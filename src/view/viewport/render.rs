@@ -3,14 +3,19 @@ use super::*;
 impl Viewport {
     /// Run a single layout pass: measure → place → collect_box_models.
     /// Returns profiling data for the pass.
-    fn run_layout_pass(&mut self) -> LayoutPassResult {
+    pub(super) fn run_layout_pass(&mut self) -> LayoutPassResult {
         self.compositor.frame_box_models.clear();
         crate::view::base_component::reset_text_measure_profile();
+        crate::view::base_component::reset_layout_gate_candidate_profile();
 
         // Take the arena out of the scene so we can pass it by &mut into
         // layout without aliasing the viewport; restore at the end.
         let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
+        let mut traversal_profile = super::frame::LayoutTraversalProfile {
+            root_count: root_keys.len(),
+            ..Default::default()
+        };
 
         let measure_started_at = Instant::now();
         let constraints = crate::view::base_component::LayoutConstraints {
@@ -24,21 +29,38 @@ impl Viewport {
         // Flush deferred arena mutations (e.g. TextArea projection subtree
         // commits queued by imperative setters between frames). Must run
         // before measure so layout sees the current projection state.
+        let sync_subtree_started_at = Instant::now();
         for &root_key in &root_keys {
             arena.sync_subtree(root_key);
         }
+        traversal_profile.sync_subtree_ms =
+            sync_subtree_started_at.elapsed().as_secs_f64() * 1000.0;
         // Refresh the per-node subtree-dirty cache once at the top of the
         // measure pass so every Element::measure / place can read
         // subtree_dirty_flags via an O(1) cache lookup instead of walking
         // its entire subtree (an O(N²) trap pre-cache).
+        let dirty_refresh_before_measure_started_at = Instant::now();
         for &root_key in &root_keys {
             arena.refresh_subtree_dirty_cache(root_key);
         }
+        traversal_profile.dirty_refresh_before_measure_ms = dirty_refresh_before_measure_started_at
+            .elapsed()
+            .as_secs_f64()
+            * 1000.0;
+        let measure_roots_started_at = Instant::now();
         for &root_key in &root_keys {
             arena.with_element_taken(root_key, |root, arena| {
                 root.measure(constraints, arena);
             });
         }
+        for &root_key in &root_keys {
+            arena.clear_arena_dirty_subtree(
+                root_key,
+                crate::view::base_component::DirtyFlags::LAYOUT,
+            );
+        }
+        traversal_profile.measure_roots_ms =
+            measure_roots_started_at.elapsed().as_secs_f64() * 1000.0;
         let measure_ms = measure_started_at.elapsed().as_secs_f64() * 1000.0;
         let text_measure_profile = crate::view::base_component::take_text_measure_profile();
 
@@ -58,26 +80,49 @@ impl Viewport {
         };
         // Measure mutated per-node dirty bits, so refresh the cache again
         // before place so `Element::place` can read it in O(1).
+        let dirty_refresh_before_place_started_at = Instant::now();
         for &root_key in &root_keys {
             arena.refresh_subtree_dirty_cache(root_key);
         }
+        traversal_profile.dirty_refresh_before_place_ms = dirty_refresh_before_place_started_at
+            .elapsed()
+            .as_secs_f64()
+            * 1000.0;
+        let place_roots_started_at = Instant::now();
         for &root_key in &root_keys {
             arena.with_element_taken(root_key, |root, arena| {
                 root.place(placement, arena);
             });
         }
+        for &root_key in &root_keys {
+            arena.clear_arena_dirty_subtree(
+                root_key,
+                crate::view::base_component::DirtyFlags::PLACE,
+            );
+        }
+        traversal_profile.place_roots_ms = place_roots_started_at.elapsed().as_secs_f64() * 1000.0;
         let place_ms = place_started_at.elapsed().as_secs_f64() * 1000.0;
         let place_profile = crate::view::base_component::take_layout_place_profile();
+        let gate_profile = crate::view::base_component::take_layout_gate_candidate_profile();
+        traversal_profile.measure_candidate_clean_children =
+            gate_profile.measure_candidate_clean_children;
+        traversal_profile.measure_dirty_children = gate_profile.measure_dirty_children;
+        traversal_profile.placement_candidate_clean_children =
+            gate_profile.placement_candidate_clean_children;
+        traversal_profile.placement_dirty_children = gate_profile.placement_dirty_children;
+        traversal_profile.skipped_child_place_calls = place_profile.skipped_child_place_calls;
 
         self.scene.node_arena = arena;
         let collect_started_at = Instant::now();
         self.refresh_frame_box_models();
         let collect_box_models_ms = collect_started_at.elapsed().as_secs_f64() * 1000.0;
+        traversal_profile.collect_box_models_ms = collect_box_models_ms;
 
         LayoutPassResult {
             measure_ms,
             place_ms,
             collect_box_models_ms,
+            traversal_profile,
             text_measure_profile,
             place_profile,
         }
@@ -170,10 +215,19 @@ impl Viewport {
         let layout = if opts.trace_layout_detail {
             let layout_measure_children =
                 build_text_measure_trace_nodes(&t.layout_text_measure_profile);
+            let layout_traversal_children =
+                super::debug::build_layout_traversal_trace_nodes(&t.layout_traversal_profile);
+            let relayout_traversal_children =
+                super::debug::build_layout_traversal_trace_nodes(&t.relayout_traversal_profile);
             TraceRenderNode::with_children(
                 "layout",
                 layout_with_transition_ms,
                 vec![
+                    TraceRenderNode::with_children(
+                        "layout_traversal",
+                        t.layout_measure_ms + t.layout_place_ms + t.layout_collect_box_models_ms,
+                        layout_traversal_children,
+                    ),
                     TraceRenderNode::with_children(
                         "measure",
                         t.layout_measure_ms,
@@ -190,6 +244,13 @@ impl Viewport {
                         "relayout_after_transition",
                         t.relayout_ms,
                         vec![
+                            TraceRenderNode::with_children(
+                                "layout_traversal",
+                                t.relayout_measure_ms
+                                    + t.relayout_place_ms
+                                    + t.relayout_collect_box_models_ms,
+                                relayout_traversal_children,
+                            ),
                             TraceRenderNode::new("measure", t.relayout_measure_ms),
                             TraceRenderNode::with_children(
                                 "place",
@@ -314,6 +375,7 @@ impl Viewport {
         timings.layout_measure_ms = layout_result.measure_ms;
         timings.layout_place_ms = layout_result.place_ms;
         timings.layout_collect_box_models_ms = layout_result.collect_box_models_ms;
+        timings.layout_traversal_profile = layout_result.traversal_profile;
         timings.layout_text_measure_profile = layout_result.text_measure_profile;
         timings.layout_place_profile = layout_result.place_profile;
         timings.layout_ms = layout_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -332,6 +394,7 @@ impl Viewport {
             timings.relayout_measure_ms = relayout_result.measure_ms;
             timings.relayout_place_ms = relayout_result.place_ms;
             timings.relayout_collect_box_models_ms = relayout_result.collect_box_models_ms;
+            timings.relayout_traversal_profile = relayout_result.traversal_profile;
             timings.relayout_place_profile = relayout_result.place_profile;
         }
         timings.relayout_ms = relayout_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -565,38 +628,29 @@ impl Viewport {
                 ctx.set_state(next_state);
             }
         }
-        let mut deferred_node_ids = ctx.take_deferred_node_ids();
+        let mut deferred_nodes = ctx.take_deferred_nodes();
         // Drain dedup: `append_to_defer`'s in-state `contains` check stops
         // working once we've taken the list out, so build-time re-appends
         // (impl_render walks calling `append_to_defer` for viewport-clip
-        // children) would otherwise re-queue an id that was already seeded
+        // children) would otherwise re-queue a node that was already seeded
         // and produce a double-paint on top.
-        let mut seen_deferred: rustc_hash::FxHashSet<u64> =
-            deferred_node_ids.iter().copied().collect();
+        let mut seen_deferred: rustc_hash::FxHashSet<crate::view::node_arena::NodeKey> =
+            deferred_nodes.iter().map(|node| node.key).collect();
         let mut deferred_index = 0usize;
-        while deferred_index < deferred_node_ids.len() {
-            let node_id = deferred_node_ids[deferred_index];
+        while deferred_index < deferred_nodes.len() {
+            let node = deferred_nodes[deferred_index].clone();
             deferred_index += 1;
-            for &root_key in &root_keys_for_build {
-                let handled = arena
-                    .with_element_taken(root_key, |root, arena| {
-                        crate::view::base_component::build_node_by_id(
-                            root.as_mut(),
-                            node_id,
-                            &mut graph,
-                            arena,
-                            &mut ctx,
-                        )
-                    })
-                    .unwrap_or(false);
-                if handled {
-                    break;
-                }
-            }
-            let newly_deferred = ctx.take_deferred_node_ids();
-            for id in newly_deferred {
-                if seen_deferred.insert(id) {
-                    deferred_node_ids.push(id);
+            crate::view::base_component::build_node_by_key(
+                node.key,
+                node.stable_id,
+                &mut graph,
+                &mut arena,
+                &mut ctx,
+            );
+            let newly_deferred = ctx.take_deferred_nodes();
+            for node in newly_deferred {
+                if seen_deferred.insert(node.key) {
+                    deferred_nodes.push(node);
                 }
             }
         }
@@ -656,12 +710,24 @@ impl Viewport {
         };
 
         // --- Execute ---
+        let mut executed = false;
         if compiled {
             if let Ok(profile) = graph.execute_profiled(self) {
                 timings.execute_ms = profile.total_ms;
                 timings.execute_pass_count = profile.pass_count;
                 timings.execute_ordered_passes = profile.ordered_passes;
                 timings.execute_detail_ordered_passes = profile.detail_ordered;
+                executed = true;
+            }
+        }
+        if executed {
+            let root_keys = self.scene.ui_root_keys.clone();
+            for root_key in root_keys {
+                crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+                    &mut self.scene.node_arena,
+                    root_key,
+                    crate::view::base_component::DirtyFlags::PAINT,
+                );
             }
         }
 
@@ -902,18 +968,14 @@ impl Viewport {
             transition_changed_after_layout = self.render_render_tree(dt, now_seconds);
         }
         let next_hover_target = self.pointer_position_viewport().and_then(|(x, y)| {
-            crate::view::base_component::hit_test_stacked(
+            Self::hit_test_pointer_target(
                 &self.scene.node_arena,
                 &self.scene.popup_stack,
+                &self.scene.ui_root_keys,
                 x,
                 y,
             )
             .map(|(_, t)| t)
-            .or_else(|| {
-                self.scene.ui_root_keys.iter().rev().find_map(|&root_key| {
-                    crate::view::base_component::hit_test(&self.scene.node_arena, root_key, x, y)
-                })
-            })
         });
         let hover_changed = {
             let mut arena = std::mem::take(&mut self.scene.node_arena);

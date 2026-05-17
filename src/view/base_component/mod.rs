@@ -76,20 +76,36 @@ pub(crate) fn subtree_dirty_flags(
     flags
 }
 
-pub(crate) fn clear_subtree_dirty_flags(
-    root: &mut dyn ElementTrait,
-    flags: DirtyFlags,
+fn clear_subtree_dirty_flags_by_key(
     arena: &crate::view::node_arena::NodeArena,
-) {
-    root.clear_local_dirty_flags(flags);
-    // Collect keys before recursing to avoid borrowing `root` while we
-    // re-enter the arena for each child.
-    let child_keys: Vec<crate::view::node_arena::NodeKey> = root.children().to_vec();
-    for child_key in child_keys {
-        if let Some(mut child_node) = arena.get_mut(child_key) {
-            clear_subtree_dirty_flags(child_node.element.as_mut(), flags, arena);
-        }
+    root_key: crate::view::node_arena::NodeKey,
+    flags: DirtyFlags,
+) -> bool {
+    let children = arena.children_of(root_key);
+    let Some(mut root_node) = arena.get_mut(root_key) else {
+        return false;
+    };
+    root_node.element.clear_local_dirty_flags(flags);
+    drop(root_node);
+
+    for child_key in children {
+        clear_subtree_dirty_flags_by_key(arena, child_key, flags);
     }
+    true
+}
+
+#[allow(dead_code)]
+pub(crate) fn clear_subtree_dirty_flags_with_arena_dirty(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    flags: DirtyFlags,
+) -> bool {
+    if !clear_subtree_dirty_flags_by_key(arena, root_key, flags) {
+        return false;
+    }
+
+    arena.clear_arena_dirty_subtree(root_key, flags);
+    true
 }
 
 pub(crate) fn can_reuse_promoted_subtree(
@@ -392,6 +408,20 @@ pub(crate) fn build_node_by_id(
     false
 }
 
+pub(crate) fn build_node_by_key(
+    node_key: crate::view::node_arena::NodeKey,
+    stable_id: u64,
+    graph: &mut crate::view::frame_graph::FrameGraph,
+    arena: &mut crate::view::node_arena::NodeArena,
+    ctx: &mut UiBuildContext,
+) -> bool {
+    arena
+        .with_element_taken(node_key, |node, arena| {
+            build_node_by_id(node.as_mut(), stable_id, graph, arena, ctx)
+        })
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LayoutTransitionSnapshotSeed {
     pub layout_x: f32,
@@ -535,7 +565,7 @@ fn hit_test_has_absolute_descendant(node: &dyn ElementTrait) -> bool {
         .is_some_and(Element::has_absolute_descendant_for_hit_test)
 }
 
-fn find_deepest_in_viewport_clip_subtree(
+fn find_deepest_in_priority_absolute_clip_subtree(
     arena: &crate::view::node_arena::NodeArena,
     key: crate::view::node_arena::NodeKey,
     x: f32,
@@ -559,14 +589,14 @@ fn find_deepest_in_viewport_clip_subtree(
     let children: Vec<_> = node.children.clone();
     drop(node);
     for child_key in children.iter().rev() {
-        if let Some(k) = find_deepest_in_viewport_clip_subtree(arena, *child_key, x, y) {
+        if let Some(k) = find_deepest_in_priority_absolute_clip_subtree(arena, *child_key, x, y) {
             return Some(k);
         }
     }
     Some(key)
 }
 
-fn find_viewport_clip_priority(
+fn find_priority_absolute_clip(
     arena: &crate::view::node_arena::NodeArena,
     key: crate::view::node_arena::NodeKey,
     x: f32,
@@ -579,29 +609,32 @@ fn find_viewport_clip_priority(
     }
 
     let children: Vec<_> = node.children.clone();
-    let is_abs_viewport_clip = node
+    let is_priority_absolute_clip = node
         .element
         .as_any()
         .downcast_ref::<Element>()
         .map(|element| {
             element.is_absolute_positioned_for_hit_test()
-                && element.clip_mode_for_hit_test() == crate::style::ClipMode::Viewport
+                && matches!(
+                    element.clip_mode_for_hit_test(),
+                    crate::style::ClipMode::Viewport | crate::style::ClipMode::AnchorParent
+                )
         })
         .unwrap_or(false);
     drop(node);
 
     for child_key in children.iter().rev() {
-        if let Some(k) = find_viewport_clip_priority(arena, *child_key, x, y) {
+        if let Some(k) = find_priority_absolute_clip(arena, *child_key, x, y) {
             return Some(k);
         }
     }
 
-    if !is_abs_viewport_clip {
+    if !is_priority_absolute_clip {
         return None;
     }
 
     if point_in_box_model(&snapshot, x, y) {
-        find_deepest_in_viewport_clip_subtree(arena, key, x, y)
+        find_deepest_in_priority_absolute_clip_subtree(arena, key, x, y)
     } else {
         None
     }
@@ -699,7 +732,7 @@ pub fn hit_test(
         width: root_snapshot.width.max(0.0),
         height: root_snapshot.height.max(0.0),
     };
-    if let Some(k) = find_viewport_clip_priority(arena, root_key, viewport_x, viewport_y) {
+    if let Some(k) = find_priority_absolute_clip(arena, root_key, viewport_x, viewport_y) {
         return Some(k);
     }
     find(arena, root_key, viewport_x, viewport_y, viewport_rect)
@@ -708,7 +741,7 @@ pub fn hit_test(
 /// Stack-priority hit-test.
 ///
 /// Walks `popup_stack` top → bottom; for each id, resolves the slot key
-/// and runs [`find_deepest_in_viewport_clip_subtree`]. Returns the first
+/// and runs [`find_deepest_in_priority_absolute_clip_subtree`]. Returns the first
 /// `(owning_root_key, target_key)` whose bounding rect contains the
 /// point. Stack entries that no longer resolve (stale ids) are skipped;
 /// callers should already have run `PopupStack::compact` for the frame.
@@ -728,9 +761,9 @@ pub fn hit_test_stacked(
         let Some(popup_key) = arena.find_by_stable_id(sid) else {
             continue;
         };
-        let Some(target_key) =
-            find_deepest_in_viewport_clip_subtree(arena, popup_key, viewport_x, viewport_y)
-        else {
+        let Some(target_key) = find_deepest_in_priority_absolute_clip_subtree(
+            arena, popup_key, viewport_x, viewport_y,
+        ) else {
             continue;
         };
         let root_key = arena.root_for(popup_key);
@@ -741,11 +774,11 @@ pub fn hit_test_stacked(
 
 /// Hit-test across multiple UI roots in a single pass.
 ///
-/// 1. Searches all roots for **nested** viewport-clipped absolute elements
-///    (dropdowns, popovers) which render on top of everything via deferred
-///    rendering. Root-level viewport-clip elements (Window shells) are
+/// 1. Searches all roots for **nested** priority absolute clip elements
+///    (dropdowns, popovers, anchor-parent overflow handles) which render on
+///    top of everything via deferred rendering. Root-level priority clips are
 ///    intentionally skipped so they don't shadow deeper targets in other roots.
-/// 2. If no nested viewport-clip match is found, falls back to the normal
+/// 2. If no nested priority absolute clip match is found, falls back to the normal
 ///    per-root `hit_test` (reverse order — last root has highest priority).
 ///
 /// Returns `Some((root_index, target_node_id))`.
@@ -772,7 +805,7 @@ pub fn hit_test_roots(
         let children: Vec<_> = root.children.clone();
         drop(root);
         for child_key in children.iter().rev() {
-            if let Some(k) = find_viewport_clip_priority(arena, *child_key, viewport_x, viewport_y)
+            if let Some(k) = find_priority_absolute_clip(arena, *child_key, viewport_x, viewport_y)
             {
                 return Some((idx, k));
             }
@@ -1104,7 +1137,7 @@ pub(crate) fn scroll_rect_into_view_from(
         }
 
         let changed = arena
-            .with_element_taken_ref(scroller_key, |element, _arena| {
+            .mutate_element_ref_with_invalidation(scroller_key, |element, cx| {
                 let before = element.get_scroll_offset();
                 let handled = element.scroll_by(dx, dy);
                 let after = element.get_scroll_offset();
@@ -1113,6 +1146,9 @@ pub(crate) fn scroll_rect_into_view_from(
                 if handled {
                     rect.x -= actual_dx;
                     rect.y -= actual_dy;
+                }
+                if handled && before != after {
+                    cx.invalidate(DirtyPassMask::RUNTIME);
                 }
                 handled
             })
@@ -1170,21 +1206,39 @@ pub fn set_scroll_offset_by_id(
     stable_id: u64,
     offset: (f32, f32),
 ) -> bool {
-    arena
-        .with_element_taken_ref(root_key, |element, arena| {
-            if element.stable_id() == stable_id {
-                element.set_scroll_offset(offset);
+    fn walk(
+        arena: &crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        stable_id: u64,
+        offset: (f32, f32),
+    ) -> bool {
+        let Some(node) = arena.get(key) else {
+            return false;
+        };
+        if node.element.stable_id() == stable_id {
+            drop(node);
+            return arena
+                .mutate_element_ref_with_invalidation(key, |element, cx| {
+                    let before = element.get_scroll_offset();
+                    element.set_scroll_offset(offset);
+                    if before != offset {
+                        cx.invalidate(DirtyPassMask::RUNTIME);
+                    }
+                    true
+                })
+                .unwrap_or(false);
+        }
+        let children = node.children.clone();
+        drop(node);
+        for child_key in children {
+            if walk(arena, child_key, stable_id, offset) {
                 return true;
             }
-            let children: Vec<_> = element.children().to_vec();
-            for child_key in children {
-                if set_scroll_offset_by_id(arena, child_key, stable_id, offset) {
-                    return true;
-                }
-            }
-            false
-        })
-        .unwrap_or(false)
+        }
+        false
+    }
+
+    walk(arena, root_key, stable_id, offset)
 }
 
 pub(crate) fn take_style_transition_requests(
@@ -1315,16 +1369,19 @@ pub(crate) fn reconcile_transition_runtime_state(
         active_channels_by_node: &FxHashMap<u64, FxHashSet<ChannelId>>,
     ) -> bool {
         arena
-            .with_element_taken(key, |element, arena| {
+            .mutate_element_with_invalidation(key, |element, cx| {
                 let mut changed = false;
                 let node_id = element.stable_id();
                 if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
                     changed |= el
                         .reconcile_transition_runtime_state(active_channels_by_node.get(&node_id));
                 }
+                if changed {
+                    cx.invalidate(element.local_dirty_flags());
+                }
                 let children: Vec<_> = element.children().to_vec();
                 for child_key in children {
-                    changed |= walk(arena, child_key, active_channels_by_node);
+                    changed |= walk(cx.arena(), child_key, active_channels_by_node);
                 }
                 changed
             })
@@ -1345,13 +1402,109 @@ pub(crate) fn set_style_field_by_id(
     field: StyleField,
     value: StyleValue,
 ) -> bool {
+    set_arena_dirty_style_field_by_id(arena, root_key, stable_id, field, &value)
+}
+
+fn set_arena_dirty_style_field_by_id(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    stable_id: u64,
+    field: StyleField,
+    value: &StyleValue,
+) -> bool {
+    let Some(target_key) = arena.find_by_stable_id(stable_id) else {
+        return false;
+    };
+    if arena.root_for(target_key) != root_key {
+        return false;
+    }
+    if !matches!(
+        (field, value),
+        (StyleField::Opacity, StyleValue::Scalar(_))
+            | (StyleField::BackgroundColor, StyleValue::Color(_))
+            | (StyleField::Color, StyleValue::Color(_))
+            | (StyleField::BorderTopColor, StyleValue::Color(_))
+            | (StyleField::BorderRightColor, StyleValue::Color(_))
+            | (StyleField::BorderBottomColor, StyleValue::Color(_))
+            | (StyleField::BorderLeftColor, StyleValue::Color(_))
+            | (StyleField::BorderRadius, StyleValue::Scalar(_))
+            | (StyleField::BoxShadow, StyleValue::BoxShadow(_))
+            | (StyleField::Transform, StyleValue::Transform(_))
+            | (StyleField::Transform, StyleValue::TransformProgress { .. })
+            | (StyleField::TransformOrigin, StyleValue::TransformOrigin(_))
+            | (
+                StyleField::TransformOrigin,
+                StyleValue::TransformOriginProgress { .. }
+            )
+    ) {
+        return false;
+    }
+
     arena
-        .with_element_taken(root_key, |root, arena| {
-            set_style_field_by_id_inner(root.as_mut(), arena, stable_id, field, value)
+        .mutate_element_with_invalidation(target_key, |element, cx| {
+            let Some(element) = element.as_any_mut().downcast_mut::<Element>() else {
+                return false;
+            };
+            match (field, value) {
+                (StyleField::Opacity, StyleValue::Scalar(value)) => {
+                    element.set_opacity_with_invalidation(*value, cx);
+                }
+                (StyleField::BackgroundColor, StyleValue::Color(color)) => {
+                    element.set_background_color_value_with_invalidation(*color, cx);
+                }
+                (StyleField::Color, StyleValue::Color(color)) => {
+                    element.set_foreground_color_with_invalidation(*color, cx);
+                }
+                (StyleField::BorderTopColor, StyleValue::Color(color)) => {
+                    element.set_border_top_color_with_invalidation(*color, cx);
+                }
+                (StyleField::BorderRightColor, StyleValue::Color(color)) => {
+                    element.set_border_right_color_with_invalidation(*color, cx);
+                }
+                (StyleField::BorderBottomColor, StyleValue::Color(color)) => {
+                    element.set_border_bottom_color_with_invalidation(*color, cx);
+                }
+                (StyleField::BorderLeftColor, StyleValue::Color(color)) => {
+                    element.set_border_left_color_with_invalidation(*color, cx);
+                }
+                (StyleField::BorderRadius, StyleValue::Scalar(value)) => {
+                    element.set_border_radius_transition_sample_with_invalidation(*value, cx);
+                }
+                (StyleField::BoxShadow, StyleValue::BoxShadow(box_shadows)) => {
+                    element.set_box_shadows_with_invalidation(box_shadows.clone(), cx);
+                }
+                (StyleField::Transform, StyleValue::Transform(transform)) => {
+                    element.set_transform_value_with_invalidation(transform.clone(), cx);
+                }
+                (StyleField::Transform, StyleValue::TransformProgress { from, to, progress }) => {
+                    element.set_transform_progress_value_with_invalidation(
+                        from.clone(),
+                        to.clone(),
+                        *progress,
+                        cx,
+                    );
+                }
+                (StyleField::TransformOrigin, StyleValue::TransformOrigin(transform_origin)) => {
+                    element.set_transform_origin_value_with_invalidation(*transform_origin, cx);
+                }
+                (
+                    StyleField::TransformOrigin,
+                    StyleValue::TransformOriginProgress { from, to, progress },
+                ) => {
+                    element.set_transform_origin_progress_value_with_invalidation(
+                        *from, *to, *progress, cx,
+                    );
+                }
+                _ => {
+                    return false;
+                }
+            }
+            true
         })
         .unwrap_or(false)
 }
 
+#[allow(dead_code)]
 fn set_style_field_by_id_inner(
     root: &mut dyn ElementTrait,
     arena: &mut crate::view::node_arena::NodeArena,
@@ -1466,13 +1619,30 @@ pub(crate) fn set_layout_field_by_id(
     field: LayoutField,
     value: f32,
 ) -> bool {
+    let Some(target_key) = arena.find_by_stable_id(node_id) else {
+        return false;
+    };
+    if arena.root_for(target_key) != root_key {
+        return false;
+    }
+
     arena
-        .with_element_taken(root_key, |root, arena| {
-            set_layout_field_by_id_inner(root.as_mut(), arena, node_id, field, value)
+        .mutate_element_with_invalidation(target_key, |element, cx| {
+            let Some(element) = element.as_any_mut().downcast_mut::<Element>() else {
+                return false;
+            };
+            match field {
+                LayoutField::Width => element.set_layout_transition_width(value),
+                LayoutField::Height => element.set_layout_transition_height(value),
+                LayoutField::X | LayoutField::Y => return false,
+            }
+            cx.invalidate(DirtyFlags::ALL);
+            true
         })
         .unwrap_or(false)
 }
 
+#[allow(dead_code)]
 fn set_layout_field_by_id_inner(
     root: &mut dyn ElementTrait,
     arena: &mut crate::view::node_arena::NodeArena,
@@ -1510,37 +1680,26 @@ pub(crate) fn set_visual_field_by_id(
     field: VisualField,
     value: f32,
 ) -> bool {
-    arena
-        .with_element_taken(root_key, |root, arena| {
-            set_visual_field_by_id_inner(root.as_mut(), arena, node_id, field, value)
-        })
-        .unwrap_or(false)
-}
+    let Some(target_key) = arena.find_by_stable_id(node_id) else {
+        return false;
+    };
+    if arena.root_for(target_key) != root_key {
+        return false;
+    }
 
-fn set_visual_field_by_id_inner(
-    root: &mut dyn ElementTrait,
-    arena: &mut crate::view::node_arena::NodeArena,
-    node_id: u64,
-    field: VisualField,
-    value: f32,
-) -> bool {
-    if root.stable_id() == node_id {
-        if let Some(element) = root.as_any_mut().downcast_mut::<Element>() {
+    arena
+        .mutate_element_with_invalidation(target_key, |element, cx| {
+            let Some(element) = element.as_any_mut().downcast_mut::<Element>() else {
+                return false;
+            };
             match field {
                 VisualField::X => element.set_layout_transition_x(value),
                 VisualField::Y => element.set_layout_transition_y(value),
             }
+            cx.invalidate(DirtyPassMask::RUNTIME);
             return true;
-        }
-        return false;
-    }
-    let children: Vec<_> = root.children().to_vec();
-    for child_key in children {
-        if set_visual_field_by_id(arena, child_key, node_id, field, value) {
-            return true;
-        }
-    }
-    false
+        })
+        .unwrap_or(false)
 }
 
 pub(crate) fn update_hover_state(
@@ -1554,16 +1713,20 @@ pub(crate) fn update_hover_state(
         target_key: Option<crate::view::node_arena::NodeKey>,
     ) -> (bool, bool) {
         arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 let mut contains_target = target_key == Some(key);
                 let mut changed = false;
                 let children: Vec<_> = element.children().to_vec();
                 for child_key in children.into_iter().rev() {
-                    let (child_contains_target, child_changed) = walk(arena, child_key, target_key);
+                    let (child_contains_target, child_changed) =
+                        walk(cx.arena(), child_key, target_key);
                     contains_target |= child_contains_target;
                     changed |= child_changed;
                 }
                 changed |= element.set_hovered(contains_target);
+                if changed {
+                    cx.invalidate(element.local_dirty_flags());
+                }
                 (contains_target, changed)
             })
             .unwrap_or((false, false))
@@ -1611,7 +1774,7 @@ fn dispatch_pointer_enter_to_key(
     pointer: crate::ui::PointerEventData,
 ) -> bool {
     arena
-        .with_element_taken_ref(key, |element, arena| {
+        .mutate_element_ref_with_invalidation(key, |element, cx| {
             let snapshot = element.box_model_snapshot();
             let (local_x, local_y) = local_point_for_node(
                 element.as_ref(),
@@ -1632,7 +1795,8 @@ fn dispatch_pointer_enter_to_key(
             meta.set_bubbles(false);
             meta.set_source(crate::ui::EventSource::Synthetic);
             let mut event = PointerEnterEvent { meta, pointer };
-            element.dispatch_pointer_enter(&mut event, arena, key);
+            element.dispatch_pointer_enter(&mut event, cx.arena(), key);
+            cx.invalidate(element.local_dirty_flags());
             true
         })
         .unwrap_or(false)
@@ -1645,7 +1809,7 @@ fn dispatch_pointer_leave_to_key(
     pointer: crate::ui::PointerEventData,
 ) -> bool {
     arena
-        .with_element_taken_ref(key, |element, arena| {
+        .mutate_element_ref_with_invalidation(key, |element, cx| {
             let snapshot = element.box_model_snapshot();
             let (local_x, local_y) = local_point_for_node(
                 element.as_ref(),
@@ -1666,7 +1830,8 @@ fn dispatch_pointer_leave_to_key(
             meta.set_bubbles(false);
             meta.set_source(crate::ui::EventSource::Synthetic);
             let mut event = PointerLeaveEvent { meta, pointer };
-            element.dispatch_pointer_leave(&mut event, arena, key);
+            element.dispatch_pointer_leave(&mut event, cx.arena(), key);
+            cx.invalidate(element.local_dirty_flags());
             true
         })
         .unwrap_or(false)
@@ -1720,11 +1885,14 @@ pub(crate) fn cancel_pointer_interactions(
         key: crate::view::node_arena::NodeKey,
     ) -> bool {
         arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 let mut changed = element.cancel_pointer_interaction();
                 let children: Vec<_> = element.children().to_vec();
                 for child_key in children.into_iter().rev() {
-                    changed |= walk(arena, child_key);
+                    changed |= walk(cx.arena(), child_key);
+                }
+                if changed {
+                    cx.invalidate(element.local_dirty_flags());
                 }
                 changed
             })
@@ -1849,7 +2017,7 @@ fn dispatch_pointer_down_bubble(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 let node_id = element.stable_id();
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
@@ -1867,7 +2035,8 @@ fn dispatch_pointer_down_bubble(
                 );
                 event.meta.set_current_target(ct);
                 let _ = node_id;
-                element.dispatch_pointer_down(event, control, arena, key);
+                element.dispatch_pointer_down(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
                 true
             })
             .unwrap_or(false);
@@ -1902,7 +2071,7 @@ fn dispatch_pointer_up_bubble(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
                     element.as_ref(),
@@ -1918,7 +2087,8 @@ fn dispatch_pointer_up_bubble(
                     crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
                 );
                 event.meta.set_current_target(ct);
-                element.dispatch_pointer_up(event, control, arena, key);
+                element.dispatch_pointer_up(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
                 true
             })
             .unwrap_or(false);
@@ -1953,7 +2123,7 @@ fn dispatch_pointer_move_bubble(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
                     element.as_ref(),
@@ -1969,7 +2139,8 @@ fn dispatch_pointer_move_bubble(
                     crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
                 );
                 event.meta.set_current_target(ct);
-                element.dispatch_pointer_move(event, control, arena, key);
+                element.dispatch_pointer_move(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
                 true
             })
             .unwrap_or(false);
@@ -2004,7 +2175,7 @@ fn dispatch_wheel_bubble(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
                     element.as_ref(),
@@ -2020,7 +2191,8 @@ fn dispatch_wheel_bubble(
                     crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
                 );
                 event.meta.set_current_target(ct);
-                element.dispatch_wheel(event, control, arena, key);
+                element.dispatch_wheel(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
                 true
             })
             .unwrap_or(false);
@@ -2035,6 +2207,7 @@ fn dispatch_wheel_bubble(
     dispatched
 }
 
+#[allow(dead_code)]
 pub(crate) fn dispatch_wheel_from_hit_test(
     arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
@@ -2088,7 +2261,7 @@ fn dispatch_context_menu_bubble(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
                     element.as_ref(),
@@ -2104,7 +2277,8 @@ fn dispatch_context_menu_bubble(
                     crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
                 );
                 event.meta.set_current_target(ct);
-                element.dispatch_context_menu(event, control, arena, key);
+                element.dispatch_context_menu(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
                 true
             })
             .unwrap_or(false);
@@ -2139,7 +2313,7 @@ fn dispatch_click_bubble(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
                     element.as_ref(),
@@ -2155,7 +2329,8 @@ fn dispatch_click_bubble(
                     crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
                 );
                 event.meta.set_current_target(ct);
-                element.dispatch_click(event, control, arena, key);
+                element.dispatch_click(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
                 true
             })
             .unwrap_or(false);
@@ -2182,7 +2357,14 @@ fn dispatch_scroll_bubble(
     while let Some(key) = current {
         let next = arena.parent_of(key);
         let handled = arena
-            .with_element_taken_ref(key, |element, _arena| element.scroll_by(dx, dy))
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                let before = element.get_scroll_offset();
+                let handled = element.scroll_by(dx, dy);
+                if handled && before != element.get_scroll_offset() {
+                    cx.invalidate(DirtyPassMask::RUNTIME);
+                }
+                handled
+            })
             .unwrap_or(false);
         if handled {
             return true;
@@ -2231,9 +2413,10 @@ fn dispatch_key_down_impl(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 event.meta.set_current_target_id(key);
-                element.dispatch_key_down(event, control, arena, key);
+                element.dispatch_key_down(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
                 true
             })
             .unwrap_or(false);
@@ -2268,9 +2451,10 @@ fn dispatch_key_up_impl(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 event.meta.set_current_target_id(key);
-                element.dispatch_key_up(event, control, arena, key);
+                element.dispatch_key_up(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
                 true
             })
             .unwrap_or(false);
@@ -2305,9 +2489,10 @@ fn dispatch_focus_impl(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 event.meta.set_current_target_id(key);
-                element.dispatch_focus(event, control, arena, key);
+                element.dispatch_focus(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
                 true
             })
             .unwrap_or(false);
@@ -2342,9 +2527,10 @@ fn dispatch_text_input_impl(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 event.meta.set_current_target_id(key);
-                element.dispatch_text_input(event, control, arena, key);
+                element.dispatch_text_input(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
                 true
             })
             .unwrap_or(false);
@@ -2379,9 +2565,10 @@ fn dispatch_ime_preedit_impl(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 event.meta.set_current_target_id(key);
-                element.dispatch_ime_preedit(event, control, arena, key);
+                element.dispatch_ime_preedit(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
                 true
             })
             .unwrap_or(false);
@@ -2416,9 +2603,10 @@ fn dispatch_blur_impl(
         });
         let next = arena.parent_of(key);
         let did = arena
-            .with_element_taken_ref(key, |element, arena| {
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
                 event.meta.set_current_target_id(key);
-                element.dispatch_blur(event, control, arena, key);
+                element.dispatch_blur(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
                 true
             })
             .unwrap_or(false);
@@ -2455,9 +2643,10 @@ macro_rules! define_focused_target_bubble {
                 });
                 let next = arena.parent_of(key);
                 let did = arena
-                    .with_element_taken_ref(key, |element, arena| {
+                    .mutate_element_ref_with_invalidation(key, |element, cx| {
                         event.meta.set_current_target_id(key);
-                        element.$dispatch_method(event, control, arena, key);
+                        element.$dispatch_method(event, control, cx.arena(), key);
+                        cx.invalidate(element.local_dirty_flags());
                         true
                     })
                     .unwrap_or(false);
@@ -2515,7 +2704,7 @@ macro_rules! define_pointer_target_bubble {
                 });
                 let next = arena.parent_of(key);
                 let did = arena
-                    .with_element_taken_ref(key, |element, arena| {
+                    .mutate_element_ref_with_invalidation(key, |element, cx| {
                         let snapshot = element.box_model_snapshot();
                         let (local_x, local_y) = local_point_for_node(
                             element.as_ref(),
@@ -2536,7 +2725,8 @@ macro_rules! define_pointer_target_bubble {
                             crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
                         );
                         event.meta.set_current_target(ct);
-                        element.$dispatch_method(event, control, arena, key);
+                        element.$dispatch_method(event, control, cx.arena(), key);
+                        cx.invalidate(element.local_dirty_flags());
                         true
                     })
                     .unwrap_or(false);
@@ -2713,7 +2903,7 @@ pub(crate) fn dispatch_drag_leave_to_key(
     control: &mut ViewportControl<'_>,
 ) -> bool {
     arena
-        .with_element_taken_ref(key, |element, arena| {
+        .mutate_element_ref_with_invalidation(key, |element, cx| {
             let snapshot = element.box_model_snapshot();
             let target = crate::ui::EventTarget::snapshot(
                 key,
@@ -2724,7 +2914,8 @@ pub(crate) fn dispatch_drag_leave_to_key(
             meta.set_bubbles(false);
             meta.set_source(crate::ui::EventSource::Synthetic);
             let mut event = crate::ui::DragLeaveEvent { meta };
-            element.dispatch_drag_leave(&mut event, control, arena, key);
+            element.dispatch_drag_leave(&mut event, control, cx.arena(), key);
+            cx.invalidate(element.local_dirty_flags());
             true
         })
         .unwrap_or(false)
@@ -2823,17 +3014,18 @@ pub(crate) fn select_all_text_by_id(
     node_id: u64,
 ) -> bool {
     arena
-        .with_element_taken_ref(root_key, |element, arena| {
+        .mutate_element_ref_with_invalidation(root_key, |element, cx| {
             if element.stable_id() == node_id {
                 if let Some(text_area) = element.as_any_mut().downcast_mut::<TextArea>() {
                     text_area.select_all();
+                    cx.invalidate(element.local_dirty_flags());
                     return true;
                 }
                 return false;
             }
             let children: Vec<_> = element.children().to_vec();
             for child_key in children {
-                if select_all_text_by_id(arena, child_key, node_id) {
+                if select_all_text_by_id(cx.arena(), child_key, node_id) {
                     return true;
                 }
             }
@@ -2850,17 +3042,18 @@ pub(crate) fn select_text_range_by_id(
     end: usize,
 ) -> bool {
     arena
-        .with_element_taken_ref(root_key, |element, arena| {
+        .mutate_element_ref_with_invalidation(root_key, |element, cx| {
             if element.stable_id() == node_id {
                 if let Some(text_area) = element.as_any_mut().downcast_mut::<TextArea>() {
                     text_area.select_range(start, end);
+                    cx.invalidate(element.local_dirty_flags());
                     return true;
                 }
                 return false;
             }
             let children: Vec<_> = element.children().to_vec();
             for child_key in children {
-                if select_text_range_by_id(arena, child_key, node_id, start, end) {
+                if select_text_range_by_id(cx.arena(), child_key, node_id, start, end) {
                     return true;
                 }
             }
@@ -3188,9 +3381,9 @@ pub(crate) use forward_event_target;
 mod tests {
     use super::{
         dispatch_click_from_hit_test, dispatch_drag_over_bubble, dispatch_hover_transition,
-        dispatch_pointer_down_from_hit_test, hit_test,
+        dispatch_pointer_down_from_hit_test, hit_test, hit_test_roots,
     };
-    use crate::style::{AnchorName, Color, Layout};
+    use crate::style::{Anchor, AnchorName, Color, Layout};
     use crate::style::{
         Angle, ClipMode, Length, ParsedValue, Position, PropertyId, Rotate, ScrollDirection, Style,
         Transform, TransformOrigin, Translate,
@@ -3568,6 +3761,375 @@ mod tests {
             dispatch_click_from_hit_test(&mut arena, root_key, &mut click_outside, &mut control);
         assert_eq!(child_clicks.get(), 1);
         assert_eq!(parent_clicks.get(), 1);
+    }
+
+    #[test]
+    fn hit_test_roots_prefers_anchor_parent_overflow_handle_over_higher_root_body() {
+        let mut lower_root = Element::new(0.0, 0.0, 100.0, 80.0);
+        lower_root.set_background_color_value(Color::rgb(16, 16, 16));
+        let mut handle = Element::new(0.0, 0.0, 4.0, 80.0);
+        let mut handle_style = Style::new();
+        handle_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#ff0000")),
+        );
+        handle_style.insert(
+            PropertyId::Cursor,
+            ParsedValue::Cursor(crate::style::Cursor::EwResize),
+        );
+        handle_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .right(Length::px(-2.0))
+                    .top(Length::px(0.0))
+                    .clip(ClipMode::AnchorParent),
+            ),
+        );
+        handle.apply_style(handle_style);
+
+        let mut higher_root = Element::new(50.0, 0.0, 100.0, 80.0);
+        higher_root.set_background_color_value(Color::rgb(32, 32, 32));
+
+        let mut arena = new_test_arena();
+        let lower_key = commit_element(&mut arena, Box::new(lower_root));
+        let handle_key = commit_child(&mut arena, lower_key, Box::new(handle));
+        let higher_key = commit_element(&mut arena, Box::new(higher_root));
+
+        let root_keys = [lower_key, higher_key];
+        for &root_key in &root_keys {
+            measure_and_place(
+                &mut arena,
+                root_key,
+                constraints(200.0, 160.0),
+                placement(200.0, 160.0),
+            );
+        }
+
+        assert_eq!(hit_test(&arena, lower_key, 101.0, 20.0), Some(handle_key));
+        assert_eq!(
+            hit_test_roots(&arena, &root_keys, 101.0, 20.0),
+            Some((0, handle_key)),
+            "visible AnchorParent overflow resize handle should win over a later root body"
+        );
+    }
+
+    #[test]
+    fn hit_test_window_like_anchor_parent_resize_handles_all_edges() {
+        let mut root = Element::new(0.0, 0.0, 100.0, 80.0);
+        let mut root_style = Style::new();
+        root_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().column().into()),
+        );
+        root_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(20.0))
+                    .top(Length::px(30.0)),
+            ),
+        );
+        root.apply_style(root_style);
+
+        let mut content = Element::new(0.0, 0.0, 100.0, 80.0);
+        content.set_background_color_value(Color::rgb(32, 32, 32));
+
+        fn resize_handle(position: Position, cursor: crate::style::Cursor) -> Element {
+            let mut handle = Element::new(0.0, 0.0, 0.0, 0.0);
+            let mut style = Style::new();
+            style.insert(PropertyId::Position, ParsedValue::Position(position));
+            style.insert(PropertyId::Cursor, ParsedValue::Cursor(cursor));
+            match cursor {
+                crate::style::Cursor::EwResize => {
+                    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(4.0)));
+                }
+                crate::style::Cursor::NsResize => {
+                    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(4.0)));
+                }
+                _ => {}
+            }
+            handle.apply_style(style);
+            handle
+        }
+
+        let left = resize_handle(
+            Position::absolute()
+                .left(Length::px(-2.0))
+                .top(Length::px(0.0))
+                .bottom(Length::px(0.0))
+                .clip(ClipMode::AnchorParent),
+            crate::style::Cursor::EwResize,
+        );
+        let right = resize_handle(
+            Position::absolute()
+                .right(Length::px(-2.0))
+                .top(Length::px(0.0))
+                .bottom(Length::px(0.0))
+                .clip(ClipMode::AnchorParent),
+            crate::style::Cursor::EwResize,
+        );
+        let top = resize_handle(
+            Position::absolute()
+                .left(Length::px(0.0))
+                .right(Length::px(0.0))
+                .top(Length::px(-2.0))
+                .clip(ClipMode::AnchorParent),
+            crate::style::Cursor::NsResize,
+        );
+        let bottom = resize_handle(
+            Position::absolute()
+                .left(Length::px(0.0))
+                .right(Length::px(0.0))
+                .bottom(Length::px(-2.0))
+                .clip(ClipMode::AnchorParent),
+            crate::style::Cursor::NsResize,
+        );
+
+        let mut arena = new_test_arena();
+        let root_key = commit_element(&mut arena, Box::new(root));
+        let _content_key = commit_child(&mut arena, root_key, Box::new(content));
+        let left_key = commit_child(&mut arena, root_key, Box::new(left));
+        let right_key = commit_child(&mut arena, root_key, Box::new(right));
+        let top_key = commit_child(&mut arena, root_key, Box::new(top));
+        let bottom_key = commit_child(&mut arena, root_key, Box::new(bottom));
+
+        measure_and_place(
+            &mut arena,
+            root_key,
+            constraints(200.0, 160.0),
+            placement(200.0, 160.0),
+        );
+
+        assert_eq!(hit_test(&arena, root_key, 19.0, 50.0), Some(left_key));
+        assert_eq!(hit_test(&arena, root_key, 121.0, 50.0), Some(right_key));
+        assert_eq!(hit_test(&arena, root_key, 50.0, 29.0), Some(top_key));
+        assert_eq!(hit_test(&arena, root_key, 50.0, 111.0), Some(bottom_key));
+    }
+
+    fn absolute_diagnostic_element(position: Position, cursor: crate::style::Cursor) -> Element {
+        let mut element = Element::new(0.0, 0.0, 20.0, 20.0);
+        let mut style = Style::new();
+        style.insert(PropertyId::Position, ParsedValue::Position(position));
+        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
+        style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        style.insert(PropertyId::Cursor, ParsedValue::Cursor(cursor));
+        style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#ff00ff")),
+        );
+        element.apply_style(style);
+        element
+    }
+
+    fn absolute_diagnostic_roots(
+        position: Position,
+    ) -> (
+        crate::view::node_arena::NodeArena,
+        [crate::view::node_arena::NodeKey; 2],
+        crate::view::node_arena::NodeKey,
+    ) {
+        let mut lower_root = Element::new(0.0, 0.0, 80.0, 80.0);
+        lower_root.set_background_color_value(Color::rgb(16, 16, 16));
+        let popup = absolute_diagnostic_element(position, crate::style::Cursor::Crosshair);
+
+        let mut higher_root = Element::new(90.0, 0.0, 80.0, 80.0);
+        higher_root.set_background_color_value(Color::rgb(32, 32, 32));
+
+        let mut arena = new_test_arena();
+        let lower_key = commit_element(&mut arena, Box::new(lower_root));
+        let popup_key = commit_child(&mut arena, lower_key, Box::new(popup));
+        let higher_key = commit_element(&mut arena, Box::new(higher_root));
+        let root_keys = [lower_key, higher_key];
+        for &root_key in &root_keys {
+            measure_and_place(
+                &mut arena,
+                root_key,
+                constraints(220.0, 120.0),
+                placement(220.0, 120.0),
+            );
+        }
+        (arena, root_keys, popup_key)
+    }
+
+    #[test]
+    fn diagnostic_absolute_viewport_clip_without_anchor_wins_over_later_root_body() {
+        let (arena, root_keys, popup_key) = absolute_diagnostic_roots(
+            Position::absolute()
+                .left(Length::px(100.0))
+                .top(Length::px(10.0))
+                .clip(ClipMode::Viewport),
+        );
+
+        assert_eq!(hit_test(&arena, root_keys[0], 105.0, 15.0), Some(popup_key));
+        assert_eq!(
+            hit_test_roots(&arena, &root_keys, 105.0, 15.0),
+            Some((0, popup_key))
+        );
+    }
+
+    #[test]
+    fn diagnostic_absolute_anchor_parent_without_anchor_wins_over_later_root_body() {
+        let (arena, root_keys, popup_key) = absolute_diagnostic_roots(
+            Position::absolute()
+                .left(Length::px(100.0))
+                .top(Length::px(10.0))
+                .clip(ClipMode::AnchorParent),
+        );
+
+        assert_eq!(hit_test(&arena, root_keys[0], 105.0, 15.0), Some(popup_key));
+        assert_eq!(
+            hit_test_roots(&arena, &root_keys, 105.0, 15.0),
+            Some((0, popup_key))
+        );
+    }
+
+    #[test]
+    fn diagnostic_absolute_parent_clip_overflow_does_not_escape_parent_hit_region() {
+        let (arena, root_keys, popup_key) = absolute_diagnostic_roots(
+            Position::absolute()
+                .left(Length::px(100.0))
+                .top(Length::px(10.0))
+                .clip(ClipMode::Parent),
+        );
+
+        assert_eq!(
+            hit_test(&arena, root_keys[0], 75.0, 15.0),
+            Some(root_keys[0])
+        );
+        assert_eq!(hit_test(&arena, root_keys[0], 105.0, 15.0), None);
+        assert_ne!(
+            hit_test_roots(&arena, &root_keys, 105.0, 15.0),
+            Some((0, popup_key)),
+            "ClipMode::Parent absolute overflow is clipped by design"
+        );
+    }
+
+    #[test]
+    fn diagnostic_root_level_absolute_viewport_clip_loses_to_later_root_body() {
+        let mut lower_root = absolute_diagnostic_element(
+            Position::absolute()
+                .left(Length::px(100.0))
+                .top(Length::px(10.0))
+                .clip(ClipMode::Viewport),
+            crate::style::Cursor::Crosshair,
+        );
+        lower_root.set_anchor_name(Some(AnchorName::new("diagnostic_root_popup")));
+        let mut higher_root = Element::new(90.0, 0.0, 80.0, 80.0);
+        higher_root.set_background_color_value(Color::rgb(32, 32, 32));
+
+        let mut arena = new_test_arena();
+        let popup_root_key = commit_element(&mut arena, Box::new(lower_root));
+        let higher_key = commit_element(&mut arena, Box::new(higher_root));
+        let root_keys = [popup_root_key, higher_key];
+        for &root_key in &root_keys {
+            measure_and_place(
+                &mut arena,
+                root_key,
+                constraints(220.0, 120.0),
+                placement(220.0, 120.0),
+            );
+        }
+
+        assert_eq!(
+            hit_test(&arena, popup_root_key, 105.0, 15.0),
+            Some(popup_root_key)
+        );
+        assert_eq!(
+            hit_test_roots(&arena, &root_keys, 105.0, 15.0),
+            Some((1, higher_key)),
+            "root-level absolute roots follow root stacking; a later root body wins"
+        );
+    }
+
+    #[test]
+    fn diagnostic_transformed_absolute_viewport_clip_cross_root_uses_visual_hit_box() {
+        let mut lower_root = Element::new(0.0, 0.0, 80.0, 80.0);
+        lower_root.set_background_color_value(Color::rgb(16, 16, 16));
+        let mut popup = Element::new(0.0, 0.0, 20.0, 20.0);
+        let mut popup_style = Style::new();
+        popup_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(0.0))
+                    .top(Length::px(10.0))
+                    .clip(ClipMode::Viewport),
+            ),
+        );
+        popup_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
+        popup_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        popup_style.insert(
+            PropertyId::Cursor,
+            ParsedValue::Cursor(crate::style::Cursor::Crosshair),
+        );
+        popup_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#ff00ff")),
+        );
+        popup_style.set_transform(Transform::new([Translate::x(Length::px(100.0))]));
+        popup.apply_style(popup_style);
+
+        let mut higher_root = Element::new(90.0, 0.0, 80.0, 80.0);
+        higher_root.set_background_color_value(Color::rgb(32, 32, 32));
+
+        let mut arena = new_test_arena();
+        let lower_key = commit_element(&mut arena, Box::new(lower_root));
+        let popup_key = commit_child(&mut arena, lower_key, Box::new(popup));
+        let higher_key = commit_element(&mut arena, Box::new(higher_root));
+        let root_keys = [lower_key, higher_key];
+        for &root_key in &root_keys {
+            measure_and_place(
+                &mut arena,
+                root_key,
+                constraints(220.0, 120.0),
+                placement(220.0, 120.0),
+            );
+        }
+        assert_eq!(hit_test(&arena, lower_key, 105.0, 15.0), Some(popup_key));
+        assert_eq!(
+            hit_test_roots(&arena, &root_keys, 105.0, 15.0),
+            Some((0, popup_key)),
+            "transformed priority absolute should resolve against its visual box before later root fallback"
+        );
+    }
+
+    #[test]
+    fn diagnostic_named_anchor_anchor_parent_cross_root_uses_anchor_parent_clip() {
+        let mut lower_root = Element::new(0.0, 0.0, 80.0, 80.0);
+        lower_root.set_background_color_value(Color::rgb(16, 16, 16));
+        lower_root.set_anchor_name(Some(AnchorName::new("diagnostic_anchor")));
+        let popup = absolute_diagnostic_element(
+            Position::absolute()
+                .anchor(Anchor::Name(AnchorName::new("diagnostic_anchor")))
+                .right(Length::px(-20.0))
+                .top(Length::px(10.0))
+                .clip(ClipMode::AnchorParent),
+            crate::style::Cursor::Crosshair,
+        );
+
+        let mut higher_root = Element::new(90.0, 0.0, 80.0, 80.0);
+        higher_root.set_background_color_value(Color::rgb(32, 32, 32));
+
+        let mut arena = new_test_arena();
+        let lower_key = commit_element(&mut arena, Box::new(lower_root));
+        let popup_key = commit_child(&mut arena, lower_key, Box::new(popup));
+        let higher_key = commit_element(&mut arena, Box::new(higher_root));
+        let root_keys = [lower_key, higher_key];
+        for &root_key in &root_keys {
+            measure_and_place(
+                &mut arena,
+                root_key,
+                constraints(220.0, 120.0),
+                placement(220.0, 120.0),
+            );
+        }
+
+        assert_eq!(hit_test(&arena, lower_key, 95.0, 15.0), Some(popup_key));
+        assert_eq!(
+            hit_test_roots(&arena, &root_keys, 95.0, 15.0),
+            Some((0, popup_key))
+        );
     }
 
     #[test]

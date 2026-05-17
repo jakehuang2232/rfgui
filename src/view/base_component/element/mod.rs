@@ -300,15 +300,145 @@ pub(crate) struct LayoutPlaceProfile {
     pub non_axis_child_place_ms: f64,
     pub absolute_child_place_ms: f64,
     pub child_place_calls: usize,
+    pub skipped_child_place_calls: usize,
     pub absolute_child_place_calls: usize,
     pub update_content_size_ms: f64,
     pub clamp_scroll_ms: f64,
     pub recompute_hit_test_ms: f64,
+    pub placement_skip_failures: PlacementSkipFailureCounters,
+    pub axis_placement_eligibility: AxisPlacementEligibilityProfile,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AxisPlacementEligibilityProfile {
+    pub candidate_child_places: usize,
+    pub clean_subtree_child_places: usize,
+    pub dirty_subtree_child_places: usize,
+    pub potential_replay_child_places: usize,
+    pub inline_child_places: usize,
+    pub flex_child_places: usize,
+    pub flow_child_places: usize,
+    pub inline_potential_replay_child_places: usize,
+    pub flex_potential_replay_child_places: usize,
+    pub flow_potential_replay_child_places: usize,
+    pub blockers: PlacementSkipFailureCounters,
+}
+
+impl AxisPlacementEligibilityProfile {
+    pub(crate) fn record_candidate(&mut self, layout: Layout) {
+        self.candidate_child_places += 1;
+        match layout {
+            Layout::Inline => self.inline_child_places += 1,
+            Layout::Flex { .. } => self.flex_child_places += 1,
+            Layout::Flow { .. } => self.flow_child_places += 1,
+            Layout::Grid => {}
+        }
+    }
+
+    pub(crate) fn record_clean_subtree(&mut self) {
+        self.clean_subtree_child_places += 1;
+    }
+
+    pub(crate) fn record_dirty_subtree(&mut self) {
+        self.dirty_subtree_child_places += 1;
+        self.blockers
+            .record(PlacementSkipFailureReason::DirtySubtree);
+    }
+
+    pub(crate) fn record_potential_replay_candidate(&mut self, layout: Layout) {
+        self.potential_replay_child_places += 1;
+        match layout {
+            Layout::Inline => self.inline_potential_replay_child_places += 1,
+            Layout::Flex { .. } => self.flex_potential_replay_child_places += 1,
+            Layout::Flow { .. } => self.flow_potential_replay_child_places += 1,
+            Layout::Grid => {}
+        }
+    }
+
+    pub(crate) fn record_blocker(&mut self, reason: PlacementSkipFailureReason) {
+        self.blockers.record(reason);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PlacementSkipFailureCounters {
+    pub dirty_subtree: usize,
+    pub non_base_element: usize,
+    pub non_leaf: usize,
+    pub anchor_name: usize,
+    pub anchor_ref: usize,
+    pub absolute_descendant: usize,
+    pub runtime_state: usize,
+    pub placement_mismatch: usize,
+    pub placement_dirty_self: usize,
+    pub hit_test_clip_mismatch: usize,
+    pub anchor_parent_clip_mismatch: usize,
+}
+
+impl PlacementSkipFailureCounters {
+    pub(crate) fn total(&self) -> usize {
+        self.dirty_subtree
+            + self.non_base_element
+            + self.non_leaf
+            + self.anchor_name
+            + self.anchor_ref
+            + self.absolute_descendant
+            + self.runtime_state
+            + self.placement_mismatch
+            + self.placement_dirty_self
+            + self.hit_test_clip_mismatch
+            + self.anchor_parent_clip_mismatch
+    }
+
+    pub(crate) fn record(&mut self, reason: PlacementSkipFailureReason) {
+        match reason {
+            PlacementSkipFailureReason::DirtySubtree => self.dirty_subtree += 1,
+            PlacementSkipFailureReason::NonBaseElement => self.non_base_element += 1,
+            PlacementSkipFailureReason::AnchorName => self.anchor_name += 1,
+            PlacementSkipFailureReason::AnchorRef => self.anchor_ref += 1,
+            PlacementSkipFailureReason::AbsoluteDescendant => self.absolute_descendant += 1,
+            PlacementSkipFailureReason::RuntimeState => self.runtime_state += 1,
+            PlacementSkipFailureReason::PlacementMismatch => self.placement_mismatch += 1,
+            PlacementSkipFailureReason::PlacementDirtySelf => self.placement_dirty_self += 1,
+            PlacementSkipFailureReason::HitTestClipMismatch => self.hit_test_clip_mismatch += 1,
+            PlacementSkipFailureReason::AnchorParentClipMismatch => {
+                self.anchor_parent_clip_mismatch += 1;
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlacementSkipFailureReason {
+    DirtySubtree,
+    NonBaseElement,
+    AnchorName,
+    AnchorRef,
+    AbsoluteDescendant,
+    RuntimeState,
+    PlacementMismatch,
+    PlacementDirtySelf,
+    HitTestClipMismatch,
+    AnchorParentClipMismatch,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LayoutGateCandidateProfile {
+    /// Clean child subtrees observed while checking the existing measure gate.
+    /// Candidate counts are informational only; they do not imply a skip.
+    pub measure_candidate_clean_children: usize,
+    pub measure_dirty_children: usize,
+    /// Clean child subtrees observed while checking the existing placement gate.
+    /// Candidate counts are informational only; they do not imply a skip.
+    pub placement_candidate_clean_children: usize,
+    pub placement_dirty_children: usize,
 }
 
 thread_local! {
     static LAYOUT_PLACE_PROFILE: RefCell<LayoutPlaceProfile> =
         RefCell::new(LayoutPlaceProfile::default());
+    static LAYOUT_GATE_CANDIDATE_PROFILE: RefCell<LayoutGateCandidateProfile> =
+        RefCell::new(LayoutGateCandidateProfile::default());
 }
 
 pub(crate) fn reset_layout_place_profile() {
@@ -326,6 +456,55 @@ pub(crate) fn take_layout_place_profile() -> LayoutPlaceProfile {
 /// can record profile counters without exposing the thread-local directly.
 pub(crate) fn with_layout_place_profile<R>(f: impl FnOnce(&mut LayoutPlaceProfile) -> R) -> R {
     LAYOUT_PLACE_PROFILE.with(|profile| f(&mut profile.borrow_mut()))
+}
+
+pub(crate) fn reset_layout_gate_candidate_profile() {
+    LAYOUT_GATE_CANDIDATE_PROFILE.with(|profile| {
+        *profile.borrow_mut() = LayoutGateCandidateProfile::default();
+    });
+}
+
+pub(crate) fn take_layout_gate_candidate_profile() -> LayoutGateCandidateProfile {
+    LAYOUT_GATE_CANDIDATE_PROFILE.with(|profile| std::mem::take(&mut *profile.borrow_mut()))
+}
+
+#[derive(Clone, Copy)]
+enum LayoutGateCandidatePhase {
+    Measure,
+    Placement,
+}
+
+fn record_layout_gate_child_candidates(
+    children: &[crate::view::node_arena::NodeKey],
+    arena: &crate::view::node_arena::NodeArena,
+    mask: DirtyFlags,
+    phase: LayoutGateCandidatePhase,
+) -> bool {
+    let mut clean_children = 0;
+    let mut dirty_children = 0;
+    for &child_key in children {
+        if arena.subtree_dirty_intersects(child_key, mask) {
+            dirty_children += 1;
+        } else {
+            clean_children += 1;
+        }
+    }
+
+    LAYOUT_GATE_CANDIDATE_PROFILE.with(|profile| {
+        let mut profile = profile.borrow_mut();
+        match phase {
+            LayoutGateCandidatePhase::Measure => {
+                profile.measure_candidate_clean_children += clean_children;
+                profile.measure_dirty_children += dirty_children;
+            }
+            LayoutGateCandidatePhase::Placement => {
+                profile.placement_candidate_clean_children += clean_children;
+                profile.placement_dirty_children += dirty_children;
+            }
+        }
+    });
+
+    dirty_children > 0
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -378,6 +557,12 @@ pub struct ViewportContext {
 }
 
 /// Mutable build state threaded through low-level render graph construction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(crate) struct DeferredRenderNode {
+    pub key: crate::view::node_arena::NodeKey,
+    pub stable_id: u64,
+}
+
 #[derive(Clone)]
 pub struct BuildState {
     target: Option<RenderTargetOut>,
@@ -385,7 +570,7 @@ pub struct BuildState {
     target_pairs: FxHashMap<u32, AttachmentTarget>,
     scissor_rect: Option<[u32; 4]>,
     clip_id_stack: Vec<u8>,
-    deferred_node_ids: Vec<u64>,
+    deferred_nodes: Vec<DeferredRenderNode>,
     dfs_opaque_rect_order: u32,
 }
 
@@ -401,7 +586,7 @@ impl BuildState {
             target_pairs: FxHashMap::default(),
             scissor_rect: ancestor_clip.scissor_rect,
             clip_id_stack: Vec::new(),
-            deferred_node_ids: Vec::new(),
+            deferred_nodes: Vec::new(),
             dfs_opaque_rect_order: 0,
         }
     }
@@ -411,9 +596,13 @@ impl BuildState {
         for (&color_handle, &depth_target) in &child.target_pairs {
             self.target_pairs.insert(color_handle, depth_target);
         }
-        for node_id in &child.deferred_node_ids {
-            if !self.deferred_node_ids.contains(node_id) {
-                self.deferred_node_ids.push(*node_id);
+        for node in &child.deferred_nodes {
+            if !self
+                .deferred_nodes
+                .iter()
+                .any(|existing| existing.key == node.key)
+            {
+                self.deferred_nodes.push(node.clone());
             }
         }
     }
@@ -499,7 +688,7 @@ impl UiBuildContext {
                 target_pairs: FxHashMap::default(),
                 scissor_rect: None,
                 clip_id_stack: Vec::new(),
-                deferred_node_ids: Vec::new(),
+                deferred_nodes: Vec::new(),
                 dfs_opaque_rect_order: 0,
             },
         }
@@ -759,14 +948,20 @@ impl UiBuildContext {
         self.state.scissor_rect = previous;
     }
 
-    pub(crate) fn append_to_defer(&mut self, node_id: u64) {
-        if !self.state.deferred_node_ids.contains(&node_id) {
-            self.state.deferred_node_ids.push(node_id);
+    pub(crate) fn append_to_defer(
+        &mut self,
+        key: crate::view::node_arena::NodeKey,
+        stable_id: u64,
+    ) {
+        if !self.state.deferred_nodes.iter().any(|node| node.key == key) {
+            self.state
+                .deferred_nodes
+                .push(DeferredRenderNode { key, stable_id });
         }
     }
 
-    pub(crate) fn take_deferred_node_ids(&mut self) -> Vec<u64> {
-        std::mem::take(&mut self.state.deferred_node_ids)
+    pub(crate) fn take_deferred_nodes(&mut self) -> Vec<DeferredRenderNode> {
+        std::mem::take(&mut self.state.deferred_nodes)
     }
 
     pub(crate) fn next_opaque_rect_order(&mut self) -> u32 {
@@ -906,6 +1101,67 @@ impl DirtyFlags {
 
     pub const fn without(self, other: Self) -> Self {
         Self(self.0 & !other.0)
+    }
+}
+
+/// Dirty masks consumed by each retained-engine pass.
+///
+/// These masks document pass dependencies before Phase 4 starts using
+/// them for finer-grained traversal gating. They intentionally do not
+/// change ownership: `Element::local_dirty_flags()` remains part of the
+/// formal dirty truth while arena dirty is being migrated in.
+pub(crate) struct DirtyPassMask;
+
+impl DirtyPassMask {
+    /// Measure/layout pass dependency.
+    pub const LAYOUT: DirtyFlags = DirtyFlags::LAYOUT;
+    /// Placement pass dependency. Box-model and hit-test data are derived
+    /// from placement, but paint-only changes must not force placement.
+    pub const PLACEMENT: DirtyFlags = DirtyFlags::PLACE
+        .union(DirtyFlags::BOX_MODEL)
+        .union(DirtyFlags::HIT_TEST);
+    /// Box-model snapshot refresh dependency.
+    pub const BOX_MODEL: DirtyFlags = DirtyFlags::BOX_MODEL;
+    /// Hit-test data refresh dependency.
+    pub const HIT_TEST: DirtyFlags = DirtyFlags::HIT_TEST;
+    /// Render/damage dependency.
+    pub const PAINT: DirtyFlags = DirtyFlags::PAINT;
+    /// Runtime-only update dependency.
+    pub const RUNTIME: DirtyFlags = DirtyFlags::RUNTIME;
+}
+
+#[cfg(test)]
+mod dirty_pass_mask_tests {
+    use super::{DirtyFlags, DirtyPassMask};
+
+    #[test]
+    fn dirty_pass_masks_encode_phase_4a_dependencies() {
+        assert_eq!(DirtyPassMask::LAYOUT, DirtyFlags::LAYOUT);
+
+        let placement = DirtyFlags::PLACE
+            .union(DirtyFlags::BOX_MODEL)
+            .union(DirtyFlags::HIT_TEST);
+        assert_eq!(DirtyPassMask::PLACEMENT, placement);
+        assert!(!DirtyPassMask::PLACEMENT.intersects(DirtyFlags::LAYOUT));
+        assert!(!DirtyPassMask::PLACEMENT.intersects(DirtyFlags::PAINT));
+
+        assert_eq!(DirtyPassMask::BOX_MODEL, DirtyFlags::BOX_MODEL);
+        assert_eq!(DirtyPassMask::HIT_TEST, DirtyFlags::HIT_TEST);
+        assert_eq!(DirtyPassMask::PAINT, DirtyFlags::PAINT);
+        assert!(!DirtyPassMask::PAINT.intersects(DirtyPassMask::PLACEMENT));
+
+        assert_eq!(
+            DirtyPassMask::RUNTIME,
+            DirtyPassMask::PLACEMENT.union(DirtyPassMask::PAINT)
+        );
+        assert_eq!(
+            DirtyPassMask::RUNTIME,
+            DirtyFlags::PLACE
+                .union(DirtyFlags::BOX_MODEL)
+                .union(DirtyFlags::HIT_TEST)
+                .union(DirtyFlags::PAINT)
+        );
+        assert!(!DirtyPassMask::RUNTIME.intersects(DirtyFlags::LAYOUT));
     }
 }
 
@@ -1788,6 +2044,14 @@ pub struct PromotionCompositeBounds {
 pub(crate) struct DebugElementRenderState {
     pub background_rgba: [u8; 4],
     pub foreground_rgba: [u8; 4],
+    #[allow(dead_code)]
+    pub border_top_rgba: [u8; 4],
+    #[allow(dead_code)]
+    pub border_right_rgba: [u8; 4],
+    #[allow(dead_code)]
+    pub border_bottom_rgba: [u8; 4],
+    #[allow(dead_code)]
+    pub border_left_rgba: [u8; 4],
     pub opacity: f32,
     pub border_radius: f32,
 }
@@ -2211,13 +2475,14 @@ impl ElementTrait for Element {
     }
 
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
+        let (frame_width, frame_height) = self.current_layout_frame_size();
         BoxModelSnapshot {
             node_id: self.core.id,
             parent_id: self.core.parent_id,
             x: self.layout_state.layout_position.x,
             y: self.layout_state.layout_position.y,
-            width: self.layout_state.layout_size.width,
-            height: self.layout_state.layout_size.height,
+            width: frame_width,
+            height: frame_height,
             border_radius: self.border_radius,
             should_render: self.layout_state.should_render,
         }
@@ -2413,7 +2678,7 @@ impl ElementTrait for Element {
             hash_f32(&mut hasher, intersection.width);
             hash_f32(&mut hasher, intersection.height);
         }
-        if !self.children.is_empty() && self.has_inner_render_area() {
+        if !self.children.is_empty() {
             let overflow_child_indices: Vec<bool> = (0..self.children.len())
                 .map(|idx| self.child_renders_outside_inner_clip(idx, arena))
                 .collect();
@@ -2694,6 +2959,10 @@ impl Element {
         DebugElementRenderState {
             background_rgba: self.background_color.as_ref().to_rgba_u8(),
             foreground_rgba: self.foreground_color.to_rgba_u8(),
+            border_top_rgba: self.border_colors.top.as_ref().to_rgba_u8(),
+            border_right_rgba: self.border_colors.right.as_ref().to_rgba_u8(),
+            border_bottom_rgba: self.border_colors.bottom.as_ref().to_rgba_u8(),
+            border_left_rgba: self.border_colors.left.as_ref().to_rgba_u8(),
             opacity: self.opacity,
             border_radius: self.border_radius,
         }

@@ -13,11 +13,183 @@
 #![cfg(test)]
 
 use super::Viewport;
-use crate::style::{Layout, Length, Padding, VerticalAlign};
+use crate::style::{
+    ClipMode, Color, Cursor, Layout, Length, Padding, ParsedValue, Position, PropertyId,
+    ScrollDirection, Style, Transition, TransitionProperty, Transitions, VerticalAlign,
+};
 use crate::ui::{
     Binding, DragEffect, RsxNode, RsxTagDescriptor, global_state, on_drag_over, on_drop, rsx,
 };
 use crate::view::Element as HostElement;
+
+struct PaintDirtyOnClickElement {
+    element: crate::view::base_component::Element,
+}
+
+impl PaintDirtyOnClickElement {
+    fn new() -> Self {
+        Self {
+            element: crate::view::base_component::Element::new_with_id(
+                0x4E4E_0001,
+                0.0,
+                0.0,
+                80.0,
+                32.0,
+            ),
+        }
+    }
+}
+
+impl crate::view::base_component::Layoutable for PaintDirtyOnClickElement {
+    fn sync_arena(&mut self, arena: &mut crate::view::node_arena::NodeArena) {
+        self.element.sync_arena(arena);
+    }
+
+    fn measure(
+        &mut self,
+        constraints: crate::view::base_component::LayoutConstraints,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        self.element.measure(constraints, arena);
+    }
+
+    fn place(
+        &mut self,
+        placement: crate::view::base_component::LayoutPlacement,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        self.element.place(placement, arena);
+    }
+
+    fn measured_size(&self) -> (f32, f32) {
+        self.element.measured_size()
+    }
+
+    fn layout_target_size(&self) -> (f32, f32) {
+        self.element.layout_target_size()
+    }
+
+    fn set_layout_width(&mut self, width: f32) {
+        self.element.set_layout_width(width);
+    }
+
+    fn set_layout_height(&mut self, height: f32) {
+        self.element.set_layout_height(height);
+    }
+
+    fn flex_props(&self) -> crate::view::base_component::FlexProps {
+        self.element.flex_props()
+    }
+
+    fn cross_alignment_size(
+        &self,
+        is_row: bool,
+        stretched_cross: Option<f32>,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> f32 {
+        self.element
+            .cross_alignment_size(is_row, stretched_cross, arena)
+    }
+
+    fn inline_relative_position(&self) -> (f32, f32) {
+        self.element.inline_relative_position()
+    }
+
+    fn set_layout_offset(&mut self, x: f32, y: f32) {
+        self.element.set_layout_offset(x, y);
+    }
+
+    fn measure_inline(
+        &mut self,
+        context: crate::view::base_component::InlineMeasureContext,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        self.element.measure_inline(context, arena);
+    }
+
+    fn get_inline_nodes_size(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> Vec<crate::view::base_component::InlineNodeSize> {
+        self.element.get_inline_nodes_size(arena)
+    }
+
+    fn place_inline(
+        &mut self,
+        placement: crate::view::base_component::InlinePlacement,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
+        self.element.place_inline(placement, arena);
+    }
+}
+
+impl crate::view::base_component::EventTarget for PaintDirtyOnClickElement {
+    fn dispatch_click(
+        &mut self,
+        _event: &mut crate::ui::ClickEvent,
+        _control: &mut crate::view::viewport::ViewportControl<'_>,
+        _arena: &crate::view::node_arena::NodeArena,
+        _self_key: crate::view::node_arena::NodeKey,
+    ) {
+        self.element
+            .set_background_color_value(Color::rgb(32, 96, 160));
+    }
+}
+
+impl crate::view::base_component::Renderable for PaintDirtyOnClickElement {
+    fn build(
+        &mut self,
+        graph: &mut crate::view::frame_graph::FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
+        ctx: crate::view::base_component::UiBuildContext,
+    ) -> crate::view::base_component::BuildState {
+        self.element.build(graph, arena, ctx)
+    }
+}
+
+impl crate::view::base_component::ElementTrait for PaintDirtyOnClickElement {
+    fn stable_id(&self) -> u64 {
+        self.element.stable_id()
+    }
+
+    fn box_model_snapshot(&self) -> crate::view::base_component::BoxModelSnapshot {
+        self.element.box_model_snapshot()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn children(&self) -> &[crate::view::node_arena::NodeKey] {
+        self.element.children()
+    }
+
+    fn local_dirty_flags(&self) -> crate::view::base_component::DirtyFlags {
+        self.element.local_dirty_flags()
+    }
+
+    fn clear_local_dirty_flags(&mut self, flags: crate::view::base_component::DirtyFlags) {
+        self.element.clear_local_dirty_flags(flags);
+    }
+}
+
+struct PaintDirtyOnClickHost;
+
+impl crate::view::HostBuilder for PaintDirtyOnClickHost {
+    fn build_descriptor(
+        _node: &crate::ui::RsxElementNode,
+        _path: &[u64],
+        _ctx: &crate::view::BuildCtx,
+    ) -> Result<crate::view::renderer_adapter::ElementDescriptor, String> {
+        Ok(crate::view::renderer_adapter::ElementDescriptor::leaf(
+            Box::new(PaintDirtyOnClickElement::new()),
+        ))
+    }
+}
 
 fn host_el() -> RsxNode {
     RsxNode::tagged("Element", RsxTagDescriptor::for_tag::<HostElement>())
@@ -82,6 +254,268 @@ fn collect_text_contents(
             collect_text_contents(arena, child, out);
         }
     }
+}
+
+fn find_text_node(
+    arena: &crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    content: &str,
+) -> Option<crate::view::node_arena::NodeKey> {
+    let node = arena.get(key)?;
+    if node
+        .element
+        .as_any()
+        .downcast_ref::<crate::view::base_component::Text>()
+        .is_some_and(|text| text.content() == content)
+    {
+        return Some(key);
+    }
+    let children = node.children.clone();
+    drop(node);
+    for child in children {
+        if let Some(found) = find_text_node(arena, child, content) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn pointer_cursor_with_text_child_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            layout: Layout::flow().row().no_wrap(),
+            width: Length::px(160.0),
+            height: Length::px(40.0),
+            cursor: Cursor::Pointer,
+        }}>
+            {"Hover target"}
+        </HostElement>
+    }
+}
+
+fn overlapping_root_with_anchor_parent_resize_handle_tree() -> RsxNode {
+    RsxNode::fragment(vec![
+        rsx! {
+            <HostElement style={{
+                position: Position::absolute()
+                    .left(Length::px(0.0))
+                    .top(Length::px(0.0))
+                    .clip(ClipMode::Parent),
+                width: Length::px(100.0),
+                height: Length::px(80.0),
+            }}>
+                <HostElement style={{
+                    position: Position::absolute()
+                        .right(Length::px(-2.0))
+                        .top(Length::px(0.0))
+                        .bottom(Length::px(0.0))
+                        .clip(ClipMode::AnchorParent),
+                    width: Length::px(4.0),
+                    cursor: Cursor::EwResize,
+                }} />
+            </HostElement>
+        },
+        rsx! {
+            <HostElement style={{
+                position: Position::absolute()
+                    .left(Length::px(50.0))
+                    .top(Length::px(0.0))
+                    .clip(ClipMode::Parent),
+                width: Length::px(100.0),
+                height: Length::px(80.0),
+            }} />
+        },
+    ])
+}
+
+fn movable_root_with_anchor_parent_resize_handle_tree(left: f32) -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            position: Position::absolute()
+                .left(Length::px(left))
+                .top(Length::px(20.0))
+                .clip(ClipMode::Parent),
+            width: Length::px(100.0),
+            height: Length::px(80.0),
+        }}>
+            <HostElement style={{
+                position: Position::absolute()
+                    .right(Length::px(-2.0))
+                    .top(Length::px(0.0))
+                    .bottom(Length::px(0.0))
+                    .clip(ClipMode::AnchorParent),
+                width: Length::px(4.0),
+                cursor: Cursor::EwResize,
+            }} />
+        </HostElement>
+    }
+}
+
+fn retained_window_accordion_button_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            layout: Layout::flow().column().no_wrap(),
+            width: Length::px(460.0),
+            height: Length::px(380.0),
+            scroll_direction: ScrollDirection::Both,
+        }}>
+            <HostElement style={{
+                width: Length::percent(100.0),
+                height: Length::px(32.0),
+            }}>
+                {"Button"}
+            </HostElement>
+            <HostElement style={{
+                layout: Layout::flow().column().no_wrap(),
+                width: Length::percent(100.0),
+                height: Length::Zero,
+                transition: [Transition::new(TransitionProperty::Height, 200).ease_in_out()],
+            }}>
+                <HostElement style={{
+                    layout: Layout::flow().row().no_wrap(),
+                    width: Length::px(96.0),
+                    height: Length::px(32.0),
+                    cursor: Cursor::Pointer,
+                }}>
+                    {"Contained"}
+                </HostElement>
+            </HostElement>
+        </HostElement>
+    }
+}
+
+fn flex_base_only_axis_workload_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            layout: Layout::flex().row(),
+            width: Length::px(240.0),
+            height: Length::px(80.0),
+        }}>
+            <HostElement style={{
+                width: Length::px(80.0),
+                height: Length::px(30.0),
+            }} />
+            <HostElement style={{
+                width: Length::px(72.0),
+                height: Length::px(28.0),
+            }} />
+        </HostElement>
+    }
+}
+
+fn flex_nested_base_only_axis_workload_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            layout: Layout::flex().row(),
+            width: Length::px(240.0),
+            height: Length::px(80.0),
+        }}>
+            <HostElement style={{
+                width: Length::px(80.0),
+                height: Length::px(40.0),
+            }}>
+                <HostElement style={{
+                    width: Length::px(24.0),
+                    height: Length::px(12.0),
+                }} />
+            </HostElement>
+            <HostElement style={{
+                width: Length::px(72.0),
+                height: Length::px(28.0),
+            }} />
+        </HostElement>
+    }
+}
+
+fn flex_base_only_axis_workload_tree_with_gap(gap: f32) -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            layout: Layout::flex().row(),
+            width: Length::px(240.0),
+            height: Length::px(80.0),
+            gap: Length::px(gap),
+        }}>
+            <HostElement style={{
+                width: Length::px(80.0),
+                height: Length::px(30.0),
+            }} />
+            <HostElement style={{
+                width: Length::px(72.0),
+                height: Length::px(28.0),
+            }} />
+        </HostElement>
+    }
+}
+
+fn flex_base_only_column_axis_workload_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            layout: Layout::flex().column(),
+            width: Length::px(240.0),
+            height: Length::px(80.0),
+        }}>
+            <HostElement style={{
+                width: Length::px(80.0),
+                height: Length::px(30.0),
+            }} />
+            <HostElement style={{
+                width: Length::px(72.0),
+                height: Length::px(28.0),
+            }} />
+        </HostElement>
+    }
+}
+
+fn flex_with_text_area_descendant_tree() -> RsxNode {
+    use crate::view::TextArea as HostTextArea;
+
+    rsx! {
+        <HostElement style={{
+            layout: Layout::flex().row(),
+            width: Length::px(240.0),
+            height: Length::px(80.0),
+        }}>
+            <HostElement style={{
+                width: Length::px(120.0),
+                height: Length::px(60.0),
+            }}>
+                <HostTextArea content={"phase 5d text area".to_string()} />
+            </HostElement>
+        </HostElement>
+    }
+}
+
+fn inline_text_axis_workload_tree() -> RsxNode {
+    use crate::view::Text as HostText;
+
+    rsx! {
+        <HostElement style={{
+            layout: Layout::Inline,
+            width: Length::px(320.0),
+            height: Length::px(80.0),
+        }}>
+            <HostText>"inline non-base descendant"</HostText>
+        </HostElement>
+    }
+}
+
+fn expanded_retained_accordion_section_style() -> Style {
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::Layout,
+        ParsedValue::Layout(Layout::flow().column().no_wrap().into()),
+    );
+    style.insert(
+        PropertyId::Width,
+        ParsedValue::Length(Length::percent(100.0)),
+    );
+    style.insert(
+        PropertyId::Transition,
+        ParsedValue::Transition(Transitions::from(vec![
+            Transition::new(TransitionProperty::Height, 200).ease_in_out(),
+        ])),
+    );
+    style
 }
 
 fn drag_drop_rerender_tree(hovering: bool, dropped: Binding<Vec<String>>) -> RsxNode {
@@ -175,6 +609,2049 @@ fn run_layout_for_test(viewport: &mut Viewport, viewport_w: f32, viewport_h: f32
     viewport.scene.node_arena = arena;
 }
 
+fn run_layout_for_test_with_gate_profile(
+    viewport: &mut Viewport,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> (
+    crate::view::base_component::LayoutGateCandidateProfile,
+    crate::view::base_component::LayoutPlaceProfile,
+) {
+    let constraints = crate::view::base_component::LayoutConstraints {
+        max_width: viewport_w,
+        max_height: viewport_h,
+        viewport_width: viewport_w,
+        viewport_height: viewport_h,
+        percent_base_width: Some(viewport_w),
+        percent_base_height: Some(viewport_h),
+    };
+    let placement = crate::view::base_component::LayoutPlacement {
+        parent_x: 0.0,
+        parent_y: 0.0,
+        visual_offset_x: 0.0,
+        visual_offset_y: 0.0,
+        available_width: viewport_w,
+        available_height: viewport_h,
+        viewport_width: viewport_w,
+        viewport_height: viewport_h,
+        percent_base_width: Some(viewport_w),
+        percent_base_height: Some(viewport_h),
+    };
+    crate::view::base_component::reset_layout_gate_candidate_profile();
+    crate::view::base_component::reset_layout_place_profile();
+    let mut arena = std::mem::take(&mut viewport.scene.node_arena);
+    let root_keys = viewport.scene.ui_root_keys.clone();
+    for &root in &root_keys {
+        arena.refresh_subtree_dirty_cache(root);
+    }
+    for &root in &root_keys {
+        arena.with_element_taken(root, |el, arena| {
+            el.measure(constraints, arena);
+        });
+    }
+    for &root in &root_keys {
+        arena.refresh_subtree_dirty_cache(root);
+    }
+    for &root in &root_keys {
+        arena.with_element_taken(root, |el, arena| {
+            el.place(placement, arena);
+        });
+    }
+    viewport.scene.node_arena = arena;
+    (
+        crate::view::base_component::take_layout_gate_candidate_profile(),
+        crate::view::base_component::take_layout_place_profile(),
+    )
+}
+
+fn sample_clean_parent_relayout_for_placement_profile(
+    tree: &RsxNode,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> crate::view::base_component::LayoutPlaceProfile {
+    let mut viewport = Viewport::new();
+    viewport.set_size(viewport_w as u32, viewport_h as u32);
+    viewport.render_rsx(tree).expect("render workload tree");
+    run_layout_for_test(&mut viewport, viewport_w, viewport_h);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    mark_place_dirty_for_test(&mut viewport, root_key);
+
+    let (_gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, viewport_w, viewport_h);
+    place_profile
+}
+
+fn nested_box_model_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            width: Length::px(120.0),
+            height: Length::px(80.0),
+        }}>
+            <HostElement style={{
+                width: Length::px(40.0),
+                height: Length::px(20.0),
+            }} />
+        </HostElement>
+    }
+}
+
+fn two_child_box_model_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            width: Length::px(120.0),
+            height: Length::px(80.0),
+        }}>
+            <HostElement style={{
+                width: Length::px(40.0),
+                height: Length::px(20.0),
+            }} />
+            <HostElement style={{
+                width: Length::px(30.0),
+                height: Length::px(18.0),
+            }} />
+        </HostElement>
+    }
+}
+
+fn two_child_grid_box_model_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            layout: Layout::Grid,
+            width: Length::px(120.0),
+            height: Length::px(80.0),
+        }}>
+            <HostElement style={{
+                width: Length::px(40.0),
+                height: Length::px(20.0),
+            }} />
+            <HostElement style={{
+                width: Length::px(30.0),
+                height: Length::px(18.0),
+            }} />
+        </HostElement>
+    }
+}
+
+fn nested_grid_box_model_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            layout: Layout::Grid,
+            width: Length::px(120.0),
+            height: Length::px(80.0),
+        }}>
+            <HostElement style={{
+                width: Length::px(60.0),
+                height: Length::px(30.0),
+            }}>
+                <HostElement style={{
+                    width: Length::px(24.0),
+                    height: Length::px(12.0),
+                }} />
+            </HostElement>
+        </HostElement>
+    }
+}
+
+fn nested_grid_with_anchor_descendant_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            layout: Layout::Grid,
+            width: Length::px(120.0),
+            height: Length::px(80.0),
+        }}>
+            <HostElement style={{
+                width: Length::px(60.0),
+                height: Length::px(30.0),
+            }}>
+                <HostElement
+                    anchor={"phase_4l_anchor".to_string()}
+                    style={{
+                        width: Length::px(24.0),
+                        height: Length::px(12.0),
+                    }}
+                />
+            </HostElement>
+        </HostElement>
+    }
+}
+
+fn nested_grid_with_absolute_descendant_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            layout: Layout::Grid,
+            width: Length::px(120.0),
+            height: Length::px(80.0),
+        }}>
+            <HostElement style={{
+                width: Length::px(60.0),
+                height: Length::px(30.0),
+            }}>
+                <HostElement style={{
+                    position: Position::absolute(),
+                    width: Length::px(24.0),
+                    height: Length::px(12.0),
+                }} />
+            </HostElement>
+        </HostElement>
+    }
+}
+
+fn nested_grid_with_text_area_descendant_tree() -> RsxNode {
+    use crate::view::TextArea as HostTextArea;
+
+    rsx! {
+        <HostElement style={{
+            layout: Layout::Grid,
+            width: Length::px(180.0),
+            height: Length::px(100.0),
+        }}>
+            <HostElement style={{
+                width: Length::px(140.0),
+                height: Length::px(60.0),
+            }}>
+                <HostTextArea content={"phase 4m text area".to_string()} />
+            </HostElement>
+        </HostElement>
+    }
+}
+
+fn scrollable_grid_box_model_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            layout: Layout::Grid,
+            width: Length::px(100.0),
+            height: Length::px(50.0),
+            scroll_direction: ScrollDirection::Both,
+        }}>
+            <HostElement style={{
+                width: Length::px(200.0),
+                height: Length::px(100.0),
+            }} />
+        </HostElement>
+    }
+}
+
+fn scrollable_box_model_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            width: Length::px(100.0),
+            height: Length::px(50.0),
+            scroll_direction: ScrollDirection::Both,
+        }}>
+            <HostElement style={{
+                width: Length::px(200.0),
+                height: Length::px(100.0),
+            }} />
+        </HostElement>
+    }
+}
+
+fn paint_dirty_on_click_tree() -> RsxNode {
+    crate::view::host_builder_node::<PaintDirtyOnClickHost>("PaintDirtyOnClick")
+}
+
+fn box_model_snapshot_for_node(
+    viewport: &Viewport,
+    key: crate::view::node_arena::NodeKey,
+) -> crate::view::base_component::BoxModelSnapshot {
+    let node_id = viewport
+        .scene
+        .node_arena
+        .get(key)
+        .expect("node exists")
+        .element
+        .stable_id();
+    *viewport
+        .frame_box_models()
+        .iter()
+        .find(|snapshot| snapshot.node_id == node_id)
+        .expect("snapshot exists")
+}
+
+fn mark_box_model_dirty_and_set_layout_width(
+    viewport: &mut Viewport,
+    key: crate::view::node_arena::NodeKey,
+    width: f32,
+) {
+    let flags = crate::view::base_component::DirtyPassMask::BOX_MODEL
+        .union(crate::view::base_component::DirtyPassMask::HIT_TEST);
+    viewport
+        .scene
+        .node_arena
+        .mutate_element_with_invalidation(key, |element, cx| {
+            element
+                .as_any_mut()
+                .downcast_mut::<crate::view::base_component::Element>()
+                .expect("host element")
+                .set_layout_transition_width(width);
+            cx.invalidate(flags);
+        })
+        .expect("node exists");
+}
+
+fn mark_place_dirty_for_test(viewport: &mut Viewport, key: crate::view::node_arena::NodeKey) {
+    viewport
+        .scene
+        .node_arena
+        .mutate_element_with_invalidation(key, |element, cx| {
+            element
+                .as_any_mut()
+                .downcast_mut::<crate::view::base_component::Element>()
+                .expect("host element")
+                .mark_place_dirty_with(cx);
+        })
+        .expect("node exists");
+}
+
+fn mark_paint_dirty_for_test(viewport: &mut Viewport, key: crate::view::node_arena::NodeKey) {
+    viewport
+        .scene
+        .node_arena
+        .mutate_element_with_invalidation(key, |element, cx| {
+            element
+                .as_any_mut()
+                .downcast_mut::<crate::view::base_component::Element>()
+                .expect("host element")
+                .mark_paint_dirty_with(cx);
+        })
+        .expect("node exists");
+}
+
+fn assert_same_box_model_snapshot(
+    actual: crate::view::base_component::BoxModelSnapshot,
+    expected: crate::view::base_component::BoxModelSnapshot,
+) {
+    assert_eq!(actual.node_id, expected.node_id);
+    assert_eq!(actual.parent_id, expected.parent_id);
+    assert_eq!(actual.x, expected.x);
+    assert_eq!(actual.y, expected.y);
+    assert_eq!(actual.width, expected.width);
+    assert_eq!(actual.height, expected.height);
+    assert_eq!(actual.border_radius, expected.border_radius);
+    assert_eq!(actual.should_render, expected.should_render);
+}
+
+#[test]
+fn phase_4k_samples_workload_placement_skip_failure_distribution() {
+    let grid_leaf = sample_clean_parent_relayout_for_placement_profile(
+        &two_child_grid_box_model_tree(),
+        120.0,
+        80.0,
+    );
+    assert_eq!(grid_leaf.child_place_calls, 0);
+    assert_eq!(grid_leaf.skipped_child_place_calls, 2);
+    assert_eq!(grid_leaf.placement_skip_failures.total(), 0);
+
+    let nested_grid = sample_clean_parent_relayout_for_placement_profile(
+        &nested_grid_box_model_tree(),
+        120.0,
+        80.0,
+    );
+    assert_eq!(nested_grid.child_place_calls, 0);
+    assert_eq!(nested_grid.skipped_child_place_calls, 1);
+    assert_eq!(nested_grid.placement_skip_failures.non_leaf, 0);
+    assert_eq!(nested_grid.placement_skip_failures.total(), 0);
+
+    let scrollable_grid = sample_clean_parent_relayout_for_placement_profile(
+        &scrollable_grid_box_model_tree(),
+        100.0,
+        50.0,
+    );
+    assert_eq!(scrollable_grid.child_place_calls, 0);
+    assert_eq!(scrollable_grid.skipped_child_place_calls, 1);
+    assert_eq!(scrollable_grid.placement_skip_failures.total(), 0);
+
+    let retained_accordion = sample_clean_parent_relayout_for_placement_profile(
+        &retained_window_accordion_button_tree(),
+        460.0,
+        380.0,
+    );
+    assert_eq!(retained_accordion.child_place_calls, 2);
+    assert_eq!(retained_accordion.skipped_child_place_calls, 0);
+    assert_eq!(retained_accordion.placement_skip_failures.total(), 0);
+}
+
+#[test]
+fn phase_5a_axis_placement_eligibility_observes_retained_flow_without_skipping() {
+    let retained_accordion = sample_clean_parent_relayout_for_placement_profile(
+        &retained_window_accordion_button_tree(),
+        460.0,
+        380.0,
+    );
+
+    assert_eq!(retained_accordion.child_place_calls, 2);
+    assert_eq!(retained_accordion.skipped_child_place_calls, 0);
+    assert_eq!(
+        retained_accordion
+            .axis_placement_eligibility
+            .candidate_child_places,
+        retained_accordion.child_place_calls,
+        "Phase 5a observes axis candidates without reducing actual place calls"
+    );
+    assert_eq!(
+        retained_accordion
+            .axis_placement_eligibility
+            .clean_subtree_child_places,
+        2
+    );
+    assert_eq!(
+        retained_accordion
+            .axis_placement_eligibility
+            .dirty_subtree_child_places,
+        0
+    );
+    assert_eq!(
+        retained_accordion
+            .axis_placement_eligibility
+            .flow_child_places,
+        2
+    );
+    assert_eq!(
+        retained_accordion
+            .axis_placement_eligibility
+            .blockers
+            .non_base_element,
+        2,
+        "retained accordion children contain text descendants, so Phase 5a records a blocker"
+    );
+
+    let place_trace_root = super::debug::TraceRenderNode::with_children(
+        "place",
+        0.0,
+        super::debug::build_layout_place_trace_nodes(&retained_accordion),
+    );
+    let place_trace = super::debug::format_trace_render_tree(&place_trace_root);
+    assert!(place_trace.contains("axis_placement_eligibility (candidates=2"));
+    assert!(place_trace.contains("flow=2"));
+    assert!(place_trace.contains("axis_placement_blockers (total=2"));
+    assert!(place_trace.contains("non_base_element=2"));
+}
+
+#[test]
+fn phase_5a_axis_placement_eligibility_counts_dirty_and_clean_children() {
+    let mut viewport = Viewport::new();
+    viewport.set_size(460, 380);
+    viewport
+        .render_rsx(&retained_window_accordion_button_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 460.0, 380.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let first_child = viewport
+        .scene
+        .node_arena
+        .children_of(root_key)
+        .first()
+        .copied()
+        .expect("retained root has first child");
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    mark_place_dirty_for_test(&mut viewport, root_key);
+    mark_place_dirty_for_test(&mut viewport, first_child);
+
+    let (_gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 460.0, 380.0);
+
+    assert!(
+        place_profile.child_place_calls
+            >= place_profile
+                .axis_placement_eligibility
+                .candidate_child_places,
+        "Phase 5a observes axis candidates without suppressing actual child placement"
+    );
+    assert_eq!(place_profile.skipped_child_place_calls, 0);
+    assert_eq!(
+        place_profile
+            .axis_placement_eligibility
+            .dirty_subtree_child_places,
+        1
+    );
+    let axis_profile = place_profile.axis_placement_eligibility;
+    assert_eq!(
+        axis_profile.clean_subtree_child_places + axis_profile.dirty_subtree_child_places,
+        axis_profile.candidate_child_places
+    );
+    assert_eq!(
+        place_profile
+            .axis_placement_eligibility
+            .blockers
+            .dirty_subtree,
+        1
+    );
+}
+
+#[test]
+fn phase_5b_cached_placement_metadata_marks_base_only_nested_subtree_replayable() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let candidate = viewport.scene.node_arena.children_of(root_key)[0];
+    viewport
+        .scene
+        .node_arena
+        .refresh_subtree_dirty_cache(root_key);
+
+    let metadata = viewport
+        .scene
+        .node_arena
+        .cached_placement_eligibility_metadata(candidate);
+    assert!(
+        metadata.first_blocker().is_none(),
+        "base-only nested Element subtree should have no cached placement replay blocker"
+    );
+    assert!(!metadata.contains_non_base_element);
+    assert!(!metadata.contains_anchor_name);
+    assert!(!metadata.contains_anchor_ref);
+    assert!(!metadata.contains_absolute_descendant);
+    assert!(!metadata.contains_runtime_layout_state);
+}
+
+#[test]
+fn phase_5b_cached_placement_metadata_marks_text_area_descendant_as_non_base() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_grid_with_text_area_descendant_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 180.0, 100.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let candidate = viewport.scene.node_arena.children_of(root_key)[0];
+    viewport
+        .scene
+        .node_arena
+        .refresh_subtree_dirty_cache(root_key);
+
+    let metadata = viewport
+        .scene
+        .node_arena
+        .cached_placement_eligibility_metadata(candidate);
+    assert!(metadata.contains_non_base_element);
+    assert_eq!(
+        metadata.first_blocker(),
+        Some(crate::view::base_component::PlacementSkipFailureReason::NonBaseElement)
+    );
+}
+
+#[test]
+fn phase_5b_cached_placement_metadata_marks_anchor_and_absolute_descendants() {
+    let mut anchor_viewport = Viewport::new();
+    anchor_viewport
+        .render_rsx(&nested_grid_with_anchor_descendant_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut anchor_viewport, 120.0, 80.0);
+    let anchor_root = anchor_viewport.scene.ui_root_keys[0];
+    let anchor_candidate = anchor_viewport.scene.node_arena.children_of(anchor_root)[0];
+    anchor_viewport
+        .scene
+        .node_arena
+        .refresh_subtree_dirty_cache(anchor_root);
+    let anchor_metadata = anchor_viewport
+        .scene
+        .node_arena
+        .cached_placement_eligibility_metadata(anchor_candidate);
+    assert!(anchor_metadata.contains_anchor_name);
+    assert_eq!(
+        anchor_metadata.first_blocker(),
+        Some(crate::view::base_component::PlacementSkipFailureReason::AnchorName)
+    );
+
+    let mut absolute_viewport = Viewport::new();
+    absolute_viewport
+        .render_rsx(&nested_grid_with_absolute_descendant_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut absolute_viewport, 120.0, 80.0);
+    let absolute_root = absolute_viewport.scene.ui_root_keys[0];
+    let absolute_candidate = absolute_viewport
+        .scene
+        .node_arena
+        .children_of(absolute_root)[0];
+    absolute_viewport
+        .scene
+        .node_arena
+        .refresh_subtree_dirty_cache(absolute_root);
+    let absolute_metadata = absolute_viewport
+        .scene
+        .node_arena
+        .cached_placement_eligibility_metadata(absolute_candidate);
+    assert!(absolute_metadata.contains_absolute_descendant);
+    assert_eq!(
+        absolute_metadata.first_blocker(),
+        Some(crate::view::base_component::PlacementSkipFailureReason::AbsoluteDescendant)
+    );
+}
+
+#[test]
+fn phase_5b_cached_placement_metadata_refreshes_after_anchor_mutation() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let candidate = viewport.scene.node_arena.children_of(root_key)[0];
+    let descendant = viewport.scene.node_arena.children_of(candidate)[0];
+    viewport
+        .scene
+        .node_arena
+        .refresh_subtree_dirty_cache(root_key);
+    assert!(
+        !viewport
+            .scene
+            .node_arena
+            .cached_placement_eligibility_metadata(candidate)
+            .contains_anchor_name
+    );
+
+    viewport
+        .scene
+        .node_arena
+        .mutate_element_with_invalidation(descendant, |element, cx| {
+            element
+                .as_any_mut()
+                .downcast_mut::<crate::view::base_component::Element>()
+                .expect("descendant element")
+                .set_anchor_name(Some(crate::style::AnchorName::new("phase_5b_anchor")));
+            cx.invalidate(crate::view::base_component::DirtyPassMask::PLACEMENT);
+        })
+        .expect("descendant exists");
+
+    assert!(
+        viewport.scene.node_arena.subtree_dirty_intersects(
+            candidate,
+            crate::view::base_component::DirtyPassMask::PLACEMENT,
+        ),
+        "dirty cache remains the first guard while metadata may be stale"
+    );
+    viewport
+        .scene
+        .node_arena
+        .refresh_subtree_dirty_cache(root_key);
+    let refreshed = viewport
+        .scene
+        .node_arena
+        .cached_placement_eligibility_metadata(candidate);
+    assert!(refreshed.contains_anchor_name);
+    assert_eq!(
+        refreshed.first_blocker(),
+        Some(crate::view::base_component::PlacementSkipFailureReason::AnchorName)
+    );
+}
+
+#[test]
+fn phase_5c_axis_trace_summarizes_retained_flow_hit_rate_without_skipping() {
+    let retained_accordion = sample_clean_parent_relayout_for_placement_profile(
+        &retained_window_accordion_button_tree(),
+        460.0,
+        380.0,
+    );
+    let axis = retained_accordion.axis_placement_eligibility;
+
+    assert_eq!(retained_accordion.child_place_calls, 2);
+    assert_eq!(retained_accordion.skipped_child_place_calls, 0);
+    assert_eq!(
+        axis.candidate_child_places,
+        retained_accordion.child_place_calls
+    );
+    assert_eq!(axis.clean_subtree_child_places, 2);
+    assert_eq!(axis.dirty_subtree_child_places, 0);
+    assert_eq!(axis.flow_child_places, 2);
+    assert_eq!(axis.potential_replay_child_places, 0);
+    assert_eq!(axis.flow_potential_replay_child_places, 0);
+    assert_eq!(axis.blockers.non_base_element, 2);
+
+    let place_trace_root = super::debug::TraceRenderNode::with_children(
+        "place",
+        0.0,
+        super::debug::build_layout_place_trace_nodes(&retained_accordion),
+    );
+    let place_trace = super::debug::format_trace_render_tree(&place_trace_root);
+    assert!(place_trace.contains("axis_placement_eligibility (candidates=2"));
+    assert!(place_trace.contains("potential_replay=0"));
+    assert!(place_trace.contains("flow=2"));
+    assert!(place_trace.contains("axis_placement_potential_replay_by_layout"));
+    assert!(place_trace.contains("flow=0"));
+}
+
+#[test]
+fn phase_5c_axis_trace_counts_flex_base_only_replay_candidates() {
+    let flex_base = sample_clean_parent_relayout_for_placement_profile(
+        &flex_base_only_axis_workload_tree(),
+        240.0,
+        80.0,
+    );
+    let axis = flex_base.axis_placement_eligibility;
+
+    assert_eq!(flex_base.child_place_calls, 0);
+    assert_eq!(flex_base.skipped_child_place_calls, 2);
+    assert_eq!(axis.candidate_child_places, 2);
+    assert_eq!(axis.clean_subtree_child_places, 2);
+    assert_eq!(axis.dirty_subtree_child_places, 0);
+    assert_eq!(axis.flex_child_places, 2);
+    assert_eq!(axis.potential_replay_child_places, 2);
+    assert_eq!(axis.flex_potential_replay_child_places, 2);
+    assert_eq!(axis.blockers.total(), 0);
+}
+
+#[test]
+fn phase_5d_flex_clean_base_only_subtree_replays_without_stale_hit_test() {
+    let mut viewport = Viewport::new();
+    viewport.set_size(240, 80);
+    viewport
+        .render_rsx(&flex_nested_base_only_axis_workload_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 240.0, 80.0);
+    viewport.refresh_frame_box_models();
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let wrapper_key = viewport.scene.node_arena.children_of(root_key)[0];
+    let leaf_key = viewport.scene.node_arena.children_of(wrapper_key)[0];
+    let wrapper_before = box_model_snapshot_for_node(&viewport, wrapper_key);
+    let leaf_before = box_model_snapshot_for_node(&viewport, leaf_key);
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    mark_place_dirty_for_test(&mut viewport, root_key);
+
+    let (_gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 240.0, 80.0);
+
+    assert_eq!(place_profile.child_place_calls, 0);
+    assert_eq!(place_profile.skipped_child_place_calls, 2);
+    assert_eq!(place_profile.placement_skip_failures.total(), 0);
+    assert_eq!(
+        place_profile
+            .axis_placement_eligibility
+            .flex_potential_replay_child_places,
+        2
+    );
+
+    viewport.refresh_frame_box_models();
+    assert_same_box_model_snapshot(
+        box_model_snapshot_for_node(&viewport, wrapper_key),
+        wrapper_before,
+    );
+    assert_same_box_model_snapshot(
+        box_model_snapshot_for_node(&viewport, leaf_key),
+        leaf_before,
+    );
+    let target = crate::view::base_component::hit_test(
+        &viewport.scene.node_arena,
+        root_key,
+        leaf_before.x + leaf_before.width * 0.5,
+        leaf_before.y + leaf_before.height * 0.5,
+    );
+    assert_eq!(target, Some(leaf_key));
+}
+
+#[test]
+fn phase_5d_flex_dirty_descendant_does_not_replay_skip() {
+    let mut viewport = Viewport::new();
+    viewport.set_size(240, 80);
+    viewport
+        .render_rsx(&flex_nested_base_only_axis_workload_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 240.0, 80.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let wrapper_key = viewport.scene.node_arena.children_of(root_key)[0];
+    let dirty_leaf = viewport.scene.node_arena.children_of(wrapper_key)[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    mark_place_dirty_for_test(&mut viewport, root_key);
+    mark_place_dirty_for_test(&mut viewport, dirty_leaf);
+
+    let (_gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 240.0, 80.0);
+
+    assert!(
+        place_profile.child_place_calls >= 1,
+        "dirty descendant must force flex child placement"
+    );
+    assert_eq!(place_profile.skipped_child_place_calls, 1);
+    assert_eq!(place_profile.placement_skip_failures.dirty_subtree, 1);
+}
+
+#[test]
+fn phase_5d_flex_context_changes_do_not_replay_skip() {
+    let mut viewport = Viewport::new();
+    viewport.set_size(240, 80);
+    viewport
+        .render_rsx(&flex_base_only_axis_workload_tree_with_gap(0.0))
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 240.0, 80.0);
+    let root_key = viewport.scene.ui_root_keys[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    viewport
+        .render_rsx(&flex_base_only_axis_workload_tree_with_gap(12.0))
+        .expect("gap rerender");
+    let (_gate_profile, gap_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 240.0, 80.0);
+
+    assert_eq!(gap_profile.skipped_child_place_calls, 0);
+    assert_eq!(gap_profile.child_place_calls, 2);
+
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    viewport
+        .render_rsx(&flex_base_only_column_axis_workload_tree())
+        .expect("axis direction rerender");
+    let (_gate_profile, direction_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 240.0, 80.0);
+
+    assert_eq!(direction_profile.skipped_child_place_calls, 0);
+    assert_eq!(direction_profile.child_place_calls, 2);
+}
+
+#[test]
+fn phase_5d_flex_available_size_change_does_not_replay_skip() {
+    let mut viewport = Viewport::new();
+    viewport.set_size(240, 80);
+    viewport
+        .render_rsx(&flex_base_only_axis_workload_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 240.0, 80.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    mark_place_dirty_for_test(&mut viewport, root_key);
+
+    let (_gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 260.0, 80.0);
+
+    assert_eq!(place_profile.skipped_child_place_calls, 0);
+    assert_eq!(place_profile.child_place_calls, 2);
+    assert_eq!(place_profile.placement_skip_failures.placement_mismatch, 2);
+}
+
+#[test]
+fn phase_5d_flex_non_base_descendant_does_not_replay_skip() {
+    let place_profile = sample_clean_parent_relayout_for_placement_profile(
+        &flex_with_text_area_descendant_tree(),
+        240.0,
+        80.0,
+    );
+
+    assert_eq!(place_profile.skipped_child_place_calls, 0);
+    assert!(
+        place_profile.child_place_calls >= 1,
+        "non-base descendant must keep the flex subtree on the normal placement path"
+    );
+    assert!(
+        place_profile
+            .axis_placement_eligibility
+            .blockers
+            .non_base_element
+            >= 1
+    );
+    assert!(place_profile.placement_skip_failures.non_base_element >= 1);
+}
+
+#[test]
+fn phase_5d_flow_and_inline_child_place_counts_do_not_drop() {
+    let retained_accordion = sample_clean_parent_relayout_for_placement_profile(
+        &retained_window_accordion_button_tree(),
+        460.0,
+        380.0,
+    );
+    let inline_text = sample_clean_parent_relayout_for_placement_profile(
+        &inline_text_axis_workload_tree(),
+        320.0,
+        80.0,
+    );
+
+    assert_eq!(retained_accordion.child_place_calls, 2);
+    assert_eq!(retained_accordion.skipped_child_place_calls, 0);
+    assert_eq!(
+        retained_accordion
+            .axis_placement_eligibility
+            .flow_child_places,
+        2
+    );
+    assert_eq!(inline_text.child_place_calls, 1);
+    assert_eq!(inline_text.skipped_child_place_calls, 0);
+    assert_eq!(
+        inline_text.axis_placement_eligibility.inline_child_places,
+        1
+    );
+}
+
+#[test]
+fn phase_5c_axis_trace_counts_inline_non_base_blockers_without_skipping() {
+    let inline_text = sample_clean_parent_relayout_for_placement_profile(
+        &inline_text_axis_workload_tree(),
+        320.0,
+        80.0,
+    );
+    let axis = inline_text.axis_placement_eligibility;
+
+    assert_eq!(inline_text.child_place_calls, 1);
+    assert_eq!(inline_text.skipped_child_place_calls, 0);
+    assert_eq!(axis.candidate_child_places, inline_text.child_place_calls);
+    assert_eq!(axis.clean_subtree_child_places, 1);
+    assert_eq!(axis.dirty_subtree_child_places, 0);
+    assert_eq!(axis.inline_child_places, 1);
+    assert_eq!(axis.potential_replay_child_places, 0);
+    assert_eq!(axis.inline_potential_replay_child_places, 0);
+    assert_eq!(axis.blockers.non_base_element, 1);
+}
+
+#[test]
+fn layout_gate_profile_counts_clean_children_as_candidates_without_skipping() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&two_child_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    let root_key = viewport.scene.ui_root_keys[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+
+    let (gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 120.0, 80.0);
+
+    assert_eq!(gate_profile.measure_candidate_clean_children, 2);
+    assert_eq!(gate_profile.measure_dirty_children, 0);
+    assert_eq!(gate_profile.placement_candidate_clean_children, 2);
+    assert_eq!(gate_profile.placement_dirty_children, 0);
+    assert_eq!(
+        place_profile.child_place_calls, 0,
+        "Phase 4g is observational: the existing clean-root early return still governs traversal"
+    );
+}
+
+#[test]
+fn placement_skip_clean_child_does_not_call_place_and_preserves_box_models() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&two_child_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    viewport.refresh_frame_box_models();
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let children = viewport.scene.node_arena.children_of(root_key);
+    let first_before = box_model_snapshot_for_node(&viewport, children[0]);
+    let second_before = box_model_snapshot_for_node(&viewport, children[1]);
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    mark_place_dirty_for_test(&mut viewport, root_key);
+
+    let (gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 120.0, 80.0);
+
+    assert_eq!(gate_profile.placement_candidate_clean_children, 2);
+    assert_eq!(gate_profile.placement_dirty_children, 0);
+    assert_eq!(
+        place_profile.child_place_calls, 0,
+        "clean in-flow children with unchanged placement context should not be placed again"
+    );
+    assert_eq!(place_profile.skipped_child_place_calls, 2);
+    assert_eq!(place_profile.placement_skip_failures.total(), 0);
+
+    viewport.refresh_frame_box_models();
+    assert_same_box_model_snapshot(
+        box_model_snapshot_for_node(&viewport, children[0]),
+        first_before,
+    );
+    assert_same_box_model_snapshot(
+        box_model_snapshot_for_node(&viewport, children[1]),
+        second_before,
+    );
+}
+
+#[test]
+fn placement_skip_clean_child_is_visible_in_layout_trace() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&two_child_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    let root_key = viewport.scene.ui_root_keys[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    mark_place_dirty_for_test(&mut viewport, root_key);
+
+    let (gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 120.0, 80.0);
+
+    let traversal_profile = super::frame::LayoutTraversalProfile {
+        root_count: 1,
+        measure_candidate_clean_children: gate_profile.measure_candidate_clean_children,
+        measure_dirty_children: gate_profile.measure_dirty_children,
+        placement_candidate_clean_children: gate_profile.placement_candidate_clean_children,
+        placement_dirty_children: gate_profile.placement_dirty_children,
+        skipped_child_place_calls: place_profile.skipped_child_place_calls,
+        ..Default::default()
+    };
+    let trace_root = super::debug::TraceRenderNode::with_children(
+        "layout_traversal",
+        0.0,
+        super::debug::build_layout_traversal_trace_nodes(&traversal_profile),
+    );
+    let trace = super::debug::format_trace_render_tree(&trace_root);
+    let place_trace_root = super::debug::TraceRenderNode::with_children(
+        "place",
+        0.0,
+        super::debug::build_layout_place_trace_nodes(&place_profile),
+    );
+    let place_trace = super::debug::format_trace_render_tree(&place_trace_root);
+
+    assert_eq!(place_profile.skipped_child_place_calls, 2);
+    assert_eq!(place_profile.placement_skip_failures.total(), 0);
+    assert!(trace.contains("skipped_child_place_calls (count=2)"));
+    assert!(place_trace.contains("skipped_child_place (calls=2)"));
+    assert!(place_trace.contains("placement_skip_failures (total=0"));
+}
+
+#[test]
+fn placement_skip_clean_nested_non_axis_subtree_does_not_call_place() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    viewport.refresh_frame_box_models();
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let wrapper_key = viewport.scene.node_arena.children_of(root_key)[0];
+    let leaf_key = viewport.scene.node_arena.children_of(wrapper_key)[0];
+    let wrapper_before = box_model_snapshot_for_node(&viewport, wrapper_key);
+    let leaf_before = box_model_snapshot_for_node(&viewport, leaf_key);
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    mark_place_dirty_for_test(&mut viewport, root_key);
+
+    let (_gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 120.0, 80.0);
+
+    assert_eq!(place_profile.child_place_calls, 0);
+    assert_eq!(place_profile.skipped_child_place_calls, 1);
+    assert_eq!(place_profile.placement_skip_failures.non_leaf, 0);
+    assert_eq!(place_profile.placement_skip_failures.total(), 0);
+
+    viewport.refresh_frame_box_models();
+    assert_same_box_model_snapshot(
+        box_model_snapshot_for_node(&viewport, wrapper_key),
+        wrapper_before,
+    );
+    assert_same_box_model_snapshot(
+        box_model_snapshot_for_node(&viewport, leaf_key),
+        leaf_before,
+    );
+}
+
+#[test]
+fn placement_skip_clean_nested_subtree_preserves_descendant_hit_test() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    viewport.refresh_frame_box_models();
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let wrapper_key = viewport.scene.node_arena.children_of(root_key)[0];
+    let leaf_key = viewport.scene.node_arena.children_of(wrapper_key)[0];
+    let leaf_before = box_model_snapshot_for_node(&viewport, leaf_key);
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    mark_place_dirty_for_test(&mut viewport, root_key);
+
+    let (_gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 120.0, 80.0);
+
+    assert_eq!(place_profile.child_place_calls, 0);
+    assert_eq!(place_profile.skipped_child_place_calls, 1);
+    assert_eq!(place_profile.placement_skip_failures.total(), 0);
+
+    let target = crate::view::base_component::hit_test(
+        &viewport.scene.node_arena,
+        root_key,
+        leaf_before.x + leaf_before.width * 0.5,
+        leaf_before.y + leaf_before.height * 0.5,
+    );
+    assert_eq!(
+        target,
+        Some(leaf_key),
+        "skipped nested subtree must retain descendant hit-test bounds",
+    );
+}
+
+#[test]
+fn layout_gate_profile_excludes_dirty_child_and_still_places_it() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&two_child_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    let root_key = viewport.scene.ui_root_keys[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    let dirty_child = viewport.scene.node_arena.children_of(root_key)[0];
+    viewport
+        .scene
+        .node_arena
+        .mutate_element_with_invalidation(dirty_child, |element, cx| {
+            element
+                .as_any_mut()
+                .downcast_mut::<crate::view::base_component::Element>()
+                .expect("host child")
+                .mark_layout_dirty_with(cx);
+        })
+        .expect("child exists");
+
+    let (gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 120.0, 80.0);
+
+    assert_eq!(gate_profile.measure_candidate_clean_children, 1);
+    assert_eq!(gate_profile.measure_dirty_children, 1);
+    assert_eq!(gate_profile.placement_candidate_clean_children, 1);
+    assert_eq!(gate_profile.placement_dirty_children, 1);
+    assert!(
+        place_profile.child_place_calls >= 1,
+        "dirty child must still drive placement traversal"
+    );
+    assert!(
+        place_profile.skipped_child_place_calls >= 1,
+        "clean sibling may be skipped by the Phase 4h child placement gate"
+    );
+}
+
+#[test]
+fn placement_skip_does_not_skip_dirty_child() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&two_child_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    let root_key = viewport.scene.ui_root_keys[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    let dirty_child = viewport.scene.node_arena.children_of(root_key)[0];
+    mark_place_dirty_for_test(&mut viewport, dirty_child);
+
+    let (gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 120.0, 80.0);
+
+    assert_eq!(gate_profile.placement_candidate_clean_children, 1);
+    assert_eq!(gate_profile.placement_dirty_children, 1);
+    assert_eq!(place_profile.child_place_calls, 1);
+    assert_eq!(place_profile.skipped_child_place_calls, 1);
+    assert_eq!(place_profile.placement_skip_failures.dirty_subtree, 1);
+    assert_eq!(place_profile.placement_skip_failures.total(), 1);
+}
+
+#[test]
+fn placement_skip_does_not_skip_nested_subtree_with_dirty_descendant() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    let root_key = viewport.scene.ui_root_keys[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    let wrapper_key = viewport.scene.node_arena.children_of(root_key)[0];
+    let dirty_leaf = viewport.scene.node_arena.children_of(wrapper_key)[0];
+    mark_place_dirty_for_test(&mut viewport, dirty_leaf);
+
+    let (_gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 120.0, 80.0);
+
+    assert_eq!(place_profile.skipped_child_place_calls, 0);
+    assert!(
+        place_profile.child_place_calls >= 1,
+        "dirty descendant must force placement through the subtree"
+    );
+    assert_eq!(place_profile.placement_skip_failures.dirty_subtree, 1);
+    assert_eq!(place_profile.placement_skip_failures.total(), 1);
+}
+
+#[test]
+fn placement_skip_does_not_skip_when_child_placement_context_changes() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&two_child_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    let root_key = viewport.scene.ui_root_keys[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+
+    let (gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 140.0, 80.0);
+
+    assert_eq!(gate_profile.placement_candidate_clean_children, 2);
+    assert_eq!(gate_profile.placement_dirty_children, 0);
+    assert_eq!(
+        place_profile.child_place_calls, 2,
+        "clean children must still be placed when the child placement key changes"
+    );
+    assert_eq!(place_profile.skipped_child_place_calls, 0);
+    assert_eq!(place_profile.placement_skip_failures.placement_mismatch, 2);
+    assert_eq!(place_profile.placement_skip_failures.total(), 2);
+}
+
+#[test]
+fn placement_skip_does_not_skip_nested_subtree_when_context_changes() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    let root_key = viewport.scene.ui_root_keys[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+
+    let (_gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 140.0, 80.0);
+
+    assert_eq!(place_profile.skipped_child_place_calls, 0);
+    assert!(
+        place_profile.child_place_calls >= 1,
+        "placement key change must force nested subtree placement"
+    );
+    assert_eq!(place_profile.placement_skip_failures.placement_mismatch, 1);
+    assert_eq!(place_profile.placement_skip_failures.total(), 1);
+}
+
+#[test]
+fn placement_skip_does_not_skip_scroll_offset_context_change() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&scrollable_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 100.0, 50.0);
+    viewport.refresh_frame_box_models();
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let root_id = viewport
+        .scene
+        .node_arena
+        .get(root_key)
+        .expect("root exists")
+        .element
+        .stable_id();
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+
+    assert!(crate::view::base_component::set_scroll_offset_by_id(
+        &viewport.scene.node_arena,
+        root_key,
+        root_id,
+        (24.0, 16.0),
+    ));
+
+    let (_gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 100.0, 50.0);
+
+    assert_eq!(place_profile.child_place_calls, 1);
+    assert_eq!(place_profile.skipped_child_place_calls, 0);
+    assert_eq!(place_profile.placement_skip_failures.placement_mismatch, 1);
+    assert_eq!(place_profile.placement_skip_failures.total(), 1);
+}
+
+#[test]
+fn placement_skip_does_not_skip_nested_subtree_with_active_layout_transition_runtime_state() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_grid_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let wrapper_key = viewport.scene.node_arena.children_of(root_key)[0];
+    let wrapper_id = viewport
+        .scene
+        .node_arena
+        .get(wrapper_key)
+        .expect("wrapper exists")
+        .element
+        .stable_id();
+
+    assert!(crate::view::base_component::set_layout_field_by_id(
+        &mut viewport.scene.node_arena,
+        root_key,
+        wrapper_id,
+        crate::transition::LayoutField::Width,
+        72.0,
+    ));
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    mark_place_dirty_for_test(&mut viewport, root_key);
+
+    let (_gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 120.0, 80.0);
+
+    assert_eq!(place_profile.skipped_child_place_calls, 0);
+    assert!(
+        place_profile.child_place_calls >= 1,
+        "active transition runtime state must force placement traversal"
+    );
+    assert_eq!(place_profile.placement_skip_failures.runtime_state, 1);
+    assert_eq!(place_profile.placement_skip_failures.total(), 1);
+}
+
+#[test]
+fn placement_skip_does_not_skip_nested_subtree_with_anchor_descendant() {
+    let place_profile = sample_clean_parent_relayout_for_placement_profile(
+        &nested_grid_with_anchor_descendant_tree(),
+        120.0,
+        80.0,
+    );
+
+    assert_eq!(place_profile.skipped_child_place_calls, 0);
+    assert!(
+        place_profile.child_place_calls >= 1,
+        "anchor descendants need placement runtime replay"
+    );
+    assert_eq!(place_profile.placement_skip_failures.anchor_name, 1);
+    assert_eq!(place_profile.placement_skip_failures.total(), 1);
+}
+
+#[test]
+fn placement_skip_does_not_skip_nested_subtree_with_absolute_descendant() {
+    let place_profile = sample_clean_parent_relayout_for_placement_profile(
+        &nested_grid_with_absolute_descendant_tree(),
+        120.0,
+        80.0,
+    );
+
+    assert_eq!(place_profile.skipped_child_place_calls, 0);
+    assert!(
+        place_profile.child_place_calls >= 1,
+        "absolute descendants are still excluded from the Phase 4l expansion"
+    );
+    assert_eq!(place_profile.placement_skip_failures.absolute_descendant, 1);
+    assert_eq!(place_profile.placement_skip_failures.total(), 1);
+}
+
+#[test]
+fn placement_skip_does_not_skip_nested_subtree_with_text_area_descendant() {
+    let place_profile = sample_clean_parent_relayout_for_placement_profile(
+        &nested_grid_with_text_area_descendant_tree(),
+        180.0,
+        100.0,
+    );
+
+    assert_eq!(place_profile.skipped_child_place_calls, 0);
+    assert!(
+        place_profile.child_place_calls >= 1,
+        "TextArea descendants are non-base elements and must not be replay-skipped",
+    );
+    assert_eq!(place_profile.placement_skip_failures.non_base_element, 1);
+    assert_eq!(place_profile.placement_skip_failures.total(), 1);
+}
+
+#[test]
+fn placement_skip_ignores_paint_only_dirty_and_reuses_box_model_cache() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&two_child_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    viewport.refresh_frame_box_models();
+    let root_key = viewport.scene.ui_root_keys[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    let paint_child = viewport.scene.node_arena.children_of(root_key)[0];
+    mark_paint_dirty_for_test(&mut viewport, paint_child);
+
+    let (_gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 120.0, 80.0);
+
+    assert_eq!(place_profile.child_place_calls, 0);
+    assert_eq!(
+        place_profile.skipped_child_place_calls, 0,
+        "paint-only dirty should let the clean root placement early-return"
+    );
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .cached_subtree_dirty(root_key)
+            .contains(crate::view::base_component::DirtyPassMask::PAINT)
+    );
+
+    viewport.refresh_frame_box_models();
+    assert_eq!(viewport.box_model_refresh_stats().collected_roots, 0);
+    assert_eq!(viewport.box_model_refresh_stats().reused_roots, 1);
+}
+
+#[test]
+fn refresh_frame_box_models_collects_first_refresh_then_reuses_clean_root() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+
+    viewport.refresh_frame_box_models();
+    let first_stats = viewport.box_model_refresh_stats();
+    assert_eq!(first_stats.collected_roots, 1);
+    assert_eq!(first_stats.reused_roots, 0);
+    assert_eq!(first_stats.collected_snapshots, 2);
+    assert_eq!(viewport.frame_box_models().len(), 2);
+
+    viewport.refresh_frame_box_models();
+    let second_stats = viewport.box_model_refresh_stats();
+    assert_eq!(second_stats.collected_roots, 0);
+    assert_eq!(second_stats.reused_roots, 1);
+    assert_eq!(second_stats.reused_snapshots, 2);
+    assert_eq!(viewport.frame_box_models().len(), 2);
+}
+
+#[test]
+fn refresh_frame_box_models_clean_skip_preserves_unrelated_paint_dirty() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    viewport.refresh_frame_box_models();
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let child_key = viewport.scene.node_arena.children_of(root_key)[0];
+    viewport
+        .scene
+        .node_arena
+        .mutate_element_with_invalidation(child_key, |element, cx| {
+            element
+                .as_any_mut()
+                .downcast_mut::<crate::view::base_component::Element>()
+                .expect("child element")
+                .mark_local_dirty(crate::view::base_component::DirtyPassMask::PAINT);
+            cx.invalidate(crate::view::base_component::DirtyPassMask::PAINT);
+        })
+        .expect("child exists");
+
+    viewport.refresh_frame_box_models();
+
+    let stats = viewport.box_model_refresh_stats();
+    assert_eq!(stats.collected_roots, 0);
+    assert_eq!(stats.reused_roots, 1);
+    let child = viewport
+        .scene
+        .node_arena
+        .get(child_key)
+        .expect("child exists");
+    assert!(
+        child
+            .element
+            .local_dirty_flags()
+            .contains(crate::view::base_component::DirtyPassMask::PAINT)
+    );
+    drop(child);
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .arena_local_dirty(child_key)
+            .contains(crate::view::base_component::DirtyPassMask::PAINT)
+    );
+}
+
+#[test]
+fn refresh_frame_box_models_dirty_root_updates_cache_and_clears_arena_shadow_dirty() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    viewport.refresh_frame_box_models();
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    mark_box_model_dirty_and_set_layout_width(&mut viewport, root_key, 222.0);
+
+    viewport.refresh_frame_box_models();
+    let stats = viewport.box_model_refresh_stats();
+    assert_eq!(stats.collected_roots, 1);
+    assert_eq!(stats.reused_roots, 0);
+    assert_eq!(
+        box_model_snapshot_for_node(&viewport, root_key).width,
+        222.0
+    );
+    let box_model_flags = crate::view::base_component::DirtyPassMask::BOX_MODEL
+        .union(crate::view::base_component::DirtyPassMask::HIT_TEST);
+    assert!(
+        !viewport
+            .scene
+            .node_arena
+            .arena_local_dirty(root_key)
+            .intersects(box_model_flags)
+    );
+
+    mark_box_model_dirty_and_set_layout_width(&mut viewport, root_key, 333.0);
+    viewport.refresh_frame_box_models();
+    assert_eq!(
+        box_model_snapshot_for_node(&viewport, root_key).width,
+        333.0
+    );
+
+    viewport.refresh_frame_box_models();
+    let reuse_stats = viewport.box_model_refresh_stats();
+    assert_eq!(reuse_stats.collected_roots, 0);
+    assert_eq!(reuse_stats.reused_roots, 1);
+    assert_eq!(
+        box_model_snapshot_for_node(&viewport, root_key).width,
+        333.0
+    );
+}
+
+#[test]
+fn layout_transition_field_update_invalidates_frame_box_model_cache() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    viewport.refresh_frame_box_models();
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let child_key = viewport.scene.node_arena.children_of(root_key)[0];
+    let child_id = viewport
+        .scene
+        .node_arena
+        .get(child_key)
+        .expect("child exists")
+        .element
+        .stable_id();
+
+    assert!(crate::view::base_component::set_layout_field_by_id(
+        &mut viewport.scene.node_arena,
+        root_key,
+        child_id,
+        crate::transition::LayoutField::Height,
+        55.0,
+    ));
+
+    viewport.refresh_frame_box_models();
+
+    let stats = viewport.box_model_refresh_stats();
+    assert_eq!(
+        stats.collected_roots, 1,
+        "layout transition samples must invalidate cached frame box models",
+    );
+    assert_eq!(
+        box_model_snapshot_for_node(&viewport, child_key).height,
+        55.0,
+        "frame box model cache must reflect the sampled transition height",
+    );
+}
+
+#[test]
+fn transition_runtime_reconcile_marks_arena_dirty_when_clearing_layout_state() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    viewport.refresh_frame_box_models();
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let child_key = viewport.scene.node_arena.children_of(root_key)[0];
+    let child_id = viewport
+        .scene
+        .node_arena
+        .get(child_key)
+        .expect("child exists")
+        .element
+        .stable_id();
+
+    assert!(crate::view::base_component::set_layout_field_by_id(
+        &mut viewport.scene.node_arena,
+        root_key,
+        child_id,
+        crate::transition::LayoutField::Width,
+        72.0,
+    ));
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+
+    assert!(
+        crate::view::base_component::reconcile_transition_runtime_state(
+            &mut viewport.scene.node_arena,
+            &[root_key],
+            &rustc_hash::FxHashMap::default(),
+        )
+    );
+
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .arena_local_dirty(child_key)
+            .contains(crate::view::base_component::DirtyFlags::ALL),
+        "clearing stale layout transition state should bubble the element's local dirty flags into arena dirty"
+    );
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .cached_subtree_dirty(root_key)
+            .contains(crate::view::base_component::DirtyFlags::ALL)
+    );
+
+    viewport.refresh_frame_box_models();
+    assert_eq!(
+        viewport.box_model_refresh_stats().collected_roots,
+        1,
+        "runtime transition cleanup must invalidate cached frame box models"
+    );
+}
+
+#[test]
+fn visual_transition_field_update_marks_arena_runtime_dirty() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    viewport.refresh_frame_box_models();
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let child_key = viewport.scene.node_arena.children_of(root_key)[0];
+    let child_id = viewport
+        .scene
+        .node_arena
+        .get(child_key)
+        .expect("child exists")
+        .element
+        .stable_id();
+
+    assert!(crate::view::base_component::set_visual_field_by_id(
+        &mut viewport.scene.node_arena,
+        root_key,
+        child_id,
+        crate::transition::VisualField::X,
+        12.0,
+    ));
+
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .arena_local_dirty(child_key)
+            .contains(crate::view::base_component::DirtyPassMask::RUNTIME)
+    );
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .cached_subtree_dirty(root_key)
+            .contains(crate::view::base_component::DirtyPassMask::RUNTIME)
+    );
+
+    viewport.refresh_frame_box_models();
+    assert_eq!(
+        viewport.box_model_refresh_stats().collected_roots,
+        1,
+        "visual transition samples must invalidate cached frame box models",
+    );
+}
+
+#[test]
+fn scroll_offset_update_marks_arena_runtime_dirty() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&scrollable_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 100.0, 50.0);
+    viewport.refresh_frame_box_models();
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let root_id = viewport
+        .scene
+        .node_arena
+        .get(root_key)
+        .expect("root exists")
+        .element
+        .stable_id();
+
+    assert!(crate::view::base_component::set_scroll_offset_by_id(
+        &viewport.scene.node_arena,
+        root_key,
+        root_id,
+        (24.0, 16.0),
+    ));
+
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .arena_local_dirty(root_key)
+            .contains(crate::view::base_component::DirtyPassMask::RUNTIME)
+    );
+
+    viewport.refresh_frame_box_models();
+    assert_eq!(
+        viewport.box_model_refresh_stats().collected_roots,
+        1,
+        "scroll offset changes must invalidate cached frame box models",
+    );
+}
+
+fn text_area_viewport(content: &str) -> (Viewport, crate::view::node_arena::NodeKey) {
+    use crate::view::TextArea as HostTextArea;
+
+    let tree = rsx! {
+        <HostTextArea content={content.to_string()} />
+    };
+
+    let mut viewport = Viewport::new();
+    viewport.set_size(320, 160);
+    viewport.render_rsx(&tree).expect("render TextArea");
+    run_layout_for_test(&mut viewport, 320.0, 160.0);
+    let root_key = viewport.scene.ui_root_keys[0];
+    viewport.refresh_frame_box_models();
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    (viewport, root_key)
+}
+
+#[test]
+fn text_area_text_input_marks_arena_dirty_and_recollects_box_models() {
+    use crate::view::base_component::DirtyFlags;
+
+    let (mut viewport, root_key) = text_area_viewport("abc");
+    viewport.set_focused_node_id(Some(root_key));
+
+    assert!(viewport.dispatch_text_input_event("Z".to_string()));
+
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .arena_local_dirty(root_key)
+            .contains(DirtyFlags::ALL),
+        "TextArea text input should mirror content dirty into arena local dirty"
+    );
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .cached_subtree_dirty(root_key)
+            .contains(DirtyFlags::ALL),
+        "TextArea text input should bubble content dirty into cached subtree dirty"
+    );
+
+    viewport.refresh_frame_box_models();
+    assert_eq!(viewport.box_model_refresh_stats().collected_roots, 1);
+    assert_eq!(viewport.box_model_refresh_stats().reused_roots, 0);
+}
+
+#[test]
+fn text_area_focus_dirty_still_reuses_clean_box_model_cache() {
+    use crate::view::base_component::{DirtyFlags, DirtyPassMask};
+
+    let (mut viewport, root_key) = text_area_viewport("abc");
+
+    assert!(viewport.dispatch_focus_event(root_key));
+
+    let arena_dirty = viewport.scene.node_arena.arena_local_dirty(root_key);
+    assert!(arena_dirty.intersects(DirtyFlags::PLACE));
+    assert!(arena_dirty.intersects(DirtyFlags::PAINT));
+    assert!(
+        !arena_dirty.intersects(DirtyPassMask::BOX_MODEL.union(DirtyPassMask::HIT_TEST)),
+        "focus/caret paint-place dirty should not become box-model dirty"
+    );
+
+    viewport.refresh_frame_box_models();
+    assert_eq!(viewport.box_model_refresh_stats().collected_roots, 0);
+    assert_eq!(viewport.box_model_refresh_stats().reused_roots, 1);
+}
+
+#[test]
+fn generic_click_dispatch_marks_arena_paint_dirty_without_box_model_recollect() {
+    use crate::view::base_component::{DirtyFlags, DirtyPassMask};
+
+    let mut viewport = Viewport::new();
+    viewport.set_size(120, 80);
+    viewport
+        .render_rsx(&paint_dirty_on_click_tree())
+        .expect("render custom click host");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+    let root_key = viewport.scene.ui_root_keys[0];
+    viewport.refresh_frame_box_models();
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        DirtyFlags::ALL,
+    );
+
+    viewport.set_pointer_position_viewport(8.0, 8.0);
+    assert!(viewport.dispatch_pointer_down_event(crate::view::viewport::PointerButton::Left));
+    assert!(viewport.dispatch_pointer_up_event(crate::view::viewport::PointerButton::Left));
+    assert!(viewport.dispatch_click_event(crate::view::viewport::PointerButton::Left));
+
+    let arena_dirty = viewport.scene.node_arena.arena_local_dirty(root_key);
+    assert!(arena_dirty.contains(DirtyPassMask::PAINT));
+    assert!(
+        !arena_dirty.intersects(DirtyPassMask::BOX_MODEL.union(DirtyPassMask::HIT_TEST)),
+        "paint-only click mutation must not become box-model/hit-test dirty"
+    );
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .cached_subtree_dirty(root_key)
+            .contains(DirtyPassMask::PAINT)
+    );
+
+    viewport.refresh_frame_box_models();
+    assert_eq!(viewport.box_model_refresh_stats().collected_roots, 0);
+    assert_eq!(viewport.box_model_refresh_stats().reused_roots, 1);
+}
+
+#[test]
+fn refresh_frame_box_models_reuses_clean_root_and_recollects_dirty_root() {
+    let tree = RsxNode::fragment(vec![nested_box_model_tree(), single_element(80.0)]);
+    let mut viewport = Viewport::new();
+    viewport.render_rsx(&tree).expect("cold render");
+    run_layout_for_test(&mut viewport, 240.0, 120.0);
+    viewport.refresh_frame_box_models();
+
+    let clean_root = viewport.scene.ui_root_keys[0];
+    let dirty_root = viewport.scene.ui_root_keys[1];
+    let clean_before = box_model_snapshot_for_node(&viewport, clean_root);
+    mark_box_model_dirty_and_set_layout_width(&mut viewport, dirty_root, 166.0);
+
+    viewport.refresh_frame_box_models();
+
+    let stats = viewport.box_model_refresh_stats();
+    assert_eq!(stats.collected_roots, 1);
+    assert_eq!(stats.reused_roots, 1);
+    assert_eq!(
+        box_model_snapshot_for_node(&viewport, clean_root).width,
+        clean_before.width
+    );
+    assert_eq!(
+        box_model_snapshot_for_node(&viewport, dirty_root).width,
+        166.0
+    );
+    let box_model_flags = crate::view::base_component::DirtyPassMask::BOX_MODEL
+        .union(crate::view::base_component::DirtyPassMask::HIT_TEST);
+    assert!(
+        !viewport
+            .scene
+            .node_arena
+            .arena_local_dirty(dirty_root)
+            .intersects(box_model_flags)
+    );
+}
+
+#[test]
+fn refresh_frame_box_models_clears_arena_shadow_dirty() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let child_key = viewport.scene.node_arena.children_of(root_key)[0];
+    let flags = crate::view::base_component::DirtyFlags::BOX_MODEL
+        .union(crate::view::base_component::DirtyFlags::HIT_TEST);
+
+    assert!(
+        crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+            &mut viewport.scene.node_arena,
+            root_key,
+            crate::view::base_component::DirtyFlags::ALL,
+        )
+    );
+    viewport
+        .scene
+        .node_arena
+        .mutate_element_with_invalidation(child_key, |element, cx| {
+            element
+                .as_any_mut()
+                .downcast_mut::<crate::view::base_component::Element>()
+                .expect("child element")
+                .mark_local_dirty(flags);
+            cx.invalidate(flags);
+        })
+        .expect("child exists");
+
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .arena_local_dirty(child_key)
+            .contains(flags)
+    );
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .cached_subtree_dirty(root_key)
+            .intersects(flags)
+    );
+
+    viewport.refresh_frame_box_models();
+
+    let child = viewport
+        .scene
+        .node_arena
+        .get(child_key)
+        .expect("child exists");
+    assert!(!child.element.local_dirty_flags().intersects(flags));
+    drop(child);
+    assert_eq!(
+        viewport.scene.node_arena.arena_local_dirty(child_key),
+        crate::view::base_component::DirtyFlags::NONE
+    );
+    assert!(
+        !viewport
+            .scene
+            .node_arena
+            .cached_subtree_dirty(root_key)
+            .intersects(flags)
+    );
+    assert!(
+        !viewport
+            .scene
+            .node_arena
+            .cached_subtree_dirty(child_key)
+            .intersects(flags)
+    );
+    assert_eq!(viewport.frame_box_models().len(), 2);
+}
+
+#[test]
+fn layout_pass_clears_consumed_arena_layout_place_and_box_dirty() {
+    let mut viewport = Viewport::new();
+    viewport
+        .render_rsx(&nested_box_model_tree())
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 120.0, 80.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let child_key = viewport.scene.node_arena.children_of(root_key)[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        root_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
+    viewport
+        .scene
+        .node_arena
+        .mutate_element_with_invalidation(child_key, |element, cx| {
+            element
+                .as_any_mut()
+                .downcast_mut::<crate::view::base_component::Element>()
+                .expect("child element")
+                .mark_layout_dirty_with(cx);
+        })
+        .expect("child exists");
+
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .cached_subtree_dirty(root_key)
+            .contains(crate::view::base_component::DirtyFlags::ALL)
+    );
+
+    viewport.run_layout_pass();
+
+    let consumed = crate::view::base_component::DirtyFlags::LAYOUT
+        .union(crate::view::base_component::DirtyFlags::PLACE)
+        .union(crate::view::base_component::DirtyFlags::BOX_MODEL)
+        .union(crate::view::base_component::DirtyFlags::HIT_TEST);
+    assert!(
+        !viewport
+            .scene
+            .node_arena
+            .arena_local_dirty(child_key)
+            .intersects(consumed),
+        "layout and box-model phases should not leave consumed arena dirty bits behind"
+    );
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .arena_local_dirty(child_key)
+            .contains(crate::view::base_component::DirtyFlags::PAINT),
+        "paint remains dirty until the render graph consumes it"
+    );
+}
+
 #[test]
 fn drag_drop_retargets_after_drag_over_rerender() {
     let dropped = global_state(|| Vec::<String>::new());
@@ -212,6 +2689,243 @@ fn drag_drop_retargets_after_drag_over_rerender() {
     viewport.dispatch_pointer_up_event(crate::view::viewport::PointerButton::Left);
 
     assert_eq!(dropped.get(), vec!["target".to_string()]);
+}
+
+#[test]
+fn cursor_resolves_pointer_from_hovered_text_child_ancestor() {
+    let mut viewport = Viewport::new();
+    viewport.set_size(160, 40);
+    viewport
+        .render_rsx(&pointer_cursor_with_text_child_tree())
+        .expect("render pointer cursor tree");
+    run_layout_for_test(&mut viewport, 160.0, 40.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let text_key =
+        find_text_node(&viewport.scene.node_arena, root_key, "Hover target").expect("text child");
+    let text_snapshot = viewport
+        .scene
+        .node_arena
+        .get(text_key)
+        .expect("text child")
+        .element
+        .box_model_snapshot();
+    let target = crate::view::base_component::hit_test(
+        &viewport.scene.node_arena,
+        root_key,
+        text_snapshot.x + text_snapshot.width * 0.5,
+        text_snapshot.y + text_snapshot.height * 0.5,
+    );
+
+    assert_eq!(target, Some(text_key), "hit-test should land on text child");
+    viewport.input_state.hovered_node_id = target;
+
+    assert_eq!(
+        viewport.resolve_cursor(),
+        Cursor::Pointer,
+        "cursor should inherit from the hovered text child's pointer ancestor",
+    );
+}
+
+#[test]
+fn pointer_move_cursor_uses_anchor_parent_resize_handle_over_later_root_body() {
+    let mut viewport = Viewport::new();
+    viewport.set_size(200, 120);
+    viewport
+        .render_rsx(&overlapping_root_with_anchor_parent_resize_handle_tree())
+        .expect("render overlapping root tree");
+    run_layout_for_test(&mut viewport, 200.0, 120.0);
+
+    let lower_root = viewport.scene.ui_root_keys[0];
+    let handle_key = viewport.scene.node_arena.children_of(lower_root)[0];
+    assert_eq!(
+        crate::view::base_component::hit_test_roots(
+            &viewport.scene.node_arena,
+            &viewport.scene.ui_root_keys,
+            101.0,
+            20.0,
+        ),
+        Some((0, handle_key)),
+        "the shared root hit-test helper already finds the visible overflow handle",
+    );
+
+    viewport.set_pointer_position_viewport(101.0, 20.0);
+    assert!(
+        viewport.dispatch_pointer_move_event(),
+        "pointer move should update hover at the resize handle",
+    );
+    assert_eq!(
+        viewport.input_state.hovered_node_id,
+        Some(handle_key),
+        "production pointer-move path must hover the visible overflow handle, not the later root body",
+    );
+    assert_eq!(
+        viewport.resolve_cursor(),
+        Cursor::EwResize,
+        "hovering the visible overflow handle should resolve the resize cursor",
+    );
+}
+
+#[test]
+fn cursor_resolves_from_hovered_node_key_when_stable_ids_collide() {
+    let mut lower =
+        crate::view::base_component::Element::new_with_id(0xC0DE, 0.0, 0.0, 100.0, 80.0);
+    let mut lower_style = Style::new();
+    lower_style.insert(PropertyId::Cursor, ParsedValue::Cursor(Cursor::EwResize));
+    lower.apply_style(lower_style);
+
+    let higher = crate::view::base_component::Element::new_with_id(0xC0DE, 0.0, 0.0, 100.0, 80.0);
+
+    let mut viewport = Viewport::new();
+    let lower_key = viewport
+        .scene
+        .node_arena
+        .insert(crate::view::node_arena::Node::new(Box::new(lower)));
+    let higher_key = viewport
+        .scene
+        .node_arena
+        .insert(crate::view::node_arena::Node::new(Box::new(higher)));
+    viewport.scene.ui_root_keys = vec![lower_key, higher_key];
+    viewport
+        .scene
+        .node_arena
+        .set_roots(viewport.scene.ui_root_keys.clone());
+    viewport.input_state.hovered_node_id = Some(lower_key);
+
+    assert_eq!(
+        viewport.resolve_cursor(),
+        Cursor::EwResize,
+        "cursor resolution must use the hovered NodeKey, not a colliding stable id from a later root"
+    );
+}
+
+#[test]
+fn placement_only_position_update_moves_anchor_parent_resize_handle_hit_test() {
+    let mut viewport = Viewport::new();
+    viewport.set_size(240, 140);
+    viewport
+        .render_rsx(&movable_root_with_anchor_parent_resize_handle_tree(20.0))
+        .expect("render initial movable root tree");
+    run_layout_for_test(&mut viewport, 240.0, 140.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let handle_key = viewport.scene.node_arena.children_of(root_key)[0];
+    assert_eq!(
+        crate::view::base_component::hit_test_roots(
+            &viewport.scene.node_arena,
+            &viewport.scene.ui_root_keys,
+            121.0,
+            50.0,
+        ),
+        Some((0, handle_key)),
+        "initial right resize handle should be hit-testable"
+    );
+
+    viewport
+        .render_rsx(&movable_root_with_anchor_parent_resize_handle_tree(80.0))
+        .expect("render moved tree through placement-only update");
+    run_layout_for_test(&mut viewport, 240.0, 140.0);
+
+    assert_ne!(
+        crate::view::base_component::hit_test_roots(
+            &viewport.scene.node_arena,
+            &viewport.scene.ui_root_keys,
+            121.0,
+            50.0,
+        ),
+        Some((0, handle_key)),
+        "old handle position must not remain clickable after placement-only move"
+    );
+    assert_eq!(
+        crate::view::base_component::hit_test_roots(
+            &viewport.scene.node_arena,
+            &viewport.scene.ui_root_keys,
+            181.0,
+            50.0,
+        ),
+        Some((0, handle_key)),
+        "new right resize handle position should be hit-testable after placement-only move"
+    );
+
+    viewport.set_pointer_position_viewport(181.0, 50.0);
+    assert!(
+        viewport.dispatch_pointer_move_event(),
+        "production pointer move should update hover at the moved resize handle",
+    );
+    assert_eq!(
+        viewport.input_state.hovered_node_id,
+        Some(handle_key),
+        "hover target should follow the placement-only moved resize handle"
+    );
+    assert_eq!(viewport.resolve_cursor(), Cursor::EwResize);
+}
+
+#[test]
+fn retained_window_accordion_button_false_to_true_hit_tests_without_scroll() {
+    let mut viewport = Viewport::new();
+    viewport.set_size(460, 380);
+    viewport
+        .render_rsx(&retained_window_accordion_button_tree())
+        .expect("render collapsed retained tree");
+    run_layout_for_test(&mut viewport, 460.0, 380.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let section_key = viewport.scene.node_arena.children_of(root_key)[1];
+    let button_key = viewport.scene.node_arena.children_of(section_key)[0];
+    let label_key = find_text_node(&viewport.scene.node_arena, root_key, "Contained")
+        .expect("contained button label");
+
+    viewport
+        .scene
+        .node_arena
+        .mutate_element_with_invalidation(section_key, |element, cx| {
+            element
+                .as_any_mut()
+                .downcast_mut::<crate::view::base_component::Element>()
+                .expect("section element")
+                .replace_style(expanded_retained_accordion_section_style());
+            cx.invalidate(crate::view::base_component::DirtyFlags::ALL);
+        })
+        .expect("section exists");
+
+    run_layout_for_test(&mut viewport, 460.0, 380.0);
+    let post_layout = viewport.run_post_layout_transitions(1.0, 1.0);
+    if post_layout.relayout_required {
+        run_layout_for_test(&mut viewport, 460.0, 380.0);
+    }
+
+    assert_eq!(
+        viewport.scene.node_arena.children_of(section_key)[0],
+        button_key,
+        "button NodeKey should be retained across false -> true expansion",
+    );
+    assert!(
+        find_text_node(&viewport.scene.node_arena, root_key, "Contained") == Some(label_key),
+        "label NodeKey should be retained across false -> true expansion",
+    );
+
+    let label_snapshot = viewport
+        .scene
+        .node_arena
+        .get(label_key)
+        .expect("contained label")
+        .element
+        .box_model_snapshot();
+    let hit_x = label_snapshot.x + label_snapshot.width * 0.5;
+    let hit_y = label_snapshot.y + label_snapshot.height * 0.5;
+    let target =
+        crate::view::base_component::hit_test(&viewport.scene.node_arena, root_key, hit_x, hit_y);
+    assert!(
+        matches!(target, Some(target) if target == label_key || target == button_key),
+        "hit at retained expanded button ({hit_x}, {hit_y}) should target button branch; got {target:?}",
+    );
+
+    viewport.input_state.hovered_node_id = target;
+    assert_eq!(
+        viewport.resolve_cursor(),
+        Cursor::Pointer,
+        "retained expanded button should resolve pointer cursor before any scroll",
+    );
 }
 
 /// Structure-identical re-render: reconcile produces an empty patch
@@ -441,6 +3155,11 @@ fn incremental_commit_applies_style_update_preserves_node_key() {
     viewport.render_rsx(&first).expect("cold render");
     assert_eq!(viewport.scene.ui_root_keys.len(), 1);
     let original_key = viewport.scene.ui_root_keys[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        original_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
 
     viewport
         .render_rsx(&second)
@@ -450,6 +3169,14 @@ fn incremental_commit_applies_style_update_preserves_node_key() {
         viewport.scene.ui_root_keys,
         vec![original_key],
         "style update must preserve NodeKey via the M3 setter path",
+    );
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .arena_local_dirty(original_key)
+            .contains(crate::view::base_component::DirtyPassMask::PAINT),
+        "FiberWork::Update must propagate element-owned dirty flags into arena dirty",
     );
 }
 
@@ -606,6 +3333,11 @@ fn incremental_commit_applies_set_text_preserves_node_key() {
     viewport.render_rsx(&first).expect("cold render");
     assert_eq!(viewport.scene.ui_root_keys.len(), 1);
     let original_key = viewport.scene.ui_root_keys[0];
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut viewport.scene.node_arena,
+        original_key,
+        crate::view::base_component::DirtyFlags::ALL,
+    );
 
     viewport
         .render_rsx(&second)
@@ -615,6 +3347,14 @@ fn incremental_commit_applies_set_text_preserves_node_key() {
         viewport.scene.ui_root_keys,
         vec![original_key],
         "SetText must preserve NodeKey via the M3 setter path",
+    );
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .arena_local_dirty(original_key)
+            .intersects(crate::view::base_component::DirtyFlags::ALL),
+        "FiberWork::SetText must propagate text dirty flags into arena dirty",
     );
 }
 
@@ -1808,6 +4548,85 @@ fn incremental_commit_applies_svg_loading_slot_swap() {
     let node = arena.get(key).expect("Svg slot survives slot swap");
     let svg = node.element.as_any().downcast_ref::<Svg>().unwrap();
     assert_eq!(svg.loading_slot_len(), 1);
+}
+
+#[test]
+fn placement_only_path_resolves_node_key_without_stable_id_index() {
+    use crate::style::{Transform, Translate};
+    use crate::view::base_component::{DirtyFlags, Element as ElementHost};
+    use crate::view::test_support::{commit_child, commit_element, new_test_arena};
+
+    let mut arena = new_test_arena();
+    let root_key = commit_element(
+        &mut arena,
+        Box::new(ElementHost::new_with_id(1, 0.0, 0.0, 0.0, 0.0)),
+    );
+    let first_child = commit_child(
+        &mut arena,
+        root_key,
+        Box::new(ElementHost::new_with_id(77, 0.0, 0.0, 0.0, 0.0)),
+    );
+    let second_child = commit_child(
+        &mut arena,
+        root_key,
+        Box::new(ElementHost::new_with_id(77, 0.0, 0.0, 0.0, 0.0)),
+    );
+    assert_eq!(
+        arena.find_by_stable_id(77),
+        Some(second_child),
+        "duplicate stable_id index points at the last inserted node",
+    );
+    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        &mut arena,
+        root_key,
+        DirtyFlags::ALL,
+    );
+
+    let rsx_root = host_el().with_child(host_el()).with_child(host_el());
+    let target_key = Viewport::arena_key_for_rsx_path(&arena, &[root_key], &rsx_root, &[0])
+        .expect("path [0] should resolve to the first arena child");
+    assert_eq!(
+        target_key, first_child,
+        "placement-only patch target must come from RSX path -> arena path -> NodeKey",
+    );
+
+    let transform = Transform::new([Translate::x(Length::px(24.0))]);
+    let mut style = crate::style::Style::new();
+    style.set_transform(transform.clone());
+    assert!(Viewport::apply_placement_style_by_node_key(
+        &arena, target_key, &style,
+    ));
+
+    {
+        let first = arena.get(first_child).unwrap();
+        let first = first
+            .element
+            .as_any()
+            .downcast_ref::<ElementHost>()
+            .unwrap();
+        assert_eq!(first.debug_transform(), &transform);
+    }
+
+    {
+        let second = arena.get(second_child).unwrap();
+        let second = second
+            .element
+            .as_any()
+            .downcast_ref::<ElementHost>()
+            .unwrap();
+        assert_eq!(second.debug_transform(), &Transform::default());
+    }
+
+    assert!(
+        arena
+            .arena_local_dirty(first_child)
+            .contains(DirtyFlags::RUNTIME)
+    );
+    assert!(
+        !arena
+            .arena_local_dirty(second_child)
+            .contains(DirtyFlags::RUNTIME)
+    );
 }
 
 /// M5: the flag is on by default. Flipping it off must still work

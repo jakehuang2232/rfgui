@@ -136,7 +136,7 @@ impl TextArea {
                 self.color
             };
             let mut updated = false;
-            arena.with_element_taken(run_key, |child, _| {
+            arena.mutate_element_with_invalidation(run_key, |child, cx| {
                 if let Some(run) = child.as_any_mut().downcast_mut::<TextAreaTextRun>() {
                     run.is_placeholder = is_placeholder;
                     run.set_text(display_text.clone(), 0..char_count);
@@ -150,6 +150,7 @@ impl TextArea {
                         self.cursor,
                         self.auto_wrap,
                     );
+                    cx.invalidate(run.local_dirty_flags());
                     updated = true;
                 }
             });
@@ -452,7 +453,7 @@ impl TextArea {
             self.color
         };
         let text_owned = text.to_string();
-        arena.with_element_taken(key, |child, _| {
+        arena.mutate_element_with_invalidation(key, |child, cx| {
             let Some(run) = child.as_any_mut().downcast_mut::<TextAreaTextRun>() else {
                 return;
             };
@@ -468,6 +469,7 @@ impl TextArea {
                 self.cursor,
                 self.auto_wrap,
             );
+            cx.invalidate(run.local_dirty_flags());
         });
     }
 
@@ -477,17 +479,18 @@ impl TextArea {
         key: NodeKey,
         range: Range<usize>,
     ) {
-        arena.with_element_taken(key, |child, _| {
+        arena.mutate_element_with_invalidation(key, |child, cx| {
             let Some(line_break) = child.as_any_mut().downcast_mut::<TextAreaLineBreak>() else {
                 return;
             };
             line_break.set_char_range(range);
             line_break.cascade_style(self.font_size, self.line_height, self.vertical_align);
+            cx.invalidate(line_break.local_dirty_flags());
         });
     }
 
     fn update_projection_segment_style(&self, arena: &mut NodeArena, key: NodeKey) {
-        arena.with_element_taken(key, |child, _| {
+        arena.mutate_element_with_invalidation(key, |child, cx| {
             let Some(segment) = child
                 .as_any_mut()
                 .downcast_mut::<TextAreaProjectionSegment>()
@@ -495,6 +498,7 @@ impl TextArea {
                 return;
             };
             segment.set_vertical_align(self.vertical_align);
+            cx.invalidate(segment.local_dirty_flags());
         });
     }
 
@@ -809,7 +813,7 @@ impl TextArea {
             let is_target = preedit_active && target_idx_local.map(|(t, _)| t) == Some(i);
             let local = target_idx_local.filter(|(t, _)| *t == i).map(|(_, l)| l);
             let pe_text = preedit_text.clone();
-            arena.with_element_taken_ref(child_key, |child, _| {
+            arena.mutate_element_ref_with_invalidation(child_key, |child, cx| {
                 let Some(run) = child.as_any_mut().downcast_mut::<TextAreaTextRun>() else {
                     return;
                 };
@@ -824,6 +828,7 @@ impl TextArea {
                 } else {
                     run.set_inline_preedit(None);
                 }
+                cx.invalidate(run.local_dirty_flags());
             });
         }
     }

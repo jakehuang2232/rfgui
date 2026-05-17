@@ -407,6 +407,19 @@ struct CompositorState {
     debug_previous_subtree_signatures: FxHashMap<u64, (u64, u64, u64, bool)>,
     promoted_reuse_cooldown_frames: u8,
     frame_box_models: Vec<super::base_component::BoxModelSnapshot>,
+    frame_box_model_cache:
+        FxHashMap<crate::view::node_arena::NodeKey, Vec<super::base_component::BoxModelSnapshot>>,
+    #[cfg(test)]
+    box_model_refresh_stats: BoxModelRefreshStats,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct BoxModelRefreshStats {
+    collected_roots: usize,
+    reused_roots: usize,
+    collected_snapshots: usize,
+    reused_snapshots: usize,
 }
 
 impl CompositorState {
@@ -420,6 +433,9 @@ impl CompositorState {
             debug_previous_subtree_signatures: FxHashMap::default(),
             promoted_reuse_cooldown_frames: 0,
             frame_box_models: Vec::new(),
+            frame_box_model_cache: FxHashMap::default(),
+            #[cfg(test)]
+            box_model_refresh_stats: BoxModelRefreshStats::default(),
         }
     }
 }
@@ -665,6 +681,11 @@ impl Viewport {
 
     pub fn frame_box_models(&self) -> &[super::base_component::BoxModelSnapshot] {
         &self.compositor.frame_box_models
+    }
+
+    #[cfg(test)]
+    fn box_model_refresh_stats(&self) -> BoxModelRefreshStats {
+        self.compositor.box_model_refresh_stats
     }
 
     pub(crate) fn set_promotion_config(&mut self, config: ViewportPromotionConfig) {

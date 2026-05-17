@@ -3,9 +3,12 @@ impl Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
     ) -> Option<&'static str> {
-        if self.children.is_empty()
-            || self.layout_state.layout_inner_size.width <= 0.0
-            || self.layout_state.layout_inner_size.height <= 0.0
+        if self.children.is_empty() {
+            return None;
+        }
+        if !self.has_active_layout_transition()
+            && (self.layout_state.layout_inner_size.width <= 0.0
+                || self.layout_state.layout_inner_size.height <= 0.0)
         {
             return None;
         }
@@ -184,7 +187,7 @@ impl Element {
                             .downcast_ref::<Element>()
                             .is_some_and(Element::should_append_to_root_viewport_render)
                         {
-                            ctx_local.append_to_defer(child.stable_id());
+                            ctx_local.append_to_defer(child_key, child.stable_id());
                             return ctx_local;
                         }
                         if ctx_local.is_node_promoted(child.stable_id()) {
@@ -1063,7 +1066,7 @@ impl Element {
                         })
                         .unwrap_or((0, false));
                     if is_defer {
-                        ctx.append_to_defer(child_id);
+                        ctx.append_to_defer(child_key, child_id);
                         continue;
                     }
                     if ctx.is_node_promoted(child_id) {

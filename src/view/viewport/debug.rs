@@ -408,8 +408,100 @@ pub(super) fn build_layout_place_trace_nodes(
         TraceRenderNode::new("place_layout_flex", profile.place_layout_flex_ms),
         TraceRenderNode::new("place_layout_flow", profile.place_layout_flow_ms),
         TraceRenderNode::new(
+            format!(
+                "axis_placement_eligibility (candidates={}, clean_subtree={}, dirty_subtree={}, potential_replay={}, inline={}, flex={}, flow={})",
+                profile.axis_placement_eligibility.candidate_child_places,
+                profile
+                    .axis_placement_eligibility
+                    .clean_subtree_child_places,
+                profile
+                    .axis_placement_eligibility
+                    .dirty_subtree_child_places,
+                profile
+                    .axis_placement_eligibility
+                    .potential_replay_child_places,
+                profile.axis_placement_eligibility.inline_child_places,
+                profile.axis_placement_eligibility.flex_child_places,
+                profile.axis_placement_eligibility.flow_child_places,
+            ),
+            0.0,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "axis_placement_potential_replay_by_layout (inline={}, flex={}, flow={})",
+                profile
+                    .axis_placement_eligibility
+                    .inline_potential_replay_child_places,
+                profile
+                    .axis_placement_eligibility
+                    .flex_potential_replay_child_places,
+                profile
+                    .axis_placement_eligibility
+                    .flow_potential_replay_child_places,
+            ),
+            0.0,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "axis_placement_blockers (total={}, dirty_subtree={}, non_base_element={}, non_leaf={}, anchor_name={}, anchor_ref={}, absolute_descendant={}, runtime_state={}, placement_mismatch={}, placement_dirty_self={}, hit_test_clip_mismatch={}, anchor_parent_clip_mismatch={})",
+                profile.axis_placement_eligibility.blockers.total(),
+                profile.axis_placement_eligibility.blockers.dirty_subtree,
+                profile.axis_placement_eligibility.blockers.non_base_element,
+                profile.axis_placement_eligibility.blockers.non_leaf,
+                profile.axis_placement_eligibility.blockers.anchor_name,
+                profile.axis_placement_eligibility.blockers.anchor_ref,
+                profile
+                    .axis_placement_eligibility
+                    .blockers
+                    .absolute_descendant,
+                profile.axis_placement_eligibility.blockers.runtime_state,
+                profile
+                    .axis_placement_eligibility
+                    .blockers
+                    .placement_mismatch,
+                profile
+                    .axis_placement_eligibility
+                    .blockers
+                    .placement_dirty_self,
+                profile
+                    .axis_placement_eligibility
+                    .blockers
+                    .hit_test_clip_mismatch,
+                profile
+                    .axis_placement_eligibility
+                    .blockers
+                    .anchor_parent_clip_mismatch
+            ),
+            0.0,
+        ),
+        TraceRenderNode::new(
             format!("child_place (calls={})", profile.child_place_calls),
             profile.non_axis_child_place_ms,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "skipped_child_place (calls={})",
+                profile.skipped_child_place_calls
+            ),
+            0.0,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "placement_skip_failures (total={}, dirty_subtree={}, non_base_element={}, non_leaf={}, anchor_name={}, anchor_ref={}, absolute_descendant={}, runtime_state={}, placement_mismatch={}, placement_dirty_self={}, hit_test_clip_mismatch={}, anchor_parent_clip_mismatch={})",
+                profile.placement_skip_failures.total(),
+                profile.placement_skip_failures.dirty_subtree,
+                profile.placement_skip_failures.non_base_element,
+                profile.placement_skip_failures.non_leaf,
+                profile.placement_skip_failures.anchor_name,
+                profile.placement_skip_failures.anchor_ref,
+                profile.placement_skip_failures.absolute_descendant,
+                profile.placement_skip_failures.runtime_state,
+                profile.placement_skip_failures.placement_mismatch,
+                profile.placement_skip_failures.placement_dirty_self,
+                profile.placement_skip_failures.hit_test_clip_mismatch,
+                profile.placement_skip_failures.anchor_parent_clip_mismatch
+            ),
+            0.0,
         ),
         TraceRenderNode::new(
             format!(
@@ -421,6 +513,61 @@ pub(super) fn build_layout_place_trace_nodes(
         TraceRenderNode::new("update_content_size", profile.update_content_size_ms),
         TraceRenderNode::new("clamp_scroll", profile.clamp_scroll_ms),
         TraceRenderNode::new("recompute_hit_test", profile.recompute_hit_test_ms),
+    ]
+}
+
+pub(super) fn build_layout_traversal_trace_nodes(
+    profile: &super::frame::LayoutTraversalProfile,
+) -> Vec<TraceRenderNode> {
+    vec![
+        TraceRenderNode::new(
+            format!("sync_subtree (roots={})", profile.root_count),
+            profile.sync_subtree_ms,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "dirty_refresh_before_measure (roots={})",
+                profile.root_count
+            ),
+            profile.dirty_refresh_before_measure_ms,
+        ),
+        TraceRenderNode::new(
+            format!("measure_roots (roots={})", profile.root_count),
+            profile.measure_roots_ms,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "measure_clean_child_candidates (clean={}, dirty={})",
+                profile.measure_candidate_clean_children, profile.measure_dirty_children
+            ),
+            0.0,
+        ),
+        TraceRenderNode::new(
+            format!("dirty_refresh_before_place (roots={})", profile.root_count),
+            profile.dirty_refresh_before_place_ms,
+        ),
+        TraceRenderNode::new(
+            format!("place_roots (roots={})", profile.root_count),
+            profile.place_roots_ms,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "placement_clean_child_candidates (clean={}, dirty={})",
+                profile.placement_candidate_clean_children, profile.placement_dirty_children
+            ),
+            0.0,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "skipped_child_place_calls (count={})",
+                profile.skipped_child_place_calls
+            ),
+            0.0,
+        ),
+        TraceRenderNode::new(
+            format!("collect_box_models (roots={})", profile.root_count),
+            profile.collect_box_models_ms,
+        ),
     ]
 }
 
@@ -994,4 +1141,32 @@ pub(super) fn build_reuse_overlay_geometry(
         );
     }
     (vertices, indices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_traversal_trace_marks_gate_counts_as_candidates() {
+        let profile = super::super::frame::LayoutTraversalProfile {
+            root_count: 1,
+            measure_candidate_clean_children: 2,
+            measure_dirty_children: 1,
+            placement_candidate_clean_children: 3,
+            placement_dirty_children: 0,
+            skipped_child_place_calls: 2,
+            ..Default::default()
+        };
+        let root = TraceRenderNode::with_children(
+            "layout_traversal",
+            0.0,
+            build_layout_traversal_trace_nodes(&profile),
+        );
+        let trace = format_trace_render_tree(&root);
+
+        assert!(trace.contains("measure_clean_child_candidates (clean=2, dirty=1)"));
+        assert!(trace.contains("placement_clean_child_candidates (clean=3, dirty=0)"));
+        assert!(trace.contains("skipped_child_place_calls (count=2)"));
+    }
 }

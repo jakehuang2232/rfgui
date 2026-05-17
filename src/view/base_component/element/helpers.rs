@@ -104,6 +104,19 @@ fn approx_eq(a: f32, b: f32) -> bool {
     (a - b).abs() < 0.0001
 }
 
+fn rect_approx_eq(a: Option<Rect>, b: Option<Rect>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            approx_eq(a.x, b.x)
+                && approx_eq(a.y, b.y)
+                && approx_eq(a.width, b.width)
+                && approx_eq(a.height, b.height)
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_collision(
     collision: Collision,
@@ -293,7 +306,12 @@ pub(crate) fn test_promoted_build_count(node_id: u64, phase: &str) -> usize {
     })
 }
 
-pub(crate) fn resolve_px(length: Length, base: f32, viewport_width: f32, viewport_height: f32) -> f32 {
+pub(crate) fn resolve_px(
+    length: Length,
+    base: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> f32 {
     length
         .resolve_with_base(Some(base), viewport_width, viewport_height)
         .unwrap_or(0.0)
@@ -484,14 +502,17 @@ fn push_transition_channels(property: TransitionProperty, out: &mut Vec<ChannelI
     }
 }
 
-fn resolve_position2d_component(
-    length: Length,
-    base: f32,
-) -> f32 {
-    length.resolve_with_base(Some(base), 0.0, 0.0).unwrap_or(base * 0.5)
+fn resolve_position2d_component(length: Length, base: f32) -> f32 {
+    length
+        .resolve_with_base(Some(base), 0.0, 0.0)
+        .unwrap_or(base * 0.5)
 }
 
-fn linear_endpoints_for_side(side: crate::style::SideOrCorner, width: f32, height: f32) -> ([f32; 2], [f32; 2]) {
+fn linear_endpoints_for_side(
+    side: crate::style::SideOrCorner,
+    width: f32,
+    height: f32,
+) -> ([f32; 2], [f32; 2]) {
     use crate::style::SideOrCorner::*;
     let cx = width * 0.5;
     let cy = height * 0.5;
@@ -549,8 +570,12 @@ fn radial_radii(
             (d, d)
         }
         RadialSize::Explicit { rx, ry } => (
-            rx.resolve_with_base(Some(width), 0.0, 0.0).unwrap_or(0.0).max(0.0),
-            ry.resolve_with_base(Some(height), 0.0, 0.0).unwrap_or(0.0).max(0.0),
+            rx.resolve_with_base(Some(width), 0.0, 0.0)
+                .unwrap_or(0.0)
+                .max(0.0),
+            ry.resolve_with_base(Some(height), 0.0, 0.0)
+                .unwrap_or(0.0)
+                .max(0.0),
         ),
     };
     match shape {
@@ -567,8 +592,10 @@ fn resolve_gradient_paint(
     width: f32,
     height: f32,
 ) -> crate::view::render_pass::draw_rect_pass::GradientPaint {
-    use crate::view::render_pass::draw_rect_pass::{GradientKindGpu, GradientPaint, GradientStopGpu};
     use crate::style::{ColorLike, Gradient, GradientLine, Length as L};
+    use crate::view::render_pass::draw_rect_pass::{
+        GradientKindGpu, GradientPaint, GradientStopGpu,
+    };
 
     let mut paint = GradientPaint::default();
     let stops_in = gradient.stops();
@@ -577,9 +604,7 @@ fn resolve_gradient_paint(
     let axis_len = match gradient {
         Gradient::Linear { line, .. } => {
             let (p0, p1) = match line {
-                GradientLine::Angle(a) => {
-                    linear_endpoints_for_angle(a.to_radians(), width, height)
-                }
+                GradientLine::Angle(a) => linear_endpoints_for_angle(a.to_radians(), width, height),
                 GradientLine::ToSide(side) => linear_endpoints_for_side(*side, width, height),
             };
             let dx = p1[0] - p0[0];
@@ -659,9 +684,7 @@ fn resolve_gradient_paint(
         Gradient::Linear { line, .. } => {
             paint.kind = GradientKindGpu::Linear;
             let (p0, p1) = match line {
-                GradientLine::Angle(a) => {
-                    linear_endpoints_for_angle(a.to_radians(), width, height)
-                }
+                GradientLine::Angle(a) => linear_endpoints_for_angle(a.to_radians(), width, height),
                 GradientLine::ToSide(side) => linear_endpoints_for_side(*side, width, height),
             };
             paint.axis = [p0[0], p0[1], p1[0], p1[1]];

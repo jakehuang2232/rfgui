@@ -17,8 +17,7 @@ use crate::view::{ElementStylePropSchema, ImageSource, SvgSource, TextStylePropS
 // `renderer_adapter::*` paths keep working.
 pub(crate) use crate::ui::{
     GlobalNodePath, child_global_node_path, child_identity_token, current_global_node_path,
-    element_runtime_name, next_identity_ordinal, rendered_node_id_by_index_path,
-    stable_node_id_from_parts,
+    element_runtime_name, next_identity_ordinal, stable_node_id_from_parts,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -943,7 +942,6 @@ pub fn commit_descriptor_tree(
         } else if let Some(mirror) = element.children_mut() {
             *mirror = child_keys;
         }
-        let _ = arena_ref;
     });
     // Phase 4: side-channel subtrees commit under the same parent
     // but bypass `Node.children`. Each slot's NodeKeys go back to the
@@ -992,9 +990,10 @@ pub(crate) fn arena_insert_child(
     let insert_at = index.min(children.len());
     children.insert(insert_at, key);
     arena.set_children(parent, children.clone());
-    arena.with_element_taken(parent, |element, arena_ref| {
+    arena.mutate_element_with_invalidation(parent, |element, cx| {
         if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
-            let _previous = el.replace_children(arena_ref, children);
+            let _previous = el.replace_children(cx.arena(), children);
+            cx.invalidate(crate::view::base_component::DirtyFlags::ALL);
         }
     });
     key
@@ -1009,9 +1008,10 @@ pub(crate) fn arena_remove_child(arena: &mut NodeArena, parent: NodeKey, index: 
     }
     let child_key = children.remove(index);
     arena.set_children(parent, children.clone());
-    arena.with_element_taken(parent, |element, arena_ref| {
+    arena.mutate_element_with_invalidation(parent, |element, cx| {
         if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
-            let _previous = el.replace_children(arena_ref, children);
+            let _previous = el.replace_children(cx.arena(), children);
+            cx.invalidate(crate::view::base_component::DirtyFlags::ALL);
         }
     });
     arena.remove_subtree(child_key);

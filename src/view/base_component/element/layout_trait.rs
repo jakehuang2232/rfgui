@@ -1,3 +1,15 @@
+fn record_refreshed_layout_gate_child_candidates(
+    children: &[crate::view::node_arena::NodeKey],
+    arena: &crate::view::node_arena::NodeArena,
+    mask: DirtyFlags,
+    phase: LayoutGateCandidatePhase,
+) -> bool {
+    for &child_key in children {
+        arena.refresh_subtree_dirty_cache(child_key);
+    }
+    record_layout_gate_child_candidates(children, arena, mask, phase)
+}
+
 impl Layoutable for Element {
     fn measure(
         &mut self,
@@ -20,11 +32,12 @@ impl Layoutable for Element {
         // entire subtree per child. The cache is refreshed by
         // `NodeArena::refresh_subtree_dirty_cache` at the top of each
         // layout pass (see `viewport/render.rs::run_layout_pass`).
-        let child_layout_dirty = self.children.iter().any(|child_key| {
-            arena
-                .cached_subtree_dirty(*child_key)
-                .intersects(DirtyFlags::LAYOUT)
-        });
+        let child_layout_dirty = record_refreshed_layout_gate_child_candidates(
+            &self.children,
+            arena,
+            DirtyPassMask::LAYOUT,
+            LayoutGateCandidatePhase::Measure,
+        );
         let inline_measure_context_changed = self.is_fragmentable_inline_element()
             && self.pending_inline_measure_context != self.last_inline_measure_context;
 
@@ -124,7 +137,7 @@ impl Layoutable for Element {
         self.last_layout_proposal = Some(proposal);
         self.last_inline_measure_context = self.pending_inline_measure_context;
         self.layout_dirty = false;
-        self.dirty_flags = self.dirty_flags.without(DirtyFlags::LAYOUT);
+        self.dirty_flags = self.dirty_flags.without(DirtyPassMask::LAYOUT);
     }
 
     fn place(
@@ -133,15 +146,16 @@ impl Layoutable for Element {
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
         // O(1) cache read per child; see refresh_subtree_dirty_cache.
-        let child_dirty_flags = self.children.iter().fold(DirtyFlags::NONE, |flags, child_key| {
-            flags.union(arena.cached_subtree_dirty(*child_key))
-        });
-        let runtime_dirty = self.dirty_flags.union(child_dirty_flags);
-        if !runtime_dirty.intersects(
-            DirtyFlags::PLACE
-                .union(DirtyFlags::BOX_MODEL)
-                .union(DirtyFlags::HIT_TEST),
-        ) && self.last_layout_placement == Some(placement)
+        let placement_dirty_mask = DirtyPassMask::PLACEMENT;
+        let child_placement_dirty = record_refreshed_layout_gate_child_candidates(
+            &self.children,
+            arena,
+            placement_dirty_mask,
+            LayoutGateCandidatePhase::Placement,
+        );
+        if !self.dirty_flags.intersects(placement_dirty_mask)
+            && !child_placement_dirty
+            && self.last_layout_placement == Some(placement)
         {
             return;
         }
@@ -250,11 +264,7 @@ impl Layoutable for Element {
         self.pop_ancestor_anchor_scope();
         self.end_place_scope();
         self.last_layout_placement = Some(placement);
-        self.dirty_flags = self.dirty_flags.without(
-            DirtyFlags::PLACE
-                .union(DirtyFlags::BOX_MODEL)
-                .union(DirtyFlags::HIT_TEST),
-        );
+        self.dirty_flags = self.dirty_flags.without(DirtyPassMask::PLACEMENT);
     }
 
     fn measured_size(&self) -> (f32, f32) {
@@ -410,6 +420,22 @@ impl Layoutable for Element {
         if self.is_fragmentable_inline_element() {
             let left_inset = (self.border_widths.left + self.padding.left).max(0.0);
             let right_inset = (self.border_widths.right + self.padding.right).max(0.0);
+            let inline_fragment_available_width = |line_idx: usize, line_count: usize| {
+                self.last_inline_measure_context.map(|context| {
+                    let available = if line_idx == 0 {
+                        context.first_available_width
+                    } else {
+                        context.full_available_width
+                    };
+                    available
+                        - if line_idx == 0 { left_inset } else { 0.0 }
+                        - if line_idx + 1 == line_count {
+                            right_inset
+                        } else {
+                            0.0
+                        }
+                })
+            };
             let inline_child_count = self
                 .children
                 .iter()
@@ -418,14 +444,19 @@ impl Layoutable for Element {
                 .count();
             if inline_child_count > 1 {
                 if let Some(info) = self.flex_info.as_ref() {
+                    let line_count = info.lines.len();
                     return info
                         .lines
                         .iter()
                         .enumerate()
                         .map(|(line_idx, _line_items)| InlineNodeSize {
-                            width: info.line_main_sum[line_idx].max(0.0)
+                            width: inline_fragment_available_width(line_idx, line_count)
+                                .map(|available| {
+                                    info.line_main_sum[line_idx].max(0.0).min(available.max(0.0))
+                                })
+                                .unwrap_or_else(|| info.line_main_sum[line_idx].max(0.0))
                                 + if line_idx == 0 { left_inset } else { 0.0 }
-                                + if line_idx + 1 == info.lines.len() {
+                                + if line_idx + 1 == line_count {
                                     right_inset
                                 } else {
                                     0.0
@@ -437,16 +468,8 @@ impl Layoutable for Element {
                             // pure-text rows); the outer line then sees a
                             // consistent (height, baseline) pair so its own
                             // ascent/descent calc is well-defined.
-                            height: (info
-                                .line_ascent
-                                .get(line_idx)
-                                .copied()
-                                .unwrap_or(0.0)
-                                + info
-                                    .line_descent
-                                    .get(line_idx)
-                                    .copied()
-                                    .unwrap_or(0.0))
+                            height: (info.line_ascent.get(line_idx).copied().unwrap_or(0.0)
+                                + info.line_descent.get(line_idx).copied().unwrap_or(0.0))
                             .max(0.0),
                             // Per `docs/design/inline-baseline.md` D1, a
                             // fragmentable inline element exposes each
@@ -454,11 +477,7 @@ impl Layoutable for Element {
                             // baseline (relative to the line box top —
                             // outer vertical padding/border paint outside
                             // and are not added here).
-                            baseline: info
-                                .line_ascent
-                                .get(line_idx)
-                                .copied()
-                                .unwrap_or(0.0),
+                            baseline: info.line_ascent.get(line_idx).copied().unwrap_or(0.0),
                             // D7: every outer fragment shares this
                             // element's own `vertical-align` (the inner
                             // line items keep their own values — they're
@@ -479,6 +498,12 @@ impl Layoutable for Element {
                 if let Some(child_node) = arena.get(*child_key) {
                     // Child's element borrow — forward but with a fresh arena ref.
                     nodes.extend(child_node.element.get_inline_nodes_size(arena));
+                }
+            }
+            let node_count = nodes.len();
+            for (idx, node) in nodes.iter_mut().enumerate() {
+                if let Some(available) = inline_fragment_available_width(idx, node_count) {
+                    node.width = node.width.min(available.max(0.0));
                 }
             }
             if let Some(first) = nodes.first_mut() {
@@ -537,11 +562,7 @@ impl Layoutable for Element {
                 &mut self.inline_paint_fragments,
                 arena,
             );
-            self.dirty_flags = self.dirty_flags.without(
-                DirtyFlags::PLACE
-                    .union(DirtyFlags::BOX_MODEL)
-                    .union(DirtyFlags::HIT_TEST),
-            );
+            self.dirty_flags = self.dirty_flags.without(DirtyPassMask::PLACEMENT);
         } else {
             self.set_layout_offset(placement.offset_x, placement.offset_y);
             self.place(

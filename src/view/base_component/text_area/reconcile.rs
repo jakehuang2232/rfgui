@@ -78,11 +78,12 @@ fn cascade_inherited_text_style(
     inherited: &InheritedTextStyle,
 ) {
     let mut child_inherited: Option<InheritedTextStyle> = None;
-    arena.with_element_taken(key, |element, _| {
+    arena.mutate_element_with_invalidation(key, |element, cx| {
         element.apply_inherited(inherited);
         if let Some(el) = element.as_any().downcast_ref::<Element>() {
             child_inherited = Some(el.child_inherited_text_style(inherited));
         }
+        cx.invalidate(element.local_dirty_flags());
     });
     let child_cascade = child_inherited.unwrap_or_else(|| inherited.clone());
     let children = arena.children_of(key);
@@ -111,9 +112,10 @@ fn reconcile_existing_subtree_inner(
         }
         (RsxNode::Text(_o), RsxNode::Text(n)) => {
             let new_content = text_with_text_area_ime_preedit(n.content.clone());
-            arena.with_element_taken(anchor, |el, _| {
+            arena.mutate_element_with_invalidation(anchor, |el, cx| {
                 if let Some(text) = el.as_any_mut().downcast_mut::<Text>() {
                     text.set_text(new_content);
+                    cx.invalidate(text.local_dirty_flags());
                 }
             });
             Ok(())
@@ -174,9 +176,10 @@ fn reconcile_element_pair(
             flatten_text_children(child, &mut content);
         }
         content = text_with_text_area_ime_preedit(content);
-        arena.with_element_taken(anchor, |el, _| {
+        arena.mutate_element_with_invalidation(anchor, |el, cx| {
             if let Some(text) = el.as_any_mut().downcast_mut::<Text>() {
                 text.set_text(content);
+                cx.invalidate(text.local_dirty_flags());
             }
         });
         return Ok(());
@@ -232,9 +235,9 @@ fn diff_and_apply_props(
     }
 
     let mut all_ok = true;
-    arena.with_element_taken(anchor, |element, arena_ref| {
+    arena.mutate_element_with_invalidation(anchor, |element, cx| {
         for (name, value) in changed {
-            match element.apply_prop(arena_ref, anchor, apply_ctx, name, value) {
+            match element.apply_prop(cx.arena(), anchor, apply_ctx, name, value) {
                 PropApplyOutcome::Applied | PropApplyOutcome::NeedsCascade => {}
                 PropApplyOutcome::UnknownProp
                 | PropApplyOutcome::DecodeFailed(_)
@@ -244,7 +247,7 @@ fn diff_and_apply_props(
             }
         }
         for name in removed {
-            match element.reset_prop(arena_ref, anchor, apply_ctx, name) {
+            match element.reset_prop(cx.arena(), anchor, apply_ctx, name) {
                 PropApplyOutcome::Applied | PropApplyOutcome::NeedsCascade => {}
                 PropApplyOutcome::UnknownProp
                 | PropApplyOutcome::DecodeFailed(_)
@@ -253,6 +256,7 @@ fn diff_and_apply_props(
                 }
             }
         }
+        cx.invalidate(element.local_dirty_flags());
     });
     if all_ok {
         Ok(())
@@ -403,12 +407,13 @@ fn arena_move_child(arena: &mut NodeArena, parent: NodeKey, from: usize, to: usi
     let target = to.min(children.len());
     children.insert(target, key);
     arena.set_children(parent, children.clone());
-    arena.with_element_taken(parent, |element, arena_ref| {
+    arena.mutate_element_with_invalidation(parent, |element, cx| {
         if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
-            let _previous = el.replace_children(arena_ref, children);
+            let _previous = el.replace_children(cx.arena(), children);
         } else if let Some(mirror) = element.children_mut() {
             *mirror = children;
         }
+        cx.invalidate(crate::view::base_component::DirtyFlags::ALL);
     });
 }
 

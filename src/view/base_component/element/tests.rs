@@ -9,27 +9,31 @@
 // `arena.children_of`. ~404 rustc errors when un-gated.
 #[cfg(test)]
 mod tests {
-    use super::{
-        expand_corner_radii_for_spread, main_axis_start_and_gap, normalize_corner_radii,
-        resolve_px_with_base, resolve_signed_px_with_base, Element, ElementTrait, EventTarget,
-        LayoutConstraints, LayoutPlacement, Layoutable, UiBuildContext,
-    };
     use super::super::core::Position as LayoutPosition;
-    use rustc_hash::{FxHashMap, FxHashSet};
-    use crate::view::base_component::Text;
+    use super::{
+        DirtyFlags, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
+        Layoutable, UiBuildContext, expand_corner_radii_for_spread, main_axis_start_and_gap,
+        normalize_corner_radii, resolve_px_with_base, resolve_signed_px_with_base,
+    };
+    use super::{reset_test_promoted_build_counts, test_promoted_build_count};
+    use crate::style::Layout;
+    use crate::style::{
+        Align, AnchorName, Angle, Border, BorderRadius, BoxShadow, ClipMode, Collision,
+        CollisionBoundary, Color, CrossSize, JustifyContent, Length, Opacity, Operator, Origin,
+        Position, Rotate, Style, Transform, TransformOrigin, Translate, VerticalAlign,
+    };
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::{LayoutField, VisualField};
-    use super::{reset_test_promoted_build_counts, test_promoted_build_count};
+    use crate::view::base_component::Text;
     use crate::view::base_component::set_style_field_by_id;
-    use crate::view::test_support::{
-        child_key, child_snapshot, commit_child, commit_element, measure_and_place,
-        new_test_arena, nth_child_snapshot,
-    };
     use crate::view::frame_graph::FrameGraph;
-    use crate::style::Layout;
-    use crate::style::{Align, AnchorName, Angle, Border, BorderRadius, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, CrossSize, JustifyContent, Length, Opacity, Operator, Origin, Position, Rotate, Transform, TransformOrigin, Translate, Style, VerticalAlign};
+    use crate::view::test_support::{
+        child_key, child_snapshot, commit_child, commit_element, measure_and_place, new_test_arena,
+        nth_child_snapshot,
+    };
     use glam::{Mat4, Vec3};
-    
+    use rustc_hash::{FxHashMap, FxHashSet};
+
     use std::sync::Arc;
 
     #[test]
@@ -748,8 +752,16 @@ mod tests {
 
         let mut arena = new_test_arena();
         let parent_key = commit_element(&mut arena, Box::new(parent));
-        let _ = commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 80.0, 30.0)));
-        let _ = commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 120.0, 10.0)));
+        let _ = commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Element::new(0.0, 0.0, 80.0, 30.0)),
+        );
+        let _ = commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Element::new(0.0, 0.0, 120.0, 10.0)),
+        );
 
         measure_and_place(
             &mut arena,
@@ -795,7 +807,11 @@ mod tests {
 
         let mut arena = new_test_arena();
         let parent_key = commit_element(&mut arena, Box::new(parent));
-        let _ = commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 80.0, 40.0)));
+        let _ = commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Element::new(0.0, 0.0, 80.0, 40.0)),
+        );
 
         measure_and_place(
             &mut arena,
@@ -1398,7 +1414,11 @@ mod tests {
             PropertyId::Position,
             ParsedValue::Position(
                 Position::absolute()
-                    .left(Length::calc(Length::percent(100.0), Operator::plus, Length::px(6.0)))
+                    .left(Length::calc(
+                        Length::percent(100.0),
+                        Operator::plus,
+                        Length::px(6.0),
+                    ))
                     .top(Length::percent(50.0))
                     .origin(Origin::center_left()),
             ),
@@ -1694,16 +1714,15 @@ mod tests {
         // from the arena.
         let mut popup_stack = crate::view::popup_stack::PopupStack::new();
         arena.seed_defer_render_with_stack(&mut popup_stack, &mut ctx);
-        let ctx_for_build =
-            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
         let next_state = arena
             .with_element_taken(parent_key, |el, a| el.build(&mut graph, a, ctx_for_build))
             .expect("parent build returns state");
         ctx.set_state(next_state);
 
-        let deferred = ctx.take_deferred_node_ids();
+        let deferred = ctx.take_deferred_nodes();
         let child_id = arena.get(child_k).unwrap().element.stable_id();
-        assert!(deferred.contains(&child_id));
+        assert!(deferred.iter().any(|node| node.stable_id == child_id));
     }
 
     #[test]
@@ -1871,7 +1890,10 @@ mod tests {
         );
 
         let child_el = crate::view::test_support::get_element::<Element>(&arena, child_k);
-        assert_eq!(child_el.absolute_clip_scissor_rect(), Some([0, 0, 500, 200]));
+        assert_eq!(
+            child_el.absolute_clip_scissor_rect(),
+            Some([0, 0, 500, 200])
+        );
     }
 
     #[test]
@@ -1922,7 +1944,10 @@ mod tests {
         // AnchorParent without anchor → grandparent's clip. Root parent's
         // grandparent clip falls back to the proposal viewport (400x300).
         let child_el = crate::view::test_support::get_element::<Element>(&arena, child_k);
-        assert_eq!(child_el.absolute_clip_scissor_rect(), Some([0, 0, 400, 300]));
+        assert_eq!(
+            child_el.absolute_clip_scissor_rect(),
+            Some([0, 0, 400, 300])
+        );
     }
 
     #[test]
@@ -2120,7 +2145,11 @@ mod tests {
         let layout_reqs = el_mut.take_layout_transition_requests();
         let visual_reqs = el_mut.take_visual_transition_requests();
         assert!(visual_reqs.iter().any(|req| req.field == VisualField::X));
-        assert!(layout_reqs.iter().any(|req| req.field == LayoutField::Width));
+        assert!(
+            layout_reqs
+                .iter()
+                .any(|req| req.field == LayoutField::Width)
+        );
     }
 
     #[test]
@@ -2355,7 +2384,6 @@ mod tests {
         assert!((h_req.from - 70.0).abs() < 0.01);
         assert!((h_req.to - 20.0).abs() < 0.01);
     }
-
 
     #[test]
     fn seed_layout_snapshot_keeps_flow_and_visual_positions_separate() {
@@ -2615,13 +2643,7 @@ mod tests {
         let mut parent_style = Style::new();
         parent_style.insert(
             PropertyId::Layout,
-            ParsedValue::Layout(
-                Layout::flow()
-                    .row()
-                    .no_wrap()
-                    .align(Align::Center)
-                    .into(),
-            ),
+            ParsedValue::Layout(Layout::flow().row().no_wrap().align(Align::Center).into()),
         );
         parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
         parent_style.insert(PropertyId::Height, ParsedValue::Auto);
@@ -2894,20 +2916,30 @@ mod tests {
         let mut first_style = Style::new();
         first_style.insert(PropertyId::Width, ParsedValue::Auto);
         first_style.insert(PropertyId::Height, ParsedValue::Auto);
-        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().shrink(1.0)));
+        first_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::style::flex().shrink(1.0)),
+        );
         first.apply_style(first_style);
 
         let mut second = Element::new(0.0, 0.0, 120.0, 20.0);
         let mut second_style = Style::new();
         second_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
         second_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
-        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().shrink(1.0)));
+        second_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::style::flex().shrink(1.0)),
+        );
         second.apply_style(second_style);
 
         let mut arena = new_test_arena();
         let parent_key = commit_element(&mut arena, Box::new(parent));
         let first_key = commit_child(&mut arena, parent_key, Box::new(first));
-        let _first_leaf = commit_child(&mut arena, first_key, Box::new(Element::new(0.0, 0.0, 20.0, 20.0)));
+        let _first_leaf = commit_child(
+            &mut arena,
+            first_key,
+            Box::new(Element::new(0.0, 0.0, 20.0, 20.0)),
+        );
         let _second_key = commit_child(&mut arena, parent_key, Box::new(second));
 
         let constraints = LayoutConstraints {
@@ -2960,13 +2992,19 @@ mod tests {
 
         let mut first = Element::new(0.0, 0.0, 20.0, 20.0);
         let mut first_style = Style::new();
-        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().grow(1.0)));
+        first_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::style::flex().grow(1.0)),
+        );
         first_style.insert(PropertyId::MaxWidth, ParsedValue::Length(Length::px(30.0)));
         first.apply_style(first_style);
 
         let mut second = Element::new(0.0, 0.0, 20.0, 20.0);
         let mut second_style = Style::new();
-        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().grow(1.0)));
+        second_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::style::flex().grow(1.0)),
+        );
         second.apply_style(second_style);
 
         let mut arena = new_test_arena();
@@ -3018,13 +3056,19 @@ mod tests {
 
         let mut first = Element::new(0.0, 0.0, 60.0, 20.0);
         let mut first_style = Style::new();
-        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().shrink(1.0)));
+        first_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::style::flex().shrink(1.0)),
+        );
         first_style.insert(PropertyId::MinWidth, ParsedValue::Length(Length::px(50.0)));
         first.apply_style(first_style);
 
         let mut second = Element::new(0.0, 0.0, 60.0, 20.0);
         let mut second_style = Style::new();
-        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().shrink(1.0)));
+        second_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::style::flex().shrink(1.0)),
+        );
         second.apply_style(second_style);
 
         let mut arena = new_test_arena();
@@ -3078,20 +3122,30 @@ mod tests {
         let mut first_style = Style::new();
         first_style.insert(PropertyId::Width, ParsedValue::Auto);
         first_style.insert(PropertyId::Height, ParsedValue::Auto);
-        first_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().shrink(1.0)));
+        first_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::style::flex().shrink(1.0)),
+        );
         first.apply_style(first_style);
 
         let mut second = Element::new(0.0, 0.0, 60.0, 20.0);
         let mut second_style = Style::new();
         second_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(60.0)));
         second_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
-        second_style.insert(PropertyId::Flex, ParsedValue::Flex(crate::style::flex().shrink(1.0)));
+        second_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::style::flex().shrink(1.0)),
+        );
         second.apply_style(second_style);
 
         let mut arena = new_test_arena();
         let parent_key = commit_element(&mut arena, Box::new(parent));
         let first_key = commit_child(&mut arena, parent_key, Box::new(first));
-        let _ = commit_child(&mut arena, first_key, Box::new(Element::new(0.0, 0.0, 60.0, 20.0)));
+        let _ = commit_child(
+            &mut arena,
+            first_key,
+            Box::new(Element::new(0.0, 0.0, 60.0, 20.0)),
+        );
         let _ = commit_child(&mut arena, parent_key, Box::new(second));
         measure_and_place(
             &mut arena,
@@ -3140,10 +3194,7 @@ mod tests {
         let mut first_style = Style::new();
         first_style.insert(PropertyId::Width, ParsedValue::Auto);
         first_style.insert(PropertyId::Height, ParsedValue::Auto);
-        first_style.insert(
-            PropertyId::MinWidth,
-            ParsedValue::Length(Length::Zero),
-        );
+        first_style.insert(PropertyId::MinWidth, ParsedValue::Length(Length::Zero));
         first_style.insert(
             PropertyId::Flex,
             ParsedValue::Flex(crate::style::flex().shrink(1.0)),
@@ -3163,7 +3214,11 @@ mod tests {
         let mut arena = new_test_arena();
         let parent_key = commit_element(&mut arena, Box::new(parent));
         let first_key = commit_child(&mut arena, parent_key, Box::new(first));
-        let _ = commit_child(&mut arena, first_key, Box::new(Element::new(0.0, 0.0, 60.0, 20.0)));
+        let _ = commit_child(
+            &mut arena,
+            first_key,
+            Box::new(Element::new(0.0, 0.0, 60.0, 20.0)),
+        );
         let _ = commit_child(&mut arena, parent_key, Box::new(second));
         measure_and_place(
             &mut arena,
@@ -3214,9 +3269,10 @@ mod tests {
         spacer_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
         spacer_style.insert(
             PropertyId::Transition,
-            ParsedValue::Transition(
-                Transitions::single(Transition::new(TransitionProperty::Width, 180)),
-            ),
+            ParsedValue::Transition(Transitions::single(Transition::new(
+                TransitionProperty::Width,
+                180,
+            ))),
         );
         spacer.apply_style(spacer_style);
 
@@ -3278,7 +3334,6 @@ mod tests {
         let thumb_snapshot = nth_child_snapshot(&arena, parent_key, 1);
         assert!((thumb_snapshot.x - 10.0).abs() < 0.01);
     }
-
 
     #[test]
     fn min_and_max_size_clamp_explicit_width_and_height() {
@@ -3667,7 +3722,8 @@ mod tests {
         };
         assert!(!inner_radii.has_any_rounding());
 
-        let mut parent_mut = crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
+        let mut parent_mut =
+            crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
         let scope = parent_mut.begin_child_clip_scope(&mut graph, &mut ctx, inner_radii);
         assert!(scope.is_some());
         assert!(scope.as_ref().is_some_and(|scope| scope.child_clip_id != 0));
@@ -3725,7 +3781,8 @@ mod tests {
             ))
         };
 
-        let mut parent_mut = crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
+        let mut parent_mut =
+            crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
         let scope = parent_mut.begin_child_clip_scope(&mut graph, &mut ctx, inner_radii);
 
         assert!(scope.is_none());
@@ -3801,8 +3858,14 @@ mod tests {
             .expect("root build returns state");
         ctx.set_state(next_state);
 
-        assert_eq!(test_promoted_build_count(promoted_child_id, "promoted-child"), 0);
-        assert_eq!(test_promoted_build_count(promoted_child_id, "promoted-layer"), 0);
+        assert_eq!(
+            test_promoted_build_count(promoted_child_id, "promoted-child"),
+            0
+        );
+        assert_eq!(
+            test_promoted_build_count(promoted_child_id, "promoted-layer"),
+            0
+        );
         assert_eq!(ctx.scissor_rect(), Some([0, 0, 20, 20]));
     }
 
@@ -3944,17 +4007,15 @@ mod tests {
             Arc::new(FxHashMap::default()),
         );
 
-        let promotion_bounds = crate::view::test_support::get_element::<Element>(&arena, parent_key)
-            .promotion_composite_bounds();
+        let promotion_bounds =
+            crate::view::test_support::get_element::<Element>(&arena, parent_key)
+                .promotion_composite_bounds();
         let mut layer_ctx = UiBuildContext::from_parts(
             ctx.viewport(),
             super::BuildState::for_layer_subtree_with_ancestor_clip(ctx.ancestor_clip_context()),
         );
-        let layer_target = layer_ctx.allocate_promoted_layer_target(
-            &mut graph,
-            parent_id,
-            promotion_bounds,
-        );
+        let layer_target =
+            layer_ctx.allocate_promoted_layer_target(&mut graph, parent_id, promotion_bounds);
         layer_ctx.set_current_target(layer_target);
         let next_state = arena
             .with_element_taken(parent_key, |el, a| {
@@ -4075,13 +4136,20 @@ mod tests {
             PropertyId::Layout,
             ParsedValue::Layout(Layout::flex().row().into()),
         );
-        row_style.insert(PropertyId::Width, ParsedValue::Length(Length::percent(100.0)));
+        row_style.insert(
+            PropertyId::Width,
+            ParsedValue::Length(Length::percent(100.0)),
+        );
         row_child.apply_style(row_style);
 
         let mut arena = new_test_arena();
         let parent_key = commit_element(&mut arena, Box::new(parent));
         let row_key = commit_child(&mut arena, parent_key, Box::new(row_child));
-        let _ = commit_child(&mut arena, row_key, Box::new(Element::new(0.0, 0.0, 40.0, 24.0)));
+        let _ = commit_child(
+            &mut arena,
+            row_key,
+            Box::new(Element::new(0.0, 0.0, 40.0, 24.0)),
+        );
 
         measure_and_place(
             &mut arena,
@@ -4153,7 +4221,11 @@ mod tests {
             let parent_key = commit_element(&mut arena, Box::new(parent));
             let _ = commit_child(&mut arena, parent_key, Box::new(tall));
             let stretched_key = commit_child(&mut arena, parent_key, Box::new(stretched));
-            let _ = commit_child(&mut arena, stretched_key, Box::new(Element::new(0.0, 0.0, 120.0, 40.0)));
+            let _ = commit_child(
+                &mut arena,
+                stretched_key,
+                Box::new(Element::new(0.0, 0.0, 120.0, 40.0)),
+            );
 
             let constraints = LayoutConstraints {
                 max_width: 320.0,
@@ -4197,11 +4269,16 @@ mod tests {
                 .apply_style(next_parent_style);
             arena.with_element_taken(parent_key, |el, a| el.measure(constraints, a));
             {
-                let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
-                assert_eq!(parent_ref.computed_style.layout_axis_cross_size(), CrossSize::Stretch);
+                let parent_ref =
+                    crate::view::test_support::get_element::<Element>(&arena, parent_key);
+                assert_eq!(
+                    parent_ref.computed_style.layout_axis_cross_size(),
+                    CrossSize::Stretch
+                );
             }
             {
-                let stretched_ref = crate::view::test_support::get_element::<Element>(&arena, stretched_key);
+                let stretched_ref =
+                    crate::view::test_support::get_element::<Element>(&arena, stretched_key);
                 assert!(stretched_ref.flex_props().allows_cross_stretch(true));
             }
             arena.with_element_taken(parent_key, |el, a| el.place(placement, a));
@@ -4231,7 +4308,8 @@ mod tests {
             arena.with_element_taken(parent_key, |el, a| el.place(placement, a));
 
             {
-                let mut stretched_mut = crate::view::test_support::get_element_mut::<Element>(&arena, stretched_key);
+                let mut stretched_mut =
+                    crate::view::test_support::get_element_mut::<Element>(&arena, stretched_key);
                 stretched_mut.layout_transition_override_height = None;
                 stretched_mut.layout_transition_target_height = None;
             }
@@ -4331,10 +4409,14 @@ mod tests {
         let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         let previous = ctx.push_scissor_rect(Some([10, 10, 40, 40]));
         assert_eq!(previous, None);
-        assert_eq!(ctx.graphics_pass_context().scissor_rect, Some([10, 10, 40, 40]));
+        assert_eq!(
+            ctx.graphics_pass_context().scissor_rect,
+            Some([10, 10, 40, 40])
+        );
 
-        let layer_state =
-            super::BuildState::for_layer_subtree_with_ancestor_clip(super::AncestorClipContext::default());
+        let layer_state = super::BuildState::for_layer_subtree_with_ancestor_clip(
+            super::AncestorClipContext::default(),
+        );
         let layer_ctx = UiBuildContext::from_parts(ctx.viewport(), layer_state);
 
         assert_eq!(
@@ -4623,10 +4705,22 @@ mod tests {
             PropertyId::BackgroundColor,
             ParsedValue::color_like(Color::hex("#112233")),
         );
-        style.insert(PropertyId::PaddingLeft, ParsedValue::Length(Length::px(10.0)));
-        style.insert(PropertyId::PaddingRight, ParsedValue::Length(Length::px(10.0)));
-        style.insert(PropertyId::PaddingTop, ParsedValue::Length(Length::px(10.0)));
-        style.insert(PropertyId::PaddingBottom, ParsedValue::Length(Length::px(10.0)));
+        style.insert(
+            PropertyId::PaddingLeft,
+            ParsedValue::Length(Length::px(10.0)),
+        );
+        style.insert(
+            PropertyId::PaddingRight,
+            ParsedValue::Length(Length::px(10.0)),
+        );
+        style.insert(
+            PropertyId::PaddingTop,
+            ParsedValue::Length(Length::px(10.0)),
+        );
+        style.insert(
+            PropertyId::PaddingBottom,
+            ParsedValue::Length(Length::px(10.0)),
+        );
         el.apply_style(style);
         let key = commit_element(&mut arena, Box::new(el));
 
@@ -4684,6 +4778,84 @@ mod tests {
     }
 
     #[test]
+    fn box_model_snapshot_uses_active_layout_frame_size() {
+        let mut el = Element::new(0.0, 0.0, 100.0, 80.0);
+        el.layout_state.layout_position = LayoutPosition { x: 5.0, y: 7.0 };
+        el.layout_state.layout_size.width = 100.0;
+        el.layout_state.layout_size.height = 80.0;
+        el.layout_transition_override_width = Some(48.0);
+        el.layout_transition_override_height = Some(0.0);
+
+        let snapshot = el.box_model_snapshot();
+        assert_eq!(snapshot.x, 5.0);
+        assert_eq!(snapshot.y, 7.0);
+        assert_eq!(snapshot.width, 48.0);
+        assert_eq!(snapshot.height, 0.0);
+    }
+
+    #[test]
+    fn zero_height_layout_transition_still_clips_children() {
+        let mut arena = new_test_arena();
+        let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
+        parent.layout_state.layout_position = LayoutPosition { x: 0.0, y: 0.0 };
+        parent.layout_state.layout_size.width = 100.0;
+        parent.layout_state.layout_size.height = 80.0;
+        parent.layout_transition_override_width = Some(100.0);
+        parent.layout_transition_override_height = Some(0.0);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Element::new(0.0, 0.0, 40.0, 20.0)),
+        );
+
+        let parent = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+        assert!(!parent.has_inner_render_area());
+        let inner_radii = parent.inner_clip_radii(normalize_corner_radii(
+            parent.border_radii,
+            parent.box_model_snapshot().width.max(0.0),
+            parent.box_model_snapshot().height.max(0.0),
+        ));
+        assert!(parent.should_clip_children(&[false], inner_radii, &arena));
+    }
+
+    #[test]
+    fn zero_height_layout_transition_changes_promotion_clip_signature() {
+        let mut closed_arena = new_test_arena();
+        let mut closed = Element::new(0.0, 0.0, 100.0, 80.0);
+        closed.layout_state.layout_position = LayoutPosition { x: 0.0, y: 0.0 };
+        closed.layout_state.layout_size.width = 100.0;
+        closed.layout_state.layout_size.height = 80.0;
+        let closed_key = commit_element(&mut closed_arena, Box::new(closed));
+        let _ = commit_child(
+            &mut closed_arena,
+            closed_key,
+            Box::new(Element::new(0.0, 0.0, 40.0, 20.0)),
+        );
+        let closed = crate::view::test_support::get_element::<Element>(&closed_arena, closed_key);
+        let open_signature = closed.promotion_clip_intersection_signature(&closed_arena);
+
+        let mut active_arena = new_test_arena();
+        let mut active = Element::new(0.0, 0.0, 100.0, 80.0);
+        active.layout_state.layout_position = LayoutPosition { x: 0.0, y: 0.0 };
+        active.layout_state.layout_size.width = 100.0;
+        active.layout_state.layout_size.height = 80.0;
+        active.layout_transition_override_width = Some(100.0);
+        active.layout_transition_override_height = Some(0.0);
+        let active_key = commit_element(&mut active_arena, Box::new(active));
+        let _ = commit_child(
+            &mut active_arena,
+            active_key,
+            Box::new(Element::new(0.0, 0.0, 40.0, 20.0)),
+        );
+        let active = crate::view::test_support::get_element::<Element>(&active_arena, active_key);
+        assert!(!active.has_inner_render_area());
+        let active_signature = active.promotion_clip_intersection_signature(&active_arena);
+
+        assert_ne!(open_signature, active_signature);
+    }
+
+    #[test]
     fn child_hit_test_clip_uses_parent_transition_inner_size() {
         let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 200.0, 100.0);
@@ -4709,7 +4881,11 @@ mod tests {
         parent.layout_transition_override_width = Some(320.0);
         parent.layout_transition_override_height = Some(180.0);
         let parent_key = commit_element(&mut arena, Box::new(parent));
-        let _ = commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 40.0, 40.0)));
+        let _ = commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Element::new(0.0, 0.0, 40.0, 40.0)),
+        );
 
         measure_and_place(
             &mut arena,
@@ -4920,9 +5096,10 @@ mod tests {
         );
         anchor_style.insert(
             PropertyId::Transition,
-            ParsedValue::Transition(
-                Transitions::single(Transition::new(TransitionProperty::Position, 200)),
-            ),
+            ParsedValue::Transition(Transitions::single(Transition::new(
+                TransitionProperty::Position,
+                200,
+            ))),
         );
         anchor.apply_style(anchor_style);
         anchor.set_anchor_name(Some(AnchorName::new("menu_button")));
@@ -4984,9 +5161,10 @@ mod tests {
             );
             next_anchor_style.insert(
                 PropertyId::Transition,
-                ParsedValue::Transition(
-                    Transitions::single(Transition::new(TransitionProperty::Position, 200)),
-                ),
+                ParsedValue::Transition(Transitions::single(Transition::new(
+                    TransitionProperty::Position,
+                    200,
+                ))),
             );
             anchor.apply_style(next_anchor_style);
             anchor.layout_transition_visual_offset_x = -40.0;
@@ -4994,7 +5172,10 @@ mod tests {
         });
 
         arena.with_element_taken(parent_key, |el, _a| {
-            el.as_any_mut().downcast_mut::<Element>().unwrap().mark_layout_dirty();
+            el.as_any_mut()
+                .downcast_mut::<Element>()
+                .unwrap()
+                .mark_layout_dirty();
         });
         measure_and_place(&mut arena, parent_key, constraints, placement);
 
@@ -5055,9 +5236,465 @@ mod tests {
         assert!((el.border_radius - 50.0).abs() < 0.001);
     }
 
+    fn clean_bridge_element(width: f32, height: f32) -> Element {
+        let mut element = Element::new(0.0, 0.0, width, height);
+        element.clear_local_dirty_flags(DirtyFlags::ALL);
+        element.mark_paint_dirty();
+        element
+    }
 
+    fn mark_arena_paint_dirty_for_subtree(
+        arena: &crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+    ) {
+        arena.mark_dirty(key, DirtyFlags::PAINT);
+        for child in arena.children_of(key) {
+            mark_arena_paint_dirty_for_subtree(arena, child);
+        }
+    }
 
+    #[test]
+    fn clear_subtree_dirty_flags_with_arena_dirty_clears_element_and_arena_dirty() {
+        let mut arena = new_test_arena();
+        let root_key = commit_element(&mut arena, Box::new(clean_bridge_element(100.0, 100.0)));
+        let child_key = commit_child(
+            &mut arena,
+            root_key,
+            Box::new(clean_bridge_element(80.0, 40.0)),
+        );
+        let grandchild_key = commit_child(
+            &mut arena,
+            child_key,
+            Box::new(clean_bridge_element(40.0, 20.0)),
+        );
+        arena.with_element_taken(root_key, |root, _arena| {
+            root.clear_local_dirty_flags(DirtyFlags::PAINT);
+        });
+        arena.clear_arena_dirty_subtree(root_key, DirtyFlags::ALL);
+        arena.refresh_subtree_dirty_cache(root_key);
+        mark_arena_paint_dirty_for_subtree(&arena, child_key);
 
+        assert!(
+            arena
+                .cached_subtree_dirty(root_key)
+                .intersects(DirtyFlags::PAINT)
+        );
+        assert!(
+            arena
+                .cached_subtree_dirty(child_key)
+                .intersects(DirtyFlags::PAINT)
+        );
+
+        assert!(
+            crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+                &mut arena,
+                child_key,
+                DirtyFlags::PAINT,
+            )
+        );
+
+        let child = crate::view::test_support::get_element::<Element>(&arena, child_key);
+        let grandchild = crate::view::test_support::get_element::<Element>(&arena, grandchild_key);
+        assert!(!child.local_dirty_flags().contains(DirtyFlags::PAINT));
+        assert!(!grandchild.local_dirty_flags().contains(DirtyFlags::PAINT));
+        assert_eq!(arena.arena_local_dirty(child_key), DirtyFlags::NONE);
+        assert_eq!(arena.arena_local_dirty(grandchild_key), DirtyFlags::NONE);
+        assert!(
+            !arena
+                .cached_subtree_dirty(root_key)
+                .intersects(DirtyFlags::PAINT)
+        );
+        assert!(
+            !arena
+                .cached_subtree_dirty(child_key)
+                .intersects(DirtyFlags::PAINT)
+        );
+    }
+
+    #[test]
+    fn clear_subtree_dirty_flags_with_arena_dirty_preserves_sibling_arena_dirty() {
+        let mut arena = new_test_arena();
+        let root_key = commit_element(&mut arena, Box::new(clean_bridge_element(100.0, 100.0)));
+        let child_key = commit_child(
+            &mut arena,
+            root_key,
+            Box::new(clean_bridge_element(80.0, 40.0)),
+        );
+        let grandchild_key = commit_child(
+            &mut arena,
+            child_key,
+            Box::new(clean_bridge_element(40.0, 20.0)),
+        );
+        let sibling_key = commit_child(
+            &mut arena,
+            root_key,
+            Box::new(clean_bridge_element(60.0, 30.0)),
+        );
+        arena.with_element_taken(root_key, |root, _arena| {
+            root.clear_local_dirty_flags(DirtyFlags::PAINT);
+        });
+        arena.clear_arena_dirty_subtree(root_key, DirtyFlags::ALL);
+        arena.refresh_subtree_dirty_cache(root_key);
+        mark_arena_paint_dirty_for_subtree(&arena, child_key);
+        arena.mark_dirty(sibling_key, DirtyFlags::PAINT);
+
+        assert!(
+            crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+                &mut arena,
+                child_key,
+                DirtyFlags::PAINT,
+            )
+        );
+
+        let child = crate::view::test_support::get_element::<Element>(&arena, child_key);
+        let grandchild = crate::view::test_support::get_element::<Element>(&arena, grandchild_key);
+        assert!(!child.local_dirty_flags().contains(DirtyFlags::PAINT));
+        assert!(!grandchild.local_dirty_flags().contains(DirtyFlags::PAINT));
+        assert_eq!(arena.arena_local_dirty(child_key), DirtyFlags::NONE);
+        assert_eq!(arena.arena_local_dirty(grandchild_key), DirtyFlags::NONE);
+        assert!(
+            arena
+                .arena_local_dirty(sibling_key)
+                .contains(DirtyFlags::PAINT)
+        );
+        assert!(
+            !arena
+                .cached_subtree_dirty(child_key)
+                .intersects(DirtyFlags::PAINT)
+        );
+        assert!(
+            arena
+                .cached_subtree_dirty(sibling_key)
+                .intersects(DirtyFlags::PAINT)
+        );
+        assert!(
+            arena
+                .cached_subtree_dirty(root_key)
+                .intersects(DirtyFlags::PAINT)
+        );
+    }
+
+    #[test]
+    fn clear_subtree_dirty_flags_with_arena_dirty_returns_false_for_missing_root() {
+        let mut arena = new_test_arena();
+        let root_key = commit_element(&mut arena, Box::new(clean_bridge_element(100.0, 100.0)));
+
+        assert!(
+            !crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+                &mut arena,
+                crate::view::node_arena::NodeKey::default(),
+                DirtyFlags::PAINT,
+            )
+        );
+        assert!(
+            arena
+                .cached_subtree_dirty(root_key)
+                .intersects(DirtyFlags::PAINT)
+        );
+    }
+
+    fn clean_style_sample_arena() -> (
+        crate::view::node_arena::NodeArena,
+        crate::view::node_arena::NodeKey,
+        crate::view::node_arena::NodeKey,
+        u64,
+    ) {
+        let mut arena = new_test_arena();
+        let mut root = Element::new(0.0, 0.0, 200.0, 150.0);
+        root.clear_local_dirty_flags(DirtyFlags::ALL);
+        let root_key = commit_element(&mut arena, Box::new(root));
+
+        let mut child = Element::new(0.0, 0.0, 80.0, 40.0);
+        child.clear_local_dirty_flags(DirtyFlags::ALL);
+        let child_id = child.stable_id();
+        let child_key = commit_child(&mut arena, root_key, Box::new(child));
+
+        assert!(crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+            &mut arena,
+            root_key,
+            DirtyFlags::ALL,
+        ));
+        arena.refresh_subtree_dirty_cache(root_key);
+        assert_eq!(arena.arena_local_dirty(child_key), DirtyFlags::NONE);
+        assert!(
+            !arena
+                .cached_subtree_dirty(root_key)
+                .intersects(DirtyFlags::PAINT)
+        );
+
+        (arena, root_key, child_key, child_id)
+    }
+
+    fn assert_style_sample_paint_dirty(
+        arena: &crate::view::node_arena::NodeArena,
+        root_key: crate::view::node_arena::NodeKey,
+        child_key: crate::view::node_arena::NodeKey,
+    ) {
+        assert_style_sample_dirty_flags(arena, root_key, child_key, DirtyFlags::PAINT);
+    }
+
+    fn assert_style_sample_dirty_flags(
+        arena: &crate::view::node_arena::NodeArena,
+        root_key: crate::view::node_arena::NodeKey,
+        child_key: crate::view::node_arena::NodeKey,
+        flags: DirtyFlags,
+    ) {
+        let child = crate::view::test_support::get_element::<Element>(arena, child_key);
+        assert!(child.local_dirty_flags().contains(flags));
+        assert!(arena.arena_local_dirty(child_key).contains(flags));
+        assert!(arena.cached_subtree_dirty(child_key).contains(flags));
+        assert!(arena.cached_subtree_dirty(root_key).contains(flags));
+    }
+
+    fn style_sample_place_dirty_flags() -> DirtyFlags {
+        DirtyFlags::PLACE
+            .union(DirtyFlags::BOX_MODEL)
+            .union(DirtyFlags::HIT_TEST)
+            .union(DirtyFlags::PAINT)
+    }
+
+    #[test]
+    fn opacity_style_sample_updates_arena_paint_dirty_cache() {
+        let (mut arena, root_key, child_key, child_id) = clean_style_sample_arena();
+
+        assert!(set_style_field_by_id(
+            &mut arena,
+            root_key,
+            child_id,
+            crate::transition::StyleField::Opacity,
+            crate::transition::StyleValue::Scalar(0.42),
+        ));
+
+        let child = crate::view::test_support::get_element::<Element>(&arena, child_key);
+        assert!((child.debug_render_state().opacity - 0.42).abs() < 0.001);
+        assert_style_sample_paint_dirty(&arena, root_key, child_key);
+    }
+
+    macro_rules! color_style_sample_dirty_cache_test {
+        ($name:ident, $style_field:ident, $debug_field:ident, $color:expr) => {
+            #[test]
+            fn $name() {
+                let (mut arena, root_key, child_key, child_id) = clean_style_sample_arena();
+                let color = $color;
+
+                assert!(set_style_field_by_id(
+                    &mut arena,
+                    root_key,
+                    child_id,
+                    crate::transition::StyleField::$style_field,
+                    crate::transition::StyleValue::Color(color),
+                ));
+
+                let child = crate::view::test_support::get_element::<Element>(&arena, child_key);
+                assert_eq!(child.debug_render_state().$debug_field, color.to_rgba_u8());
+                assert_style_sample_paint_dirty(&arena, root_key, child_key);
+            }
+        };
+    }
+
+    color_style_sample_dirty_cache_test!(
+        background_color_style_sample_updates_arena_paint_dirty_cache,
+        BackgroundColor,
+        background_rgba,
+        Color::rgb(249, 115, 22)
+    );
+    color_style_sample_dirty_cache_test!(
+        foreground_color_style_sample_updates_arena_paint_dirty_cache,
+        Color,
+        foreground_rgba,
+        Color::rgb(90, 80, 70)
+    );
+    color_style_sample_dirty_cache_test!(
+        border_top_color_style_sample_updates_arena_paint_dirty_cache,
+        BorderTopColor,
+        border_top_rgba,
+        Color::rgba(11, 22, 33, 210)
+    );
+    color_style_sample_dirty_cache_test!(
+        border_right_color_style_sample_updates_arena_paint_dirty_cache,
+        BorderRightColor,
+        border_right_rgba,
+        Color::rgba(44, 55, 66, 220)
+    );
+    color_style_sample_dirty_cache_test!(
+        border_bottom_color_style_sample_updates_arena_paint_dirty_cache,
+        BorderBottomColor,
+        border_bottom_rgba,
+        Color::rgba(77, 88, 99, 230)
+    );
+    color_style_sample_dirty_cache_test!(
+        border_left_color_style_sample_updates_arena_paint_dirty_cache,
+        BorderLeftColor,
+        border_left_rgba,
+        Color::rgba(101, 112, 123, 240)
+    );
+
+    #[test]
+    fn border_radius_style_sample_updates_arena_paint_dirty_cache() {
+        let (mut arena, root_key, child_key, child_id) = clean_style_sample_arena();
+
+        assert!(set_style_field_by_id(
+            &mut arena,
+            root_key,
+            child_id,
+            crate::transition::StyleField::BorderRadius,
+            crate::transition::StyleValue::Scalar(8.0),
+        ));
+
+        assert_style_sample_paint_dirty(&arena, root_key, child_key);
+    }
+
+    #[test]
+    fn box_shadow_style_sample_updates_arena_paint_dirty_cache() {
+        let (mut arena, root_key, child_key, child_id) = clean_style_sample_arena();
+        let shadows = vec![
+            BoxShadow::new()
+                .color(Color::hex("#223344"))
+                .offset_x(6.0)
+                .offset_y(8.0)
+                .blur(12.0)
+                .spread(4.0)
+                .inset(true),
+        ];
+
+        assert!(set_style_field_by_id(
+            &mut arena,
+            root_key,
+            child_id,
+            crate::transition::StyleField::BoxShadow,
+            crate::transition::StyleValue::BoxShadow(shadows.clone()),
+        ));
+
+        let child = crate::view::test_support::get_element::<Element>(&arena, child_key);
+        assert_eq!(child.box_shadows, shadows);
+        assert_style_sample_paint_dirty(&arena, root_key, child_key);
+    }
+
+    #[test]
+    fn transform_style_sample_updates_arena_place_dirty_cache() {
+        let (mut arena, root_key, child_key, child_id) = clean_style_sample_arena();
+        let transform = Transform::new([Translate::xy(Length::px(12.0), Length::px(18.0))]);
+
+        assert!(set_style_field_by_id(
+            &mut arena,
+            root_key,
+            child_id,
+            crate::transition::StyleField::Transform,
+            crate::transition::StyleValue::Transform(transform.clone()),
+        ));
+
+        let child = crate::view::test_support::get_element::<Element>(&arena, child_key);
+        assert_eq!(child.transform, transform);
+        assert!(child.resolved_transform.is_some());
+        assert_style_sample_dirty_flags(
+            &arena,
+            root_key,
+            child_key,
+            style_sample_place_dirty_flags(),
+        );
+    }
+
+    #[test]
+    fn transform_origin_style_sample_updates_arena_place_dirty_cache() {
+        let (mut arena, root_key, child_key, child_id) = clean_style_sample_arena();
+
+        assert!(set_style_field_by_id(
+            &mut arena,
+            root_key,
+            child_id,
+            crate::transition::StyleField::TransformOrigin,
+            crate::transition::StyleValue::TransformOriginProgress {
+                from: TransformOrigin::percent(50.0, 50.0),
+                to: TransformOrigin::px(10.0, 20.0),
+                progress: 0.5,
+            },
+        ));
+
+        let child = crate::view::test_support::get_element::<Element>(&arena, child_key);
+        assert!(child.resolved_transform.is_none());
+        assert!(
+            (child
+                .transform_origin
+                .x()
+                .resolve_without_percent_base(0.0, 0.0)
+                - 25.0)
+                .abs()
+                < 0.0001
+        );
+        assert!(
+            (child
+                .transform_origin
+                .y()
+                .resolve_without_percent_base(0.0, 0.0)
+                - 20.0)
+                .abs()
+                < 0.0001
+        );
+        assert_style_sample_dirty_flags(
+            &arena,
+            root_key,
+            child_key,
+            style_sample_place_dirty_flags(),
+        );
+    }
+
+    #[test]
+    fn paint_only_style_sample_rejects_mismatched_value_type() {
+        let (mut arena, root_key, child_key, child_id) = clean_style_sample_arena();
+
+        assert!(!set_style_field_by_id(
+            &mut arena,
+            root_key,
+            child_id,
+            crate::transition::StyleField::Opacity,
+            crate::transition::StyleValue::Color(Color::rgb(1, 2, 3)),
+        ));
+        assert_eq!(arena.arena_local_dirty(child_key), DirtyFlags::NONE);
+        assert!(
+            !arena
+                .cached_subtree_dirty(root_key)
+                .intersects(DirtyFlags::PAINT)
+        );
+    }
+
+    #[test]
+    fn paint_only_style_sample_rejects_wrong_root() {
+        let (mut arena, root_key, child_key, child_id) = clean_style_sample_arena();
+        let other_root = commit_element(&mut arena, Box::new(Element::new(0.0, 0.0, 10.0, 10.0)));
+
+        assert!(!set_style_field_by_id(
+            &mut arena,
+            other_root,
+            child_id,
+            crate::transition::StyleField::BackgroundColor,
+            crate::transition::StyleValue::Color(Color::rgb(1, 2, 3)),
+        ));
+        assert_eq!(arena.arena_local_dirty(child_key), DirtyFlags::NONE);
+        assert!(
+            !arena
+                .cached_subtree_dirty(root_key)
+                .intersects(DirtyFlags::PAINT)
+        );
+    }
+
+    #[test]
+    fn paint_only_style_sample_rejects_missing_stable_id() {
+        let (mut arena, root_key, child_key, _child_id) = clean_style_sample_arena();
+
+        assert!(!set_style_field_by_id(
+            &mut arena,
+            root_key,
+            u64::MAX,
+            crate::transition::StyleField::BorderTopColor,
+            crate::transition::StyleValue::Color(Color::rgb(1, 2, 3)),
+        ));
+        assert_eq!(arena.arena_local_dirty(child_key), DirtyFlags::NONE);
+        assert!(
+            !arena
+                .cached_subtree_dirty(root_key)
+                .intersects(DirtyFlags::PAINT)
+        );
+    }
 
     #[test]
     fn transform_style_sample_updates_element_transform_matrix() {
@@ -5079,8 +5716,6 @@ mod tests {
         assert_eq!(el.transform, transform);
         assert!(el.resolved_transform.is_some());
     }
-
-
 
     #[test]
     fn box_shadow_style_sample_updates_element_shadows() {
@@ -5131,8 +5766,22 @@ mod tests {
 
         let el = crate::view::test_support::get_element::<Element>(&arena, key);
         assert!(el.resolved_transform.is_none());
-        assert!((el.transform_origin.x().resolve_without_percent_base(0.0, 0.0) - 55.0).abs() < 0.0001);
-        assert!((el.transform_origin.y().resolve_without_percent_base(0.0, 0.0) - 47.5).abs() < 0.0001);
+        assert!(
+            (el.transform_origin
+                .x()
+                .resolve_without_percent_base(0.0, 0.0)
+                - 55.0)
+                .abs()
+                < 0.0001
+        );
+        assert!(
+            (el.transform_origin
+                .y()
+                .resolve_without_percent_base(0.0, 0.0)
+                - 47.5)
+                .abs()
+                < 0.0001
+        );
     }
 
     #[test]
@@ -5188,9 +5837,21 @@ mod tests {
         parent.apply_style(parent_style);
         let parent_key = commit_element(&mut arena, Box::new(parent));
 
-        commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 60.0, 10.0)));
-        commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 50.0, 20.0)));
-        commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 40.0, 15.0)));
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Element::new(0.0, 0.0, 60.0, 10.0)),
+        );
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Element::new(0.0, 0.0, 50.0, 20.0)),
+        );
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Element::new(0.0, 0.0, 40.0, 15.0)),
+        );
 
         measure_and_place(
             &mut arena,
@@ -5249,8 +5910,18 @@ mod tests {
         let parent_key = commit_element(&mut arena, Box::new(parent));
 
         commit_child(&mut arena, parent_key, Box::new(Text::from_content("lead")));
-        commit_child(&mut arena, parent_key, Box::new(Element::new(0.0, 0.0, 50.0, 20.0)));
-        commit_child(&mut arena, parent_key, Box::new(Text::from_content(" trailing text continues after the badge.")));
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Element::new(0.0, 0.0, 50.0, 20.0)),
+        );
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Text::from_content(
+                " trailing text continues after the badge.",
+            )),
+        );
 
         measure_and_place(
             &mut arena,
@@ -5310,7 +5981,8 @@ mod tests {
         parent.apply_style(parent_style);
         let parent_key = commit_element(&mut arena, Box::new(parent));
 
-        let mut text = Text::from_content("fragmented text should wrap across multiple inline lines");
+        let mut text =
+            Text::from_content("fragmented text should wrap across multiple inline lines");
         text.set_size(300.0, 300.0);
         commit_child(&mut arena, parent_key, Box::new(text));
 
@@ -5406,7 +6078,13 @@ mod tests {
         parent.apply_style(parent_style);
         let parent_key = commit_element(&mut arena, Box::new(parent));
 
-        commit_child(&mut arena, parent_key, Box::new(Text::from_content("最後接一段中文，確認混排時也能一起換行。")));
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Text::from_content(
+                "最後接一段中文，確認混排時也能一起換行。",
+            )),
+        );
 
         measure_and_place(
             &mut arena,
@@ -5459,8 +6137,16 @@ mod tests {
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
-        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("nested")));
-        commit_child(&mut arena, wrapper_key, Box::new(Element::new(0.0, 0.0, 44.0, 20.0)));
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Text::from_content("nested")),
+        );
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Element::new(0.0, 0.0, 44.0, 20.0)),
+        );
 
         commit_child(&mut arena, parent_key, Box::new(Text::from_content("tail")));
 
@@ -5521,9 +6207,13 @@ mod tests {
         wrapper_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#2563eb")));
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
-        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
-            "inline wrapper background should wrap across lines",
-        )));
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Text::from_content(
+                "inline wrapper background should wrap across lines",
+            )),
+        );
 
         measure_and_place(
             &mut arena,
@@ -5567,7 +6257,10 @@ mod tests {
             .collect::<Vec<_>>();
         let rect_like_count = pass_names
             .iter()
-            .filter(|name| name.contains("draw_rect_pass::DrawRectPass") || name.contains("draw_rect_pass::OpaqueRectPass"))
+            .filter(|name| {
+                name.contains("draw_rect_pass::DrawRectPass")
+                    || name.contains("draw_rect_pass::OpaqueRectPass")
+            })
             .count();
         let border_count = pass_names
             .iter()
@@ -5581,7 +6274,10 @@ mod tests {
         // wrapper produces ≥ 2 *fill* and ≥ 2 *border* rect passes (one
         // per visual line fragment) — so total rect-like passes ≥ 4.
         let _ = border_count;
-        assert!(rect_like_count >= 4, "expected multiple fragment rect passes, got {pass_names:?}");
+        assert!(
+            rect_like_count >= 4,
+            "expected multiple fragment rect passes, got {pass_names:?}"
+        );
     }
 
     #[test]
@@ -5594,7 +6290,11 @@ mod tests {
         parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
         parent.apply_style(parent_style);
         let parent_key = commit_element(&mut arena, Box::new(parent));
-        commit_child(&mut arena, parent_key, Box::new(Text::from_content("Inline text starts here,")));
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Text::from_content("Inline text starts here,")),
+        );
 
         let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut wrapper_style = Style::new();
@@ -5608,12 +6308,20 @@ mod tests {
         wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
-        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
-            "badge test test test test test test test",
-        )));
-        commit_child(&mut arena, parent_key, Box::new(Text::from_content(
-            "then more text continues after the badge,",
-        )));
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Text::from_content(
+                "badge test test test test test test test",
+            )),
+        );
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Text::from_content(
+                "then more text continues after the badge,",
+            )),
+        );
 
         measure_and_place(
             &mut arena,
@@ -5664,9 +6372,11 @@ mod tests {
         wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
-        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
-            "badge test test test test",
-        )));
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Text::from_content("badge test test test test")),
+        );
 
         measure_and_place(
             &mut arena,
@@ -5698,8 +6408,12 @@ mod tests {
             let wrapper_el = crate::view::test_support::get_element::<Element>(&arena, wrapper_key);
             assert!(wrapper_el.inline_paint_fragments.len() >= 2);
             let first = wrapper_el.inline_paint_fragments[0];
-            let last = *wrapper_el.inline_paint_fragments.last().expect("last fragment");
-            let nested_text = crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
+            let last = *wrapper_el
+                .inline_paint_fragments
+                .last()
+                .expect("last fragment");
+            let nested_text =
+                crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
             let fragments = nested_text.inline_fragment_positions();
             (first, last, fragments)
         };
@@ -5719,14 +6433,17 @@ mod tests {
             .filter(|(_, position)| (position.y - last_line_y).abs() < 0.5)
             .map(|(content, position)| {
                 let mut text = Text::from_content(content.as_str());
-                text.measure(LayoutConstraints {
-                    max_width: 200.0,
-                    max_height: 80.0,
-                    viewport_width: 200.0,
-                    viewport_height: 80.0,
-                    percent_base_width: Some(200.0),
-                    percent_base_height: Some(80.0),
-                }, &mut arena);
+                text.measure(
+                    LayoutConstraints {
+                        max_width: 200.0,
+                        max_height: 80.0,
+                        viewport_width: 200.0,
+                        viewport_height: 80.0,
+                        percent_base_width: Some(200.0),
+                        percent_base_height: Some(80.0),
+                    },
+                    &mut arena,
+                );
                 let (width, _) = text.measured_size();
                 position.x + width
             })
@@ -5758,7 +6475,11 @@ mod tests {
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
-        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("alpha beta gamma delta")));
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Text::from_content("alpha beta gamma delta")),
+        );
 
         measure_and_place(
             &mut arena,
@@ -5827,9 +6548,13 @@ mod tests {
         wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
-        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
-            "Permission is hereby granted, free of charge, to any person obtaining a copy",
-        )));
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Text::from_content(
+                "Permission is hereby granted, free of charge, to any person obtaining a copy",
+            )),
+        );
 
         measure_and_place(
             &mut arena,
@@ -5888,14 +6613,20 @@ mod tests {
         wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
         wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
-        wrapper_style.set_padding(crate::style::Padding::new().xy(
-            Length::px(8.0),
-            Length::px(12.0),
-        ));
+        wrapper_style
+            .set_padding(crate::style::Padding::new().xy(Length::px(8.0), Length::px(12.0)));
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
-        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("badge")));
-        commit_child(&mut arena, parent_key, Box::new(Text::from_content("trailing")));
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Text::from_content("badge")),
+        );
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Text::from_content("trailing")),
+        );
 
         measure_and_place(
             &mut arena,
@@ -5926,7 +6657,8 @@ mod tests {
         let trailing_key = child_key(&arena, parent_key, 1);
 
         let (badge_y, text_height) = {
-            let nested_text = crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
+            let nested_text =
+                crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
             let by = nested_text.inline_fragment_positions()[0].1.y;
             let (_, th) = nested_text.measured_size();
             (by, th)
@@ -5937,7 +6669,10 @@ mod tests {
         };
         let (paint_top, paint_height) = {
             let wrapper_el = crate::view::test_support::get_element::<Element>(&arena, wrapper_key);
-            (wrapper_el.inline_paint_fragments[0].y, wrapper_el.inline_paint_fragments[0].height)
+            (
+                wrapper_el.inline_paint_fragments[0].y,
+                wrapper_el.inline_paint_fragments[0].height,
+            )
         };
         let inline_node_height = arena
             .with_element_taken(wrapper_key, |el, a| el.get_inline_nodes_size(a)[0].height)
@@ -5967,20 +6702,35 @@ mod tests {
             parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
             parent.apply_style(parent_style);
             let parent_key = commit_element(&mut arena, Box::new(parent));
-            commit_child(&mut arena, parent_key, Box::new(Text::from_content("Inline text starts here,")));
+            commit_child(
+                &mut arena,
+                parent_key,
+                Box::new(Text::from_content("Inline text starts here,")),
+            );
 
             let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
             let mut wrapper_style = Style::new();
-            wrapper_style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(Color::hex("#93c5fd")));
+            wrapper_style.insert(
+                PropertyId::BackgroundColor,
+                ParsedValue::color_like(Color::hex("#93c5fd")),
+            );
             wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
             wrapper.apply_style(wrapper_style);
             let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
-            commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
-                "badge test test test test test test test",
-            )));
-            commit_child(&mut arena, parent_key, Box::new(Text::from_content(
-                "then more text continues after the badge,",
-            )));
+            commit_child(
+                &mut arena,
+                wrapper_key,
+                Box::new(Text::from_content(
+                    "badge test test test test test test test",
+                )),
+            );
+            commit_child(
+                &mut arena,
+                parent_key,
+                Box::new(Text::from_content(
+                    "then more text continues after the badge,",
+                )),
+            );
 
             measure_and_place(
                 &mut arena,
@@ -6011,9 +6761,15 @@ mod tests {
             let expected = arena
                 .with_element_taken(nested_text_key, |el, a| el.get_inline_nodes_size(a).len())
                 .expect("inline nodes size");
-            let nested_text = crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
+            let nested_text =
+                crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
             let actual = nested_text.inline_fragment_positions().len();
-            assert_eq!(actual, expected, "width={width}, actual={actual}, expected={expected}, fragments={:?}", nested_text.inline_fragment_positions());
+            assert_eq!(
+                actual,
+                expected,
+                "width={width}, actual={actual}, expected={expected}, fragments={:?}",
+                nested_text.inline_fragment_positions()
+            );
         }
     }
 
@@ -6088,19 +6844,31 @@ mod tests {
 
         let a_paints: Vec<_> = {
             let el = crate::view::test_support::get_element::<Element>(&arena, sib_a_key);
-            el.inline_paint_fragments.iter().map(|r| (r.x, r.y, r.width, r.height)).collect()
+            el.inline_paint_fragments
+                .iter()
+                .map(|r| (r.x, r.y, r.width, r.height))
+                .collect()
         };
         let b_paints: Vec<_> = {
             let el = crate::view::test_support::get_element::<Element>(&arena, sib_b_key);
-            el.inline_paint_fragments.iter().map(|r| (r.x, r.y, r.width, r.height)).collect()
+            el.inline_paint_fragments
+                .iter()
+                .map(|r| (r.x, r.y, r.width, r.height))
+                .collect()
         };
         let text_a: Vec<_> = {
             let t = crate::view::test_support::get_element::<Text>(&arena, text_a_key);
-            t.inline_fragment_positions().iter().map(|(_, p)| (p.x, p.y)).collect()
+            t.inline_fragment_positions()
+                .iter()
+                .map(|(_, p)| (p.x, p.y))
+                .collect()
         };
         let text_b: Vec<_> = {
             let t = crate::view::test_support::get_element::<Text>(&arena, text_b_key);
-            t.inline_fragment_positions().iter().map(|(_, p)| (p.x, p.y)).collect()
+            t.inline_fragment_positions()
+                .iter()
+                .map(|(_, p)| (p.x, p.y))
+                .collect()
         };
         let a_inline_nodes = arena
             .with_element_taken(sib_a_key, |el, a| el.get_inline_nodes_size(a))
@@ -6142,7 +6910,11 @@ mod tests {
         parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
         parent.apply_style(parent_style);
         let parent_key = commit_element(&mut arena, Box::new(parent));
-        commit_child(&mut arena, parent_key, Box::new(Text::from_content("lead-in text")));
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Text::from_content("lead-in text")),
+        );
 
         let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut wrapper_style = Style::new();
@@ -6152,8 +6924,16 @@ mod tests {
         wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(6.0)));
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
-        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("first child text that wraps")));
-        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("second child text also wraps")));
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Text::from_content("first child text that wraps")),
+        );
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Text::from_content("second child text also wraps")),
+        );
         commit_child(&mut arena, parent_key, Box::new(Text::from_content("tail")));
 
         measure_and_place(
@@ -6242,7 +7022,8 @@ mod tests {
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_element(&mut arena, Box::new(wrapper));
 
-        let child_key_val = commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("a")));
+        let child_key_val =
+            commit_child(&mut arena, wrapper_key, Box::new(Text::from_content("a")));
         arena.with_element_taken(wrapper_key, |el, a| el.measure(constraints, a));
         let before_width = {
             let w = crate::view::test_support::get_element::<Element>(&arena, wrapper_key);
@@ -6250,7 +7031,8 @@ mod tests {
         };
 
         {
-            let mut child = crate::view::test_support::get_element_mut::<Text>(&arena, child_key_val);
+            let mut child =
+                crate::view::test_support::get_element_mut::<Text>(&arena, child_key_val);
             child.set_text("a much longer child");
         }
 
@@ -6272,43 +7054,52 @@ mod tests {
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_element(&mut arena, Box::new(wrapper));
-        commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
-            "Permission is hereby granted, free of charge, to any person obtaining a copy",
-        )));
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Text::from_content(
+                "Permission is hereby granted, free of charge, to any person obtaining a copy",
+            )),
+        );
 
         arena.with_element_taken(wrapper_key, |el, a| {
-            el.measure_inline(super::InlineMeasureContext {
-                first_available_width: 200.0,
-                full_available_width: 200.0,
-                available_height: 1_000_000.0,
-                viewport_width: 200.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(200.0),
-                percent_base_height: Some(120.0),
-            }, a);
+            el.measure_inline(
+                super::InlineMeasureContext {
+                    first_available_width: 200.0,
+                    full_available_width: 200.0,
+                    available_height: 1_000_000.0,
+                    viewport_width: 200.0,
+                    viewport_height: 120.0,
+                    percent_base_width: Some(200.0),
+                    percent_base_height: Some(120.0),
+                },
+                a,
+            );
         });
         let wide_nodes = arena
             .with_element_taken(wrapper_key, |el, a| el.get_inline_nodes_size(a))
             .expect("wide inline nodes");
 
         arena.with_element_taken(wrapper_key, |el, a| {
-            el.measure_inline(super::InlineMeasureContext {
-                first_available_width: 40.0,
-                full_available_width: 200.0,
-                available_height: 1_000_000.0,
-                viewport_width: 200.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(200.0),
-                percent_base_height: Some(120.0),
-            }, a);
+            el.measure_inline(
+                super::InlineMeasureContext {
+                    first_available_width: 40.0,
+                    full_available_width: 200.0,
+                    available_height: 1_000_000.0,
+                    viewport_width: 200.0,
+                    viewport_height: 120.0,
+                    percent_base_width: Some(200.0),
+                    percent_base_height: Some(120.0),
+                },
+                a,
+            );
         });
         let narrow_first_line_nodes = arena
             .with_element_taken(wrapper_key, |el, a| el.get_inline_nodes_size(a))
             .expect("narrow inline nodes");
 
         assert_ne!(
-            wide_nodes,
-            narrow_first_line_nodes,
+            wide_nodes, narrow_first_line_nodes,
             "fragmentable inline element should remeasure when only first_available_width changes"
         );
     }
@@ -6325,21 +7116,39 @@ mod tests {
             parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
             parent.apply_style(parent_style);
             let parent_key = commit_element(&mut arena, Box::new(parent));
-            commit_child(&mut arena, parent_key, Box::new(Text::from_content("Inline text starts here,")));
+            commit_child(
+                &mut arena,
+                parent_key,
+                Box::new(Text::from_content("Inline text starts here,")),
+            );
 
             let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
             let mut wrapper_style = Style::new();
-            wrapper_style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(Color::hex("#93c5fd")));
-            wrapper_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#ffffff")));
+            wrapper_style.insert(
+                PropertyId::BackgroundColor,
+                ParsedValue::color_like(Color::hex("#93c5fd")),
+            );
+            wrapper_style.insert(
+                PropertyId::Color,
+                ParsedValue::color_like(Color::hex("#ffffff")),
+            );
             wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
             wrapper.apply_style(wrapper_style);
             let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
-            commit_child(&mut arena, wrapper_key, Box::new(Text::from_content(
-                "badge test test test test test test test",
-            )));
-            commit_child(&mut arena, parent_key, Box::new(Text::from_content(
-                "then more text continues after the badge,",
-            )));
+            commit_child(
+                &mut arena,
+                wrapper_key,
+                Box::new(Text::from_content(
+                    "badge test test test test test test test",
+                )),
+            );
+            commit_child(
+                &mut arena,
+                parent_key,
+                Box::new(Text::from_content(
+                    "then more text continues after the badge,",
+                )),
+            );
 
             measure_and_place(
                 &mut arena,
@@ -6370,7 +7179,8 @@ mod tests {
             let trailing_key = child_key(&arena, parent_key, 2);
 
             let nested_fragments = {
-                let nested_text = crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
+                let nested_text =
+                    crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
                 nested_text.inline_fragment_positions()
             };
             let trailing_fragments = {
@@ -6380,21 +7190,28 @@ mod tests {
             for (_, trailing_position) in &trailing_fragments {
                 let same_line_right = nested_fragments
                     .iter()
-                    .filter(|(_, nested_position)| (nested_position.y - trailing_position.y).abs() < 0.5)
+                    .filter(|(_, nested_position)| {
+                        (nested_position.y - trailing_position.y).abs() < 0.5
+                    })
                     .map(|(content, nested_position)| {
                         let mut text = Text::from_content(content.as_str());
-                        text.measure(LayoutConstraints {
-                            max_width: 200.0,
-                            max_height: 80.0,
-                            viewport_width: 200.0,
-                            viewport_height: 80.0,
-                            percent_base_width: Some(200.0),
-                            percent_base_height: Some(80.0),
-                        }, &mut arena);
+                        text.measure(
+                            LayoutConstraints {
+                                max_width: 200.0,
+                                max_height: 80.0,
+                                viewport_width: 200.0,
+                                viewport_height: 80.0,
+                                percent_base_width: Some(200.0),
+                                percent_base_height: Some(80.0),
+                            },
+                            &mut arena,
+                        );
                         let (fragment_width, _) = text.measured_size();
                         nested_position.x + fragment_width
                     })
-                    .fold(None, |acc: Option<f32>, value| Some(acc.map_or(value, |max| max.max(value))));
+                    .fold(None, |acc: Option<f32>, value| {
+                        Some(acc.map_or(value, |max| max.max(value)))
+                    });
                 if let Some(nested_right) = same_line_right {
                     assert!(
                         nested_right <= trailing_position.x + 0.5,
@@ -6483,8 +7300,16 @@ mod tests {
         );
         let snap = child_snapshot(&arena, child_k);
         // child positioned at parent.x + left, parent.y + top
-        assert!((snap.x - (100.0 + 10.0)).abs() < 0.01, "layout_x = {}", snap.x);
-        assert!((snap.y - (50.0 + 5.0)).abs() < 0.01, "layout_y = {}", snap.y);
+        assert!(
+            (snap.x - (100.0 + 10.0)).abs() < 0.01,
+            "layout_x = {}",
+            snap.x
+        );
+        assert!(
+            (snap.y - (50.0 + 5.0)).abs() < 0.01,
+            "layout_y = {}",
+            snap.y
+        );
     }
 
     #[test]
@@ -6693,7 +7518,9 @@ mod tests {
         );
 
         // absolute_clip_rect should be the full viewport rect (escape clip).
-        let abs_clip = child_el.absolute_clip_rect.expect("clip_rect set for absolute");
+        let abs_clip = child_el
+            .absolute_clip_rect
+            .expect("clip_rect set for absolute");
         assert!(
             (abs_clip.x - 0.0).abs() < 0.01
                 && (abs_clip.y - 0.0).abs() < 0.01
@@ -6894,22 +7721,20 @@ mod tests {
         let pass_count_before_defer = graph.pass_descriptors().len();
 
         // Defer pass.
-        let deferred = ctx.take_deferred_node_ids();
+        let deferred = ctx.take_deferred_nodes();
         assert!(
-            deferred.contains(&snackbar_id),
+            deferred.iter().any(|node| node.stable_id == snackbar_id),
             "snackbar should be in deferred list, got {:?}",
             deferred
         );
-        for id in &deferred {
-            let _ = arena.with_element_taken(win_k, |root, arena| {
-                crate::view::base_component::build_node_by_id(
-                    root.as_mut(),
-                    *id,
-                    &mut graph,
-                    arena,
-                    &mut ctx,
-                )
-            });
+        for node in &deferred {
+            crate::view::base_component::build_node_by_key(
+                node.key,
+                node.stable_id,
+                &mut graph,
+                &mut arena,
+                &mut ctx,
+            );
         }
 
         let pass_count_after_defer = graph.pass_descriptors().len();
@@ -7020,24 +7845,22 @@ mod tests {
 
         // Window's build with should_render=false should still collect
         // viewport-anchored descendants into the deferred list.
-        let deferred = ctx.take_deferred_node_ids();
+        let deferred = ctx.take_deferred_nodes();
         assert!(
-            deferred.contains(&snackbar_id),
+            deferred.iter().any(|node| node.stable_id == snackbar_id),
             "snackbar should be deferred even when window not rendered, got {:?}",
             deferred
         );
 
         let pass_count_before_defer = graph.pass_descriptors().len();
-        for id in &deferred {
-            let _ = arena.with_element_taken(win_k, |root, arena| {
-                crate::view::base_component::build_node_by_id(
-                    root.as_mut(),
-                    *id,
-                    &mut graph,
-                    arena,
-                    &mut ctx,
-                )
-            });
+        for node in &deferred {
+            crate::view::base_component::build_node_by_key(
+                node.key,
+                node.stable_id,
+                &mut graph,
+                &mut arena,
+                &mut ctx,
+            );
         }
         let pass_count_after_defer = graph.pass_descriptors().len();
         assert!(
@@ -7155,9 +7978,9 @@ mod tests {
             .expect("window build returns state");
         ctx.set_state(next_state);
 
-        let deferred = ctx.take_deferred_node_ids();
+        let deferred = ctx.take_deferred_nodes();
         assert!(
-            deferred.contains(&snackbar_id),
+            deferred.iter().any(|node| node.stable_id == snackbar_id),
             "BUG: snackbar should be in deferred list when ancestor inner is below viewport, got {:?}",
             deferred
         );
@@ -7285,11 +8108,11 @@ mod tests {
             .expect("window build returns state");
         ctx.set_state(next_state);
 
-        let deferred = ctx.take_deferred_node_ids();
+        let deferred = ctx.take_deferred_nodes();
         eprintln!("[deferred ids] {:?}", deferred);
         eprintln!("[snackbar id] {}", snackbar_id);
         assert!(
-            deferred.contains(&snackbar_id),
+            deferred.iter().any(|node| node.stable_id == snackbar_id),
             "BUG: snackbar must be deferred when its tree-ancestor section is below viewport"
         );
     }
@@ -7354,8 +8177,7 @@ mod tests {
         let s2_k = commit_child(&mut arena, win_k, Box::new(section2));
         let acc_k = commit_child(&mut arena, s2_k, Box::new(accordion));
         let acc_content_k = commit_child(&mut arena, acc_k, Box::new(accordion_content));
-        let snackbar_k =
-            commit_child(&mut arena, acc_content_k, Box::new(snackbar));
+        let snackbar_k = commit_child(&mut arena, acc_content_k, Box::new(snackbar));
         let snackbar_id = arena.get(snackbar_k).unwrap().element.stable_id();
 
         measure_and_place(
@@ -7406,9 +8228,9 @@ mod tests {
             .expect("window build returns state");
         ctx.set_state(next_state);
 
-        let deferred = ctx.take_deferred_node_ids();
+        let deferred = ctx.take_deferred_nodes();
         assert!(
-            deferred.contains(&snackbar_id),
+            deferred.iter().any(|node| node.stable_id == snackbar_id),
             "BUG: deeply nested snackbar must still be deferred. defer={:?} snackbar_id={}",
             deferred,
             snackbar_id
@@ -7430,7 +8252,11 @@ mod tests {
         style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
         parent.apply_style(style);
         let parent_key = commit_element(&mut arena, Box::new(parent));
-        commit_child(&mut arena, parent_key, Box::new(Text::from_content("hello")));
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Text::from_content("hello")),
+        );
 
         measure_and_place(
             &mut arena,
@@ -7484,7 +8310,11 @@ mod tests {
         let nodes = element.get_inline_nodes_size(&arena);
         assert_eq!(nodes.len(), 1);
         let n = nodes[0];
-        assert!((n.height - 30.0).abs() < 1e-3, "height mismatch: {}", n.height);
+        assert!(
+            (n.height - 30.0).abs() < 1e-3,
+            "height mismatch: {}",
+            n.height
+        );
         assert!(
             (n.baseline - n.height).abs() < 1e-3,
             "non-fragmentable element baseline {} must equal height {}",
@@ -7495,8 +8325,8 @@ mod tests {
 
     #[test]
     fn inline_baseline_text_area_run_reports_first_visual_line_baseline() {
-        use crate::view::base_component::text_area::TextAreaTextRun;
         use crate::view::base_component::InlineMeasureContext;
+        use crate::view::base_component::text_area::TextAreaTextRun;
         let mut arena = new_test_arena();
         let mut run = TextAreaTextRun::new("hello".to_string(), 0..5);
         run.measure_inline(
@@ -7635,13 +8465,8 @@ mod tests {
     /// at y=0 regardless of vertical-align.
     #[test]
     fn d3_pure_element_same_height_baseline_aligns_at_top() {
-        let (a, b) = place_two_pure_elements_with_va(
-            VerticalAlign::Baseline,
-            20.0,
-            10.0,
-            20.0,
-            10.0,
-        );
+        let (a, b) =
+            place_two_pure_elements_with_va(VerticalAlign::Baseline, 20.0, 10.0, 20.0, 10.0);
         assert!((a - 0.0).abs() < 0.01);
         assert!((b - 0.0).abs() < 0.01);
     }
@@ -7650,13 +8475,8 @@ mod tests {
     /// element bottom-aligns (line_ascent - height).
     #[test]
     fn d3_pure_element_diff_height_default_baseline_short_element_drops_to_bottom() {
-        let (a, b) = place_two_pure_elements_with_va(
-            VerticalAlign::Baseline,
-            20.0,
-            30.0,
-            20.0,
-            10.0,
-        );
+        let (a, b) =
+            place_two_pure_elements_with_va(VerticalAlign::Baseline, 20.0, 30.0, 20.0, 10.0);
         assert!((a - 0.0).abs() < 0.01);
         // 30 - 10 = 20
         assert!((b - 20.0).abs() < 0.01, "got b={b}");
@@ -7666,13 +8486,7 @@ mod tests {
     /// (pre-Sprint-3 visual).
     #[test]
     fn d3_pure_element_diff_height_top_align_keeps_both_at_top() {
-        let (a, b) = place_two_pure_elements_with_va(
-            VerticalAlign::Top,
-            20.0,
-            30.0,
-            20.0,
-            10.0,
-        );
+        let (a, b) = place_two_pure_elements_with_va(VerticalAlign::Top, 20.0, 30.0, 20.0, 10.0);
         assert!((a - 0.0).abs() < 0.01);
         assert!((b - 0.0).abs() < 0.01);
     }
@@ -7683,13 +8497,7 @@ mod tests {
     /// formulas to line_h - h.
     #[test]
     fn d3_pure_element_diff_height_bottom_aligns_short_to_bottom() {
-        let (a, b) = place_two_pure_elements_with_va(
-            VerticalAlign::Bottom,
-            20.0,
-            30.0,
-            20.0,
-            10.0,
-        );
+        let (a, b) = place_two_pure_elements_with_va(VerticalAlign::Bottom, 20.0, 30.0, 20.0, 10.0);
         assert!((a - 0.0).abs() < 0.01);
         assert!((b - 20.0).abs() < 0.01);
     }
@@ -7698,13 +8506,7 @@ mod tests {
     /// vertically centered within line_box_h.
     #[test]
     fn d3_pure_element_diff_height_middle_centers_each_item() {
-        let (a, b) = place_two_pure_elements_with_va(
-            VerticalAlign::Middle,
-            20.0,
-            30.0,
-            20.0,
-            10.0,
-        );
+        let (a, b) = place_two_pure_elements_with_va(VerticalAlign::Middle, 20.0, 30.0, 20.0, 10.0);
         // line_box_h = 30 (descent = 0 for pure-element)
         // tallest centered: (30 - 30)/2 = 0
         // shorter centered: (30 - 10)/2 = 10
@@ -7783,13 +8585,7 @@ mod tests {
     /// vertically centered within line_box_h.
     #[test]
     fn d3_mixed_text_plus_element_middle_centers_each_item() {
-        let (a, b) = place_two_pure_elements_with_va(
-            VerticalAlign::Middle,
-            20.0,
-            30.0,
-            20.0,
-            10.0,
-        );
+        let (a, b) = place_two_pure_elements_with_va(VerticalAlign::Middle, 20.0, 30.0, 20.0, 10.0);
         // line_box_h = 30 (pure-element row, descent = 0).
         // tall element centered: (30-30)/2 = 0.
         // short element centered: (30-10)/2 = 10.
@@ -8176,8 +8972,7 @@ mod tests {
         );
 
         // Inner Text must shape as ONE fragment (atomic chip content).
-        let inner_text =
-            crate::view::test_support::get_element::<Text>(&arena, inner_text_key);
+        let inner_text = crate::view::test_support::get_element::<Text>(&arena, inner_text_key);
         let fragments = inner_text.inline_fragment_positions();
         assert_eq!(
             fragments.len(),
@@ -8190,9 +8985,7 @@ mod tests {
 
     #[test]
     fn text_area_projection_segment_wraps_when_first_fragment_cannot_fit_residue() {
-        use crate::view::base_component::text_area::{
-            TextAreaProjectionSegment, TextAreaTextRun,
-        };
+        use crate::view::base_component::text_area::{TextAreaProjectionSegment, TextAreaTextRun};
 
         let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 220.0, 0.0);
@@ -8273,8 +9066,7 @@ mod tests {
             "projection must wrap to a fresh line when the residue cannot fit it: prev={prev:?}, projection={projection:?}"
         );
         assert!(
-            suffix.y >= projection.y - 1.0
-                && suffix.y < projection.y + projection.height.max(1.0),
+            suffix.y >= projection.y - 1.0 && suffix.y < projection.y + projection.height.max(1.0),
             "suffix should stay within the projection line box: projection={projection:?}, suffix={suffix:?}"
         );
         assert!(
@@ -8332,7 +9124,10 @@ mod tests {
             );
         }
         assert!(
-            !nodes.last().expect("last projection fragment").force_break_after,
+            !nodes
+                .last()
+                .expect("last projection fragment")
+                .force_break_after,
             "last projection fragment should allow following siblings on the same line"
         );
     }
@@ -8389,7 +9184,10 @@ mod tests {
         let nodes = arena
             .with_element_taken_ref(segment_key, |el, arena| el.get_inline_nodes_size(arena))
             .expect("segment inline nodes");
-        assert!(!nodes.is_empty(), "projection segment should expose inline nodes");
+        assert!(
+            !nodes.is_empty(),
+            "projection segment should expose inline nodes"
+        );
         for (idx, node) in nodes.iter().enumerate() {
             assert_eq!(
                 node.vertical_align,
@@ -8469,8 +9267,7 @@ mod tests {
     fn inherited_text_style_cascades_vertical_align_into_text() {
         use crate::view::renderer_adapter::InheritedTextStyle;
 
-        let parent_style =
-            Style::new().with_vertical_align(VerticalAlign::Middle);
+        let parent_style = Style::new().with_vertical_align(VerticalAlign::Middle);
         let mut inherited = InheritedTextStyle::default();
         inherited.merge_style(&parent_style);
         assert_eq!(inherited.vertical_align, Some(VerticalAlign::Middle));
@@ -8612,8 +9409,10 @@ mod tests {
 
         // line_box_h(row) = max(text_ascent, elem_h=30) + max(text_descent, 0)
         // With elem_h=30 dominating ascent, line_box_h = 30 + text_descent.
-        let line_box_a = 30.0_f32.max(text_a_n.baseline) + (text_a_n.height - text_a_n.baseline).max(0.0);
-        let line_box_b = 30.0_f32.max(text_b_n.baseline) + (text_b_n.height - text_b_n.baseline).max(0.0);
+        let line_box_a =
+            30.0_f32.max(text_a_n.baseline) + (text_a_n.height - text_a_n.baseline).max(0.0);
+        let line_box_b =
+            30.0_f32.max(text_b_n.baseline) + (text_b_n.height - text_b_n.baseline).max(0.0);
         // line_box_b grows by ~font_size * 0.5 (descent grew that much,
         // ascent stayed below elem_h since text_ascent ~16 < 30).
         let delta = line_box_b - line_box_a;
@@ -8652,8 +9451,16 @@ mod tests {
         wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
         wrapper.apply_style(wrapper_style);
         let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
-        commit_child(&mut arena, wrapper_key, Box::new(Element::new(0.0, 0.0, 20.0, 10.0)));
-        commit_child(&mut arena, wrapper_key, Box::new(Element::new(0.0, 0.0, 20.0, 30.0)));
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Element::new(0.0, 0.0, 20.0, 10.0)),
+        );
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Element::new(0.0, 0.0, 20.0, 30.0)),
+        );
 
         measure_and_place(
             &mut arena,
@@ -8722,7 +9529,11 @@ mod tests {
         // Element taller than typical text height (~16.8 px at default
         // font-size 14, line-height 1.2). Element baseline = height = 30,
         // so line_ascent = 30 and the line picks up text_descent on top.
-        commit_child(&mut arena, wrapper_key, Box::new(Element::new(0.0, 0.0, 20.0, 30.0)));
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Element::new(0.0, 0.0, 20.0, 30.0)),
+        );
 
         measure_and_place(
             &mut arena,

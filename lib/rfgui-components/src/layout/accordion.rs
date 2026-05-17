@@ -2,8 +2,8 @@ use crate::material_symbol::ExpandMoreIcon;
 use crate::use_theme;
 use rfgui::style::flex;
 use rfgui::style::{
-    Align, Angle, Border, ClipMode, Color, Cursor, Layout, Length, Position, Rotate, Transform,
-    Transition, TransitionProperty,
+    Align, Angle, Border, Color, Cursor, Layout, Length, Rotate, Transform, Transition,
+    TransitionProperty,
 };
 use rfgui::ui::{Binding, RsxComponent, RsxNode, component, on_click, props, rsx, use_state};
 use rfgui::view::Element;

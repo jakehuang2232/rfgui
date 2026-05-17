@@ -1,3 +1,5 @@
+use crate::view::node_arena::InvalidationContext;
+
 impl Element {
     const SHOULD_RENDER_OVERSCAN_PX: f32 = 24.0;
 
@@ -69,7 +71,7 @@ impl Element {
     }
 
     fn transition_inner_rect(&self) -> Rect {
-        let (frame_width, frame_height) = self.current_layout_transition_size();
+        let (frame_width, frame_height) = self.current_layout_frame_size();
         self.inner_rect_for_frame_size(frame_width, frame_height)
     }
 
@@ -243,7 +245,13 @@ impl Element {
         if self.is_fragmentable_inline_element() && self.inline_paint_fragments.len() > 1 {
             return false;
         }
-        if self.children.is_empty() || !self.has_inner_render_area() {
+        if self.children.is_empty() {
+            return false;
+        }
+        if self.has_active_layout_transition() && !self.has_inner_render_area() {
+            return true;
+        }
+        if !self.has_inner_render_area() {
             return false;
         }
         // Force clip: (has children AND has border_radius) OR any child has active animator.
@@ -405,14 +413,21 @@ impl Element {
         )
     }
 
-    fn current_clip_layout_size(&self) -> (f32, f32) {
-        let has_active_layout_transition = self.layout_transition_override_width.is_some()
-            || self.layout_transition_override_height.is_some();
-        if has_active_layout_transition {
+    fn has_active_layout_transition(&self) -> bool {
+        self.layout_transition_override_width.is_some()
+            || self.layout_transition_override_height.is_some()
+    }
+
+    fn current_layout_frame_size(&self) -> (f32, f32) {
+        if self.has_active_layout_transition() {
             self.current_layout_transition_size()
         } else {
             self.current_layout_target_size()
         }
+    }
+
+    fn current_clip_layout_size(&self) -> (f32, f32) {
+        self.current_layout_frame_size()
     }
 
     fn current_layout_target_size(&self) -> (f32, f32) {
@@ -738,17 +753,28 @@ impl Element {
         self.mark_local_dirty(DirtyFlags::ALL);
     }
 
+    pub fn mark_layout_dirty_with(&mut self, cx: &mut InvalidationContext<'_>) {
+        self.mark_layout_dirty();
+        cx.invalidate(DirtyFlags::ALL);
+    }
+
     pub(crate) fn mark_place_dirty(&mut self) {
-        self.mark_local_dirty(
-            DirtyFlags::PLACE
-                .union(DirtyFlags::BOX_MODEL)
-                .union(DirtyFlags::HIT_TEST)
-                .union(DirtyFlags::PAINT),
-        );
+        self.mark_local_dirty(DirtyPassMask::RUNTIME);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn mark_place_dirty_with(&mut self, cx: &mut InvalidationContext<'_>) {
+        self.mark_place_dirty();
+        cx.invalidate(DirtyPassMask::RUNTIME);
     }
 
     pub(crate) fn mark_paint_dirty(&mut self) {
-        self.mark_local_dirty(DirtyFlags::PAINT);
+        self.mark_local_dirty(DirtyPassMask::PAINT);
+    }
+
+    pub(crate) fn mark_paint_dirty_with(&mut self, cx: &mut InvalidationContext<'_>) {
+        self.mark_paint_dirty();
+        cx.invalidate(DirtyPassMask::PAINT);
     }
 
     pub(crate) fn mark_local_dirty(&mut self, flags: DirtyFlags) {
@@ -765,9 +791,27 @@ impl Element {
         self.mark_paint_dirty();
     }
 
+    pub fn set_background_color_value_with_invalidation(
+        &mut self,
+        color: Color,
+        cx: &mut InvalidationContext<'_>,
+    ) {
+        self.background_color = Box::new(color);
+        self.mark_paint_dirty_with(cx);
+    }
+
     pub fn set_foreground_color(&mut self, color: Color) {
         self.foreground_color = color;
         self.mark_paint_dirty();
+    }
+
+    pub fn set_foreground_color_with_invalidation(
+        &mut self,
+        color: Color,
+        cx: &mut InvalidationContext<'_>,
+    ) {
+        self.foreground_color = color;
+        self.mark_paint_dirty_with(cx);
     }
 
     pub fn set_box_shadows(&mut self, box_shadows: Vec<BoxShadow>) {
@@ -775,10 +819,29 @@ impl Element {
         self.mark_paint_dirty();
     }
 
+    pub fn set_box_shadows_with_invalidation(
+        &mut self,
+        box_shadows: Vec<BoxShadow>,
+        cx: &mut InvalidationContext<'_>,
+    ) {
+        self.box_shadows = box_shadows;
+        self.mark_paint_dirty_with(cx);
+    }
+
     pub fn set_transform_value(&mut self, transform: Transform) {
         self.transform = transform;
         self.update_resolved_transform();
         self.mark_place_dirty();
+    }
+
+    pub fn set_transform_value_with_invalidation(
+        &mut self,
+        transform: Transform,
+        cx: &mut InvalidationContext<'_>,
+    ) {
+        self.transform = transform;
+        self.update_resolved_transform();
+        self.mark_place_dirty_with(cx);
     }
 
     pub fn set_transform_progress_value(&mut self, from: Transform, to: Transform, progress: f32) {
@@ -795,10 +858,40 @@ impl Element {
         self.mark_place_dirty();
     }
 
+    pub fn set_transform_progress_value_with_invalidation(
+        &mut self,
+        from: Transform,
+        to: Transform,
+        progress: f32,
+        cx: &mut InvalidationContext<'_>,
+    ) {
+        self.transform = interpolate_transform_with_reference_box(
+            &from,
+            &to,
+            progress,
+            glam::Vec2::new(
+                self.layout_state.layout_size.width.max(0.0),
+                self.layout_state.layout_size.height.max(0.0),
+            ),
+        );
+        self.update_resolved_transform();
+        self.mark_place_dirty_with(cx);
+    }
+
     pub fn set_transform_origin_value(&mut self, transform_origin: TransformOrigin) {
         self.transform_origin = transform_origin;
         self.update_resolved_transform();
         self.mark_place_dirty();
+    }
+
+    pub fn set_transform_origin_value_with_invalidation(
+        &mut self,
+        transform_origin: TransformOrigin,
+        cx: &mut InvalidationContext<'_>,
+    ) {
+        self.transform_origin = transform_origin;
+        self.update_resolved_transform();
+        self.mark_place_dirty_with(cx);
     }
 
     pub fn set_transform_origin_progress_value(
@@ -818,6 +911,26 @@ impl Element {
         );
         self.update_resolved_transform();
         self.mark_place_dirty();
+    }
+
+    pub fn set_transform_origin_progress_value_with_invalidation(
+        &mut self,
+        from: TransformOrigin,
+        to: TransformOrigin,
+        progress: f32,
+        cx: &mut InvalidationContext<'_>,
+    ) {
+        self.transform_origin = crate::style::interpolate_transform_origin_with_reference_box(
+            from,
+            to,
+            progress,
+            glam::Vec2::new(
+                self.layout_state.layout_size.width.max(0.0),
+                self.layout_state.layout_size.height.max(0.0),
+            ),
+        );
+        self.update_resolved_transform();
+        self.mark_place_dirty_with(cx);
     }
 
     pub fn set_layout_transition_x(&mut self, value: f32) {
@@ -873,9 +986,27 @@ impl Element {
         self.mark_paint_dirty();
     }
 
+    pub fn set_border_top_color_with_invalidation(
+        &mut self,
+        color: Color,
+        cx: &mut InvalidationContext<'_>,
+    ) {
+        self.border_colors.top = Box::new(color);
+        self.mark_paint_dirty_with(cx);
+    }
+
     pub fn set_border_right_color(&mut self, color: Color) {
         self.border_colors.right = Box::new(color);
         self.mark_paint_dirty();
+    }
+
+    pub fn set_border_right_color_with_invalidation(
+        &mut self,
+        color: Color,
+        cx: &mut InvalidationContext<'_>,
+    ) {
+        self.border_colors.right = Box::new(color);
+        self.mark_paint_dirty_with(cx);
     }
 
     pub fn set_border_bottom_color(&mut self, color: Color) {
@@ -883,9 +1014,27 @@ impl Element {
         self.mark_paint_dirty();
     }
 
+    pub fn set_border_bottom_color_with_invalidation(
+        &mut self,
+        color: Color,
+        cx: &mut InvalidationContext<'_>,
+    ) {
+        self.border_colors.bottom = Box::new(color);
+        self.mark_paint_dirty_with(cx);
+    }
+
     pub fn set_border_left_color(&mut self, color: Color) {
         self.border_colors.left = Box::new(color);
         self.mark_paint_dirty();
+    }
+
+    pub fn set_border_left_color_with_invalidation(
+        &mut self,
+        color: Color,
+        cx: &mut InvalidationContext<'_>,
+    ) {
+        self.border_colors.left = Box::new(color);
+        self.mark_paint_dirty_with(cx);
     }
 
     pub fn set_border_radius(&mut self, radius: f32) {
@@ -898,6 +1047,15 @@ impl Element {
     pub fn set_opacity(&mut self, opacity: f32) {
         self.opacity = opacity;
         self.mark_paint_dirty();
+    }
+
+    pub fn set_opacity_with_invalidation(
+        &mut self,
+        opacity: f32,
+        cx: &mut InvalidationContext<'_>,
+    ) {
+        self.opacity = opacity;
+        self.mark_paint_dirty_with(cx);
     }
 
     /// Crate-visible read for the incremental-commit tests (M4 #7).

@@ -962,8 +962,9 @@ pub(crate) fn recascade_text_subtree(
         };
         // Phase 3: cascade replay goes through `ElementTrait::apply_inherited`.
         // Text / TextArea override; other hosts use the no-op default.
-        arena.with_element_taken(key, |element, _arena_ref| {
+        arena.mutate_element_with_invalidation(key, |element, cx| {
             element.apply_inherited(&inherited);
+            cx.invalidate(element.local_dirty_flags());
         });
         for child in arena.children_of(key) {
             walk(arena, ctx, child);
@@ -1188,9 +1189,9 @@ fn apply_update_work(
         }
     }
 
-    arena.with_element_taken(key, |element, arena_ref| {
+    arena.mutate_element_with_invalidation(key, |element, cx| {
         for (name, value) in changed {
-            match element.apply_prop(arena_ref, key, &ctx, name, value) {
+            match element.apply_prop(cx.arena(), key, &ctx, name, value) {
                 PropApplyOutcome::Applied => {}
                 PropApplyOutcome::NeedsCascade => {
                     cascade_dirty = true;
@@ -1207,7 +1208,7 @@ fn apply_update_work(
             }
         }
         for name in removed {
-            match element.reset_prop(arena_ref, key, &ctx, name) {
+            match element.reset_prop(cx.arena(), key, &ctx, name) {
                 PropApplyOutcome::Applied => {}
                 PropApplyOutcome::NeedsCascade => {
                     cascade_dirty = true;
@@ -1220,6 +1221,7 @@ fn apply_update_work(
                 }
             }
         }
+        cx.invalidate(element.local_dirty_flags());
     });
     // 軌 A #7: recascade after the element is back in its slot —
     // the walker relies on ancestor chain being intact.
@@ -1283,7 +1285,7 @@ fn apply_set_text_work(
     }
 
     let mut result: Result<(), UpdateFailure> = Ok(());
-    arena.with_element_taken(key, |element, _arena_ref| {
+    arena.mutate_element_with_invalidation(key, |element, cx| {
         if let Some(t) = element.as_any_mut().downcast_mut::<Text>() {
             t.set_text(text.clone());
         } else if let Some(ta) = element.as_any_mut().downcast_mut::<TextArea>() {
@@ -1291,6 +1293,7 @@ fn apply_set_text_work(
         } else {
             result = Err(UpdateFailure::SetTextOnNonTextTarget);
         }
+        cx.invalidate(element.local_dirty_flags());
     });
     result
 }
@@ -1322,12 +1325,13 @@ fn arena_move_child(arena: &mut NodeArena, parent: NodeKey, key: NodeKey, from: 
         children.insert(at, moved);
     }
     arena.set_children(parent, children.clone());
-    arena.with_element_taken(parent, |element, arena_ref| {
+    arena.mutate_element_with_invalidation(parent, |element, cx| {
         if let Some(el) = element
             .as_any_mut()
             .downcast_mut::<crate::view::base_component::Element>()
         {
-            let _previous = el.replace_children(arena_ref, children);
+            let _previous = el.replace_children(cx.arena(), children);
+            cx.invalidate(crate::view::base_component::DirtyFlags::ALL);
         }
     });
 }

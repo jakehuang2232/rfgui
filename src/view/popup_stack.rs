@@ -1,21 +1,19 @@
 //! Interaction-ordered stack for viewport-clip absolute nodes.
 //!
-//! Acts as the single source of truth for two parallel concerns:
+//! Acts as the cross-frame source of truth for interaction priority:
 //!
-//! - **Deferred render order** — `append_defer_render_nodes_to` consults
-//!   the stack so the latest-interacted popup is painted last (visually
-//!   on top).
 //! - **Pointer hit-test priority** — `hit_test_stacked` walks the stack
 //!   top-to-bottom so the same popup absorbs clicks first.
 //!
-//! Entries are `stable_id` (u64) so the stack survives slotmap reallocation
-//! across remount cycles.
+//! Deferred render targets are collected from the current frame's arena
+//! `NodeKey`s. The stack keeps `stable_id`s only so interaction order
+//! survives slotmap reallocation across remount cycles.
 
 use crate::view::node_arena::NodeArena;
 
 /// Bottom-to-top ordering of viewport-clip absolute nodes.
 ///
-/// Last entry = top of stack = painted last = hit-tested first.
+/// Last entry = top of stack = hit-tested first.
 #[derive(Debug, Default, Clone)]
 pub struct PopupStack {
     ids: Vec<u64>,

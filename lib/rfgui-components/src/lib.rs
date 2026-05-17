@@ -527,6 +527,40 @@ mod tests {
         }
     }
 
+    fn find_text_node(arena: &NodeArena, key: NodeKey, content: &str) -> Option<NodeKey> {
+        let (matches, children) = {
+            let node = arena.get(key)?;
+            (
+                node.element
+                    .as_any()
+                    .downcast_ref::<rfgui::view::base_component::Text>()
+                    .is_some_and(|text| text.content() == content),
+                node.children.clone(),
+            )
+        };
+        if matches {
+            return Some(key);
+        }
+        for child in children {
+            if let Some(found) = find_text_node(arena, child, content) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn is_ancestor_or_self(arena: &NodeArena, ancestor: NodeKey, mut node: NodeKey) -> bool {
+        loop {
+            if node == ancestor {
+                return true;
+            }
+            let Some(parent) = arena.parent_of(node) else {
+                return false;
+            };
+            node = parent;
+        }
+    }
+
     #[test]
     fn checkbox_label_has_non_zero_text_layout() {
         let tree = rsx! {
@@ -1020,5 +1054,75 @@ mod tests {
             icon.2 > title.2 + title.4 - 1.0,
             "icon should be pushed after title: {boxes:#?}"
         );
+    }
+
+    #[test]
+    fn window_accordion_button_label_hit_tests_inside_button_branch() {
+        let tree = rsx! {
+            <Window
+                title="Component Test"
+                width={Some(460.0)}
+                height={Some(380.0)}
+                position={Some((96.0, 96.0))}
+            >
+                <Accordion
+                    title="Button"
+                    default_expanded={Some(true)}
+                >
+                    <Button variant={Some(ButtonVariant::Contained)}>
+                        Contained
+                    </Button>
+                </Accordion>
+            </Window>
+        };
+
+        let mut arena = NodeArena::new();
+        let roots = commit_rsx_tree_into(&mut arena, &tree);
+        let root_key = *roots.first().expect("root");
+        measure_and_place_root(
+            &mut arena,
+            root_key,
+            LayoutConstraints {
+                max_width: 1280.0,
+                max_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 1280.0,
+                available_height: 800.0,
+                viewport_width: 1280.0,
+                viewport_height: 800.0,
+                percent_base_width: Some(1280.0),
+                percent_base_height: Some(800.0),
+            },
+        );
+
+        let label_key = find_text_node(&arena, root_key, "Contained").expect("button label");
+        let label_snapshot = arena
+            .get(label_key)
+            .expect("button label")
+            .element
+            .box_model_snapshot();
+        let x = label_snapshot.x + label_snapshot.width * 0.5;
+        let y = label_snapshot.y + label_snapshot.height * 0.5;
+        let target = rfgui::view::base_component::hit_test(&arena, root_key, x, y)
+            .expect("button label should hit-test");
+        let target_id = arena.get(target).expect("hit target").element.stable_id();
+        let cursor = rfgui::view::base_component::get_cursor_by_id(&arena, root_key, target_id)
+            .expect("cursor for hit target");
+
+        assert!(
+            is_ancestor_or_self(&arena, target, label_key)
+                || is_ancestor_or_self(&arena, label_key, target),
+            "hit at button label ({x}, {y}) should stay in the button label branch; target={target:?}, label={label_key:?}",
+        );
+        assert_eq!(cursor, rfgui::style::Cursor::Pointer);
     }
 }

@@ -190,6 +190,7 @@ impl Layoutable for TextAreaProjectionSegment {
                 visual_offset_y: 0.0,
                 child_available_width: placement.available_width,
                 child_available_height: placement.available_height,
+                child_parent_hit_test_clip: None,
                 viewport_width: placement.viewport_width,
                 viewport_height: placement.viewport_height,
                 child_percent_base_width: placement.percent_base_width,

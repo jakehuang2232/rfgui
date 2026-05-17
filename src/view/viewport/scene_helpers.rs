@@ -90,24 +90,32 @@ impl Viewport {
         map: &FxHashMap<u64, (f32, f32)>,
     ) {
         fn walk(
-            node: &mut dyn crate::view::base_component::ElementTrait,
             arena: &crate::view::node_arena::NodeArena,
+            key: crate::view::node_arena::NodeKey,
             map: &FxHashMap<u64, (f32, f32)>,
         ) {
-            if let Some(offset) = map.get(&node.stable_id()) {
-                node.set_scroll_offset(*offset);
+            let Some(node) = arena.get(key) else {
+                return;
+            };
+            let stable_id = node.element.stable_id();
+            let child_keys = node.children.clone();
+            drop(node);
+
+            if let Some(offset) = map.get(&stable_id) {
+                let _ = arena.mutate_element_ref_with_invalidation(key, |element, cx| {
+                    let before = element.get_scroll_offset();
+                    element.set_scroll_offset(*offset);
+                    if before != *offset {
+                        cx.invalidate(crate::view::base_component::DirtyPassMask::RUNTIME);
+                    }
+                });
             }
-            let child_keys: Vec<crate::view::node_arena::NodeKey> = node.children().to_vec();
             for child_key in child_keys {
-                if let Some(mut child_node) = arena.get_mut(child_key) {
-                    walk(child_node.element.as_mut(), arena, map);
-                }
+                walk(arena, child_key, map);
             }
         }
         for &root_key in root_keys {
-            if let Some(mut root_node) = arena.get_mut(root_key) {
-                walk(root_node.element.as_mut(), arena, map);
-            }
+            walk(arena, root_key, map);
         }
     }
 
@@ -191,19 +199,19 @@ impl Viewport {
         Ok(true)
     }
 
-    pub(super) fn apply_placement_style_by_node_id(
+    pub(super) fn apply_placement_style_by_node_key(
         arena: &crate::view::node_arena::NodeArena,
-        root_keys: &[crate::view::node_arena::NodeKey],
-        node_id: u64,
+        target_key: crate::view::node_arena::NodeKey,
         style: &Style,
     ) -> bool {
-        for &root_key in root_keys {
-            let Some(mut root_node) = arena.get_mut(root_key) else {
-                continue;
-            };
-            if let Some(element) =
-                Self::element_by_id_mut(root_node.element.as_mut(), node_id, arena)
-            {
+        arena
+            .mutate_element_ref_with_invalidation(target_key, |element, cx| {
+                let Some(element) = element
+                    .as_any_mut()
+                    .downcast_mut::<crate::view::base_component::Element>()
+                else {
+                    return false;
+                };
                 let mut patch_style = Style::new();
                 if let Some(crate::style::ParsedValue::Transform(transform)) =
                     style.get(PropertyId::Transform)
@@ -224,10 +232,43 @@ impl Viewport {
                     );
                 }
                 element.apply_style(patch_style);
-                return true;
-            }
+                cx.invalidate(crate::view::base_component::DirtyPassMask::RUNTIME);
+                true
+            })
+            .unwrap_or(false)
+    }
+
+    fn root_set(root: &RsxNode) -> Vec<&RsxNode> {
+        match root {
+            RsxNode::Fragment(fragment) => fragment.children.iter().collect(),
+            other => vec![other],
         }
-        false
+    }
+
+    pub(super) fn arena_key_for_rsx_path(
+        arena: &crate::view::node_arena::NodeArena,
+        root_keys: &[crate::view::node_arena::NodeKey],
+        root: &RsxNode,
+        path: &[usize],
+    ) -> Option<crate::view::node_arena::NodeKey> {
+        let roots = Self::root_set(root);
+        if roots.len() != root_keys.len() {
+            return None;
+        }
+
+        let (root_index, per_root, per_root_path) = match root {
+            RsxNode::Fragment(_) => {
+                let (&root_index, rest) = path.split_first()?;
+                (root_index, *roots.get(root_index)?, rest)
+            }
+            _ => (0, roots[0], path),
+        };
+
+        let arena_path = match crate::view::fiber_work::rsx_to_arena_path(per_root, per_root_path) {
+            crate::view::fiber_work::ArenaPathResolution::Arena(path) => path,
+            crate::view::fiber_work::ArenaPathResolution::Invalid => return None,
+        };
+        crate::view::renderer_adapter::resolve_path(arena, root_keys[root_index], &arena_path)
     }
 
     pub(super) fn try_apply_placement_updates(&mut self, root: &RsxNode) -> Result<bool, String> {
@@ -263,19 +304,20 @@ impl Viewport {
                 return Ok(false);
             };
             let style = style.unwrap_or_default();
-            let node_id =
-                crate::view::renderer_adapter::rendered_node_id_by_index_path(root, path)?
-                    .ok_or_else(|| "target redraw patch resolved to a fragment".to_string())?;
-            updates.push((node_id, style));
-        }
-
-        for (node_id, style) in &updates {
-            if !Self::apply_placement_style_by_node_id(
+            let Some(target_key) = Self::arena_key_for_rsx_path(
                 &self.scene.node_arena,
                 &self.scene.ui_root_keys,
-                *node_id,
-                style,
-            ) {
+                root,
+                path,
+            ) else {
+                return Ok(false);
+            };
+            updates.push((target_key, style));
+        }
+
+        for (target_key, style) in &updates {
+            if !Self::apply_placement_style_by_node_key(&self.scene.node_arena, *target_key, style)
+            {
                 return Ok(false);
             }
         }
@@ -295,40 +337,62 @@ impl Viewport {
         Self::rsx_node_by_index_path(child, &path[1..])
     }
 
-    pub(super) fn element_by_id_mut<'a>(
-        root: &'a mut dyn crate::view::base_component::ElementTrait,
-        node_id: u64,
-        _arena: &'a crate::view::node_arena::NodeArena,
-    ) -> Option<&'a mut crate::view::base_component::Element> {
-        // NOTE: arena-backed children are now accessed via `NodeKey`. This
-        // helper only resolves the direct root; full-tree search via the
-        // arena is handled by the dispatch/events stack and is out of
-        // scope for this refactor step.
-        if root.stable_id() == node_id {
-            return root
-                .as_any_mut()
-                .downcast_mut::<crate::view::base_component::Element>();
-        }
-        None
-    }
-
     pub(super) fn refresh_frame_box_models(&mut self) {
         self.compositor.frame_box_models.clear();
-        let arena = &self.scene.node_arena;
-        let root_keys = self.scene.ui_root_keys.clone();
-        for &root_key in &root_keys {
-            let snapshots = crate::view::base_component::collect_box_models(root_key, arena);
-            self.compositor.frame_box_models.extend(snapshots);
+        #[cfg(test)]
+        {
+            self.compositor.box_model_refresh_stats = BoxModelRefreshStats::default();
         }
+        let root_keys = self.scene.ui_root_keys.clone();
+        let active_roots: FxHashSet<_> = root_keys.iter().copied().collect();
+        self.compositor
+            .frame_box_model_cache
+            .retain(|root_key, _| active_roots.contains(root_key));
+
         for &root_key in &root_keys {
-            if let Some(mut root_node) = arena.get_mut(root_key) {
-                crate::view::base_component::clear_subtree_dirty_flags(
-                    root_node.element.as_mut(),
-                    crate::view::base_component::DirtyFlags::BOX_MODEL
-                        .union(crate::view::base_component::DirtyFlags::HIT_TEST),
-                    arena,
-                );
+            let flags = crate::view::base_component::DirtyPassMask::BOX_MODEL
+                .union(crate::view::base_component::DirtyPassMask::HIT_TEST);
+            let can_reuse = self
+                .compositor
+                .frame_box_model_cache
+                .contains_key(&root_key)
+                && !self
+                    .scene
+                    .node_arena
+                    .subtree_dirty_intersects(root_key, flags);
+
+            if can_reuse {
+                let snapshots = self
+                    .compositor
+                    .frame_box_model_cache
+                    .get(&root_key)
+                    .expect("cache entry checked")
+                    .clone();
+                #[cfg(test)]
+                {
+                    self.compositor.box_model_refresh_stats.reused_roots += 1;
+                    self.compositor.box_model_refresh_stats.reused_snapshots += snapshots.len();
+                }
+                self.compositor.frame_box_models.extend(snapshots);
+                continue;
             }
+
+            let snapshots =
+                crate::view::base_component::collect_box_models(root_key, &self.scene.node_arena);
+            #[cfg(test)]
+            {
+                self.compositor.box_model_refresh_stats.collected_roots += 1;
+                self.compositor.box_model_refresh_stats.collected_snapshots += snapshots.len();
+            }
+            self.compositor
+                .frame_box_model_cache
+                .insert(root_key, snapshots.clone());
+            self.compositor.frame_box_models.extend(snapshots);
+            crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+                &mut self.scene.node_arena,
+                root_key,
+                flags,
+            );
         }
     }
 }
