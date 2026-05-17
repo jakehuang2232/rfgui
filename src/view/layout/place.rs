@@ -171,10 +171,20 @@ pub(crate) fn place_axis_children(inputs: PlaceAxisChildrenInputs<'_>, arena: &m
                 });
             } else {
                 arena.with_element_taken(child_key, |child, arena| {
-                    if is_row {
-                        child.set_layout_width(item_main);
+                    let (target_width, target_height) = child.layout_target_size();
+                    let item_target_main = if matches!(layout, Layout::Flow { .. }) {
+                        if is_row {
+                            target_width.max(0.0)
+                        } else {
+                            target_height.max(0.0)
+                        }
                     } else {
-                        child.set_layout_height(item_main);
+                        item_main
+                    };
+                    if is_row {
+                        child.set_layout_width(item_target_main);
+                    } else {
+                        child.set_layout_height(item_target_main);
                     }
                     let stretched_cross = if cross_size == CrossSize::Stretch
                         && child.flex_props().allows_cross_stretch(is_row)

@@ -166,11 +166,7 @@ fn AccordionView(
             <Element
                 style={{
                     layout: Layout::flex().column(),
-                    gap: theme.spacing.sm,
-                    position: Position::static_().clip(ClipMode::Parent),
                     height: if is_expanded { None } else { Length::Zero },
-                    padding: theme.component.card.padding,
-                    border: if is_expanded { content_border } else { None },
                     background: theme.color.layer.surface.clone(),
                     transition: [
                         Transition::new(
@@ -181,7 +177,13 @@ fn AccordionView(
                     ],
                 }}
             >
-                {children}
+                <Element style={{
+                    padding: theme.component.card.padding,
+                    border: content_border,
+                    gap: theme.spacing.sm,
+                }}>
+                    {children}
+                </Element>
             </Element>
         </Element>
     }

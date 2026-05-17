@@ -115,6 +115,20 @@ struct LayoutFrame {
 }
 
 #[derive(Clone, Copy, Debug)]
+struct LayoutTransitionState {
+    frame: Size,
+    width_keeps_content_constraint: bool,
+    height_keeps_content_constraint: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ResolvedLayoutSizes {
+    target: Size,
+    axis_measure_constraint: Size,
+    axis_place_constraint: Size,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct CornerRadii {
     top_left: f32,
     top_right: f32,
@@ -1136,6 +1150,9 @@ pub trait Layoutable {
     );
     fn place(&mut self, placement: LayoutPlacement, arena: &mut crate::view::node_arena::NodeArena);
     fn measured_size(&self) -> (f32, f32);
+    fn layout_target_size(&self) -> (f32, f32) {
+        self.measured_size()
+    }
     fn set_layout_width(&mut self, width: f32);
     fn set_layout_height(&mut self, height: f32);
     fn flex_props(&self) -> FlexProps {
