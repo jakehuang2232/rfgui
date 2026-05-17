@@ -713,7 +713,7 @@ pub enum TextAlign {
 /// Inherited prop. Initial value `Baseline` (per
 /// `docs/design/inline-baseline.md` D5). Read only by `Layout::Inline`
 /// place pipelines; non-inline containers pass through inheritance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VerticalAlign {
     Baseline,
     Top,

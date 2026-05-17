@@ -7600,6 +7600,100 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fragmentable_badge_text_keeps_source_order_and_y_with_sibling_text() {
+        for width in 220..=1_000 {
+            let width = width as f32;
+            let mut arena = new_test_arena();
+            let mut parent = Element::new(0.0, 0.0, width, 0.0);
+            let mut parent_style = Style::new();
+            parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+            parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
+            parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(8.0)));
+            parent.apply_style(parent_style);
+            let parent_key = commit_element(&mut arena, Box::new(parent));
+
+            let lead_key = commit_child(
+                &mut arena,
+                parent_key,
+                Box::new(Text::from_content("Inline text starts here,")),
+            );
+
+            let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+            let mut wrapper_style = Style::new();
+            wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
+            wrapper.apply_style(wrapper_style);
+            let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+            let badge_text_key = commit_child(
+                &mut arena,
+                wrapper_key,
+                Box::new(Text::from_content(
+                    "badge test test test test test test test",
+                )),
+            );
+
+            let trailing_key = commit_child(
+                &mut arena,
+                parent_key,
+                Box::new(Text::from_content(
+                    "then more text continues after the badge,",
+                )),
+            );
+
+            measure_and_place(
+                &mut arena,
+                parent_key,
+                LayoutConstraints {
+                    max_width: width,
+                    max_height: 240.0,
+                    viewport_width: width,
+                    viewport_height: 240.0,
+                    percent_base_width: Some(width),
+                    percent_base_height: Some(240.0),
+                },
+                LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: width,
+                    available_height: 240.0,
+                    viewport_width: width,
+                    viewport_height: 240.0,
+                    percent_base_width: Some(width),
+                    percent_base_height: Some(240.0),
+                },
+            );
+
+            let lead_fragment = {
+                let lead = crate::view::test_support::get_element::<Text>(&arena, lead_key);
+                lead.inline_fragment_positions()[0].1
+            };
+            let badge_fragment = {
+                let badge = crate::view::test_support::get_element::<Text>(&arena, badge_text_key);
+                badge.inline_fragment_positions()[0].1
+            };
+            let trailing_fragment = {
+                let trailing = crate::view::test_support::get_element::<Text>(&arena, trailing_key);
+                trailing.inline_fragment_positions()[0].1
+            };
+
+            let trailing_after_badge = trailing_fragment.y > badge_fragment.y + 0.5
+                || ((trailing_fragment.y - badge_fragment.y).abs() < 0.5
+                    && trailing_fragment.x > badge_fragment.x);
+            assert!(
+                trailing_after_badge,
+                "width={width} trailing text must not be visually before badge text: lead=({},{}) badge=({},{}) trailing=({},{})",
+                lead_fragment.x,
+                lead_fragment.y,
+                badge_fragment.x,
+                badge_fragment.y,
+                trailing_fragment.x,
+                trailing_fragment.y
+            );
+        }
+    }
+
     /// D7: fragmentable inline element shares its own `vertical-align`
     /// across all outer fragments. Inner line items keep their own
     /// values.
@@ -7914,10 +8008,12 @@ mod tests {
     }
 
     #[test]
-    fn text_area_projection_segment_preserves_projection_root_vertical_align() {
+    fn text_area_projection_segment_uses_owner_vertical_align() {
         use crate::view::base_component::text_area::TextAreaProjectionSegment;
 
         let mut arena = new_test_arena();
+        let mut segment = TextAreaProjectionSegment::new();
+        segment.set_vertical_align(VerticalAlign::Bottom);
         let mut badge = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut badge_style = Style::new();
         badge_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
@@ -7933,7 +8029,7 @@ mod tests {
             &mut arena,
             None,
             crate::view::renderer_adapter::ElementDescriptor {
-                element: Box::new(TextAreaProjectionSegment::new()),
+                element: Box::new(segment),
                 children: vec![crate::view::renderer_adapter::ElementDescriptor {
                     element: Box::new(badge),
                     children: vec![crate::view::renderer_adapter::ElementDescriptor::leaf(
@@ -7967,8 +8063,8 @@ mod tests {
         for (idx, node) in nodes.iter().enumerate() {
             assert_eq!(
                 node.vertical_align,
-                VerticalAlign::Middle,
-                "projection fragment {idx} must preserve the projection root's vertical_align"
+                VerticalAlign::Bottom,
+                "projection fragment {idx} must expose the owning TextArea's vertical_align"
             );
         }
     }

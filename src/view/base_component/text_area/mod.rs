@@ -65,6 +65,7 @@ pub struct TextArea {
     pub(crate) font_size: f32,
     pub(crate) font_weight: u16,
     pub(crate) line_height: f32,
+    pub(crate) vertical_align: crate::style::VerticalAlign,
     pub(crate) color: crate::style::Color,
     pub(crate) cursor: Cursor,
 
@@ -136,6 +137,7 @@ impl Default for TextArea {
             font_size: 14.0,
             font_weight: 400,
             line_height: 1.25,
+            vertical_align: crate::style::VerticalAlign::Baseline,
             color: crate::style::Color::rgba(17, 17, 17, 255),
             cursor: Cursor::Text,
 
@@ -243,10 +245,22 @@ impl TextArea {
             self.font_weight = fw;
             changed = true;
         }
+        if let Some(line_height) = inherited.line_height
+            && (self.line_height - line_height).abs() > f32::EPSILON
+        {
+            self.line_height = line_height;
+            changed = true;
+        }
         if let Some(color) = inherited.color
             && self.color == crate::style::Color::rgba(17, 17, 17, 255)
         {
             self.color = color;
+            changed = true;
+        }
+        if let Some(vertical_align) = inherited.vertical_align
+            && self.vertical_align != vertical_align
+        {
+            self.vertical_align = vertical_align;
             changed = true;
         }
         if changed {
@@ -372,6 +386,7 @@ impl ElementTrait for TextArea {
         self.font_families.hash(&mut hasher);
         self.font_size.to_bits().hash(&mut hasher);
         self.line_height.to_bits().hash(&mut hasher);
+        self.vertical_align.hash(&mut hasher);
         self.font_weight.hash(&mut hasher);
         self.multiline.hash(&mut hasher);
         self.auto_wrap.hash(&mut hasher);
@@ -427,6 +442,7 @@ impl ElementTrait for TextArea {
                 self.font_families.clone(),
                 self.font_size,
                 self.line_height,
+                self.vertical_align,
                 self.font_weight,
                 if is_placeholder {
                     self.placeholder_color
@@ -631,6 +647,16 @@ impl ElementTrait for TextArea {
                 }
                 if let Some(ParsedValue::FontWeight(fw)) = style.get(PropertyId::FontWeight) {
                     self.font_weight = fw.value();
+                }
+                if let Some(ParsedValue::LineHeight(line_height)) =
+                    style.get(PropertyId::LineHeight)
+                {
+                    self.line_height = line_height.value();
+                }
+                if let Some(ParsedValue::VerticalAlign(vertical_align)) =
+                    style.get(PropertyId::VerticalAlign)
+                {
+                    self.vertical_align = *vertical_align;
                 }
                 self.mark_content_dirty();
                 PropApplyOutcome::Applied

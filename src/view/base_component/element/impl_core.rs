@@ -455,6 +455,7 @@ impl Element {
             layout_state: crate::view::layout::LayoutState::new(x, y, width, height),
             intrinsic_size_is_percent_base: true,
             parsed_style: style,
+            text_cascade_style: None,
             computed_style: ComputedStyle::default(),
             padding: EdgeInsets {
                 left: 0.0,
@@ -866,6 +867,7 @@ impl Element {
     pub fn apply_style(&mut self, style: Style) {
         let base = std::mem::take(&mut self.parsed_style);
         self.parsed_style = base + style;
+        self.text_cascade_style = Some(self.parsed_style.clone());
         self.recompute_style();
     }
 
@@ -879,6 +881,7 @@ impl Element {
     /// diff. Layout-transition baselines and hover state flags live on
     /// `Element` (not `parsed_style`) and are preserved.
     pub fn replace_style(&mut self, style: Style) {
+        self.text_cascade_style = Some(style.clone());
         self.parsed_style = style;
         self.recompute_style();
     }
@@ -891,6 +894,16 @@ impl Element {
     /// to replay each ancestor's text-cascading props.
     pub(crate) fn parsed_style(&self) -> &Style {
         &self.parsed_style
+    }
+
+    pub(crate) fn text_cascade_style(&self) -> &Style {
+        self.text_cascade_style
+            .as_ref()
+            .unwrap_or(&self.parsed_style)
+    }
+
+    pub(crate) fn set_text_cascade_style(&mut self, style: Style) {
+        self.text_cascade_style = Some(style);
     }
 
     pub fn set_intrinsic_size_as_percent_base(&mut self, enabled: bool) {

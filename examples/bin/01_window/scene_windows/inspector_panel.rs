@@ -75,59 +75,68 @@ pub fn build(theme: &Theme) -> RsxNode {
                 binding={dark_mode.binding()}
                 on_change={on_dark_mode}
             />
-            <Switch
-                label="Debug Render Time"
-                binding={debug_render_time.binding()}
-                on_change={on_render_time}
-            />
-            <Element style={{
-                layout: Layout::flow().column().no_wrap(),
-                gap: theme.spacing.xs,
-                padding: Padding::new().left(theme.spacing.md),
-                position: Position::static_().clip(ClipMode::Parent),
-                height: if show_render_detail { None } else { Length::Zero },
-                transition: [
-                    Transition::new(
-                        TransitionProperty::Height,
-                        theme.motion.duration.normal,
-                    )
-                    .ease_in_out(),
-                ],
-            }}>
-                <Checkbox
-                    label="Layout Detail"
-                    binding={detail_layout.binding()}
-                    on_change={on_detail_layout}
+            <Element style={{ layout: Layout::flow().column().no_wrap() }}>
+                <Switch
+                    label="Debug Render Time"
+                    binding={debug_render_time.binding()}
+                    on_change={on_render_time}
                 />
-                <Checkbox
-                    label="Compile Detail"
-                    binding={detail_compile.binding()}
-                    on_change={on_detail_compile}
-                />
-                <Checkbox
-                    label="Execute Detail"
-                    binding={detail_execute.binding()}
-                    on_change={on_detail_execute}
-                />
+                <Element style={{
+                    layout: Layout::flow().column().no_wrap(),
+                    gap: theme.spacing.xs,
+                    padding: Padding::new().left(theme.spacing.md).y(theme.spacing.xs),
+                    position: Position::static_().clip(ClipMode::Parent),
+                    height: if show_render_detail { None } else { Length::Zero },
+                    transition: [
+                        Transition::new(
+                            TransitionProperty::Height,
+                            theme.motion.duration.normal,
+                        )
+                        .ease_in_out(),
+                    ],
+                }}>
+                    <Checkbox
+                        label="Layout Detail"
+                        binding={detail_layout.binding()}
+                        on_change={on_detail_layout}
+                    />
+                    <Checkbox
+                        label="Compile Detail"
+                        binding={detail_compile.binding()}
+                        on_change={on_detail_compile}
+                    />
+                    <Checkbox
+                        label="Execute Detail"
+                        binding={detail_execute.binding()}
+                        on_change={on_detail_execute}
+                    />
+                </Element>
             </Element>
             <Switch
                 label="Debug Geometry Overlay"
                 binding={debug_geometry_overlay.binding()}
                 on_change={on_geometry_overlay}
             />
-            <Switch
-                label="Debug Reuse Path"
-                binding={debug_reuse_path.binding()}
-                on_change={on_reuse_path}
-            />
-            {if show_reuse_legend {
-                rsx! {
-                    <Element style={{
+            <Element style={{ layout: Layout::flow().column().no_wrap() }}>
+                <Switch
+                    label="Debug Reuse Path"
+                    binding={debug_reuse_path.binding()}
+                    on_change={on_reuse_path}
+                />
+                <Element style={{
                         layout: Layout::flow().column().no_wrap(),
                         gap: theme.spacing.xs,
                         padding: Padding::uniform(theme.spacing.xs),
                         border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
                         width: Length::percent(100.0),
+                        height: if show_reuse_legend { None } else { Length::Zero },
+                        transition: [
+                            Transition::new(
+                                TransitionProperty::Height,
+                                theme.motion.duration.normal,
+                            )
+                            .ease_in_out(),
+                        ],
                     }}>
                         <Element>"Reuse Path Colors"</Element>
                         <Element style={{ layout: Layout::flow().row().no_wrap(), gap: theme.spacing.xs, width: Length::percent(100.0) }}>
@@ -171,10 +180,7 @@ pub fn build(theme: &Theme) -> RsxNode {
                             <Element>"Red: absolute clip inline"</Element>
                         </Element>
                     </Element>
-                }
-            } else {
-                rsx! { <Element /> }
-            }}
+            </Element>
             <Switch
                 label="Enable Layer Promotion"
                 binding={enable_layer_promotion.binding()}

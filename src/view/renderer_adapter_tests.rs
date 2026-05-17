@@ -5,15 +5,17 @@
 #![cfg(test)]
 
 use crate::style::{
-    Border, BorderRadius, Color, ColorLike, Cursor, FontSize, IntoColor, Layout, Length,
-    ParsedValue, PropertyId, Style, Unit,
+    Border, BorderRadius, Color, ColorLike, Cursor, FontSize, IntoColor, Layout, Length, Padding,
+    ParsedValue, PropertyId, Style, Unit, VerticalAlign,
 };
 use crate::ui::{
     GlobalKey, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor,
     identity_token_from_node_identity, rendered_node_id, rsx,
 };
 use crate::view::base_component::text_area::TextAreaTextRun;
-use crate::view::base_component::{Text, TextArea, get_cursor_by_id, hit_test};
+use crate::view::base_component::{
+    Element as BaseElement, Text, TextArea, get_cursor_by_id, hit_test,
+};
 use crate::view::test_support::{commit_rsx_tree, measure_and_place};
 use crate::view::{
     Element as HostElement, ElementStylePropSchema, Text as HostText, TextArea as HostTextArea,
@@ -129,6 +131,150 @@ fn text_style_with_size(width: f32, height: f32) -> TextStylePropSchema {
         width: Some(Length::px(width)),
         height: Some(Length::px(height)),
         ..empty_text_style()
+    }
+}
+
+#[test]
+fn rsx_fragmentable_badge_text_aligns_with_sibling_inline_text() {
+    for vertical_align in [
+        VerticalAlign::Baseline,
+        VerticalAlign::Top,
+        VerticalAlign::Middle,
+        VerticalAlign::Bottom,
+    ] {
+        let tree = rsx! {
+            <HostElement style={ElementStylePropSchema {
+                layout: Some(Layout::Inline),
+                width: Some(Length::px(960.0)),
+                gap: Some(Length::px(8.0)),
+                line_height: Some(1.2),
+                vertical_align: Some(vertical_align),
+                ..empty_element_style()
+            }}>
+                Inline text starts here,
+                <HostElement style={ElementStylePropSchema {
+                    padding: Some(Padding::uniform(Length::px(8.0))),
+                    ..empty_element_style()
+                }}>
+                    badge test test test test test test test
+                </HostElement>
+                <HostText>then more text continues after the badge,</HostText>
+                <HostElement style={ElementStylePropSchema {
+                    width: Some(Length::px(90.0)),
+                    height: Some(Length::px(50.0)),
+                    padding: Some(Padding::uniform(Length::px(8.0))),
+                    ..empty_element_style()
+                }}>
+                    <HostText>note note note note note note note</HostText>
+                </HostElement>
+            </HostElement>
+        };
+        let mut arena = crate::view::node_arena::NodeArena::new();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        let root = roots[0];
+        measure_and_place(
+            &mut arena,
+            root,
+            crate::view::base_component::LayoutConstraints {
+                max_width: 960.0,
+                max_height: 240.0,
+                viewport_width: 960.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(960.0),
+                percent_base_height: Some(240.0),
+            },
+            crate::view::base_component::LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 960.0,
+                available_height: 240.0,
+                viewport_width: 960.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(960.0),
+                percent_base_height: Some(240.0),
+            },
+        );
+
+        let root_children = arena.children_of(root);
+        let lead_key = root_children[0];
+        let badge_key = root_children[1];
+        let trailing_key = root_children[2];
+        let note_key = root_children[3];
+        let badge_text_key = arena.children_of(badge_key)[0];
+        let note_text_key = arena.children_of(note_key)[0];
+        let badge_paint_y = {
+            let node = arena.get(badge_key).expect("badge node");
+            node.element
+                .as_any()
+                .downcast_ref::<BaseElement>()
+                .expect("badge element")
+                .inline_fragment_rects()[0]
+                .y
+        };
+
+        let lead_fragment = {
+            let node = arena.get(lead_key).expect("lead node");
+            node.element
+                .as_any()
+                .downcast_ref::<Text>()
+                .expect("lead text")
+                .inline_fragment_positions()[0]
+                .1
+        };
+        let badge_fragment = {
+            let node = arena.get(badge_text_key).expect("badge text node");
+            let fragments = node
+                .element
+                .as_any()
+                .downcast_ref::<Text>()
+                .expect("badge text")
+                .inline_fragment_positions();
+            fragments
+                .iter()
+                .find(|(content, _)| content.contains("badge"))
+                .unwrap_or_else(|| panic!("expected visible badge fragment, got {fragments:?}"))
+                .1
+        };
+        let trailing_fragment = {
+            let node = arena.get(trailing_key).expect("trailing node");
+            node.element
+                .as_any()
+                .downcast_ref::<Text>()
+                .expect("trailing text")
+                .inline_fragment_positions()[0]
+                .1
+        };
+        let note_fragment = {
+            let node = arena.get(note_text_key).expect("note text node");
+            node.element
+                .as_any()
+                .downcast_ref::<Text>()
+                .expect("note text")
+                .inline_fragment_positions()[0]
+                .1
+        };
+        assert!(
+            (lead_fragment.y - badge_fragment.y).abs() < 0.5,
+            "{vertical_align:?}: lead_y={} badge_y={} trailing_y={} note_y={} should match",
+            lead_fragment.y,
+            badge_fragment.y,
+            trailing_fragment.y,
+            note_fragment.y
+        );
+        assert!(
+            (lead_fragment.y - badge_paint_y - 8.0).abs() < 0.5,
+            "{vertical_align:?}: badge_paint_y={} should be padding-top above lead_y={}",
+            badge_paint_y,
+            lead_fragment.y
+        );
+        assert!(
+            trailing_fragment.x > badge_fragment.x,
+            "{vertical_align:?}: trailing text should follow badge text: trailing_x={} badge_x={}",
+            trailing_fragment.x,
+            badge_fragment.x
+        );
     }
 }
 

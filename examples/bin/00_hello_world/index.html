@@ -210,6 +210,12 @@
       data-bin="00_hello_world"
       data-initializer="bootstrap.js"
     />
+    <link
+      data-trunk
+      rel="copy-dir"
+      href="../../assets"
+      data-target-path="assets"
+    />
     <script>
       window.addEventListener("error", () => {
         setBootError("Loading failed. Please refresh the page.");

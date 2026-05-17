@@ -1,7 +1,10 @@
-use crate::rfgui::style::{Border, BorderRadius, Color, Layout, Length, Padding};
+use crate::rfgui::style::{Border, BorderRadius, Color, Layout, Length, Padding, VerticalAlign};
 use crate::rfgui::ui::{RsxNode, component, on_text_area_render, rsx, use_state};
 use crate::rfgui::view::{Element, Text, TextArea};
-use crate::rfgui_components::{Switch, Theme};
+use crate::rfgui_components::{
+    ButtonSize, Switch, Theme, ToggleButton, ToggleButtonGroup, ToggleGroupChangeHandler,
+};
+use std::rc::Rc;
 
 fn projection_token_ranges(content: &str) -> Vec<(usize, usize)> {
     let chars: Vec<char> = content.chars().collect();
@@ -41,12 +44,38 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
     let fixed_width = use_state(|| true);
     let fixed_height = use_state(|| true);
     let auto_wrap = use_state(|| true);
+    let vertical_align = use_state(|| VerticalAlign::Baseline);
+    let vertical_align_group = use_state(|| Some(String::from("baseline")));
 
     let multiline_value = multiline.get();
     let projection_value = projection.get();
     let fixed_width_value = fixed_width.get();
     let fixed_height_value = fixed_height.get();
     let auto_wrap_value = auto_wrap.get();
+    let va = vertical_align.get();
+
+    let vertical_align_change = {
+        let vertical_align = vertical_align.binding();
+        let vertical_align_group = vertical_align_group.binding();
+        Rc::new(
+            move |_: &mut crate::rfgui::ui::ClickEvent, value: Option<String>| {
+                let selected = value.unwrap_or_else(|| match vertical_align.get() {
+                    VerticalAlign::Top => String::from("top"),
+                    VerticalAlign::Middle => String::from("middle"),
+                    VerticalAlign::Bottom => String::from("bottom"),
+                    _ => String::from("baseline"),
+                });
+                let next = match selected.as_str() {
+                    "top" => VerticalAlign::Top,
+                    "middle" => VerticalAlign::Middle,
+                    "bottom" => VerticalAlign::Bottom,
+                    _ => VerticalAlign::Baseline,
+                };
+                vertical_align.set(next);
+                vertical_align_group.set(Some(selected));
+            },
+        ) as ToggleGroupChangeHandler
+    };
 
     let badge_background = Color::hex("#233241");
     let badge_border = Color::hex("#42566f");
@@ -111,6 +140,17 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
                 <Switch label="Fixed width" binding={fixed_width.binding()} />
                 <Switch label="Fixed height" binding={fixed_height.binding()} />
                 <Switch label="Auto wrap" binding={auto_wrap.binding()} />
+                <Text>vertical-align:</Text>
+                <ToggleButtonGroup
+                    value={vertical_align_group.binding()}
+                    on_change={Some(vertical_align_change)}
+                    size={Some(ButtonSize::Small)}
+                >
+                    <ToggleButton value="baseline">Baseline</ToggleButton>
+                    <ToggleButton value="top">Top</ToggleButton>
+                    <ToggleButton value="middle">Middle</ToggleButton>
+                    <ToggleButton value="bottom">Bottom</ToggleButton>
+                </ToggleButtonGroup>
             </Element>
             <Text>{format!("chars={} lines={} width={} height={} projection={} wrap={}",
                 content.get().chars().count(),
@@ -135,6 +175,7 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
                 <TextArea
                     style={{
                         color: theme.color.text.primary.clone(),
+                        vertical_align: va,
                     }}
                     font_size=14
                     multiline={multiline_value}

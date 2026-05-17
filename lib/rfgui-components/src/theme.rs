@@ -280,31 +280,31 @@ fn button_sizes() -> ButtonSizes {
     // font size sm). Small/Large scale from there.
     ButtonSizes {
         small: ButtonSizeSpec {
-            padding: Padding::uniform(Length::px(0.0)).x(Length::px(8.0)),
+            padding: Padding::uniform(Length::px(2.0)).x(Length::px(8.0)),
             font_size: FontSize::px(12.0),
             icon_size: FontSize::px(14.0),
             icon_gap: Length::px(4.0),
             icon_button_size: Length::px(28.0),
             icon_button_padding: Padding::uniform(Length::px(4.0)),
-            toggle_button_padding: Padding::uniform(Length::px(0.0)).x(Length::px(8.0)),
+            toggle_button_padding: Padding::uniform(Length::px(2.0)).x(Length::px(8.0)),
         },
         medium: ButtonSizeSpec {
-            padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
+            padding: Padding::uniform(Length::px(3.0)).x(Length::px(12.0)),
             font_size: FontSize::px(14.0),
             icon_size: FontSize::px(16.0),
             icon_gap: Length::px(6.0),
             icon_button_size: Length::px(36.0),
             icon_button_padding: Padding::uniform(Length::px(6.0)),
-            toggle_button_padding: Padding::uniform(Length::px(0.0)).x(Length::px(12.0)),
+            toggle_button_padding: Padding::uniform(Length::px(3.0)).x(Length::px(12.0)),
         },
         large: ButtonSizeSpec {
-            padding: Padding::uniform(Length::px(0.0)).x(Length::px(16.0)),
+            padding: Padding::uniform(Length::px(4.0)).x(Length::px(16.0)),
             font_size: FontSize::px(16.0),
             icon_size: FontSize::px(20.0),
             icon_gap: Length::px(8.0),
             icon_button_size: Length::px(44.0),
             icon_button_padding: Padding::uniform(Length::px(8.0)),
-            toggle_button_padding: Padding::uniform(Length::px(0.0)).x(Length::px(16.0)),
+            toggle_button_padding: Padding::uniform(Length::px(4.0)).x(Length::px(16.0)),
         },
     }
 }

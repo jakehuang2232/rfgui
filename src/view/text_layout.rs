@@ -10,11 +10,14 @@ use crate::ui::Rect;
 use crate::view::font_system::with_shared_parley_context;
 
 const TEXT_LAYOUT_WRAP_EPSILON: f32 = 2.0;
+const PARLEY_SAFE_CHUNK_CHARS: usize = 240;
+const PARLEY_CLUSTER_BREAK: char = '\u{200B}';
 
 #[derive(Clone)]
 pub(crate) struct TextLayout {
     inner: ParleyLayout<[u8; 4]>,
     lines: Arc<OnceLock<Vec<TextLine>>>,
+    byte_map: Option<Arc<ParleyByteMap>>,
 }
 
 #[derive(Clone)]
@@ -96,10 +99,11 @@ pub(crate) struct TextLayoutLineFragment {
 }
 
 impl TextLayout {
-    fn new(inner: ParleyLayout<[u8; 4]>) -> Self {
+    fn new(inner: ParleyLayout<[u8; 4]>, byte_map: Option<ParleyByteMap>) -> Self {
         Self {
             inner,
             lines: Arc::new(OnceLock::new()),
+            byte_map: byte_map.map(Arc::new),
         }
     }
 
@@ -129,7 +133,8 @@ impl TextLayout {
         } else {
             Affinity::Downstream
         };
-        let cursor = ParleyCursor::from_byte_index(&self.inner, byte_index, affinity);
+        let layout_byte = self.original_to_layout_byte(byte_index);
+        let cursor = ParleyCursor::from_byte_index(&self.inner, layout_byte, affinity);
         let rect = cursor.geometry(&self.inner, 0.0);
         TextCursorGeometry {
             x: rect.x0 as f32,
@@ -139,7 +144,7 @@ impl TextLayout {
     }
 
     pub(crate) fn hit_byte(&self, x: f32, y: f32) -> usize {
-        ParleyCursor::from_point(&self.inner, x, y).index()
+        self.layout_to_original_byte(ParleyCursor::from_point(&self.inner, x, y).index())
     }
 
     pub(crate) fn caret_geometry_for_char_with_affinity(
@@ -281,12 +286,26 @@ impl TextLayout {
                     width: (metrics.inline_max_coord - metrics.inline_min_coord).max(0.0),
                     height: metrics.line_height,
                     baseline: (metrics.baseline - metrics.block_min_coord).max(0.0),
-                    text_start: text_range.start,
-                    text_end: text_range.end,
+                    text_start: self.layout_to_original_byte(text_range.start),
+                    text_end: self.layout_to_original_byte(text_range.end),
                     glyphs,
                 }
             })
             .collect()
+    }
+
+    fn original_to_layout_byte(&self, byte: usize) -> usize {
+        self.byte_map
+            .as_ref()
+            .map(|map| map.original_to_layout_byte(byte))
+            .unwrap_or(byte)
+    }
+
+    fn layout_to_original_byte(&self, byte: usize) -> usize {
+        self.byte_map
+            .as_ref()
+            .map(|map| map.layout_to_original_byte(byte))
+            .unwrap_or(byte)
     }
 
     pub(crate) fn inline_line_fragments(&self, content: &str) -> Vec<TextLayoutLineFragment> {
@@ -348,6 +367,85 @@ impl TextLayout {
             });
         }
         out
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ParleyByteMap {
+    insertions: Vec<ParleyInsertedText>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ParleyInsertedText {
+    original_byte: usize,
+    layout_start: usize,
+    layout_end: usize,
+}
+
+impl ParleyByteMap {
+    fn original_to_layout_byte(&self, byte: usize) -> usize {
+        byte + self
+            .insertions
+            .iter()
+            .filter(|insertion| insertion.original_byte <= byte)
+            .map(|insertion| insertion.layout_end - insertion.layout_start)
+            .sum::<usize>()
+    }
+
+    fn layout_to_original_byte(&self, byte: usize) -> usize {
+        let mut inserted_before = 0;
+        for insertion in &self.insertions {
+            if byte < insertion.layout_start {
+                break;
+            }
+            let inserted_len = insertion.layout_end - insertion.layout_start;
+            if byte < insertion.layout_end {
+                return insertion.original_byte;
+            }
+            inserted_before += inserted_len;
+        }
+        byte.saturating_sub(inserted_before)
+    }
+}
+
+struct ParleySafeText<'a> {
+    text: Cow<'a, str>,
+    byte_map: Option<ParleyByteMap>,
+}
+
+fn parley_safe_text(content: &str) -> ParleySafeText<'_> {
+    let content = if content.is_empty() { " " } else { content };
+    let mut out: Option<String> = None;
+    let mut insertions = Vec::new();
+    let mut chunk_chars = 0_usize;
+
+    for (byte, ch) in content.char_indices() {
+        if chunk_chars >= PARLEY_SAFE_CHUNK_CHARS {
+            let out = out.get_or_insert_with(|| content[..byte].to_string());
+            let layout_start = out.len();
+            out.push(PARLEY_CLUSTER_BREAK);
+            insertions.push(ParleyInsertedText {
+                original_byte: byte,
+                layout_start,
+                layout_end: out.len(),
+            });
+            chunk_chars = 0;
+        }
+        if let Some(out) = out.as_mut() {
+            out.push(ch);
+        }
+        chunk_chars += 1;
+    }
+
+    match out {
+        Some(text) => ParleySafeText {
+            text: Cow::Owned(text),
+            byte_map: Some(ParleyByteMap { insertions }),
+        },
+        None => ParleySafeText {
+            text: Cow::Borrowed(content),
+            byte_map: None,
+        },
     }
 }
 
@@ -457,7 +555,8 @@ pub(crate) fn build_text_layout_with_style(
     style: TextLayoutStyle,
     font_families: &[String],
 ) -> BuiltTextLayout {
-    let content = if content.is_empty() { " " } else { content };
+    let safe_text = parley_safe_text(content);
+    let content = safe_text.text.as_ref();
     with_shared_parley_context(|ctx| {
         let mut builder = ctx.layout.ranged_builder(&mut ctx.font, content, 1.0, true);
         builder.push_default(StyleProperty::FontSize(style.font_size.max(1.0)));
@@ -484,7 +583,7 @@ pub(crate) fn build_text_layout_with_style(
             AlignmentOptions::default(),
         );
         BuiltTextLayout {
-            layout: TextLayout::new(layout),
+            layout: TextLayout::new(layout, safe_text.byte_map),
         }
     })
 }
@@ -496,7 +595,8 @@ fn build_text_layout_with_style_and_line_widths(
     style: TextLayoutStyle,
     font_families: &[String],
 ) -> BuiltTextLayout {
-    let content = if content.is_empty() { " " } else { content };
+    let safe_text = parley_safe_text(content);
+    let content = safe_text.text.as_ref();
     with_shared_parley_context(|ctx| {
         let mut builder = ctx.layout.ranged_builder(&mut ctx.font, content, 1.0, true);
         builder.push_default(StyleProperty::FontSize(style.font_size.max(1.0)));
@@ -517,7 +617,7 @@ fn build_text_layout_with_style_and_line_widths(
             AlignmentOptions::default(),
         );
         BuiltTextLayout {
-            layout: TextLayout::new(layout),
+            layout: TextLayout::new(layout, safe_text.byte_map),
         }
     })
 }
@@ -746,5 +846,45 @@ mod tests {
             "preedit effective-text char boundary should be represented",
         );
         assert!(geom.height >= 1.0);
+    }
+
+    #[test]
+    fn overlong_combining_cluster_does_not_overflow_parley_map_len() {
+        let mut content = String::from("a");
+        for _ in 0..300 {
+            content.push('\u{0301}');
+        }
+        content.push('b');
+
+        let layout = test_layout(&content, Some(300.0));
+        let fragments = layout.inline_line_fragments(&content);
+        let combined = fragments
+            .iter()
+            .map(|fragment| fragment.content.as_str())
+            .collect::<String>();
+
+        assert_eq!(combined, content);
+        assert_eq!(layout.hit_byte(0.0, 0.0).min(content.len()), 0);
+        let tail =
+            layout.caret_geometry_for_char_with_affinity(&content, content.chars().count(), false);
+        assert!(tail.height >= 1.0);
+    }
+
+    #[test]
+    fn long_plain_text_keeps_original_line_fragments_after_safe_chunking() {
+        let content = "a".repeat(PARLEY_SAFE_CHUNK_CHARS * 2 + 3);
+
+        let layout = test_layout(&content, Some(10_000.0));
+        let fragments = layout.inline_line_fragments(&content);
+        let combined = fragments
+            .iter()
+            .map(|fragment| fragment.content.as_str())
+            .collect::<String>();
+
+        assert_eq!(combined, content);
+        assert_eq!(
+            layout.hit_byte(10_000.0, 0.0).min(content.len()),
+            content.len()
+        );
     }
 }

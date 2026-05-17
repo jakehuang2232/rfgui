@@ -13,7 +13,7 @@
 #![cfg(test)]
 
 use super::Viewport;
-use crate::style::{Layout, Length};
+use crate::style::{Layout, Length, Padding, VerticalAlign};
 use crate::ui::{
     Binding, DragEffect, RsxNode, RsxTagDescriptor, global_state, on_drag_over, on_drop, rsx,
 };
@@ -34,6 +34,35 @@ fn single_element(width_px: f32) -> RsxNode {
 
 fn text_leaf(content: &str) -> RsxNode {
     RsxNode::text(content)
+}
+
+fn inline_badge_vertical_align_tree(vertical_align: VerticalAlign) -> RsxNode {
+    use crate::view::Text as HostText;
+
+    rsx! {
+        <HostElement style={{
+            layout: Layout::Inline,
+            width: Length::px(960.0),
+            gap: Length::px(8.0),
+            line_height: 1.2f32,
+            vertical_align: vertical_align,
+        }}>
+            <HostText>"Inline text starts here,"</HostText>
+            <HostElement style={{
+                padding: Padding::uniform(Length::px(8.0)),
+            }}>
+                <HostText>"badge test test test test test test test"</HostText>
+            </HostElement>
+            <HostText>"then more text continues after the badge,"</HostText>
+            <HostElement style={{
+                width: Length::px(90.0),
+                height: Length::px(50.0),
+                padding: Padding::uniform(Length::px(8.0)),
+            }}>
+                <HostText>"note note note note note note note"</HostText>
+            </HostElement>
+        </HostElement>
+    }
 }
 
 fn collect_text_contents(
@@ -762,8 +791,9 @@ fn incremental_commit_replace_style_drops_absent_declaration() {
 
 /// When the `style` prop itself is removed between renders, reconcile
 /// emits a `removed: [\"style\"]` entry. M4 #1 routes that through
-/// `Element::replace_style(Style::new())`, clearing all authored
-/// declarations while keeping NodeKey stable.
+/// `Element::replace_style(...)`, clearing all authored declarations
+/// while preserving the inherited base needed by the Element's own
+/// computed style.
 #[test]
 fn incremental_commit_removes_style_prop_resets_parsed_style() {
     use crate::view::base_component::Element as ElementHost;
@@ -813,8 +843,16 @@ fn incremental_commit_removes_style_prop_resets_parsed_style() {
         .downcast_ref::<ElementHost>()
         .expect("Element host");
     assert!(
-        el.parsed_style().declarations().is_empty(),
-        "removed-style prop must reset parsed_style to Style::new()",
+        el.text_cascade_style().declarations().is_empty(),
+        "removed-style prop must clear the authored text cascade style",
+    );
+    assert!(
+        !matches!(
+            el.parsed_style().get(crate::style::PropertyId::Width),
+            Some(crate::style::ParsedValue::Length(length))
+                if *length == Length::px(120.0)
+        ),
+        "removed-style prop must drop the authored width declaration",
     );
 }
 
@@ -1004,6 +1042,255 @@ fn incremental_commit_recascade_preserves_explicit_text_font_size() {
         (text - 14.0).abs() < 1e-4,
         "explicit font_size={{14}} must survive ancestor cascade change; got {}",
         text
+    );
+}
+
+#[test]
+fn incremental_commit_vertical_align_keeps_fragmentable_badge_text_aligned() {
+    use crate::view::base_component::Text as TextHost;
+
+    let mut viewport = Viewport::new();
+    viewport.set_use_incremental_commit(true);
+
+    viewport
+        .render_rsx(&inline_badge_vertical_align_tree(VerticalAlign::Baseline))
+        .expect("cold render");
+    run_layout_for_test(&mut viewport, 960.0, 240.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let children = viewport.scene.node_arena.children_of(root_key);
+    let lead_key = children[0];
+    let badge_key = children[1];
+    let badge_text_key = viewport.scene.node_arena.children_of(badge_key)[0];
+
+    viewport
+        .render_rsx(&inline_badge_vertical_align_tree(VerticalAlign::Middle))
+        .expect("vertical-align change should render");
+    run_layout_for_test(&mut viewport, 960.0, 240.0);
+
+    assert_eq!(viewport.scene.ui_root_keys, vec![root_key]);
+    assert_eq!(
+        viewport.scene.node_arena.children_of(root_key)[1],
+        badge_key
+    );
+
+    let lead_y = viewport
+        .scene
+        .node_arena
+        .get(lead_key)
+        .expect("lead text")
+        .element
+        .as_any()
+        .downcast_ref::<TextHost>()
+        .expect("lead text")
+        .inline_fragment_positions()[0]
+        .1
+        .y;
+    let badge_y = viewport
+        .scene
+        .node_arena
+        .get(badge_text_key)
+        .expect("badge text")
+        .element
+        .as_any()
+        .downcast_ref::<TextHost>()
+        .expect("badge text")
+        .inline_fragment_positions()[0]
+        .1
+        .y;
+    let wrapper_nodes = viewport
+        .scene
+        .node_arena
+        .with_element_taken(badge_key, |element, arena| {
+            element.get_inline_nodes_size(arena)
+        })
+        .expect("badge wrapper");
+
+    assert!(
+        (lead_y - badge_y).abs() < 0.5,
+        "fragmentable badge text must track sibling inline text after incremental vertical-align update: lead_y={lead_y}, badge_y={badge_y}"
+    );
+    assert!(
+        wrapper_nodes
+            .iter()
+            .all(|node| node.vertical_align == VerticalAlign::Middle),
+        "fragmentable badge wrapper must expose the updated inherited vertical_align, got {wrapper_nodes:?}"
+    );
+}
+
+#[test]
+fn incremental_commit_recascade_updates_text_area_inherited_vertical_align() {
+    use crate::view::TextArea as HostTextArea;
+    use crate::view::base_component::TextArea as TextAreaHost;
+
+    fn tree(vertical_align: VerticalAlign) -> RsxNode {
+        rsx! {
+            <HostElement style={{
+                width: Length::px(240.0),
+                height: Length::px(120.0),
+                vertical_align: vertical_align,
+            }}>
+                <HostTextArea content={"abc".to_string()} />
+            </HostElement>
+        }
+    }
+
+    let mut viewport = Viewport::new();
+    viewport.set_use_incremental_commit(true);
+
+    viewport
+        .render_rsx(&tree(VerticalAlign::Middle))
+        .expect("cold render");
+    let root_key = viewport.scene.ui_root_keys[0];
+    let text_area_key = viewport.scene.node_arena.children_of(root_key)[0];
+
+    viewport
+        .render_rsx(&tree(VerticalAlign::Bottom))
+        .expect("parent vertical-align update should commit incrementally");
+
+    assert_eq!(viewport.scene.ui_root_keys, vec![root_key]);
+    let text_area_node = viewport
+        .scene
+        .node_arena
+        .get(text_area_key)
+        .expect("TextArea node");
+    let text_area = text_area_node
+        .element
+        .as_any()
+        .downcast_ref::<TextAreaHost>()
+        .expect("TextArea host");
+    assert_eq!(
+        text_area.vertical_align,
+        VerticalAlign::Bottom,
+        "TextArea without its own style must follow parent inherited vertical_align updates",
+    );
+}
+
+#[test]
+fn incremental_commit_recascade_updates_text_area_inherited_line_height() {
+    use crate::view::TextArea as HostTextArea;
+    use crate::view::base_component::TextArea as TextAreaHost;
+    use crate::view::base_component::text_area::TextAreaTextRun;
+
+    fn tree(line_height: f32) -> RsxNode {
+        rsx! {
+            <HostElement style={{
+                width: Length::px(240.0),
+                height: Length::px(120.0),
+                line_height: line_height,
+            }}>
+                <HostTextArea content={"abc".to_string()} />
+            </HostElement>
+        }
+    }
+
+    let mut viewport = Viewport::new();
+    viewport.set_use_incremental_commit(true);
+
+    viewport.render_rsx(&tree(1.1)).expect("cold render");
+    run_layout_for_test(&mut viewport, 240.0, 120.0);
+    let root_key = viewport.scene.ui_root_keys[0];
+    let text_area_key = viewport.scene.node_arena.children_of(root_key)[0];
+
+    viewport
+        .render_rsx(&tree(1.8))
+        .expect("parent line-height update should commit incrementally");
+    run_layout_for_test(&mut viewport, 240.0, 120.0);
+
+    assert_eq!(viewport.scene.ui_root_keys, vec![root_key]);
+    let text_area_node = viewport
+        .scene
+        .node_arena
+        .get(text_area_key)
+        .expect("TextArea node");
+    let text_area = text_area_node
+        .element
+        .as_any()
+        .downcast_ref::<TextAreaHost>()
+        .expect("TextArea host");
+    assert!(
+        (text_area.line_height - 1.8).abs() < 1e-4,
+        "TextArea without its own style must follow parent inherited line_height updates, got {}",
+        text_area.line_height,
+    );
+    let run_key = text_area.children[0];
+    let run_node = viewport
+        .scene
+        .node_arena
+        .get(run_key)
+        .expect("TextArea run");
+    let run = run_node
+        .element
+        .as_any()
+        .downcast_ref::<TextAreaTextRun>()
+        .expect("TextAreaTextRun");
+    assert!(
+        (run.line_height - 1.8).abs() < 1e-4,
+        "TextArea run children must be rebuilt with updated inherited line_height, got {}",
+        run.line_height,
+    );
+}
+
+#[test]
+fn incremental_commit_reset_element_style_restores_inherited_text_base() {
+    use crate::view::Text as HostText;
+
+    let first = rsx! {
+        <HostElement style={{
+            layout: Layout::Inline,
+            width: Length::px(320.0),
+            vertical_align: VerticalAlign::Bottom,
+        }}>
+            <HostElement style={{
+                vertical_align: VerticalAlign::Middle,
+                padding: Padding::uniform(Length::px(4.0)),
+            }}>
+                <HostText>"badge"</HostText>
+            </HostElement>
+        </HostElement>
+    };
+    let second = rsx! {
+        <HostElement style={{
+            layout: Layout::Inline,
+            width: Length::px(320.0),
+            vertical_align: VerticalAlign::Bottom,
+        }}>
+            <HostElement>
+                <HostText>"badge"</HostText>
+            </HostElement>
+        </HostElement>
+    };
+
+    let mut viewport = Viewport::new();
+    viewport.set_use_incremental_commit(true);
+
+    viewport.render_rsx(&first).expect("cold render");
+    run_layout_for_test(&mut viewport, 320.0, 120.0);
+    let root_key = viewport.scene.ui_root_keys[0];
+    let wrapper_key = viewport.scene.node_arena.children_of(root_key)[0];
+
+    viewport
+        .render_rsx(&second)
+        .expect("style removal should commit incrementally");
+    run_layout_for_test(&mut viewport, 320.0, 120.0);
+
+    assert_eq!(viewport.scene.ui_root_keys, vec![root_key]);
+    assert_eq!(
+        viewport.scene.node_arena.children_of(root_key)[0],
+        wrapper_key
+    );
+    let wrapper_nodes = viewport
+        .scene
+        .node_arena
+        .with_element_taken(wrapper_key, |element, arena| {
+            element.get_inline_nodes_size(arena)
+        })
+        .expect("wrapper element");
+    assert!(
+        wrapper_nodes
+            .iter()
+            .all(|node| node.vertical_align == VerticalAlign::Bottom),
+        "removing an Element style should leave its inherited text base intact, got {wrapper_nodes:?}"
     );
 }
 

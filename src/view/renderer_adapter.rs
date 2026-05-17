@@ -205,6 +205,28 @@ fn convert_text_leaf(
     Box::new(text_node)
 }
 
+pub(crate) fn element_base_style_from_inherited(inherited: &InheritedTextStyle) -> Style {
+    let mut base_style = Style::new();
+    base_style.insert(PropertyId::Width, ParsedValue::Auto);
+    base_style.insert(PropertyId::Height, ParsedValue::Auto);
+    if let Some(cursor) = inherited.cursor {
+        base_style.insert(PropertyId::Cursor, ParsedValue::Cursor(cursor));
+    }
+    if let Some(line_height) = inherited.line_height {
+        base_style.insert(
+            PropertyId::LineHeight,
+            ParsedValue::LineHeight(crate::style::LineHeight::new(line_height)),
+        );
+    }
+    if let Some(vertical_align) = inherited.vertical_align {
+        base_style.insert(
+            PropertyId::VerticalAlign,
+            ParsedValue::VerticalAlign(vertical_align),
+        );
+    }
+    base_style
+}
+
 /// Build the container Element plus child-inherited text style without
 /// walking children. Used by the descriptor path
 /// ([`convert_container_element_desc`]).
@@ -223,24 +245,7 @@ fn build_container_element_shell(
         initial_size,
     );
     element.set_intrinsic_size_as_percent_base(false);
-    let mut base_style = Style::new();
-    base_style.insert(PropertyId::Width, ParsedValue::Auto);
-    base_style.insert(PropertyId::Height, ParsedValue::Auto);
-    if let Some(cursor) = inherited_text_style.cursor {
-        base_style.insert(PropertyId::Cursor, ParsedValue::Cursor(cursor));
-    }
-    if let Some(line_height) = inherited_text_style.line_height {
-        base_style.insert(
-            PropertyId::LineHeight,
-            ParsedValue::LineHeight(crate::style::LineHeight::new(line_height)),
-        );
-    }
-    if let Some(vertical_align) = inherited_text_style.vertical_align {
-        base_style.insert(
-            PropertyId::VerticalAlign,
-            ParsedValue::VerticalAlign(vertical_align),
-        );
-    }
+    let base_style = element_base_style_from_inherited(inherited_text_style);
 
     let mut user_style = Style::new();
     let mut has_user_style = false;
@@ -252,7 +257,7 @@ fn build_container_element_shell(
         }
     }
     let effective_style = if has_user_style {
-        base_style + user_style
+        base_style + user_style.clone()
     } else {
         base_style
     };
@@ -263,12 +268,13 @@ fn build_container_element_shell(
     // identity, layered style, and child cascade — anchor / padding /
     // opacity / event handlers all flow through the host.
     element.ingest_props(node)?;
+    element.set_text_cascade_style(user_style);
     // Phase 3: child cascade goes through the host. Element merges
-    // its `parsed_style()` (which now includes the layered base+user)
-    // onto `parent`. Equivalent to the previous inline merge of
-    // user_style alone — base_style only adds {Width:Auto,
-    // Height:Auto, Cursor:inherited.cursor}, none of which alter the
-    // text cascade beyond what's already inherited.
+    // its user-authored text cascade style onto `parent`. The layered
+    // base style may include inherited text props needed for this
+    // Element's own computed style, but replaying that base during a
+    // later incremental recascade would resurrect stale inherited
+    // values.
     let child_inherited_text_style = element.child_inherited_text_style(inherited_text_style);
 
     Ok((element, child_inherited_text_style))
@@ -523,13 +529,19 @@ pub(crate) fn convert_text_area_element_desc(
         text_area.font_size = inherited_size;
     }
     text_area.font_weight = inherited_text_style.font_weight.unwrap_or(400);
+    if let Some(inherited_line_height) = inherited_text_style.line_height {
+        text_area.line_height = inherited_line_height;
+    }
+    if let Some(inherited_vertical_align) = inherited_text_style.vertical_align {
+        text_area.vertical_align = inherited_vertical_align;
+    }
     if let Some(inherited_color) = inherited_text_style.color {
         text_area.color = inherited_color;
     }
 
     // Phase 3: text-side declarations from `style` go through the
-    // shared cascade-prop resolver. TextArea only reads font / size /
-    // weight / color / cursor (no text_wrap).
+    // shared cascade-prop resolver. TextArea only reads text-side
+    // properties (no text_wrap).
     if let Some(style) = &style {
         let resolved = inherited_text_style.resolved_text_props(style);
         if let Some(color) = resolved.color {
@@ -546,6 +558,12 @@ pub(crate) fn convert_text_area_element_desc(
         }
         if let Some(font_weight) = resolved.font_weight {
             text_area.font_weight = font_weight;
+        }
+        if let Some(line_height) = resolved.line_height {
+            text_area.line_height = line_height;
+        }
+        if let Some(vertical_align) = resolved.vertical_align {
+            text_area.vertical_align = vertical_align;
         }
     }
 
@@ -1092,9 +1110,10 @@ pub(crate) fn rsx_to_descriptors_with_inherited(
 
 /// M6 cascade: rebuild the `InheritedTextStyle` that the cold-path
 /// converter would see at `parent_key`. Walks the arena parent chain
-/// root→parent and replays each Element ancestor's `parsed_style`
-/// through `InheritedTextStyle::merge_style`, matching exactly what
-/// `build_container_element_shell` does during cold convert.
+/// root→parent and replays each Element ancestor's user-authored text
+/// cascade style through `InheritedTextStyle::merge_style`, matching
+/// exactly what `build_container_element_shell` does during cold
+/// convert.
 ///
 /// Non-Element ancestors (Text, TextArea, user hosts) contribute no
 /// cascading style — the cold path treats them as leaves in the
@@ -1120,7 +1139,7 @@ pub(crate) fn inherited_text_style_at_parent(
     for key in chain {
         let Some(node) = arena.get(key) else { continue };
         if let Some(el) = node.element.as_any().downcast_ref::<Element>() {
-            inherited.merge_style(el.parsed_style());
+            inherited.merge_style(el.text_cascade_style());
         }
     }
     inherited

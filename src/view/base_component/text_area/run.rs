@@ -134,6 +134,7 @@ impl TextAreaTextRun {
         font_families: Vec<String>,
         font_size: f32,
         line_height: f32,
+        vertical_align: crate::style::VerticalAlign,
         font_weight: u16,
         color: crate::style::Color,
         cursor: Cursor,
@@ -142,12 +143,14 @@ impl TextAreaTextRun {
         let layout_changed = self.font_families != font_families
             || self.font_size != font_size
             || self.line_height != line_height
+            || self.vertical_align != vertical_align
             || self.font_weight != font_weight
             || self.color != color
             || self.auto_wrap != auto_wrap;
         self.font_families = font_families;
         self.font_size = font_size;
         self.line_height = line_height;
+        self.vertical_align = vertical_align;
         self.font_weight = font_weight;
         self.color = color;
         self.cursor = cursor;
@@ -313,6 +316,77 @@ impl TextAreaTextRun {
             node.force_break_after = idx < last;
         }
         nodes
+    }
+
+    fn inline_text_pass_fragments(&self, opacity: f32) -> Vec<TextPassFragment> {
+        let Some(layout) = self.text_layout.as_ref() else {
+            return Vec::new();
+        };
+        let effective = self.effective_text();
+        let line_fragments = layout.inline_line_fragments(&effective);
+        if line_fragments.len() <= 1 || line_fragments.len() != self.inline_paint_fragments.len() {
+            return Vec::new();
+        }
+        line_fragments
+            .into_iter()
+            .zip(self.inline_paint_fragments.iter())
+            .filter_map(|(line, rect)| {
+                if line.content.is_empty() {
+                    return None;
+                }
+                let fragment_layout = measure_text_layout(
+                    line.content.as_str(),
+                    Some(line.width.max(1.0)),
+                    false,
+                    self.font_size,
+                    self.line_height,
+                    self.font_weight,
+                    TextLayoutAlignment::Left,
+                    self.font_families.as_slice(),
+                );
+                Some(TextPassFragment {
+                    content: line.content,
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width.max(line.width).max(1.0),
+                    height: rect.height.max(line.height).max(1.0),
+                    color: self.color.to_rgba_f32(),
+                    opacity,
+                    text_layout: Some(fragment_layout.text_layout),
+                })
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline_fragment_positions(&self) -> Vec<(String, Rect)> {
+        let Some(layout) = self.text_layout.as_ref() else {
+            return Vec::new();
+        };
+        layout
+            .inline_line_fragments(&self.effective_text())
+            .into_iter()
+            .zip(self.inline_paint_fragments.iter().copied())
+            .map(|(line, rect)| (line.content, rect))
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline_text_pass_fragment_positions(&self) -> Vec<(String, Rect)> {
+        self.inline_text_pass_fragments(1.0)
+            .into_iter()
+            .map(|fragment| {
+                (
+                    fragment.content,
+                    Rect {
+                        x: fragment.x,
+                        y: fragment.y,
+                        width: fragment.width,
+                        height: fragment.height,
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Hit-test: run-local (x, y) → char index in `effective_text`
@@ -510,12 +584,21 @@ impl TextAreaLineBreak {
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::LAYOUT);
     }
 
-    pub(crate) fn cascade_style(&mut self, font_size: f32, line_height: f32) {
-        if self.font_size == font_size && self.line_height == line_height {
+    pub(crate) fn cascade_style(
+        &mut self,
+        font_size: f32,
+        line_height: f32,
+        vertical_align: crate::style::VerticalAlign,
+    ) {
+        if self.font_size == font_size
+            && self.line_height == line_height
+            && self.vertical_align == vertical_align
+        {
             return;
         }
         self.font_size = font_size;
         self.line_height = line_height;
+        self.vertical_align = vertical_align;
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::LAYOUT);
     }
 
@@ -925,32 +1008,39 @@ impl Renderable for TextAreaTextRun {
         let Some(input_target) = ctx.current_target() else {
             return ctx.into_state();
         };
-        let [x, y] = ctx.paint_point(
-            self.layout_state.layout_position.x,
-            self.layout_state.layout_position.y,
-        );
+        let fragments = {
+            let inline_fragments = self.inline_text_pass_fragments(1.0);
+            if inline_fragments.is_empty() {
+                let [x, y] = ctx.paint_point(
+                    self.layout_state.layout_position.x,
+                    self.layout_state.layout_position.y,
+                );
 
-        let fragment = TextPassFragment {
-            content: self.effective_text(),
-            x,
-            y,
-            width: self.layout_state.layout_size.width.max(1.0),
-            height: self.layout_state.layout_size.height.max(1.0),
-            color: self.color.to_rgba_f32(),
-            opacity: 1.0,
-            text_layout: self.text_layout.clone(),
+                vec![TextPassFragment {
+                    content: self.effective_text(),
+                    x,
+                    y,
+                    width: self.layout_state.layout_size.width.max(1.0),
+                    height: self.layout_state.layout_size.height.max(1.0),
+                    color: self.color.to_rgba_f32(),
+                    opacity: 1.0,
+                    text_layout: self.text_layout.clone(),
+                }]
+            } else {
+                inline_fragments
+            }
         };
         let pass = TextPass::new(
-            TextPassParams::single_fragment(
-                fragment,
-                self.font_size,
-                self.line_height,
-                self.font_weight,
-                self.font_families.clone(),
-                self.auto_wrap,
-                None,
-                None,
-            ),
+            TextPassParams {
+                fragments,
+                font_size: self.font_size,
+                line_height: self.line_height,
+                font_weight: self.font_weight,
+                font_families: self.font_families.clone(),
+                allow_wrap: false,
+                scissor_rect: None,
+                stencil_clip_id: None,
+            },
             TextInput {
                 pass_context: ctx.graphics_pass_context(),
             },

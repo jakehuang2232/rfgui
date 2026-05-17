@@ -48,6 +48,7 @@ pub(crate) struct TextAreaProjectionSegment {
     flow_offset: Position,
     layout_state: LayoutState,
     flex_info: Option<FlexLayoutInfo>,
+    vertical_align: VerticalAlign,
     inline_paint_fragments: Vec<Rect>,
     dirty_flags: DirtyFlags,
     node_id: u64,
@@ -63,6 +64,7 @@ impl Default for TextAreaProjectionSegment {
             flow_offset: Position { x: 0.0, y: 0.0 },
             layout_state: LayoutState::new(0.0, 0.0, 0.0, 0.0),
             flex_info: None,
+            vertical_align: VerticalAlign::Baseline,
             inline_paint_fragments: Vec::new(),
             dirty_flags: DirtyFlags::ALL,
             node_id: next_ui_node_id(),
@@ -97,6 +99,14 @@ impl TextAreaProjectionSegment {
 
     pub(crate) fn set_ime_context(&mut self, ctx: Option<TextAreaImeContext>) {
         self.ime_context = ctx;
+    }
+
+    pub(crate) fn set_vertical_align(&mut self, vertical_align: VerticalAlign) {
+        if self.vertical_align == vertical_align {
+            return;
+        }
+        self.vertical_align = vertical_align;
+        self.dirty_flags = self.dirty_flags.union(DirtyFlags::LAYOUT);
     }
 
     fn measure_with_inline_first_width(
@@ -137,19 +147,6 @@ impl TextAreaProjectionSegment {
         };
         self.layout_state.layout_inner_size = self.layout_state.layout_size;
         self.flex_info = Some(outputs.flex_info);
-    }
-
-    fn projection_root_vertical_align(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-    ) -> VerticalAlign {
-        self.children
-            .iter()
-            .filter_map(|child_key| arena.get(*child_key))
-            .flat_map(|child| child.element.get_inline_nodes_size(arena))
-            .next()
-            .map(|node| node.vertical_align)
-            .unwrap_or(VerticalAlign::Baseline)
     }
 }
 
@@ -241,9 +238,9 @@ impl Layoutable for TextAreaProjectionSegment {
 
     fn get_inline_nodes_size(
         &self,
-        arena: &crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
     ) -> Vec<InlineNodeSize> {
-        let vertical_align = self.projection_root_vertical_align(arena);
+        let vertical_align = self.vertical_align;
         let Some(info) = self.flex_info.as_ref() else {
             let (width, height) = self.measured_size();
             return vec![InlineNodeSize {
