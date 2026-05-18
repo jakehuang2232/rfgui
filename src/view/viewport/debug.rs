@@ -901,6 +901,28 @@ pub(super) fn format_style_value(value: &StyleValue) -> String {
     }
 }
 
+pub(super) fn reuse_overlay_color(
+    actual: PromotedLayerUpdateKind,
+    reason: Option<&'static str>,
+) -> [f32; 4] {
+    use crate::style::ColorLike;
+
+    let hex = match (actual, reason) {
+        (PromotedLayerUpdateKind::Reuse, _) => "#26f25af2",
+        (PromotedLayerUpdateKind::Reraster, Some("child-scissor-clip-inline")) => "#ffe526f2",
+        (PromotedLayerUpdateKind::Reraster, Some("child-stencil-clip-inline")) => "#ff8c26f2",
+        (
+            PromotedLayerUpdateKind::Reraster,
+            Some("absolute-viewport-clip-inline" | "absolute-anchor-clip-inline"),
+        ) => "#ff3333f2",
+        (PromotedLayerUpdateKind::Reraster, Some(reason)) if reason.ends_with("-inline") => {
+            "#ffcc59f2"
+        }
+        (PromotedLayerUpdateKind::Reraster, _) => "#ff731af2",
+    };
+    crate::style::Color::hex(hex).to_rgba_f32()
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct PostLayoutTransitionResult {
     pub redraw_changed: bool,
@@ -1146,6 +1168,47 @@ pub(super) fn build_reuse_overlay_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style::ColorLike;
+
+    fn assert_color_matches_hex(actual: [f32; 4], expected_hex: &str) {
+        let expected = crate::style::Color::hex(expected_hex).to_rgba_f32();
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn reuse_overlay_colors_match_legend_hex_values() {
+        assert_color_matches_hex(
+            reuse_overlay_color(PromotedLayerUpdateKind::Reuse, None),
+            "#26f25af2",
+        );
+        assert_color_matches_hex(
+            reuse_overlay_color(PromotedLayerUpdateKind::Reraster, None),
+            "#ff731af2",
+        );
+        assert_color_matches_hex(
+            reuse_overlay_color(
+                PromotedLayerUpdateKind::Reraster,
+                Some("child-scissor-clip-inline"),
+            ),
+            "#ffe526f2",
+        );
+        assert_color_matches_hex(
+            reuse_overlay_color(
+                PromotedLayerUpdateKind::Reraster,
+                Some("child-stencil-clip-inline"),
+            ),
+            "#ff8c26f2",
+        );
+        assert_color_matches_hex(
+            reuse_overlay_color(
+                PromotedLayerUpdateKind::Reraster,
+                Some("absolute-viewport-clip-inline"),
+            ),
+            "#ff3333f2",
+        );
+    }
 
     #[test]
     fn layout_traversal_trace_marks_gate_counts_as_candidates() {

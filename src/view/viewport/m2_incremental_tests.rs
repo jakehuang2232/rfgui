@@ -328,6 +328,38 @@ fn overlapping_root_with_anchor_parent_resize_handle_tree() -> RsxNode {
     ])
 }
 
+fn same_root_escape_descendant_under_later_sibling_tree() -> RsxNode {
+    rsx! {
+        <HostElement style={{
+            width: Length::px(220.0),
+            height: Length::px(120.0),
+        }}>
+            <HostElement style={{
+                width: Length::px(80.0),
+                height: Length::px(80.0),
+            }}>
+                <HostElement style={{
+                    position: Position::absolute()
+                        .left(Length::px(100.0))
+                        .top(Length::px(10.0))
+                        .clip(ClipMode::Viewport),
+                    width: Length::px(20.0),
+                    height: Length::px(20.0),
+                    cursor: Cursor::Crosshair,
+                }} />
+            </HostElement>
+            <HostElement style={{
+                position: Position::absolute()
+                    .left(Length::px(90.0))
+                    .top(Length::px(0.0))
+                    .clip(ClipMode::Parent),
+                width: Length::px(80.0),
+                height: Length::px(80.0),
+            }} />
+        </HostElement>
+    }
+}
+
 fn movable_root_with_anchor_parent_resize_handle_tree(left: f32) -> RsxNode {
     rsx! {
         <HostElement style={{
@@ -2728,7 +2760,7 @@ fn cursor_resolves_pointer_from_hovered_text_child_ancestor() {
 }
 
 #[test]
-fn pointer_move_cursor_uses_anchor_parent_resize_handle_over_later_root_body() {
+fn pointer_move_cursor_respects_root_stacking_over_anchor_parent_resize_handle() {
     let mut viewport = Viewport::new();
     viewport.set_size(200, 120);
     viewport
@@ -2738,6 +2770,7 @@ fn pointer_move_cursor_uses_anchor_parent_resize_handle_over_later_root_body() {
 
     let lower_root = viewport.scene.ui_root_keys[0];
     let handle_key = viewport.scene.node_arena.children_of(lower_root)[0];
+    let higher_root = viewport.scene.ui_root_keys[1];
     assert_eq!(
         crate::view::base_component::hit_test_roots(
             &viewport.scene.node_arena,
@@ -2745,8 +2778,8 @@ fn pointer_move_cursor_uses_anchor_parent_resize_handle_over_later_root_body() {
             101.0,
             20.0,
         ),
-        Some((0, handle_key)),
-        "the shared root hit-test helper already finds the visible overflow handle",
+        Some((1, higher_root)),
+        "root children follow sibling stacking; an earlier root's escape descendant is not a top layer",
     );
 
     viewport.set_pointer_position_viewport(101.0, 20.0);
@@ -2756,13 +2789,75 @@ fn pointer_move_cursor_uses_anchor_parent_resize_handle_over_later_root_body() {
     );
     assert_eq!(
         viewport.input_state.hovered_node_id,
-        Some(handle_key),
-        "production pointer-move path must hover the visible overflow handle, not the later root body",
+        Some(higher_root),
+        "production pointer-move path should hover the later root body, not an earlier root descendant",
     );
     assert_eq!(
         viewport.resolve_cursor(),
-        Cursor::EwResize,
-        "hovering the visible overflow handle should resolve the resize cursor",
+        Cursor::Default,
+        "escape clipping does not promote an earlier root descendant above a later root",
+    );
+
+    let mut popup_stack = crate::view::popup_stack::PopupStack::new();
+    let handle_id = viewport
+        .scene
+        .node_arena
+        .get(handle_key)
+        .expect("handle node exists")
+        .element
+        .stable_id();
+    popup_stack.register(handle_id);
+    assert_eq!(
+        crate::view::base_component::hit_test_stacked(
+            &viewport.scene.node_arena,
+            &popup_stack,
+            101.0,
+            20.0,
+        ),
+        Some((lower_root, handle_key)),
+        "PopupStack is the explicit top-layer interaction path",
+    );
+}
+
+#[test]
+fn hit_test_same_root_escape_descendant_respects_later_sibling_stacking() {
+    let mut viewport = Viewport::new();
+    viewport.set_size(220, 120);
+    viewport
+        .render_rsx(&same_root_escape_descendant_under_later_sibling_tree())
+        .expect("render same-root stacking tree");
+    run_layout_for_test(&mut viewport, 220.0, 120.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let root_children = viewport.scene.node_arena.children_of(root_key);
+    let earlier_parent = root_children[0];
+    let escape_child = viewport.scene.node_arena.children_of(earlier_parent)[0];
+    let later_sibling = root_children[1];
+
+    assert_eq!(
+        crate::view::base_component::hit_test(&viewport.scene.node_arena, root_key, 105.0, 15.0,),
+        Some(later_sibling),
+        "within one root, a later sibling stacks above an earlier sibling's escape descendant",
+    );
+
+    let mut popup_stack = crate::view::popup_stack::PopupStack::new();
+    let escape_child_id = viewport
+        .scene
+        .node_arena
+        .get(escape_child)
+        .expect("escape child exists")
+        .element
+        .stable_id();
+    popup_stack.register(escape_child_id);
+    assert_eq!(
+        crate::view::base_component::hit_test_stacked(
+            &viewport.scene.node_arena,
+            &popup_stack,
+            105.0,
+            15.0,
+        ),
+        Some((root_key, escape_child)),
+        "PopupStack can intentionally promote an escape descendant above normal sibling stacking",
     );
 }
 

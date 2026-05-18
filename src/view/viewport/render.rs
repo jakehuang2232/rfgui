@@ -152,25 +152,7 @@ impl Viewport {
             if !snapshot.should_render {
                 continue;
             }
-            let color = match (record.actual, record.reason) {
-                (PromotedLayerUpdateKind::Reuse, _) => [0.15, 0.95, 0.35, 0.95],
-                (PromotedLayerUpdateKind::Reraster, Some("child-scissor-clip-inline")) => {
-                    [1.0, 0.9, 0.15, 0.95]
-                }
-                (PromotedLayerUpdateKind::Reraster, Some("child-stencil-clip-inline")) => {
-                    [1.0, 0.55, 0.15, 0.95]
-                }
-                (
-                    PromotedLayerUpdateKind::Reraster,
-                    Some("absolute-viewport-clip-inline" | "absolute-anchor-clip-inline"),
-                ) => [1.0, 0.2, 0.2, 0.95],
-                (PromotedLayerUpdateKind::Reraster, Some(reason))
-                    if reason.ends_with("-inline") =>
-                {
-                    [1.0, 0.8, 0.35, 0.95]
-                }
-                (PromotedLayerUpdateKind::Reraster, _) => [1.0, 0.45, 0.1, 0.95],
-            };
+            let color = reuse_overlay_color(record.actual, record.reason);
             let label = promoted_node_ids
                 .contains(&record.node_id)
                 .then(|| record.node_id.to_string());

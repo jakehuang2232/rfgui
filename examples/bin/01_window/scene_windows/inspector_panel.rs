@@ -143,7 +143,7 @@ pub fn build(theme: &Theme) -> RsxNode {
                             <Element style={{
                                 width: Length::px(12.0),
                                 height: Length::px(12.0),
-                                background: Color::hex("#26f25a"),
+                                background: Color::hex("#26f25af2"),
                             }} />
                             <Element>"Green: actual reuse"</Element>
                         </Element>
@@ -151,7 +151,7 @@ pub fn build(theme: &Theme) -> RsxNode {
                             <Element style={{
                                 width: Length::px(12.0),
                                 height: Length::px(12.0),
-                                background: Color::hex("#ff731a"),
+                                background: Color::hex("#ff731af2"),
                             }} />
                             <Element>"Orange: actual reraster"</Element>
                         </Element>
@@ -159,7 +159,7 @@ pub fn build(theme: &Theme) -> RsxNode {
                             <Element style={{
                                 width: Length::px(12.0),
                                 height: Length::px(12.0),
-                                background: Color::hex("#ffe526"),
+                                background: Color::hex("#ffe526f2"),
                             }} />
                             <Element>"Yellow: child scissor clip inline"</Element>
                         </Element>
@@ -167,7 +167,7 @@ pub fn build(theme: &Theme) -> RsxNode {
                             <Element style={{
                                 width: Length::px(12.0),
                                 height: Length::px(12.0),
-                                background: Color::hex("#ff8c26"),
+                                background: Color::hex("#ff8c26f2"),
                             }} />
                             <Element>"Deep orange: child stencil clip inline"</Element>
                         </Element>
@@ -175,7 +175,7 @@ pub fn build(theme: &Theme) -> RsxNode {
                             <Element style={{
                                 width: Length::px(12.0),
                                 height: Length::px(12.0),
-                                background: Color::hex("#ff3333"),
+                                background: Color::hex("#ff3333f2"),
                             }} />
                             <Element>"Red: absolute clip inline"</Element>
                         </Element>

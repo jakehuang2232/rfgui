@@ -502,7 +502,6 @@ fn WindowView(
                         .clip(AnchorParent),
                     width: Length::px(RESIZE_EDGE_THICKNESS * 2.0),
                     cursor: Cursor::EwResize,
-                    background: "#ff0000",
                 }}
                 on_pointer_down={resize_right_down}
             />

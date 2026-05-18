@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod core;
 mod element;
+mod hit_test;
 mod image;
 mod svg;
 mod text;
@@ -22,6 +23,8 @@ pub(crate) mod text_area;
 
 pub(crate) use core::*;
 pub use element::*;
+pub(crate) use hit_test::hit_test_pointer_target;
+pub use hit_test::{hit_test, hit_test_roots, hit_test_stacked};
 pub use image::*;
 pub use svg::*;
 pub use text::*;
@@ -533,290 +536,6 @@ pub(crate) fn seed_layout_transition_snapshots(
     for &root_key in root_keys {
         apply(arena, root_key, snapshots);
     }
-}
-
-#[derive(Clone, Copy)]
-struct HitTestRect {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-}
-
-fn hit_test_point_for_node(node: &dyn ElementTrait, x: f32, y: f32) -> (f32, f32) {
-    node.as_any()
-        .downcast_ref::<Element>()
-        .and_then(|element| element.map_viewport_to_paint_space(x, y))
-        .unwrap_or((x, y))
-}
-
-fn hit_test_point_in_rect(rect: HitTestRect, x: f32, y: f32) -> bool {
-    rect.width > 0.0
-        && rect.height > 0.0
-        && x >= rect.x
-        && y >= rect.y
-        && x <= rect.x + rect.width
-        && y <= rect.y + rect.height
-}
-
-fn hit_test_has_absolute_descendant(node: &dyn ElementTrait) -> bool {
-    node.as_any()
-        .downcast_ref::<Element>()
-        .is_some_and(Element::has_absolute_descendant_for_hit_test)
-}
-
-fn find_deepest_in_priority_absolute_clip_subtree(
-    arena: &crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    x: f32,
-    y: f32,
-) -> Option<crate::view::node_arena::NodeKey> {
-    let node = arena.get(key)?;
-    let (x, y) = hit_test_point_for_node(node.element.as_ref(), x, y);
-    let snapshot = node.element.box_model_snapshot();
-    if !snapshot.should_render && !hit_test_has_absolute_descendant(node.element.as_ref()) {
-        return None;
-    }
-    if !point_in_box_model(&snapshot, x, y) {
-        return None;
-    }
-    if !node.element.hit_test_visible_at(x, y) {
-        return None;
-    }
-    if node.element.intercepts_pointer_at(x, y) {
-        return Some(key);
-    }
-    let children: Vec<_> = node.children.clone();
-    drop(node);
-    for child_key in children.iter().rev() {
-        if let Some(k) = find_deepest_in_priority_absolute_clip_subtree(arena, *child_key, x, y) {
-            return Some(k);
-        }
-    }
-    Some(key)
-}
-
-fn find_priority_absolute_clip(
-    arena: &crate::view::node_arena::NodeArena,
-    key: crate::view::node_arena::NodeKey,
-    x: f32,
-    y: f32,
-) -> Option<crate::view::node_arena::NodeKey> {
-    let node = arena.get(key)?;
-    let snapshot = node.element.box_model_snapshot();
-    if !snapshot.should_render && !hit_test_has_absolute_descendant(node.element.as_ref()) {
-        return None;
-    }
-
-    let children: Vec<_> = node.children.clone();
-    let is_priority_absolute_clip = node
-        .element
-        .as_any()
-        .downcast_ref::<Element>()
-        .map(|element| {
-            element.is_absolute_positioned_for_hit_test()
-                && matches!(
-                    element.clip_mode_for_hit_test(),
-                    crate::style::ClipMode::Viewport | crate::style::ClipMode::AnchorParent
-                )
-        })
-        .unwrap_or(false);
-    drop(node);
-
-    for child_key in children.iter().rev() {
-        if let Some(k) = find_priority_absolute_clip(arena, *child_key, x, y) {
-            return Some(k);
-        }
-    }
-
-    if !is_priority_absolute_clip {
-        return None;
-    }
-
-    if point_in_box_model(&snapshot, x, y) {
-        find_deepest_in_priority_absolute_clip_subtree(arena, key, x, y)
-    } else {
-        None
-    }
-}
-
-pub fn hit_test(
-    arena: &crate::view::node_arena::NodeArena,
-    root_key: crate::view::node_arena::NodeKey,
-    viewport_x: f32,
-    viewport_y: f32,
-) -> Option<crate::view::node_arena::NodeKey> {
-    fn child_allows_outside_parent_hit(
-        child: &dyn ElementTrait,
-        x: f32,
-        y: f32,
-        viewport_rect: HitTestRect,
-    ) -> bool {
-        let Some(element) = child.as_any().downcast_ref::<Element>() else {
-            return false;
-        };
-        if element.has_absolute_descendant_for_hit_test() {
-            return true;
-        }
-        if !element.is_absolute_positioned_for_hit_test() {
-            return false;
-        }
-        match element.clip_mode_for_hit_test() {
-            crate::style::ClipMode::Parent => false,
-            crate::style::ClipMode::Viewport => hit_test_point_in_rect(viewport_rect, x, y),
-            // AnchorParent always escapes the immediate parent's hit region —
-            // with an explicit anchor it tracks the anchor's parent, without
-            // one it falls back to the grandparent clip. Either way the gate
-            // here must be open; the actual bounds check happens via the
-            // child's own `hit_test_clip_rect` inside `find()`.
-            crate::style::ClipMode::AnchorParent => true,
-        }
-    }
-
-    fn find(
-        arena: &crate::view::node_arena::NodeArena,
-        key: crate::view::node_arena::NodeKey,
-        x: f32,
-        y: f32,
-        viewport_rect: HitTestRect,
-    ) -> Option<crate::view::node_arena::NodeKey> {
-        let node = arena.get(key)?;
-        let (x, y) = hit_test_point_for_node(node.element.as_ref(), x, y);
-        let snapshot = node.element.box_model_snapshot();
-        let has_absolute_descendant = node
-            .element
-            .as_any()
-            .downcast_ref::<Element>()
-            .is_some_and(Element::has_absolute_descendant_for_hit_test);
-        if !snapshot.should_render && !has_absolute_descendant {
-            return None;
-        }
-        let in_self = point_in_box_model(&snapshot, x, y) && node.element.hit_test_visible_at(x, y);
-        if in_self && node.element.intercepts_pointer_at(x, y) {
-            return Some(key);
-        }
-        if !in_self && !has_absolute_descendant {
-            return None;
-        }
-
-        let children: Vec<_> = node.children.clone();
-        drop(node);
-        for child_key in children.iter().rev() {
-            if !in_self {
-                let Some(child_node) = arena.get(*child_key) else {
-                    continue;
-                };
-                let allowed = child_allows_outside_parent_hit(
-                    child_node.element.as_ref(),
-                    x,
-                    y,
-                    viewport_rect,
-                );
-                drop(child_node);
-                if !allowed {
-                    continue;
-                }
-            }
-            if let Some(k) = find(arena, *child_key, x, y, viewport_rect) {
-                return Some(k);
-            }
-        }
-
-        if in_self { Some(key) } else { None }
-    }
-
-    let root_snapshot = arena.get(root_key)?.element.box_model_snapshot();
-    let viewport_rect = HitTestRect {
-        x: root_snapshot.x,
-        y: root_snapshot.y,
-        width: root_snapshot.width.max(0.0),
-        height: root_snapshot.height.max(0.0),
-    };
-    if let Some(k) = find_priority_absolute_clip(arena, root_key, viewport_x, viewport_y) {
-        return Some(k);
-    }
-    find(arena, root_key, viewport_x, viewport_y, viewport_rect)
-}
-
-/// Stack-priority hit-test.
-///
-/// Walks `popup_stack` top → bottom; for each id, resolves the slot key
-/// and runs [`find_deepest_in_priority_absolute_clip_subtree`]. Returns the first
-/// `(owning_root_key, target_key)` whose bounding rect contains the
-/// point. Stack entries that no longer resolve (stale ids) are skipped;
-/// callers should already have run `PopupStack::compact` for the frame.
-///
-/// Returns `None` when no stacked popup contains the point — caller
-/// falls back to the per-root `hit_test`.
-pub fn hit_test_stacked(
-    arena: &crate::view::node_arena::NodeArena,
-    popup_stack: &crate::view::popup_stack::PopupStack,
-    viewport_x: f32,
-    viewport_y: f32,
-) -> Option<(
-    crate::view::node_arena::NodeKey,
-    crate::view::node_arena::NodeKey,
-)> {
-    for sid in popup_stack.iter_top_down() {
-        let Some(popup_key) = arena.find_by_stable_id(sid) else {
-            continue;
-        };
-        let Some(target_key) = find_deepest_in_priority_absolute_clip_subtree(
-            arena, popup_key, viewport_x, viewport_y,
-        ) else {
-            continue;
-        };
-        let root_key = arena.root_for(popup_key);
-        return Some((root_key, target_key));
-    }
-    None
-}
-
-/// Hit-test across multiple UI roots in a single pass.
-///
-/// 1. Searches all roots for **nested** priority absolute clip elements
-///    (dropdowns, popovers, anchor-parent overflow handles) which render on
-///    top of everything via deferred rendering. Root-level priority clips are
-///    intentionally skipped so they don't shadow deeper targets in other roots.
-/// 2. If no nested priority absolute clip match is found, falls back to the normal
-///    per-root `hit_test` (reverse order — last root has highest priority).
-///
-/// Returns `Some((root_index, target_node_id))`.
-pub fn hit_test_roots(
-    arena: &crate::view::node_arena::NodeArena,
-    root_keys: &[crate::view::node_arena::NodeKey],
-    viewport_x: f32,
-    viewport_y: f32,
-) -> Option<(usize, crate::view::node_arena::NodeKey)> {
-    let mut fallback: Option<(usize, crate::view::node_arena::NodeKey)> = None;
-    for (idx, &root_key) in root_keys.iter().enumerate().rev() {
-        let Some(root) = arena.get(root_key) else {
-            continue;
-        };
-        let snapshot = root.element.box_model_snapshot();
-        let has_abs = root
-            .element
-            .as_any()
-            .downcast_ref::<Element>()
-            .is_some_and(Element::has_absolute_descendant_for_hit_test);
-        if !snapshot.should_render && !has_abs {
-            continue;
-        }
-        let children: Vec<_> = root.children.clone();
-        drop(root);
-        for child_key in children.iter().rev() {
-            if let Some(k) = find_priority_absolute_clip(arena, *child_key, viewport_x, viewport_y)
-            {
-                return Some((idx, k));
-            }
-        }
-        if fallback.is_none() {
-            if let Some(k) = hit_test(arena, root_key, viewport_x, viewport_y) {
-                fallback = Some((idx, k));
-            }
-        }
-    }
-    fallback
 }
 
 /// Build the `target → root` path (DOM `composedPath` order) for the given
@@ -2921,55 +2640,6 @@ pub(crate) fn dispatch_drag_leave_to_key(
         .unwrap_or(false)
 }
 
-fn point_in_box_model(snapshot: &BoxModelSnapshot, x: f32, y: f32) -> bool {
-    if snapshot.width <= 0.0 || snapshot.height <= 0.0 {
-        return false;
-    }
-
-    let left = snapshot.x;
-    let top = snapshot.y;
-    let right = left + snapshot.width;
-    let bottom = top + snapshot.height;
-    if x < left || x > right || y < top || y > bottom {
-        return false;
-    }
-
-    let r = snapshot
-        .border_radius
-        .max(0.0)
-        .min(snapshot.width * 0.5)
-        .min(snapshot.height * 0.5);
-    if r <= 0.0 {
-        return true;
-    }
-
-    let tl = (left + r, top + r);
-    let tr = (right - r, top + r);
-    let bl = (left + r, bottom - r);
-    let br = (right - r, bottom - r);
-
-    if x < tl.0 && y < tl.1 {
-        return distance_sq(x, y, tl.0, tl.1) <= r * r;
-    }
-    if x > tr.0 && y < tr.1 {
-        return distance_sq(x, y, tr.0, tr.1) <= r * r;
-    }
-    if x < bl.0 && y > bl.1 {
-        return distance_sq(x, y, bl.0, bl.1) <= r * r;
-    }
-    if x > br.0 && y > br.1 {
-        return distance_sq(x, y, br.0, br.1) <= r * r;
-    }
-
-    true
-}
-
-fn distance_sq(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
-    let dx = x1 - x2;
-    let dy = y1 - y2;
-    dx * dx + dy * dy
-}
-
 pub fn get_ime_cursor_rect_by_id(
     arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
@@ -3764,7 +3434,7 @@ mod tests {
     }
 
     #[test]
-    fn hit_test_roots_prefers_anchor_parent_overflow_handle_over_higher_root_body() {
+    fn hit_test_roots_respects_later_root_over_anchor_parent_overflow_handle() {
         let mut lower_root = Element::new(0.0, 0.0, 100.0, 80.0);
         lower_root.set_background_color_value(Color::rgb(16, 16, 16));
         let mut handle = Element::new(0.0, 0.0, 4.0, 80.0);
@@ -3809,8 +3479,8 @@ mod tests {
         assert_eq!(hit_test(&arena, lower_key, 101.0, 20.0), Some(handle_key));
         assert_eq!(
             hit_test_roots(&arena, &root_keys, 101.0, 20.0),
-            Some((0, handle_key)),
-            "visible AnchorParent overflow resize handle should win over a later root body"
+            Some((1, higher_key)),
+            "root children follow sibling stacking; an earlier root's overflow handle is not a top layer"
         );
     }
 
@@ -3901,6 +3571,47 @@ mod tests {
             placement(200.0, 160.0),
         );
 
+        let left_snapshot = arena
+            .get(left_key)
+            .expect("left handle")
+            .element
+            .box_model_snapshot();
+        let right_snapshot = arena
+            .get(right_key)
+            .expect("right handle")
+            .element
+            .box_model_snapshot();
+        let top_snapshot = arena
+            .get(top_key)
+            .expect("top handle")
+            .element
+            .box_model_snapshot();
+        let bottom_snapshot = arena
+            .get(bottom_key)
+            .expect("bottom handle")
+            .element
+            .box_model_snapshot();
+        assert_eq!(
+            (left_snapshot.width, left_snapshot.height),
+            (4.0, 80.0),
+            "left edge snapshot should use the placed frame size"
+        );
+        assert_eq!(
+            (right_snapshot.width, right_snapshot.height),
+            (4.0, 80.0),
+            "right edge snapshot should use the placed frame size"
+        );
+        assert_eq!(
+            (top_snapshot.width, top_snapshot.height),
+            (100.0, 4.0),
+            "top edge snapshot should use the placed frame size"
+        );
+        assert_eq!(
+            (bottom_snapshot.width, bottom_snapshot.height),
+            (100.0, 4.0),
+            "bottom edge snapshot should use the placed frame size"
+        );
+
         assert_eq!(hit_test(&arena, root_key, 19.0, 50.0), Some(left_key));
         assert_eq!(hit_test(&arena, root_key, 121.0, 50.0), Some(right_key));
         assert_eq!(hit_test(&arena, root_key, 50.0, 29.0), Some(top_key));
@@ -3953,7 +3664,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_absolute_viewport_clip_without_anchor_wins_over_later_root_body() {
+    fn diagnostic_absolute_viewport_clip_without_anchor_respects_later_root_body() {
         let (arena, root_keys, popup_key) = absolute_diagnostic_roots(
             Position::absolute()
                 .left(Length::px(100.0))
@@ -3964,12 +3675,13 @@ mod tests {
         assert_eq!(hit_test(&arena, root_keys[0], 105.0, 15.0), Some(popup_key));
         assert_eq!(
             hit_test_roots(&arena, &root_keys, 105.0, 15.0),
-            Some((0, popup_key))
+            Some((1, root_keys[1])),
+            "clip:Viewport escapes the parent gate but does not cross root sibling stacking"
         );
     }
 
     #[test]
-    fn diagnostic_absolute_anchor_parent_without_anchor_wins_over_later_root_body() {
+    fn diagnostic_absolute_anchor_parent_without_anchor_respects_later_root_body() {
         let (arena, root_keys, popup_key) = absolute_diagnostic_roots(
             Position::absolute()
                 .left(Length::px(100.0))
@@ -3980,7 +3692,8 @@ mod tests {
         assert_eq!(hit_test(&arena, root_keys[0], 105.0, 15.0), Some(popup_key));
         assert_eq!(
             hit_test_roots(&arena, &root_keys, 105.0, 15.0),
-            Some((0, popup_key))
+            Some((1, root_keys[1])),
+            "clip:AnchorParent escapes the parent gate but does not cross root sibling stacking"
         );
     }
 
@@ -4043,7 +3756,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_transformed_absolute_viewport_clip_cross_root_uses_visual_hit_box() {
+    fn diagnostic_transformed_absolute_viewport_clip_respects_later_root_body() {
         let mut lower_root = Element::new(0.0, 0.0, 80.0, 80.0);
         lower_root.set_background_color_value(Color::rgb(16, 16, 16));
         let mut popup = Element::new(0.0, 0.0, 20.0, 20.0);
@@ -4089,13 +3802,13 @@ mod tests {
         assert_eq!(hit_test(&arena, lower_key, 105.0, 15.0), Some(popup_key));
         assert_eq!(
             hit_test_roots(&arena, &root_keys, 105.0, 15.0),
-            Some((0, popup_key)),
-            "transformed priority absolute should resolve against its visual box before later root fallback"
+            Some((1, higher_key)),
+            "transformed escape absolute remains owned by its root stacking context"
         );
     }
 
     #[test]
-    fn diagnostic_named_anchor_anchor_parent_cross_root_uses_anchor_parent_clip() {
+    fn diagnostic_named_anchor_anchor_parent_respects_later_root_body() {
         let mut lower_root = Element::new(0.0, 0.0, 80.0, 80.0);
         lower_root.set_background_color_value(Color::rgb(16, 16, 16));
         lower_root.set_anchor_name(Some(AnchorName::new("diagnostic_anchor")));
@@ -4128,7 +3841,8 @@ mod tests {
         assert_eq!(hit_test(&arena, lower_key, 95.0, 15.0), Some(popup_key));
         assert_eq!(
             hit_test_roots(&arena, &root_keys, 95.0, 15.0),
-            Some((0, popup_key))
+            Some((1, higher_key)),
+            "named AnchorParent escape remains owned by its root stacking context"
         );
     }
 

@@ -69,8 +69,8 @@ use self::debug::{
     format_style_field, format_style_promotion_trace, format_style_request_trace,
     format_style_sample_trace, format_style_value, format_trace_render_tree,
     record_debug_style_promotion, record_debug_style_request, record_debug_style_sample,
-    record_debug_style_sample_record, style_field_requires_relayout, take_debug_reuse_path,
-    take_debug_style_sample_records, trace_promoted_build_frame_marker,
+    record_debug_style_sample_record, reuse_overlay_color, style_field_requires_relayout,
+    take_debug_reuse_path, take_debug_style_sample_records, trace_promoted_build_frame_marker,
 };
 pub use self::frame::FrameParts;
 use self::frame::{

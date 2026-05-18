@@ -2475,14 +2475,13 @@ impl ElementTrait for Element {
     }
 
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
-        let (frame_width, frame_height) = self.current_layout_frame_size();
         BoxModelSnapshot {
             node_id: self.core.id,
             parent_id: self.core.parent_id,
             x: self.layout_state.layout_position.x,
             y: self.layout_state.layout_position.y,
-            width: frame_width,
-            height: frame_height,
+            width: self.layout_state.layout_size.width.max(0.0),
+            height: self.layout_state.layout_size.height.max(0.0),
             border_radius: self.border_radius,
             should_render: self.layout_state.should_render,
         }

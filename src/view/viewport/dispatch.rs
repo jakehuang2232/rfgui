@@ -11,16 +11,8 @@ impl Viewport {
         crate::view::node_arena::NodeKey,
         crate::view::node_arena::NodeKey,
     )> {
-        crate::view::base_component::hit_test_stacked(arena, popup_stack, x, y).or_else(|| {
-            crate::view::base_component::hit_test_roots(arena, root_keys, x, y).and_then(
-                |(root_index, target_key)| {
-                    root_keys
-                        .get(root_index)
-                        .copied()
-                        .map(|root_key| (root_key, target_key))
-                },
-            )
-        })
+        crate::view::base_component::hit_test_pointer_target(arena, popup_stack, root_keys, x, y)
+            .map(|target| (target.root_key, target.target_key))
     }
 
     #[doc(hidden)]

@@ -1334,6 +1334,9 @@ impl Element {
             if child.computed_style.position.anchor_ref().is_some() {
                 return Some(PlacementSkipFailureReason::AnchorRef);
             }
+            if child.is_absolute_positioned_for_hit_test() {
+                return Some(PlacementSkipFailureReason::AbsoluteDescendant);
+            }
             if child.has_absolute_descendant_for_hit_test {
                 return Some(PlacementSkipFailureReason::AbsoluteDescendant);
             }
