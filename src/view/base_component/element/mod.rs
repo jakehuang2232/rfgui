@@ -2200,6 +2200,7 @@ pub struct Element {
     absolute_clip_rect: Option<Rect>,
     anchor_parent_clip_rect: Option<Rect>,
     hit_test_clip_rect: Option<Rect>,
+    last_child_hit_test_clip_rect: Option<Rect>,
     children: Vec<crate::view::node_arena::NodeKey>,
 }
 

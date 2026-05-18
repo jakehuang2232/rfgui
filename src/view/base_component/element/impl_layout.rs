@@ -1060,6 +1060,38 @@ impl Element {
         PLACEMENT_RUNTIME.with(|runtime| runtime.borrow().hit_test_clip_stack.last().copied())
     }
 
+    pub(crate) fn current_inherited_hit_test_clip_rect(&self, placement: LayoutPlacement) -> Rect {
+        self.current_parent_hit_test_clip_rect().unwrap_or(Rect {
+            x: placement.parent_x + placement.visual_offset_x,
+            y: placement.parent_y + placement.visual_offset_y,
+            width: placement.available_width.max(0.0),
+            height: placement.available_height.max(0.0),
+        })
+    }
+
+    pub(crate) fn hit_test_clip_matches_current_placement(
+        &self,
+        placement: LayoutPlacement,
+    ) -> bool {
+        if self.computed_style.position.mode() == PositionMode::Absolute {
+            return true;
+        }
+        rect_approx_eq(
+            self.hit_test_clip_rect,
+            Some(self.current_inherited_hit_test_clip_rect(placement)),
+        )
+    }
+
+    pub(crate) fn current_child_hit_test_clip_rect(&self) -> Rect {
+        let inherited_hit_test_clip = self.hit_test_clip_rect.unwrap_or(Rect {
+            x: self.layout_state.layout_position.x,
+            y: self.layout_state.layout_position.y,
+            width: self.layout_state.layout_size.width.max(0.0),
+            height: self.layout_state.layout_size.height.max(0.0),
+        });
+        intersect_rect(inherited_hit_test_clip, self.inner_clip_rect())
+    }
+
     fn register_anchor_snapshot(&self) {
         let Some(anchor_name) = self.anchor_name.as_ref() else {
             return;
@@ -1321,6 +1353,14 @@ impl Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
     ) -> Option<PlacementSkipFailureReason> {
+        if !self.children.is_empty()
+            && !rect_approx_eq(
+                self.last_child_hit_test_clip_rect,
+                Some(self.current_child_hit_test_clip_rect()),
+            )
+        {
+            return Some(PlacementSkipFailureReason::HitTestClipMismatch);
+        }
         for child_key in &self.children {
             let Some(child_node) = arena.get(*child_key) else {
                 return Some(PlacementSkipFailureReason::NonBaseElement);
@@ -1355,6 +1395,7 @@ impl Element {
 
     pub(crate) fn flex_axis_placement_replay_failure(
         &self,
+        arena: &crate::view::node_arena::NodeArena,
         placement: LayoutPlacement,
         inherited_hit_test_clip: Rect,
         target_width: f32,
@@ -1375,6 +1416,9 @@ impl Element {
         if !approx_eq(self.core.position.x, offset_x) || !approx_eq(self.core.position.y, offset_y)
         {
             return Some(PlacementSkipFailureReason::PlacementMismatch);
+        }
+        if let Some(reason) = self.clean_placement_skip_subtree_failure(arena) {
+            return Some(reason);
         }
         None
     }
@@ -1433,14 +1477,8 @@ impl Element {
         child_inner_height: f32,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
-        let inherited_hit_test_clip = self.hit_test_clip_rect.unwrap_or(Rect {
-            x: self.layout_state.layout_position.x,
-            y: self.layout_state.layout_position.y,
-            width: self.layout_state.layout_size.width.max(0.0),
-            height: self.layout_state.layout_size.height.max(0.0),
-        });
-        let child_parent_hit_test_clip =
-            intersect_rect(inherited_hit_test_clip, self.inner_clip_rect());
+        let child_parent_hit_test_clip = self.current_child_hit_test_clip_rect();
+        self.last_child_hit_test_clip_rect = Some(child_parent_hit_test_clip);
         self.push_hit_test_clip_scope(child_parent_hit_test_clip);
         let overscan = Self::SHOULD_RENDER_OVERSCAN_PX.max(0.0);
         self.push_child_clip_scope(Rect {

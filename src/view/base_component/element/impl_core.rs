@@ -640,6 +640,7 @@ impl Element {
             absolute_clip_rect: None,
             anchor_parent_clip_rect: None,
             hit_test_clip_rect: None,
+            last_child_hit_test_clip_rect: None,
             children: Vec::new(),
         };
         el.recompute_style();

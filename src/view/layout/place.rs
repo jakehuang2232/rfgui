@@ -377,6 +377,7 @@ fn flex_axis_child_replay(
     let require_width_assignment = is_row || stretched_cross.is_some();
     let require_height_assignment = !is_row || stretched_cross.is_some();
     if let Some(reason) = child_element.flex_axis_placement_replay_failure(
+        arena,
         placement,
         child_parent_hit_test_clip,
         target_width,

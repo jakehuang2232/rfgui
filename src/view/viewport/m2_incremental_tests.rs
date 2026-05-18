@@ -384,6 +384,10 @@ fn movable_root_with_anchor_parent_resize_handle_tree(left: f32) -> RsxNode {
 }
 
 fn retained_window_accordion_button_tree() -> RsxNode {
+    retained_window_accordion_button_tree_with_expanded(false)
+}
+
+fn retained_window_accordion_button_tree_with_expanded(expanded: bool) -> RsxNode {
     rsx! {
         <HostElement style={{
             layout: Layout::flow().column().no_wrap(),
@@ -400,7 +404,7 @@ fn retained_window_accordion_button_tree() -> RsxNode {
             <HostElement style={{
                 layout: Layout::flow().column().no_wrap(),
                 width: Length::percent(100.0),
-                height: Length::Zero,
+                height: if expanded { None } else { Length::Zero },
                 transition: [Transition::new(TransitionProperty::Height, 200).ease_in_out()],
             }}>
                 <HostElement style={{
@@ -410,6 +414,124 @@ fn retained_window_accordion_button_tree() -> RsxNode {
                     cursor: Cursor::Pointer,
                 }}>
                     {"Contained"}
+                </HostElement>
+            </HostElement>
+        </HostElement>
+    }
+}
+
+fn retained_component_test_button_section_tree_with_expanded(expanded: bool) -> RsxNode {
+    use crate::view::Text as HostText;
+
+    rsx! {
+        <HostElement style={{
+            width: Length::px(460.0),
+            height: Length::px(380.0),
+            layout: Layout::flow().column().no_wrap(),
+        }}>
+            <HostElement style={{
+                width: Length::percent(100.0),
+                height: Length::px(32.0),
+            }}>
+                <HostText>"Component Test"</HostText>
+            </HostElement>
+            <HostElement style={{
+                width: Length::percent(100.0),
+                height: Length::px(348.0),
+                padding: Padding::uniform(Length::px(16.0)),
+                layout: Layout::flow().column().no_wrap(),
+                scroll_direction: ScrollDirection::Both,
+            }}>
+                <HostElement style={{
+                    width: Length::percent(100.0),
+                    layout: Layout::flow().column().no_wrap(),
+                    gap: Length::px(8.0),
+                    padding: Padding::uniform(Length::px(12.0)),
+                }}>
+                    <HostElement style={{
+                        width: Length::percent(100.0),
+                        layout: Layout::flow().column().no_wrap(),
+                    }}>
+                        <HostElement style={{
+                            width: Length::percent(100.0),
+                            height: Length::px(36.0),
+                            layout: Layout::flex().align(crate::style::Align::Center),
+                            padding: Padding::uniform(Length::px(8.0)),
+                            cursor: Cursor::Pointer,
+                        }}>
+                            <HostText>"Button"</HostText>
+                        </HostElement>
+                        <HostElement style={{
+                            layout: Layout::flex().column(),
+                            height: if expanded { None } else { Length::Zero },
+                            transition: [Transition::new(TransitionProperty::Height, 200).ease_in_out()],
+                        }}>
+                            <HostElement style={{
+                                padding: Padding::uniform(Length::px(12.0)),
+                                gap: Length::px(8.0),
+                            }}>
+                                <HostText>"Variant"</HostText>
+                                <HostElement style={{
+                                    width: Length::percent(100.0),
+                                    layout: Layout::flow().row().wrap(),
+                                    gap: Length::px(8.0),
+                                }}>
+                                    <HostElement style={{
+                                        layout: Layout::flow().row().no_wrap().align(crate::style::Align::Center),
+                                        padding: Padding::uniform(Length::px(8.0)),
+                                        cursor: Cursor::Pointer,
+                                    }}>
+                                        <HostText>"Contained"</HostText>
+                                    </HostElement>
+                                    <HostElement style={{
+                                        layout: Layout::flow().row().no_wrap().align(crate::style::Align::Center),
+                                        padding: Padding::uniform(Length::px(8.0)),
+                                        cursor: Cursor::Pointer,
+                                    }}>
+                                        <HostText>"Outlined"</HostText>
+                                    </HostElement>
+                                    <HostElement style={{
+                                        layout: Layout::flow().row().no_wrap().align(crate::style::Align::Center),
+                                        padding: Padding::uniform(Length::px(8.0)),
+                                        cursor: Cursor::Pointer,
+                                    }}>
+                                        <HostText>"Text"</HostText>
+                                    </HostElement>
+                                    <HostElement style={{
+                                        layout: Layout::flow().row().no_wrap().align(crate::style::Align::Center),
+                                        padding: Padding::uniform(Length::px(8.0)),
+                                    }}>
+                                        <HostText>"Disabled"</HostText>
+                                    </HostElement>
+                                </HostElement>
+                                <HostText>"Size"</HostText>
+                                <HostElement style={{
+                                    width: Length::percent(100.0),
+                                    layout: Layout::flow().row().wrap().align(crate::style::Align::Center),
+                                    gap: Length::px(8.0),
+                                }}>
+                                    <HostElement style={{
+                                        padding: Padding::uniform(Length::px(6.0)),
+                                        cursor: Cursor::Pointer,
+                                    }}>
+                                        <HostText>"Small"</HostText>
+                                    </HostElement>
+                                    <HostElement style={{
+                                        padding: Padding::uniform(Length::px(8.0)),
+                                        cursor: Cursor::Pointer,
+                                    }}>
+                                        <HostText>"Medium"</HostText>
+                                    </HostElement>
+                                    <HostElement style={{
+                                        padding: Padding::uniform(Length::px(10.0)),
+                                        cursor: Cursor::Pointer,
+                                    }}>
+                                        <HostText>"Large"</HostText>
+                                    </HostElement>
+                                </HostElement>
+                            </HostElement>
+                        </HostElement>
+                    </HostElement>
                 </HostElement>
             </HostElement>
         </HostElement>
@@ -3020,6 +3142,145 @@ fn retained_window_accordion_button_false_to_true_hit_tests_without_scroll() {
         viewport.resolve_cursor(),
         Cursor::Pointer,
         "retained expanded button should resolve pointer cursor before any scroll",
+    );
+}
+
+#[test]
+fn retained_window_accordion_button_rerender_false_to_true_hit_tests_without_scroll() {
+    let collapsed = retained_window_accordion_button_tree_with_expanded(false);
+    let expanded = retained_window_accordion_button_tree_with_expanded(true);
+
+    let mut viewport = Viewport::new();
+    viewport.set_size(460, 380);
+    viewport.set_use_incremental_commit(true);
+    viewport
+        .render_rsx(&collapsed)
+        .expect("render collapsed retained tree");
+    run_layout_for_test(&mut viewport, 460.0, 380.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let section_key = viewport.scene.node_arena.children_of(root_key)[1];
+    let button_key = viewport.scene.node_arena.children_of(section_key)[0];
+    let label_key = find_text_node(&viewport.scene.node_arena, root_key, "Contained")
+        .expect("contained button label");
+
+    viewport
+        .render_rsx(&expanded)
+        .expect("rerender expanded retained tree");
+    run_layout_for_test(&mut viewport, 460.0, 380.0);
+    let post_layout = viewport.run_post_layout_transitions(1.0, 1.0);
+    if post_layout.relayout_required {
+        run_layout_for_test(&mut viewport, 460.0, 380.0);
+    }
+
+    assert_eq!(
+        viewport.scene.ui_root_keys[0], root_key,
+        "root NodeKey should be retained across false -> true rerender",
+    );
+    assert_eq!(
+        viewport.scene.node_arena.children_of(root_key)[1],
+        section_key,
+        "section NodeKey should be retained across false -> true rerender",
+    );
+    assert_eq!(
+        viewport.scene.node_arena.children_of(section_key)[0],
+        button_key,
+        "button NodeKey should be retained across false -> true rerender",
+    );
+    assert_eq!(
+        find_text_node(&viewport.scene.node_arena, root_key, "Contained"),
+        Some(label_key),
+        "label NodeKey should be retained across false -> true rerender",
+    );
+
+    let label_snapshot = viewport
+        .scene
+        .node_arena
+        .get(label_key)
+        .expect("contained label")
+        .element
+        .box_model_snapshot();
+    let hit_x = label_snapshot.x + label_snapshot.width * 0.5;
+    let hit_y = label_snapshot.y + label_snapshot.height * 0.5;
+    let target =
+        crate::view::base_component::hit_test(&viewport.scene.node_arena, root_key, hit_x, hit_y);
+    assert!(
+        matches!(target, Some(target) if target == label_key || target == button_key),
+        "hit at rerendered expanded button ({hit_x}, {hit_y}) should target button branch before any scroll; got {target:?}",
+    );
+
+    viewport.input_state.hovered_node_id = target;
+    assert_eq!(
+        viewport.resolve_cursor(),
+        Cursor::Pointer,
+        "rerendered expanded button should resolve pointer cursor before any scroll",
+    );
+}
+
+#[test]
+fn component_test_button_section_rerender_false_to_true_hit_tests_without_scroll() {
+    let collapsed = retained_component_test_button_section_tree_with_expanded(false);
+    let expanded = retained_component_test_button_section_tree_with_expanded(true);
+
+    let mut viewport = Viewport::new();
+    viewport.set_size(460, 380);
+    viewport.set_use_incremental_commit(true);
+    viewport
+        .render_rsx(&collapsed)
+        .expect("render collapsed component-test-like tree");
+    run_layout_for_test(&mut viewport, 460.0, 380.0);
+
+    let root_key = viewport.scene.ui_root_keys[0];
+    let contained_key = find_text_node(&viewport.scene.node_arena, root_key, "Contained")
+        .expect("contained button text");
+    let button_key = viewport
+        .scene
+        .node_arena
+        .parent_of(contained_key)
+        .expect("contained text parent button");
+
+    viewport
+        .render_rsx(&expanded)
+        .expect("rerender expanded component-test-like tree");
+    run_layout_for_test(&mut viewport, 460.0, 380.0);
+    let post_layout = viewport.run_post_layout_transitions(1.0, 1.0);
+    if post_layout.relayout_required {
+        let profile = run_layout_for_test_with_gate_profile(&mut viewport, 460.0, 380.0);
+        eprintln!("profile1 {profile:?}");
+    }
+    let post_layout = viewport.run_post_layout_transitions(1.0, 2.0);
+    if post_layout.relayout_required {
+        let profile = run_layout_for_test_with_gate_profile(&mut viewport, 460.0, 380.0);
+        eprintln!("profile2 {profile:?}");
+    }
+
+    assert_eq!(
+        find_text_node(&viewport.scene.node_arena, root_key, "Contained"),
+        Some(contained_key),
+        "contained text NodeKey should be retained across component-test-like expansion",
+    );
+
+    let contained_snapshot = viewport
+        .scene
+        .node_arena
+        .get(contained_key)
+        .expect("contained button text")
+        .element
+        .box_model_snapshot();
+    let hit_x = contained_snapshot.x + contained_snapshot.width * 0.5;
+    let hit_y = contained_snapshot.y + contained_snapshot.height * 0.5;
+    let target =
+        crate::view::base_component::hit_test(&viewport.scene.node_arena, root_key, hit_x, hit_y);
+    assert!(
+        matches!(target, Some(target) if target == contained_key || target == button_key),
+        "hit at component-test-like expanded button ({hit_x}, {hit_y}) should target the button branch before any scroll; got {target:?}, button={button_key:?}, text={contained_key:?}",
+    );
+
+    viewport.input_state.hovered_node_id = target;
+    assert_eq!(
+        viewport.resolve_cursor(),
+        Cursor::Pointer,
+        "component-test-like expanded button should resolve pointer cursor before any scroll",
     );
 }
 

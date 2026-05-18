@@ -156,6 +156,12 @@ impl Layoutable for Element {
         if !self.dirty_flags.intersects(placement_dirty_mask)
             && !child_placement_dirty
             && self.last_layout_placement == Some(placement)
+            && self.hit_test_clip_matches_current_placement(placement)
+            && (self.children.is_empty()
+                || rect_approx_eq(
+                    self.last_child_hit_test_clip_rect,
+                    Some(self.current_child_hit_test_clip_rect()),
+                ))
         {
             return;
         }
