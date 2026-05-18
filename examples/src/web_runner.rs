@@ -8,9 +8,10 @@
 //!    surface). We use `wasm_bindgen_futures::spawn_local` and store the
 //!    viewport behind `Rc<RefCell<...>>` so the future can write it back
 //!    after `resumed` returns.
-//! 2. There is no host clipboard or `arboard`; everything lives in an
-//!    in-memory shim. Cursor goes through `CanvasCursorSink` on the
-//!    canvas's CSS style.
+//! 2. There is no `arboard`; browser copy/cut/paste goes through DOM
+//!    clipboard events, with an in-memory shim kept for platform service
+//!    fallback. Cursor goes through `CanvasCursorSink` on the canvas's CSS
+//!    style.
 //!
 //! Existing `index.html` keeps a `<canvas id="app-canvas">` element; we
 //! pass it to winit via `WindowAttributesExtWebSys::with_canvas` so
@@ -31,12 +32,12 @@ use rfgui::ui::run_due_timers;
 use rfgui::view::viewport::{RenderFrameResult, SurfaceFormatPreference, Viewport};
 use rfgui::view::{load_browser_fonts, load_web_font_from_url, set_default_font_families};
 use smol_str::SmolStr;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{HtmlCanvasElement, window};
+use web_sys::{ClipboardEvent, CompositionEvent, HtmlCanvasElement, window};
 use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{
@@ -76,9 +77,10 @@ struct Runner {
     redraw: WebRedrawRequester,
     last_mouse_logical: Option<(f32, f32)>,
     cursor_in_window: bool,
-    ime_composing: bool,
+    ime_composing: Rc<Cell<bool>>,
     boot_overlay_hidden: bool,
     resize_listener: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
+    dom_input_listeners: Vec<wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)>>,
     /// Set when async viewport init kicks off. Reset once the viewport
     /// actually appears in the shared cell. Prevents re-entry from a
     /// second `resumed` call.
@@ -97,9 +99,10 @@ impl Runner {
             redraw: WebRedrawRequester::default(),
             last_mouse_logical: None,
             cursor_in_window: false,
-            ime_composing: false,
+            ime_composing: Rc::new(Cell::new(false)),
             boot_overlay_hidden: false,
             resize_listener: None,
+            dom_input_listeners: Vec::new(),
             init_in_flight: false,
         }
     }
@@ -164,6 +167,181 @@ impl Runner {
         let _ =
             web_window.add_event_listener_with_callback("resize", closure.as_ref().unchecked_ref());
         self.resize_listener = Some(closure);
+    }
+
+    fn install_dom_input_listeners(&mut self, canvas: &HtmlCanvasElement, window: Arc<Window>) {
+        if !self.dom_input_listeners.is_empty() {
+            return;
+        }
+
+        self.install_clipboard_listener(canvas, &window, "copy");
+        self.install_clipboard_listener(canvas, &window, "cut");
+        self.install_paste_listener(canvas, &window);
+        self.install_composition_listeners(canvas, &window);
+    }
+
+    fn install_clipboard_listener(
+        &mut self,
+        canvas: &HtmlCanvasElement,
+        window: &Arc<Window>,
+        event_name: &'static str,
+    ) {
+        let viewport_slot = self.viewport.clone();
+        let window = window.clone();
+        let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::Event| {
+            let Ok(event) = event.dyn_into::<ClipboardEvent>() else {
+                return;
+            };
+            let Some(clipboard) = event.clipboard_data() else {
+                return;
+            };
+            let mut vp = viewport_slot.borrow_mut();
+            let Some(viewport) = vp.as_mut() else {
+                return;
+            };
+            let handled = match event_name {
+                "copy" => viewport.dispatch_copy_event(),
+                "cut" => viewport.dispatch_cut_event(),
+                _ => false,
+            };
+            let requests = viewport.drain_platform_requests();
+            if let Some(text) = requests.clipboard_write {
+                let _ = clipboard.set_data("text/plain", &text);
+                event.prevent_default();
+            } else if handled {
+                event.prevent_default();
+            }
+            if requests.request_redraw {
+                window.request_redraw();
+            }
+        })
+            as Box<dyn FnMut(web_sys::Event)>);
+        let _ =
+            canvas.add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref());
+        self.dom_input_listeners.push(closure);
+    }
+
+    fn install_paste_listener(&mut self, canvas: &HtmlCanvasElement, window: &Arc<Window>) {
+        let viewport_slot = self.viewport.clone();
+        let window = window.clone();
+        let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::Event| {
+            let Ok(event) = event.dyn_into::<ClipboardEvent>() else {
+                return;
+            };
+            let Some(clipboard) = event.clipboard_data() else {
+                return;
+            };
+            let Ok(text) = clipboard.get_data("text/plain") else {
+                return;
+            };
+            if text.is_empty() {
+                return;
+            }
+            let mut vp = viewport_slot.borrow_mut();
+            let Some(viewport) = vp.as_mut() else {
+                return;
+            };
+            if viewport.dispatch_paste_event(text) {
+                event.prevent_default();
+                window.request_redraw();
+            }
+        })
+            as Box<dyn FnMut(web_sys::Event)>);
+        let _ = canvas.add_event_listener_with_callback("paste", closure.as_ref().unchecked_ref());
+        self.dom_input_listeners.push(closure);
+    }
+
+    fn install_composition_listeners(&mut self, canvas: &HtmlCanvasElement, window: &Arc<Window>) {
+        let viewport_slot = self.viewport.clone();
+        let ime_composing = self.ime_composing.clone();
+        let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::Event| {
+            ime_composing.set(true);
+            let Ok(event) = event.dyn_into::<CompositionEvent>() else {
+                return;
+            };
+            let preedit = PlatformImePreedit {
+                text: event.data().unwrap_or_default(),
+                cursor_start: None,
+                cursor_end: None,
+                selection_start: None,
+                selection_end: None,
+                attributes: Vec::new(),
+            };
+            if let Some(viewport) = viewport_slot.borrow_mut().as_mut() {
+                let _ = viewport.dispatch_ime_enabled_event();
+                let _ = viewport.dispatch_platform_ime_preedit(&preedit);
+            }
+        })
+            as Box<dyn FnMut(web_sys::Event)>);
+        let _ = canvas
+            .add_event_listener_with_callback("compositionstart", closure.as_ref().unchecked_ref());
+        self.dom_input_listeners.push(closure);
+
+        let viewport_slot = self.viewport.clone();
+        let ime_composing = self.ime_composing.clone();
+        let window_update = window.clone();
+        let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::Event| {
+            ime_composing.set(true);
+            let Ok(event) = event.dyn_into::<CompositionEvent>() else {
+                return;
+            };
+            let preedit = PlatformImePreedit {
+                text: event.data().unwrap_or_default(),
+                cursor_start: None,
+                cursor_end: None,
+                selection_start: None,
+                selection_end: None,
+                attributes: Vec::new(),
+            };
+            if let Some(viewport) = viewport_slot.borrow_mut().as_mut() {
+                let _ = viewport.dispatch_platform_ime_preedit(&preedit);
+                window_update.request_redraw();
+            }
+        })
+            as Box<dyn FnMut(web_sys::Event)>);
+        let _ = canvas.add_event_listener_with_callback(
+            "compositionupdate",
+            closure.as_ref().unchecked_ref(),
+        );
+        self.dom_input_listeners.push(closure);
+
+        let viewport_slot = self.viewport.clone();
+        let ime_composing = self.ime_composing.clone();
+        let window_end = window.clone();
+        let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::Event| {
+            ime_composing.set(false);
+            let Ok(event) = event.dyn_into::<CompositionEvent>() else {
+                return;
+            };
+            let text = event.data().unwrap_or_default();
+            let clear_preedit = PlatformImePreedit {
+                text: String::new(),
+                cursor_start: None,
+                cursor_end: None,
+                selection_start: None,
+                selection_end: None,
+                attributes: Vec::new(),
+            };
+            let mut vp = viewport_slot.borrow_mut();
+            let Some(viewport) = vp.as_mut() else {
+                return;
+            };
+            let _ = viewport.dispatch_platform_ime_preedit(&clear_preedit);
+            if !text.is_empty() {
+                let ti = PlatformTextInput {
+                    text: text.clone(),
+                    input_type: rfgui::platform::PlatformInputType::ImeCommit,
+                    is_composing: false,
+                };
+                let _ = viewport.dispatch_ime_commit_event(text);
+                let _ = viewport.dispatch_platform_text_input(&ti);
+            }
+            window_end.request_redraw();
+        })
+            as Box<dyn FnMut(web_sys::Event)>);
+        let _ = canvas
+            .add_event_listener_with_callback("compositionend", closure.as_ref().unchecked_ref());
+        self.dom_input_listeners.push(closure);
     }
 
     fn ensure_ready(&mut self) {
@@ -308,7 +486,7 @@ impl Runner {
             characters,
             modifiers,
             repeat: event.repeat,
-            is_composing: self.ime_composing,
+            is_composing: self.ime_composing.get(),
             pressed,
             timestamp,
         };
@@ -335,7 +513,8 @@ impl Runner {
         // Ctrl+Shift+C (devtools) and Cmd+Alt+V (format-paste) keep their
         // raw-key semantics.
         if pressed
-            && !self.ime_composing
+            && self.dom_input_listeners.is_empty()
+            && !self.ime_composing.get()
             && modifiers.command()
             && !modifiers.shift()
             && !modifiers.alt()
@@ -368,38 +547,37 @@ impl Runner {
                 _ => {}
             }
         }
-        if pressed && !self.ime_composing {
+        if pressed && !self.ime_composing.get() {
             if let Some(text) = event.text.as_ref() {
-                if !text.is_empty() {
-                    let allow = self
+                if !text.is_empty()
+                    && self
                         .viewport
                         .borrow()
                         .as_ref()
-                        .map(|v| !v.modifiers().any())
-                        .unwrap_or(true);
-                    if allow {
-                        let ti = PlatformTextInput {
-                            text: text.to_string(),
-                            input_type: rfgui::platform::PlatformInputType::Typing,
-                            is_composing: false,
+                        .map(|v| should_dispatch_text(v, text))
+                        .unwrap_or(true)
+                {
+                    let ti = PlatformTextInput {
+                        text: text.to_string(),
+                        input_type: rfgui::platform::PlatformInputType::Typing,
+                        is_composing: false,
+                    };
+                    let ti_event = AppEvent::TextInput(ti.clone());
+                    let mut vp = self.viewport.borrow_mut();
+                    if let Some(viewport) = vp.as_mut() {
+                        let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
+                            Some(sink) => sink,
+                            None => &mut NoopCursorSink,
                         };
-                        let ti_event = AppEvent::TextInput(ti.clone());
-                        let mut vp = self.viewport.borrow_mut();
-                        if let Some(viewport) = vp.as_mut() {
-                            let cursor_sink: &mut dyn CursorSink = match self.cursor_sink.as_mut() {
-                                Some(sink) => sink,
-                                None => &mut NoopCursorSink,
-                            };
-                            viewport.dispatch_app_event(
-                                &ti_event,
-                                PlatformServices {
-                                    clipboard: &mut self.clipboard,
-                                    cursor: cursor_sink,
-                                    redraw: &self.redraw,
-                                },
-                            );
-                            let _ = viewport.dispatch_platform_text_input(&ti);
-                        }
+                        viewport.dispatch_app_event(
+                            &ti_event,
+                            PlatformServices {
+                                clipboard: &mut self.clipboard,
+                                cursor: cursor_sink,
+                                redraw: &self.redraw,
+                            },
+                        );
+                        let _ = viewport.dispatch_platform_text_input(&ti);
                     }
                 }
             }
@@ -409,13 +587,13 @@ impl Runner {
     fn handle_ime(&mut self, ime: Ime) {
         match ime {
             Ime::Enabled => {
-                self.ime_composing = false;
+                self.ime_composing.set(false);
                 if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
                     let _ = viewport.dispatch_ime_enabled_event();
                 }
             }
             Ime::Disabled => {
-                self.ime_composing = false;
+                self.ime_composing.set(false);
                 let preedit = PlatformImePreedit {
                     text: String::new(),
                     cursor_start: None,
@@ -430,7 +608,7 @@ impl Runner {
                 }
             }
             Ime::Preedit(text, cursor) => {
-                self.ime_composing = !text.is_empty();
+                self.ime_composing.set(!text.is_empty());
                 let (start, end) = match cursor {
                     Some((s, e)) => (Some(s), Some(e)),
                     None => (None, None),
@@ -462,7 +640,7 @@ impl Runner {
                 }
             }
             Ime::Commit(text) => {
-                self.ime_composing = false;
+                self.ime_composing.set(false);
                 if text.is_empty() {
                     return;
                 }
@@ -514,6 +692,7 @@ impl ApplicationHandler for Runner {
         );
         window.set_ime_allowed(true);
         if let Some(canvas) = canvas {
+            self.install_dom_input_listeners(&canvas, window.clone());
             self.cursor_sink = Some(CanvasCursorSink::new(canvas));
         }
         self.window = Some(window);
@@ -770,7 +949,7 @@ impl ApplicationHandler for Runner {
                     }
                 }
                 if !focused {
-                    self.ime_composing = false;
+                    self.ime_composing.set(false);
                     if let Some(viewport) = self.viewport.borrow_mut().as_mut() {
                         viewport.clear_input_state();
                     }
@@ -868,6 +1047,30 @@ fn lookup_app_canvas() -> Option<HtmlCanvasElement> {
     let document = window()?.document()?;
     let element = document.get_element_by_id("app-canvas")?;
     element.dyn_into::<HtmlCanvasElement>().ok()
+}
+
+/// Return true when a `KeyEvent::text` payload should also be sent down
+/// the text-input path. Shift is allowed because it produces uppercase
+/// letters / symbols; Ctrl, Alt, and Meta remain shortcut modifiers.
+fn should_dispatch_text(viewport: &Viewport, text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    let mut chars = text.chars();
+    let Some(ch) = chars.next() else {
+        return false;
+    };
+    if chars.next().is_some() {
+        return false;
+    }
+    if matches!(ch as u32, 0xF700..=0xF8FF) {
+        return false;
+    }
+    if ch.is_control() {
+        return false;
+    }
+    let modifiers = viewport.modifiers();
+    !(modifiers.ctrl() || modifiers.alt() || modifiers.meta())
 }
 
 /// Read the canvas's CSS box, multiply by the device pixel ratio, and write
