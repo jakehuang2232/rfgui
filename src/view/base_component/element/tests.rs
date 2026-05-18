@@ -739,6 +739,85 @@ mod tests {
     }
 
     #[test]
+    fn inline_measure_skips_absolute_child_for_remaining_width() {
+        let mut parent = Element::new(0.0, 0.0, 200.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(200.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Auto);
+        parent.apply_style(parent_style);
+
+        let leading = Element::new(0.0, 0.0, 190.0, 20.0);
+
+        let mut popover = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut popover_style = Style::new();
+        popover_style.insert(PropertyId::Width, ParsedValue::Auto);
+        popover_style.insert(PropertyId::Height, ParsedValue::Auto);
+        popover_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flow().row().no_wrap().into()),
+        );
+        popover_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute().anchor(crate::style::Anchor::Viewport),
+            ),
+        );
+        popover.apply_style(popover_style);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _leading_key = commit_child(&mut arena, parent_key, Box::new(leading));
+        let popover_key = commit_child(&mut arena, parent_key, Box::new(popover));
+        let _popover_text_key = commit_child(
+            &mut arena,
+            popover_key,
+            Box::new(Text::from_content("absolute snackbar message")),
+        );
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 200.0,
+                max_height: 200.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 200.0,
+                available_height: 200.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(200.0),
+                percent_base_height: Some(200.0),
+            },
+        );
+
+        let parent_snapshot = child_snapshot(&arena, parent_key);
+        let popover_snapshot = nth_child_snapshot(&arena, parent_key, 1);
+
+        assert!(
+            popover_snapshot.width > 100.0,
+            "absolute child should measure against the parent constraint, not the 10px inline remainder: {:?}",
+            popover_snapshot
+        );
+        assert!(
+            popover_snapshot.height < 40.0,
+            "absolute child should not be made tall by remainder-width text wrapping: {:?}",
+            popover_snapshot
+        );
+        assert_eq!(parent_snapshot.width, 200.0);
+        assert_eq!(parent_snapshot.height, 20.0);
+    }
+
+    #[test]
     fn column_flow_auto_size_uses_cross_for_width_and_main_for_height() {
         let mut parent = Element::new(0.0, 0.0, 240.0, 120.0);
         let mut parent_style = Style::new();
