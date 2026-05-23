@@ -3338,6 +3338,95 @@ mod tests {
     }
 
     #[test]
+    fn explicit_flex_basis_is_not_clamped_by_intrinsic_auto_min_main() {
+        let mut parent = Element::new(0.0, 0.0, 409.0, 40.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().row().into()),
+        );
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(409.0)));
+        parent_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
+        parent_style.insert(PropertyId::Gap, ParsedValue::Length(Length::px(4.0)));
+        parent.apply_style(parent_style);
+
+        let mut track = Element::new(0.0, 0.0, 155.0, 18.0);
+        let mut track_style = Style::new();
+        track_style.insert(PropertyId::Width, ParsedValue::Auto);
+        track_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(18.0)));
+        track_style.insert(PropertyId::MinWidth, ParsedValue::Length(Length::Zero));
+        track_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(crate::style::flex().grow(3.0).shrink(1.0)),
+        );
+        track.apply_style(track_style);
+
+        let mut label = Element::new(0.0, 0.0, 250.0, 18.0);
+        let mut label_style = Style::new();
+        label_style.insert(PropertyId::Width, ParsedValue::Auto);
+        label_style.insert(PropertyId::Height, ParsedValue::Auto);
+        label_style.insert(PropertyId::MaxWidth, ParsedValue::Length(Length::px(250.0)));
+        label_style.insert(
+            PropertyId::Flex,
+            ParsedValue::Flex(
+                crate::style::flex()
+                    .grow(1.0)
+                    .shrink(1.0)
+                    .basis(Length::px(80.0)),
+            ),
+        );
+        label.apply_style(label_style);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let _ = commit_child(&mut arena, parent_key, Box::new(track));
+        let label_key = commit_child(&mut arena, parent_key, Box::new(label));
+        let _ = commit_child(
+            &mut arena,
+            label_key,
+            Box::new(Element::new(0.0, 0.0, 250.0, 18.0)),
+        );
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 409.0,
+                max_height: 40.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(409.0),
+                percent_base_height: Some(40.0),
+                viewport_height: 600.0,
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 409.0,
+                available_height: 40.0,
+                viewport_width: 800.0,
+                percent_base_width: Some(409.0),
+                percent_base_height: Some(40.0),
+                viewport_height: 600.0,
+            },
+        );
+
+        let track_snapshot = nth_child_snapshot(&arena, parent_key, 0);
+        let label_snapshot = nth_child_snapshot(&arena, parent_key, 1);
+        assert!(
+            (track_snapshot.width - 243.75).abs() < 0.01,
+            "track width should grow from zero basis, got {}",
+            track_snapshot.width
+        );
+        assert!(
+            (label_snapshot.width - 161.25).abs() < 0.01,
+            "label width should grow from 80px basis, not clamp to intrinsic 250px, got {}",
+            label_snapshot.width
+        );
+    }
+
+    #[test]
     fn flex_basis_auto_uses_zero_when_child_main_size_is_indefinite() {
         let mut parent = Element::new(0.0, 0.0, 80.0, 40.0);
         let mut parent_style = Style::new();

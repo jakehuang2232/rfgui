@@ -1369,12 +1369,14 @@ impl FlexProps {
     }
 
     /// Derived auto_min_main: only content-sized elements opt in via
-    /// `intrinsic_feeds_auto_min`. Gated on main size = `Auto` and no
-    /// explicit min.
+    /// `intrinsic_feeds_auto_min`. Gated on flex-basis = `Auto`, main
+    /// size = `Auto`, and no explicit min so an authored basis remains
+    /// the item's starting constraint instead of being clamped by content.
     #[inline]
     pub fn auto_min_main(&self, is_row: bool) -> Option<f32> {
         if !self.intrinsic_feeds_auto_min
             || self.has_explicit_min_main(is_row)
+            || self.basis != SizeValue::Auto
             || self.main_size(is_row) != SizeValue::Auto
         {
             return None;
