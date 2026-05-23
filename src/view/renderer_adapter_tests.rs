@@ -4,17 +4,21 @@
 
 #![cfg(test)]
 
+use crate::style::style_props::{StylePropError, TextStyleSet, validate_style};
 use crate::style::{
-    Border, BorderRadius, Color, ColorLike, Cursor, FontSize, IntoColor, Layout, Length, Padding,
-    ParsedValue, PropertyId, Style, Unit, VerticalAlign,
+    Border, BorderRadius, Color, ColorLike, Cursor, FontFamily, FontSize, FontWeight, IntoColor,
+    Layout, Length, Padding, ParsedValue, PropertyId, Style, TextWrap, Unit, VerticalAlign,
 };
 use crate::ui::{
-    GlobalKey, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor,
+    GlobalKey, IntoPropValue, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor,
     identity_token_from_node_identity, rendered_node_id, rsx,
 };
 use crate::view::base_component::text_area::TextAreaTextRun;
 use crate::view::base_component::{
     Element as BaseElement, Text, TextArea, get_cursor_by_id, hit_test,
+};
+use crate::view::renderer_adapter::{
+    StyleCascadeContext, as_element_style, as_text_style, computed_parent_from_style_cascade,
 };
 use crate::view::test_support::{commit_rsx_tree, measure_and_place};
 use crate::view::{
@@ -117,6 +121,69 @@ fn style_with_size(
     }
 }
 
+#[test]
+fn computed_parent_from_style_cascade_maps_text_cascade_fields() {
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::FontFamily,
+        ParsedValue::FontFamily(FontFamily::new(["Inter", "Arial"])),
+    );
+    style.insert(
+        PropertyId::FontSize,
+        ParsedValue::FontSize(FontSize::px(18.0)),
+    );
+    style.insert(
+        PropertyId::FontWeight,
+        ParsedValue::FontWeight(FontWeight::new(650)),
+    );
+    style.insert(
+        PropertyId::Color,
+        ParsedValue::Color(Color::rgb(0x12, 0x34, 0x56).into()),
+    );
+    style.insert(PropertyId::Cursor, ParsedValue::Cursor(Cursor::Pointer));
+    style.insert(
+        PropertyId::TextWrap,
+        ParsedValue::TextWrap(TextWrap::NoWrap),
+    );
+    style.insert(
+        PropertyId::LineHeight,
+        ParsedValue::LineHeight(crate::style::LineHeight::new(1.6)),
+    );
+    style.insert(
+        PropertyId::VerticalAlign,
+        ParsedValue::VerticalAlign(VerticalAlign::Middle),
+    );
+
+    let cascade = StyleCascadeContext::from_viewport_style(&style, 0.0, 0.0);
+    let parent = computed_parent_from_style_cascade(&cascade);
+
+    assert_eq!(
+        parent.font_families,
+        vec!["Inter".to_string(), "Arial".to_string()]
+    );
+    assert!((parent.font_size - 18.0).abs() < f32::EPSILON);
+    assert_eq!(parent.font_weight, 650);
+    assert_eq!(parent.color.to_rgba_u8(), [0x12, 0x34, 0x56, 0xff]);
+    assert_eq!(parent.cursor, Cursor::Pointer);
+    assert_eq!(parent.text_wrap, TextWrap::NoWrap);
+    assert!((parent.line_height - 1.6).abs() < f32::EPSILON);
+    assert_eq!(parent.vertical_align, VerticalAlign::Middle);
+}
+
+#[test]
+fn computed_parent_from_style_cascade_falls_back_to_root_font_size() {
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::FontSize,
+        ParsedValue::FontSize(FontSize::px(20.0)),
+    );
+
+    let cascade = StyleCascadeContext::from_viewport_style(&style, 0.0, 0.0);
+    let parent = computed_parent_from_style_cascade(&cascade);
+
+    assert!((parent.font_size - 20.0).abs() < f32::EPSILON);
+}
+
 fn text_style_with_color(color_hex: &str) -> TextStylePropSchema {
     TextStylePropSchema {
         color: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(
@@ -132,6 +199,73 @@ fn text_style_with_size(width: f32, height: f32) -> TextStylePropSchema {
         height: Some(Length::px(height)),
         ..empty_text_style()
     }
+}
+
+#[test]
+fn as_text_style_accepts_text_style_props() {
+    let value = TextStylePropSchema {
+        color: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(
+            "#123456",
+        )))),
+        font_size: Some(FontSize::px(18.0)),
+        cursor: Some(Cursor::Text),
+        ..empty_text_style()
+    }
+    .into_prop_value();
+
+    let style = as_text_style(&value, "style").expect("text style should validate");
+
+    assert!(matches!(
+        style.get(PropertyId::Color),
+        Some(ParsedValue::Color(_))
+    ));
+    assert!(matches!(
+        style.get(PropertyId::FontSize),
+        Some(ParsedValue::FontSize(_))
+    ));
+    assert_eq!(
+        style.get(PropertyId::Cursor),
+        Some(&ParsedValue::Cursor(Cursor::Text))
+    );
+}
+
+#[test]
+fn text_style_set_rejects_unsupported_normalized_fields() {
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::BackgroundColor,
+        ParsedValue::color_like(Color::hex("#123456")),
+    );
+
+    assert_eq!(
+        validate_style::<TextStyleSet>(&style),
+        Err(StylePropError::UnsupportedProperty {
+            property: PropertyId::BackgroundColor,
+        })
+    );
+}
+
+#[test]
+fn as_element_style_accepts_box_style_props() {
+    let value = ElementStylePropSchema {
+        layout: Some(Layout::Inline),
+        background_color: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(
+            "#123456",
+        )))),
+        ..empty_element_style()
+    }
+    .into_prop_value();
+
+    let style = as_element_style(&value, "style").expect("element style should validate");
+
+    assert_eq!(
+        style.get(PropertyId::Layout),
+        Some(&ParsedValue::Layout(Layout::Inline))
+    );
+    assert!(matches!(
+        style.get(PropertyId::BackgroundColor),
+        Some(ParsedValue::Color(_))
+    ));
 }
 
 #[test]
@@ -779,6 +913,105 @@ fn textarea_uses_style_color_and_inherits_parent_color() {
 
     assert_eq!(inherited_rgba, parent_color.to_rgba_f32());
     assert_eq!(explicit_rgba, local_color.to_rgba_f32());
+}
+
+#[test]
+fn textarea_style_bridge_resolves_em_font_size_from_inherited_parent() {
+    let parent_style = ElementStylePropSchema {
+        font_size: Some(FontSize::px(24.0)),
+        ..empty_element_style()
+    };
+    let textarea_style = ElementStylePropSchema {
+        font_size: Some(FontSize::em(1.25)),
+        ..empty_element_style()
+    };
+
+    let tree = host_element_node()
+        .with_prop("style", parent_style)
+        .with_child(
+            host_text_area_node()
+                .with_prop("style", textarea_style)
+                .with_prop("content", "hello")
+                .with_prop("multiline", false),
+        );
+
+    let mut arena = crate::view::test_support::new_test_arena();
+    let roots = commit_rsx_tree(&mut arena, &tree);
+    let root = *roots.first().expect("single root");
+    let text_area_key = *arena.children_of(root).first().expect("textarea child");
+    let text_area_node = arena.get(text_area_key).unwrap();
+    let text_area = text_area_node
+        .element
+        .as_any()
+        .downcast_ref::<TextArea>()
+        .expect("textarea");
+
+    assert!((text_area.font_size - 30.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn textarea_style_bridge_applies_existing_text_fields() {
+    let local_color = IntoColor::<Color>::into_color(Color::hex("#aa5500"));
+    let textarea_style = ElementStylePropSchema {
+        color: Some(Box::new(local_color)),
+        font: Some(FontFamily::new(["Inter", "system-ui"])),
+        font_weight: Some(FontWeight::new(650)),
+        line_height: Some(1.7),
+        cursor: Some(Cursor::Pointer),
+        ..empty_element_style()
+    };
+
+    let tree = host_text_area_node()
+        .with_prop("style", textarea_style)
+        .with_prop("content", "hello")
+        .with_prop("multiline", false);
+
+    let mut arena = crate::view::test_support::new_test_arena();
+    let roots = commit_rsx_tree(&mut arena, &tree);
+    let text_area_node = arena.get(*roots.first().expect("textarea root")).unwrap();
+    let text_area = text_area_node
+        .element
+        .as_any()
+        .downcast_ref::<TextArea>()
+        .expect("textarea");
+
+    assert_eq!(text_area.color.to_rgba_f32(), local_color.to_rgba_f32());
+    assert_eq!(text_area.font_families, vec!["Inter", "system-ui"]);
+    assert_eq!(text_area.font_weight, 650);
+    assert!((text_area.line_height - 1.7).abs() < f32::EPSILON);
+    assert_eq!(text_area.cursor, Cursor::Pointer);
+}
+
+#[test]
+fn textarea_style_width_height_remain_box_model_noops() {
+    let textarea_style = ElementStylePropSchema {
+        width: Some(Length::px(120.0)),
+        height: Some(Length::px(48.0)),
+        font_size: Some(FontSize::px(18.0)),
+        ..empty_element_style()
+    };
+
+    let tree = host_text_area_node()
+        .with_prop("style", textarea_style)
+        .with_prop("content", "hello")
+        .with_prop("multiline", false);
+
+    let mut arena = crate::view::test_support::new_test_arena();
+    let roots = commit_rsx_tree(&mut arena, &tree);
+    let root = *roots.first().expect("textarea root");
+    measure_and_place(&mut arena, root, std_constraints(), std_placement());
+
+    let snapshot = arena.get(root).unwrap().element.box_model_snapshot();
+    assert!(
+        snapshot.width > 120.0,
+        "TextArea style.width should remain a no-op; got {}",
+        snapshot.width
+    );
+    assert!(
+        (snapshot.height - 48.0).abs() > 0.5,
+        "TextArea style.height should remain a no-op; got {}",
+        snapshot.height
+    );
 }
 
 #[test]

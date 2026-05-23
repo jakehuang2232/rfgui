@@ -1,13 +1,14 @@
 #![allow(missing_docs)]
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::{ElementCore, Position, Size};
+use super::{ComputedStyleConsumer, ElementCore, Position, Size};
 use crate::style::ColorLike;
 use crate::style::{
     Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle,
     Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length, PositionMode, ScrollDirection,
-    SizeValue, Style, Transform, TransformKind, TransformOrigin, TransitionProperty,
-    TransitionTiming, compute_style, interpolate_transform_with_reference_box,
+    SizeValue, Style, StyleComputeContext, Transform, TransformKind, TransformOrigin,
+    TransitionProperty, TransitionTiming, compute_style_with_context,
+    interpolate_transform_with_reference_box,
 };
 use crate::transition::{
     AnimationRequest, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_STYLE_BACKGROUND_COLOR,
@@ -1928,17 +1929,18 @@ pub trait ElementTrait:
     /// host. Default is a no-op (most hosts don't read inherited
     /// text props). Text / TextArea override to fill font / color /
     /// cursor / text_wrap that the author didn't explicitly set.
-    fn apply_inherited(&mut self, _inherited: &crate::view::renderer_adapter::InheritedTextStyle) {}
+    fn apply_inherited(&mut self, _inherited: &crate::view::renderer_adapter::StyleCascadeContext) {
+    }
 
-    /// 軌 1 #14 Phase 3: produce the `InheritedTextStyle` to pass to
+    /// 軌 1 #14 Phase 3: produce the `StyleCascadeContext` to pass to
     /// this host's children. Default returns the parent cascade
     /// unchanged (leaves and non-Element containers don't introduce
     /// new cascade declarations). `Element` overrides to merge its
     /// own `parsed_style()` on top of the parent cascade.
-    fn child_inherited_text_style(
+    fn child_style_cascade(
         &self,
-        parent: &crate::view::renderer_adapter::InheritedTextStyle,
-    ) -> crate::view::renderer_adapter::InheritedTextStyle {
+        parent: &crate::view::renderer_adapter::StyleCascadeContext,
+    ) -> crate::view::renderer_adapter::StyleCascadeContext {
         parent.clone()
     }
 
@@ -1982,7 +1984,7 @@ pub trait ElementTrait:
         node: &crate::ui::RsxElementNode,
         path: &[u64],
         global_path: Option<&crate::view::renderer_adapter::GlobalNodePath>,
-        inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+        inherited: &crate::view::renderer_adapter::StyleCascadeContext,
     ) -> Result<Vec<crate::view::renderer_adapter::ElementDescriptor>, String> {
         crate::view::renderer_adapter::walk_children_descriptors(node, path, global_path, inherited)
     }
@@ -2128,7 +2130,7 @@ struct ElementTransitionRequests {
 /// from→to deltas. Phase B trimmed the layout/hover/transition fields
 /// — those existed for the now-removed `restore_state` hack.
 #[derive(Clone, Debug)]
-struct ElementStyleSnapshot {
+pub(crate) struct ElementStyleSnapshot {
     opacity: f32,
     border_radius: f32,
     width: f32,
@@ -2476,13 +2478,14 @@ impl ElementTrait for Element {
     }
 
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
+        let (width, height) = self.current_layout_frame_size();
         BoxModelSnapshot {
             node_id: self.core.id,
             parent_id: self.core.parent_id,
             x: self.layout_state.layout_position.x,
             y: self.layout_state.layout_position.y,
-            width: self.layout_state.layout_size.width.max(0.0),
-            height: self.layout_state.layout_size.height.max(0.0),
+            width,
+            height,
             border_radius: self.border_radius,
             should_render: self.layout_state.should_render,
         }
@@ -2747,7 +2750,7 @@ impl ElementTrait for Element {
         self.core.parent_id = parent_id;
     }
 
-    fn apply_inherited(&mut self, inherited: &crate::view::renderer_adapter::InheritedTextStyle) {
+    fn apply_inherited(&mut self, inherited: &crate::view::renderer_adapter::StyleCascadeContext) {
         use crate::style::{LineHeight, ParsedValue, PropertyId};
 
         let authored = self.text_cascade_style();
@@ -2756,7 +2759,7 @@ impl ElementTrait for Element {
 
         if authored.get(PropertyId::LineHeight).is_none() {
             let next_value = inherited
-                .line_height
+                .inherited_line_height()
                 .map(|lh| ParsedValue::LineHeight(LineHeight::new(lh)));
             if next.get(PropertyId::LineHeight) != next_value.as_ref() {
                 match next_value {
@@ -2770,7 +2773,9 @@ impl ElementTrait for Element {
         }
 
         if authored.get(PropertyId::VerticalAlign).is_none() {
-            let next_value = inherited.vertical_align.map(ParsedValue::VerticalAlign);
+            let next_value = inherited
+                .inherited_vertical_align()
+                .map(ParsedValue::VerticalAlign);
             if next.get(PropertyId::VerticalAlign) != next_value.as_ref() {
                 match next_value {
                     Some(value) => next.insert(PropertyId::VerticalAlign, value),
@@ -2783,7 +2788,7 @@ impl ElementTrait for Element {
         }
 
         if authored.get(PropertyId::Cursor).is_none() {
-            let next_value = inherited.cursor.map(ParsedValue::Cursor);
+            let next_value = inherited.inherited_cursor().map(ParsedValue::Cursor);
             if next.get(PropertyId::Cursor) != next_value.as_ref() {
                 match next_value {
                     Some(value) => next.insert(PropertyId::Cursor, value),
@@ -2801,10 +2806,10 @@ impl ElementTrait for Element {
         }
     }
 
-    fn child_inherited_text_style(
+    fn child_style_cascade(
         &self,
-        parent: &crate::view::renderer_adapter::InheritedTextStyle,
-    ) -> crate::view::renderer_adapter::InheritedTextStyle {
+        parent: &crate::view::renderer_adapter::StyleCascadeContext,
+    ) -> crate::view::renderer_adapter::StyleCascadeContext {
         let mut child = parent.clone();
         child.merge_style(self.text_cascade_style());
         child
@@ -2849,8 +2854,8 @@ impl ElementTrait for Element {
     ) -> crate::view::fiber_work::PropApplyOutcome {
         use crate::view::fiber_work::PropApplyOutcome;
         use crate::view::renderer_adapter::{
-            InheritedTextStyle, as_element_style, as_owned_string,
-            element_base_style_from_inherited, inherited_text_style_at_parent,
+            StyleCascadeContext, as_element_style, as_owned_string,
+            element_base_style_from_inherited, style_cascade_at_parent,
         };
 
         match name {
@@ -2860,14 +2865,14 @@ impl ElementTrait for Element {
                 };
                 let inherited = arena.parent_of(self_key).map_or_else(
                     || {
-                        InheritedTextStyle::from_viewport_style(
+                        StyleCascadeContext::from_viewport_style(
                             ctx.viewport_style,
                             ctx.viewport_width,
                             ctx.viewport_height,
                         )
                     },
                     |parent| {
-                        inherited_text_style_at_parent(
+                        style_cascade_at_parent(
                             arena,
                             parent,
                             ctx.viewport_style,
@@ -2911,20 +2916,20 @@ impl ElementTrait for Element {
     ) -> crate::view::fiber_work::PropApplyOutcome {
         use crate::view::fiber_work::PropApplyOutcome;
         use crate::view::renderer_adapter::{
-            InheritedTextStyle, element_base_style_from_inherited, inherited_text_style_at_parent,
+            StyleCascadeContext, element_base_style_from_inherited, style_cascade_at_parent,
         };
         match name {
             "style" => {
                 let inherited = arena.parent_of(self_key).map_or_else(
                     || {
-                        InheritedTextStyle::from_viewport_style(
+                        StyleCascadeContext::from_viewport_style(
                             ctx.viewport_style,
                             ctx.viewport_width,
                             ctx.viewport_height,
                         )
                     },
                     |parent| {
-                        inherited_text_style_at_parent(
+                        style_cascade_at_parent(
                             arena,
                             parent,
                             ctx.viewport_style,

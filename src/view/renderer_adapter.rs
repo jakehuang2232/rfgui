@@ -1,10 +1,11 @@
 #![allow(missing_docs)]
 
 //! Adapters that convert RSX trees into low-level retained host elements.
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::style::Style;
+use crate::style::style_props::{StylePropTrait, property_is_inherited, validate_style};
 use crate::style::{Color, Cursor, Length, ParsedValue, Position, PropertyId, TextWrap};
+use crate::style::{ComputedStyle, Style, StyleComputeContext, compute_style_with_context};
 use crate::ui::{FromPropValue, PropValue, RsxElementNode, RsxNode, RsxTextNode, use_context};
 use crate::view::base_component::text_area::TextAreaProjectionSegment;
 use crate::view::base_component::{
@@ -20,164 +21,154 @@ pub(crate) use crate::ui::{
     element_runtime_name, next_identity_ordinal, stable_node_id_from_parts,
 };
 
-#[derive(Clone, Debug, Default)]
-pub struct InheritedTextStyle {
-    pub(crate) font_families: Vec<String>,
-    pub(crate) font_size: Option<f32>,
+#[derive(Clone, Debug)]
+pub struct StyleCascadeContext {
+    pub(crate) parent: ComputedStyle,
+    active_inherited_properties: FxHashSet<PropertyId>,
     pub(crate) root_font_size: f32,
     pub(crate) viewport_width: f32,
     pub(crate) viewport_height: f32,
-    pub(crate) font_weight: Option<u16>,
-    pub(crate) color: Option<Color>,
-    pub(crate) cursor: Option<Cursor>,
-    pub(crate) text_wrap: Option<TextWrap>,
-    /// Multiplier-style line height (e.g. 1.2 = 120% of font_size).
-    /// Inherited typography prop. Default is the `Text` field's own
-    /// initial value when unset (cascade is opt-in).
-    pub(crate) line_height: Option<f32>,
-    /// Cross-axis alignment cascaded from an Element ancestor's
-    /// `style` prop. See `docs/design/inline-baseline.md` D5/D5a.
-    pub(crate) vertical_align: Option<crate::style::VerticalAlign>,
 }
 
-/// Resolved text-cascading declarations extracted from a `Style`.
-///
-/// 軌 1 #14 Phase 3: single enumeration of the cascade's prop list
-/// (font_family / font_size / font_weight / color / cursor / text_wrap).
-/// Callers that need to write these into a host (Text setters,
-/// TextArea fields, `InheritedTextStyle` cascade) read from the same
-/// `ResolvedTextProps` instead of repeating per-PropertyId match arms.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ResolvedTextProps {
-    pub(crate) font_families: Option<Vec<String>>,
-    pub(crate) font_size: Option<f32>,
-    pub(crate) font_weight: Option<u16>,
-    pub(crate) color: Option<Color>,
-    pub(crate) cursor: Option<Cursor>,
-    pub(crate) text_wrap: Option<TextWrap>,
-    pub(crate) line_height: Option<f32>,
-    pub(crate) vertical_align: Option<crate::style::VerticalAlign>,
+impl Default for StyleCascadeContext {
+    fn default() -> Self {
+        let mut active = FxHashSet::default();
+        active.insert(PropertyId::FontSize);
+        Self {
+            parent: ComputedStyle::default(),
+            active_inherited_properties: active,
+            root_font_size: 16.0,
+            viewport_width: 0.0,
+            viewport_height: 0.0,
+        }
+    }
 }
 
-impl InheritedTextStyle {
+impl StyleCascadeContext {
     pub(crate) fn from_viewport_style(
         style: &Style,
         viewport_width: f32,
         viewport_height: f32,
     ) -> Self {
-        let default_root_font_size = 16.0;
-        let root_font_size = resolve_font_size_from_style(
+        let parent = compute_style_with_context(
             style,
-            default_root_font_size,
-            default_root_font_size,
-            viewport_width,
-            viewport_height,
-        )
-        .unwrap_or(default_root_font_size);
-        let mut inherited = Self {
-            font_families: Vec::new(),
-            font_size: Some(root_font_size),
+            StyleComputeContext {
+                parent: None,
+                viewport_width,
+                viewport_height,
+                root_font_size: 16.0,
+                hovered: false,
+            },
+        );
+        let root_font_size = parent.font_size;
+        let mut active = active_inherited_properties(style);
+        active.insert(PropertyId::FontSize);
+        Self {
+            parent,
+            active_inherited_properties: active,
             root_font_size,
             viewport_width,
             viewport_height,
-            font_weight: None,
-            color: None,
-            cursor: None,
-            text_wrap: None,
-            line_height: None,
-            vertical_align: None,
-        };
-        let resolved = inherited.resolved_text_props(style);
-        if let Some(font_families) = resolved.font_families {
-            inherited.font_families = font_families;
         }
-        // `from_viewport_style` keeps the explicit root_font_size
-        // already computed above — don't downgrade it to whatever
-        // `resolve_font_size_from_style` returns mid-cascade.
-        inherited.font_weight = resolved.font_weight.or(inherited.font_weight);
-        inherited.color = resolved.color.or(inherited.color);
-        inherited.cursor = resolved.cursor.or(inherited.cursor);
-        inherited.text_wrap = resolved.text_wrap.or(inherited.text_wrap);
-        inherited.line_height = resolved.line_height.or(inherited.line_height);
-        inherited.vertical_align = resolved.vertical_align.or(inherited.vertical_align);
-        inherited
     }
 
-    /// Mutate `self` with the text-cascading declarations authored in
-    /// an Element's `style` prop. Mirrors the merge previously inlined
-    /// in `build_container_element_shell`; pulled out so the
-    /// incremental-commit path can replay the same cascade walking
-    /// the arena parent chain (M6).
+    /// Mutate this runtime cascade with declarations authored in an
+    /// ancestor style. The registry decides which authored properties
+    /// become active inherited values; `compute_style_with_context`
+    /// produces the next computed parent snapshot.
     pub(crate) fn merge_style(&mut self, style: &Style) {
-        let resolved = self.resolved_text_props(style);
-        if let Some(font_families) = resolved.font_families {
-            self.font_families = font_families;
-        }
-        if let Some(font_size) = resolved.font_size {
-            self.font_size = Some(font_size);
-        }
-        if let Some(font_weight) = resolved.font_weight {
-            self.font_weight = Some(font_weight);
-        }
-        if let Some(color) = resolved.color {
-            self.color = Some(color);
-        }
-        if let Some(cursor) = resolved.cursor {
-            self.cursor = Some(cursor);
-        }
-        if let Some(text_wrap) = resolved.text_wrap {
-            self.text_wrap = Some(text_wrap);
-        }
-        if let Some(line_height) = resolved.line_height {
-            self.line_height = Some(line_height);
-        }
-        if let Some(vertical_align) = resolved.vertical_align {
-            self.vertical_align = Some(vertical_align);
-        }
+        self.parent = compute_style_with_context(
+            style,
+            StyleComputeContext {
+                parent: Some(&self.parent),
+                viewport_width: self.viewport_width,
+                viewport_height: self.viewport_height,
+                root_font_size: self.root_font_size,
+                hovered: false,
+            },
+        );
+        self.active_inherited_properties
+            .extend(active_inherited_properties(style));
     }
 
-    /// Single source of truth for "what does this `Style` cascade?".
-    /// Resolves font_size relative to `self`'s font_size / root /
-    /// viewport. Other props are direct extractions.
-    pub(crate) fn resolved_text_props(&self, style: &Style) -> ResolvedTextProps {
-        ResolvedTextProps {
-            font_families: match style.get(PropertyId::FontFamily) {
-                Some(ParsedValue::FontFamily(family)) => Some(family.as_slice().to_vec()),
-                _ => None,
-            },
-            font_size: resolve_font_size_from_style(
-                style,
-                self.font_size.unwrap_or(self.root_font_size),
-                self.root_font_size,
-                self.viewport_width,
-                self.viewport_height,
-            ),
-            font_weight: match style.get(PropertyId::FontWeight) {
-                Some(ParsedValue::FontWeight(fw)) => Some(fw.value()),
-                _ => None,
-            },
-            color: match style.get(PropertyId::Color) {
-                Some(ParsedValue::Color(color)) => Some(color.to_color()),
-                _ => None,
-            },
-            cursor: match style.get(PropertyId::Cursor) {
-                Some(ParsedValue::Cursor(cursor)) => Some(*cursor),
-                _ => None,
-            },
-            text_wrap: match style.get(PropertyId::TextWrap) {
-                Some(ParsedValue::TextWrap(text_wrap)) => Some(*text_wrap),
-                _ => None,
-            },
-            line_height: match style.get(PropertyId::LineHeight) {
-                // Multiplier value clamped to >= 0 to mirror compute_style.
-                Some(ParsedValue::LineHeight(lh)) => Some(lh.value().max(0.0)),
-                _ => None,
-            },
-            vertical_align: match style.get(PropertyId::VerticalAlign) {
-                Some(ParsedValue::VerticalAlign(va)) => Some(*va),
-                _ => None,
-            },
+    pub(crate) fn has_inherited(&self, property: PropertyId) -> bool {
+        self.active_inherited_properties.contains(&property)
+    }
+
+    pub(crate) fn inherited_font_families(&self) -> Option<&[String]> {
+        self.has_inherited(PropertyId::FontFamily)
+            .then_some(self.parent.font_families.as_slice())
+    }
+
+    pub(crate) fn inherited_font_size(&self) -> Option<f32> {
+        self.has_inherited(PropertyId::FontSize)
+            .then_some(self.parent.font_size)
+    }
+
+    pub(crate) fn inherited_font_weight(&self) -> Option<u16> {
+        self.has_inherited(PropertyId::FontWeight)
+            .then_some(self.parent.font_weight)
+    }
+
+    pub(crate) fn inherited_color(&self) -> Option<Color> {
+        self.has_inherited(PropertyId::Color)
+            .then_some(self.parent.color)
+    }
+
+    pub(crate) fn inherited_cursor(&self) -> Option<Cursor> {
+        self.has_inherited(PropertyId::Cursor)
+            .then_some(self.parent.cursor)
+    }
+
+    pub(crate) fn inherited_text_wrap(&self) -> Option<TextWrap> {
+        self.has_inherited(PropertyId::TextWrap)
+            .then_some(self.parent.text_wrap)
+    }
+
+    pub(crate) fn inherited_line_height(&self) -> Option<f32> {
+        self.has_inherited(PropertyId::LineHeight)
+            .then_some(self.parent.line_height)
+    }
+
+    pub(crate) fn inherited_vertical_align(&self) -> Option<crate::style::VerticalAlign> {
+        self.has_inherited(PropertyId::VerticalAlign)
+            .then_some(self.parent.vertical_align)
+    }
+}
+
+fn active_inherited_properties(style: &Style) -> FxHashSet<PropertyId> {
+    let mut active = FxHashSet::default();
+    for declaration in style.declarations() {
+        if property_is_inherited(declaration.property) {
+            active.insert(declaration.property);
         }
+    }
+    active
+}
+
+pub(crate) fn computed_parent_from_style_cascade(cascade: &StyleCascadeContext) -> ComputedStyle {
+    cascade.parent.clone()
+}
+
+/// Resolve an explicit `font_size` prop using the same inherited text
+/// context as the computed-style bridge parent. This is for the
+/// standalone `font_size` prop only; local `style.font_size` flows
+/// through `compute_style_with_context`.
+pub(crate) fn resolve_font_size_prop_with_inherited(
+    value: &PropValue,
+    cascade: &StyleCascadeContext,
+) -> Option<f32> {
+    let parent_font_size = cascade.parent.font_size;
+    match value {
+        PropValue::I64(v) => Some((*v as f32).max(0.0)),
+        PropValue::F64(v) => Some((*v as f32).max(0.0)),
+        PropValue::FontSize(fs) => Some(fs.resolve_px(
+            parent_font_size,
+            cascade.root_font_size,
+            cascade.viewport_width,
+            cascade.viewport_height,
+        )),
+        _ => None,
     }
 }
 
@@ -193,31 +184,31 @@ fn convert_text_leaf(
     text: &RsxTextNode,
     path: &[u64],
     global_path: Option<&GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
+    style_cascade: &StyleCascadeContext,
 ) -> Box<dyn ElementTrait> {
     let content = text_with_text_area_ime_preedit(text.content.clone());
     let mut text_node = Text::from_content_with_id(
         stable_node_id_from_parts("TextNode", path, global_path),
         content,
     );
-    text_node.apply_inherited(inherited_text_style);
+    text_node.apply_inherited(style_cascade);
     Box::new(text_node)
 }
 
-pub(crate) fn element_base_style_from_inherited(inherited: &InheritedTextStyle) -> Style {
+pub(crate) fn element_base_style_from_inherited(cascade: &StyleCascadeContext) -> Style {
     let mut base_style = Style::new();
     base_style.insert(PropertyId::Width, ParsedValue::Auto);
     base_style.insert(PropertyId::Height, ParsedValue::Auto);
-    if let Some(cursor) = inherited.cursor {
+    if let Some(cursor) = cascade.inherited_cursor() {
         base_style.insert(PropertyId::Cursor, ParsedValue::Cursor(cursor));
     }
-    if let Some(line_height) = inherited.line_height {
+    if let Some(line_height) = cascade.inherited_line_height() {
         base_style.insert(
             PropertyId::LineHeight,
             ParsedValue::LineHeight(crate::style::LineHeight::new(line_height)),
         );
     }
-    if let Some(vertical_align) = inherited.vertical_align {
+    if let Some(vertical_align) = cascade.inherited_vertical_align() {
         base_style.insert(
             PropertyId::VerticalAlign,
             ParsedValue::VerticalAlign(vertical_align),
@@ -233,8 +224,8 @@ fn build_container_element_shell(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<&GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
-) -> Result<(Element, InheritedTextStyle), String> {
+    style_cascade: &StyleCascadeContext,
+) -> Result<(Element, StyleCascadeContext), String> {
     let initial_size = if path.is_empty() { 10_000.0 } else { 0.0 };
     let mut element = Element::new_with_id(
         stable_node_id_from_parts(element_runtime_name(node), path, global_path),
@@ -244,7 +235,7 @@ fn build_container_element_shell(
         initial_size,
     );
     element.set_intrinsic_size_as_percent_base(false);
-    let base_style = element_base_style_from_inherited(inherited_text_style);
+    let base_style = element_base_style_from_inherited(style_cascade);
 
     let mut user_style = Style::new();
     let mut has_user_style = false;
@@ -274,16 +265,16 @@ fn build_container_element_shell(
     // Element's own computed style, but replaying that base during a
     // later incremental recascade would resurrect stale inherited
     // values.
-    let child_inherited_text_style = element.child_inherited_text_style(inherited_text_style);
+    let child_style_cascade = element.child_style_cascade(style_cascade);
 
-    Ok((element, child_inherited_text_style))
+    Ok((element, child_style_cascade))
 }
 
 pub(crate) fn convert_text_element(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
+    style_cascade: &StyleCascadeContext,
 ) -> Result<Box<dyn ElementTrait>, String> {
     let mut text_content = String::new();
     let mut text = Text::from_content_with_id(
@@ -291,76 +282,26 @@ pub(crate) fn convert_text_element(
         "",
     );
     let mut style: Option<Style> = None;
-    let mut width: Option<f32> = None;
-    let mut height: Option<f32> = None;
 
-    // Cold-path-owned props: style (extracted for downstream
-    // width/height/font_weight/color/cursor/text_wrap fan-out) and
-    // font_size (cascade-resolved). Everything else flows through
-    // `Text::ingest_props`.
+    // Cold-path-owned props: local style is decoded once and then
+    // applied by `TextComputedStyleBridge`; standalone `font_size`
+    // keeps its existing explicit-prop priority. Everything else flows
+    // through `Text::ingest_props`.
     for (key, value) in node.props.iter() {
         match *key {
             "style" => style = Some(as_text_style(value, key)?),
             "font_size" => {
-                text.set_font_size(as_font_size_px(
-                    value,
-                    key,
-                    inherited_text_style
-                        .font_size
-                        .unwrap_or(inherited_text_style.root_font_size),
-                    inherited_text_style.root_font_size,
-                    inherited_text_style.viewport_width,
-                    inherited_text_style.viewport_height,
-                )?);
+                let Some(px) = resolve_font_size_prop_with_inherited(value, style_cascade) else {
+                    return Err(format!("prop `{key}` expects numeric or FontSize value"));
+                };
+                text.set_font_size(px);
             }
             _ => {}
         }
     }
     text.ingest_props(node)?;
 
-    if let Some(style) = &style {
-        if let Some(value) = style.get(PropertyId::Width) {
-            width = length_from_parsed_value(value, "Text style.width")?;
-        }
-        if let Some(value) = style.get(PropertyId::Height) {
-            height = length_from_parsed_value(value, "Text style.height")?;
-        }
-        // Phase 3: shared cascade-prop resolver. Text doesn't read
-        // `font_family` from style (cascade-only), so font_families
-        // is intentionally ignored.
-        let resolved = inherited_text_style.resolved_text_props(style);
-        if let Some(font_size) = resolved.font_size {
-            text.set_font_size(font_size);
-        }
-        if let Some(font_weight) = resolved.font_weight {
-            text.set_font_weight(font_weight);
-        }
-        if let Some(color) = resolved.color {
-            text.set_color(color);
-        }
-        if let Some(cursor) = resolved.cursor {
-            text.set_cursor(cursor);
-        }
-        if let Some(text_wrap) = resolved.text_wrap {
-            text.set_text_wrap(text_wrap);
-        }
-    }
-
-    // 軌 A #7: the explicit setters above now flip per-prop flags
-    // on `Text`. `apply_inherited` consults those flags and only
-    // writes props the author didn't author. Replaces the 6-block
-    // `has_explicit_*` fan-out.
-    text.apply_inherited(inherited_text_style);
-    if let Some(width) = width {
-        text.set_width(width);
-    } else {
-        text.set_auto_width(true);
-    }
-    if let Some(height) = height {
-        text.set_height(height);
-    } else {
-        text.set_auto_height(true);
-    }
+    text.apply_style_cold(style.as_ref(), style_cascade)?;
 
     for child in &node.children {
         append_text_children(&mut text_content, child)?;
@@ -386,63 +327,6 @@ pub(crate) fn text_with_text_area_ime_preedit(mut content: String) -> String {
         .unwrap_or(content.len());
     content.insert_str(byte, ctx.preedit.as_str());
     content
-}
-
-pub(crate) fn length_from_parsed_value(
-    value: &ParsedValue,
-    context: &str,
-) -> Result<Option<f32>, String> {
-    match value {
-        ParsedValue::Length(Length::Px(v)) => Ok(Some(*v)),
-        ParsedValue::Length(Length::Zero) => Ok(Some(0.0)),
-        ParsedValue::Length(length @ Length::Calc(_)) => {
-            if length.needs_percent_base() {
-                return Err(format!("{context} does not support relative length"));
-            }
-            Ok(Some(length.resolve_without_percent_base(0.0, 0.0)))
-        }
-        ParsedValue::Auto => Ok(None),
-        ParsedValue::Length(Length::Percent(_) | Length::Vh(_) | Length::Vw(_)) => {
-            Err(format!("{context} does not support relative length"))
-        }
-        _ => Err(format!("{context} expects Length value")),
-    }
-}
-
-pub(crate) fn resolve_font_size_from_style(
-    style: &Style,
-    parent_font_size: f32,
-    root_font_size: f32,
-    viewport_width: f32,
-    viewport_height: f32,
-) -> Option<f32> {
-    let value = style.get(PropertyId::FontSize)?;
-    resolve_font_size_parsed_value(
-        value,
-        parent_font_size,
-        root_font_size,
-        viewport_width,
-        viewport_height,
-    )
-}
-
-fn resolve_font_size_parsed_value(
-    value: &ParsedValue,
-    parent_font_size: f32,
-    root_font_size: f32,
-    viewport_width: f32,
-    viewport_height: f32,
-) -> Option<f32> {
-    match value {
-        ParsedValue::FontSize(font_size) => Some(font_size.resolve_px(
-            parent_font_size,
-            root_font_size,
-            viewport_width,
-            viewport_height,
-        )),
-        ParsedValue::Length(Length::Px(px)) => Some((*px).max(0.0)),
-        _ => None,
-    }
 }
 
 fn append_text_children(out: &mut String, node: &RsxNode) -> Result<(), String> {
@@ -477,7 +361,7 @@ pub(crate) fn convert_text_area_element_desc(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
+    style_cascade: &StyleCascadeContext,
 ) -> Result<ElementDescriptor, String> {
     let stable_id = stable_node_id_from_parts("TextArea", path, global_path.as_ref());
     let mut text_area = TextArea::with_stable_id(stable_id);
@@ -485,23 +369,18 @@ pub(crate) fn convert_text_area_element_desc(
     let mut explicit_font_size: Option<f32> = None;
     let mut explicit_font: Option<String> = None;
 
-    // Cold-path-owned props: layered style + explicit font-priority
-    // (font, font_size with cascade resolution). The rest of the
-    // schema flows through `TextArea::ingest_props`.
+    // Cold-path-owned props: local style is decoded once and then
+    // applied by `TextAreaComputedStyleBridge`; explicit font/font_size
+    // props keep their existing priority. The rest of the schema flows
+    // through `TextArea::ingest_props`.
     for (key, value) in node.props.iter() {
         match *key {
             "style" => style = Some(as_element_style(value, key)?),
             "font_size" => {
-                explicit_font_size = Some(as_font_size_px(
-                    value,
-                    key,
-                    inherited_text_style
-                        .font_size
-                        .unwrap_or(inherited_text_style.root_font_size),
-                    inherited_text_style.root_font_size,
-                    inherited_text_style.viewport_width,
-                    inherited_text_style.viewport_height,
-                )?);
+                let Some(px) = resolve_font_size_prop_with_inherited(value, style_cascade) else {
+                    return Err(format!("prop `{key}` expects numeric or FontSize value"));
+                };
+                explicit_font_size = Some(px);
             }
             "font" => explicit_font = Some(as_owned_string(value, key)?),
             _ => {}
@@ -520,63 +399,15 @@ pub(crate) fn convert_text_area_element_desc(
         text_area.content = text_area.content.chars().take(limit).collect();
     }
 
-    // Inherited cascade first (fills only what the author didn't set).
-    if text_area.font_families.is_empty() {
-        text_area.font_families = inherited_text_style.font_families.clone();
-    }
-    if let Some(inherited_size) = inherited_text_style.font_size {
-        text_area.font_size = inherited_size;
-    }
-    text_area.font_weight = inherited_text_style.font_weight.unwrap_or(400);
-    if let Some(inherited_line_height) = inherited_text_style.line_height {
-        text_area.line_height = inherited_line_height;
-    }
-    if let Some(inherited_vertical_align) = inherited_text_style.vertical_align {
-        text_area.vertical_align = inherited_vertical_align;
-    }
-    if let Some(inherited_color) = inherited_text_style.color {
-        text_area.color = inherited_color;
-    }
-
-    // Phase 3: text-side declarations from `style` go through the
-    // shared cascade-prop resolver. TextArea only reads text-side
-    // properties (no text_wrap).
-    if let Some(style) = &style {
-        let resolved = inherited_text_style.resolved_text_props(style);
-        if let Some(color) = resolved.color {
-            text_area.color = color;
-        }
-        if let Some(cursor) = resolved.cursor {
-            text_area.cursor = cursor;
-        }
-        if let Some(font_size) = resolved.font_size {
-            text_area.font_size = font_size;
-        }
-        if let Some(font_families) = resolved.font_families {
-            text_area.font_families = font_families;
-        }
-        if let Some(font_weight) = resolved.font_weight {
-            text_area.font_weight = font_weight;
-        }
-        if let Some(line_height) = resolved.line_height {
-            text_area.line_height = line_height;
-        }
-        if let Some(vertical_align) = resolved.vertical_align {
-            text_area.vertical_align = vertical_align;
-        }
-    }
-
-    // Explicit `font_size` / `font` props win over `style.*` and
-    // inherited (mirrors v1's setter-priority semantics).
-    if let Some(size) = explicit_font_size {
-        text_area.font_size = size;
-    }
-    if let Some(family) = explicit_font {
-        text_area.font_families = vec![family];
-    }
+    text_area.apply_style_cold(
+        style.as_ref(),
+        style_cascade,
+        explicit_font_size,
+        explicit_font,
+    );
 
     let child_descriptors =
-        text_area.build_children(node, path, global_path.as_ref(), inherited_text_style)?;
+        text_area.build_children(node, path, global_path.as_ref(), style_cascade)?;
 
     Ok(ElementDescriptor {
         element: Box::new(text_area) as Box<dyn ElementTrait>,
@@ -596,7 +427,7 @@ pub(crate) fn convert_text_area_projection_segment_element_desc(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
+    style_cascade: &StyleCascadeContext,
 ) -> Result<ElementDescriptor, String> {
     let stable_id =
         stable_node_id_from_parts("TextAreaProjectionSegment", path, global_path.as_ref());
@@ -624,7 +455,7 @@ pub(crate) fn convert_text_area_projection_segment_element_desc(
     segment.set_char_range(range_start..range_end);
 
     let child_descriptors =
-        segment.build_children(node, path, global_path.as_ref(), inherited_text_style)?;
+        segment.build_children(node, path, global_path.as_ref(), style_cascade)?;
 
     Ok(ElementDescriptor {
         element: Box::new(segment) as Box<dyn ElementTrait>,
@@ -637,7 +468,7 @@ pub(crate) fn convert_image_slot_desc(
     value: &PropValue,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
+    style_cascade: &StyleCascadeContext,
     slot_name: &str,
 ) -> Result<Vec<ElementDescriptor>, String> {
     let slot_node = RsxNode::from_prop_value(value.clone())?;
@@ -675,7 +506,7 @@ pub(crate) fn convert_image_slot_desc(
         &slot_node,
         &slot_path,
         slot_global_path,
-        inherited_text_style,
+        style_cascade,
         &mut wrapper_children,
     )?;
 
@@ -690,7 +521,7 @@ pub(crate) fn convert_image_element_desc(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
+    style_cascade: &StyleCascadeContext,
 ) -> Result<ElementDescriptor, String> {
     let mut source: Option<ImageSource> = None;
     let mut style: Option<Style> = None;
@@ -708,7 +539,7 @@ pub(crate) fn convert_image_element_desc(
                     value,
                     path,
                     global_path.clone(),
-                    inherited_text_style,
+                    style_cascade,
                     "loading",
                 )?;
             }
@@ -717,7 +548,7 @@ pub(crate) fn convert_image_element_desc(
                     value,
                     path,
                     global_path.clone(),
-                    inherited_text_style,
+                    style_cascade,
                     "error",
                 )?;
             }
@@ -750,7 +581,7 @@ pub(crate) fn convert_image_element_desc(
         });
     }
 
-    let children = image.build_children(node, path, global_path.as_ref(), inherited_text_style)?;
+    let children = image.build_children(node, path, global_path.as_ref(), style_cascade)?;
 
     Ok(ElementDescriptor {
         element: Box::new(image) as Box<dyn ElementTrait>,
@@ -763,7 +594,7 @@ pub(crate) fn convert_svg_element_desc(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
+    style_cascade: &StyleCascadeContext,
 ) -> Result<ElementDescriptor, String> {
     let mut source: Option<SvgSource> = None;
     let mut style: Option<Style> = None;
@@ -781,7 +612,7 @@ pub(crate) fn convert_svg_element_desc(
                     value,
                     path,
                     global_path.clone(),
-                    inherited_text_style,
+                    style_cascade,
                     "loading",
                 )?;
             }
@@ -790,7 +621,7 @@ pub(crate) fn convert_svg_element_desc(
                     value,
                     path,
                     global_path.clone(),
-                    inherited_text_style,
+                    style_cascade,
                     "error",
                 )?;
             }
@@ -823,7 +654,7 @@ pub(crate) fn convert_svg_element_desc(
         });
     }
 
-    let children = svg.build_children(node, path, global_path.as_ref(), inherited_text_style)?;
+    let children = svg.build_children(node, path, global_path.as_ref(), style_cascade)?;
 
     Ok(ElementDescriptor {
         element: Box::new(svg) as Box<dyn ElementTrait>,
@@ -836,20 +667,26 @@ pub(crate) fn convert_svg_element_desc(
 // `ui::rsx_tree`. Re-exported here so existing
 // `renderer_adapter::as_*` paths keep working.
 pub(crate) use crate::ui::{
-    as_binding_string, as_bool, as_f32, as_font_size_px, as_owned_string, as_string, as_text_align,
-    as_usize,
+    as_binding_string, as_bool, as_f32, as_owned_string, as_string, as_text_align, as_usize,
 };
 
 pub(crate) fn as_element_style(value: &PropValue, key: &str) -> Result<Style, String> {
-    ElementStylePropSchema::from_prop_value(value.clone())
-        .map(|style| style.to_style())
-        .map_err(|_| format!("prop `{key}` expects ElementStylePropSchema value"))
+    style_from_prop_value::<ElementStylePropSchema>(value, key, "ElementStylePropSchema")
 }
 
 pub(crate) fn as_text_style(value: &PropValue, key: &str) -> Result<Style, String> {
-    TextStylePropSchema::from_prop_value(value.clone())
-        .map(|style| style.to_style())
-        .map_err(|_| format!("prop `{key}` expects TextStylePropSchema value"))
+    style_from_prop_value::<TextStylePropSchema>(value, key, "TextStylePropSchema")
+}
+
+fn style_from_prop_value<P>(value: &PropValue, key: &str, expected: &str) -> Result<Style, String>
+where
+    P: FromPropValue + StylePropTrait,
+{
+    let prop = P::from_prop_value(value.clone())
+        .map_err(|_| format!("prop `{key}` expects {expected} value"))?;
+    let style = prop.to_style();
+    validate_style::<P::Accepted>(&style).map_err(|err| format!("prop `{key}` contains {err}"))?;
+    Ok(style)
 }
 
 // -----------------------------------------------------------------------------
@@ -1035,7 +872,7 @@ pub fn rsx_to_descriptors_with_context(
     let mut errors = Vec::new();
     let mut path = Vec::new();
     let inherited =
-        InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
+        StyleCascadeContext::from_viewport_style(viewport_style, viewport_width, viewport_height);
     let global_path = current_global_node_path(root, None);
     append_nodes_with_path_desc(
         root,
@@ -1063,7 +900,7 @@ pub(crate) fn rsx_to_descriptors_scoped_with_context(
     let mut errors = Vec::new();
     let mut path: Vec<u64> = scope.to_vec();
     let inherited =
-        InheritedTextStyle::from_viewport_style(inherited_style, viewport_width, viewport_height);
+        StyleCascadeContext::from_viewport_style(inherited_style, viewport_width, viewport_height);
     let global_path = current_global_node_path(root, None);
     append_nodes_with_path_desc(
         root,
@@ -1080,7 +917,7 @@ pub(crate) fn rsx_to_descriptors_scoped_with_context(
 }
 
 /// M6 cascade: build descriptors for `root` using an already-computed
-/// `InheritedTextStyle`. Sibling of
+/// `StyleCascadeContext`. Sibling of
 /// `rsx_to_descriptors_scoped_with_context` for callers that don't
 /// start from the viewport root — the incremental-commit path in
 /// `fiber_work` uses this after reconstructing the cascade at the
@@ -1088,7 +925,7 @@ pub(crate) fn rsx_to_descriptors_scoped_with_context(
 pub(crate) fn rsx_to_descriptors_with_inherited(
     root: &RsxNode,
     scope: &[u64],
-    inherited: &InheritedTextStyle,
+    inherited: &StyleCascadeContext,
 ) -> Result<Vec<ElementDescriptor>, String> {
     let mut out = Vec::new();
     let mut errors = Vec::new();
@@ -1108,23 +945,23 @@ pub(crate) fn rsx_to_descriptors_with_inherited(
     Ok(out)
 }
 
-/// M6 cascade: rebuild the `InheritedTextStyle` that the cold-path
+/// M6 cascade: rebuild the `StyleCascadeContext` that the cold-path
 /// converter would see at `parent_key`. Walks the arena parent chain
 /// root→parent and replays each Element ancestor's user-authored text
-/// cascade style through `InheritedTextStyle::merge_style`, matching
+/// cascade style through `StyleCascadeContext::merge_style`, matching
 /// exactly what `build_container_element_shell` does during cold
 /// convert.
 ///
 /// Non-Element ancestors (Text, TextArea, user hosts) contribute no
 /// cascading style — the cold path treats them as leaves in the
 /// cascade accumulation loop — so they're skipped here.
-pub(crate) fn inherited_text_style_at_parent(
+pub(crate) fn style_cascade_at_parent(
     arena: &NodeArena,
     parent_key: NodeKey,
     viewport_style: &Style,
     viewport_width: f32,
     viewport_height: f32,
-) -> InheritedTextStyle {
+) -> StyleCascadeContext {
     // Collect ancestor chain parent→root, then reverse to walk root→parent.
     let mut chain: Vec<NodeKey> = Vec::new();
     let mut cursor = Some(parent_key);
@@ -1135,7 +972,7 @@ pub(crate) fn inherited_text_style_at_parent(
     chain.reverse();
 
     let mut inherited =
-        InheritedTextStyle::from_viewport_style(viewport_style, viewport_width, viewport_height);
+        StyleCascadeContext::from_viewport_style(viewport_style, viewport_width, viewport_height);
     for key in chain {
         let Some(node) = arena.get(key) else { continue };
         if let Some(el) = node.element.as_any().downcast_ref::<Element>() {
@@ -1150,7 +987,7 @@ fn append_nodes_with_path_desc(
     out: &mut Vec<ElementDescriptor>,
     path: &mut Vec<u64>,
     global_path: Option<GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
+    style_cascade: &StyleCascadeContext,
     errors: &mut Vec<String>,
 ) {
     match node {
@@ -1168,7 +1005,7 @@ fn append_nodes_with_path_desc(
                     out,
                     path,
                     child_global_path,
-                    inherited_text_style,
+                    style_cascade,
                     errors,
                 );
                 path.pop();
@@ -1176,7 +1013,7 @@ fn append_nodes_with_path_desc(
         }
         _ => {
             let current_global_path = current_global_node_path(node, global_path.as_ref());
-            match convert_node_desc(node, path, current_global_path, inherited_text_style) {
+            match convert_node_desc(node, path, current_global_path, style_cascade) {
                 Ok(desc) => out.push(desc),
                 Err(err) => errors.push(format!("node_path={path:?}: {err}")),
             }
@@ -1188,7 +1025,7 @@ fn convert_node_desc(
     node: &RsxNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
+    style_cascade: &StyleCascadeContext,
 ) -> Result<ElementDescriptor, String> {
     match node {
         RsxNode::Component(_) => {
@@ -1201,7 +1038,7 @@ fn convert_node_desc(
             text,
             path,
             global_path.as_ref(),
-            inherited_text_style,
+            style_cascade,
         ))),
         RsxNode::Fragment(_) => Err("fragment must be flattened before conversion".to_string()),
         RsxNode::Element(el) => {
@@ -1217,7 +1054,7 @@ fn convert_node_desc(
                 .ok_or_else(|| format!("tag `{}` missing host_builder", descriptor.type_name))?;
             let ctx = crate::view::host_element::BuildCtx {
                 global_path,
-                inherited: inherited_text_style.clone(),
+                inherited: style_cascade.clone(),
             };
             let any = builder(el, path, &ctx as &dyn std::any::Any)?;
             let boxed: Box<crate::view::host_element::HostElementDescBox> =
@@ -1236,16 +1073,12 @@ pub(crate) fn convert_container_element_desc(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
+    style_cascade: &StyleCascadeContext,
 ) -> Result<ElementDescriptor, String> {
-    let (element, child_inherited_text_style) =
-        build_container_element_shell(node, path, global_path.as_ref(), inherited_text_style)?;
-    let children = element.build_children(
-        node,
-        path,
-        global_path.as_ref(),
-        &child_inherited_text_style,
-    )?;
+    let (element, child_style_cascade) =
+        build_container_element_shell(node, path, global_path.as_ref(), style_cascade)?;
+    let children =
+        element.build_children(node, path, global_path.as_ref(), &child_style_cascade)?;
     Ok(ElementDescriptor {
         element: Box::new(element) as Box<dyn ElementTrait>,
         children,
@@ -1262,7 +1095,7 @@ pub(crate) fn walk_children_descriptors(
     node: &RsxElementNode,
     path: &[u64],
     global_path: Option<&GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
+    style_cascade: &StyleCascadeContext,
 ) -> Result<Vec<ElementDescriptor>, String> {
     let mut children: Vec<ElementDescriptor> = Vec::new();
     let mut child_path = Vec::with_capacity(path.len().saturating_add(1));
@@ -1281,7 +1114,7 @@ pub(crate) fn walk_children_descriptors(
             child,
             &child_path,
             child_global_path,
-            inherited_text_style,
+            style_cascade,
             &mut children,
         )?;
         child_path.pop();
@@ -1293,7 +1126,7 @@ fn append_child_nodes_flattening_fragments_desc(
     node: &RsxNode,
     path: &[u64],
     global_path: Option<GlobalNodePath>,
-    inherited_text_style: &InheritedTextStyle,
+    style_cascade: &StyleCascadeContext,
     out: &mut Vec<ElementDescriptor>,
 ) -> Result<(), String> {
     match node {
@@ -1312,7 +1145,7 @@ fn append_child_nodes_flattening_fragments_desc(
                     child,
                     &child_path,
                     child_global_path,
-                    inherited_text_style,
+                    style_cascade,
                     out,
                 )?;
                 child_path.pop();
@@ -1320,12 +1153,7 @@ fn append_child_nodes_flattening_fragments_desc(
             Ok(())
         }
         _ => {
-            out.push(convert_node_desc(
-                node,
-                path,
-                global_path,
-                inherited_text_style,
-            )?);
+            out.push(convert_node_desc(node, path, global_path, style_cascade)?);
             Ok(())
         }
     }

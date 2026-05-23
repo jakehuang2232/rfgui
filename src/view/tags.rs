@@ -2,6 +2,7 @@
 
 //! Built-in RSX host tags and their typed prop schemas.
 
+use crate::style::style_props::{AllStyleSet, NoStylePropSchema, StylePropTrait, TextStyleSet};
 use crate::style::{
     Align, Animator, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily,
     FontSize, FontWeight, IntoAnimationStyle, Layout, Length, Opacity, Padding, Position,
@@ -803,7 +804,7 @@ mod v2_poc_tests {
 
 // ---------- v2 path: trivial RsxTag for all-Option schemas ----------
 macro_rules! impl_rsx_tag_v2_trivial {
-    ($tag:ty, $props:ty, $accepts:expr) => {
+    ($tag:ty, $props:ty, $style_prop:ty, $accepts:expr) => {
         impl crate::ui::RsxTag for $tag {
             type Props = $props;
             type StrictProps = $props;
@@ -827,15 +828,19 @@ macro_rules! impl_rsx_tag_v2_trivial {
 
         impl crate::ui::component::sealed::Sealed for $tag {}
         impl crate::ui::HostTag for $tag {}
+        impl crate::ui::HostStyleTag for $tag {
+            type StyleProp = $style_prop;
+        }
     };
 }
 
-impl_rsx_tag_v2_trivial!(Element, ElementPropSchema, true);
-impl_rsx_tag_v2_trivial!(Text, TextPropSchema, true);
-impl_rsx_tag_v2_trivial!(TextArea, TextAreaPropSchema, true);
+impl_rsx_tag_v2_trivial!(Element, ElementPropSchema, ElementStylePropSchema, true);
+impl_rsx_tag_v2_trivial!(Text, TextPropSchema, TextStylePropSchema, true);
+impl_rsx_tag_v2_trivial!(TextArea, TextAreaPropSchema, ElementStylePropSchema, true);
 impl_rsx_tag_v2_trivial!(
     TextAreaProjectionSegment,
     TextAreaProjectionSegmentPropSchema,
+    NoStylePropSchema,
     true
 );
 
@@ -965,6 +970,9 @@ impl crate::ui::RsxTag for Image {
 
 impl crate::ui::component::sealed::Sealed for Image {}
 impl crate::ui::HostTag for Image {}
+impl crate::ui::HostStyleTag for Image {
+    type StyleProp = ElementStylePropSchema;
+}
 
 #[doc(hidden)]
 pub struct __SvgPropsInit {
@@ -1025,6 +1033,9 @@ impl crate::ui::RsxTag for Svg {
 
 impl crate::ui::component::sealed::Sealed for Svg {}
 impl crate::ui::HostTag for Svg {}
+impl crate::ui::HostStyleTag for Svg {
+    type StyleProp = ElementStylePropSchema;
+}
 
 fn into_shared_prop_value<T: 'static>(value: T) -> crate::ui::PropValue {
     crate::ui::PropValue::Shared(SharedPropValue::new(Rc::new(value)))
@@ -1117,151 +1128,379 @@ fn apply_selection(selection: &Option<SelectionStylePropSchema>) -> Option<Selec
     Some(output)
 }
 
-fn apply_element_style_fields(style: &mut Style, schema: &HoverElementStylePropSchema) {
-    if let Some(position) = schema.position.clone() {
-        style.insert(
-            crate::style::PropertyId::Position,
-            crate::style::ParsedValue::Position(position),
-        );
+struct SharedStyleFields<'a> {
+    width: Option<Length>,
+    height: Option<Length>,
+    color: &'a Option<Box<dyn ColorLike>>,
+    font: &'a Option<FontFamily>,
+    font_size: Option<FontSize>,
+    font_weight: Option<FontWeight>,
+    text_wrap: Option<TextWrap>,
+    cursor: Option<Cursor>,
+    opacity: Option<Opacity>,
+    transition: &'a Option<Transitions>,
+}
+
+trait SharedStylePropFields {
+    fn shared_style_fields(&self) -> SharedStyleFields<'_>;
+}
+
+impl SharedStylePropFields for ElementStylePropSchema {
+    fn shared_style_fields(&self) -> SharedStyleFields<'_> {
+        SharedStyleFields {
+            width: self.width,
+            height: self.height,
+            color: &self.color,
+            font: &self.font,
+            font_size: self.font_size,
+            font_weight: self.font_weight,
+            text_wrap: self.text_wrap,
+            cursor: self.cursor,
+            opacity: self.opacity,
+            transition: &self.transition,
+        }
     }
-    if let Some(width) = schema.width {
+}
+
+impl SharedStylePropFields for HoverElementStylePropSchema {
+    fn shared_style_fields(&self) -> SharedStyleFields<'_> {
+        SharedStyleFields {
+            width: self.width,
+            height: self.height,
+            color: &self.color,
+            font: &self.font,
+            font_size: self.font_size,
+            font_weight: self.font_weight,
+            text_wrap: self.text_wrap,
+            cursor: self.cursor,
+            opacity: self.opacity,
+            transition: &self.transition,
+        }
+    }
+}
+
+impl SharedStylePropFields for TextStylePropSchema {
+    fn shared_style_fields(&self) -> SharedStyleFields<'_> {
+        SharedStyleFields {
+            width: self.width,
+            height: self.height,
+            color: &self.color,
+            font: &self.font,
+            font_size: self.font_size,
+            font_weight: self.font_weight,
+            text_wrap: self.text_wrap,
+            cursor: self.cursor,
+            opacity: self.opacity,
+            transition: &self.transition,
+        }
+    }
+}
+
+impl SharedStylePropFields for HoverTextStylePropSchema {
+    fn shared_style_fields(&self) -> SharedStyleFields<'_> {
+        SharedStyleFields {
+            width: self.width,
+            height: self.height,
+            color: &self.color,
+            font: &self.font,
+            font_size: self.font_size,
+            font_weight: self.font_weight,
+            text_wrap: self.text_wrap,
+            cursor: self.cursor,
+            opacity: self.opacity,
+            transition: &self.transition,
+        }
+    }
+}
+
+struct ElementStyleFields<'a> {
+    shared: SharedStyleFields<'a>,
+    position: &'a Option<Position>,
+    min_width: Option<Length>,
+    max_width: Option<Length>,
+    min_height: Option<Length>,
+    max_height: Option<Length>,
+    layout: Option<Layout>,
+    cross_size: Option<CrossSize>,
+    align: Option<Align>,
+    flex: Option<Flex>,
+    gap: Option<Length>,
+    scroll_direction: Option<ScrollDirection>,
+    border: &'a Option<crate::style::Border>,
+    background: &'a Option<crate::style::Background>,
+    background_color: &'a Option<Box<dyn ColorLike>>,
+    background_image: &'a Option<crate::style::Gradient>,
+    border_image: &'a Option<crate::style::Gradient>,
+    line_height: Option<f64>,
+    vertical_align: Option<VerticalAlign>,
+    border_radius: Option<BorderRadius>,
+    selection: &'a Option<SelectionStylePropSchema>,
+    box_shadow: &'a Option<Vec<BoxShadow>>,
+    padding: Option<Padding>,
+    transform: &'a Option<Transform>,
+    transform_origin: Option<TransformOrigin>,
+    animator: &'a Option<Animator>,
+}
+
+trait ElementStylePropFields: SharedStylePropFields {
+    fn element_style_fields(&self) -> ElementStyleFields<'_>;
+}
+
+impl ElementStylePropFields for ElementStylePropSchema {
+    fn element_style_fields(&self) -> ElementStyleFields<'_> {
+        ElementStyleFields {
+            shared: self.shared_style_fields(),
+            position: &self.position,
+            min_width: self.min_width,
+            max_width: self.max_width,
+            min_height: self.min_height,
+            max_height: self.max_height,
+            layout: self.layout,
+            cross_size: self.cross_size,
+            align: self.align,
+            flex: self.flex,
+            gap: self.gap,
+            scroll_direction: self.scroll_direction,
+            border: &self.border,
+            background: &self.background,
+            background_color: &self.background_color,
+            background_image: &self.background_image,
+            border_image: &self.border_image,
+            line_height: self.line_height,
+            vertical_align: self.vertical_align,
+            border_radius: self.border_radius,
+            selection: &self.selection,
+            box_shadow: &self.box_shadow,
+            padding: self.padding,
+            transform: &self.transform,
+            transform_origin: self.transform_origin,
+            animator: &self.animator,
+        }
+    }
+}
+
+impl ElementStylePropFields for HoverElementStylePropSchema {
+    fn element_style_fields(&self) -> ElementStyleFields<'_> {
+        ElementStyleFields {
+            shared: self.shared_style_fields(),
+            position: &self.position,
+            min_width: self.min_width,
+            max_width: self.max_width,
+            min_height: self.min_height,
+            max_height: self.max_height,
+            layout: self.layout,
+            cross_size: self.cross_size,
+            align: self.align,
+            flex: self.flex,
+            gap: self.gap,
+            scroll_direction: self.scroll_direction,
+            border: &self.border,
+            background: &self.background,
+            background_color: &self.background_color,
+            background_image: &self.background_image,
+            border_image: &self.border_image,
+            line_height: self.line_height,
+            vertical_align: self.vertical_align,
+            border_radius: self.border_radius,
+            selection: &self.selection,
+            box_shadow: &self.box_shadow,
+            padding: self.padding,
+            transform: &self.transform,
+            transform_origin: self.transform_origin,
+            animator: &self.animator,
+        }
+    }
+}
+
+fn apply_shared_size_style_fields(style: &mut Style, fields: &SharedStyleFields<'_>) {
+    if let Some(width) = fields.width {
         crate::style::insert_style_length(style, crate::style::PropertyId::Width, width);
     }
-    if let Some(height) = schema.height {
+    if let Some(height) = fields.height {
         crate::style::insert_style_length(style, crate::style::PropertyId::Height, height);
     }
-    if let Some(min_width) = schema.min_width {
-        crate::style::insert_style_length(style, crate::style::PropertyId::MinWidth, min_width);
-    }
-    if let Some(max_width) = schema.max_width {
-        crate::style::insert_style_length(style, crate::style::PropertyId::MaxWidth, max_width);
-    }
-    if let Some(min_height) = schema.min_height {
-        crate::style::insert_style_length(style, crate::style::PropertyId::MinHeight, min_height);
-    }
-    if let Some(max_height) = schema.max_height {
-        crate::style::insert_style_length(style, crate::style::PropertyId::MaxHeight, max_height);
-    }
-    if let Some(layout) = schema.layout {
-        style.insert(
-            crate::style::PropertyId::Layout,
-            crate::style::ParsedValue::Layout(layout),
-        );
-    }
-    if let Some(cross_size) = schema.cross_size {
-        style.insert(
-            crate::style::PropertyId::CrossSize,
-            crate::style::ParsedValue::CrossSize(cross_size),
-        );
-    }
-    if let Some(align) = schema.align {
-        style.insert(
-            crate::style::PropertyId::Align,
-            crate::style::ParsedValue::Align(align),
-        );
-    }
-    if let Some(flex) = schema.flex {
-        crate::style::insert_style_flex(style, crate::style::PropertyId::Flex, flex);
-    }
-    if let Some(gap) = schema.gap {
-        crate::style::insert_style_length(style, crate::style::PropertyId::Gap, gap);
-    }
-    if let Some(scroll_direction) = schema.scroll_direction {
-        style.insert(
-            crate::style::PropertyId::ScrollDirection,
-            crate::style::ParsedValue::ScrollDirection(scroll_direction),
-        );
-    }
-    if let Some(cursor) = schema.cursor {
-        style.insert(
-            crate::style::PropertyId::Cursor,
-            crate::style::ParsedValue::Cursor(cursor),
-        );
-    }
-    apply_box_color(style, crate::style::PropertyId::Color, &schema.color);
-    apply_background(style, schema.background.as_ref());
-    apply_box_color(
-        style,
-        crate::style::PropertyId::BackgroundColor,
-        &schema.background_color,
-    );
-    if let Some(gradient) = &schema.background_image {
-        style.insert(
-            crate::style::PropertyId::BackgroundImage,
-            crate::style::ParsedValue::Gradient(gradient.clone()),
-        );
-    }
-    if let Some(gradient) = &schema.border_image {
-        style.insert(
-            crate::style::PropertyId::BorderImage,
-            crate::style::ParsedValue::Gradient(gradient.clone()),
-        );
-    }
-    if let Some(border) = &schema.border {
-        style.set_border(border.clone());
-    }
-    if let Some(font) = &schema.font {
+}
+
+fn apply_shared_color_style_field(style: &mut Style, fields: &SharedStyleFields<'_>) {
+    apply_box_color(style, crate::style::PropertyId::Color, fields.color);
+}
+
+fn apply_shared_typography_style_fields(style: &mut Style, fields: &SharedStyleFields<'_>) {
+    if let Some(font) = fields.font {
         style.insert(
             crate::style::PropertyId::FontFamily,
             crate::style::ParsedValue::FontFamily(font.clone()),
         );
     }
-    if let Some(font_size) = schema.font_size {
+    if let Some(font_size) = fields.font_size {
         crate::style::insert_style_font_size(style, crate::style::PropertyId::FontSize, font_size);
     }
-    if let Some(font_weight) = schema.font_weight {
+    if let Some(font_weight) = fields.font_weight {
         crate::style::insert_style_font_weight(
             style,
             crate::style::PropertyId::FontWeight,
             font_weight,
         );
     }
-    if let Some(text_wrap) = schema.text_wrap {
+    if let Some(text_wrap) = fields.text_wrap {
         crate::style::insert_style_text_wrap(style, crate::style::PropertyId::TextWrap, text_wrap);
     }
-    if let Some(line_height) = schema.line_height {
-        style.set_line_height(line_height as f32);
+}
+
+fn apply_shared_cursor_style_field(style: &mut Style, fields: &SharedStyleFields<'_>) {
+    if let Some(cursor) = fields.cursor {
+        style.insert(
+            crate::style::PropertyId::Cursor,
+            crate::style::ParsedValue::Cursor(cursor),
+        );
     }
-    if let Some(vertical_align) = schema.vertical_align {
-        style.set_vertical_align(vertical_align);
-    }
-    if let Some(border_radius) = schema.border_radius {
-        style.set_border_radius(border_radius);
-    }
-    if let Some(opacity) = schema.opacity {
+}
+
+fn apply_shared_opacity_style_field(style: &mut Style, fields: &SharedStyleFields<'_>) {
+    if let Some(opacity) = fields.opacity {
         style.insert(
             crate::style::PropertyId::Opacity,
             crate::style::ParsedValue::Opacity(opacity),
         );
     }
-    if let Some(box_shadow) = &schema.box_shadow {
-        style.insert(
-            crate::style::PropertyId::BoxShadow,
-            crate::style::ParsedValue::BoxShadow(box_shadow.clone()),
-        );
-    }
-    if let Some(padding) = schema.padding {
-        style.set_padding(padding);
-    }
-    if let Some(transform) = &schema.transform {
-        style.set_transform(transform.clone());
-    }
-    if let Some(transform_origin) = schema.transform_origin {
-        style.set_transform_origin(transform_origin);
-    }
-    if let Some(transition) = &schema.transition {
+}
+
+fn apply_shared_transition_style_field(style: &mut Style, fields: &SharedStyleFields<'_>) {
+    if let Some(transition) = fields.transition {
         style.insert(
             crate::style::PropertyId::Transition,
             crate::style::ParsedValue::Transition(transition.clone()),
         );
     }
-    if let Some(animator) = &schema.animator {
+}
+
+fn apply_shared_style_fields(style: &mut Style, fields: &SharedStyleFields<'_>) {
+    apply_shared_size_style_fields(style, fields);
+    apply_shared_color_style_field(style, fields);
+    apply_shared_typography_style_fields(style, fields);
+    apply_shared_cursor_style_field(style, fields);
+    apply_shared_opacity_style_field(style, fields);
+    apply_shared_transition_style_field(style, fields);
+}
+
+fn apply_element_style_fields<T>(style: &mut Style, schema: &T)
+where
+    T: ElementStylePropFields,
+{
+    let fields = schema.element_style_fields();
+    let shared = &fields.shared;
+
+    if let Some(position) = fields.position.clone() {
+        style.insert(
+            crate::style::PropertyId::Position,
+            crate::style::ParsedValue::Position(position),
+        );
+    }
+    apply_shared_size_style_fields(style, &shared);
+    if let Some(min_width) = fields.min_width {
+        crate::style::insert_style_length(style, crate::style::PropertyId::MinWidth, min_width);
+    }
+    if let Some(max_width) = fields.max_width {
+        crate::style::insert_style_length(style, crate::style::PropertyId::MaxWidth, max_width);
+    }
+    if let Some(min_height) = fields.min_height {
+        crate::style::insert_style_length(style, crate::style::PropertyId::MinHeight, min_height);
+    }
+    if let Some(max_height) = fields.max_height {
+        crate::style::insert_style_length(style, crate::style::PropertyId::MaxHeight, max_height);
+    }
+    if let Some(layout) = fields.layout {
+        style.insert(
+            crate::style::PropertyId::Layout,
+            crate::style::ParsedValue::Layout(layout),
+        );
+    }
+    if let Some(cross_size) = fields.cross_size {
+        style.insert(
+            crate::style::PropertyId::CrossSize,
+            crate::style::ParsedValue::CrossSize(cross_size),
+        );
+    }
+    if let Some(align) = fields.align {
+        style.insert(
+            crate::style::PropertyId::Align,
+            crate::style::ParsedValue::Align(align),
+        );
+    }
+    if let Some(flex) = fields.flex {
+        crate::style::insert_style_flex(style, crate::style::PropertyId::Flex, flex);
+    }
+    if let Some(gap) = fields.gap {
+        crate::style::insert_style_length(style, crate::style::PropertyId::Gap, gap);
+    }
+    if let Some(scroll_direction) = fields.scroll_direction {
+        style.insert(
+            crate::style::PropertyId::ScrollDirection,
+            crate::style::ParsedValue::ScrollDirection(scroll_direction),
+        );
+    }
+    apply_shared_cursor_style_field(style, &shared);
+    apply_shared_color_style_field(style, &shared);
+    apply_background(style, fields.background.as_ref());
+    apply_box_color(
+        style,
+        crate::style::PropertyId::BackgroundColor,
+        fields.background_color,
+    );
+    if let Some(gradient) = fields.background_image {
+        style.insert(
+            crate::style::PropertyId::BackgroundImage,
+            crate::style::ParsedValue::Gradient(gradient.clone()),
+        );
+    }
+    if let Some(gradient) = fields.border_image {
+        style.insert(
+            crate::style::PropertyId::BorderImage,
+            crate::style::ParsedValue::Gradient(gradient.clone()),
+        );
+    }
+    if let Some(border) = fields.border {
+        style.set_border(border.clone());
+    }
+    apply_shared_typography_style_fields(style, &shared);
+    if let Some(line_height) = fields.line_height {
+        style.set_line_height(line_height as f32);
+    }
+    if let Some(vertical_align) = fields.vertical_align {
+        style.set_vertical_align(vertical_align);
+    }
+    if let Some(border_radius) = fields.border_radius {
+        style.set_border_radius(border_radius);
+    }
+    if let Some(opacity) = shared.opacity {
+        style.insert(
+            crate::style::PropertyId::Opacity,
+            crate::style::ParsedValue::Opacity(opacity),
+        );
+    }
+    if let Some(box_shadow) = fields.box_shadow {
+        style.insert(
+            crate::style::PropertyId::BoxShadow,
+            crate::style::ParsedValue::BoxShadow(box_shadow.clone()),
+        );
+    }
+    if let Some(padding) = fields.padding {
+        style.set_padding(padding);
+    }
+    if let Some(transform) = fields.transform {
+        style.set_transform(transform.clone());
+    }
+    if let Some(transform_origin) = fields.transform_origin {
+        style.set_transform_origin(transform_origin);
+    }
+    apply_shared_transition_style_field(style, &shared);
+    if let Some(animator) = fields.animator {
         style.insert(
             crate::style::PropertyId::Animator,
             crate::style::ParsedValue::Animator(animator.clone()),
         );
     }
-    if let Some(selection) = apply_selection(&schema.selection) {
+    if let Some(selection) = apply_selection(fields.selection) {
         style.set_selection(selection);
     }
 }
@@ -1283,129 +1522,311 @@ impl HoverElementStylePropSchema {
 impl ElementStylePropSchema {
     pub fn to_style(&self) -> Style {
         let mut style = Style::new();
-        let hover_view = HoverElementStylePropSchema {
-            position: self.position.clone(),
-            width: self.width,
-            height: self.height,
-            min_width: self.min_width,
-            max_width: self.max_width,
-            min_height: self.min_height,
-            max_height: self.max_height,
-            layout: self.layout,
-            cross_size: self.cross_size,
-            align: self.align,
-            flex: self.flex,
-            gap: self.gap,
-            scroll_direction: self.scroll_direction,
-            cursor: self.cursor,
-            color: self.color.clone(),
-            border: self.border.clone(),
-            background: self.background.clone(),
-            background_color: self.background_color.clone(),
-            background_image: self.background_image.clone(),
-            border_image: self.border_image.clone(),
-            font: self.font.clone(),
-            font_size: self.font_size,
-            font_weight: self.font_weight,
-            text_wrap: self.text_wrap,
-            line_height: self.line_height,
-            vertical_align: self.vertical_align,
-            selection: self.selection.clone(),
-            border_radius: self.border_radius,
-            opacity: self.opacity,
-            box_shadow: self.box_shadow.clone(),
-            padding: self.padding,
-            transform: self.transform.clone(),
-            transform_origin: self.transform_origin,
-            transition: self.transition.clone(),
-            animator: self.animator.clone(),
-        };
-        apply_element_style_fields(&mut style, &hover_view);
+        apply_element_style_fields(&mut style, self);
         if let Some(hover) = &self.hover {
             style.set_hover(hover.to_style());
         }
         style
+    }
+}
+
+impl StylePropTrait for ElementStylePropSchema {
+    type Accepted = AllStyleSet;
+
+    fn to_style(&self) -> Style {
+        ElementStylePropSchema::to_style(self)
     }
 }
 
 impl HoverTextStylePropSchema {
     pub fn to_style(&self) -> Style {
         let mut style = Style::new();
-        if let Some(width) = self.width {
-            crate::style::insert_style_length(&mut style, crate::style::PropertyId::Width, width);
-        }
-        if let Some(height) = self.height {
-            crate::style::insert_style_length(&mut style, crate::style::PropertyId::Height, height);
-        }
-        apply_box_color(&mut style, crate::style::PropertyId::Color, &self.color);
-        if let Some(font) = &self.font {
-            style.insert(
-                crate::style::PropertyId::FontFamily,
-                crate::style::ParsedValue::FontFamily(font.clone()),
-            );
-        }
-        if let Some(font_size) = self.font_size {
-            crate::style::insert_style_font_size(
-                &mut style,
-                crate::style::PropertyId::FontSize,
-                font_size,
-            );
-        }
-        if let Some(font_weight) = self.font_weight {
-            crate::style::insert_style_font_weight(
-                &mut style,
-                crate::style::PropertyId::FontWeight,
-                font_weight,
-            );
-        }
-        if let Some(text_wrap) = self.text_wrap {
-            crate::style::insert_style_text_wrap(
-                &mut style,
-                crate::style::PropertyId::TextWrap,
-                text_wrap,
-            );
-        }
-        if let Some(cursor) = self.cursor {
-            style.insert(
-                crate::style::PropertyId::Cursor,
-                crate::style::ParsedValue::Cursor(cursor),
-            );
-        }
-        if let Some(opacity) = self.opacity {
-            style.insert(
-                crate::style::PropertyId::Opacity,
-                crate::style::ParsedValue::Opacity(opacity),
-            );
-        }
-        if let Some(transition) = &self.transition {
-            style.insert(
-                crate::style::PropertyId::Transition,
-                crate::style::ParsedValue::Transition(transition.clone()),
-            );
-        }
+        apply_shared_style_fields(&mut style, &self.shared_style_fields());
         style
     }
 }
 
 impl TextStylePropSchema {
     pub fn to_style(&self) -> Style {
-        let mut style = HoverTextStylePropSchema {
-            width: self.width,
-            height: self.height,
-            color: self.color.clone(),
-            font: self.font.clone(),
-            font_size: self.font_size,
-            font_weight: self.font_weight,
-            text_wrap: self.text_wrap,
-            cursor: self.cursor,
-            opacity: self.opacity,
-            transition: self.transition.clone(),
-        }
-        .to_style();
+        let mut style = Style::new();
+        apply_shared_style_fields(&mut style, &self.shared_style_fields());
         if let Some(hover) = &self.hover {
             style.set_hover(hover.to_style());
         }
         style
+    }
+}
+
+impl StylePropTrait for TextStylePropSchema {
+    type Accepted = TextStyleSet;
+
+    fn to_style(&self) -> Style {
+        TextStylePropSchema::to_style(self)
+    }
+}
+
+#[cfg(test)]
+mod style_lowering_tests {
+    use super::*;
+    use crate::style::style_props::{StylePropSet, validate_style};
+    use crate::style::{Color, ParsedValue, PropertyId, Transition, TransitionProperty};
+    use crate::ui::HostStyleTag;
+    use std::any::TypeId;
+
+    fn color(hex: &'static str) -> Box<dyn ColorLike> {
+        Box::new(Color::hex(hex))
+    }
+
+    fn transition() -> Transitions {
+        Transitions::single(Transition::new(TransitionProperty::Opacity, 120))
+    }
+
+    fn host_style_prop_type<T>() -> TypeId
+    where
+        T: HostStyleTag,
+        <T as HostStyleTag>::StyleProp: 'static,
+    {
+        TypeId::of::<<T as HostStyleTag>::StyleProp>()
+    }
+
+    fn host_style_accepts<T>(property: PropertyId) -> bool
+    where
+        T: HostStyleTag,
+    {
+        <<T::StyleProp as StylePropTrait>::Accepted as StylePropSet>::accepts(property)
+    }
+
+    fn hover_text_style() -> HoverTextStylePropSchema {
+        HoverTextStylePropSchema {
+            width: Some(Length::px(120.0)),
+            height: Some(Length::px(32.0)),
+            color: Some(color("#123456")),
+            font: Some(FontFamily::new(["Inter"])),
+            font_size: Some(FontSize::px(17.0)),
+            font_weight: Some(FontWeight::new(600)),
+            text_wrap: Some(TextWrap::NoWrap),
+            cursor: Some(Cursor::Text),
+            opacity: Some(Opacity::new(0.75)),
+            transition: Some(transition()),
+        }
+    }
+
+    #[test]
+    fn built_in_host_tags_declare_style_prop_contract() {
+        assert_eq!(
+            host_style_prop_type::<Element>(),
+            TypeId::of::<ElementStylePropSchema>()
+        );
+        assert_eq!(
+            host_style_prop_type::<Text>(),
+            TypeId::of::<TextStylePropSchema>()
+        );
+        assert_eq!(
+            host_style_prop_type::<TextArea>(),
+            TypeId::of::<ElementStylePropSchema>()
+        );
+        assert_eq!(
+            host_style_prop_type::<Image>(),
+            TypeId::of::<ElementStylePropSchema>()
+        );
+        assert_eq!(
+            host_style_prop_type::<Svg>(),
+            TypeId::of::<ElementStylePropSchema>()
+        );
+        assert_eq!(
+            host_style_prop_type::<TextAreaProjectionSegment>(),
+            TypeId::of::<NoStylePropSchema>()
+        );
+    }
+
+    #[test]
+    fn host_tag_style_contract_exposes_accepted_set() {
+        assert!(host_style_accepts::<Element>(PropertyId::BackgroundColor));
+        assert!(host_style_accepts::<TextArea>(PropertyId::BackgroundColor));
+        assert!(host_style_accepts::<Image>(PropertyId::BackgroundColor));
+        assert!(host_style_accepts::<Svg>(PropertyId::BackgroundColor));
+
+        assert!(host_style_accepts::<Text>(PropertyId::Color));
+        assert!(host_style_accepts::<Text>(PropertyId::FontSize));
+        assert!(!host_style_accepts::<Text>(PropertyId::BackgroundColor));
+        assert!(!host_style_accepts::<TextAreaProjectionSegment>(
+            PropertyId::Color
+        ));
+    }
+
+    #[test]
+    fn host_tag_style_contract_matches_validation() {
+        let element_style = ElementStylePropSchema {
+            background_color: Some(color("#224466")),
+            ..Default::default()
+        }
+        .to_style();
+        assert_eq!(
+            validate_style::<<ElementStylePropSchema as StylePropTrait>::Accepted>(&element_style),
+            Ok(())
+        );
+
+        let text_style = TextStylePropSchema {
+            color: Some(color("#224466")),
+            ..Default::default()
+        }
+        .to_style();
+        assert_eq!(
+            validate_style::<<TextStylePropSchema as StylePropTrait>::Accepted>(&text_style),
+            Ok(())
+        );
+
+        assert_eq!(
+            validate_style::<<TextStylePropSchema as StylePropTrait>::Accepted>(&element_style),
+            Err(
+                crate::style::style_props::StylePropError::unsupported_property(
+                    PropertyId::BackgroundColor
+                )
+            )
+        );
+    }
+
+    fn text_style() -> TextStylePropSchema {
+        let hover = hover_text_style();
+        TextStylePropSchema {
+            width: hover.width,
+            height: hover.height,
+            color: hover.color.clone(),
+            font: hover.font.clone(),
+            font_size: hover.font_size,
+            font_weight: hover.font_weight,
+            text_wrap: hover.text_wrap,
+            cursor: hover.cursor,
+            hover: None,
+            opacity: hover.opacity,
+            transition: hover.transition.clone(),
+        }
+    }
+
+    fn element_style() -> ElementStylePropSchema {
+        let text = text_style();
+        ElementStylePropSchema {
+            width: text.width,
+            height: text.height,
+            color: text.color.clone(),
+            font: text.font.clone(),
+            font_size: text.font_size,
+            font_weight: text.font_weight,
+            text_wrap: text.text_wrap,
+            cursor: text.cursor,
+            opacity: text.opacity,
+            transition: text.transition.clone(),
+            background_color: Some(color("#abcdef")),
+            layout: Some(Layout::Inline),
+            ..Default::default()
+        }
+    }
+
+    fn assert_shared_fields(style: &Style) {
+        assert!(matches!(
+            style.get(PropertyId::Width),
+            Some(ParsedValue::Length(_))
+        ));
+        assert!(matches!(
+            style.get(PropertyId::Height),
+            Some(ParsedValue::Length(_))
+        ));
+        assert!(matches!(
+            style.get(PropertyId::Color),
+            Some(ParsedValue::Color(_))
+        ));
+        assert!(matches!(
+            style.get(PropertyId::FontFamily),
+            Some(ParsedValue::FontFamily(_))
+        ));
+        assert!(matches!(
+            style.get(PropertyId::FontSize),
+            Some(ParsedValue::FontSize(_))
+        ));
+        assert!(matches!(
+            style.get(PropertyId::FontWeight),
+            Some(ParsedValue::FontWeight(_))
+        ));
+        assert_eq!(
+            style.get(PropertyId::TextWrap),
+            Some(&ParsedValue::TextWrap(TextWrap::NoWrap))
+        );
+        assert_eq!(
+            style.get(PropertyId::Cursor),
+            Some(&ParsedValue::Cursor(Cursor::Text))
+        );
+        assert_eq!(
+            style.get(PropertyId::Opacity),
+            Some(&ParsedValue::Opacity(Opacity::new(0.75)))
+        );
+        assert!(matches!(
+            style.get(PropertyId::Transition),
+            Some(ParsedValue::Transition(_))
+        ));
+    }
+
+    #[test]
+    fn text_style_lowering_keeps_shared_fields() {
+        let style = text_style().to_style();
+
+        assert_shared_fields(&style);
+        assert!(style.hover().is_none());
+    }
+
+    #[test]
+    fn element_style_lowering_keeps_shared_and_element_fields() {
+        let style = element_style().to_style();
+
+        assert_shared_fields(&style);
+        assert_eq!(
+            style.get(PropertyId::Layout),
+            Some(&ParsedValue::Layout(Layout::Inline))
+        );
+        assert!(matches!(
+            style.get(PropertyId::BackgroundColor),
+            Some(ParsedValue::Color(_))
+        ));
+    }
+
+    #[test]
+    fn hover_lowering_keeps_shared_fields() {
+        let schema = TextStylePropSchema {
+            hover: Some(hover_text_style()),
+            ..text_style()
+        };
+        let style = schema.to_style();
+
+        assert_shared_fields(style.hover().expect("hover style should lower"));
+    }
+
+    #[test]
+    fn inherent_and_trait_to_style_match_for_element_style() {
+        let schema = ElementStylePropSchema {
+            hover: Some(HoverElementStylePropSchema {
+                background_color: Some(color("#111111")),
+                width: Some(Length::px(80.0)),
+                ..Default::default()
+            }),
+            ..element_style()
+        };
+
+        assert_eq!(
+            ElementStylePropSchema::to_style(&schema),
+            <ElementStylePropSchema as StylePropTrait>::to_style(&schema)
+        );
+    }
+
+    #[test]
+    fn inherent_and_trait_to_style_match_for_text_style() {
+        let schema = TextStylePropSchema {
+            hover: Some(hover_text_style()),
+            ..text_style()
+        };
+
+        assert_eq!(
+            TextStylePropSchema::to_style(&schema),
+            <TextStylePropSchema as StylePropTrait>::to_style(&schema)
+        );
     }
 }
 

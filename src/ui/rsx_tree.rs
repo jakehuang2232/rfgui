@@ -156,7 +156,7 @@ impl PartialEq for RsxProviderNode {
 /// its own `BuildCtx` (carries inherited text style + global path).
 ///
 /// Engine-core (this module) cannot name `ElementDescriptor` /
-/// `InheritedTextStyle`, so both the return type and the context are
+/// `StyleCascadeContext`, so both the return type and the context are
 /// type-erased through `Any`.
 pub type ErasedHostBuilder = fn(&RsxElementNode, &[u64], &dyn Any) -> Result<Box<dyn Any>, String>;
 

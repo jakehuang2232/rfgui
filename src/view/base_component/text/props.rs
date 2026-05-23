@@ -34,20 +34,20 @@ impl Text {
     ) -> PropApplyOutcome {
         use crate::view::fiber_work::{PropApplyOutcome, resolve_font_size_px_with_inherited};
         use crate::view::renderer_adapter::{
-            InheritedTextStyle, as_f32, as_string, as_text_align, as_text_style,
-            inherited_text_style_at_parent,
+            StyleCascadeContext, as_f32, as_string, as_text_align, as_text_style,
+            style_cascade_at_parent,
         };
 
-        let resolve_inherited = || -> InheritedTextStyle {
+        let resolve_inherited = || -> StyleCascadeContext {
             match arena.parent_of(self_key) {
-                Some(p) => inherited_text_style_at_parent(
+                Some(p) => style_cascade_at_parent(
                     arena,
                     p,
                     ctx.viewport_style,
                     ctx.viewport_width,
                     ctx.viewport_height,
                 ),
-                None => InheritedTextStyle::from_viewport_style(
+                None => StyleCascadeContext::from_viewport_style(
                     ctx.viewport_style,
                     ctx.viewport_width,
                     ctx.viewport_height,
@@ -116,7 +116,7 @@ impl Text {
         name: &'static str,
     ) -> PropApplyOutcome {
         use crate::view::fiber_work::PropApplyOutcome;
-        use crate::view::renderer_adapter::{InheritedTextStyle, inherited_text_style_at_parent};
+        use crate::view::renderer_adapter::{StyleCascadeContext, style_cascade_at_parent};
 
         match name {
             "opacity" => {
@@ -129,14 +129,14 @@ impl Text {
                 // formerly-authored props fall back to inherited
                 // values (or Text defaults where inherited is None).
                 let inherited = match arena.parent_of(self_key) {
-                    Some(p) => inherited_text_style_at_parent(
+                    Some(p) => style_cascade_at_parent(
                         arena,
                         p,
                         ctx.viewport_style,
                         ctx.viewport_width,
                         ctx.viewport_height,
                     ),
-                    None => InheritedTextStyle::from_viewport_style(
+                    None => StyleCascadeContext::from_viewport_style(
                         ctx.viewport_style,
                         ctx.viewport_width,
                         ctx.viewport_height,

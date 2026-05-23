@@ -1179,26 +1179,21 @@ impl Element {
             .has_style_snapshot
             .then(|| self.capture_style_snapshot());
         let old_computed = self.computed_style.clone();
-        let merged_hover;
-        let effective_style = if self.is_hovered {
-            if let Some(hover_style) = self.parsed_style.hover() {
-                merged_hover = self.parsed_style.clone() + hover_style.clone();
-                &merged_hover
-            } else {
-                &self.parsed_style
-            }
-        } else {
-            &self.parsed_style
-        };
-        self.computed_style = compute_style(effective_style, None);
-        if let Some(previous_snapshot) = previous_snapshot.as_ref() {
-            self.collect_style_transition_requests(&previous_snapshot);
-        }
-        self.sync_props_from_computed_style();
-        if let Some(previous_snapshot) = previous_snapshot.as_ref() {
-            self.preserve_transform_transition_baseline(previous_snapshot);
-        }
-        self.sync_animator_requests();
+        let next_computed = compute_style_with_context(
+            &self.parsed_style,
+            StyleComputeContext {
+                parent: None,
+                viewport_width: 0.0,
+                viewport_height: 0.0,
+                root_font_size: 16.0,
+                hovered: self.is_hovered,
+            },
+        );
+        ComputedStyleConsumer::apply_computed_style(
+            self,
+            next_computed,
+            previous_snapshot.as_ref(),
+        );
         self.has_style_snapshot = true;
         if !old_computed.layout_eq(&self.computed_style) {
             self.mark_layout_dirty();
@@ -1266,7 +1261,7 @@ impl Element {
                                 field: *field,
                                 from: previous.value_for(*field),
                                 to: previous.current_value_for(&self.computed_style, *field),
-                                transition: runtime,
+                                transition: runtime.clone(),
                             });
                     }
                 }
@@ -1279,9 +1274,11 @@ impl Element {
                                 target: self.core.id,
                                 field: StyleField::Opacity,
                                 from: previous.value_for(StyleField::Opacity),
-                                to: previous
-                                    .current_value_for(&self.computed_style, StyleField::Opacity),
-                                transition: runtime,
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::Opacity,
+                                ),
+                                transition: runtime.clone(),
                             });
                     }
                 }
@@ -1298,7 +1295,7 @@ impl Element {
                                     &self.computed_style,
                                     StyleField::BorderRadius,
                                 ),
-                                transition: runtime,
+                                transition: runtime.clone(),
                             });
                     }
                 }
@@ -1315,7 +1312,7 @@ impl Element {
                                     &self.computed_style,
                                     StyleField::BackgroundColor,
                                 ),
-                                transition: runtime,
+                                transition: runtime.clone(),
                             });
                     }
                 }
@@ -1328,10 +1325,34 @@ impl Element {
                                 target: self.core.id,
                                 field: StyleField::Color,
                                 from: previous.value_for(StyleField::Color),
-                                to: previous
-                                    .current_value_for(&self.computed_style, StyleField::Color),
-                                transition: runtime,
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::Color,
+                                ),
+                                transition: runtime.clone(),
                             });
+                    }
+                }
+                TransitionProperty::BorderColor => {
+                    const BORDER_FIELDS: [StyleField; 4] = [
+                        StyleField::BorderTopColor,
+                        StyleField::BorderRightColor,
+                        StyleField::BorderBottomColor,
+                        StyleField::BorderLeftColor,
+                    ];
+                    for field in BORDER_FIELDS {
+                        if changed_fields.contains(&field) {
+                            self.transition_requests
+                                .get_or_insert_with(Default::default)
+                                .style
+                                .push(StyleTrackRequest {
+                                    target: self.core.id,
+                                    field,
+                                    from: previous.value_for(field),
+                                    to: previous.current_value_for(&self.computed_style, field),
+                                    transition: runtime.clone(),
+                                });
+                        }
                     }
                 }
                 TransitionProperty::BoxShadow => {
@@ -1343,9 +1364,11 @@ impl Element {
                                 target: self.core.id,
                                 field: StyleField::BoxShadow,
                                 from: previous.value_for(StyleField::BoxShadow),
-                                to: previous
-                                    .current_value_for(&self.computed_style, StyleField::BoxShadow),
-                                transition: runtime,
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::BoxShadow,
+                                ),
+                                transition: runtime.clone(),
                             });
                     }
                 }
@@ -1358,9 +1381,11 @@ impl Element {
                                 target: self.core.id,
                                 field: StyleField::Transform,
                                 from: previous.value_for(StyleField::Transform),
-                                to: previous
-                                    .current_value_for(&self.computed_style, StyleField::Transform),
-                                transition: runtime,
+                                to: previous.current_value_for(
+                                    &self.computed_style,
+                                    StyleField::Transform,
+                                ),
+                                transition: runtime.clone(),
                             });
                     }
                 }
@@ -1377,74 +1402,32 @@ impl Element {
                                     &self.computed_style,
                                     StyleField::TransformOrigin,
                                 ),
-                                transition: runtime,
-                            });
-                    }
-                }
-                TransitionProperty::BorderColor => {
-                    if changed_fields.contains(&StyleField::BorderTopColor) {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
-                            .style
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::BorderTopColor,
-                                from: previous.value_for(StyleField::BorderTopColor),
-                                to: previous.current_value_for(
-                                    &self.computed_style,
-                                    StyleField::BorderTopColor,
-                                ),
-                                transition: runtime,
-                            });
-                    }
-                    if changed_fields.contains(&StyleField::BorderRightColor) {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
-                            .style
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::BorderRightColor,
-                                from: previous.value_for(StyleField::BorderRightColor),
-                                to: previous.current_value_for(
-                                    &self.computed_style,
-                                    StyleField::BorderRightColor,
-                                ),
-                                transition: runtime,
-                            });
-                    }
-                    if changed_fields.contains(&StyleField::BorderBottomColor) {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
-                            .style
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::BorderBottomColor,
-                                from: previous.value_for(StyleField::BorderBottomColor),
-                                to: previous.current_value_for(
-                                    &self.computed_style,
-                                    StyleField::BorderBottomColor,
-                                ),
-                                transition: runtime,
-                            });
-                    }
-                    if changed_fields.contains(&StyleField::BorderLeftColor) {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
-                            .style
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::BorderLeftColor,
-                                from: previous.value_for(StyleField::BorderLeftColor),
-                                to: previous.current_value_for(
-                                    &self.computed_style,
-                                    StyleField::BorderLeftColor,
-                                ),
-                                transition: runtime,
+                                transition: runtime.clone(),
                             });
                     }
                 }
                 _ => {}
             }
         }
+    }
+}
+
+impl ComputedStyleConsumer for Element {
+    type Snapshot = ElementStyleSnapshot;
+
+    fn apply_computed_style(
+        &mut self,
+        computed: ComputedStyle,
+        previous_snapshot: Option<&ElementStyleSnapshot>,
+    ) {
+        self.computed_style = computed;
+        if let Some(previous_snapshot) = previous_snapshot {
+            self.collect_style_transition_requests(previous_snapshot);
+        }
+        self.sync_props_from_computed_style();
+        if let Some(previous_snapshot) = previous_snapshot {
+            self.preserve_transform_transition_baseline(previous_snapshot);
+        }
+        self.sync_animator_requests();
     }
 }

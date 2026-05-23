@@ -3,7 +3,10 @@
 #![cfg(test)]
 
 use super::{ElementTrait, Text, measure_text_size};
-use crate::style::TextWrap;
+use crate::style::{
+    Color, FontFamily, FontSize, FontWeight, ParsedValue, PropertyId, Style, TextWrap,
+    VerticalAlign,
+};
 use crate::view::base_component::{
     DirtyFlags, InlineMeasureContext, LayoutConstraints, LayoutPlacement, Layoutable,
 };
@@ -12,6 +15,125 @@ use crate::view::text_layout::TextLayoutAlignment;
 
 fn arena() -> NodeArena {
     NodeArena::new()
+}
+
+#[test]
+fn text_style_cold_path_uses_computed_bridge_for_supported_fields() {
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::Color,
+        ParsedValue::Color(Color::rgb(0x12, 0x34, 0x56).into()),
+    );
+    style.insert(
+        PropertyId::FontSize,
+        ParsedValue::FontSize(FontSize::em(1.5)),
+    );
+    style.insert(
+        PropertyId::FontWeight,
+        ParsedValue::FontWeight(FontWeight::new(650)),
+    );
+    style.insert(
+        PropertyId::FontFamily,
+        ParsedValue::FontFamily(FontFamily::new(["Inter", "system-ui"])),
+    );
+    style.insert(
+        PropertyId::TextWrap,
+        ParsedValue::TextWrap(TextWrap::NoWrap),
+    );
+
+    let mut inherited_style = Style::new();
+    inherited_style.insert(
+        PropertyId::FontSize,
+        ParsedValue::FontSize(FontSize::px(20.0)),
+    );
+    let inherited = crate::view::renderer_adapter::StyleCascadeContext::from_viewport_style(
+        &inherited_style,
+        0.0,
+        0.0,
+    );
+
+    let mut text = Text::from_content("computed");
+    text.apply_style_cold(Some(&style), &inherited)
+        .expect("text computed style bridge should apply");
+
+    assert_eq!(text.color.to_rgba_u8(), [0x12, 0x34, 0x56, 0xff]);
+    assert!((text.font_size() - 30.0).abs() < f32::EPSILON);
+    assert_eq!(text.font_weight, 650);
+    assert_eq!(text.font_families, vec!["Inter", "system-ui"]);
+    assert_eq!(text.text_wrap(), TextWrap::NoWrap);
+}
+
+#[test]
+fn text_style_computed_bridge_does_not_apply_unauthored_computed_defaults() {
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::Color,
+        ParsedValue::Color(Color::rgb(0x22, 0x44, 0x66).into()),
+    );
+
+    let mut inherited_style = Style::new();
+    inherited_style.insert(
+        PropertyId::FontSize,
+        ParsedValue::FontSize(FontSize::px(18.0)),
+    );
+    inherited_style.insert(
+        PropertyId::FontWeight,
+        ParsedValue::FontWeight(FontWeight::new(500)),
+    );
+    inherited_style.insert(
+        PropertyId::TextWrap,
+        ParsedValue::TextWrap(TextWrap::NoWrap),
+    );
+    let inherited = crate::view::renderer_adapter::StyleCascadeContext::from_viewport_style(
+        &inherited_style,
+        0.0,
+        0.0,
+    );
+
+    let mut text = Text::from_content("masked");
+    text.apply_style_cold(Some(&style), &inherited)
+        .expect("text computed style bridge should apply");
+
+    assert_eq!(text.color.to_rgba_u8(), [0x22, 0x44, 0x66, 0xff]);
+    assert!((text.font_size() - 18.0).abs() < f32::EPSILON);
+    assert_eq!(text.font_weight, 500);
+    assert_eq!(text.text_wrap(), TextWrap::NoWrap);
+}
+
+#[test]
+fn text_style_computed_bridge_resolves_em_from_computed_parent() {
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::FontSize,
+        ParsedValue::FontSize(FontSize::em(1.25)),
+    );
+
+    let mut inherited_style = Style::new();
+    inherited_style.insert(
+        PropertyId::FontSize,
+        ParsedValue::FontSize(FontSize::px(24.0)),
+    );
+    inherited_style.insert(
+        PropertyId::LineHeight,
+        ParsedValue::LineHeight(crate::style::LineHeight::new(1.7)),
+    );
+    inherited_style.insert(
+        PropertyId::VerticalAlign,
+        ParsedValue::VerticalAlign(VerticalAlign::Bottom),
+    );
+    let inherited = crate::view::renderer_adapter::StyleCascadeContext::from_viewport_style(
+        &inherited_style,
+        0.0,
+        0.0,
+    );
+
+    let mut text = Text::from_content("computed parent");
+    text.apply_style_cold(Some(&style), &inherited)
+        .expect("text computed style bridge should apply");
+
+    assert!((text.font_size() - 30.0).abs() < f32::EPSILON);
+    assert!((text.line_height_value() - 1.7).abs() < f32::EPSILON);
+    assert_eq!(text.vertical_align(), VerticalAlign::Bottom);
 }
 
 #[test]

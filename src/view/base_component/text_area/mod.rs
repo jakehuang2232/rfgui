@@ -22,6 +22,7 @@ mod render_string;
 mod run;
 mod segment;
 mod state;
+mod style;
 
 pub use ime_context::TextAreaImeContext;
 pub use render_string::{TextAreaRenderProjection, TextAreaRenderString};
@@ -224,40 +225,43 @@ impl TextArea {
     /// children.
     pub(crate) fn apply_inherited(
         &mut self,
-        inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+        inherited: &crate::view::renderer_adapter::StyleCascadeContext,
     ) -> bool {
         let mut changed = false;
-        if self.font_families.is_empty() && !inherited.font_families.is_empty() {
-            self.font_families = inherited.font_families.clone();
+        if self.font_families.is_empty()
+            && let Some(font_families) = inherited.inherited_font_families()
+            && !font_families.is_empty()
+        {
+            self.font_families = font_families.to_vec();
             changed = true;
         }
-        if let Some(fs) = inherited.font_size
+        if let Some(fs) = inherited.inherited_font_size()
             && (self.font_size - fs).abs() > f32::EPSILON
             && (self.font_size - 14.0).abs() < f32::EPSILON
         {
             self.font_size = fs;
             changed = true;
         }
-        if let Some(fw) = inherited.font_weight
+        if let Some(fw) = inherited.inherited_font_weight()
             && self.font_weight == 400
             && fw != 400
         {
             self.font_weight = fw;
             changed = true;
         }
-        if let Some(line_height) = inherited.line_height
+        if let Some(line_height) = inherited.inherited_line_height()
             && (self.line_height - line_height).abs() > f32::EPSILON
         {
             self.line_height = line_height;
             changed = true;
         }
-        if let Some(color) = inherited.color
+        if let Some(color) = inherited.inherited_color()
             && self.color == crate::style::Color::rgba(17, 17, 17, 255)
         {
             self.color = color;
             changed = true;
         }
-        if let Some(vertical_align) = inherited.vertical_align
+        if let Some(vertical_align) = inherited.inherited_vertical_align()
             && self.vertical_align != vertical_align
         {
             self.vertical_align = vertical_align;
@@ -405,7 +409,7 @@ impl ElementTrait for TextArea {
         hasher.finish()
     }
 
-    fn apply_inherited(&mut self, inherited: &crate::view::renderer_adapter::InheritedTextStyle) {
+    fn apply_inherited(&mut self, inherited: &crate::view::renderer_adapter::StyleCascadeContext) {
         TextArea::apply_inherited(self, inherited);
     }
 
@@ -418,7 +422,7 @@ impl ElementTrait for TextArea {
         _node: &crate::ui::RsxElementNode,
         _path: &[u64],
         _global_path: Option<&crate::view::renderer_adapter::GlobalNodePath>,
-        _inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+        _inherited: &crate::view::renderer_adapter::StyleCascadeContext,
     ) -> Result<Vec<crate::view::renderer_adapter::ElementDescriptor>, String> {
         // Spawn a single `TextAreaTextRun` from `self.content` (or
         // placeholder fallback). RSX `node.children` are not walked
@@ -512,29 +516,29 @@ impl ElementTrait for TextArea {
         name: &'static str,
         value: crate::ui::PropValue,
     ) -> crate::view::fiber_work::PropApplyOutcome {
-        use crate::style::{ParsedValue, PropertyId};
         use crate::ui::FromPropValue;
         use crate::view::fiber_work::{PropApplyOutcome, resolve_font_size_px_with_inherited};
-        use crate::view::renderer_adapter::{InheritedTextStyle, inherited_text_style_at_parent};
+        use crate::view::renderer_adapter::{StyleCascadeContext, style_cascade_at_parent};
 
         self.set_self_node_key(self_key);
 
-        let resolve_inherited = |arena: &crate::view::node_arena::NodeArena| -> InheritedTextStyle {
-            match arena.parent_of(self_key) {
-                Some(p) => inherited_text_style_at_parent(
-                    arena,
-                    p,
-                    ctx.viewport_style,
-                    ctx.viewport_width,
-                    ctx.viewport_height,
-                ),
-                None => InheritedTextStyle::from_viewport_style(
-                    ctx.viewport_style,
-                    ctx.viewport_width,
-                    ctx.viewport_height,
-                ),
-            }
-        };
+        let resolve_inherited =
+            |arena: &crate::view::node_arena::NodeArena| -> StyleCascadeContext {
+                match arena.parent_of(self_key) {
+                    Some(p) => style_cascade_at_parent(
+                        arena,
+                        p,
+                        ctx.viewport_style,
+                        ctx.viewport_width,
+                        ctx.viewport_height,
+                    ),
+                    None => StyleCascadeContext::from_viewport_style(
+                        ctx.viewport_style,
+                        ctx.viewport_width,
+                        ctx.viewport_height,
+                    ),
+                }
+            };
 
         match name {
             "key" => PropApplyOutcome::Applied,
@@ -631,34 +635,7 @@ impl ElementTrait for TextArea {
                     return PropApplyOutcome::DecodeFailed(name);
                 };
                 let inherited = resolve_inherited(arena);
-                if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
-                    self.color = color.to_color();
-                }
-                if let Some(ParsedValue::FontSize(size)) = style.get(PropertyId::FontSize) {
-                    self.font_size = size.resolve_px(
-                        inherited.font_size.unwrap_or(inherited.root_font_size),
-                        inherited.root_font_size,
-                        inherited.viewport_width,
-                        inherited.viewport_height,
-                    );
-                }
-                if let Some(ParsedValue::FontFamily(family)) = style.get(PropertyId::FontFamily) {
-                    self.font_families = family.as_slice().to_vec();
-                }
-                if let Some(ParsedValue::FontWeight(fw)) = style.get(PropertyId::FontWeight) {
-                    self.font_weight = fw.value();
-                }
-                if let Some(ParsedValue::LineHeight(line_height)) =
-                    style.get(PropertyId::LineHeight)
-                {
-                    self.line_height = line_height.value();
-                }
-                if let Some(ParsedValue::VerticalAlign(vertical_align)) =
-                    style.get(PropertyId::VerticalAlign)
-                {
-                    self.vertical_align = *vertical_align;
-                }
-                self.mark_content_dirty();
+                self.apply_style_incremental(&style, &inherited);
                 PropApplyOutcome::Applied
             }
             "on_change" => {

@@ -9,6 +9,7 @@ use crate::style::parsed_style::{
     PropertyId, ScrollDirection, Style, TextWrap, Transform, TransformOrigin, Transitions,
     VerticalAlign,
 };
+use crate::style::style_props::apply_inherited_properties;
 
 /// A resolved size value used by computed style.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -271,17 +272,44 @@ impl ComputedStyle {
 }
 
 pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> ComputedStyle {
+    compute_style_with_context(
+        parsed,
+        StyleComputeContext {
+            parent,
+            viewport_width: 0.0,
+            viewport_height: 0.0,
+            root_font_size: 16.0,
+            hovered: false,
+        },
+    )
+}
+
+/// Runtime context for style computation.
+///
+/// Font-size relative units are resolved from this context. Hovered state
+/// selects the authored hover style before declarations are computed.
+#[derive(Debug, Clone, Copy)]
+pub struct StyleComputeContext<'a> {
+    pub parent: Option<&'a ComputedStyle>,
+    pub viewport_width: f32,
+    pub viewport_height: f32,
+    pub root_font_size: f32,
+    pub hovered: bool,
+}
+
+pub fn compute_style_with_context(parsed: &Style, ctx: StyleComputeContext<'_>) -> ComputedStyle {
+    let effective_style = ctx
+        .hovered
+        .then(|| parsed.hover().map(|hover| parsed.clone() + hover.clone()))
+        .flatten();
+    let parsed = effective_style.as_ref().unwrap_or(parsed);
+
     let mut computed = ComputedStyle::default();
     let mut has_explicit_cross_size = false;
     let mut has_explicit_align = false;
 
-    if let Some(parent) = parent {
-        computed.color = parent.color;
-        computed.font_families = parent.font_families.clone();
-        computed.font_size = parent.font_size;
-        computed.font_weight = parent.font_weight;
-        computed.line_height = parent.line_height;
-        computed.vertical_align = parent.vertical_align;
+    if let Some(parent) = ctx.parent {
+        apply_inherited_properties(parent, &mut computed);
     }
 
     if let Some(selection) = parsed.selection()
@@ -413,7 +441,7 @@ pub fn compute_style(parsed: &Style, parent: Option<&ComputedStyle>) -> Computed
             }
             PropertyId::FontSize => {
                 if let ParsedValue::FontSize(value) = &declaration.value {
-                    computed.font_size = resolve_font_size_px(*value, computed.font_size);
+                    computed.font_size = resolve_font_size_px(*value, computed.font_size, ctx);
                 }
             }
             PropertyId::FontWeight => {
@@ -592,8 +620,17 @@ fn resolve_length_px(length: Length) -> f32 {
     length.resolve_without_percent_base(0.0, 0.0)
 }
 
-fn resolve_font_size_px(font_size: FontSize, parent_font_size: f32) -> f32 {
-    font_size.resolve_px(parent_font_size, 16.0, 0.0, 0.0)
+fn resolve_font_size_px(
+    font_size: FontSize,
+    parent_font_size: f32,
+    ctx: StyleComputeContext<'_>,
+) -> f32 {
+    font_size.resolve_px(
+        parent_font_size,
+        ctx.root_font_size,
+        ctx.viewport_width,
+        ctx.viewport_height,
+    )
 }
 
 fn max4(a: f32, b: f32, c: f32, d: f32) -> f32 {
@@ -602,12 +639,13 @@ fn max4(a: f32, b: f32, c: f32, d: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::compute_style;
+    use super::{StyleComputeContext, compute_style, compute_style_with_context};
     use crate::style::{
         Align, CrossAxis, CrossSize, FlowDirection, FlowWrap, JustifyContent, Layout, Length,
     };
     use crate::style::{
-        BoxShadow, Color, FontSize, ParsedValue, PropertyId, SizeValue, Style, TextWrap,
+        BoxShadow, Color, FontSize, Opacity, ParsedValue, PropertyId, SelectionStyle, SizeValue,
+        Style, TextWrap,
     };
 
     #[test]
@@ -649,6 +687,303 @@ mod tests {
         );
         let child = compute_style(&child_style, Some(&parent));
         assert_eq!(child.font_size, 30.0);
+    }
+
+    #[test]
+    fn compute_style_with_context_matches_legacy_parent_inheritance() {
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::Color,
+            ParsedValue::Color(Color::rgb(0x33, 0x66, 0x99).into()),
+        );
+        parent_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::px(22.0)),
+        );
+        parent_style.insert(
+            PropertyId::LineHeight,
+            ParsedValue::LineHeight(crate::style::LineHeight::new(1.6)),
+        );
+        parent_style.insert(
+            PropertyId::TextWrap,
+            ParsedValue::TextWrap(TextWrap::NoWrap),
+        );
+        let parent = compute_style(&parent_style, None);
+
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::percent(150.0)),
+        );
+        child_style.insert(
+            PropertyId::Opacity,
+            ParsedValue::Opacity(crate::style::Opacity::new(0.5)),
+        );
+
+        let legacy = compute_style(&child_style, Some(&parent));
+        let with_context = compute_style_with_context(
+            &child_style,
+            StyleComputeContext {
+                parent: Some(&parent),
+                viewport_width: 640.0,
+                viewport_height: 480.0,
+                root_font_size: 24.0,
+                hovered: true,
+            },
+        );
+
+        assert_eq!(with_context, legacy);
+        assert_eq!(with_context.color, parent.color);
+        assert_eq!(with_context.font_size, 33.0);
+        assert_eq!(with_context.line_height, parent.line_height);
+        assert_eq!(with_context.text_wrap, parent.text_wrap);
+    }
+
+    #[test]
+    fn compute_style_with_context_applies_hover_style_when_hovered() {
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Color,
+            ParsedValue::Color(Color::rgb(0x10, 0x20, 0x30).into()),
+        );
+
+        let mut hover = Style::new();
+        hover.insert(
+            PropertyId::Color,
+            ParsedValue::Color(Color::rgb(0x44, 0x55, 0x66).into()),
+        );
+        hover.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.4)));
+        style.set_hover(hover);
+
+        let computed = compute_style_with_context(
+            &style,
+            StyleComputeContext {
+                parent: None,
+                viewport_width: 0.0,
+                viewport_height: 0.0,
+                root_font_size: 16.0,
+                hovered: true,
+            },
+        );
+
+        assert_eq!(computed.color, Color::rgb(0x44, 0x55, 0x66));
+        assert_eq!(computed.opacity, 0.4);
+    }
+
+    #[test]
+    fn compute_style_with_context_ignores_hover_style_when_not_hovered() {
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Color,
+            ParsedValue::Color(Color::rgb(0x10, 0x20, 0x30).into()),
+        );
+
+        let mut hover = Style::new();
+        hover.insert(
+            PropertyId::Color,
+            ParsedValue::Color(Color::rgb(0x44, 0x55, 0x66).into()),
+        );
+        hover.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.4)));
+        style.set_hover(hover);
+
+        let computed = compute_style_with_context(
+            &style,
+            StyleComputeContext {
+                parent: None,
+                viewport_width: 0.0,
+                viewport_height: 0.0,
+                root_font_size: 16.0,
+                hovered: false,
+            },
+        );
+
+        assert_eq!(computed.color, Color::rgb(0x10, 0x20, 0x30));
+        assert_eq!(computed.opacity, 1.0);
+    }
+
+    #[test]
+    fn hover_style_overrides_base_declarations() {
+        let mut style = Style::new();
+        style.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.2)));
+
+        let mut hover = Style::new();
+        hover.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.8)));
+        style.set_hover(hover);
+
+        let computed = compute_style_with_context(
+            &style,
+            StyleComputeContext {
+                parent: None,
+                viewport_width: 0.0,
+                viewport_height: 0.0,
+                root_font_size: 16.0,
+                hovered: true,
+            },
+        );
+
+        assert_eq!(computed.opacity, 0.8);
+    }
+
+    #[test]
+    fn legacy_compute_style_does_not_apply_hover_style() {
+        let mut style = Style::new();
+        style.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.2)));
+
+        let mut hover = Style::new();
+        hover.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.8)));
+        style.set_hover(hover);
+
+        let computed = compute_style(&style, None);
+
+        assert_eq!(computed.opacity, 0.2);
+    }
+
+    #[test]
+    fn hovered_effective_style_uses_merged_selection() {
+        let mut style = Style::new();
+        let mut base_selection = SelectionStyle::new();
+        base_selection.set_background(Color::rgb(0x11, 0x22, 0x33));
+        style.set_selection(base_selection);
+
+        let mut hover = Style::new();
+        let mut hover_selection = SelectionStyle::new();
+        hover_selection.set_background(Color::rgb(0xaa, 0xbb, 0xcc));
+        hover.set_selection(hover_selection);
+        style.set_hover(hover);
+
+        let computed = compute_style_with_context(
+            &style,
+            StyleComputeContext {
+                parent: None,
+                viewport_width: 0.0,
+                viewport_height: 0.0,
+                root_font_size: 16.0,
+                hovered: true,
+            },
+        );
+
+        assert_eq!(
+            computed.selection_background_color,
+            Color::rgb(0xaa, 0xbb, 0xcc)
+        );
+    }
+
+    #[test]
+    fn legacy_compute_style_keeps_default_root_font_size_for_rem() {
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::rem(2.0)),
+        );
+
+        let legacy = compute_style(&style, None);
+
+        assert_eq!(legacy.font_size, 32.0);
+    }
+
+    #[test]
+    fn compute_style_with_context_resolves_rem_from_root_font_size() {
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::rem(2.0)),
+        );
+
+        let computed = compute_style_with_context(
+            &style,
+            StyleComputeContext {
+                parent: None,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                root_font_size: 20.0,
+                hovered: false,
+            },
+        );
+
+        assert_eq!(computed.font_size, 40.0);
+    }
+
+    #[test]
+    fn compute_style_with_context_resolves_viewport_font_sizes() {
+        let mut vw_style = Style::new();
+        vw_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::vw(10.0)),
+        );
+        let vw = compute_style_with_context(
+            &vw_style,
+            StyleComputeContext {
+                parent: None,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                root_font_size: 16.0,
+                hovered: false,
+            },
+        );
+
+        let mut vh_style = Style::new();
+        vh_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::vh(10.0)),
+        );
+        let vh = compute_style_with_context(
+            &vh_style,
+            StyleComputeContext {
+                parent: None,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                root_font_size: 16.0,
+                hovered: false,
+            },
+        );
+
+        assert_eq!(vw.font_size, 80.0);
+        assert_eq!(vh.font_size, 60.0);
+    }
+
+    #[test]
+    fn compute_style_with_context_resolves_em_and_percent_from_parent_font_size() {
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::px(20.0)),
+        );
+        let parent = compute_style(&parent_style, None);
+
+        let mut em_style = Style::new();
+        em_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::em(1.5)),
+        );
+        let em = compute_style_with_context(
+            &em_style,
+            StyleComputeContext {
+                parent: Some(&parent),
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                root_font_size: 24.0,
+                hovered: false,
+            },
+        );
+
+        let mut percent_style = Style::new();
+        percent_style.insert(
+            PropertyId::FontSize,
+            ParsedValue::FontSize(FontSize::percent(150.0)),
+        );
+        let percent = compute_style_with_context(
+            &percent_style,
+            StyleComputeContext {
+                parent: Some(&parent),
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+                root_font_size: 24.0,
+                hovered: false,
+            },
+        );
+
+        assert_eq!(em.font_size, 30.0);
+        assert_eq!(percent.font_size, 30.0);
     }
 
     #[test]

@@ -32,7 +32,7 @@ use crate::view::base_component::{Element, ElementTrait, Text};
 use crate::view::fiber_work::{ApplyContext, PropApplyOutcome};
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::renderer_adapter::{
-    InheritedTextStyle, arena_insert_child, arena_remove_child,
+    StyleCascadeContext, arena_insert_child, arena_remove_child,
     rsx_to_descriptors_scoped_with_context, text_with_text_area_ime_preedit,
 };
 
@@ -57,38 +57,34 @@ pub(crate) fn reconcile_existing_subtree(
         )
     });
     // Reconcile only diffs RSX props; cascading text props (font / color
-    // / text_wrap / cursor) flow through `InheritedTextStyle`, which a
+    // / text_wrap / cursor) flow through `StyleCascadeContext`, which a
     // pure prop-diff would miss when a TextArea-side cascade input
     // (e.g. `auto_wrap`) flips between renders. Replay the cascade onto
     // the live subtree so existing Text leaves pick up the new values.
     if result.is_ok() {
-        let inherited = InheritedTextStyle::from_viewport_style(
+        let inherited = StyleCascadeContext::from_viewport_style(
             inherited_style,
             apply_ctx.viewport_width,
             apply_ctx.viewport_height,
         );
-        cascade_inherited_text_style(arena, anchor, &inherited);
+        cascade_style_cascade(arena, anchor, &inherited);
     }
     result
 }
 
-fn cascade_inherited_text_style(
-    arena: &mut NodeArena,
-    key: NodeKey,
-    inherited: &InheritedTextStyle,
-) {
-    let mut child_inherited: Option<InheritedTextStyle> = None;
+fn cascade_style_cascade(arena: &mut NodeArena, key: NodeKey, inherited: &StyleCascadeContext) {
+    let mut child_inherited: Option<StyleCascadeContext> = None;
     arena.mutate_element_with_invalidation(key, |element, cx| {
         element.apply_inherited(inherited);
         if let Some(el) = element.as_any().downcast_ref::<Element>() {
-            child_inherited = Some(el.child_inherited_text_style(inherited));
+            child_inherited = Some(el.child_style_cascade(inherited));
         }
         cx.invalidate(element.local_dirty_flags());
     });
     let child_cascade = child_inherited.unwrap_or_else(|| inherited.clone());
     let children = arena.children_of(key);
     for child_key in children {
-        cascade_inherited_text_style(arena, child_key, &child_cascade);
+        cascade_style_cascade(arena, child_key, &child_cascade);
     }
 }
 

@@ -1162,7 +1162,7 @@ fn incremental_commit_applies_text_cascading_style_change_on_leaf() {
 /// M6 cascade: an incremental InsertChild under a parent that
 /// authored `style={{ font_size: 22 }}` must build the new Text child
 /// with `font_size == 22`, matching what the cold-path converter
-/// would do via `InheritedTextStyle::merge_style`. M5.0 previously
+/// would do via `StyleCascadeContext::merge_style`. M5.0 previously
 /// shipped with the viewport root style as the approximation, which
 /// would have resolved to the default 16.0.
 #[test]

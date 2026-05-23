@@ -284,7 +284,7 @@ impl ElementTrait for Text {
         self.dirty_flags = self.dirty_flags.without(flags);
     }
 
-    fn apply_inherited(&mut self, inherited: &crate::view::renderer_adapter::InheritedTextStyle) {
+    fn apply_inherited(&mut self, inherited: &crate::view::renderer_adapter::StyleCascadeContext) {
         Text::apply_inherited(self, inherited);
     }
 
@@ -293,7 +293,7 @@ impl ElementTrait for Text {
         _node: &crate::ui::RsxElementNode,
         _path: &[u64],
         _global_path: Option<&crate::view::renderer_adapter::GlobalNodePath>,
-        _inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+        _inherited: &crate::view::renderer_adapter::StyleCascadeContext,
     ) -> Result<Vec<crate::view::renderer_adapter::ElementDescriptor>, String> {
         // Text is a descriptor leaf: its RSX children collapse into
         // the host's String content (assembled by the cold path /

@@ -1,4 +1,4 @@
-use crate::style::{ParsedValue, PropertyId, Style};
+use crate::style::{ComputedStyle, ParsedValue, PropertyId, Style};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::{
     ImageHandle, ImageSnapshot, acquire_image_resource, needs_upload, snapshot_image,
@@ -10,8 +10,8 @@ use crate::view::render_pass::texture_composite_pass::{
 use crate::view::{ImageFit, ImageSampling, ImageSource};
 
 use super::{
-    BoxModelSnapshot, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
-    Layoutable, Renderable, UiBuildContext,
+    BoxModelSnapshot, ComputedStyleConsumer, Element, ElementStyleSnapshot, ElementTrait,
+    EventTarget, LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
 };
 use crate::view::node_arena::{NodeArena, NodeKey};
 
@@ -216,6 +216,18 @@ impl Image {
     }
 }
 
+impl ComputedStyleConsumer for Image {
+    type Snapshot = ElementStyleSnapshot;
+
+    fn apply_computed_style(
+        &mut self,
+        computed: ComputedStyle,
+        previous_snapshot: Option<&ElementStyleSnapshot>,
+    ) {
+        ComputedStyleConsumer::apply_computed_style(&mut self.element, computed, previous_snapshot);
+    }
+}
+
 impl ElementTrait for Image {
     fn stable_id(&self) -> u64 {
         self.element.stable_id()
@@ -301,7 +313,7 @@ impl ElementTrait for Image {
         node: &crate::ui::RsxElementNode,
         _path: &[u64],
         _global_path: Option<&crate::view::renderer_adapter::GlobalNodePath>,
-        _inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+        _inherited: &crate::view::renderer_adapter::StyleCascadeContext,
     ) -> Result<Vec<crate::view::renderer_adapter::ElementDescriptor>, String> {
         if !node.children.is_empty() {
             return Err("<Image> does not accept children; use loading/error props".to_string());
@@ -320,7 +332,7 @@ impl ElementTrait for Image {
         use crate::ui::FromPropValue;
         use crate::view::fiber_work::PropApplyOutcome;
         use crate::view::renderer_adapter::{
-            InheritedTextStyle, as_element_style, commit_descriptor_tree, convert_image_slot_desc,
+            StyleCascadeContext, as_element_style, commit_descriptor_tree, convert_image_slot_desc,
         };
 
         match name {
@@ -343,7 +355,7 @@ impl ElementTrait for Image {
                 PropApplyOutcome::Applied
             }
             "loading" | "error" => {
-                let inherited = InheritedTextStyle::default();
+                let inherited = StyleCascadeContext::default();
                 let Ok(descriptors) = convert_image_slot_desc(&value, &[], None, &inherited, name)
                 else {
                     return PropApplyOutcome::DecodeFailed(name);
@@ -589,10 +601,13 @@ pub(crate) fn compute_image_mapping(
 #[cfg(test)]
 mod tests {
     use super::Image;
+    use crate::style::Color;
     use crate::style::Layout;
-    use crate::style::{Length, ParsedValue, PropertyId, Style};
+    use crate::style::{ComputedStyle, EdgeInsets, Length, ParsedValue, PropertyId, Style};
     use crate::view::ImageSource;
-    use crate::view::base_component::{Element, LayoutConstraints, LayoutPlacement, Layoutable};
+    use crate::view::base_component::{
+        ComputedStyleConsumer, Element, LayoutConstraints, LayoutPlacement, Layoutable,
+    };
     use crate::view::test_support::{commit_child, commit_element, new_test_arena};
 
     fn rgba_source(width: u32, height: u32) -> ImageSource {
@@ -620,6 +635,30 @@ mod tests {
             &mut arena,
         );
         assert_eq!(image.measured_size(), (80.0, 40.0));
+    }
+
+    #[test]
+    fn computed_style_consumer_syncs_image_element_render_state() {
+        let mut image = Image::new_with_id(2, rgba_source(80, 40));
+        let mut computed = ComputedStyle::default();
+        computed.background_color = Color::rgb(20, 30, 40);
+        computed.border_colors = EdgeInsets {
+            top: Color::rgb(200, 0, 0),
+            right: Color::rgb(0, 200, 0),
+            bottom: Color::rgb(0, 0, 200),
+            left: Color::rgb(200, 200, 0),
+        };
+        computed.opacity = 0.4;
+
+        ComputedStyleConsumer::apply_computed_style(&mut image, computed, None);
+
+        let render_state = image.element.debug_render_state();
+        assert_eq!(render_state.background_rgba, [20, 30, 40, 255]);
+        assert_eq!(render_state.border_top_rgba, [200, 0, 0, 255]);
+        assert_eq!(render_state.border_right_rgba, [0, 200, 0, 255]);
+        assert_eq!(render_state.border_bottom_rgba, [0, 0, 200, 255]);
+        assert_eq!(render_state.border_left_rgba, [200, 200, 0, 255]);
+        assert!((render_state.opacity - 0.4).abs() < 0.001);
     }
 
     #[test]

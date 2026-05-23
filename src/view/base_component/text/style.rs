@@ -1,11 +1,105 @@
 //! Text typography setters + style/inherited cascade.
 
-use crate::style::{ColorLike, Cursor, Style, TextAlign, TextWrap};
+use crate::style::{
+    ColorLike, ComputedStyle, Cursor, Length, SizeValue, Style, StyleComputeContext, TextAlign,
+    TextWrap, compute_style_with_context,
+};
 use crate::view::base_component::{DirtyFlags, Position, Size};
-use crate::view::renderer_adapter::InheritedTextStyle;
+use crate::view::renderer_adapter::{StyleCascadeContext, computed_parent_from_style_cascade};
 use crate::view::text_layout::TextLayoutAlignment;
 
 use super::Text;
+
+#[derive(Debug)]
+pub(crate) struct TextComputedStyleBridge {
+    computed: ComputedStyle,
+    width: Result<Option<f32>, String>,
+    height: Result<Option<f32>, String>,
+    has_font_family: bool,
+    has_font_size: bool,
+    has_font_weight: bool,
+    has_color: bool,
+    has_cursor: bool,
+    has_text_wrap: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextStyleApplyMode {
+    Cold,
+    Incremental,
+}
+
+impl TextComputedStyleBridge {
+    /// Normalize a local `<Text style=...>` declaration against the
+    /// inherited text cascade. This uses the same compute pipeline as retained
+    /// style consumers, but Text needs authored-field masks and inherited
+    /// parent context before applying fields, so it is deliberately a local
+    /// bridge instead of a `ComputedStyleConsumer` implementation. Ancestor
+    /// cascade still flows through `Text::apply_inherited`.
+    pub(crate) fn from_style(style: &Style, inherited: &StyleCascadeContext) -> Self {
+        use crate::style::PropertyId;
+
+        let parent = computed_parent_from_style_cascade(inherited);
+
+        let computed = compute_style_with_context(
+            style,
+            StyleComputeContext {
+                parent: Some(&parent),
+                viewport_width: inherited.viewport_width,
+                viewport_height: inherited.viewport_height,
+                root_font_size: inherited.root_font_size,
+                hovered: false,
+            },
+        );
+
+        Self {
+            width: authored_size_value_px(
+                style,
+                PropertyId::Width,
+                computed.width,
+                "Text style.width",
+            ),
+            height: authored_size_value_px(
+                style,
+                PropertyId::Height,
+                computed.height,
+                "Text style.height",
+            ),
+            has_font_family: style.get(PropertyId::FontFamily).is_some(),
+            has_font_size: style.get(PropertyId::FontSize).is_some(),
+            has_font_weight: style.get(PropertyId::FontWeight).is_some(),
+            has_color: style.get(PropertyId::Color).is_some(),
+            has_cursor: style.get(PropertyId::Cursor).is_some(),
+            has_text_wrap: style.get(PropertyId::TextWrap).is_some(),
+            computed,
+        }
+    }
+}
+
+fn authored_size_value_px(
+    style: &Style,
+    property: crate::style::PropertyId,
+    computed: SizeValue,
+    context: &str,
+) -> Result<Option<f32>, String> {
+    if style.get(property).is_none() {
+        return Ok(None);
+    }
+    match computed {
+        SizeValue::Auto => Ok(None),
+        SizeValue::Length(Length::Px(value)) => Ok(Some(value)),
+        SizeValue::Length(Length::Zero) => Ok(Some(0.0)),
+        SizeValue::Length(length @ Length::Calc(_)) => {
+            if length.needs_percent_base() {
+                return Err(format!("{context} does not support relative length"));
+            }
+            Ok(Some(length.resolve_without_percent_base(0.0, 0.0)))
+        }
+        SizeValue::Length(Length::Percent(_) | Length::Vh(_) | Length::Vw(_)) => {
+            Err(format!("{context} does not support relative length"))
+        }
+    }
+}
 
 impl Text {
     pub fn set_position(&mut self, x: f32, y: f32) {
@@ -103,7 +197,7 @@ impl Text {
     }
 
     /// Crate-visible read for the M6 cascade tests; Text resolves
-    /// font_size at convert time from `InheritedTextStyle`, so
+    /// font_size at convert time from `StyleCascadeContext`, so
     /// exposing the stored value lets tests assert parent cascade
     /// reached the Text leaf correctly.
     #[cfg(test)]
@@ -208,10 +302,8 @@ impl Text {
     pub(crate) fn apply_style_incremental(
         &mut self,
         style: Option<&Style>,
-        inherited: &InheritedTextStyle,
+        inherited: &StyleCascadeContext,
     ) {
-        use crate::style::{ParsedValue, PropertyId};
-
         // Track 1 #10 scope fix: do NOT blanket-reset the per-prop
         // explicit flags before re-applying. A Text can source the
         // same prop (e.g. `font_size`) from an independent prop
@@ -227,53 +319,45 @@ impl Text {
         // incremental declaration-removal cascade refill must author
         // an explicit reset value.
 
-        let mut width: Option<f32> = None;
-        let mut height: Option<f32> = None;
+        let _ = self.apply_style_with_computed_bridge(
+            style,
+            inherited,
+            TextStyleApplyMode::Incremental,
+        );
+    }
 
-        if let Some(style) = style {
-            if let Some(value) = style.get(PropertyId::Width) {
-                width = crate::view::renderer_adapter::length_from_parsed_value(
-                    value,
-                    "Text style.width",
-                )
-                .ok()
-                .flatten();
-            }
-            if let Some(value) = style.get(PropertyId::Height) {
-                height = crate::view::renderer_adapter::length_from_parsed_value(
-                    value,
-                    "Text style.height",
-                )
-                .ok()
-                .flatten();
-            }
-            if let Some(ParsedValue::FontFamily(font_family)) = style.get(PropertyId::FontFamily) {
-                self.set_fonts(font_family.as_slice().iter().cloned());
-            }
-            if let Some(font_size) = crate::view::renderer_adapter::resolve_font_size_from_style(
-                style,
-                inherited.font_size.unwrap_or(inherited.root_font_size),
-                inherited.root_font_size,
-                inherited.viewport_width,
-                inherited.viewport_height,
-            ) {
-                self.set_font_size(font_size);
-            }
-            if let Some(ParsedValue::FontWeight(font_weight)) = style.get(PropertyId::FontWeight) {
-                self.set_font_weight(font_weight.value());
-            }
-            if let Some(ParsedValue::Color(color)) = style.get(PropertyId::Color) {
-                self.set_color(color.clone());
-            }
-            if let Some(ParsedValue::Cursor(cursor)) = style.get(PropertyId::Cursor) {
-                self.set_cursor(*cursor);
-            }
-            if let Some(ParsedValue::TextWrap(text_wrap)) = style.get(PropertyId::TextWrap) {
-                self.set_text_wrap(*text_wrap);
-            }
+    pub(crate) fn apply_style_cold(
+        &mut self,
+        style: Option<&Style>,
+        inherited: &StyleCascadeContext,
+    ) -> Result<(), String> {
+        self.apply_style_with_computed_bridge(style, inherited, TextStyleApplyMode::Cold)
+    }
+
+    fn apply_style_with_computed_bridge(
+        &mut self,
+        style: Option<&Style>,
+        inherited: &StyleCascadeContext,
+        mode: TextStyleApplyMode,
+    ) -> Result<(), String> {
+        let bridge = style.map(|style| TextComputedStyleBridge::from_style(style, inherited));
+
+        if let Some(bridge) = &bridge {
+            self.apply_computed_text_bridge(bridge);
         }
 
         self.apply_inherited(inherited);
+
+        let width = match bridge.as_ref().map(|bridge| &bridge.width) {
+            Some(Ok(width)) => *width,
+            Some(Err(err)) if mode == TextStyleApplyMode::Cold => return Err(err.clone()),
+            Some(Err(_)) | None => None,
+        };
+        let height = match bridge.as_ref().map(|bridge| &bridge.height) {
+            Some(Ok(height)) => *height,
+            Some(Err(err)) if mode == TextStyleApplyMode::Cold => return Err(err.clone()),
+            Some(Err(_)) | None => None,
+        };
 
         if let Some(width) = width {
             self.set_width(width);
@@ -285,25 +369,49 @@ impl Text {
         } else {
             self.set_auto_height(true);
         }
+
+        Ok(())
     }
 
-    /// 軌 A #7: apply an ancestor-derived `InheritedTextStyle` to any
+    fn apply_computed_text_bridge(&mut self, bridge: &TextComputedStyleBridge) {
+        if bridge.has_font_family {
+            self.set_fonts(bridge.computed.font_families.iter().cloned());
+        }
+        if bridge.has_font_size {
+            self.set_font_size(bridge.computed.font_size);
+        }
+        if bridge.has_font_weight {
+            self.set_font_weight(bridge.computed.font_weight);
+        }
+        if bridge.has_color {
+            self.set_color(bridge.computed.color);
+        }
+        if bridge.has_cursor {
+            self.set_cursor(bridge.computed.cursor);
+        }
+        if bridge.has_text_wrap {
+            self.set_text_wrap(bridge.computed.text_wrap);
+        }
+    }
+
+    /// 軌 A #7: apply an ancestor-derived `StyleCascadeContext` to any
     /// Text prop that the author didn't set explicitly. Returns
     /// `true` if any prop changed (so the caller can short-circuit
     /// redundant dirty-marking). Explicit values — anything the
     /// author set via a public setter — are preserved.
-    pub(crate) fn apply_inherited(&mut self, inherited: &InheritedTextStyle) -> bool {
+    pub(crate) fn apply_inherited(&mut self, inherited: &StyleCascadeContext) -> bool {
         let mut changed = false;
         if !self.font_family_explicit
-            && !inherited.font_families.is_empty()
-            && self.font_families != inherited.font_families
+            && let Some(font_families) = inherited.inherited_font_families()
+            && !font_families.is_empty()
+            && self.font_families != font_families
         {
-            self.font_families = inherited.font_families.clone();
+            self.font_families = font_families.to_vec();
             self.mark_measure_dirty();
             changed = true;
         }
         if !self.font_size_explicit
-            && let Some(fs) = inherited.font_size
+            && let Some(fs) = inherited.inherited_font_size()
             && (self.font_size - fs).abs() > f32::EPSILON
         {
             self.font_size = fs;
@@ -311,7 +419,7 @@ impl Text {
             changed = true;
         }
         if !self.font_weight_explicit
-            && let Some(fw) = inherited.font_weight
+            && let Some(fw) = inherited.inherited_font_weight()
             && self.font_weight != fw
         {
             self.font_weight = fw;
@@ -319,14 +427,14 @@ impl Text {
             changed = true;
         }
         if !self.color_explicit
-            && let Some(color) = &inherited.color
+            && let Some(color) = inherited.inherited_color()
         {
-            self.color = Box::new(color.clone());
+            self.color = Box::new(color);
             self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
             changed = true;
         }
         if !self.text_wrap_explicit {
-            let next = inherited.text_wrap.unwrap_or(TextWrap::Wrap);
+            let next = inherited.inherited_text_wrap().unwrap_or(TextWrap::Wrap);
             if self.text_wrap != next {
                 self.text_wrap = next;
                 self.clear_layout_caches();
@@ -335,7 +443,7 @@ impl Text {
             }
         }
         if !self.line_height_explicit
-            && let Some(lh) = inherited.line_height
+            && let Some(lh) = inherited.inherited_line_height()
             && (self.line_height - lh).abs() > f32::EPSILON
         {
             self.line_height = lh;
@@ -343,7 +451,7 @@ impl Text {
             changed = true;
         }
         if !self.cursor_explicit
-            && let Some(cursor) = inherited.cursor
+            && let Some(cursor) = inherited.inherited_cursor()
             && self.cursor != cursor
         {
             self.cursor = cursor;
@@ -355,7 +463,7 @@ impl Text {
         // will be re-overwritten by an ancestor cascade. Matches Sprint
         // 3 acceptance footgun (`docs/design/inline-baseline.md` Risk
         // #6: inheritance footgun, document-only mitigation).
-        if let Some(va) = inherited.vertical_align
+        if let Some(va) = inherited.inherited_vertical_align()
             && self.vertical_align != va
         {
             self.vertical_align = va;

@@ -12,14 +12,14 @@
 use std::any::{Any, TypeId};
 
 use crate::ui::{ErasedHostBuilder, GlobalNodePath, RsxElementNode, RsxNode, RsxTagDescriptor};
-use crate::view::renderer_adapter::{ElementDescriptor, InheritedTextStyle};
+use crate::view::renderer_adapter::{ElementDescriptor, StyleCascadeContext};
 
 /// Owned conversion context handed to a [`HostBuilder`]. `'static` so
 /// the engine-core `&dyn Any` downcast works (borrowed references can't
 /// carry non-`'static` lifetimes through `Any`).
 pub struct BuildCtx {
     pub global_path: Option<GlobalNodePath>,
-    pub inherited: InheritedTextStyle,
+    pub inherited: StyleCascadeContext,
 }
 
 /// Implement on a tag type to provide a compile-time descriptor build

@@ -893,6 +893,16 @@ pub(crate) mod sealed {
 /// types implement [`ComponentTag`] instead.
 pub trait HostTag: RsxTag + sealed::Sealed {}
 
+/// Crate-internal style contract for built-in host tags.
+///
+/// `rsx-macro` must stay generic and does not inspect this type. The
+/// view layer uses it to know which typed style prop schema and accepted
+/// property set belong to each host.
+#[allow(dead_code)]
+pub(crate) trait HostStyleTag: HostTag {
+    type StyleProp: crate::style::style_props::StylePropTrait;
+}
+
 /// Marker trait for user-authored components. Carries the static
 /// [`ComponentVTable`] emitted by the `#[component]` macro (either the
 /// fn-style authoring form or the `impl RsxTag` block form).

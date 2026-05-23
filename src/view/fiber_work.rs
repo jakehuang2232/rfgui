@@ -30,7 +30,8 @@ use crate::style::Style;
 use crate::ui::{Patch, PropValue, RsxElementNode, RsxNode};
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::renderer_adapter::{
-    ElementDescriptor, arena_insert_child, arena_remove_child, commit_descriptor_tree, resolve_path,
+    ElementDescriptor, arena_insert_child, arena_remove_child, commit_descriptor_tree,
+    resolve_font_size_prop_with_inherited, resolve_path,
 };
 
 /// Context needed to translate descriptor-producing patches
@@ -43,11 +44,11 @@ use crate::view::renderer_adapter::{
 /// translator can reuse the cold-path converter verbatim.
 /// 軌 A #9: viewport-level context threaded into the apply path so
 /// setters that depend on inherited cascade (Text/TextArea
-/// `font_size` em/rem/%/vw/vh) can rebuild an `InheritedTextStyle`
+/// `font_size` em/rem/%/vw/vh) can rebuild an `StyleCascadeContext`
 /// from the arena ancestors.
 ///
 /// Mirrors the inputs to
-/// `renderer_adapter::inherited_text_style_at_parent` so the Update
+/// `renderer_adapter::style_cascade_at_parent` so the Update
 /// dispatchers can reuse the cold-path resolver verbatim.
 #[derive(Clone, Copy)]
 pub struct ApplyContext<'a> {
@@ -341,7 +342,7 @@ pub fn patch_to_fiber_work_with_rsx(
             // new subtree's descriptor. Callers lacking context (unit
             // tests, ad-hoc translation) fall back.
             let ctx = ctx?;
-            let inherited = crate::view::renderer_adapter::InheritedTextStyle::from_viewport_style(
+            let inherited = crate::view::renderer_adapter::StyleCascadeContext::from_viewport_style(
                 ctx.inherited_style,
                 ctx.viewport_width,
                 ctx.viewport_height,
@@ -373,7 +374,7 @@ pub fn patch_to_fiber_work_with_rsx(
             // existing multi-descriptor ReplaceRoot apply path which
             // clears + pushes N.
             let ctx = ctx?;
-            let inherited = crate::view::renderer_adapter::InheritedTextStyle::from_viewport_style(
+            let inherited = crate::view::renderer_adapter::StyleCascadeContext::from_viewport_style(
                 ctx.inherited_style,
                 ctx.viewport_width,
                 ctx.viewport_height,
@@ -408,7 +409,7 @@ pub fn patch_to_fiber_work_with_rsx(
             // Rebuild the inherited cascade at the arena parent so the
             // new subtree sees the same ancestor style the cold path
             // would.
-            let inherited = crate::view::renderer_adapter::inherited_text_style_at_parent(
+            let inherited = crate::view::renderer_adapter::style_cascade_at_parent(
                 arena,
                 parent_key,
                 ctx.inherited_style,
@@ -521,14 +522,14 @@ pub fn patch_to_fiber_work_with_rsx(
             let child_rsx = kids.get(index)?;
 
             // 4) Reuse the cold-path converter. M6 cascade: rebuild
-            //    the `InheritedTextStyle` at the arena parent by
+            //    the `StyleCascadeContext` at the arena parent by
             //    walking its ancestor chain and replaying each
             //    Element's `parsed_style` through `merge_style`. This
             //    matches what `build_container_element_shell` does in
             //    the cold-path loop, so text children inherit
             //    font_size / color / etc. from ancestors instead of
             //    the viewport-root approximation M5.0 shipped.
-            let inherited = crate::view::renderer_adapter::inherited_text_style_at_parent(
+            let inherited = crate::view::renderer_adapter::style_cascade_at_parent(
                 arena,
                 parent_key,
                 ctx.inherited_style,
@@ -842,7 +843,7 @@ impl FiberWork {
 
 /// PropertyIds that cascade into descendant text nodes (font_family,
 /// font_size, font_weight, color, cursor, text_wrap — mirrors
-/// `InheritedTextStyle::merge_style`). Kept in one place so the
+/// `StyleCascadeContext::merge_style`). Kept in one place so the
 /// boundary gate and the cold-path merger reference the same list.
 const TEXT_CASCADING_PROPS: &[crate::style::PropertyId] = &[
     crate::style::PropertyId::FontFamily,
@@ -932,22 +933,22 @@ pub(crate) fn recascade_text_subtree(
     ctx: ApplyContext<'_>,
     root_key: NodeKey,
 ) {
-    use crate::view::renderer_adapter::inherited_text_style_at_parent;
+    use crate::view::renderer_adapter::style_cascade_at_parent;
 
     fn walk(arena: &mut NodeArena, ctx: ApplyContext<'_>, key: NodeKey) {
         // Compute inherited cascade at this node's arena parent — the
         // helper walks the ancestor chain replaying each Element's
-        // `parsed_style` through `InheritedTextStyle::merge_style`.
+        // `parsed_style` through `StyleCascadeContext::merge_style`.
         let parent = arena.parent_of(key);
         let inherited = match parent {
-            Some(p) => inherited_text_style_at_parent(
+            Some(p) => style_cascade_at_parent(
                 arena,
                 p,
                 ctx.viewport_style,
                 ctx.viewport_width,
                 ctx.viewport_height,
             ),
-            None => crate::view::renderer_adapter::InheritedTextStyle::from_viewport_style(
+            None => crate::view::renderer_adapter::StyleCascadeContext::from_viewport_style(
                 ctx.viewport_style,
                 ctx.viewport_width,
                 ctx.viewport_height,
@@ -1224,7 +1225,7 @@ fn apply_update_work(
 
 /// 軌 A #9: resolve a `font_size` prop to pixels with full inherited
 /// context. `parent_font_size` comes from the arena ancestor walk
-/// (`inherited_text_style_at_parent`); `root_font_size` is the
+/// (`style_cascade_at_parent`); `root_font_size` is the
 /// viewport root; viewport dims are passed in for `vw`/`vh`/`%`.
 ///
 /// The `Em`/`Rem`/`Percent`/`Vw`/`Vh` variants now resolve correctly
@@ -1232,20 +1233,9 @@ fn apply_update_work(
 /// rebuild because the apply side had no inherited context.
 pub(crate) fn resolve_font_size_px_with_inherited(
     value: &PropValue,
-    inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+    inherited: &crate::view::renderer_adapter::StyleCascadeContext,
 ) -> Option<f32> {
-    let parent_font_size = inherited.font_size.unwrap_or(inherited.root_font_size);
-    match value {
-        PropValue::I64(v) => Some((*v as f32).max(0.0)),
-        PropValue::F64(v) => Some((*v as f32).max(0.0)),
-        PropValue::FontSize(fs) => Some(fs.resolve_px(
-            parent_font_size,
-            inherited.root_font_size,
-            inherited.viewport_width,
-            inherited.viewport_height,
-        )),
-        _ => None,
-    }
+    resolve_font_size_prop_with_inherited(value, inherited)
 }
 
 /// Apply a `Patch::SetText` to a Text or TextArea host at `key`.

@@ -1,4 +1,4 @@
-use crate::style::{ParsedValue, PropertyId, Style};
+use crate::style::{ComputedStyle, ParsedValue, PropertyId, Style};
 use crate::time::{Duration, Instant};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::ImageSnapshot;
@@ -14,8 +14,8 @@ use crate::view::svg_resource::{
 use crate::view::{ImageFit, ImageSampling, SvgSource};
 
 use super::{
-    BoxModelSnapshot, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
-    Layoutable, Renderable, UiBuildContext,
+    BoxModelSnapshot, ComputedStyleConsumer, Element, ElementStyleSnapshot, ElementTrait,
+    EventTarget, LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
 };
 
 const PLACEHOLDER_SIZE: f32 = 120.0;
@@ -271,6 +271,18 @@ impl Svg {
     }
 }
 
+impl ComputedStyleConsumer for Svg {
+    type Snapshot = ElementStyleSnapshot;
+
+    fn apply_computed_style(
+        &mut self,
+        computed: ComputedStyle,
+        previous_snapshot: Option<&ElementStyleSnapshot>,
+    ) {
+        ComputedStyleConsumer::apply_computed_style(&mut self.element, computed, previous_snapshot);
+    }
+}
+
 impl ElementTrait for Svg {
     fn stable_id(&self) -> u64 {
         self.element.stable_id()
@@ -360,7 +372,7 @@ impl ElementTrait for Svg {
         node: &crate::ui::RsxElementNode,
         _path: &[u64],
         _global_path: Option<&crate::view::renderer_adapter::GlobalNodePath>,
-        _inherited: &crate::view::renderer_adapter::InheritedTextStyle,
+        _inherited: &crate::view::renderer_adapter::StyleCascadeContext,
     ) -> Result<Vec<crate::view::renderer_adapter::ElementDescriptor>, String> {
         if !node.children.is_empty() {
             return Err("<Svg> does not accept children; use loading/error props".to_string());
@@ -380,7 +392,7 @@ impl ElementTrait for Svg {
         use crate::view::fiber_work::PropApplyOutcome;
         use crate::view::node_arena::NodeKey;
         use crate::view::renderer_adapter::{
-            InheritedTextStyle, as_element_style, commit_descriptor_tree, convert_image_slot_desc,
+            StyleCascadeContext, as_element_style, commit_descriptor_tree, convert_image_slot_desc,
         };
 
         match name {
@@ -399,7 +411,7 @@ impl ElementTrait for Svg {
                 PropApplyOutcome::Applied
             }
             "loading" | "error" => {
-                let inherited = InheritedTextStyle::default();
+                let inherited = StyleCascadeContext::default();
                 let Ok(descriptors) = convert_image_slot_desc(&value, &[], None, &inherited, name)
                 else {
                     return PropApplyOutcome::DecodeFailed(name);
@@ -627,10 +639,10 @@ impl Renderable for Svg {
 #[cfg(test)]
 mod tests {
     use super::Svg;
-    use crate::style::Style;
+    use crate::style::{Color, ComputedStyle, EdgeInsets, Style};
     use crate::time::{Duration, Instant};
     use crate::view::SvgSource;
-    use crate::view::base_component::{LayoutConstraints, Layoutable};
+    use crate::view::base_component::{ComputedStyleConsumer, LayoutConstraints, Layoutable};
     use crate::view::test_support::new_test_arena;
 
     fn simple_svg() -> SvgSource {
@@ -657,6 +669,30 @@ mod tests {
             &mut arena,
         );
         assert_eq!(svg.measured_size(), (80.0, 40.0));
+    }
+
+    #[test]
+    fn computed_style_consumer_syncs_svg_element_render_state() {
+        let mut svg = Svg::new_with_id(2, simple_svg());
+        let mut computed = ComputedStyle::default();
+        computed.background_color = Color::rgb(30, 40, 50);
+        computed.border_colors = EdgeInsets {
+            top: Color::rgb(210, 0, 0),
+            right: Color::rgb(0, 210, 0),
+            bottom: Color::rgb(0, 0, 210),
+            left: Color::rgb(210, 210, 0),
+        };
+        computed.opacity = 0.45;
+
+        ComputedStyleConsumer::apply_computed_style(&mut svg, computed, None);
+
+        let render_state = svg.element.debug_render_state();
+        assert_eq!(render_state.background_rgba, [30, 40, 50, 255]);
+        assert_eq!(render_state.border_top_rgba, [210, 0, 0, 255]);
+        assert_eq!(render_state.border_right_rgba, [0, 210, 0, 255]);
+        assert_eq!(render_state.border_bottom_rgba, [0, 0, 210, 255]);
+        assert_eq!(render_state.border_left_rgba, [210, 210, 0, 255]);
+        assert!((render_state.opacity - 0.45).abs() < 0.001);
     }
 
     #[test]

@@ -4,6 +4,7 @@ mod computed_style;
 mod gradient;
 mod interpolate;
 mod parsed_style;
+pub(crate) mod style_props;
 
 pub use background::*;
 pub use color::*;
