@@ -498,6 +498,7 @@ impl TextArea {
                 return;
             };
             segment.set_vertical_align(self.vertical_align);
+            segment.set_auto_wrap(self.auto_wrap);
             cx.invalidate(segment.local_dirty_flags());
         });
     }
@@ -650,6 +651,7 @@ impl TextArea {
             segment_index,
             range,
             self.vertical_align,
+            self.auto_wrap,
             children,
         );
         Some(crate::view::renderer_adapter::commit_descriptor_tree(
@@ -1003,6 +1005,7 @@ fn wrap_projection_children(
     segment_index: usize,
     range: Range<usize>,
     vertical_align: crate::style::VerticalAlign,
+    auto_wrap: bool,
     children: Vec<crate::view::renderer_adapter::ElementDescriptor>,
 ) -> crate::view::renderer_adapter::ElementDescriptor {
     let wrapper_id = text_area_stable_id
@@ -1011,6 +1014,7 @@ fn wrap_projection_children(
     let mut wrapper = TextAreaProjectionSegment::with_stable_id(wrapper_id);
     wrapper.set_char_range(range);
     wrapper.set_vertical_align(vertical_align);
+    wrapper.set_auto_wrap(auto_wrap);
 
     crate::view::renderer_adapter::ElementDescriptor {
         element: Box::new(wrapper) as Box<dyn ElementTrait>,

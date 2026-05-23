@@ -553,6 +553,352 @@ mod tests {
         (arena, root)
     }
 
+    fn projection_chip_text_area(
+        token: &'static str,
+        max_width: f32,
+        max_height: f32,
+        auto_wrap: bool,
+    ) -> (
+        crate::view::node_arena::NodeArena,
+        crate::view::node_arena::NodeKey,
+    ) {
+        let content = format!("pre {token} post");
+        let token_byte_start = content.find(token).expect("token");
+        let range_start = content[..token_byte_start].chars().count();
+        let range = range_start..range_start + token.chars().count();
+        let mut text_area = TextArea::new();
+        text_area.content = content;
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.auto_wrap = auto_wrap;
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+            render.range(range.clone(), move |_node| {
+                crate::ui::RsxNode::tagged(
+                    "Element",
+                    crate::ui::RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                )
+                .with_prop(
+                    "style",
+                    crate::view::ElementStylePropSchema {
+                        padding: Some(
+                            crate::style::Padding::uniform(crate::style::Length::px(0.0))
+                                .x(crate::style::Length::px(20.0)),
+                        ),
+                        font_size: Some(crate::style::FontSize::Px(24.0)),
+                        border: Some(crate::style::Border::uniform(
+                            crate::style::Length::px(1.0),
+                            &crate::style::Color::hex("#42566f"),
+                        )),
+                        ..Default::default()
+                    },
+                )
+                .with_child(
+                    crate::ui::RsxNode::tagged(
+                        "Text",
+                        crate::ui::RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
+                    )
+                    .with_child(crate::ui::RsxNode::text(token)),
+                )
+            });
+        }));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width,
+                max_height,
+                viewport_width: max_width,
+                viewport_height: max_height,
+                percent_base_width: Some(max_width),
+                percent_base_height: Some(max_height),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: max_width,
+                available_height: max_height,
+                viewport_width: max_width,
+                viewport_height: max_height,
+                percent_base_width: Some(max_width),
+                percent_base_height: Some(max_height),
+            },
+        );
+        (arena, root)
+    }
+
+    fn first_projection_segment(
+        arena: &crate::view::node_arena::NodeArena,
+        root: crate::view::node_arena::NodeKey,
+    ) -> crate::view::node_arena::NodeKey {
+        let root_node = arena.get(root).expect("TextArea root");
+        let text_area = root_node
+            .element
+            .as_any()
+            .downcast_ref::<TextArea>()
+            .unwrap();
+        text_area
+            .children
+            .iter()
+            .copied()
+            .find(|key| {
+                arena.get(*key).is_some_and(|node| {
+                    node.element
+                        .as_any()
+                        .is::<crate::view::base_component::text_area::TextAreaProjectionSegment>()
+                })
+            })
+            .expect("projection segment")
+    }
+
+    fn first_projection_text_line_count(
+        arena: &crate::view::node_arena::NodeArena,
+        root: crate::view::node_arena::NodeKey,
+    ) -> usize {
+        fn visit(
+            arena: &crate::view::node_arena::NodeArena,
+            key: crate::view::node_arena::NodeKey,
+        ) -> Option<usize> {
+            let node = arena.get(key)?;
+            if let Some(text) = node
+                .element
+                .as_any()
+                .downcast_ref::<crate::view::base_component::Text>()
+            {
+                return Some(text.visual_line_heads().len().max(1));
+            }
+            for child in node.element.children() {
+                if let Some(count) = visit(arena, *child) {
+                    return Some(count);
+                }
+            }
+            None
+        }
+        visit(arena, root).expect("projection Text descendant")
+    }
+
+    #[test]
+    fn projection_chip_wraps_inside_text_area_width_when_auto_wrap_enabled() {
+        let max_width = 160.0;
+        let (arena, root) = projection_chip_text_area(
+            "{{USERAAAAASSZZsdc_ID_USERAAAAASSZZsdc_ID}}",
+            max_width,
+            240.0,
+            true,
+        );
+        let segment = first_projection_segment(&arena, root);
+        let segment_snapshot = arena
+            .get(segment)
+            .expect("projection segment")
+            .element
+            .box_model_snapshot();
+
+        assert!(
+            segment_snapshot.width <= max_width + 0.5,
+            "projection segment must not report wider than TextArea viewport, width={}",
+            segment_snapshot.width,
+        );
+        assert!(
+            segment_snapshot.x + segment_snapshot.width <= max_width + 0.5,
+            "projection segment must fit the remaining TextArea line width, x={} width={}",
+            segment_snapshot.x,
+            segment_snapshot.width,
+        );
+        assert!(
+            first_projection_text_line_count(&arena, segment) > 1,
+            "projection Text must wrap inside the constrained chip when auto_wrap=true",
+        );
+    }
+
+    #[test]
+    fn projection_chip_shrinks_without_internal_wrap_when_auto_wrap_disabled() {
+        let max_width = 160.0;
+        let (arena, root) = projection_chip_text_area(
+            "{{USERAAAAASSZZsdc_ID_USERAAAAASSZZsdc_ID}}",
+            max_width,
+            240.0,
+            false,
+        );
+        let segment = first_projection_segment(&arena, root);
+        let segment_snapshot = arena
+            .get(segment)
+            .expect("projection segment")
+            .element
+            .box_model_snapshot();
+
+        assert!(
+            segment_snapshot.width <= max_width + 0.5,
+            "projection segment must shrink to TextArea viewport when auto_wrap=false, width={}",
+            segment_snapshot.width,
+        );
+        assert_eq!(
+            first_projection_text_line_count(&arena, segment),
+            1,
+            "projection Text must stay on one line when auto_wrap=false",
+        );
+    }
+
+    #[test]
+    fn projection_badges_do_not_overlap_following_text_runs() {
+        let content = "First line with a long value that can wrap when auto wrap is enabled.{{API_HOST}}/v1/users/{{USER_ID}}/activity/with/a/very/long/path\nTail line";
+        let mut text_area = TextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.auto_wrap = true;
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+            let ranges = [(69..81), (91..102)];
+            for range in ranges {
+                let slice: String = content
+                    .chars()
+                    .skip(range.start)
+                    .take(range.len())
+                    .collect();
+                render.range(range.clone(), move |_node| {
+                    let slice = slice.clone();
+                    crate::ui::RsxNode::tagged(
+                        "Element",
+                        crate::ui::RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                    )
+                    .with_prop(
+                        "style",
+                        crate::view::ElementStylePropSchema {
+                            padding: Some(
+                                crate::style::Padding::uniform(crate::style::Length::px(0.0))
+                                    .x(crate::style::Length::px(20.0)),
+                            ),
+                            font_size: Some(crate::style::FontSize::Px(24.0)),
+                            border: Some(crate::style::Border::uniform(
+                                crate::style::Length::px(1.0),
+                                &crate::style::Color::hex("#42566f"),
+                            )),
+                            ..Default::default()
+                        },
+                    )
+                    .with_child(
+                        crate::ui::RsxNode::tagged(
+                            "Text",
+                            crate::ui::RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
+                        )
+                        .with_child(crate::ui::RsxNode::text(slice)),
+                    )
+                });
+            }
+        }));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 360.0,
+                max_height: 240.0,
+                viewport_width: 360.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(360.0),
+                percent_base_height: Some(240.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 360.0,
+                available_height: 240.0,
+                viewport_width: 360.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(360.0),
+                percent_base_height: Some(240.0),
+            },
+        );
+
+        let root_node = arena.get(root).expect("TextArea root");
+        let text_area = root_node
+            .element
+            .as_any()
+            .downcast_ref::<TextArea>()
+            .unwrap();
+        let mut api = None;
+        let mut user = None;
+        let mut users_path = None;
+        let mut activity_path = None;
+        for &child in &text_area.children {
+            let node = arena.get(child).expect("TextArea child");
+            let snapshot = node.element.box_model_snapshot();
+            if let Some(segment) = node
+                .element
+                .as_any()
+                .downcast_ref::<crate::view::base_component::text_area::TextAreaProjectionSegment>(
+            ) {
+                match segment.char_range() {
+                    range if range == (69..81) => api = Some(snapshot),
+                    range if range == (91..102) => user = Some(snapshot),
+                    _ => {}
+                }
+            } else if let Some(run) =
+                node.element
+                    .as_any()
+                    .downcast_ref::<crate::view::base_component::text_area::TextAreaTextRun>()
+            {
+                if run.text == "/v1/users/" {
+                    users_path = Some(snapshot);
+                }
+                if run.text.contains("/activity/with") {
+                    activity_path = Some(snapshot);
+                }
+            }
+        }
+
+        fn assert_no_same_line_overlap(
+            left: crate::view::base_component::BoxModelSnapshot,
+            right: crate::view::base_component::BoxModelSnapshot,
+            label: &str,
+        ) {
+            let vertical_overlap =
+                left.y < right.y + right.height - 0.5 && right.y < left.y + left.height - 0.5;
+            if vertical_overlap {
+                assert!(
+                    right.x + 0.5 >= left.x + left.width,
+                    "{label} overlap: left={left:?}, right={right:?}",
+                );
+            }
+        }
+
+        assert_no_same_line_overlap(
+            api.expect("API projection"),
+            users_path.expect("/v1/users/ run"),
+            "API projection and following path",
+        );
+        assert_no_same_line_overlap(
+            user.expect("USER projection"),
+            activity_path.expect("/activity run"),
+            "USER projection and following path",
+        );
+    }
+
     #[test]
     fn auto_height_parent_grows_after_trailing_newline_insert() {
         let line_height = 14.0 * 1.25;

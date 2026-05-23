@@ -49,6 +49,8 @@ pub(crate) struct TextAreaProjectionSegment {
     layout_state: LayoutState,
     flex_info: Option<FlexLayoutInfo>,
     vertical_align: VerticalAlign,
+    auto_wrap: bool,
+    inline_full_available_width: f32,
     inline_paint_fragments: Vec<Rect>,
     dirty_flags: DirtyFlags,
     node_id: u64,
@@ -65,6 +67,8 @@ impl Default for TextAreaProjectionSegment {
             layout_state: LayoutState::new(0.0, 0.0, 0.0, 0.0),
             flex_info: None,
             vertical_align: VerticalAlign::Baseline,
+            auto_wrap: true,
+            inline_full_available_width: 0.0,
             inline_paint_fragments: Vec::new(),
             dirty_flags: DirtyFlags::ALL,
             node_id: next_ui_node_id(),
@@ -109,13 +113,22 @@ impl TextAreaProjectionSegment {
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::LAYOUT);
     }
 
+    pub(crate) fn set_auto_wrap(&mut self, auto_wrap: bool) {
+        if self.auto_wrap == auto_wrap {
+            return;
+        }
+        self.auto_wrap = auto_wrap;
+        self.dirty_flags = self.dirty_flags.union(DirtyFlags::LAYOUT);
+    }
+
     fn measure_with_inline_first_width(
         &mut self,
         constraints: LayoutConstraints,
-        inline_first_available_width: f32,
+        _inline_first_available_width: f32,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
         let inner_width = constraints.max_width.max(0.0);
+        self.inline_full_available_width = inner_width;
         let absolute_mask = vec![false; self.children.len()];
         let outputs = measure_axis(
             MeasureAxisInputs {
@@ -124,7 +137,7 @@ impl TextAreaProjectionSegment {
                 absolute_mask: &absolute_mask,
                 is_row: true,
                 is_real_flex: false,
-                solver_wrap: true,
+                solver_wrap: self.auto_wrap,
                 solver_gap: 0.0,
                 main_limit: inner_width,
                 inner_width,
@@ -134,19 +147,44 @@ impl TextAreaProjectionSegment {
                 child_percent_base_height: constraints.percent_base_height,
                 viewport_width: constraints.viewport_width,
                 viewport_height: constraints.viewport_height,
-                inline_wrap: true,
+                inline_wrap: self.auto_wrap,
                 inline_gap: 0.0,
-                inline_first_available_width: Some(inline_first_available_width.max(0.0)),
+                inline_first_available_width: Some(inner_width),
             },
             arena,
         );
         self.layout_state.content_size = outputs.content_size;
+        let reported_width = outputs
+            .flex_info
+            .line_main_sum
+            .iter()
+            .fold(0.0_f32, |acc, &line_width| {
+                acc.max(self.reported_line_width(line_width))
+            });
         self.layout_state.layout_size = Size {
-            width: outputs.content_size.width,
+            width: reported_width,
             height: outputs.content_size.height,
         };
         self.layout_state.layout_inner_size = self.layout_state.layout_size;
         self.flex_info = Some(outputs.flex_info);
+    }
+
+    fn reported_line_width(&self, line_width: f32) -> f32 {
+        line_width
+            .max(0.0)
+            .min(self.inline_full_available_width.max(0.0))
+    }
+
+    fn placement_flex_info(&self) -> Option<FlexLayoutInfo> {
+        let mut info = self.flex_info.clone()?;
+        for width in &mut info.line_main_sum {
+            *width = self.reported_line_width(*width);
+        }
+        info.total_main = info
+            .line_main_sum
+            .iter()
+            .fold(0.0_f32, |acc, &w| acc.max(w));
+        Some(info)
     }
 }
 
@@ -172,7 +210,7 @@ impl Layoutable for TextAreaProjectionSegment {
         self.layout_state.layout_flow_position = self.layout_state.layout_position;
         self.layout_state.layout_flow_inner_position = self.layout_state.layout_inner_position;
 
-        let Some(info) = self.flex_info.clone() else {
+        let Some(info) = self.placement_flex_info() else {
             return;
         };
         place_axis_children(
@@ -259,13 +297,10 @@ impl Layoutable for TextAreaProjectionSegment {
                 let baseline = info.line_ascent.get(line_idx).copied().unwrap_or(0.0);
                 let descent = info.line_descent.get(line_idx).copied().unwrap_or(0.0);
                 let last = info.lines.len().saturating_sub(1);
+                let reported_width = self
+                    .reported_line_width(info.line_main_sum.get(line_idx).copied().unwrap_or(0.0));
                 InlineNodeSize {
-                    width: info
-                        .line_main_sum
-                        .get(line_idx)
-                        .copied()
-                        .unwrap_or(0.0)
-                        .max(0.0),
+                    width: reported_width,
                     height: (baseline + descent).max(0.0),
                     baseline,
                     vertical_align,
@@ -281,13 +316,14 @@ impl Layoutable for TextAreaProjectionSegment {
         placement: InlinePlacement,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
+        let flex_info = self.placement_flex_info();
         let absolute_mask = vec![false; self.children.len()];
         place_inline_fragment(
             PlaceInlineFragmentInputs {
                 placement,
                 children: &self.children,
                 absolute_mask: &absolute_mask,
-                flex_info: self.flex_info.as_ref(),
+                flex_info: flex_info.as_ref(),
                 left_inset: 0.0,
                 right_inset: 0.0,
                 top_inset: 0.0,

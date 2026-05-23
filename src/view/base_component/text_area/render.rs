@@ -502,6 +502,8 @@ impl Renderable for TextArea {
             );
         }
 
+        let previous_scissor = ctx.push_scissor_rect(self.viewport_scissor_rect());
+
         // Layer 0 — selection background. Drawn under children so glyphs
         // overlay the highlight.
         if let Some(target) = ctx.current_target() {
@@ -642,9 +644,38 @@ impl Renderable for TextArea {
         }
 
         self.dirty_flags = self.dirty_flags.without(DirtyFlags::PAINT);
+        ctx.restore_scissor_rect(previous_scissor);
         ctx.set_paint_offset(parent_paint_offset);
         ctx.into_state()
     }
+}
+
+impl TextArea {
+    fn viewport_scissor_rect(&self) -> Option<[u32; 4]> {
+        let rect = Rect {
+            x: self.layout_state.layout_position.x,
+            y: self.layout_state.layout_position.y,
+            width: self.viewport_size.width,
+            height: self.viewport_size.height,
+        };
+        rect_to_scissor_rect(rect)
+    }
+}
+
+fn rect_to_scissor_rect(rect: Rect) -> Option<[u32; 4]> {
+    let left = rect.x.floor().max(0.0) as i64;
+    let top = rect.y.floor().max(0.0) as i64;
+    let right = (rect.x + rect.width).ceil().max(0.0) as i64;
+    let bottom = (rect.y + rect.height).ceil().max(0.0) as i64;
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some([
+        left as u32,
+        top as u32,
+        (right - left) as u32,
+        (bottom - top) as u32,
+    ])
 }
 
 /// DFS the projection subtree rooted at `root_key` for the first
@@ -860,6 +891,7 @@ mod tests {
     use crate::ui::{RsxNode, RsxTagDescriptor};
     use crate::view::ElementStylePropSchema;
     use crate::view::base_component::{ElementTrait, LayoutConstraints, LayoutPlacement, Text};
+    use crate::view::frame_graph::FrameGraph;
 
     fn projection_fixture(cursor_char: usize, with_text_child: bool) -> (NodeArena, NodeKey) {
         let mut text_area = TextArea::new();
@@ -929,6 +961,68 @@ mod tests {
             },
         );
         (arena, root)
+    }
+
+    #[test]
+    fn viewport_scissor_uses_text_area_viewport_not_content_width() {
+        let mut text_area = TextArea::new();
+        text_area.layout_state.layout_position =
+            crate::view::base_component::Position { x: 10.2, y: 20.6 };
+        text_area.viewport_size = crate::view::base_component::Size {
+            width: 120.1,
+            height: 40.2,
+        };
+        text_area.layout_state.content_size = crate::view::base_component::Size {
+            width: 360.0,
+            height: 90.0,
+        };
+
+        assert_eq!(text_area.viewport_scissor_rect(), Some([10, 20, 121, 41]));
+    }
+
+    #[test]
+    fn text_area_build_restores_viewport_scissor() {
+        let (mut arena, root) = projection_fixture(3, true);
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 90.0,
+                max_height: 36.0,
+                viewport_width: 90.0,
+                viewport_height: 36.0,
+                percent_base_width: Some(90.0),
+                percent_base_height: Some(36.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 90.0,
+                available_height: 36.0,
+                viewport_width: 90.0,
+                viewport_height: 36.0,
+                percent_base_width: Some(90.0),
+                percent_base_height: Some(36.0),
+            },
+        );
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(root, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("TextArea build returns state");
+        ctx.set_state(next_state);
+
+        assert_eq!(
+            ctx.graphics_pass_context().scissor_rect,
+            None,
+            "TextArea viewport scissor must not leak to sibling roots",
+        );
     }
 
     fn caret_position(arena: &NodeArena, root: NodeKey) -> (f32, f32, f32) {
