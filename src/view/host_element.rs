@@ -1,10 +1,13 @@
 //! Host-builder shim for built-in and downstream custom host tags.
 //!
-//! Replaces the legacy `HostElement` + `host_factory` pipeline. A
-//! [`HostBuilder`] knows how to build its own [`ElementDescriptor`]
-//! (children + side slots) given a [`BuildCtx`]; the engine-core
-//! descriptor stores a fn pointer ([`ErasedHostBuilder`]) that the
-//! renderer dispatches through without enumerating host types.
+//! Host-builder dispatch has replaced the legacy registry /
+//! `host_factory` path. A [`HostBuilder`] knows how to build its own
+//! [`ElementDescriptor`] (children + side slots) given a [`BuildCtx`];
+//! the engine-core descriptor stores a fn pointer
+//! ([`ErasedHostBuilder`]) that the renderer dispatches through without
+//! enumerating host types. Some built-in builder bodies still delegate
+//! to `renderer_adapter`; moving those bodies out of the adapter is
+//! pending cleanup.
 
 use std::any::{Any, TypeId};
 

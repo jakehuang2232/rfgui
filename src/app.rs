@@ -1,10 +1,12 @@
 //! `App` trait and supporting types — the contract between user code and
 //! any backend runner.
 //!
-//! Phase 5 of the viewport-decoupling work. The rfgui engine itself ships
-//! no runner; actual event-loop glue (winit, web, custom) lives in the
-//! host crate and calls back into this trait. The trait intentionally
-//! knows nothing about `winit`, `web_sys`, or any specific platform.
+//! Current state: `App` is the platform-neutral contract that host runners
+//! call into, while some temporary backend helpers still live under
+//! `crate::platform`. Target state: the rfgui engine ships only this
+//! abstraction boundary; concrete event-loop glue (winit, web, custom) lives
+//! in `examples/` or downstream crates. The trait intentionally knows nothing
+//! about `winit`, `web_sys`, or any specific platform.
 //!
 //! Flow per frame / event batch:
 //!   1. Host drains its platform events, wraps each in an `AppEvent`, and

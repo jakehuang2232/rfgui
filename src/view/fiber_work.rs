@@ -1,5 +1,5 @@
-//! Phase A M1: Fiber work-unit model and the `Patch → FiberWork`
-//! translation plus `apply_fiber_works` commit skeleton.
+//! Fiber work-unit model, `Patch -> FiberWork` translation, and
+//! incremental commit application.
 //!
 //! # Why this exists
 //!
@@ -11,23 +11,18 @@
 //! so the commit phase can be scheduled, batched, and (later)
 //! interrupted.
 //!
-//! M1 goal: **plumbing only, no traffic**. The full legacy pipeline
-//! (`render_rsx` → `apply_patch`) keeps running unchanged. This module
-//! adds:
+//! The current viewport path enables incremental commit by default for
+//! work that can be translated and applied safely, and falls back to a
+//! full rebuild otherwise. This module provides:
 //!
 //! 1. `FiberWork` — a parallel representation of patches anchored on
 //!    arena keys.
 //! 2. `patch_to_fiber_work` — a best-effort translator. Returns `None`
-//!    for patch variants whose faithful M1 translation would require
-//!    context the caller does not yet have (full RSX subtree for
-//!    descriptors); those fall through to the legacy path.
-//! 3. `apply_fiber_works` — a committer skeleton. `Create` / `Delete` /
-//!    `Move` are wired through existing arena helpers. `Update` /
-//!    `SetText` are reserved for M3 when the setter layer lands.
-//!
-//! Traffic is routed onto this path later (M2) via a scene flag. M1
-//! only requires: compiles, does not panic on no-op calls, and carries
-//! the smallest round-trip test.
+//!    for patch variants whose faithful translation requires context
+//!    the caller does not have; those fall through to the full rebuild
+//!    path.
+//! 3. `apply_fiber_works` — the committer for Create/Delete/Move/
+//!    Replace/Update/SetText work that is safe for the current arena.
 
 use rustc_hash::FxHashMap;
 
@@ -41,7 +36,7 @@ use crate::view::renderer_adapter::{
 /// Context needed to translate descriptor-producing patches
 /// (`InsertChild`, and eventually `ReplaceRoot` / `ReplaceNode`) into
 /// `FiberWork::Create`. Passed `None` when the caller only wants the
-/// subset that doesn't build new subtrees (legacy M2 / M3 callers).
+/// subset that does not build new subtrees.
 ///
 /// Fields mirror the inputs to
 /// [`renderer_adapter::rsx_to_descriptors_scoped_with_context`] so the
@@ -219,14 +214,14 @@ pub enum FiberWork {
         descriptor: ElementDescriptor,
         stable_id: u64,
     },
-    /// Apply a prop diff to an existing element. M1 leaves this as a
-    /// TODO — the setter layer lands in M3.
+    /// Apply a prop diff to an existing element through the incremental
+    /// setter layer.
     Update {
         key: NodeKey,
         changed: Vec<(&'static str, PropValue)>,
         removed: Vec<&'static str>,
     },
-    /// Replace a text-node's content. Also M3.
+    /// Replace a text-node or TextArea host's content.
     SetText { key: NodeKey, text: String },
     /// Reorder child within `parent`.
     Move {
@@ -285,19 +280,18 @@ pub enum FiberWork {
 
 /// Translate a single reconciler `Patch` into a `FiberWork`.
 ///
-/// Returns `None` when the M1 translator cannot faithfully produce a
+/// Returns `None` when the translator cannot faithfully produce a
 /// work unit from the patch alone — callers should interpret `None` as
-/// "fall back to the legacy full-rebuild path" rather than silently
-/// skipping the patch.
+/// "fall back to the full-rebuild path" rather than silently skipping
+/// the patch.
 ///
-/// Specifically M1 falls back on:
+/// Specifically this falls back on:
 /// - `ReplaceRoot` / `ReplaceNode` — these carry a whole `RsxNode`
 ///   subtree that needs the full inherited-style/global-path context
 ///   to be converted into an `ElementDescriptor`. That context is
 ///   plumbed by `render_rsx`, not by this translator, so we bail.
-/// - `InsertChild` — same reason: needs the descriptor pipeline with
-///   the parent's inherited style. M2 will take a parent-context
-///   argument and handle it.
+/// - `InsertChild` without descriptor context — same reason: needs the
+///   descriptor pipeline with the parent's inherited style.
 ///
 /// `_root` is passed through to `resolve_path`; callers typically pass
 /// `arena.roots()[0]` for single-root scenes.
@@ -617,11 +611,10 @@ pub fn patches_to_fiber_works(
 
 /// Translate `patches` into works, stopping at the first patch that
 /// cannot be faithfully translated. Returns `None` in that case so the
-/// caller knows the whole batch should fall back to the legacy
-/// full-rebuild path.
+/// caller knows the whole batch should fall back to the full-rebuild path.
 ///
-/// M2 uses this flavour because partial translation is not safe: a
-/// skipped patch would leave the arena inconsistent with the new RSX.
+/// Partial translation is not safe: a skipped patch would leave the arena
+/// inconsistent with the new RSX.
 pub fn translate_patches_all_or_nothing(
     patches: Vec<Patch>,
     id_to_key: &FxHashMap<u64, NodeKey>,
@@ -1023,12 +1016,10 @@ fn target_is_text_like(arena: &NodeArena, key: NodeKey) -> bool {
 
 /// Apply a batch of `FiberWork` items against `arena`.
 ///
-/// M1 scope:
-/// - `Create` / `Delete` / `Move` are fully wired.
-/// - `Update` / `SetText` are **no-ops** pending the M3 setter layer.
-///   They deliberately do **not** panic; the incremental path is gated
-///   off in M1 so these branches are only exercised by tests that
-///   specifically construct them.
+/// Supports Create/Delete/Move/Replace/Update/SetText work. Update and
+/// SetText return through the setter layer; when a target or prop cannot
+/// be applied safely, the caller's commit gate is responsible for falling
+/// back to a full rebuild before this function is used.
 pub fn apply_fiber_works(arena: &mut NodeArena, ctx: ApplyContext<'_>, works: Vec<FiberWork>) {
     for work in works {
         match work {
@@ -1337,7 +1328,7 @@ fn arena_move_child(arena: &mut NodeArena, parent: NodeKey, key: NodeKey, from: 
 }
 
 // ---------------------------------------------------------------------------
-// Helpers (currently unused by M1 translator; retained for future M2 use).
+// Helpers retained for descriptor/stable-id cleanup.
 // ---------------------------------------------------------------------------
 
 /// Extract the `stable_id` that `rsx_to_descriptors_with_context` would
@@ -1345,15 +1336,11 @@ fn arena_move_child(arena: &mut NodeArena, parent: NodeKey, key: NodeKey, from: 
 /// translator can build descriptors — kept here so the TODO surface
 /// stays in one place.
 ///
-/// Status as of M2: still a stub. M2 intentionally routes `InsertChild`
-/// to the legacy full-rebuild path (`patch_to_fiber_work` returns
-/// `None`), so this helper has no caller yet. Filling it in requires
-/// exposing `stable_node_id_from_parts` (currently private in
-/// `renderer_adapter`) as `pub(crate)` and threading the parent's
-/// `GlobalNodePath` + identity-ordinal context through. That context
-/// only exists in `rsx_to_descriptors_with_context` today — deferred
-/// to the M2+ work that wires descriptor construction into the
-/// translator.
+/// Still a stub. Filling it in requires exposing
+/// `stable_node_id_from_parts` (currently private in `renderer_adapter`)
+/// as `pub(crate)` and threading the parent's `GlobalNodePath` +
+/// identity-ordinal context through. Descriptor-producing translators
+/// currently get stable identity from the descriptor pipeline instead.
 #[allow(dead_code)]
 fn expected_stable_id(node: &RsxNode) -> u64 {
     match node {
@@ -1366,7 +1353,7 @@ fn expected_stable_id(node: &RsxNode) -> u64 {
 fn element_tag_hint(_el: &RsxElementNode) -> u64 {
     // See `expected_stable_id` — filling this in is gated on exposing
     // `element_runtime_name` + `stable_node_id_from_parts` from
-    // renderer_adapter. M2 doesn't need it.
+    // renderer_adapter.
     0
 }
 

@@ -7,10 +7,10 @@ mod debug;
 mod dispatch;
 mod frame;
 mod gpu_resources;
+#[cfg(test)]
+mod incremental_tests;
 mod input;
 mod lifecycle;
-#[cfg(test)]
-mod m2_incremental_tests;
 mod promotion_runtime;
 mod render;
 mod scene_helpers;
@@ -230,11 +230,10 @@ struct SceneState {
     popup_stack: super::popup_stack::PopupStack,
     scroll_offsets: FxHashMap<u64, (f32, f32)>,
     last_rsx_root: Option<RsxNode>,
-    /// Phase A M1 dark-launch flag for the Fiber-commit (`FiberWork`)
-    /// path. Defaults to `false`; M1 never reads it from `render_rsx`
-    /// (the plumbing is in place but not yet wired). M2 flips the
-    /// switch and compares output against the legacy `apply_patch`
-    /// pipeline.
+    /// Incremental Fiber-commit (`FiberWork`) switch. It is enabled by
+    /// default; `render_rsx` attempts the incremental path for eligible
+    /// updates and falls back to the full rebuild pipeline whenever
+    /// translation or application is not safe.
     use_incremental_commit: bool,
 }
 
@@ -547,10 +546,10 @@ impl Viewport {
         }
     }
 
-    /// Phase A M1 dark-launch switch for the incremental Fiber commit
-    /// path. Off by default. `render_rsx` will continue to use the
-    /// legacy `apply_patch` pipeline regardless until M2 wires the
-    /// flag through the commit site.
+    /// Toggle the incremental Fiber commit path. When enabled,
+    /// `render_rsx` supports eligible Create/Delete/Move/Replace/Update/
+    /// SetText work and falls back to a full rebuild when a patch cannot
+    /// be translated or applied safely.
     pub fn set_use_incremental_commit(&mut self, on: bool) {
         self.scene.use_incremental_commit = on;
     }

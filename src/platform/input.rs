@@ -1,10 +1,9 @@
 //! Platform-neutral input event types.
 //!
-//! Phase 0 scaffolding. The viewport still consumes primitive args in its
-//! `dispatch_*` methods today — phase 3 will port them to take
-//! `Platform*Event` directly. For now these types define the canonical shape
-//! that every backend must produce, so conversion code in future backends
-//! (winit, web, headless) has a single target.
+//! Current state: backend code should enter through
+//! `dispatch_platform_*` event methods. Those canonical entry points still
+//! forward internally to primitive dispatch helpers, which remain temporarily
+//! available for tests and existing callers.
 
 use bitflags::bitflags;
 use smol_str::SmolStr;

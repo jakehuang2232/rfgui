@@ -870,11 +870,10 @@ impl std::fmt::Debug for ComponentNodeInner {
     }
 }
 
-// Component nodes compare by raw prop-pointer identity + children equality.
-// In P1 no producer constructs these, so this impl is exercised only by the
-// derived `PartialEq` on `RsxNode`. Two boxed props allocations are unique
-// by pointer, so this is effectively `Rc::ptr_eq` semantics at the enclosing
-// `Rc<ComponentNodeInner>`.
+// Component nodes compare by type/vtable identity, raw prop-pointer identity,
+// key, and children equality. Rendered components are unwrapped before host
+// conversion, so equality remains tied to the authored component allocation
+// rather than deep prop-value comparison.
 impl PartialEq for ComponentNodeInner {
     fn eq(&self, other: &Self) -> bool {
         self.type_id == other.type_id

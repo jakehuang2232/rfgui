@@ -96,7 +96,10 @@ macro_rules! style {
 /// runners. The engine itself never drives an event loop.
 pub mod app;
 /// Platform abstraction traits (surface target, clipboard, cursor sink, ...).
-/// Phase 0 of the viewport-decoupling work. No backend code lives here.
+/// Current state: this module defines the intended engine/backend boundary,
+/// but still contains temporary backend helpers and platform-facing cfg
+/// modules. Target state: rfgui core keeps only abstractions; concrete
+/// backend helpers move to `examples/` or downstream crates.
 pub mod platform;
 /// Typed style system: colors, gradients, layout primitives, transforms,
 /// transitions/animations, and the parsed/computed style trees.

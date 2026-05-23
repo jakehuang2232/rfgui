@@ -839,13 +839,12 @@ impl_rsx_tag_v2_trivial!(
     true
 );
 
-// ---------- Phase 6b: HostBuilder impls for built-in host tags ----------
+// ---------- HostBuilder impls for built-in host tags ----------
 //
-// Each tag's `build_descriptor` delegates to the per-host body in
-// `view::renderer_adapter` (Step 4 wiring). Step 6 will inline the
-// bodies into each `base_component/*` module and delete the adapter
-// helpers; the builder fn pointer carried by `HOST_BUILDER` then
-// becomes the only conversion path.
+// Host-builder dispatch is now the conversion path for built-in
+// descriptors. The descriptor bodies still delegate to
+// `view::renderer_adapter`; moving those bodies into the relevant
+// `base_component/*` modules remains pending cleanup.
 
 macro_rules! impl_host_builder_via_adapter {
     ($tag:ty, $delegate:path) => {

@@ -132,10 +132,10 @@ impl TextArea {
     }
 
     /// macOS Option+Left target: nearest word START strictly before
-    /// `cursor_char`. Routes through the host-installed
-    /// [`WordSegmenter`](crate::platform::WordSegmenter) — falls back
-    /// to alphanumeric-run heuristic when the host hasn't installed
-    /// a richer impl (e.g. `rfgui-segmenter::system_segmenter()`).
+    /// `cursor_char`. Routes through the process-wide
+    /// `rfgui-segmenter` system segmenter; when no OS-native segmenter
+    /// is available for the target, `rfgui-segmenter` falls back to its
+    /// Unicode rule based implementation.
     pub(super) fn prev_word_boundary_at(&self, from: usize) -> usize {
         prev_word_boundary(&self.content, word_segmenter(), from)
     }

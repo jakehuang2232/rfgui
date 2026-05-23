@@ -765,22 +765,18 @@ impl Viewport {
         if root_changed && self.try_apply_placement_updates(root)? {
             needs_rebuild = false;
         }
-        // Phase A M2: dark-launched incremental Fiber-commit path.
+        // Incremental Fiber-commit path.
         //
         // Only engaged when ALL of:
-        //   - `set_use_incremental_commit(true)` was called,
+        //   - incremental commit is enabled (default true),
         //   - a previous `last_rsx_root` exists (not a cold start),
         //   - the full-rebuild path below would otherwise run,
-        //   - we have exactly one arena root (multi-root + fragment
-        //     roots are M3 territory),
-        //   - every reconcile patch translates into a FiberWork that is
-        //     committable under M2's Delete/Move-only setter surface.
+        //   - we have at least one arena root,
+        //   - every reconcile patch can be translated into FiberWork
+        //     and applied safely.
         //
         // Any failure leaves `needs_rebuild` untouched and falls
-        // through to the legacy full-rebuild path. With the flag OFF
-        // (the default) this whole block is a single `if false`
-        // branch and behaviour is byte-identical to the prior
-        // pipeline.
+        // through to the full-rebuild path.
         if needs_rebuild
             && self.scene.use_incremental_commit
             && self.scene.last_rsx_root.is_some()

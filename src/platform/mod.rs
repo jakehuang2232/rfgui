@@ -1,9 +1,17 @@
 //! Platform abstraction traits for rfgui.
 //!
-//! Phase 0 of the viewport decoupling work. Defines the boundary between the
-//! rendering/runtime core (`view::viewport`) and any concrete platform backend
-//! (winit, web, headless, …). Nothing in this module is allowed to depend on
-//! `winit`, `arboard`, `web_sys`, or `wasm_bindgen`.
+//! Defines the intended boundary between the rendering/runtime core
+//! (`view::viewport`) and any concrete platform backend (winit, web,
+//! headless, ...).
+//!
+//! Current state: this module still carries temporary backend helpers and
+//! platform-facing cfg modules while the decoupling work is in flight. Target
+//! state: rfgui core keeps only platform-neutral abstractions, and concrete
+//! backend helpers live in `examples/` or downstream crates.
+//!
+//! Nothing in the core abstraction surface is allowed to depend on `winit`,
+//! `arboard`, `web_sys`, or `wasm_bindgen`; existing temporary cfg modules are
+//! pending cleanup, not the desired steady state.
 //!
 //! The only platform-shaped dependency allowed here is `raw-window-handle`
 //! (re-exported via `wgpu::rwh`), because the wgpu surface creation API is
