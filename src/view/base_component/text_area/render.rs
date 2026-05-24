@@ -63,7 +63,7 @@ impl TextArea {
             if let Some(pos) = arena
                 .with_element_taken_ref(child_key, |el, _| {
                     let run = el.as_any().downcast_ref::<TextAreaTextRun>()?;
-                    if run.inline_preedit.is_none() {
+                    if run.inline_preedit.is_none() && !run.is_preedit_run() {
                         return None;
                     }
                     let (x, y_top, lh) = run.preedit_caret_local_position()?;
@@ -1074,14 +1074,33 @@ mod tests {
     }
 
     fn plain_preedit_fixture(content: &str, cursor_char: usize) -> (NodeArena, NodeKey) {
+        plain_preedit_fixture_with_options(
+            content,
+            cursor_char,
+            "\u{4E2D}",
+            Some((3, 3)),
+            super::super::caret_map::CaretAffinity::Downstream,
+            300.0,
+        )
+    }
+
+    fn plain_preedit_fixture_with_options(
+        content: &str,
+        cursor_char: usize,
+        preedit: &str,
+        preedit_cursor: Option<(usize, usize)>,
+        affinity: super::super::caret_map::CaretAffinity,
+        width: f32,
+    ) -> (NodeArena, NodeKey) {
         let mut text_area = TextArea::new();
         text_area.content = content.to_string();
         text_area.font_size = 14.0;
         text_area.line_height = 1.25;
         text_area.multiline = true;
         text_area.cursor_char = cursor_char;
-        text_area.ime_preedit = "\u{4E2D}".to_string();
-        text_area.ime_preedit_cursor = Some((3, 3));
+        text_area.cursor_affinity = affinity;
+        text_area.ime_preedit = preedit.to_string();
+        text_area.ime_preedit_cursor = preedit_cursor;
 
         let mut arena = crate::view::test_support::new_test_arena();
         let root = crate::view::test_support::commit_element(
@@ -1098,9 +1117,9 @@ mod tests {
             &mut arena,
             root,
             LayoutConstraints {
-                max_width: 300.0,
+                max_width: width,
                 max_height: 300.0,
-                viewport_width: 300.0,
+                viewport_width: width,
                 viewport_height: 300.0,
                 percent_base_width: None,
                 percent_base_height: None,
@@ -1110,15 +1129,108 @@ mod tests {
                 parent_y: 20.0,
                 visual_offset_x: 0.0,
                 visual_offset_y: 0.0,
-                available_width: 300.0,
+                available_width: width,
                 available_height: 300.0,
-                viewport_width: 300.0,
+                viewport_width: width,
                 viewport_height: 300.0,
                 percent_base_width: None,
                 percent_base_height: None,
             },
         );
         (arena, root)
+    }
+
+    fn wrapped_plain_fixture(content: &str, width: f32) -> (NodeArena, NodeKey) {
+        let mut text_area = TextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.multiline = true;
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: width,
+                max_height: 300.0,
+                viewport_width: width,
+                viewport_height: 300.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+            LayoutPlacement {
+                parent_x: 10.0,
+                parent_y: 20.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: width,
+                available_height: 300.0,
+                viewport_width: width,
+                viewport_height: 300.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+        );
+        (arena, root)
+    }
+
+    fn shared_soft_wrap_boundary(arena: &NodeArena, root: NodeKey) -> usize {
+        arena
+            .with_element_taken_ref(root, |el, arena| {
+                let text_area = el
+                    .as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root");
+                let map = super::super::caret_map::CaretNavigationMap::build(text_area, arena);
+                map.lines.windows(2).find_map(|pair| {
+                    pair[0].stops.iter().find_map(|upper| {
+                        pair[1]
+                            .stops
+                            .iter()
+                            .any(|lower| lower.char_index == upper.char_index)
+                            .then_some(upper.char_index)
+                    })
+                })
+            })
+            .expect("root exists")
+            .expect("fixture should contain a shared soft-wrap boundary")
+    }
+
+    fn run_text_pass_fragments(arena: &NodeArena, root: NodeKey) -> Vec<(String, Rect)> {
+        arena
+            .with_element_taken_ref(root, |el, arena| {
+                let text_area = el
+                    .as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root");
+                text_area
+                    .children
+                    .iter()
+                    .flat_map(|key| {
+                        arena
+                            .with_element_taken_ref(*key, |child, _| {
+                                child
+                                    .as_any()
+                                    .downcast_ref::<super::super::run::TextAreaTextRun>()
+                                    .map(|run| run.inline_text_pass_fragment_positions())
+                                    .unwrap_or_default()
+                            })
+                            .unwrap_or_default()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .expect("root exists")
     }
 
     #[test]
@@ -1650,6 +1762,256 @@ mod tests {
                 .iter()
                 .all(|rect| rect.height == 1.0 && rect.width >= 1.0),
             "IME underline should be visible 1px strokes: {rects:?}"
+        );
+    }
+
+    #[test]
+    fn soft_wrap_tail_preedit_uses_current_line_when_space_allows() {
+        use super::super::caret_map::CaretAffinity;
+
+        let content = "the quick brown fox jumps over the lazy dog";
+        let width = 80.0;
+        let (base_arena, base_root) = wrapped_plain_fixture(content, width);
+        let boundary = shared_soft_wrap_boundary(&base_arena, base_root);
+        let cursor = boundary.saturating_sub(1);
+        let (upper_y, lower_y) = base_arena
+            .with_element_taken_ref(base_root, |el, arena| {
+                let text_area = el
+                    .as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root");
+                let map = super::super::caret_map::CaretNavigationMap::build(text_area, arena);
+                let upper = map
+                    .caret_stop_for_char(boundary, CaretAffinity::Upstream)
+                    .expect("upstream boundary stop");
+                let lower = map
+                    .caret_stop_for_char(boundary, CaretAffinity::Downstream)
+                    .expect("downstream boundary stop");
+                (upper.y_top, lower.y_top)
+            })
+            .expect("root exists");
+        assert!(
+            upper_y < lower_y,
+            "fixture boundary must span two visual lines"
+        );
+        let midpoint = (upper_y + lower_y) * 0.5;
+
+        let (up_arena, up_root) = plain_preedit_fixture_with_options(
+            content,
+            cursor,
+            ".",
+            Some((".".len(), ".".len())),
+            CaretAffinity::Upstream,
+            width,
+        );
+        let (_, up_caret_y, _) = caret_position(&up_arena, up_root);
+        let up_fragments = run_text_pass_fragments(&up_arena, up_root);
+        let up_rects = up_arena
+            .with_element_taken_ref(up_root, |el, arena| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .preedit_underline_screen_rects(arena)
+            })
+            .expect("root exists");
+        assert!(
+            up_caret_y < midpoint,
+            "upstream preedit caret should stay on upper visual line: caret_y={up_caret_y}, upper_y={upper_y}, lower_y={lower_y}"
+        );
+        assert!(
+            up_fragments
+                .iter()
+                .any(|(content, rect)| content.contains('.') && rect.y < midpoint),
+            "upstream preedit glyph should be painted on upper visual line: fragments={up_fragments:?}, upper_y={upper_y}, lower_y={lower_y}"
+        );
+        assert!(
+            up_rects.iter().any(|rect| rect.y < lower_y),
+            "upstream preedit underline should start on upper visual line: rects={up_rects:?}, upper_y={upper_y}, lower_y={lower_y}"
+        );
+
+        let (down_arena, down_root) = plain_preedit_fixture_with_options(
+            content,
+            cursor,
+            ".",
+            Some((".".len(), ".".len())),
+            CaretAffinity::Downstream,
+            width,
+        );
+        let (_, down_caret_y, _) = caret_position(&down_arena, down_root);
+        let down_fragments = run_text_pass_fragments(&down_arena, down_root);
+        assert!(
+            down_caret_y < midpoint,
+            "preedit should stay on current line when there is enough remaining space even with downstream affinity: caret_y={down_caret_y}, upper_y={upper_y}, lower_y={lower_y}"
+        );
+        assert!(
+            down_fragments
+                .iter()
+                .any(|(content, rect)| content.contains('.') && rect.y < midpoint),
+            "preedit glyph should be painted on current line when there is enough remaining space: fragments={down_fragments:?}, upper_y={upper_y}, lower_y={lower_y}"
+        );
+    }
+
+    #[test]
+    fn hard_newline_tail_preedit_uses_current_line_when_space_allows() {
+        use super::super::caret_map::CaretAffinity;
+
+        let content = "abc\ndef";
+        let width = 120.0;
+        let cursor = 3;
+        let (arena, root) = plain_preedit_fixture_with_options(
+            content,
+            cursor,
+            "\u{4E2D}",
+            Some(("\u{4E2D}".len(), "\u{4E2D}".len())),
+            CaretAffinity::Downstream,
+            width,
+        );
+        let fragments = run_text_pass_fragments(&arena, root);
+        let abc_y = fragments
+            .iter()
+            .find_map(|(content, rect)| content.contains("abc").then_some(rect.y))
+            .expect("abc fragment");
+        let preedit_y = fragments
+            .iter()
+            .find_map(|(content, rect)| content.contains('\u{4E2D}').then_some(rect.y))
+            .expect("preedit fragment");
+        assert!(
+            (preedit_y - abc_y).abs() <= 1.5,
+            "hard-newline tail preedit should stay before newline when space allows: fragments={fragments:?}"
+        );
+        let (_, caret_y, _) = caret_position(&arena, root);
+        assert!(
+            (caret_y - abc_y).abs() <= 1.5,
+            "preedit caret should stay with glyph before newline: caret_y={caret_y}, fragments={fragments:?}"
+        );
+        let rects = arena
+            .with_element_taken_ref(root, |el, arena| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .preedit_underline_screen_rects(arena)
+            })
+            .expect("root exists");
+        assert!(
+            rects.iter().any(|rect| (rect.y - abc_y).abs() <= 20.0),
+            "preedit underline should stay with glyph before newline: rects={rects:?}, fragments={fragments:?}"
+        );
+    }
+
+    #[test]
+    fn hard_newline_tail_preedit_wraps_when_space_is_insufficient() {
+        use super::super::caret_map::CaretAffinity;
+
+        let content = "abcdefgh\nz";
+        let width = 70.0;
+        let cursor = 8;
+        let (arena, root) = plain_preedit_fixture_with_options(
+            content,
+            cursor,
+            "\u{4E2D}\u{4E2D}",
+            Some(("\u{4E2D}\u{4E2D}".len(), "\u{4E2D}\u{4E2D}".len())),
+            CaretAffinity::Downstream,
+            width,
+        );
+        let fragments = run_text_pass_fragments(&arena, root);
+        let first_y = fragments
+            .iter()
+            .find_map(|(content, rect)| content.contains("abcdefgh").then_some(rect.y))
+            .expect("prefix fragment");
+        let preedit_y = fragments
+            .iter()
+            .find_map(|(content, rect)| content.contains('\u{4E2D}').then_some(rect.y))
+            .expect("preedit fragment");
+        assert!(
+            preedit_y > first_y + 1.0,
+            "hard-newline tail preedit should wrap when remaining space is insufficient: fragments={fragments:?}"
+        );
+        let (_, caret_y, _) = caret_position(&arena, root);
+        assert!(
+            caret_y > first_y + 1.0,
+            "preedit caret should wrap with glyph before newline: caret_y={caret_y}, fragments={fragments:?}"
+        );
+        let rects = arena
+            .with_element_taken_ref(root, |el, arena| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .preedit_underline_screen_rects(arena)
+            })
+            .expect("root exists");
+        assert!(
+            rects.iter().any(|rect| rect.y > first_y + 1.0),
+            "preedit underline should wrap with glyph before newline: rects={rects:?}, fragments={fragments:?}"
+        );
+    }
+
+    #[test]
+    fn upstream_soft_wrap_preedit_can_wrap_across_lines() {
+        use super::super::caret_map::CaretAffinity;
+
+        let content = "the quick brown fox jumps over the lazy dog";
+        let width = 80.0;
+        let (base_arena, base_root) = wrapped_plain_fixture(content, width);
+        let boundary = shared_soft_wrap_boundary(&base_arena, base_root);
+        let preedit = "\u{4E2D}".repeat(12);
+        let (arena, root) = plain_preedit_fixture_with_options(
+            content,
+            boundary,
+            &preedit,
+            Some((preedit.len(), preedit.len())),
+            CaretAffinity::Upstream,
+            width,
+        );
+
+        let fragments = run_text_pass_fragments(&arena, root);
+        let preedit_fragment_ys = fragments
+            .iter()
+            .filter_map(|(content, rect)| content.contains('\u{4E2D}').then_some(rect.y))
+            .collect::<Vec<_>>();
+        assert!(
+            preedit_fragment_ys.len() >= 2,
+            "long preedit glyphs should be painted as multiple visual fragments: fragments={fragments:?}"
+        );
+        assert!(
+            preedit_fragment_ys
+                .iter()
+                .fold(f32::NEG_INFINITY, |max, y| max.max(*y))
+                - preedit_fragment_ys
+                    .iter()
+                    .fold(f32::INFINITY, |min, y| min.min(*y))
+                > 1.0,
+            "long preedit glyph fragments should span multiple visual lines: fragments={fragments:?}"
+        );
+
+        let rects = arena
+            .with_element_taken_ref(root, |el, arena| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .preedit_underline_screen_rects(arena)
+            })
+            .expect("root exists");
+        assert!(
+            rects.len() >= 2,
+            "long preedit should keep multi-line underline fragments: {rects:?}"
+        );
+        let min_y = rects
+            .iter()
+            .map(|rect| rect.y)
+            .fold(f32::INFINITY, f32::min);
+        let max_y = rects
+            .iter()
+            .map(|rect| rect.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            max_y - min_y > 1.0,
+            "long preedit underline should span multiple visual lines: {rects:?}"
+        );
+
+        let (_, caret_y, _) = caret_position(&arena, root);
+        assert!(
+            caret_y >= min_y - 24.0 && caret_y <= max_y + 1.0,
+            "preedit caret should land on one of the composed visual lines: caret_y={caret_y}, rects={rects:?}"
         );
     }
 

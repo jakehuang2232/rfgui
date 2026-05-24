@@ -280,9 +280,7 @@ impl TextArea {
         if self.ime_preedit == normalized && self.ime_preedit_cursor == cursor {
             return false;
         }
-        if self.cursor_is_inside_projection() || self.children.is_empty() {
-            self.children_dirty = true;
-        }
+        self.children_dirty = true;
         self.ime_preedit = normalized;
         self.ime_preedit_cursor = cursor;
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
@@ -310,11 +308,7 @@ impl TextArea {
         if self.ime_preedit.is_empty() && self.ime_preedit_cursor.is_none() {
             return false;
         }
-        if self.cursor_is_inside_projection()
-            || (self.content.is_empty() && self.placeholder.is_empty())
-        {
-            self.children_dirty = true;
-        }
+        self.children_dirty = true;
         self.ime_preedit.clear();
         self.ime_preedit_cursor = None;
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);

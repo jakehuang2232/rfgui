@@ -35,9 +35,8 @@ use crate::view::text_layout::{TextLayout, TextLayoutAlignment};
 use super::super::next_ui_node_id;
 use super::edit::byte_index_at_char;
 
-/// IME preedit overlay routed in by the owning `TextArea` when the cursor
-/// falls inside this run. Run relayouts with the preedit text spliced in at
-/// `insert_at_local`.
+/// Legacy in-run IME preedit splice used by projection/context paths.
+/// Plain TextArea preedit is represented as a transient sibling Run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InlinePreedit {
     pub insert_at_local: usize,
@@ -49,6 +48,8 @@ pub(crate) struct TextAreaTextRun {
     pub(crate) text: String,
     pub(crate) char_range: Range<usize>,
     pub(crate) is_placeholder: bool,
+    pub(crate) is_preedit_run: bool,
+    pub(crate) preedit_cursor: Option<(usize, usize)>,
     /// `text` is the visible content of one paragraph. Hard newline
     /// characters are represented by a sibling [`TextAreaLineBreak`], not
     /// by flags on the text run.
@@ -62,7 +63,7 @@ pub(crate) struct TextAreaTextRun {
     pub(crate) auto_wrap: bool,
     pub(crate) vertical_align: crate::style::VerticalAlign,
 
-    // IME preedit overlay (TextArea routes via set_inline_preedit)
+    // Legacy IME splice path. Plain TextArea preedit uses `is_preedit_run`.
     pub(crate) inline_preedit: Option<InlinePreedit>,
 
     // text layout state
@@ -86,6 +87,8 @@ impl TextAreaTextRun {
             text,
             char_range,
             is_placeholder: false,
+            is_preedit_run: false,
+            preedit_cursor: None,
             font_families: Vec::new(),
             font_size: 14.0,
             line_height: 1.25,
@@ -116,6 +119,19 @@ impl TextAreaTextRun {
         }
         self.inline_preedit = preedit;
         self.invalidate_text_layout();
+    }
+
+    pub(crate) fn set_preedit_run(&mut self, is_preedit_run: bool, cursor: Option<(usize, usize)>) {
+        if self.is_preedit_run == is_preedit_run && self.preedit_cursor == cursor {
+            return;
+        }
+        self.is_preedit_run = is_preedit_run;
+        self.preedit_cursor = cursor;
+        self.invalidate_text_layout();
+    }
+
+    pub(crate) fn is_preedit_run(&self) -> bool {
+        self.is_preedit_run
     }
 
     pub(crate) fn set_text(&mut self, text: String, char_range: Range<usize>) {
@@ -238,6 +254,17 @@ impl TextAreaTextRun {
     /// inside the composing text rather than at the splice point — mirrors
     /// v1's `preedit_fragment_caret_screen_position`.
     pub fn preedit_caret_local_position(&self) -> Option<(f32, f32, f32)> {
+        if self.is_preedit_run {
+            let caret_byte = match self.preedit_cursor {
+                Some((_, end)) => clamp_utf8_boundary(&self.text, end),
+                None => self.text.len(),
+            };
+            if let Some(layout) = self.text_layout.as_ref() {
+                let geom = layout.cursor_geometry(caret_byte, false);
+                return Some((geom.x, geom.y, geom.height));
+            }
+            return Some(self.empty_line_caret_position());
+        }
         let preedit = self.inline_preedit.as_ref()?;
         let pre_byte = byte_index_at_char(&self.text, preedit.insert_at_local);
         let caret_byte_in_preedit = match preedit.preedit_cursor {
@@ -373,7 +400,19 @@ impl TextAreaTextRun {
 
     #[cfg(test)]
     pub(crate) fn inline_text_pass_fragment_positions(&self) -> Vec<(String, Rect)> {
-        self.inline_text_pass_fragments(1.0)
+        let fragments = self.inline_text_pass_fragments(1.0);
+        if fragments.is_empty() && self.text_layout.is_some() && !self.effective_text().is_empty() {
+            return vec![(
+                self.effective_text(),
+                Rect {
+                    x: self.layout_state.layout_position.x,
+                    y: self.layout_state.layout_position.y,
+                    width: self.layout_state.layout_size.width.max(1.0),
+                    height: self.layout_state.layout_size.height.max(1.0),
+                },
+            )];
+        }
+        fragments
             .into_iter()
             .map(|fragment| {
                 (
@@ -398,6 +437,9 @@ impl TextAreaTextRun {
     /// the post-commit content char index.
     ///
     pub fn screen_position_to_local_char(&self, x: f32, y: f32) -> Option<usize> {
+        if self.is_preedit_run {
+            return Some(0);
+        }
         if let Some(layout) = self.text_layout.as_ref() {
             let effective = self.effective_text();
             let byte = clamp_utf8_boundary(&effective, layout.hit_byte(x, y));
@@ -470,6 +512,18 @@ impl TextAreaTextRun {
     /// the visual-line baseline — matches v1's
     /// `ime_preedit_underline_rects` look.
     pub fn preedit_underline_rects(&self) -> Vec<Rect> {
+        if self.is_preedit_run {
+            return self
+                .local_selection_rects(0, self.text.chars().count())
+                .into_iter()
+                .map(|rect| Rect {
+                    x: rect.x,
+                    y: rect.y + rect.height.max(1.0) - 1.0,
+                    width: rect.width.max(1.0),
+                    height: 1.0,
+                })
+                .collect();
+        }
         let Some(preedit) = self.inline_preedit.as_ref() else {
             return Vec::new();
         };
@@ -557,6 +611,9 @@ impl TextAreaTextRun {
     }
 
     fn effective_char_to_plain_local_char(&self, effective_char: usize) -> usize {
+        if self.is_preedit_run {
+            return 0;
+        }
         match &self.inline_preedit {
             Some(preedit) => {
                 let preedit_len = preedit.preedit_text.chars().count();
@@ -1222,6 +1279,8 @@ impl ElementTrait for TextAreaTextRun {
         } else {
             u64::MAX.hash(&mut hasher);
         }
+        self.is_preedit_run.hash(&mut hasher);
+        self.preedit_cursor.hash(&mut hasher);
         hasher.finish()
     }
 }

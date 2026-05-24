@@ -62,6 +62,8 @@ enum Segment {
         text: String,
         range: Range<usize>,
         is_placeholder: bool,
+        is_preedit: bool,
+        preedit_cursor: Option<(usize, usize)>,
     },
     LineBreak {
         range: Range<usize>,
@@ -92,12 +94,17 @@ impl TextArea {
         // Fast in-place path is only valid for the single-paragraph
         // single-Run case. Multi-paragraph content (contains `\n`) needs
         // the full slice path so each paragraph maps to its own Run.
+        let preedit_active = !self.ime_preedit.is_empty() || self.ime_preedit_cursor.is_some();
         let display_has_newline = if self.content.is_empty() {
             self.placeholder.contains('\n')
         } else {
             self.content.contains('\n')
         };
-        if projections.is_empty() && !display_has_newline && self.has_only_single_run(arena) {
+        if !preedit_active
+            && projections.is_empty()
+            && !display_has_newline
+            && self.has_only_single_run(arena)
+        {
             self.update_single_run_in_place(arena);
             self.route_preedit_to_runs(arena);
             return;
@@ -174,6 +181,8 @@ impl TextArea {
                 display_text,
                 0..char_count,
                 is_placeholder,
+                false,
+                None,
             );
             self.children = vec![run_key];
             self.child_char_ranges = vec![0..char_count];
@@ -278,6 +287,8 @@ impl TextArea {
                     text,
                     range,
                     is_placeholder,
+                    is_preedit,
+                    preedit_cursor,
                 } => {
                     let key = match run_queue.pop_front() {
                         Some(existing_key) => {
@@ -287,6 +298,8 @@ impl TextArea {
                                 &text,
                                 range.clone(),
                                 is_placeholder,
+                                is_preedit,
+                                preedit_cursor,
                             );
                             existing_key
                         }
@@ -296,6 +309,8 @@ impl TextArea {
                             text,
                             range.clone(),
                             is_placeholder,
+                            is_preedit,
+                            preedit_cursor,
                         ),
                     };
                     new_children.push(key);
@@ -446,6 +461,8 @@ impl TextArea {
         text: &str,
         range: Range<usize>,
         is_placeholder: bool,
+        is_preedit: bool,
+        preedit_cursor: Option<(usize, usize)>,
     ) {
         let cascade_color = if is_placeholder {
             self.placeholder_color
@@ -458,6 +475,7 @@ impl TextArea {
                 return;
             };
             run.is_placeholder = is_placeholder;
+            run.set_preedit_run(is_preedit, preedit_cursor);
             run.set_text(text_owned, range);
             run.cascade_style(
                 self.font_families.clone(),
@@ -531,6 +549,15 @@ impl TextArea {
         // Empty content + placeholder special case (no projection
         // semantically applies — placeholder is a single decorative Run).
         if self.content.is_empty() {
+            if !self.ime_preedit.is_empty() {
+                return vec![Segment::Plain {
+                    text: self.ime_preedit.clone(),
+                    range: 0..0,
+                    is_placeholder: false,
+                    is_preedit: true,
+                    preedit_cursor: self.ime_preedit_cursor,
+                }];
+            }
             return if !self.placeholder.is_empty() {
                 let mut out = Vec::new();
                 expand_plain_paragraphs(
@@ -567,7 +594,79 @@ impl TextArea {
             let plain = slice_chars(self.content.as_str(), cursor..total_chars);
             expand_plain_paragraphs(&mut out, &plain, cursor..total_chars, false);
         }
+        self.insert_preedit_segment(&mut out);
         out
+    }
+
+    fn insert_preedit_segment(&self, segments: &mut Vec<Segment>) {
+        if self.ime_preedit.is_empty() {
+            return;
+        }
+        let cursor = self.cursor_char.min(self.content.chars().count());
+        if segments.iter().any(|segment| {
+            matches!(
+                segment,
+                Segment::Projection { range, .. } if cursor >= range.start && cursor < range.end
+            )
+        }) {
+            return;
+        }
+        let preedit = Segment::Plain {
+            text: self.ime_preedit.clone(),
+            range: cursor..cursor,
+            is_placeholder: false,
+            is_preedit: true,
+            preedit_cursor: self.ime_preedit_cursor,
+        };
+
+        let mut idx = 0;
+        while idx < segments.len() {
+            match &segments[idx] {
+                Segment::LineBreak { range } if range.start == cursor => {
+                    segments.insert(idx, preedit);
+                    return;
+                }
+                Segment::Plain {
+                    text,
+                    range,
+                    is_placeholder,
+                    is_preedit,
+                    ..
+                } if !*is_preedit && cursor >= range.start && cursor <= range.end => {
+                    let local = cursor.saturating_sub(range.start);
+                    let prefix = slice_chars(text, 0..local);
+                    let suffix = slice_chars(text, local..text.chars().count());
+                    let range_start = range.start;
+                    let range_end = range.end;
+                    let is_placeholder = *is_placeholder;
+                    let mut replacement = Vec::new();
+                    if !prefix.is_empty() {
+                        replacement.push(Segment::Plain {
+                            text: prefix,
+                            range: range_start..cursor,
+                            is_placeholder,
+                            is_preedit: false,
+                            preedit_cursor: None,
+                        });
+                    }
+                    replacement.push(preedit);
+                    if !suffix.is_empty() || cursor == range_end {
+                        replacement.push(Segment::Plain {
+                            text: suffix,
+                            range: cursor..range_end,
+                            is_placeholder,
+                            is_preedit: false,
+                            preedit_cursor: None,
+                        });
+                    }
+                    segments.splice(idx..=idx, replacement);
+                    return;
+                }
+                _ => {}
+            }
+            idx += 1;
+        }
+        segments.push(preedit);
     }
 
     /// Build + commit a fresh `TextAreaTextRun` under `parent_key`,
@@ -579,6 +678,8 @@ impl TextArea {
         text: String,
         range: Range<usize>,
         is_placeholder: bool,
+        is_preedit: bool,
+        preedit_cursor: Option<(usize, usize)>,
     ) -> NodeKey {
         let cascade_color = if is_placeholder {
             self.placeholder_color
@@ -587,6 +688,7 @@ impl TextArea {
         };
         let mut run = TextAreaTextRun::new(text, range);
         run.is_placeholder = is_placeholder;
+        run.set_preedit_run(is_preedit, preedit_cursor);
         run.cascade_style(
             self.font_families.clone(),
             self.font_size,
@@ -742,15 +844,38 @@ impl TextArea {
     /// the IME context is routed via `<Provider<TextAreaImeContext>>`
     /// during rebuild instead — every Run gets its preedit cleared here.
     pub(super) fn route_preedit_to_runs(&self, arena: &NodeArena) {
+        let has_preedit_run = self.children.iter().any(|&child_key| {
+            arena
+                .with_element_taken_ref(child_key, |child, _| {
+                    child
+                        .as_any()
+                        .downcast_ref::<TextAreaTextRun>()
+                        .is_some_and(|run| run.is_preedit_run())
+                })
+                .unwrap_or(false)
+        });
+        if has_preedit_run {
+            for &child_key in self.children.iter() {
+                arena.mutate_element_ref_with_invalidation(child_key, |child, cx| {
+                    let Some(run) = child.as_any_mut().downcast_mut::<TextAreaTextRun>() else {
+                        return;
+                    };
+                    run.set_inline_preedit(None);
+                    cx.invalidate(run.local_dirty_flags());
+                });
+            }
+            return;
+        }
         let preedit_active = !self.ime_preedit.is_empty() || self.ime_preedit_cursor.is_some();
         let cursor_char = self.cursor_char;
         let preedit_text = self.ime_preedit.clone();
         let preedit_cursor = self.ime_preedit_cursor;
 
         // Locate whether the cursor sits inside a projection. In that case
-        // TextArea does not draw preedit text through an adjacent Run; the
-        // projection owns text rendering via `TextAreaImeContext`, while
-        // TextArea only draws IME underline overlay in render.rs.
+        // Projection-owned text still receives preedit through context.
+        // Plain TextArea preedit is represented by a transient Run segment
+        // during rebuild, so this router only clears stale legacy splices
+        // once that Run exists.
         let mut cursor_in_projection = false;
         for (range, &key) in self.child_char_ranges.iter().zip(self.children.iter()) {
             if cursor_char < range.start || cursor_char >= range.end {
@@ -934,6 +1059,8 @@ fn expand_plain_paragraphs(
                     text: paragraph_chars.iter().collect(),
                     range: paragraph_start..para_end_excl_nl,
                     is_placeholder,
+                    is_preedit: false,
+                    preedit_cursor: None,
                 });
             }
             out.push(Segment::LineBreak {
@@ -955,6 +1082,8 @@ fn expand_plain_paragraphs(
             text: paragraph_chars.iter().collect(),
             range: paragraph_start..char_index,
             is_placeholder,
+            is_preedit: false,
+            preedit_cursor: None,
         });
     }
 }
@@ -1220,8 +1349,7 @@ mod tests {
 
     /// Caret inside a projection segment with preedit active should not
     /// route preedit text onto adjacent Runs. The projection owns text
-    /// rendering via `TextAreaImeContext`; TextArea only draws the IME
-    /// underline overlay in render.rs.
+    /// rendering via `TextAreaImeContext`.
     #[test]
     fn projection_preedit_does_not_route_to_adjacent_run_when_caret_in_projection() {
         let (arena, root) = fixture_with_caret_in_projection("\u{4E2D}\u{6587}", Some((2, 2)));
@@ -1243,56 +1371,47 @@ mod tests {
     }
 
     #[test]
-    fn preedit_routes_to_middle_empty_paragraph_run() {
+    fn preedit_inserts_transient_run_on_middle_empty_paragraph() {
         let (arena, root) = plain_textarea_with_preedit("a\n\nb", 2, "\u{4E2D}");
 
         let children = arena.children_of(root);
         assert_eq!(
             children.len(),
-            5,
-            "expected Run / LineBreak / empty Run / LineBreak / Run"
+            6,
+            "expected Run / LineBreak / preedit Run / empty Run / LineBreak / Run"
         );
-        assert_run_text_range(&arena, children[2], "", 2..2);
-        assert_eq!(
-            run_inline_preedit(&arena, children[2]).map(|pe| (pe.insert_at_local, pe.preedit_text)),
-            Some((0, "\u{4E2D}".to_string())),
-            "middle empty paragraph should host the preedit"
-        );
+        assert_preedit_run(&arena, children[2], "\u{4E2D}", 2..2);
+        assert_run_text_range(&arena, children[3], "", 2..2);
         assert!(run_inline_preedit(&arena, children[0]).is_none());
-        assert!(run_inline_preedit(&arena, children[4]).is_none());
+        assert!(run_inline_preedit(&arena, children[5]).is_none());
     }
 
     #[test]
-    fn preedit_routes_to_trailing_empty_paragraph_run() {
+    fn preedit_inserts_transient_run_on_trailing_empty_paragraph() {
         let (arena, root) = plain_textarea_with_preedit("a\n", 2, "\u{4E2D}");
 
         let children = arena.children_of(root);
         assert_eq!(
             children.len(),
-            3,
-            "expected Run / LineBreak / trailing empty Run"
+            4,
+            "expected Run / LineBreak / preedit Run / trailing empty Run"
         );
-        assert_run_text_range(&arena, children[2], "", 2..2);
-        assert_eq!(
-            run_inline_preedit(&arena, children[2]).map(|pe| (pe.insert_at_local, pe.preedit_text)),
-            Some((0, "\u{4E2D}".to_string())),
-            "trailing empty paragraph should host the preedit"
-        );
+        assert_preedit_run(&arena, children[2], "\u{4E2D}", 2..2);
+        assert_run_text_range(&arena, children[3], "", 2..2);
         assert!(run_inline_preedit(&arena, children[0]).is_none());
     }
 
     #[test]
-    fn preedit_routes_to_empty_textarea_run() {
+    fn preedit_inserts_transient_run_in_empty_textarea() {
         let (arena, root) = plain_textarea_with_preedit("", 0, "\u{4E2D}");
 
         let children = arena.children_of(root);
-        assert_eq!(children.len(), 1, "empty TextArea should create a host Run");
-        assert_run_text_range(&arena, children[0], "", 0..0);
         assert_eq!(
-            run_inline_preedit(&arena, children[0]).map(|pe| (pe.insert_at_local, pe.preedit_text)),
-            Some((0, "\u{4E2D}".to_string())),
-            "empty TextArea should host the preedit"
+            children.len(),
+            1,
+            "empty TextArea should create a preedit Run"
         );
+        assert_preedit_run(&arena, children[0], "\u{4E2D}", 0..0);
     }
 
     fn plain_textarea_with_preedit(
@@ -1338,6 +1457,26 @@ mod tests {
                     .expect("TextAreaTextRun");
                 assert_eq!(run.text, text);
                 assert_eq!(run.char_range, range);
+            })
+            .expect("run exists");
+    }
+
+    fn assert_preedit_run(
+        arena: &NodeArena,
+        key: NodeKey,
+        text: &str,
+        range: std::ops::Range<usize>,
+    ) {
+        arena
+            .with_element_taken_ref(key, |child, _| {
+                let run = child
+                    .as_any()
+                    .downcast_ref::<crate::view::base_component::text_area::TextAreaTextRun>()
+                    .expect("TextAreaTextRun");
+                assert_eq!(run.text, text);
+                assert_eq!(run.char_range, range);
+                assert!(run.is_preedit_run(), "expected transient preedit Run");
+                assert!(run.inline_preedit.is_none());
             })
             .expect("run exists");
     }
