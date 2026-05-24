@@ -42,12 +42,10 @@ impl Text {
         let full_width = full_width.max(1.0);
         let effective_first_width =
             self.first_line_width_for_word_boundary(first_width, full_width);
-        let (layout_first_width, layout_full_width) =
-            self.parley_inline_wrap_widths(effective_first_width, full_width);
         let layout = build_text_layout_with_line_widths(
             self.content.as_str(),
-            layout_first_width,
-            layout_full_width,
+            effective_first_width,
+            full_width,
             self.font_size,
             self.line_height,
             self.font_weight,
@@ -92,28 +90,6 @@ impl Text {
         } else {
             first_width
         }
-    }
-
-    fn parley_inline_wrap_widths(&self, first_width: f32, full_width: f32) -> (f32, f32) {
-        let unwrapped = measure_text_layout(
-            self.content.as_str(),
-            None,
-            false,
-            self.font_size,
-            self.line_height,
-            self.font_weight,
-            self.align,
-            self.font_families.as_slice(),
-        );
-        let legacy_width = unwrapped.width.max(1.0);
-        let parley_width = unwrapped
-            .text_layout
-            .inline_line_fragments(self.content.as_str())
-            .first()
-            .map(|line| line.width.max(1.0))
-            .unwrap_or(legacy_width);
-        let scale = (parley_width / legacy_width).clamp(1.0, 1.25);
-        (first_width * scale, full_width * scale)
     }
 
     fn fragments_from_text_layout_lines(

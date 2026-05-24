@@ -800,9 +800,12 @@ impl Layoutable for TextAreaTextRun {
             // Empty paragraph: skip shaping (which would substitute a
             // space and report a visible glyph width). The Run still claims
             // a `line_height`-tall slot so the inline solver gives it a
-            // proper blank line.
+            // proper blank line. Floor at 0.8 to match every other line-
+            // height path (`line_height_px`, `empty_line_caret_position`,
+            // the shaped path's `build_text_layout`) so a blank paragraph
+            // and a shaped one report the same height.
             self.text_layout = None;
-            (0.0_f32, self.font_size.max(1.0) * self.line_height)
+            (0.0_f32, self.font_size.max(1.0) * self.line_height.max(0.8))
         } else {
             let layout = self.build_run_text_layout(max_width);
             let (w, h) = layout.measure_size();
