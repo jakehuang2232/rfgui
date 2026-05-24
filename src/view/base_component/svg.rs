@@ -539,6 +539,7 @@ impl Renderable for Svg {
         let document_snapshot = self.document_snapshot();
         self.sync_active_slot(arena, Self::resolve_document_slot(&document_snapshot));
 
+        let parent_paint_offset = ctx.paint_offset();
         let viewport = ctx.viewport();
         let base_state = self.element.build_base_only(graph, arena, ctx);
         let mut ctx = UiBuildContext::from_parts(viewport, base_state);
@@ -588,6 +589,11 @@ impl Renderable for Svg {
             local_draw_bounds[2],
             local_draw_bounds[3],
         ];
+        let draw_bounds = super::image::paint_adjusted_texture_bounds(
+            &self.element,
+            parent_paint_offset,
+            draw_bounds,
+        );
 
         graph.add_graphics_pass(TextureCompositePass::new(
             TextureCompositeParams {

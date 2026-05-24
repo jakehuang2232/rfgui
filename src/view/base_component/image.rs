@@ -12,6 +12,7 @@ use crate::view::{ImageFit, ImageSampling, ImageSource};
 use super::{
     BoxModelSnapshot, ComputedStyleConsumer, Element, ElementStyleSnapshot, ElementTrait,
     EventTarget, LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
+    round_layout_value,
 };
 use crate::view::node_arena::{NodeArena, NodeKey};
 
@@ -464,6 +465,18 @@ impl Layoutable for Image {
     }
 }
 
+pub(crate) fn paint_adjusted_texture_bounds(
+    element: &Element,
+    parent_paint_offset: [f32; 2],
+    mut bounds: [f32; 4],
+) -> [f32; 4] {
+    let paint_x = element.layout_state.layout_position.x + parent_paint_offset[0];
+    let paint_y = element.layout_state.layout_position.y + parent_paint_offset[1];
+    bounds[0] += parent_paint_offset[0] + round_layout_value(paint_x) - paint_x;
+    bounds[1] += parent_paint_offset[1] + round_layout_value(paint_y) - paint_y;
+    bounds
+}
+
 impl Renderable for Image {
     fn build(
         &mut self,
@@ -474,6 +487,7 @@ impl Renderable for Image {
         let snapshot = self.snapshot();
         self.sync_active_slot(arena, Self::resolve_slot(&snapshot));
 
+        let parent_paint_offset = ctx.paint_offset();
         let viewport = ctx.viewport();
         let base_state = self.element.build_base_only(graph, arena, ctx);
         let mut ctx = UiBuildContext::from_parts(viewport, base_state);
@@ -503,6 +517,8 @@ impl Renderable for Image {
             local_draw_bounds[2],
             local_draw_bounds[3],
         ];
+        let draw_bounds =
+            paint_adjusted_texture_bounds(&self.element, parent_paint_offset, draw_bounds);
         graph.add_graphics_pass(TextureCompositePass::new(
             TextureCompositeParams {
                 bounds: draw_bounds,
@@ -635,6 +651,26 @@ mod tests {
             &mut arena,
         );
         assert_eq!(image.measured_size(), (80.0, 40.0));
+    }
+
+    #[test]
+    fn texture_bounds_apply_host_paint_offset_without_changing_size() {
+        let element = Element::new(10.25, 20.75, 100.0, 50.0);
+        let parent_paint_offset = [0.2, -0.3];
+        let bounds = [18.25, 24.5, 80.0, 40.0];
+
+        let adjusted = super::paint_adjusted_texture_bounds(&element, parent_paint_offset, bounds);
+
+        let expected_dx = (10.25_f32 + parent_paint_offset[0]).round()
+            - (10.25_f32 + parent_paint_offset[0])
+            + parent_paint_offset[0];
+        let expected_dy = (20.75_f32 + parent_paint_offset[1]).round()
+            - (20.75_f32 + parent_paint_offset[1])
+            + parent_paint_offset[1];
+        assert!((adjusted[0] - (bounds[0] + expected_dx)).abs() < 0.001);
+        assert!((adjusted[1] - (bounds[1] + expected_dy)).abs() < 0.001);
+        assert_eq!(adjusted[2], bounds[2]);
+        assert_eq!(adjusted[3], bounds[3]);
     }
 
     #[test]

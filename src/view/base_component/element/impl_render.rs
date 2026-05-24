@@ -750,9 +750,11 @@ impl Element {
                     fragment.width,
                     fragment.height,
                 );
+                let [shadow_x, shadow_y] =
+                    ctx.paint_point(fragment.x - spread, fragment.y - spread);
                 let mesh = ShadowMesh::rounded_rect_with_radii(
-                    fragment.x - spread,
-                    fragment.y - spread,
+                    shadow_x,
+                    shadow_y,
                     fragment.width + spread * 2.0,
                     fragment.height + spread * 2.0,
                     shadow_radii.to_array(),
@@ -840,6 +842,41 @@ impl Element {
         })
     }
 
+    fn transformed_quad_positions_with_paint_snap(
+        &self,
+        source_bounds: crate::view::base_component::PromotionCompositeBounds,
+        visual_bounds: crate::view::base_component::PromotionCompositeBounds,
+    ) -> [[f32; 2]; 4] {
+        let dx = visual_bounds.x - source_bounds.x;
+        let dy = visual_bounds.y - source_bounds.y;
+        self.transformed_quad_positions(source_bounds)
+            .map(|[x, y]| [x + dx, y + dy])
+    }
+
+    fn paint_snapped_own_composite_bounds(
+        &self,
+        bounds: crate::view::base_component::PromotionCompositeBounds,
+        paint_offset: [f32; 2],
+    ) -> crate::view::base_component::PromotionCompositeBounds {
+        crate::view::base_component::paint_snapped_promotion_composite_bounds(
+            self,
+            bounds,
+            paint_offset,
+        )
+    }
+
+    fn paint_snapped_child_composite_bounds(
+        child: &dyn ElementTrait,
+        bounds: crate::view::base_component::PromotionCompositeBounds,
+        paint_offset: [f32; 2],
+    ) -> crate::view::base_component::PromotionCompositeBounds {
+        crate::view::base_component::paint_snapped_promotion_composite_bounds(
+            child,
+            bounds,
+            paint_offset,
+        )
+    }
+
     fn build_transformed_subtree(
         &mut self,
         graph: &mut FrameGraph,
@@ -848,6 +885,8 @@ impl Element {
         force_self_opaque: bool,
     ) -> BuildState {
         let source_bounds = self.transform_subtree_raster_bounds(arena);
+        let visual_bounds =
+            self.paint_snapped_own_composite_bounds(source_bounds, ctx.paint_offset());
         let mut layer_ctx = UiBuildContext::from_parts(
             ctx.viewport(),
             BuildState::for_layer_subtree_with_ancestor_clip(AncestorClipContext::default()),
@@ -882,12 +921,14 @@ impl Element {
         graph.add_graphics_pass(crate::view::render_pass::TextureCompositePass::new(
             crate::view::render_pass::TextureCompositeParams {
                 bounds: [
-                    source_bounds.x,
-                    source_bounds.y,
-                    source_bounds.width,
-                    source_bounds.height,
+                    visual_bounds.x,
+                    visual_bounds.y,
+                    visual_bounds.width,
+                    visual_bounds.height,
                 ],
-                quad_positions: Some(self.transformed_quad_positions(source_bounds)),
+                quad_positions: Some(
+                    self.transformed_quad_positions_with_paint_snap(source_bounds, visual_bounds),
+                ),
                 uv_bounds: Some([
                     source_bounds.x,
                     source_bounds.y,
@@ -902,7 +943,9 @@ impl Element {
             },
             crate::view::render_pass::TextureCompositeInput {
                 source: crate::view::render_pass::TextureCompositeSourceIn::with_handle(
-                    layer_target.handle().expect("transformed layer target should exist"),
+                    layer_target
+                        .handle()
+                        .expect("transformed layer target should exist"),
                 ),
                 sampled_source_key: None,
                 sampled_source_size: None,
@@ -1117,7 +1160,12 @@ impl Element {
         child: &dyn ElementTrait,
         layer_target: RenderTargetOut,
     ) {
-        let composite_bounds = child.promotion_composite_bounds();
+        let raw_composite_bounds = child.promotion_composite_bounds();
+        let composite_bounds = Self::paint_snapped_child_composite_bounds(
+            child,
+            raw_composite_bounds,
+            ctx.paint_offset(),
+        );
         let opacity = if child.as_any().downcast_ref::<Element>().is_some() {
             1.0
         } else {
@@ -1158,7 +1206,9 @@ impl Element {
             },
             crate::view::render_pass::composite_layer_pass::CompositeLayerInput {
                 layer: crate::view::render_pass::composite_layer_pass::LayerIn::with_handle(
-                    layer_target.handle().expect("promoted layer target should exist"),
+                    layer_target
+                        .handle()
+                        .expect("promoted layer target should exist"),
                 ),
                 pass_context: ctx.graphics_pass_context(),
             },
@@ -1220,7 +1270,12 @@ impl Element {
             target
         });
         ctx.set_current_target(parent_target);
-        let composite_bounds = child.promotion_composite_bounds();
+        let raw_composite_bounds = child.promotion_composite_bounds();
+        let composite_bounds = Self::paint_snapped_child_composite_bounds(
+            child,
+            raw_composite_bounds,
+            ctx.paint_offset(),
+        );
         let pass = crate::view::render_pass::TextureCompositePass::new(
             crate::view::render_pass::TextureCompositeParams {
                 bounds: [
@@ -1231,16 +1286,16 @@ impl Element {
                 ],
                 quad_positions: None,
                 uv_bounds: Some([
-                    composite_bounds.x,
-                    composite_bounds.y,
-                    composite_bounds.width,
-                    composite_bounds.height,
+                    raw_composite_bounds.x,
+                    raw_composite_bounds.y,
+                    raw_composite_bounds.width,
+                    raw_composite_bounds.height,
                 ]),
                 mask_uv_bounds: Some([
-                    composite_bounds.x,
-                    composite_bounds.y,
-                    composite_bounds.width,
-                    composite_bounds.height,
+                    raw_composite_bounds.x,
+                    raw_composite_bounds.y,
+                    raw_composite_bounds.width,
+                    raw_composite_bounds.height,
                 ]),
                 use_mask: true,
                 source_is_premultiplied: true,
@@ -1253,7 +1308,9 @@ impl Element {
             },
             crate::view::render_pass::TextureCompositeInput {
                 source: crate::view::render_pass::TextureCompositeSourceIn::with_handle(
-                    layer_target.handle().expect("promoted layer target should exist"),
+                    layer_target
+                        .handle()
+                        .expect("promoted layer target should exist"),
                 ),
                 sampled_source_key: None,
                 sampled_source_size: None,
@@ -1262,7 +1319,9 @@ impl Element {
                 sampled_upload_generation: None,
                 sampled_source_sampling: None,
                 mask: crate::view::render_pass::TextureCompositeMaskIn::with_handle(
-                    mask_target.handle().expect("promoted clip mask target should exist"),
+                    mask_target
+                        .handle()
+                        .expect("promoted clip mask target should exist"),
                 ),
                 pass_context: ctx.graphics_pass_context(),
             },
@@ -1416,7 +1475,9 @@ impl Element {
                 },
                 crate::view::render_pass::composite_layer_pass::CompositeLayerInput {
                     layer: crate::view::render_pass::composite_layer_pass::LayerIn::with_handle(
-                        base_target.handle().expect("promoted base target should exist"),
+                        base_target
+                            .handle()
+                            .expect("promoted base target should exist"),
                     ),
                     pass_context: compose_pass_context,
                 },
@@ -1526,26 +1587,26 @@ impl Element {
                     // Child clip geometry is tracked in promotion signatures; do not block
                     // promoted child reuse solely because the container clips its children.
                 } else {
-                crate::view::viewport::record_debug_reuse_path(
-                    crate::view::viewport::DebugReusePathRecord {
-                        node_id: child_id,
-                        context: crate::view::viewport::DebugReusePathContext::Child,
-                        requested: requested_update,
-                        can_reuse: false,
-                        actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
-                        reason: Some(reason),
-                        clip_rect: element.absolute_clip_scissor_rect(),
-                    },
-                );
-                let viewport = ctx.viewport();
-                let next_state = element.build(
-                    graph,
-                    arena,
-                    UiBuildContext::from_parts(viewport, ctx.state_clone()),
-                );
-                ctx.set_state(next_state);
-                let _ = mask_target;
-                return;
+                    crate::view::viewport::record_debug_reuse_path(
+                        crate::view::viewport::DebugReusePathRecord {
+                            node_id: child_id,
+                            context: crate::view::viewport::DebugReusePathContext::Child,
+                            requested: requested_update,
+                            can_reuse: false,
+                            actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
+                            reason: Some(reason),
+                            clip_rect: element.absolute_clip_scissor_rect(),
+                        },
+                    );
+                    let viewport = ctx.viewport();
+                    let next_state = element.build(
+                        graph,
+                        arena,
+                        UiBuildContext::from_parts(viewport, ctx.state_clone()),
+                    );
+                    ctx.set_state(next_state);
+                    let _ = mask_target;
+                    return;
                 }
             }
         }
@@ -1636,5 +1697,142 @@ impl Element {
         } else {
             Self::composite_promoted_child_target(graph, ctx, child.as_ref(), layer_target);
         }
+    }
+}
+
+#[cfg(test)]
+mod paint_snap_tests {
+    use super::*;
+
+    #[test]
+    fn box_shadow_mesh_origin_applies_paint_offset_without_changing_geometry() {
+        let mut ctx = UiBuildContext::new(100, 100, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        ctx.translate_paint_offset(0.4, -0.6);
+
+        let fragment = Rect {
+            x: 10.25,
+            y: 20.75,
+            width: 30.5,
+            height: 40.25,
+        };
+        let spread = 2.5;
+        let [shadow_x, shadow_y] = ctx.paint_point(fragment.x - spread, fragment.y - spread);
+
+        assert!((shadow_x - 8.15).abs() < 0.001);
+        assert!((shadow_y - 17.65).abs() < 0.001);
+        assert!((fragment.width + spread * 2.0 - 35.5).abs() < 0.001);
+        assert!((fragment.height + spread * 2.0 - 45.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn promoted_composite_bounds_snap_origin_without_changing_coverage() {
+        let element = Element::new(10.25, 20.75, 30.0, 10.0);
+        let bounds = crate::view::base_component::PromotionCompositeBounds {
+            x: 8.5,
+            y: 18.25,
+            width: 40.25,
+            height: 20.5,
+            corner_radii: [0.0; 4],
+        };
+        let snapped = crate::view::base_component::paint_snapped_promotion_composite_bounds(
+            &element,
+            bounds,
+            [0.2, -0.3],
+        );
+
+        assert!((snapped.x - 8.25).abs() < 0.001);
+        assert!((snapped.y - 17.5).abs() < 0.001);
+        assert_eq!(snapped.width, bounds.width);
+        assert_eq!(snapped.height, bounds.height);
+        assert_eq!(snapped.corner_radii, bounds.corner_radii);
+    }
+
+    #[test]
+    fn promoted_composite_bounds_snap_fractional_host_and_inherited_offset_only_translates() {
+        let element = Element::new(10.25, 20.75, 30.0, 10.0);
+        let bounds = crate::view::base_component::PromotionCompositeBounds {
+            x: 8.5,
+            y: 18.25,
+            width: 40.25,
+            height: 20.5,
+            corner_radii: [1.0, 2.0, 3.0, 4.0],
+        };
+
+        let snapped = Element::paint_snapped_child_composite_bounds(&element, bounds, [0.2, -0.3]);
+
+        assert!((snapped.x - 8.25).abs() < 0.001);
+        assert!((snapped.y - 17.5).abs() < 0.001);
+        assert_eq!(snapped.width, bounds.width);
+        assert_eq!(snapped.height, bounds.height);
+        assert_eq!(snapped.corner_radii, bounds.corner_radii);
+    }
+
+    #[test]
+    fn transformed_quad_positions_use_snapped_destination_without_changing_source_bounds() {
+        let mut element = Element::new(10.25, 20.75, 30.0, 10.0);
+        element.resolved_transform = Some(Mat4::IDENTITY);
+        let source_bounds = crate::view::base_component::PromotionCompositeBounds {
+            x: 10.25,
+            y: 20.75,
+            width: 30.5,
+            height: 10.25,
+            corner_radii: [0.0; 4],
+        };
+
+        let visual_bounds = element.paint_snapped_own_composite_bounds(source_bounds, [0.2, -0.3]);
+        let quad_positions =
+            element.transformed_quad_positions_with_paint_snap(source_bounds, visual_bounds);
+        let uv_bounds = [
+            source_bounds.x,
+            source_bounds.y,
+            source_bounds.width,
+            source_bounds.height,
+        ];
+
+        assert!((visual_bounds.x - 10.0).abs() < 0.001);
+        assert!((visual_bounds.y - 20.0).abs() < 0.001);
+        assert_eq!(visual_bounds.width, source_bounds.width);
+        assert_eq!(visual_bounds.height, source_bounds.height);
+        assert_eq!(uv_bounds, [10.25, 20.75, 30.5, 10.25]);
+        assert_eq!(
+            quad_positions,
+            [[10.0, 30.25], [40.5, 30.25], [40.5, 20.0], [10.0, 20.0],]
+        );
+    }
+
+    #[test]
+    fn transformed_quad_applies_paint_snap_after_transforming_raw_bounds() {
+        let mut element = Element::new(10.25, 20.75, 30.0, 10.0);
+        element.resolved_transform = Some(Mat4::from_scale(Vec3::new(2.0, 3.0, 1.0)));
+        let source_bounds = crate::view::base_component::PromotionCompositeBounds {
+            x: 8.5,
+            y: 18.25,
+            width: 40.25,
+            height: 20.5,
+            corner_radii: [0.0; 4],
+        };
+        let visual_bounds =
+            element.paint_snapped_own_composite_bounds(source_bounds, [0.2, -0.3]);
+
+        let raw_transformed = element.transformed_quad_positions(source_bounds);
+        let snapped =
+            element.transformed_quad_positions_with_paint_snap(source_bounds, visual_bounds);
+        let dx = visual_bounds.x - source_bounds.x;
+        let dy = visual_bounds.y - source_bounds.y;
+
+        for ([raw_x, raw_y], [snapped_x, snapped_y]) in raw_transformed.into_iter().zip(snapped) {
+            assert!((snapped_x - (raw_x + dx)).abs() < 0.001);
+            assert!((snapped_y - (raw_y + dy)).abs() < 0.001);
+        }
+
+        let wrongly_scaled = element.transformed_quad_positions(visual_bounds);
+        assert!(
+            (wrongly_scaled[0][0] - snapped[0][0]).abs() > 0.001,
+            "paint snap delta must not be multiplied by transform scale"
+        );
+        assert!(
+            (wrongly_scaled[0][1] - snapped[0][1]).abs() > 0.001,
+            "paint snap delta must not be multiplied by transform scale"
+        );
     }
 }

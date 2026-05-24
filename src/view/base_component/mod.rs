@@ -141,6 +141,21 @@ pub(crate) fn round_layout_value(value: f32) -> f32 {
     }
 }
 
+pub(crate) fn paint_snapped_promotion_composite_bounds(
+    node: &dyn ElementTrait,
+    bounds: PromotionCompositeBounds,
+    paint_offset: [f32; 2],
+) -> PromotionCompositeBounds {
+    let snap = node.box_model_snapshot();
+    let dx = round_layout_value(snap.x + paint_offset[0]) - snap.x;
+    let dy = round_layout_value(snap.y + paint_offset[1]) - snap.y;
+    PromotionCompositeBounds {
+        x: bounds.x + dx,
+        y: bounds.y + dy,
+        ..bounds
+    }
+}
+
 pub(crate) fn get_debug_element_render_state_by_id(
     root: &dyn ElementTrait,
     stable_id: u64,
@@ -346,7 +361,11 @@ pub(crate) fn build_node_by_id(
             };
             ctx.merge_child_state_side_effects(&next_state);
             let layer_target = next_state.current_target().unwrap_or(layer_target);
-            let composite_bounds = node.promotion_composite_bounds();
+            let composite_bounds = paint_snapped_promotion_composite_bounds(
+                node,
+                node.promotion_composite_bounds(),
+                ctx.paint_offset(),
+            );
             let opacity = if node.as_any().downcast_ref::<Element>().is_some() {
                 1.0
             } else {

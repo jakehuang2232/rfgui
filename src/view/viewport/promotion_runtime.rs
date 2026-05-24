@@ -144,7 +144,12 @@ impl Viewport {
         root: &dyn crate::view::base_component::ElementTrait,
         layer_target: crate::view::render_pass::draw_rect_pass::RenderTargetOut,
     ) {
-        let composite_bounds = root.promotion_composite_bounds();
+        let composite_bounds =
+            crate::view::base_component::paint_snapped_promotion_composite_bounds(
+                root,
+                root.promotion_composite_bounds(),
+                ctx.paint_offset(),
+            );
         let opacity = if root
             .as_any()
             .downcast_ref::<crate::view::base_component::Element>()

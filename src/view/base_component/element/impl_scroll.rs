@@ -406,9 +406,10 @@ impl Element {
         border_radius: f32,
         color: [f32; 4],
     ) -> BuildState {
+        let [rect_x, rect_y] = ctx.paint_point(rect.x, rect.y);
         let mesh = ShadowMesh::rounded_rect(
-            rect.x,
-            rect.y,
+            rect_x,
+            rect_y,
             rect.width.max(0.0),
             rect.height.max(0.0),
             border_radius.max(0.0),
@@ -462,7 +463,7 @@ impl Element {
 
             let mut pass = DrawRectPass::new(
                 RectPassParams {
-                    position: [track.x, track.y],
+                    position: ctx.paint_point(track.x, track.y),
                     size: [track.width, track.height],
                     fill_color: track_color,
                     opacity: 1.0,
@@ -487,7 +488,7 @@ impl Element {
 
             let mut pass = DrawRectPass::new(
                 RectPassParams {
-                    position: [track.x, track.y],
+                    position: ctx.paint_point(track.x, track.y),
                     size: [track.width, track.height],
                     fill_color: track_color,
                     opacity: 1.0,
@@ -512,7 +513,7 @@ impl Element {
 
             let mut pass = DrawRectPass::new(
                 RectPassParams {
-                    position: [thumb.x, thumb.y],
+                    position: ctx.paint_point(thumb.x, thumb.y),
                     size: [thumb.width, thumb.height],
                     fill_color: thumb_color,
                     opacity: 1.0,
@@ -537,7 +538,7 @@ impl Element {
 
             let mut pass = DrawRectPass::new(
                 RectPassParams {
-                    position: [thumb.x, thumb.y],
+                    position: ctx.paint_point(thumb.x, thumb.y),
                     size: [thumb.width, thumb.height],
                     fill_color: thumb_color,
                     opacity: 1.0,
@@ -934,5 +935,29 @@ impl Element {
     pub(crate) fn should_append_to_root_viewport_render(&self) -> bool {
         self.computed_style.position.mode() == PositionMode::Absolute
             && self.computed_style.position.clip_mode() == ClipMode::Viewport
+    }
+}
+
+#[cfg(test)]
+mod scrollbar_paint_snap_tests {
+    use super::*;
+
+    #[test]
+    fn scrollbar_rect_position_applies_paint_offset_without_changing_size() {
+        let mut ctx = UiBuildContext::new(100, 100, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        ctx.translate_paint_offset(-0.3, 0.45);
+
+        let rect = Rect {
+            x: 91.25,
+            y: 4.5,
+            width: 7.0,
+            height: 80.25,
+        };
+        let position = ctx.paint_point(rect.x, rect.y);
+
+        assert!((position[0] - 90.95).abs() < 0.001);
+        assert!((position[1] - 4.95).abs() < 0.001);
+        assert!((rect.width - 7.0).abs() < 0.001);
+        assert!((rect.height - 80.25).abs() < 0.001);
     }
 }

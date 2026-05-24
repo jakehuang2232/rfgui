@@ -345,7 +345,11 @@ impl TextAreaTextRun {
         nodes
     }
 
-    fn inline_text_pass_fragments(&self, opacity: f32) -> Vec<TextPassFragment> {
+    fn inline_text_pass_fragments(
+        &self,
+        opacity: f32,
+        paint_offset: [f32; 2],
+    ) -> Vec<TextPassFragment> {
         let Some(layout) = self.text_layout.as_ref() else {
             return Vec::new();
         };
@@ -361,6 +365,8 @@ impl TextAreaTextRun {
                 if line.content.is_empty() {
                     return None;
                 }
+                let x = rect.x + paint_offset[0];
+                let y = rect.y + paint_offset[1];
                 let fragment_layout = measure_text_layout(
                     line.content.as_str(),
                     Some(line.width.max(1.0)),
@@ -373,8 +379,8 @@ impl TextAreaTextRun {
                 );
                 Some(TextPassFragment {
                     content: line.content,
-                    x: rect.x,
-                    y: rect.y,
+                    x,
+                    y,
                     width: rect.width.max(line.width).max(1.0),
                     height: rect.height.max(line.height).max(1.0),
                     color: self.color.to_rgba_f32(),
@@ -400,13 +406,21 @@ impl TextAreaTextRun {
 
     #[cfg(test)]
     pub(crate) fn inline_text_pass_fragment_positions(&self) -> Vec<(String, Rect)> {
-        let fragments = self.inline_text_pass_fragments(1.0);
+        self.inline_text_pass_fragment_positions_with_offset([0.0, 0.0])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline_text_pass_fragment_positions_with_offset(
+        &self,
+        paint_offset: [f32; 2],
+    ) -> Vec<(String, Rect)> {
+        let fragments = self.inline_text_pass_fragments(1.0, paint_offset);
         if fragments.is_empty() && self.text_layout.is_some() && !self.effective_text().is_empty() {
             return vec![(
                 self.effective_text(),
                 Rect {
-                    x: self.layout_state.layout_position.x,
-                    y: self.layout_state.layout_position.y,
+                    x: self.layout_state.layout_position.x + paint_offset[0],
+                    y: self.layout_state.layout_position.y + paint_offset[1],
                     width: self.layout_state.layout_size.width.max(1.0),
                     height: self.layout_state.layout_size.height.max(1.0),
                 },
@@ -1110,7 +1124,7 @@ impl Renderable for TextAreaTextRun {
             return ctx.into_state();
         };
         let fragments = {
-            let inline_fragments = self.inline_text_pass_fragments(1.0);
+            let inline_fragments = self.inline_text_pass_fragments(1.0, ctx.paint_offset());
             if inline_fragments.is_empty() {
                 let [x, y] = ctx.paint_point(
                     self.layout_state.layout_position.x,

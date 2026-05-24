@@ -1191,6 +1191,54 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_text_run_text_pass_fragments_apply_paint_offset_after_layout() {
+        let content = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
+        let (arena, root) = placed_text_area(content, 0, 90.0, 240.0, true);
+        let paint_offset = [0.35, -0.6];
+
+        arena.with_element_taken_ref(root, |el, arena| {
+            let text_area = el.as_any().downcast_ref::<TextArea>().expect("TextArea root");
+            let mut checked = false;
+            for key in &text_area.children {
+                let Some(node) = arena.get(*key) else {
+                    continue;
+                };
+                let Some(run) = node.element.as_any().downcast_ref::<
+                    crate::view::base_component::text_area::TextAreaTextRun,
+                >() else {
+                    continue;
+                };
+                let raw = run.inline_text_pass_fragment_positions();
+                let painted = run.inline_text_pass_fragment_positions_with_offset(paint_offset);
+
+                assert!(
+                    raw.len() > 1,
+                    "fixture must produce wrapped fragments, got {raw:?}"
+                );
+                assert_eq!(raw.len(), painted.len());
+                for ((raw_content, raw_rect), (painted_content, painted_rect)) in
+                    raw.iter().zip(painted.iter())
+                {
+                    assert_eq!(raw_content, painted_content);
+                    assert!(
+                        (painted_rect.x - (raw_rect.x + paint_offset[0])).abs() < 0.001,
+                        "paint x must apply offset after layout: raw={raw_rect:?}, painted={painted_rect:?}"
+                    );
+                    assert!(
+                        (painted_rect.y - (raw_rect.y + paint_offset[1])).abs() < 0.001,
+                        "paint y must apply offset after layout: raw={raw_rect:?}, painted={painted_rect:?}"
+                    );
+                    assert_eq!(painted_rect.width, raw_rect.width);
+                    assert_eq!(painted_rect.height, raw_rect.height);
+                }
+                checked = true;
+                break;
+            }
+            assert!(checked, "text run");
+        });
+    }
+
+    #[test]
     fn place_scrolls_viewport_down_to_caret() {
         let content = "one\ntwo\nthree\nfour\nfive";
         let (arena, root) = placed_text_area(content, content.chars().count(), 200.0, 35.0, true);

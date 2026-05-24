@@ -331,20 +331,8 @@ impl Element {
         };
         let previous_scissor = ctx.push_scissor_rect(inner_scissor);
 
-        let inner = self.inner_clip_rect();
-        let mut pass_params = RectPassParams {
-            position: [inner.x, inner.y],
-            size: [inner.width, inner.height],
-            fill_color: [0.0, 0.0, 0.0, 0.0],
-            opacity: 1.0,
-            ..Default::default()
-        };
-
-        pass_params.set_border_width(0.0);
-        pass_params.set_border_radii(inner_radii.to_array());
-
         let mut increment = DrawRectPass::new(
-            pass_params,
+            self.child_clip_stencil_pass_params(ctx, inner_radii),
             DrawRectInput {
                 ..Default::default()
             },
@@ -378,21 +366,12 @@ impl Element {
             self.layout_state.layout_size.width.max(0.0),
             self.layout_state.layout_size.height.max(0.0),
         ));
-        let inner = self.inner_clip_rect();
 
         let mut decrement = DrawRectPass::new(
-            RectPassParams {
-                position: [inner.x, inner.y],
-                size: [inner.width, inner.height],
-                fill_color: [0.0, 0.0, 0.0, 0.0],
-                opacity: 1.0,
-                ..Default::default()
-            },
+            self.child_clip_stencil_pass_params(ctx, inner_radii),
             DrawRectInput::default(),
             DrawRectOutput::default(),
         );
-        decrement.set_border_width(0.0);
-        decrement.set_border_radii(inner_radii.to_array());
         decrement.set_stencil_decrement(scope.child_clip_id);
         decrement.set_color_write_enabled(false);
         self.push_stencil_pass(graph, ctx, decrement);
@@ -400,6 +379,25 @@ impl Element {
         ctx.pop_clip_id();
         ctx.restore_scissor_rect(scope.previous_scissor);
         debug_assert_eq!(ctx.current_clip_id(), scope.parent_clip_id);
+    }
+
+    fn child_clip_stencil_pass_params(
+        &self,
+        ctx: &UiBuildContext,
+        inner_radii: CornerRadii,
+    ) -> RectPassParams {
+        let inner = self.inner_clip_rect();
+        let [inner_x, inner_y] = ctx.paint_point(inner.x, inner.y);
+        let mut pass_params = RectPassParams {
+            position: [inner_x, inner_y],
+            size: [inner.width, inner.height],
+            fill_color: [0.0, 0.0, 0.0, 0.0],
+            opacity: 1.0,
+            ..Default::default()
+        };
+        pass_params.set_border_width(0.0);
+        pass_params.set_border_radii(inner_radii.to_array());
+        pass_params
     }
 
     fn current_layout_transition_size(&self) -> (f32, f32) {

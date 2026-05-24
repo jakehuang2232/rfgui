@@ -618,3 +618,20 @@ pub(crate) fn logical_scissor_to_target_physical(
         (clamped_bottom - clamped_top) as u32,
     ])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::view::viewport::Viewport;
+
+    #[test]
+    fn logical_scissor_to_target_physical_preserves_fractional_scaled_coverage() {
+        let mut viewport = Viewport::new();
+        viewport.set_scale_factor(1.25);
+
+        let physical =
+            logical_scissor_to_target_physical(&viewport, [10, 20, 101, 51], (3, 7), (200, 200));
+
+        assert_eq!(physical, Some([9, 18, 127, 64]));
+    }
+}
