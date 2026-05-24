@@ -422,7 +422,10 @@ impl Element {
         if self.has_active_layout_transition() {
             self.current_layout_transition_size()
         } else {
-            self.current_layout_target_size()
+            (
+                self.layout_state.layout_size.width.max(0.0),
+                self.layout_state.layout_size.height.max(0.0),
+            )
         }
     }
 

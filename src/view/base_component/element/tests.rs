@@ -5103,6 +5103,22 @@ mod tests {
     }
 
     #[test]
+    fn box_model_snapshot_uses_rendered_size_without_polluting_layout_target() {
+        let mut el = Element::new(0.0, 0.0, 100.0, 80.0);
+        el.layout_state.layout_position = LayoutPosition { x: 5.0, y: 7.0 };
+        el.layout_state.layout_size.width = 48.0;
+        el.layout_state.layout_size.height = 30.0;
+
+        let snapshot = el.box_model_snapshot();
+        assert_eq!(snapshot.x, 5.0);
+        assert_eq!(snapshot.y, 7.0);
+        assert_eq!(snapshot.width, 48.0);
+        assert_eq!(snapshot.height, 30.0);
+        assert_eq!(el.layout_target_size(), (100.0, 80.0));
+        assert_eq!(el.measured_size(), (100.0, 80.0));
+    }
+
+    #[test]
     fn zero_height_layout_transition_still_clips_children() {
         let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);

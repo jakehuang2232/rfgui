@@ -415,6 +415,50 @@ impl TextAreaTextRun {
             return Vec::new();
         }
         if let Some(layout) = self.text_layout.as_ref() {
+            let line_fragments = layout.inline_line_fragments(&self.text);
+            if line_fragments.len() > 1 && line_fragments.len() == self.inline_paint_fragments.len()
+            {
+                let origin = self.layout_state.layout_position;
+                let mut out = Vec::new();
+                let mut consumed_chars = 0_usize;
+                for (line, fragment_rect) in line_fragments
+                    .into_iter()
+                    .zip(self.inline_paint_fragments.iter())
+                {
+                    let frag_chars = line.content.chars().count();
+                    let frag_start = consumed_chars;
+                    let frag_end = consumed_chars + frag_chars;
+                    consumed_chars = frag_end;
+                    if frag_end <= start_char || frag_start >= end_char {
+                        continue;
+                    }
+                    let fragment_start = start_char.saturating_sub(frag_start);
+                    let fragment_end = end_char.saturating_sub(frag_start).min(frag_chars);
+                    let fragment_layout = measure_text_layout(
+                        line.content.as_str(),
+                        Some(line.width.max(1.0)),
+                        false,
+                        self.font_size,
+                        self.line_height,
+                        self.font_weight,
+                        TextLayoutAlignment::Left,
+                        self.font_families.as_slice(),
+                    );
+                    for rect in fragment_layout.text_layout.selection_rects(
+                        line.content.as_str(),
+                        fragment_start,
+                        fragment_end,
+                    ) {
+                        out.push(Rect {
+                            x: fragment_rect.x - origin.x + rect.x,
+                            y: fragment_rect.y - origin.y + rect.y,
+                            width: rect.width,
+                            height: rect.height,
+                        });
+                    }
+                }
+                return out;
+            }
             return layout.selection_rects(self.text.as_str(), start_char, end_char);
         }
         Vec::new()

@@ -1702,7 +1702,9 @@ mod tests {
             .downcast_ref::<TextArea>()
             .expect("TextArea root");
         let mut enabled_fragment_y = None;
+        let mut enabled_selection_y = None;
         let mut activity_fragment_y = None;
+        let mut activity_selection_y = None;
         let mut api_segment_y = None;
         let mut user_segment_y = None;
         for key in &text_area.children {
@@ -1719,6 +1721,22 @@ mod tests {
                     if content.contains("/activity/with") {
                         activity_fragment_y = Some(rect.y);
                     }
+                }
+                if let Some(start) = run.text.find("enabled.") {
+                    let rect = run
+                        .local_selection_rects(start, start + "enabled.".len())
+                        .into_iter()
+                        .next()
+                        .expect("enabled. selection rect");
+                    enabled_selection_y = Some(node.element.box_model_snapshot().y + rect.y);
+                }
+                if let Some(start) = run.text.find("/activity/with") {
+                    let rect = run
+                        .local_selection_rects(start, start + "/activity/with".len())
+                        .into_iter()
+                        .next()
+                        .expect("/activity selection rect");
+                    activity_selection_y = Some(node.element.box_model_snapshot().y + rect.y);
                 }
                 if run.text.contains("/activity/with") {
                     activity_fragment_y = Some(node.element.box_model_snapshot().y);
@@ -1741,16 +1759,26 @@ mod tests {
         }
 
         let enabled_y = enabled_fragment_y.expect("enabled. fragment");
+        let enabled_sel_y = enabled_selection_y.expect("enabled. selection");
         let api_y = api_segment_y.expect("{{API_HOST}} segment");
         let activity_y = activity_fragment_y.expect("/activity fragment");
+        let activity_sel_y = activity_selection_y.expect("/activity selection");
         let user_y = user_segment_y.expect("{{USER_ID}} segment");
         assert!(
             enabled_y > api_y + 1.0,
             "Bottom align should place the shorter enabled. fragment below the taller API badge top, enabled_y={enabled_y}, api_y={api_y}",
         );
         assert!(
+            (enabled_sel_y - enabled_y).abs() < 0.5,
+            "Selection rect should follow bottom-aligned enabled. fragment, selection_y={enabled_sel_y}, fragment_y={enabled_y}",
+        );
+        assert!(
             activity_y > user_y + 1.0,
             "Bottom align should place the shorter /activity fragment below the taller USER_ID badge top, activity_y={activity_y}, user_y={user_y}",
+        );
+        assert!(
+            (activity_sel_y - activity_y).abs() < 0.5,
+            "Selection rect should follow bottom-aligned /activity fragment, selection_y={activity_sel_y}, fragment_y={activity_y}",
         );
     }
 
