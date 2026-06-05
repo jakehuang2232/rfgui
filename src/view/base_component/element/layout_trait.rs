@@ -153,8 +153,11 @@ impl Layoutable for Element {
             placement_dirty_mask,
             LayoutGateCandidatePhase::Placement,
         );
+        let inline_ifc_layout_call_site_dirty =
+            self.inline_ifc_layout_call_site_dirty_gate(arena, placement);
         if !self.dirty_flags.intersects(placement_dirty_mask)
             && !child_placement_dirty
+            && !inline_ifc_layout_call_site_dirty
             && self.last_layout_placement == Some(placement)
             && self.hit_test_clip_matches_current_placement(placement)
             && (self.children.is_empty()
@@ -267,6 +270,10 @@ impl Layoutable for Element {
         LAYOUT_PLACE_PROFILE.with(|profile| {
             profile.borrow_mut().place_children_ms += place_children_elapsed_ms;
         });
+        self.run_inline_ifc_layout_call_site_opt_in_after_place(
+            arena,
+            child_layout_inner_size.width,
+        );
         self.pop_ancestor_anchor_scope();
         self.end_place_scope();
         self.last_layout_placement = Some(placement);
@@ -428,12 +435,19 @@ impl Layoutable for Element {
             let right_inset = (self.border_widths.right + self.padding.right).max(0.0);
             let inline_fragment_available_width = |line_idx: usize, line_count: usize| {
                 self.last_inline_measure_context.map(|context| {
-                    let available = if line_idx == 0 {
-                        context.first_available_width
-                    } else {
-                        context.full_available_width
-                    };
-                    available
+                    // Bound every fragment by the *full* line width it was
+                    // actually wrapped at, NOT the remaining first-line slot.
+                    // The inner content already chose its own wrap — including
+                    // moving a too-wide first word down to a full-width line
+                    // (`Text::first_line_width_for_word_boundary`). Capping the
+                    // first fragment to the tiny `first_available_width` residue
+                    // would report a full-width first line as narrow, so the
+                    // outer inline solver keeps it on the current line and clips
+                    // it to a sliver (e.g. "Permission…copy" → "Pe"). Reporting
+                    // the natural width lets the outer solver wrap the whole
+                    // element down when its first line genuinely doesn't fit the
+                    // remaining slot, matching the inner wrap decision.
+                    context.full_available_width
                         - if line_idx == 0 { left_inset } else { 0.0 }
                         - if line_idx + 1 == line_count {
                             right_inset

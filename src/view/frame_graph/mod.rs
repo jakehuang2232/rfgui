@@ -16,4 +16,6 @@ pub use frame_graph::{
     GraphicsRecordContext, PrepareContext, ResourceCache, ResourceLifetime, SampleCountPolicy,
     TransferRecordContext, dump_cache_stats, register_cache_stats,
 };
+#[cfg(test)]
+pub(crate) use frame_graph::{PassDescriptor, PassDetails};
 pub use texture_resource::TextureDesc;

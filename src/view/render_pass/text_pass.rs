@@ -31,6 +31,13 @@ pub struct TextPass {
     output: TextOutput,
 }
 
+pub(crate) struct TextPreparedInputPass {
+    params: TextPassPreparedParams,
+    prepared: Option<TextPreparedState>,
+    input: TextInput,
+    output: TextOutput,
+}
+
 #[derive(Clone)]
 pub struct TextPassFragment {
     pub content: String,
@@ -52,6 +59,20 @@ pub struct TextPassParams {
     pub allow_wrap: bool,
     pub scissor_rect: Option<[u32; 4]>,
     pub stencil_clip_id: Option<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextPassPreparedParams {
+    pub(crate) staging_input: TextPassPreparedStagingInput,
+    pub(crate) fragments: Vec<TextPassPreparedFragment>,
+    pub(crate) scissor_rect: Option<[u32; 4]>,
+    pub(crate) stencil_clip_id: Option<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TextPassPreparedFragment {
+    pub(crate) origin: [f32; 2],
+    pub(crate) size: [f32; 2],
 }
 
 impl TextPassParams {
@@ -90,6 +111,21 @@ pub struct TextOutput {
 
 impl TextPass {
     pub fn new(params: TextPassParams, input: TextInput, output: TextOutput) -> Self {
+        Self {
+            params,
+            prepared: None,
+            input,
+            output,
+        }
+    }
+}
+
+impl TextPreparedInputPass {
+    pub(crate) fn new(
+        params: TextPassPreparedParams,
+        input: TextInput,
+        output: TextOutput,
+    ) -> Self {
         Self {
             params,
             prepared: None,
@@ -189,8 +225,149 @@ struct PendingGlyphInstance {
     fragment_index: u32,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextPassRasterGlyphInput {
+    pub(crate) glyph_id: u32,
+    pub(crate) font_size: f32,
+    pub(crate) font_data: Option<ParleyFontData>,
+    pub(crate) font_data_id: u64,
+    pub(crate) font_index: u32,
+    pub(crate) normalized_coords_hash: u64,
+}
+
+impl TextPassRasterGlyphInput {
+    #[cfg(test)]
+    pub(crate) fn from_text_glyph(glyph: &TextGlyph) -> Option<Self> {
+        let font_data = glyph.font_data.as_ref()?;
+        Some(Self {
+            glyph_id: glyph.id,
+            font_size: glyph.font_size,
+            font_data: Some(font_data.clone()),
+            font_data_id: font_data.data.id(),
+            font_index: font_data.index,
+            normalized_coords_hash: glyph.normalized_coords_hash,
+        })
+    }
+
+    fn to_text_glyph(&self) -> Option<TextGlyph> {
+        let font_data = self.font_data.as_ref()?;
+        if font_data.data.id() != self.font_data_id || font_data.index != self.font_index {
+            return None;
+        }
+        Some(TextGlyph {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            id: self.glyph_id,
+            font_size: self.font_size,
+            font_data: Some(font_data.clone()),
+            normalized_coords_hash: self.normalized_coords_hash,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TextPassGlyphPaintInput {
+    pub(crate) local_pos: [f32; 2],
+    pub(crate) color: [f32; 4],
+    pub(crate) opacity: f32,
+    pub(crate) fragment_index: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextPassPreparedStagingInput {
+    pub(crate) scale_factor: f32,
+    pub(crate) glyphs: Vec<TextPassPreparedStagingGlyphInput>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextPassPreparedStagingGlyphInput {
+    pub(crate) raster: TextPassRasterGlyphInput,
+    pub(crate) paint: TextPassGlyphPaintInput,
+    pub(crate) final_paint_pos: [f32; 2],
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextPassPreparedStagingProbe {
+    pub(crate) scale_factor: f32,
+    pub(crate) glyphs: Vec<TextPassPreparedStagingGlyph>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextPassPreparedStagingGlyph {
+    pub(crate) glyph_index: usize,
+    pub(crate) raster_key: Option<TextRasterKey>,
+    pub(crate) paint: TextPassGlyphPaintInput,
+    pub(crate) final_paint_pos: [f32; 2],
+    pub(crate) instance_local_pos: [f32; 2],
+    pub(crate) instance_size: [f32; 2],
+    pub(crate) atlas_kind: TextPassPreparedStagingAtlasKind,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextPassPreparedStagingAtlasKind {
+    Mask,
+    Color,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextPassPrepareProbe {
+    pub(crate) scale_factor: f32,
+    pub(crate) fragments: Vec<TextPassPrepareFragmentProbe>,
+    pub(crate) glyphs: Vec<TextPassPrepareGlyphProbe>,
+    pub(crate) mask_draw: Option<TextPassPrepareDrawProbe>,
+    pub(crate) color_draw: Option<TextPassPrepareDrawProbe>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TextPassPrepareFragmentProbe {
+    pub(crate) origin: [f32; 2],
+    pub(crate) clip_min: [f32; 2],
+    pub(crate) clip_max: [f32; 2],
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextPassPrepareGlyphProbe {
+    pub(crate) atlas_kind: TextPassPreparedStagingAtlasKind,
+    pub(crate) local_pos: [f32; 2],
+    pub(crate) size: [f32; 2],
+    pub(crate) color: [f32; 4],
+    pub(crate) opacity: f32,
+    pub(crate) fragment_index: u32,
+    pub(crate) image_width: u32,
+    pub(crate) image_height: u32,
+    pub(crate) image_data_hash: u64,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextPassPrepareDrawProbe {
+    pub(crate) atlas_width: u32,
+    pub(crate) atlas_height: u32,
+    pub(crate) pixel_hash: u64,
+    pub(crate) instances: Vec<TextPassPrepareInstanceProbe>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TextPassPrepareInstanceProbe {
+    pub(crate) local_pos: [f32; 2],
+    pub(crate) size: [f32; 2],
+    pub(crate) uv_min: [f32; 2],
+    pub(crate) uv_max: [f32; 2],
+    pub(crate) color: [f32; 4],
+    pub(crate) opacity: f32,
+    pub(crate) fragment_index: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct TextRasterKey {
+pub(crate) struct TextRasterKey {
     font_blob_id: u64,
     font_index: u32,
     glyph_id: u32,
@@ -199,7 +376,7 @@ struct TextRasterKey {
     normalized_coords_hash: u64,
 }
 
-struct CachedRasterImage {
+pub(crate) struct CachedRasterImage {
     image: SwashRasterImage,
     last_used_frame: u64,
 }
@@ -268,6 +445,59 @@ impl GraphicsPass for TextPass {
 
     fn name(&self) -> &'static str {
         "TextPass"
+    }
+}
+
+impl GraphicsPass for TextPreparedInputPass {
+    fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+        builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
+        if builder.texture_target(&self.output.render_target).is_some() {
+            builder.write_color(
+                &self.output.render_target,
+                GraphicsColorAttachmentOps::load(),
+            );
+        } else {
+            builder.write_surface_color(GraphicsColorAttachmentOps::load());
+        }
+
+        if self.input.pass_context.uses_depth_stencil {
+            builder.read_output_depth();
+            builder.read_output_stencil();
+        }
+    }
+
+    fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
+        self.prepared =
+            prepare_text_prepared_input_pass(&self.params, &self.input, &self.output, ctx);
+    }
+
+    fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
+        let Some(prepared) = self.prepared.as_ref() else {
+            return;
+        };
+        if let Some(scissor) = prepared.scissor_rect {
+            ctx.set_scissor_rect(scissor[0], scissor[1], scissor[2], scissor[3]);
+        }
+        if let Some(reference) = prepared.stencil_clip_id {
+            ctx.set_stencil_reference(reference as u32);
+        }
+
+        draw_prepared_text(
+            ctx,
+            prepared,
+            TextPipelineKind::Mask,
+            prepared.mask_draw.as_ref(),
+        );
+        draw_prepared_text(
+            ctx,
+            prepared,
+            TextPipelineKind::Color,
+            prepared.color_draw.as_ref(),
+        );
+    }
+
+    fn name(&self) -> &'static str {
+        "TextPreparedInputPass"
     }
 }
 
@@ -461,6 +691,192 @@ fn prepare_text_pass(
     })
 }
 
+fn prepare_text_prepared_input_pass(
+    params: &TextPassPreparedParams,
+    input: &TextInput,
+    output: &TextOutput,
+    ctx: &mut PrepareContext<'_, '_>,
+) -> Option<TextPreparedState> {
+    if params.fragments.is_empty() || params.staging_input.glyphs.is_empty() {
+        return None;
+    }
+
+    let target_handle = output.render_target.handle();
+    let (device, queue, surface_format, surface_size, scale_factor) = {
+        let viewport = ctx.viewport();
+        (
+            viewport.device()?.clone(),
+            viewport.queue()?.clone(),
+            viewport.surface_format(),
+            viewport.surface_size(),
+            viewport.scale_factor().max(0.0001),
+        )
+    };
+
+    let target_format = target_handle
+        .and_then(|handle| render_target_format(ctx, handle))
+        .unwrap_or(surface_format);
+    let sample_count = target_handle
+        .and_then(|handle| render_target_sample_count(ctx, handle))
+        .unwrap_or(1)
+        .max(1);
+    let target = resolve_texture_ref(target_handle, ctx, surface_size, None);
+    let target_origin = target_handle
+        .and_then(|handle| render_target_origin(ctx, handle))
+        .unwrap_or((0, 0));
+    let scissor_rect = params
+        .scissor_rect
+        .or(input.pass_context.scissor_rect)
+        .and_then(|rect| {
+            logical_scissor_to_target_physical(
+                ctx.viewport(),
+                rect,
+                target_origin,
+                target.physical_size,
+            )
+        });
+    let stencil_clip_id = params
+        .stencil_clip_id
+        .or(input.pass_context.stencil_clip_id);
+
+    let renderer_key = TextRendererKey {
+        format: target_format,
+        sample_count,
+        stencil_enabled: input.pass_context.uses_depth_stencil,
+    };
+
+    let fragments = params
+        .fragments
+        .iter()
+        .map(|fragment| {
+            let width = fragment.size[0].max(1.0);
+            let height = fragment.size[1].max(1.0);
+            let origin = [
+                fragment.origin[0] * scale_factor - target_origin.0 as f32
+                    + target.logical_origin.0 as f32,
+                fragment.origin[1] * scale_factor - target_origin.1 as f32
+                    + target.logical_origin.1 as f32,
+            ];
+            FragmentUniform {
+                origin,
+                clip_min: origin,
+                clip_max: [
+                    origin[0] + width * scale_factor,
+                    origin[1] + height * scale_factor,
+                ],
+                _pad: [0.0, 0.0],
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut pending = Vec::new();
+    TEXT_RESOURCES.with(|slot| {
+        let mut resources = slot.borrow_mut();
+        let frame_epoch = resources.frame_epoch;
+        let TextResources {
+            scale_context,
+            raster_cache,
+            ..
+        } = &mut *resources;
+        collect_prepared_staging_glyphs(
+            scale_context,
+            raster_cache,
+            frame_epoch,
+            &params.staging_input,
+            fragments.as_slice(),
+            scale_factor,
+            &mut pending,
+        );
+    });
+
+    if pending.is_empty() {
+        return None;
+    }
+
+    let screen_uniform = ScreenUniform {
+        screen_size: [
+            target.physical_size.0.max(1) as f32,
+            target.physical_size.1.max(1) as f32,
+        ],
+        _pad: [0.0, 0.0],
+    };
+    let screen_buffer = super::create_transient_buffer(
+        &device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Text Screen Uniform Buffer"),
+            contents: bytemuck::bytes_of(&screen_uniform),
+            usage: wgpu::BufferUsages::UNIFORM,
+        },
+    );
+    let fragment_buffer = super::create_transient_buffer(
+        &device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Text Fragment Storage Buffer"),
+            contents: bytemuck::cast_slice(&fragments),
+            usage: wgpu::BufferUsages::STORAGE,
+        },
+    );
+
+    let (globals_bind_group, mask_draw, color_draw) = TEXT_RESOURCES.with(|slot| {
+        let mut resources = slot.borrow_mut();
+        resources.ensure_common(&device);
+        let screen_layout = resources
+            .screen_layout
+            .as_ref()
+            .expect("screen bind group layout initialized");
+        let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Text Globals Bind Group"),
+            layout: screen_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: screen_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: fragment_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let mask_draw = build_prepared_draw(
+            &device,
+            &queue,
+            &mut resources,
+            AtlasKind::Mask,
+            pending.iter().filter(|glyph| glyph.kind == AtlasKind::Mask),
+        );
+        let color_draw = build_prepared_draw(
+            &device,
+            &queue,
+            &mut resources,
+            AtlasKind::Color,
+            pending
+                .iter()
+                .filter(|glyph| glyph.kind == AtlasKind::Color),
+        );
+        resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Mask);
+        resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Color);
+        (globals_bind_group, mask_draw, color_draw)
+    });
+
+    if mask_draw.is_none() && color_draw.is_none() {
+        screen_buffer.destroy();
+        fragment_buffer.destroy();
+        return None;
+    }
+
+    Some(TextPreparedState {
+        renderer_key,
+        globals_bind_group,
+        screen_buffer,
+        fragment_buffer,
+        mask_draw,
+        color_draw,
+        scissor_rect,
+        stencil_clip_id,
+    })
+}
+
 fn collect_fragment_glyphs(
     scale_context: &mut SwashScaleContext,
     raster_cache: &mut FxHashMap<TextRasterKey, CachedRasterImage>,
@@ -514,6 +930,314 @@ fn collect_fragment_glyphs(
     }
 }
 
+fn collect_prepared_staging_glyphs(
+    scale_context: &mut SwashScaleContext,
+    raster_cache: &mut FxHashMap<TextRasterKey, CachedRasterImage>,
+    frame_epoch: u64,
+    input: &TextPassPreparedStagingInput,
+    fragments: &[FragmentUniform],
+    scale_factor: f32,
+    out: &mut Vec<PendingGlyphInstance>,
+) {
+    for glyph in input.glyphs.iter() {
+        let Some(fragment) = fragments.get(glyph.paint.fragment_index as usize) else {
+            continue;
+        };
+        let Some(image) = rasterize_text_pass_glyph_input(
+            scale_context,
+            raster_cache,
+            frame_epoch,
+            &glyph.raster,
+            scale_factor,
+        ) else {
+            continue;
+        };
+        let width = image.placement.width.max(1) as f32;
+        let height = image.placement.height.max(1) as f32;
+        if width <= 0.0 || height <= 0.0 || image.data.is_empty() {
+            continue;
+        }
+        let kind = match image.content {
+            SwashRasterContent::Color => AtlasKind::Color,
+            SwashRasterContent::Mask | SwashRasterContent::SubpixelMask => AtlasKind::Mask,
+        };
+        let local_pos = snap_text_local_pos(
+            fragment.origin,
+            [
+                glyph.paint.local_pos[0] * scale_factor + image.placement.left as f32,
+                glyph.paint.local_pos[1] * scale_factor - image.placement.top as f32,
+            ],
+        );
+        out.push(PendingGlyphInstance {
+            kind,
+            local_pos,
+            size: [width, height],
+            image,
+            color: glyph.paint.color,
+            opacity: glyph.paint.opacity,
+            fragment_index: glyph.paint.fragment_index,
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn build_text_pass_prepared_staging_probe(
+    input: &TextPassPreparedStagingInput,
+) -> TextPassPreparedStagingProbe {
+    let scale_factor = input.scale_factor.max(0.0001);
+    let glyphs = TEXT_RESOURCES.with(|slot| {
+        let mut resources = slot.borrow_mut();
+        let frame_epoch = resources.frame_epoch;
+        let TextResources {
+            scale_context,
+            raster_cache,
+            ..
+        } = &mut *resources;
+        input
+            .glyphs
+            .iter()
+            .enumerate()
+            .filter_map(|(glyph_index, glyph)| {
+                let image = rasterize_text_pass_glyph_input(
+                    scale_context,
+                    raster_cache,
+                    frame_epoch,
+                    &glyph.raster,
+                    scale_factor,
+                )?;
+                let width = image.placement.width.max(1) as f32;
+                let height = image.placement.height.max(1) as f32;
+                if width <= 0.0 || height <= 0.0 || image.data.is_empty() {
+                    return None;
+                }
+                let atlas_kind = match image.content {
+                    SwashRasterContent::Color => TextPassPreparedStagingAtlasKind::Color,
+                    SwashRasterContent::Mask | SwashRasterContent::SubpixelMask => {
+                        TextPassPreparedStagingAtlasKind::Mask
+                    }
+                };
+                let fragment_origin = [
+                    (glyph.final_paint_pos[0] - glyph.paint.local_pos[0]) * scale_factor,
+                    (glyph.final_paint_pos[1] - glyph.paint.local_pos[1]) * scale_factor,
+                ];
+                let local_pos = snap_text_local_pos(
+                    fragment_origin,
+                    [
+                        glyph.paint.local_pos[0] * scale_factor + image.placement.left as f32,
+                        glyph.paint.local_pos[1] * scale_factor - image.placement.top as f32,
+                    ],
+                );
+                Some(TextPassPreparedStagingGlyph {
+                    glyph_index,
+                    raster_key: text_raster_key_for_raster_input(&glyph.raster, scale_factor),
+                    paint: glyph.paint,
+                    final_paint_pos: glyph.final_paint_pos,
+                    instance_local_pos: local_pos,
+                    instance_size: [width, height],
+                    atlas_kind,
+                })
+            })
+            .collect()
+    });
+
+    TextPassPreparedStagingProbe {
+        scale_factor,
+        glyphs,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn build_text_pass_prepare_probe_for_test(
+    params: &TextPassParams,
+    scale_factor: f32,
+) -> TextPassPrepareProbe {
+    let scale_factor = scale_factor.max(0.0001);
+    let mut fragments = Vec::with_capacity(params.fragments.len());
+    let mut pending = Vec::new();
+    for fragment in params.fragments.iter() {
+        if fragment.content.is_empty() || fragment.opacity <= 0.0 {
+            continue;
+        }
+        let width = fragment.width.max(1.0);
+        let height = fragment.height.max(1.0);
+        let origin = [fragment.x * scale_factor, fragment.y * scale_factor];
+        fragments.push(FragmentUniform {
+            origin,
+            clip_min: origin,
+            clip_max: [
+                origin[0] + width * scale_factor,
+                origin[1] + height * scale_factor,
+            ],
+            _pad: [0.0, 0.0],
+        });
+        let Some(layout) = fragment.text_layout.as_ref() else {
+            continue;
+        };
+        let active_fragment_index = (fragments.len() - 1) as u32;
+        TEXT_RESOURCES.with(|slot| {
+            let mut resources = slot.borrow_mut();
+            let frame_epoch = resources.frame_epoch;
+            let TextResources {
+                scale_context,
+                raster_cache,
+                ..
+            } = &mut *resources;
+            collect_fragment_glyphs(
+                scale_context,
+                raster_cache,
+                frame_epoch,
+                layout,
+                origin,
+                fragment.color,
+                fragment.opacity,
+                active_fragment_index,
+                scale_factor,
+                &mut pending,
+            );
+        });
+    }
+
+    text_pass_prepare_probe_from_parts(scale_factor, &fragments, pending)
+}
+
+#[cfg(test)]
+pub(crate) fn build_text_prepared_input_pass_prepare_probe_for_test(
+    params: &TextPassPreparedParams,
+    scale_factor: f32,
+) -> TextPassPrepareProbe {
+    let scale_factor = scale_factor.max(0.0001);
+    let fragments = params
+        .fragments
+        .iter()
+        .map(|fragment| {
+            let width = fragment.size[0].max(1.0);
+            let height = fragment.size[1].max(1.0);
+            let origin = [
+                fragment.origin[0] * scale_factor,
+                fragment.origin[1] * scale_factor,
+            ];
+            FragmentUniform {
+                origin,
+                clip_min: origin,
+                clip_max: [
+                    origin[0] + width * scale_factor,
+                    origin[1] + height * scale_factor,
+                ],
+                _pad: [0.0, 0.0],
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut pending = Vec::new();
+    TEXT_RESOURCES.with(|slot| {
+        let mut resources = slot.borrow_mut();
+        let frame_epoch = resources.frame_epoch;
+        let TextResources {
+            scale_context,
+            raster_cache,
+            ..
+        } = &mut *resources;
+        collect_prepared_staging_glyphs(
+            scale_context,
+            raster_cache,
+            frame_epoch,
+            &params.staging_input,
+            fragments.as_slice(),
+            scale_factor,
+            &mut pending,
+        );
+    });
+
+    text_pass_prepare_probe_from_parts(scale_factor, &fragments, pending)
+}
+
+#[cfg(test)]
+fn text_pass_prepare_probe_from_parts(
+    scale_factor: f32,
+    fragments: &[FragmentUniform],
+    pending: Vec<PendingGlyphInstance>,
+) -> TextPassPrepareProbe {
+    let glyphs = pending
+        .iter()
+        .map(|glyph| {
+            let atlas_kind = match glyph.kind {
+                AtlasKind::Mask => TextPassPreparedStagingAtlasKind::Mask,
+                AtlasKind::Color => TextPassPreparedStagingAtlasKind::Color,
+            };
+            TextPassPrepareGlyphProbe {
+                atlas_kind,
+                local_pos: glyph.local_pos,
+                size: glyph.size,
+                color: glyph.color,
+                opacity: glyph.opacity,
+                fragment_index: glyph.fragment_index,
+                image_width: glyph.image.placement.width,
+                image_height: glyph.image.placement.height,
+                image_data_hash: hash_bytes_for_test(glyph.image.data.as_slice()),
+            }
+        })
+        .collect();
+    let mask_draw = text_pass_prepare_draw_probe_from_pending(
+        AtlasKind::Mask,
+        pending.iter().filter(|glyph| glyph.kind == AtlasKind::Mask),
+    );
+    let color_draw = text_pass_prepare_draw_probe_from_pending(
+        AtlasKind::Color,
+        pending
+            .iter()
+            .filter(|glyph| glyph.kind == AtlasKind::Color),
+    );
+
+    TextPassPrepareProbe {
+        scale_factor,
+        fragments: fragments
+            .iter()
+            .map(|fragment| TextPassPrepareFragmentProbe {
+                origin: fragment.origin,
+                clip_min: fragment.clip_min,
+                clip_max: fragment.clip_max,
+            })
+            .collect(),
+        glyphs,
+        mask_draw,
+        color_draw,
+    }
+}
+
+#[cfg(test)]
+fn text_pass_prepare_draw_probe_from_pending<'a>(
+    atlas_kind: AtlasKind,
+    glyphs: impl Iterator<Item = &'a PendingGlyphInstance>,
+) -> Option<TextPassPrepareDrawProbe> {
+    let glyphs = glyphs.collect::<Vec<_>>();
+    let atlas = pack_atlas(atlas_kind, glyphs.as_slice())?;
+    Some(TextPassPrepareDrawProbe {
+        atlas_width: atlas.width,
+        atlas_height: atlas.height,
+        pixel_hash: hash_bytes_for_test(atlas.pixels.as_slice()),
+        instances: atlas
+            .instances
+            .into_iter()
+            .map(|instance| TextPassPrepareInstanceProbe {
+                local_pos: instance.local_pos,
+                size: instance.size,
+                uv_min: instance.uv_min,
+                uv_max: instance.uv_max,
+                color: instance.color,
+                opacity: instance.opacity,
+                fragment_index: instance.fragment_index,
+            })
+            .collect(),
+    })
+}
+
+#[cfg(test)]
+fn hash_bytes_for_test(bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
 fn snap_text_local_pos(fragment_origin: [f32; 2], local_pos: [f32; 2]) -> [f32; 2] {
     [
         text_render_trunc(fragment_origin[0] + local_pos[0]) - fragment_origin[0],
@@ -537,14 +1261,7 @@ fn rasterize_glyph(
     scale_factor: f32,
 ) -> Option<SwashRasterImage> {
     let font_data = glyph.font_data.as_ref()?;
-    let key = TextRasterKey {
-        font_blob_id: font_data.data.id(),
-        font_index: font_data.index,
-        glyph_id: glyph.id,
-        font_size_bits: glyph.font_size.to_bits(),
-        scale_factor_bits: scale_factor.to_bits(),
-        normalized_coords_hash: glyph.normalized_coords_hash,
-    };
+    let key = text_raster_key_for_text_glyph(glyph, scale_factor)?;
     if let Some(entry) = raster_cache.get_mut(&key) {
         entry.last_used_frame = frame_epoch;
         return Some(entry.image.clone());
@@ -578,6 +1295,75 @@ fn rasterize_glyph(
         },
     );
     Some(image)
+}
+
+#[allow(dead_code)]
+pub(crate) fn rasterize_text_pass_glyph_input(
+    scale_context: &mut SwashScaleContext,
+    raster_cache: &mut FxHashMap<TextRasterKey, CachedRasterImage>,
+    frame_epoch: u64,
+    glyph: &TextPassRasterGlyphInput,
+    scale_factor: f32,
+) -> Option<SwashRasterImage> {
+    rasterize_glyph(
+        scale_context,
+        raster_cache,
+        frame_epoch,
+        &glyph.to_text_glyph()?,
+        scale_factor,
+    )
+}
+
+pub(crate) fn text_raster_key_for_text_glyph(
+    glyph: &TextGlyph,
+    scale_factor: f32,
+) -> Option<TextRasterKey> {
+    let font_data = glyph.font_data.as_ref()?;
+    Some(text_raster_key_from_parts(
+        font_data.data.id(),
+        font_data.index,
+        glyph.id,
+        glyph.font_size,
+        scale_factor,
+        glyph.normalized_coords_hash,
+    ))
+}
+
+#[allow(dead_code)]
+pub(crate) fn text_raster_key_for_raster_input(
+    glyph: &TextPassRasterGlyphInput,
+    scale_factor: f32,
+) -> Option<TextRasterKey> {
+    let font_data = glyph.font_data.as_ref()?;
+    if font_data.data.id() != glyph.font_data_id || font_data.index != glyph.font_index {
+        return None;
+    }
+    Some(text_raster_key_from_parts(
+        glyph.font_data_id,
+        glyph.font_index,
+        glyph.glyph_id,
+        glyph.font_size,
+        scale_factor,
+        glyph.normalized_coords_hash,
+    ))
+}
+
+fn text_raster_key_from_parts(
+    font_blob_id: u64,
+    font_index: u32,
+    glyph_id: u32,
+    font_size: f32,
+    scale_factor: f32,
+    normalized_coords_hash: u64,
+) -> TextRasterKey {
+    TextRasterKey {
+        font_blob_id,
+        font_index,
+        glyph_id,
+        font_size_bits: font_size.to_bits(),
+        scale_factor_bits: scale_factor.to_bits(),
+        normalized_coords_hash,
+    }
 }
 
 fn swash_font_ref(font_data: &ParleyFontData) -> Option<SwashFontRef<'_>> {
@@ -1106,6 +1892,9 @@ fn signature_for_params(params: &TextPassParams) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view::text_layout::{
+        TextLayoutAlignment, TextLayoutStyle, build_text_layout_with_style,
+    };
 
     fn fragment(content: &str) -> TextPassFragment {
         TextPassFragment {
@@ -1195,5 +1984,159 @@ mod tests {
         assert_eq!(attrs.attributes[0].offset, 0);
         assert_eq!(attrs.attributes[4].offset, 32);
         assert_eq!(attrs.attributes[6].offset, 52);
+    }
+
+    fn first_renderable_text_glyph() -> TextGlyph {
+        let layout = build_text_layout_with_style(
+            "Raster key",
+            Some(200.0),
+            TextLayoutStyle {
+                font_size: 17.0,
+                line_height: 1.2,
+                font_weight: 500,
+                align: TextLayoutAlignment::Left,
+                allow_wrap: true,
+            },
+            &["sans-serif".to_string()],
+        )
+        .layout;
+        layout
+            .lines()
+            .into_iter()
+            .flat_map(|line| line.glyphs)
+            .find(|glyph| glyph.font_data.is_some())
+            .expect("test layout should produce a glyph with font data")
+    }
+
+    #[test]
+    fn raster_input_key_matches_existing_text_glyph_key_fields() {
+        let glyph = first_renderable_text_glyph();
+        let input = TextPassRasterGlyphInput::from_text_glyph(&glyph)
+            .expect("glyph should carry font data");
+        let scale_factor = 1.75;
+
+        let text_key = text_raster_key_for_text_glyph(&glyph, scale_factor)
+            .expect("text glyph should produce a raster key");
+        let input_key = text_raster_key_for_raster_input(&input, scale_factor)
+            .expect("neutral input should produce a raster key");
+
+        assert_eq!(input_key, text_key);
+        assert_eq!(input_key.glyph_id, glyph.id);
+        assert_eq!(input_key.font_size_bits, glyph.font_size.to_bits());
+        assert_eq!(
+            input_key.font_blob_id,
+            glyph.font_data.as_ref().unwrap().data.id()
+        );
+        assert_eq!(
+            input_key.font_index,
+            glyph.font_data.as_ref().unwrap().index
+        );
+        assert_eq!(
+            input_key.normalized_coords_hash,
+            glyph.normalized_coords_hash
+        );
+    }
+
+    #[test]
+    fn raster_input_rejects_stale_font_handle_identity() {
+        let glyph = first_renderable_text_glyph();
+        let mut input = TextPassRasterGlyphInput::from_text_glyph(&glyph)
+            .expect("glyph should carry font data");
+        input.font_data_id = input.font_data_id.wrapping_add(1);
+
+        assert!(text_raster_key_for_raster_input(&input, 1.0).is_none());
+        assert!(input.to_text_glyph().is_none());
+    }
+
+    #[test]
+    fn raster_input_uses_existing_rasterize_path() {
+        let glyph = first_renderable_text_glyph();
+        let input = TextPassRasterGlyphInput::from_text_glyph(&glyph)
+            .expect("glyph should carry font data");
+        let scale_factor = 1.0;
+        let key = text_raster_key_for_raster_input(&input, scale_factor)
+            .expect("neutral input should produce a raster key");
+        let mut scale_context = SwashScaleContext::new();
+        let mut raster_cache = FxHashMap::default();
+
+        let image = rasterize_text_pass_glyph_input(
+            &mut scale_context,
+            &mut raster_cache,
+            42,
+            &input,
+            scale_factor,
+        )
+        .expect("neutral input should rasterize through the existing glyph path");
+
+        assert!(!image.data.is_empty());
+        assert!(raster_cache.contains_key(&key));
+    }
+
+    #[test]
+    fn paint_input_is_separate_from_raster_key_fields() {
+        let glyph = first_renderable_text_glyph();
+        let input = TextPassRasterGlyphInput::from_text_glyph(&glyph)
+            .expect("glyph should carry font data");
+        let first_paint = TextPassGlyphPaintInput {
+            local_pos: [1.0, 2.0],
+            color: [1.0, 0.0, 0.0, 1.0],
+            opacity: 0.25,
+            fragment_index: 3,
+        };
+        let second_paint = TextPassGlyphPaintInput {
+            local_pos: [8.0, 13.0],
+            color: [0.0, 0.0, 1.0, 1.0],
+            opacity: 0.95,
+            fragment_index: 7,
+        };
+
+        let before = text_raster_key_for_raster_input(&input, 2.0)
+            .expect("neutral input should produce a raster key");
+        let after = text_raster_key_for_raster_input(&input, 2.0)
+            .expect("paint changes are not part of raster key input");
+
+        assert_ne!(first_paint, second_paint);
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn prepared_staging_probe_uses_existing_raster_and_instance_metadata() {
+        let glyph = first_renderable_text_glyph();
+        let raster = TextPassRasterGlyphInput::from_text_glyph(&glyph)
+            .expect("glyph should carry font data");
+        let scale_factor = 1.5;
+        let paint = TextPassGlyphPaintInput {
+            local_pos: [glyph.x + 2.25, glyph.y + 7.5],
+            color: [0.2, 0.4, 0.6, 1.0],
+            opacity: 0.5,
+            fragment_index: 11,
+        };
+        let input = TextPassPreparedStagingInput {
+            scale_factor,
+            glyphs: vec![TextPassPreparedStagingGlyphInput {
+                raster: raster.clone(),
+                paint,
+                final_paint_pos: [23.0 + paint.local_pos[0], 29.0 + paint.local_pos[1]],
+            }],
+        };
+
+        let probe = build_text_pass_prepared_staging_probe(&input);
+
+        assert_eq!(probe.scale_factor, scale_factor);
+        assert_eq!(probe.glyphs.len(), 1);
+        let staged = &probe.glyphs[0];
+        assert_eq!(staged.glyph_index, 0);
+        assert_eq!(
+            staged.raster_key,
+            text_raster_key_for_raster_input(&raster, scale_factor)
+        );
+        assert_eq!(staged.paint, paint);
+        assert_eq!(staged.final_paint_pos, input.glyphs[0].final_paint_pos);
+        assert!(staged.instance_size[0] >= 1.0);
+        assert!(staged.instance_size[1] >= 1.0);
+        assert!(matches!(
+            staged.atlas_kind,
+            TextPassPreparedStagingAtlasKind::Mask | TextPassPreparedStagingAtlasKind::Color
+        ));
     }
 }

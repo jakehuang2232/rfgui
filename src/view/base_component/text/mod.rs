@@ -33,6 +33,16 @@ pub(crate) use self::hit_test::{
     TextAreaSelectionRenderContext, with_text_area_selection_render_context,
 };
 
+#[cfg(test)]
+use crate::view::inline_text_pass_adapter::{
+    InlineTextPassBridgePackage, InlineTextPassPreparedEquivalentProbe,
+    InlineTextPassPreparedInput, TextReadOnlyIfcBridgeInput,
+};
+#[cfg(test)]
+use crate::view::render_pass::text_pass::{
+    TextPassPreparedStagingInput, TextPassPreparedStagingProbe,
+};
+
 pub struct Text {
     pub(super) position: Position,
     pub(super) size: Size,
@@ -82,6 +92,95 @@ pub struct Text {
     pub(super) cursor_explicit: bool,
     pub(super) text_wrap_explicit: bool,
     pub(super) line_height_explicit: bool,
+    pub(super) read_only_ifc_staging_mode: TextReadOnlyIfcStagingMode,
+    #[cfg(test)]
+    pub(super) read_only_ifc_staging_probe: Option<TextReadOnlyIfcStagingProbe>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+// P6 staged rollout gate: read-only non-inline Text now defaults to the
+// prepared candidate, while `Disabled` remains the explicit rollback path.
+#[allow(dead_code)]
+pub(crate) enum TextReadOnlyIfcStagingMode {
+    /// Explicit rollback/disable mode. Read-only Text keeps the existing
+    /// TextPass fragment path and does not build IFC probe metadata.
+    Disabled,
+    /// Build IFC bridge/prepared metadata for tests and comparison, but still
+    /// render through the existing TextPass path.
+    ProbeOnly,
+    /// Formal default candidate branch: read-only non-inline Text renders
+    /// through the IFC prepared-input pass while the existing TextPass path
+    /// remains the defined fallback.
+    RenderPreparedInput,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TextReadOnlyIfcFallback {
+    ExistingTextPass,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TextReadOnlyIfcRenderDecision {
+    ExistingTextPass { capture_probe: bool },
+    PreparedCandidate { fallback: TextReadOnlyIfcFallback },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextInlineIfcStyleMetadata {
+    pub(crate) font_size: f32,
+    pub(crate) line_height: f32,
+    pub(crate) font_weight: u16,
+    pub(crate) brush: [u8; 4],
+    pub(crate) font_families: Vec<String>,
+}
+
+impl TextReadOnlyIfcRenderDecision {
+    pub(crate) fn captures_probe(self) -> bool {
+        match self {
+            Self::ExistingTextPass { capture_probe } => capture_probe,
+            Self::PreparedCandidate { .. } => true,
+        }
+    }
+
+    pub(crate) fn uses_prepared_render_pass(self) -> bool {
+        matches!(self, Self::PreparedCandidate { .. })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fallback(self) -> Option<TextReadOnlyIfcFallback> {
+        match self {
+            Self::ExistingTextPass { .. } => None,
+            Self::PreparedCandidate { fallback } => Some(fallback),
+        }
+    }
+}
+
+impl TextReadOnlyIfcStagingMode {
+    pub(crate) fn render_decision(self) -> TextReadOnlyIfcRenderDecision {
+        match self {
+            Self::Disabled => TextReadOnlyIfcRenderDecision::ExistingTextPass {
+                capture_probe: false,
+            },
+            Self::ProbeOnly => TextReadOnlyIfcRenderDecision::ExistingTextPass {
+                capture_probe: true,
+            },
+            Self::RenderPreparedInput => TextReadOnlyIfcRenderDecision::PreparedCandidate {
+                fallback: TextReadOnlyIfcFallback::ExistingTextPass,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextReadOnlyIfcStagingProbe {
+    pub(crate) mode: TextReadOnlyIfcStagingMode,
+    pub(crate) input: TextReadOnlyIfcBridgeInput,
+    pub(crate) package: InlineTextPassBridgePackage,
+    pub(crate) prepared_input: InlineTextPassPreparedInput,
+    pub(crate) prepared_equivalent: InlineTextPassPreparedEquivalentProbe,
+    pub(crate) text_pass_staging_input: TextPassPreparedStagingInput,
+    pub(crate) text_pass_staging_probe: TextPassPreparedStagingProbe,
 }
 
 pub(crate) use self::profile::{
@@ -155,7 +254,15 @@ impl Text {
             cursor_explicit: false,
             text_wrap_explicit: false,
             line_height_explicit: false,
+            read_only_ifc_staging_mode: TextReadOnlyIfcStagingMode::RenderPreparedInput,
+            #[cfg(test)]
+            read_only_ifc_staging_probe: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_read_only_ifc_staging_mode(&mut self, mode: TextReadOnlyIfcStagingMode) {
+        self.read_only_ifc_staging_mode = mode;
     }
 
     #[cfg(test)]

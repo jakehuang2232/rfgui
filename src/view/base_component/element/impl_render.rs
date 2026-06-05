@@ -373,6 +373,12 @@ impl Element {
         ctx.set_state(shadow_state);
 
         if self.is_fragmentable_inline_element() && !self.inline_paint_fragments.is_empty() {
+            if matches!(
+                self.inline_ifc_render_decision(),
+                ElementInlineIfcRenderDecision::DrawRectPackageCandidate { .. }
+            ) {
+                return self.build_inline_ifc_draw_rect_package_render_pipeline(graph, ctx, opacity);
+            }
             return self.build_inline_fragment_render_pipeline(graph, ctx, fill_color, opacity);
         }
 
@@ -503,6 +509,229 @@ impl Element {
             );
             border_pass.set_border_widths(left, right, top, bottom);
             border_pass.set_border_radii(outer_radii.to_array());
+            self.push_rect_pass_auto(graph, &mut ctx, border_pass);
+        }
+        ctx.into_state()
+    }
+
+    fn inline_ifc_render_decision(&self) -> ElementInlineIfcRenderDecision {
+        if matches!(
+            self.inline_ifc_render_mode,
+            ElementInlineIfcRenderMode::DrawRectPackageCandidate
+        ) && self.inline_ifc_rollout_packages.has_draw_rect_decoration()
+        {
+            ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: self
+                    .inline_ifc_rollout_packages
+                    .atomic_placement
+                    .as_ref()
+                    .is_some_and(|package| !package.placements.is_empty()),
+            }
+        } else {
+            ElementInlineIfcRenderDecision::ExistingInlineFragments
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn update_inline_ifc_rollout_packages_from_root_source(
+        &mut self,
+        root_source: &InlineIfcElementRootSource,
+        element_source: InlineIfcSourceId,
+        cache: &mut InlineIfcElementRootCandidateCache,
+    ) -> InlineIfcElementRootCandidate {
+        let candidate = cache.update(root_source);
+        self.inline_ifc_rollout_packages = candidate
+            .package(element_source)
+            .map(ElementInlineIfcRolloutPackages::from_inline_ifc_distributed)
+            .unwrap_or_default();
+        candidate
+    }
+
+    #[allow(dead_code)]
+    fn install_inline_ifc_rollout_packages_from_candidate(
+        &mut self,
+        packages: Option<&InlineIfcDistributedElementPackages>,
+    ) {
+        self.inline_ifc_rollout_packages = packages
+            .map(ElementInlineIfcRolloutPackages::from_inline_ifc_distributed)
+            .unwrap_or_default();
+    }
+
+    #[cfg(test)]
+    fn inline_ifc_render_decision_for_test(&self) -> ElementInlineIfcRenderDecision {
+        self.inline_ifc_render_decision()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_inline_ifc_render_mode_for_test(
+        &mut self,
+        mode: ElementInlineIfcRenderMode,
+    ) {
+        self.inline_ifc_render_mode = mode;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_inline_ifc_draw_rect_package_for_test(
+        &mut self,
+        package: InlineIfcElementDecorationDrawRectPackage,
+    ) {
+        self.inline_ifc_rollout_packages.decoration_draw_rect = Some(package);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_inline_ifc_atomic_placement_package_for_test(
+        &mut self,
+        package: InlineIfcAtomicBoxPlacementPackage,
+    ) {
+        self.inline_ifc_rollout_packages.atomic_placement = Some(package);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_inline_ifc_rollout_packages_for_test(
+        &mut self,
+        packages: ElementInlineIfcRolloutPackages,
+    ) {
+        self.inline_ifc_rollout_packages = packages;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline_ifc_atomic_placement_metadata_for_test(
+        &self,
+    ) -> Option<ElementInlineIfcAtomicPlacementMetadata> {
+        self.inline_ifc_atomic_placement_metadata()
+    }
+
+    fn inline_ifc_atomic_placement_metadata(
+        &self,
+    ) -> Option<ElementInlineIfcAtomicPlacementMetadata> {
+        self.inline_ifc_rollout_packages
+            .atomic_placement
+            .as_ref()
+            .filter(|package| !package.placements.is_empty())
+            .cloned()
+            .map(|package| ElementInlineIfcAtomicPlacementMetadata { package })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline_ifc_draw_rect_pass_metadata_for_test(
+        &self,
+        paint_offset: [f32; 2],
+    ) -> Vec<ElementInlineIfcDrawRectPassMetadata> {
+        let Some(package) = self
+            .inline_ifc_rollout_packages
+            .decoration_draw_rect
+            .as_ref()
+        else {
+            return Vec::new();
+        };
+        package
+            .fragments
+            .iter()
+            .map(|fragment| {
+                self.inline_ifc_fragment_draw_rect_pass_metadata(fragment, paint_offset)
+            })
+            .collect()
+    }
+
+    fn inline_ifc_fragment_draw_rect_pass_metadata(
+        &self,
+        fragment: &crate::view::inline_formatting_context::InlineIfcElementDecorationDrawRect,
+        paint_offset: [f32; 2],
+    ) -> ElementInlineIfcDrawRectPassMetadata {
+        let metadata = fragment.metadata;
+        let max_bw = metadata.size[0].min(metadata.size[1]) * 0.5;
+        let left = metadata.border_widths[0].clamp(0.0, max_bw);
+        let right = metadata.border_widths[1].clamp(0.0, max_bw);
+        let top = metadata.border_widths[2].clamp(0.0, max_bw);
+        let bottom = metadata.border_widths[3].clamp(0.0, max_bw);
+        let outer_radii =
+            normalize_corner_radii(self.border_radii, metadata.size[0], metadata.size[1]);
+        let fill = {
+            let mut params = RectPassParams {
+                position: [
+                    metadata.position[0] + paint_offset[0],
+                    metadata.position[1] + paint_offset[1],
+                ],
+                size: metadata.size,
+                fill_color: metadata.fill_color,
+                opacity: metadata.opacity,
+                ..Default::default()
+            };
+            params.set_border_widths(left, right, top, bottom);
+            params.set_border_radii(outer_radii.to_array());
+            params
+        };
+        let border = if left <= 0.0 && right <= 0.0 && top <= 0.0 && bottom <= 0.0 {
+            None
+        } else {
+            let mut params = RectPassParams {
+                position: [
+                    metadata.position[0] + paint_offset[0],
+                    metadata.position[1] + paint_offset[1],
+                ],
+                size: metadata.size,
+                fill_color: [0.0, 0.0, 0.0, 0.0],
+                opacity: metadata.opacity,
+                border_color: metadata.border_color,
+                ..Default::default()
+            };
+            params.set_border_side_colors(
+                metadata.border_color,
+                metadata.border_color,
+                metadata.border_color,
+                metadata.border_color,
+            );
+            params.set_border_widths(left, right, top, bottom);
+            params.set_border_radii(outer_radii.to_array());
+            Some(params)
+        };
+        ElementInlineIfcDrawRectPassMetadata { fill, border }
+    }
+
+    fn build_inline_ifc_draw_rect_package_render_pipeline(
+        &mut self,
+        graph: &mut FrameGraph,
+        mut ctx: UiBuildContext,
+        opacity: f32,
+    ) -> BuildState {
+        let _atomic_placement_count = self
+            .inline_ifc_atomic_placement_metadata()
+            .map(|metadata| metadata.package.placements.len())
+            .unwrap_or(0);
+        let Some(package) = self
+            .inline_ifc_rollout_packages
+            .decoration_draw_rect
+            .as_ref()
+            .cloned()
+        else {
+            return self.build_inline_fragment_render_pipeline(
+                graph,
+                ctx,
+                self.background_color.as_ref().to_rgba_f32(),
+                opacity,
+            );
+        };
+        for fragment in package.fragments {
+            let pass_metadata =
+                self.inline_ifc_fragment_draw_rect_pass_metadata(&fragment, ctx.paint_offset());
+            let mut fill_pass = DrawRectPass::new(
+                pass_metadata.fill,
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
+            );
+            fill_pass.set_render_mode(RectRenderMode::FillOnly);
+            self.push_rect_pass_auto(graph, &mut ctx, fill_pass);
+
+            let Some(border_params) = pass_metadata.border else {
+                continue;
+            };
+            let mut border_pass = DrawRectPass::new(
+                border_params,
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
+            );
+            border_pass.set_render_mode(RectRenderMode::BorderOnly);
             self.push_rect_pass_auto(graph, &mut ctx, border_pass);
         }
         ctx.into_state()

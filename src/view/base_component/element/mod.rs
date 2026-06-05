@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::{ComputedStyleConsumer, ElementCore, Position, Size};
+use super::{ComputedStyleConsumer, ElementCore, Position, Size, Text, TextInlineIfcStyleMetadata};
 use crate::style::ColorLike;
 use crate::style::{
     Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle,
@@ -27,6 +27,16 @@ use crate::ui::{
 use crate::view::base_component::round_layout_value;
 use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::{AttachmentTarget, FrameGraph, ResourceLifetime, TextureDesc};
+use crate::view::inline_formatting_context::{
+    InlineIfcAtomicBoxPlacementPackage, InlineIfcAtomicMeasureConstraints, InlineIfcCacheKey,
+    InlineIfcDecorationBoxInsets, InlineIfcDistributedElementPackages,
+    InlineIfcElementDecorationDrawRectPackage, InlineIfcElementDecorationDrawRectStyle,
+    InlineIfcElementDecorationPackageSource, InlineIfcElementRootCandidate,
+    InlineIfcElementRootCandidateCache, InlineIfcElementRootSource,
+    InlineIfcElementRootSourceBuilder, InlineIfcInvalidation, InlineIfcItem,
+    InlineIfcMeasuredAtomicBox, InlineIfcSize, InlineIfcSourceId, InlineIfcStyle,
+};
+use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::promotion::{PromotedLayerUpdateKind, PromotionNodeInfo};
 use crate::view::render_pass::draw_rect_pass::DrawRectInput;
 use crate::view::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
@@ -2126,6 +2136,1864 @@ struct ElementTransitionRequests {
     visual: Vec<VisualTrackRequest>,
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ElementInlineIfcMetadataCollectorInput {
+    pub(crate) root_key: NodeKey,
+    pub(crate) max_width: f32,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcMetadataCollectorInput {
+    pub(crate) fn new(root_key: NodeKey, max_width: f32) -> Self {
+        Self {
+            root_key,
+            max_width: max_width.max(1.0),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ElementInlineIfcMetadataCollectorOutput {
+    pub(crate) root_source: InlineIfcElementRootSource,
+    pub(crate) sources_by_node: FxHashMap<NodeKey, InlineIfcSourceId>,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcMetadataCollectorOutput {
+    pub(crate) fn source_for_node(&self, key: NodeKey) -> Option<InlineIfcSourceId> {
+        self.sources_by_node.get(&key).copied()
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ElementInlineIfcCandidateLifecycleInput {
+    pub(crate) root_key: NodeKey,
+    pub(crate) max_width: f32,
+    pub(crate) install_targets: Vec<NodeKey>,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcCandidateLifecycleInput {
+    pub(crate) fn new(root_key: NodeKey, max_width: f32) -> Self {
+        Self {
+            root_key,
+            max_width: max_width.max(1.0),
+            install_targets: Vec::new(),
+        }
+    }
+
+    pub(crate) fn with_install_targets(mut self, install_targets: Vec<NodeKey>) -> Self {
+        self.install_targets = install_targets;
+        self
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcCandidateLifecycleInstallStatus {
+    ObservedOnly,
+    Installed,
+    ClearedMissingSource,
+    SkippedNonElement,
+    MissingNode,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ElementInlineIfcCandidateLifecycleInstall {
+    pub(crate) node_key: NodeKey,
+    pub(crate) source: Option<InlineIfcSourceId>,
+    pub(crate) status: ElementInlineIfcCandidateLifecycleInstallStatus,
+    pub(crate) has_decoration_package: bool,
+    pub(crate) has_atomic_package: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ElementInlineIfcCandidateLifecycleOutput {
+    pub(crate) cache_key: InlineIfcCacheKey,
+    pub(crate) invalidation: InlineIfcInvalidation,
+    pub(crate) rebuilt: bool,
+    pub(crate) cache_len: usize,
+    pub(crate) sources_by_node: FxHashMap<NodeKey, InlineIfcSourceId>,
+    pub(crate) installs: Vec<ElementInlineIfcCandidateLifecycleInstall>,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcCandidateLifecycleOutput {
+    pub(crate) fn source_for_node(&self, key: NodeKey) -> Option<InlineIfcSourceId> {
+        self.sources_by_node.get(&key).copied()
+    }
+
+    pub(crate) fn install_for_node(
+        &self,
+        key: NodeKey,
+    ) -> Option<&ElementInlineIfcCandidateLifecycleInstall> {
+        self.installs.iter().find(|install| install.node_key == key)
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcLayoutCallSiteOptInMode {
+    #[default]
+    Disabled,
+    ShadowObservation,
+    DryRunCandidate,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcLayoutCallSiteGate {
+    requested_mode: ElementInlineIfcLayoutCallSiteOptInMode,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcLayoutCallSiteGate {
+    pub(crate) fn disabled() -> Self {
+        Self {
+            requested_mode: ElementInlineIfcLayoutCallSiteOptInMode::Disabled,
+        }
+    }
+
+    pub(crate) fn explicit_dry_run_candidate() -> Self {
+        Self {
+            requested_mode: ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate,
+        }
+    }
+
+    pub(crate) fn explicit_shadow_observation() -> Self {
+        Self {
+            requested_mode: ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation,
+        }
+    }
+
+    pub(crate) fn resolve(self) -> ElementInlineIfcLayoutCallSiteOptInMode {
+        match self.requested_mode {
+            ElementInlineIfcLayoutCallSiteOptInMode::Disabled => {
+                ElementInlineIfcLayoutCallSiteOptInMode::Disabled
+            }
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation => {
+                ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
+            }
+            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate => {
+                ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
+            }
+        }
+    }
+
+    pub(crate) fn is_enabled(self) -> bool {
+        matches!(
+            self.resolve(),
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
+                | ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
+        )
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcLayoutCallSiteRolloutPhase {
+    #[default]
+    Disabled,
+    ProductionDefaultShadowRun,
+    ControlledInstalledPackageCandidate,
+    ExplicitDryRunCandidate,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcLayoutCallSiteRolloutPhase {
+    pub(crate) fn mode(self) -> ElementInlineIfcLayoutCallSiteOptInMode {
+        match self {
+            Self::Disabled => ElementInlineIfcLayoutCallSiteOptInMode::Disabled,
+            Self::ProductionDefaultShadowRun => {
+                ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
+            }
+            Self::ControlledInstalledPackageCandidate => {
+                ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
+            }
+            Self::ExplicitDryRunCandidate => {
+                ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcLayoutCallSiteRolloutConfig {
+    phase: ElementInlineIfcLayoutCallSiteRolloutPhase,
+}
+
+impl Default for ElementInlineIfcLayoutCallSiteRolloutConfig {
+    fn default() -> Self {
+        Self::production_default_shadow_run_phase()
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcDefaultRolloutBlockedReason {
+    RenderGateNotIndependent,
+    LegacyFallbackMissing,
+    UnsupportedRootAndTextAreaBoundaryUnconfirmed,
+    InvalidationGuardUnconfirmed,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcDefaultRolloutDecisionInput {
+    pub(crate) render_gate_independent: bool,
+    pub(crate) legacy_fallback_available: bool,
+    pub(crate) unsupported_root_and_text_area_boundary_confirmed: bool,
+    pub(crate) invalidation_guard_confirmed: bool,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcDefaultRolloutDecisionInput {
+    pub(crate) fn checklist_passed() -> Self {
+        Self {
+            render_gate_independent: true,
+            legacy_fallback_available: true,
+            unsupported_root_and_text_area_boundary_confirmed: true,
+            invalidation_guard_confirmed: true,
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcDefaultRolloutDecision {
+    recommended_phase: ElementInlineIfcLayoutCallSiteRolloutPhase,
+    blocked_reasons: Vec<ElementInlineIfcDefaultRolloutBlockedReason>,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcDefaultRolloutDecision {
+    pub(crate) fn evaluate(input: ElementInlineIfcDefaultRolloutDecisionInput) -> Self {
+        let mut blocked_reasons = Vec::new();
+        if !input.render_gate_independent {
+            blocked_reasons
+                .push(ElementInlineIfcDefaultRolloutBlockedReason::RenderGateNotIndependent);
+        }
+        if !input.legacy_fallback_available {
+            blocked_reasons
+                .push(ElementInlineIfcDefaultRolloutBlockedReason::LegacyFallbackMissing);
+        }
+        if !input.unsupported_root_and_text_area_boundary_confirmed {
+            blocked_reasons.push(
+                ElementInlineIfcDefaultRolloutBlockedReason::
+                    UnsupportedRootAndTextAreaBoundaryUnconfirmed,
+            );
+        }
+        if !input.invalidation_guard_confirmed {
+            blocked_reasons
+                .push(ElementInlineIfcDefaultRolloutBlockedReason::InvalidationGuardUnconfirmed);
+        }
+
+        let recommended_phase = if blocked_reasons.is_empty() {
+            ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun
+        } else {
+            ElementInlineIfcLayoutCallSiteRolloutPhase::Disabled
+        };
+        Self {
+            recommended_phase,
+            blocked_reasons,
+        }
+    }
+
+    pub(crate) fn is_allowed(&self) -> bool {
+        self.blocked_reasons.is_empty()
+    }
+
+    pub(crate) fn recommended_phase(&self) -> ElementInlineIfcLayoutCallSiteRolloutPhase {
+        self.recommended_phase
+    }
+
+    pub(crate) fn recommended_config(&self) -> ElementInlineIfcLayoutCallSiteRolloutConfig {
+        ElementInlineIfcLayoutCallSiteRolloutConfig {
+            phase: self.recommended_phase,
+        }
+    }
+
+    pub(crate) fn blocked_reasons(&self) -> &[ElementInlineIfcDefaultRolloutBlockedReason] {
+        &self.blocked_reasons
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcDefaultShadowRunAuditBlockedReason {
+    DecisionBlocked,
+    ProductionDefaultNotShadowOnlyObservation,
+    ShadowObservationDiagnosticMissing,
+    ShadowObservationInstalledPackages,
+    LegacyFallbackNotObserved,
+    RenderGateExplicitnessUnobserved,
+    UnsupportedOrNonInlineNoOpUnobserved,
+    TextAreaBoundaryUnobserved,
+    MatrixInvalidationGuardUnobserved,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcDefaultShadowRunAdoptionAuditInput {
+    pub(crate) decision: ElementInlineIfcDefaultRolloutDecision,
+    pub(crate) production_default_config: ElementInlineIfcLayoutCallSiteRolloutConfig,
+    pub(crate) shadow_observation_diagnostic_observed: bool,
+    pub(crate) shadow_observation_installed_packages: bool,
+    pub(crate) legacy_fallback_observed: bool,
+    pub(crate) render_gate_explicit_observed: bool,
+    pub(crate) unsupported_or_non_inline_no_op_observed: bool,
+    pub(crate) text_area_boundary_observed: bool,
+    pub(crate) matrix_invalidation_guard_observed: bool,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcDefaultShadowRunAdoptionAuditInput {
+    pub(crate) fn with_confirmed_observations(
+        decision: ElementInlineIfcDefaultRolloutDecision,
+    ) -> Self {
+        Self {
+            decision,
+            production_default_config: ElementInlineIfcLayoutCallSiteRolloutConfig::default(),
+            shadow_observation_diagnostic_observed: true,
+            shadow_observation_installed_packages: false,
+            legacy_fallback_observed: true,
+            render_gate_explicit_observed: true,
+            unsupported_or_non_inline_no_op_observed: true,
+            text_area_boundary_observed: true,
+            matrix_invalidation_guard_observed: true,
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcDefaultShadowRunAuditReadiness {
+    Blocked,
+    ReadyForShadowOnlyObservation,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcDefaultShadowRunAdoptionAudit {
+    readiness: ElementInlineIfcDefaultShadowRunAuditReadiness,
+    recommended_config: ElementInlineIfcLayoutCallSiteRolloutConfig,
+    blocked_reasons: Vec<ElementInlineIfcDefaultShadowRunAuditBlockedReason>,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcDefaultShadowRunAdoptionAudit {
+    pub(crate) fn evaluate(input: ElementInlineIfcDefaultShadowRunAdoptionAuditInput) -> Self {
+        let mut blocked_reasons = Vec::new();
+        if !input.decision.is_allowed()
+            || input.decision.recommended_phase()
+                != ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun
+        {
+            blocked_reasons
+                .push(ElementInlineIfcDefaultShadowRunAuditBlockedReason::DecisionBlocked);
+        }
+        if input.production_default_config.phase()
+            != ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun
+        {
+            blocked_reasons.push(
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
+                    ProductionDefaultNotShadowOnlyObservation,
+            );
+        }
+        if !input.shadow_observation_diagnostic_observed {
+            blocked_reasons.push(
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
+                    ShadowObservationDiagnosticMissing,
+            );
+        }
+        if input.shadow_observation_installed_packages {
+            blocked_reasons.push(
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
+                    ShadowObservationInstalledPackages,
+            );
+        }
+        if !input.legacy_fallback_observed {
+            blocked_reasons.push(
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::LegacyFallbackNotObserved,
+            );
+        }
+        if !input.render_gate_explicit_observed {
+            blocked_reasons.push(
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
+                    RenderGateExplicitnessUnobserved,
+            );
+        }
+        if !input.unsupported_or_non_inline_no_op_observed {
+            blocked_reasons.push(
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
+                    UnsupportedOrNonInlineNoOpUnobserved,
+            );
+        }
+        if !input.text_area_boundary_observed {
+            blocked_reasons.push(
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::TextAreaBoundaryUnobserved,
+            );
+        }
+        if !input.matrix_invalidation_guard_observed {
+            blocked_reasons.push(
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
+                    MatrixInvalidationGuardUnobserved,
+            );
+        }
+
+        let readiness = if blocked_reasons.is_empty() {
+            ElementInlineIfcDefaultShadowRunAuditReadiness::ReadyForShadowOnlyObservation
+        } else {
+            ElementInlineIfcDefaultShadowRunAuditReadiness::Blocked
+        };
+        let recommended_config = if blocked_reasons.is_empty() {
+            input.decision.recommended_config()
+        } else {
+            ElementInlineIfcLayoutCallSiteRolloutConfig::disabled()
+        };
+        Self {
+            readiness,
+            recommended_config,
+            blocked_reasons,
+        }
+    }
+
+    pub(crate) fn readiness(&self) -> ElementInlineIfcDefaultShadowRunAuditReadiness {
+        self.readiness
+    }
+
+    pub(crate) fn is_ready_for_shadow_only_observation(&self) -> bool {
+        matches!(
+            self.readiness,
+            ElementInlineIfcDefaultShadowRunAuditReadiness::ReadyForShadowOnlyObservation
+        )
+    }
+
+    pub(crate) fn recommended_config(&self) -> ElementInlineIfcLayoutCallSiteRolloutConfig {
+        self.recommended_config
+    }
+
+    pub(crate) fn blocked_reasons(&self) -> &[ElementInlineIfcDefaultShadowRunAuditBlockedReason] {
+        &self.blocked_reasons
+    }
+
+    pub(crate) fn allows_render_candidate_default(&self) -> bool {
+        false
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcRenderDefaultAuditBlockedReason {
+    ShadowRunAuditNotReady,
+    RenderDefaultAlreadyCandidate,
+    InstalledPackageLifecycleUnconfirmed,
+    LegacyFallbackUnconfirmed,
+    UnsupportedOrNonInlineBoundaryUnconfirmed,
+    TextAreaBoundaryUnconfirmed,
+    RollbackDisabledPathUnconfirmed,
+    ExplicitRenderOptInUnconfirmed,
+    MissingInstalledPackageFallbackUnconfirmed,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcRenderDefaultAuditInput {
+    pub(crate) shadow_run_audit: ElementInlineIfcDefaultShadowRunAdoptionAudit,
+    pub(crate) current_render_default: ElementInlineIfcRenderMode,
+    pub(crate) installed_package_lifecycle_confirmed: bool,
+    pub(crate) legacy_fallback_confirmed: bool,
+    pub(crate) unsupported_or_non_inline_boundary_confirmed: bool,
+    pub(crate) text_area_boundary_confirmed: bool,
+    pub(crate) rollback_disabled_path_confirmed: bool,
+    pub(crate) explicit_render_opt_in_confirmed: bool,
+    pub(crate) missing_installed_package_fallback_confirmed: bool,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcRenderDefaultAuditInput {
+    pub(crate) fn with_confirmed_observations(
+        shadow_run_audit: ElementInlineIfcDefaultShadowRunAdoptionAudit,
+    ) -> Self {
+        Self {
+            shadow_run_audit,
+            current_render_default: ElementInlineIfcRenderMode::Disabled,
+            installed_package_lifecycle_confirmed: true,
+            legacy_fallback_confirmed: true,
+            unsupported_or_non_inline_boundary_confirmed: true,
+            text_area_boundary_confirmed: true,
+            rollback_disabled_path_confirmed: true,
+            explicit_render_opt_in_confirmed: true,
+            missing_installed_package_fallback_confirmed: true,
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcRenderDefaultAuditReadiness {
+    Blocked,
+    ReadyForExplicitRenderCandidateEvaluation,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcRenderDefaultAudit {
+    readiness: ElementInlineIfcRenderDefaultAuditReadiness,
+    explicit_candidate_evaluation_mode: Option<ElementInlineIfcRenderMode>,
+    blocked_reasons: Vec<ElementInlineIfcRenderDefaultAuditBlockedReason>,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcRenderDefaultAudit {
+    pub(crate) fn evaluate(input: ElementInlineIfcRenderDefaultAuditInput) -> Self {
+        let mut blocked_reasons = Vec::new();
+        if !input
+            .shadow_run_audit
+            .is_ready_for_shadow_only_observation()
+        {
+            blocked_reasons
+                .push(ElementInlineIfcRenderDefaultAuditBlockedReason::ShadowRunAuditNotReady);
+        }
+        if input.current_render_default != ElementInlineIfcRenderMode::Disabled {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAuditBlockedReason::RenderDefaultAlreadyCandidate,
+            );
+        }
+        if !input.installed_package_lifecycle_confirmed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAuditBlockedReason::
+                    InstalledPackageLifecycleUnconfirmed,
+            );
+        }
+        if !input.legacy_fallback_confirmed {
+            blocked_reasons
+                .push(ElementInlineIfcRenderDefaultAuditBlockedReason::LegacyFallbackUnconfirmed);
+        }
+        if !input.unsupported_or_non_inline_boundary_confirmed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAuditBlockedReason::
+                    UnsupportedOrNonInlineBoundaryUnconfirmed,
+            );
+        }
+        if !input.text_area_boundary_confirmed {
+            blocked_reasons
+                .push(ElementInlineIfcRenderDefaultAuditBlockedReason::TextAreaBoundaryUnconfirmed);
+        }
+        if !input.rollback_disabled_path_confirmed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAuditBlockedReason::RollbackDisabledPathUnconfirmed,
+            );
+        }
+        if !input.explicit_render_opt_in_confirmed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAuditBlockedReason::ExplicitRenderOptInUnconfirmed,
+            );
+        }
+        if !input.missing_installed_package_fallback_confirmed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAuditBlockedReason::
+                    MissingInstalledPackageFallbackUnconfirmed,
+            );
+        }
+
+        let readiness = if blocked_reasons.is_empty() {
+            ElementInlineIfcRenderDefaultAuditReadiness::ReadyForExplicitRenderCandidateEvaluation
+        } else {
+            ElementInlineIfcRenderDefaultAuditReadiness::Blocked
+        };
+        let explicit_candidate_evaluation_mode = if blocked_reasons.is_empty() {
+            Some(ElementInlineIfcRenderMode::DrawRectPackageCandidate)
+        } else {
+            None
+        };
+        Self {
+            readiness,
+            explicit_candidate_evaluation_mode,
+            blocked_reasons,
+        }
+    }
+
+    pub(crate) fn readiness(&self) -> ElementInlineIfcRenderDefaultAuditReadiness {
+        self.readiness
+    }
+
+    pub(crate) fn is_ready_for_explicit_render_candidate_evaluation(&self) -> bool {
+        matches!(
+            self.readiness,
+            ElementInlineIfcRenderDefaultAuditReadiness::ReadyForExplicitRenderCandidateEvaluation
+        )
+    }
+
+    pub(crate) fn explicit_candidate_evaluation_mode(&self) -> Option<ElementInlineIfcRenderMode> {
+        self.explicit_candidate_evaluation_mode
+    }
+
+    pub(crate) fn blocked_reasons(&self) -> &[ElementInlineIfcRenderDefaultAuditBlockedReason] {
+        &self.blocked_reasons
+    }
+
+    pub(crate) fn allows_render_candidate_default(&self) -> bool {
+        false
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcRenderDefaultRolloutBlockedReason {
+    RenderAuditNotReady,
+    RenderDefaultAlreadyCandidate,
+    ExplicitCandidateEvaluationUnobserved,
+    InstalledPackageCandidateUnobserved,
+    LegacyDefaultDecisionChanged,
+    MissingInstalledPackageFallbackUnobserved,
+    RollbackDisabledPathUnconfirmed,
+    TextAreaBoundaryUnconfirmed,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcRenderDefaultRolloutDecisionInput {
+    pub(crate) render_audit: ElementInlineIfcRenderDefaultAudit,
+    pub(crate) current_render_default: ElementInlineIfcRenderMode,
+    pub(crate) current_default_render_decision: ElementInlineIfcRenderDecision,
+    pub(crate) explicit_candidate_evaluation_observed: bool,
+    pub(crate) controlled_installed_package_candidate_observed: bool,
+    pub(crate) missing_installed_package_fallback_observed: bool,
+    pub(crate) rollback_disabled_path_confirmed: bool,
+    pub(crate) text_area_boundary_confirmed: bool,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcRenderDefaultRolloutDecisionInput {
+    pub(crate) fn with_confirmed_observations(
+        render_audit: ElementInlineIfcRenderDefaultAudit,
+    ) -> Self {
+        Self {
+            render_audit,
+            current_render_default: ElementInlineIfcRenderMode::Disabled,
+            current_default_render_decision:
+                ElementInlineIfcRenderDecision::ExistingInlineFragments,
+            explicit_candidate_evaluation_observed: true,
+            controlled_installed_package_candidate_observed: true,
+            missing_installed_package_fallback_observed: true,
+            rollback_disabled_path_confirmed: true,
+            text_area_boundary_confirmed: true,
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcRenderDefaultRolloutReadiness {
+    Blocked,
+    ReadyForControlledInstalledPackageCandidate,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcRenderDefaultRolloutDecision {
+    readiness: ElementInlineIfcRenderDefaultRolloutReadiness,
+    explicit_installed_package_candidate_mode: Option<ElementInlineIfcRenderMode>,
+    blocked_reasons: Vec<ElementInlineIfcRenderDefaultRolloutBlockedReason>,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcRenderDefaultRolloutDecision {
+    pub(crate) fn evaluate(input: ElementInlineIfcRenderDefaultRolloutDecisionInput) -> Self {
+        let mut blocked_reasons = Vec::new();
+        if !input
+            .render_audit
+            .is_ready_for_explicit_render_candidate_evaluation()
+        {
+            blocked_reasons
+                .push(ElementInlineIfcRenderDefaultRolloutBlockedReason::RenderAuditNotReady);
+        }
+        if input.current_render_default != ElementInlineIfcRenderMode::Disabled {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::RenderDefaultAlreadyCandidate,
+            );
+        }
+        if !input.explicit_candidate_evaluation_observed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::
+                    ExplicitCandidateEvaluationUnobserved,
+            );
+        }
+        if !input.controlled_installed_package_candidate_observed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::
+                    InstalledPackageCandidateUnobserved,
+            );
+        }
+        if input.current_default_render_decision
+            != ElementInlineIfcRenderDecision::ExistingInlineFragments
+        {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::LegacyDefaultDecisionChanged,
+            );
+        }
+        if !input.missing_installed_package_fallback_observed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::
+                    MissingInstalledPackageFallbackUnobserved,
+            );
+        }
+        if !input.rollback_disabled_path_confirmed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::RollbackDisabledPathUnconfirmed,
+            );
+        }
+        if !input.text_area_boundary_confirmed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::TextAreaBoundaryUnconfirmed,
+            );
+        }
+
+        let readiness = if blocked_reasons.is_empty() {
+            ElementInlineIfcRenderDefaultRolloutReadiness::
+                ReadyForControlledInstalledPackageCandidate
+        } else {
+            ElementInlineIfcRenderDefaultRolloutReadiness::Blocked
+        };
+        let explicit_installed_package_candidate_mode = if blocked_reasons.is_empty() {
+            Some(ElementInlineIfcRenderMode::DrawRectPackageCandidate)
+        } else {
+            None
+        };
+        Self {
+            readiness,
+            explicit_installed_package_candidate_mode,
+            blocked_reasons,
+        }
+    }
+
+    pub(crate) fn readiness(&self) -> ElementInlineIfcRenderDefaultRolloutReadiness {
+        self.readiness
+    }
+
+    pub(crate) fn is_ready_for_controlled_installed_package_candidate(&self) -> bool {
+        matches!(
+            self.readiness,
+            ElementInlineIfcRenderDefaultRolloutReadiness::
+                ReadyForControlledInstalledPackageCandidate
+        )
+    }
+
+    pub(crate) fn explicit_installed_package_candidate_mode(
+        &self,
+    ) -> Option<ElementInlineIfcRenderMode> {
+        self.explicit_installed_package_candidate_mode
+    }
+
+    pub(crate) fn controlled_installed_package_candidate_config(
+        &self,
+    ) -> Option<ElementInlineIfcLayoutCallSiteRolloutConfig> {
+        self.is_ready_for_controlled_installed_package_candidate()
+            .then(
+                ElementInlineIfcLayoutCallSiteRolloutConfig::controlled_installed_package_candidate,
+            )
+    }
+
+    pub(crate) fn blocked_reasons(&self) -> &[ElementInlineIfcRenderDefaultRolloutBlockedReason] {
+        &self.blocked_reasons
+    }
+
+    pub(crate) fn allows_render_candidate_default(&self) -> bool {
+        false
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason {
+    RolloutDecisionNotReady,
+    ControlledInstalledPackageCandidateMissing,
+    ControlledInstalledPackageDiagnosticMissing,
+    DefaultPathPackageUnavailable,
+    MissingInstalledPackageFallbackUnconfirmed,
+    DisabledRollbackUnconfirmed,
+    UnsupportedOrNonInlineNoOpUnconfirmed,
+    TextAreaBoundaryUnconfirmed,
+    LegacyFallbackUnconfirmed,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcRenderDefaultAdoptionAuditInput {
+    pub(crate) rollout_decision: ElementInlineIfcRenderDefaultRolloutDecision,
+    pub(crate) controlled_installed_package_candidate_observed: bool,
+    pub(crate) controlled_installed_package_diagnostic_observed: bool,
+    pub(crate) default_path_package_available: bool,
+    pub(crate) missing_installed_package_fallback_confirmed: bool,
+    pub(crate) disabled_rollback_confirmed: bool,
+    pub(crate) unsupported_or_non_inline_no_op_confirmed: bool,
+    pub(crate) text_area_boundary_confirmed: bool,
+    pub(crate) legacy_fallback_confirmed: bool,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcRenderDefaultAdoptionAuditInput {
+    pub(crate) fn with_confirmed_observations(
+        rollout_decision: ElementInlineIfcRenderDefaultRolloutDecision,
+    ) -> Self {
+        Self {
+            rollout_decision,
+            controlled_installed_package_candidate_observed: true,
+            controlled_installed_package_diagnostic_observed: true,
+            default_path_package_available: true,
+            missing_installed_package_fallback_confirmed: true,
+            disabled_rollback_confirmed: true,
+            unsupported_or_non_inline_no_op_confirmed: true,
+            text_area_boundary_confirmed: true,
+            legacy_fallback_confirmed: true,
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcRenderDefaultAdoptionAuditReadiness {
+    Blocked,
+    ReadyForInlineElementRenderDefault,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcRenderDefaultAdoptionAudit {
+    readiness: ElementInlineIfcRenderDefaultAdoptionAuditReadiness,
+    recommended_default_mode: Option<ElementInlineIfcRenderMode>,
+    blocked_reasons: Vec<ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason>,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcRenderDefaultAdoptionAudit {
+    pub(crate) fn evaluate(input: ElementInlineIfcRenderDefaultAdoptionAuditInput) -> Self {
+        let mut blocked_reasons = Vec::new();
+        if !input
+            .rollout_decision
+            .is_ready_for_controlled_installed_package_candidate()
+        {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::RolloutDecisionNotReady,
+            );
+        }
+        if !input.controlled_installed_package_candidate_observed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
+                    ControlledInstalledPackageCandidateMissing,
+            );
+        }
+        if !input.controlled_installed_package_diagnostic_observed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
+                    ControlledInstalledPackageDiagnosticMissing,
+            );
+        }
+        if !input.default_path_package_available {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
+                    DefaultPathPackageUnavailable,
+            );
+        }
+        if !input.missing_installed_package_fallback_confirmed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
+                    MissingInstalledPackageFallbackUnconfirmed,
+            );
+        }
+        if !input.disabled_rollback_confirmed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::DisabledRollbackUnconfirmed,
+            );
+        }
+        if !input.unsupported_or_non_inline_no_op_confirmed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
+                    UnsupportedOrNonInlineNoOpUnconfirmed,
+            );
+        }
+        if !input.text_area_boundary_confirmed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::TextAreaBoundaryUnconfirmed,
+            );
+        }
+        if !input.legacy_fallback_confirmed {
+            blocked_reasons.push(
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::LegacyFallbackUnconfirmed,
+            );
+        }
+
+        let readiness = if blocked_reasons.is_empty() {
+            ElementInlineIfcRenderDefaultAdoptionAuditReadiness::ReadyForInlineElementRenderDefault
+        } else {
+            ElementInlineIfcRenderDefaultAdoptionAuditReadiness::Blocked
+        };
+        let recommended_default_mode = if blocked_reasons.is_empty() {
+            Some(ElementInlineIfcRenderMode::DrawRectPackageCandidate)
+        } else {
+            None
+        };
+        Self {
+            readiness,
+            recommended_default_mode,
+            blocked_reasons,
+        }
+    }
+
+    pub(crate) fn readiness(&self) -> ElementInlineIfcRenderDefaultAdoptionAuditReadiness {
+        self.readiness
+    }
+
+    pub(crate) fn is_ready_for_inline_element_render_default(&self) -> bool {
+        matches!(
+            self.readiness,
+            ElementInlineIfcRenderDefaultAdoptionAuditReadiness::ReadyForInlineElementRenderDefault
+        )
+    }
+
+    pub(crate) fn recommended_default_mode(&self) -> Option<ElementInlineIfcRenderMode> {
+        self.recommended_default_mode
+    }
+
+    pub(crate) fn blocked_reasons(
+        &self,
+    ) -> &[ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason] {
+        &self.blocked_reasons
+    }
+
+    pub(crate) fn allows_render_candidate_default(&self) -> bool {
+        self.is_ready_for_inline_element_render_default()
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextAreaInlineIfcReadinessBlockedReason {
+    EditableIfcPathUnwired,
+    ProjectionIfcPathUnwired,
+    ImeIfcPathUnwired,
+    CaretAffinityIfcPathUnwired,
+    ScrollFollowIfcPathUnwired,
+    TextAreaTextRunBoundaryUnconfirmed,
+    InlineElementRolloutBoundaryUnconfirmed,
+    ReadOnlyTextPreparedPathSeparationUnconfirmed,
+    LegacyFallbackUnconfirmed,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TextAreaInlineIfcReadinessInput {
+    pub(crate) editable_ifc_path_wired: bool,
+    pub(crate) projection_ifc_path_wired: bool,
+    pub(crate) ime_ifc_path_wired: bool,
+    pub(crate) caret_affinity_ifc_path_wired: bool,
+    pub(crate) scroll_follow_ifc_path_wired: bool,
+    pub(crate) text_area_text_run_boundary_confirmed: bool,
+    pub(crate) inline_element_rollout_boundary_confirmed: bool,
+    pub(crate) read_only_text_prepared_path_separated: bool,
+    pub(crate) legacy_fallback_confirmed: bool,
+}
+
+#[allow(dead_code)]
+impl TextAreaInlineIfcReadinessInput {
+    pub(crate) fn current_p7_preflight_observations() -> Self {
+        Self {
+            editable_ifc_path_wired: false,
+            projection_ifc_path_wired: false,
+            ime_ifc_path_wired: false,
+            caret_affinity_ifc_path_wired: false,
+            scroll_follow_ifc_path_wired: false,
+            text_area_text_run_boundary_confirmed: true,
+            inline_element_rollout_boundary_confirmed: true,
+            read_only_text_prepared_path_separated: true,
+            legacy_fallback_confirmed: true,
+        }
+    }
+
+    pub(crate) fn with_all_ifc_paths_wired() -> Self {
+        Self {
+            editable_ifc_path_wired: true,
+            projection_ifc_path_wired: true,
+            ime_ifc_path_wired: true,
+            caret_affinity_ifc_path_wired: true,
+            scroll_follow_ifc_path_wired: true,
+            text_area_text_run_boundary_confirmed: true,
+            inline_element_rollout_boundary_confirmed: true,
+            read_only_text_prepared_path_separated: true,
+            legacy_fallback_confirmed: true,
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextAreaInlineIfcReadinessState {
+    Blocked,
+    ReadyForEditableIfcEvaluation,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TextAreaInlineIfcReadiness {
+    readiness: TextAreaInlineIfcReadinessState,
+    blocked_reasons: Vec<TextAreaInlineIfcReadinessBlockedReason>,
+}
+
+#[allow(dead_code)]
+impl TextAreaInlineIfcReadiness {
+    pub(crate) fn evaluate(input: TextAreaInlineIfcReadinessInput) -> Self {
+        let mut blocked_reasons = Vec::new();
+        if !input.editable_ifc_path_wired {
+            blocked_reasons.push(TextAreaInlineIfcReadinessBlockedReason::EditableIfcPathUnwired);
+        }
+        if !input.projection_ifc_path_wired {
+            blocked_reasons.push(TextAreaInlineIfcReadinessBlockedReason::ProjectionIfcPathUnwired);
+        }
+        if !input.ime_ifc_path_wired {
+            blocked_reasons.push(TextAreaInlineIfcReadinessBlockedReason::ImeIfcPathUnwired);
+        }
+        if !input.caret_affinity_ifc_path_wired {
+            blocked_reasons
+                .push(TextAreaInlineIfcReadinessBlockedReason::CaretAffinityIfcPathUnwired);
+        }
+        if !input.scroll_follow_ifc_path_wired {
+            blocked_reasons
+                .push(TextAreaInlineIfcReadinessBlockedReason::ScrollFollowIfcPathUnwired);
+        }
+        if !input.text_area_text_run_boundary_confirmed {
+            blocked_reasons
+                .push(TextAreaInlineIfcReadinessBlockedReason::TextAreaTextRunBoundaryUnconfirmed);
+        }
+        if !input.inline_element_rollout_boundary_confirmed {
+            blocked_reasons.push(
+                TextAreaInlineIfcReadinessBlockedReason::InlineElementRolloutBoundaryUnconfirmed,
+            );
+        }
+        if !input.read_only_text_prepared_path_separated {
+            blocked_reasons.push(
+                TextAreaInlineIfcReadinessBlockedReason::
+                    ReadOnlyTextPreparedPathSeparationUnconfirmed,
+            );
+        }
+        if !input.legacy_fallback_confirmed {
+            blocked_reasons
+                .push(TextAreaInlineIfcReadinessBlockedReason::LegacyFallbackUnconfirmed);
+        }
+
+        let readiness = if blocked_reasons.is_empty() {
+            TextAreaInlineIfcReadinessState::ReadyForEditableIfcEvaluation
+        } else {
+            TextAreaInlineIfcReadinessState::Blocked
+        };
+        Self {
+            readiness,
+            blocked_reasons,
+        }
+    }
+
+    pub(crate) fn readiness(&self) -> TextAreaInlineIfcReadinessState {
+        self.readiness
+    }
+
+    pub(crate) fn is_ready_for_editable_ifc_evaluation(&self) -> bool {
+        matches!(
+            self.readiness,
+            TextAreaInlineIfcReadinessState::ReadyForEditableIfcEvaluation
+        )
+    }
+
+    pub(crate) fn blocked_reasons(&self) -> &[TextAreaInlineIfcReadinessBlockedReason] {
+        &self.blocked_reasons
+    }
+
+    pub(crate) fn allows_text_area_default_rollout(&self) -> bool {
+        false
+    }
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcLayoutCallSiteRolloutConfig {
+    pub(crate) fn disabled() -> Self {
+        Self {
+            phase: ElementInlineIfcLayoutCallSiteRolloutPhase::Disabled,
+        }
+    }
+
+    pub(crate) fn explicit_dry_run_candidate() -> Self {
+        Self {
+            phase: ElementInlineIfcLayoutCallSiteRolloutPhase::ExplicitDryRunCandidate,
+        }
+    }
+
+    pub(crate) fn explicit_shadow_observation() -> Self {
+        Self::production_default_shadow_run_phase()
+    }
+
+    pub(crate) fn production_default_shadow_run_phase() -> Self {
+        Self {
+            phase: ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun,
+        }
+    }
+
+    pub(crate) fn controlled_installed_package_candidate() -> Self {
+        Self {
+            phase: ElementInlineIfcLayoutCallSiteRolloutPhase::ControlledInstalledPackageCandidate,
+        }
+    }
+
+    pub(crate) fn from_mode(mode: ElementInlineIfcLayoutCallSiteOptInMode) -> Self {
+        match mode {
+            ElementInlineIfcLayoutCallSiteOptInMode::Disabled => Self::disabled(),
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation => {
+                Self::production_default_shadow_run_phase()
+            }
+            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate => {
+                Self::explicit_dry_run_candidate()
+            }
+        }
+    }
+
+    pub(crate) fn phase(self) -> ElementInlineIfcLayoutCallSiteRolloutPhase {
+        self.phase
+    }
+
+    pub(crate) fn mode(self) -> ElementInlineIfcLayoutCallSiteOptInMode {
+        self.phase.mode()
+    }
+
+    pub(crate) fn gate(self) -> ElementInlineIfcLayoutCallSiteGate {
+        match self.mode() {
+            ElementInlineIfcLayoutCallSiteOptInMode::Disabled => {
+                ElementInlineIfcLayoutCallSiteGate::disabled()
+            }
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation => {
+                ElementInlineIfcLayoutCallSiteGate::explicit_shadow_observation()
+            }
+            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate => {
+                ElementInlineIfcLayoutCallSiteGate::explicit_dry_run_candidate()
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_scenario(scenario: ElementInlineIfcLayoutCallSiteScenario) -> Self {
+        match scenario {
+            ElementInlineIfcLayoutCallSiteScenario::DefaultLegacyFallback => Self::disabled(),
+            ElementInlineIfcLayoutCallSiteScenario::DefaultCandidateShadowObservation => {
+                Self::production_default_shadow_run_phase()
+            }
+            ElementInlineIfcLayoutCallSiteScenario::ControlledInstalledPackageCandidate => {
+                Self::controlled_installed_package_candidate()
+            }
+            ElementInlineIfcLayoutCallSiteScenario::DemoLikeDryRunCandidate
+            | ElementInlineIfcLayoutCallSiteScenario::ExamplesLikeDryRunCandidate
+            | ElementInlineIfcLayoutCallSiteScenario::UnsupportedRootProbe => {
+                Self::explicit_dry_run_candidate()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcLayoutCallSiteScenario {
+    DefaultLegacyFallback,
+    DefaultCandidateShadowObservation,
+    ControlledInstalledPackageCandidate,
+    DemoLikeDryRunCandidate,
+    ExamplesLikeDryRunCandidate,
+    UnsupportedRootProbe,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ElementInlineIfcLayoutCallSiteOptInInput {
+    pub(crate) root_key: NodeKey,
+    pub(crate) max_width: f32,
+    pub(crate) mode: ElementInlineIfcLayoutCallSiteOptInMode,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcLayoutCallSiteOptInInput {
+    pub(crate) fn disabled(root_key: NodeKey, max_width: f32) -> Self {
+        Self {
+            root_key,
+            max_width: max_width.max(1.0),
+            mode: ElementInlineIfcLayoutCallSiteOptInMode::Disabled,
+        }
+    }
+
+    pub(crate) fn dry_run_candidate(root_key: NodeKey, max_width: f32) -> Self {
+        Self {
+            root_key,
+            max_width: max_width.max(1.0),
+            mode: ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate,
+        }
+    }
+
+    pub(crate) fn shadow_observation(root_key: NodeKey, max_width: f32) -> Self {
+        Self {
+            root_key,
+            max_width: max_width.max(1.0),
+            mode: ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation,
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcLayoutCallSiteOptInStatus {
+    Disabled,
+    UnsupportedRoot,
+    NoInstallTargets,
+    LifecycleRan,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ElementInlineIfcLayoutCallSiteOptInOutput {
+    pub(crate) root_key: NodeKey,
+    pub(crate) mode: ElementInlineIfcLayoutCallSiteOptInMode,
+    pub(crate) status: ElementInlineIfcLayoutCallSiteOptInStatus,
+    pub(crate) install_targets: Vec<NodeKey>,
+    pub(crate) lifecycle: Option<ElementInlineIfcCandidateLifecycleOutput>,
+    pub(crate) fallback: ElementInlineIfcRenderFallback,
+}
+
+#[allow(dead_code)]
+impl ElementInlineIfcLayoutCallSiteOptInOutput {
+    fn no_op(
+        input: &ElementInlineIfcLayoutCallSiteOptInInput,
+        status: ElementInlineIfcLayoutCallSiteOptInStatus,
+    ) -> Self {
+        Self {
+            root_key: input.root_key,
+            mode: input.mode,
+            status,
+            install_targets: Vec::new(),
+            lifecycle: None,
+            fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+        }
+    }
+
+    pub(crate) fn lifecycle(&self) -> Option<&ElementInlineIfcCandidateLifecycleOutput> {
+        self.lifecycle.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn diagnostic_for_test(
+        &self,
+        arena: &NodeArena,
+        cache_len: usize,
+    ) -> ElementInlineIfcLayoutCallSiteDiagnostic {
+        let lifecycle = self.lifecycle();
+        let mut target_installs = Vec::new();
+        for &target in &self.install_targets {
+            let install = lifecycle.and_then(|lifecycle| lifecycle.install_for_node(target));
+            let render_decision = arena.get(target).and_then(|node| {
+                node.element
+                    .as_any()
+                    .downcast_ref::<Element>()
+                    .map(|element| element.inline_ifc_render_decision_for_test())
+            });
+            target_installs.push(ElementInlineIfcLayoutCallSiteTargetDiagnostic {
+                node_key: target,
+                source: install.and_then(|install| install.source),
+                install_status: install.map(|install| install.status),
+                has_decoration_package: install
+                    .map(|install| install.has_decoration_package)
+                    .unwrap_or(false),
+                has_atomic_package: install
+                    .map(|install| install.has_atomic_package)
+                    .unwrap_or(false),
+                render_decision,
+            });
+        }
+
+        ElementInlineIfcLayoutCallSiteDiagnostic {
+            root_key: self.root_key,
+            mode: self.mode,
+            status: self.status,
+            fallback: self.fallback,
+            cache_len,
+            cache_key: lifecycle.map(|lifecycle| lifecycle.cache_key.clone()),
+            invalidation: lifecycle.map(|lifecycle| lifecycle.invalidation),
+            rebuilt: lifecycle.map(|lifecycle| lifecycle.rebuilt),
+            install_targets: self.install_targets.clone(),
+            target_installs,
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ElementInlineIfcLayoutCallSiteTargetDiagnostic {
+    pub(crate) node_key: NodeKey,
+    pub(crate) source: Option<InlineIfcSourceId>,
+    pub(crate) install_status: Option<ElementInlineIfcCandidateLifecycleInstallStatus>,
+    pub(crate) has_decoration_package: bool,
+    pub(crate) has_atomic_package: bool,
+    pub(crate) render_decision: Option<ElementInlineIfcRenderDecision>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ElementInlineIfcLayoutCallSiteDiagnostic {
+    pub(crate) root_key: NodeKey,
+    pub(crate) mode: ElementInlineIfcLayoutCallSiteOptInMode,
+    pub(crate) status: ElementInlineIfcLayoutCallSiteOptInStatus,
+    pub(crate) fallback: ElementInlineIfcRenderFallback,
+    pub(crate) cache_len: usize,
+    pub(crate) cache_key: Option<InlineIfcCacheKey>,
+    pub(crate) invalidation: Option<InlineIfcInvalidation>,
+    pub(crate) rebuilt: Option<bool>,
+    pub(crate) install_targets: Vec<NodeKey>,
+    pub(crate) target_installs: Vec<ElementInlineIfcLayoutCallSiteTargetDiagnostic>,
+}
+
+#[cfg(test)]
+impl ElementInlineIfcLayoutCallSiteDiagnostic {
+    pub(crate) fn target(
+        &self,
+        key: NodeKey,
+    ) -> Option<&ElementInlineIfcLayoutCallSiteTargetDiagnostic> {
+        self.target_installs
+            .iter()
+            .find(|target| target.node_key == key)
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcLayoutCallSiteOptIn;
+
+#[allow(dead_code)]
+impl ElementInlineIfcLayoutCallSiteOptIn {
+    pub(crate) fn run(
+        arena: &mut NodeArena,
+        input: ElementInlineIfcLayoutCallSiteOptInInput,
+        cache: &mut InlineIfcElementRootCandidateCache,
+    ) -> ElementInlineIfcLayoutCallSiteOptInOutput {
+        if matches!(
+            input.mode,
+            ElementInlineIfcLayoutCallSiteOptInMode::Disabled
+        ) {
+            return ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
+                &input,
+                ElementInlineIfcLayoutCallSiteOptInStatus::Disabled,
+            );
+        }
+
+        if !element_inline_ifc_supports_layout_call_site_root(arena, input.root_key) {
+            return ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
+                &input,
+                ElementInlineIfcLayoutCallSiteOptInStatus::UnsupportedRoot,
+            );
+        }
+
+        let install_targets =
+            element_inline_ifc_layout_call_site_install_targets(arena, input.root_key);
+        if install_targets.is_empty() {
+            return ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
+                &input,
+                ElementInlineIfcLayoutCallSiteOptInStatus::NoInstallTargets,
+            );
+        }
+
+        let lifecycle_input =
+            ElementInlineIfcCandidateLifecycleInput::new(input.root_key, input.max_width)
+                .with_install_targets(install_targets.clone());
+        let lifecycle = match input.mode {
+            ElementInlineIfcLayoutCallSiteOptInMode::Disabled => None,
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation => {
+                ElementInlineIfcCandidateLifecycle::observe(arena, lifecycle_input, cache)
+            }
+            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate => {
+                ElementInlineIfcCandidateLifecycle::dry_run(arena, lifecycle_input, cache)
+            }
+        };
+        let Some(lifecycle) = lifecycle else {
+            return ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
+                &input,
+                ElementInlineIfcLayoutCallSiteOptInStatus::UnsupportedRoot,
+            );
+        };
+
+        ElementInlineIfcLayoutCallSiteOptInOutput {
+            root_key: input.root_key,
+            mode: input.mode,
+            status: ElementInlineIfcLayoutCallSiteOptInStatus::LifecycleRan,
+            install_targets,
+            lifecycle: Some(lifecycle),
+            fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+        }
+    }
+}
+
+#[derive(Default)]
+struct ElementInlineIfcLayoutCallSiteState {
+    rollout_config: ElementInlineIfcLayoutCallSiteRolloutConfig,
+    cache: InlineIfcElementRootCandidateCache,
+    last_output: Option<ElementInlineIfcLayoutCallSiteOptInOutput>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcCandidateLifecycle;
+
+#[allow(dead_code)]
+impl ElementInlineIfcCandidateLifecycle {
+    pub(crate) fn dry_run(
+        arena: &mut NodeArena,
+        input: ElementInlineIfcCandidateLifecycleInput,
+        cache: &mut InlineIfcElementRootCandidateCache,
+    ) -> Option<ElementInlineIfcCandidateLifecycleOutput> {
+        let collected = ElementInlineIfcMetadataCollector::collect(
+            arena,
+            ElementInlineIfcMetadataCollectorInput::new(input.root_key, input.max_width),
+        )?;
+        Some(Self::dry_run_collected(arena, input, collected, cache))
+    }
+
+    pub(crate) fn observe(
+        arena: &NodeArena,
+        input: ElementInlineIfcCandidateLifecycleInput,
+        cache: &mut InlineIfcElementRootCandidateCache,
+    ) -> Option<ElementInlineIfcCandidateLifecycleOutput> {
+        let collected = ElementInlineIfcMetadataCollector::collect(
+            arena,
+            ElementInlineIfcMetadataCollectorInput::new(input.root_key, input.max_width),
+        )?;
+        Some(Self::observe_collected(input, collected, cache))
+    }
+
+    fn observe_collected(
+        input: ElementInlineIfcCandidateLifecycleInput,
+        collected: ElementInlineIfcMetadataCollectorOutput,
+        cache: &mut InlineIfcElementRootCandidateCache,
+    ) -> ElementInlineIfcCandidateLifecycleOutput {
+        let candidate = cache.update(&collected.root_source);
+        let mut install_targets = input.install_targets;
+        if install_targets.is_empty() {
+            install_targets = collected.sources_by_node.keys().copied().collect();
+            install_targets.sort_by_key(|key| format!("{key:?}"));
+        }
+
+        let installs = install_targets
+            .into_iter()
+            .map(|target| {
+                let source = collected.source_for_node(target);
+                let packages = source.and_then(|source| candidate.package(source));
+                ElementInlineIfcCandidateLifecycleInstall {
+                    node_key: target,
+                    source,
+                    status: ElementInlineIfcCandidateLifecycleInstallStatus::ObservedOnly,
+                    has_decoration_package: packages
+                        .and_then(|packages| packages.decoration_draw_rect.as_ref())
+                        .is_some_and(|package| !package.fragments.is_empty()),
+                    has_atomic_package: packages
+                        .and_then(|packages| packages.atomic_placement.as_ref())
+                        .is_some_and(|package| !package.placements.is_empty()),
+                }
+            })
+            .collect();
+
+        ElementInlineIfcCandidateLifecycleOutput {
+            cache_key: candidate.cache_key,
+            invalidation: candidate.invalidation,
+            rebuilt: candidate.rebuilt,
+            cache_len: cache.len(),
+            sources_by_node: collected.sources_by_node,
+            installs,
+        }
+    }
+
+    fn dry_run_collected(
+        arena: &mut NodeArena,
+        input: ElementInlineIfcCandidateLifecycleInput,
+        collected: ElementInlineIfcMetadataCollectorOutput,
+        cache: &mut InlineIfcElementRootCandidateCache,
+    ) -> ElementInlineIfcCandidateLifecycleOutput {
+        let candidate = cache.update(&collected.root_source);
+        let mut install_targets = input.install_targets;
+        if install_targets.is_empty() {
+            install_targets = collected.sources_by_node.keys().copied().collect();
+            install_targets.sort_by_key(|key| format!("{key:?}"));
+        }
+
+        let mut installs = Vec::new();
+        for target in install_targets {
+            let source = collected.source_for_node(target);
+            let Some(mut node) = arena.get_mut(target) else {
+                installs.push(ElementInlineIfcCandidateLifecycleInstall {
+                    node_key: target,
+                    source,
+                    status: ElementInlineIfcCandidateLifecycleInstallStatus::MissingNode,
+                    has_decoration_package: false,
+                    has_atomic_package: false,
+                });
+                continue;
+            };
+            let Some(element) = node.element.as_any_mut().downcast_mut::<Element>() else {
+                installs.push(ElementInlineIfcCandidateLifecycleInstall {
+                    node_key: target,
+                    source,
+                    status: ElementInlineIfcCandidateLifecycleInstallStatus::SkippedNonElement,
+                    has_decoration_package: false,
+                    has_atomic_package: false,
+                });
+                continue;
+            };
+
+            let packages = source.and_then(|source| candidate.package(source));
+            element.install_inline_ifc_rollout_packages_from_candidate(packages);
+            let installed = element.inline_ifc_rollout_packages.clone();
+            installs.push(ElementInlineIfcCandidateLifecycleInstall {
+                node_key: target,
+                source,
+                status: if packages.is_some() {
+                    ElementInlineIfcCandidateLifecycleInstallStatus::Installed
+                } else {
+                    ElementInlineIfcCandidateLifecycleInstallStatus::ClearedMissingSource
+                },
+                has_decoration_package: installed.has_draw_rect_decoration(),
+                has_atomic_package: installed.has_atomic_placement(),
+            });
+        }
+
+        ElementInlineIfcCandidateLifecycleOutput {
+            cache_key: candidate.cache_key,
+            invalidation: candidate.invalidation,
+            rebuilt: candidate.rebuilt,
+            cache_len: cache.len(),
+            sources_by_node: collected.sources_by_node,
+            installs,
+        }
+    }
+}
+
+fn element_inline_ifc_supports_layout_call_site_root(arena: &NodeArena, key: NodeKey) -> bool {
+    arena
+        .get(key)
+        .and_then(|node| {
+            node.element
+                .as_any()
+                .downcast_ref::<Element>()
+                .map(|element| element.computed_style.layout == Layout::Inline)
+        })
+        .unwrap_or(false)
+}
+
+fn element_inline_ifc_layout_call_site_install_targets(
+    arena: &NodeArena,
+    root_key: NodeKey,
+) -> Vec<NodeKey> {
+    element_inline_ifc_layout_call_site_install_targets_from_children(
+        arena,
+        arena.children_of(root_key),
+    )
+}
+
+fn element_inline_ifc_layout_call_site_install_targets_from_children(
+    arena: &NodeArena,
+    root_children: Vec<NodeKey>,
+) -> Vec<NodeKey> {
+    fn walk(
+        arena: &NodeArena,
+        key: NodeKey,
+        seen: &mut FxHashSet<NodeKey>,
+        out: &mut Vec<NodeKey>,
+    ) {
+        for child_key in arena.children_of(key) {
+            if !seen.insert(child_key) {
+                continue;
+            }
+            let is_inline_element = arena
+                .get(child_key)
+                .and_then(|node| {
+                    node.element
+                        .as_any()
+                        .downcast_ref::<Element>()
+                        .map(|element| element.computed_style.layout == Layout::Inline)
+                })
+                .unwrap_or(false);
+            if is_inline_element {
+                out.push(child_key);
+            }
+            walk(arena, child_key, seen, out);
+        }
+    }
+
+    let mut seen = FxHashSet::default();
+    let mut targets = Vec::new();
+    for child_key in root_children {
+        if !seen.insert(child_key) {
+            continue;
+        }
+        let is_inline_element = arena
+            .get(child_key)
+            .and_then(|node| {
+                node.element
+                    .as_any()
+                    .downcast_ref::<Element>()
+                    .map(|element| element.computed_style.layout == Layout::Inline)
+            })
+            .unwrap_or(false);
+        if is_inline_element {
+            targets.push(child_key);
+        }
+        walk(arena, child_key, &mut seen, &mut targets);
+    }
+    targets
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ElementInlineIfcMetadataCollector;
+
+#[allow(dead_code)]
+impl ElementInlineIfcMetadataCollector {
+    pub(crate) fn collect(
+        arena: &NodeArena,
+        input: ElementInlineIfcMetadataCollectorInput,
+    ) -> Option<ElementInlineIfcMetadataCollectorOutput> {
+        let root_source = element_inline_ifc_source_id_for_node(arena, input.root_key)?;
+        let root_children = arena.children_of(input.root_key);
+        let mut state = ElementInlineIfcMetadataCollectorState {
+            arena,
+            root_source,
+            max_width: input.max_width.max(1.0),
+            sources_by_node: FxHashMap::default(),
+            decoration_sources: Vec::new(),
+            atomic_sources: Vec::new(),
+        };
+        state.sources_by_node.insert(input.root_key, root_source);
+
+        let mut builder = InlineIfcElementRootSourceBuilder::new().with_max_width(state.max_width);
+        for child_key in root_children {
+            if let Some(item) = state.collect_item(child_key, root_source) {
+                builder.push_item(item);
+            }
+        }
+        for source in state.decoration_sources {
+            builder.add_decoration_source(source);
+        }
+        for source in state.atomic_sources {
+            builder.add_atomic_source(source);
+        }
+
+        Some(ElementInlineIfcMetadataCollectorOutput {
+            root_source: builder.build(),
+            sources_by_node: state.sources_by_node,
+        })
+    }
+
+    fn collect_for_taken_root(
+        arena: &NodeArena,
+        input: ElementInlineIfcMetadataCollectorInput,
+        root: &Element,
+    ) -> Option<ElementInlineIfcMetadataCollectorOutput> {
+        if root.computed_style.layout != Layout::Inline {
+            return None;
+        }
+        let root_source = element_inline_ifc_source_id(input.root_key, root);
+        let mut state = ElementInlineIfcMetadataCollectorState {
+            arena,
+            root_source,
+            max_width: input.max_width.max(1.0),
+            sources_by_node: FxHashMap::default(),
+            decoration_sources: Vec::new(),
+            atomic_sources: Vec::new(),
+        };
+        state.sources_by_node.insert(input.root_key, root_source);
+
+        let mut builder = InlineIfcElementRootSourceBuilder::new().with_max_width(state.max_width);
+        for child_key in root.children.iter().copied() {
+            if let Some(item) = state.collect_item(child_key, root_source) {
+                builder.push_item(item);
+            }
+        }
+        for source in state.decoration_sources {
+            builder.add_decoration_source(source);
+        }
+        for source in state.atomic_sources {
+            builder.add_atomic_source(source);
+        }
+
+        Some(ElementInlineIfcMetadataCollectorOutput {
+            root_source: builder.build(),
+            sources_by_node: state.sources_by_node,
+        })
+    }
+}
+
+struct ElementInlineIfcMetadataCollectorState<'a> {
+    arena: &'a NodeArena,
+    root_source: InlineIfcSourceId,
+    max_width: f32,
+    sources_by_node: FxHashMap<NodeKey, InlineIfcSourceId>,
+    decoration_sources: Vec<InlineIfcElementDecorationPackageSource>,
+    atomic_sources: Vec<InlineIfcSourceId>,
+}
+
+impl ElementInlineIfcMetadataCollectorState<'_> {
+    fn collect_item(
+        &mut self,
+        key: NodeKey,
+        inherited_source: InlineIfcSourceId,
+    ) -> Option<InlineIfcItem> {
+        enum CollectedNode {
+            Text {
+                source: InlineIfcSourceId,
+                text: String,
+                style: InlineIfcStyle,
+            },
+            InlineElement {
+                source: InlineIfcSourceId,
+                style: InlineIfcStyle,
+                decoration_source: InlineIfcElementDecorationPackageSource,
+                children: Vec<NodeKey>,
+            },
+            Atomic {
+                source: InlineIfcSourceId,
+                measurement: InlineIfcMeasuredAtomicBox,
+            },
+        }
+
+        let collected = {
+            let node = self.arena.get(key)?;
+            let element = node.element.as_ref();
+            let source = element_inline_ifc_source_id(key, element);
+            let snapshot = element.box_model_snapshot();
+            self.sources_by_node.insert(key, source);
+
+            if let Some(text) = element.as_any().downcast_ref::<Text>() {
+                CollectedNode::Text {
+                    source,
+                    text: text.content().to_string(),
+                    style: inline_ifc_style_from_text_metadata(
+                        text.inline_ifc_text_style_metadata(),
+                        inherited_source,
+                        self.root_source,
+                    ),
+                }
+            } else if let Some(element) = element.as_any().downcast_ref::<Element>() {
+                if element.is_fragmentable_inline_element() {
+                    let style = element.inline_ifc_style_metadata();
+                    CollectedNode::InlineElement {
+                        source,
+                        style: style.clone(),
+                        decoration_source: element.inline_ifc_decoration_package_source(source),
+                        children: node.children.clone(),
+                    }
+                } else {
+                    CollectedNode::Atomic {
+                        source,
+                        measurement: self.atomic_measurement(snapshot),
+                    }
+                }
+            } else {
+                CollectedNode::Atomic {
+                    source,
+                    measurement: self.atomic_measurement(snapshot),
+                }
+            }
+        };
+
+        match collected {
+            CollectedNode::Text {
+                source,
+                text,
+                style,
+            } => Some(InlineIfcItem::TextSpan {
+                source,
+                text,
+                style: Some(style),
+            }),
+            CollectedNode::InlineElement {
+                source,
+                style,
+                decoration_source,
+                children,
+            } => {
+                let mut span_children = Vec::new();
+                for child_key in children {
+                    if let Some(item) = self.collect_item(child_key, source) {
+                        span_children.push(item);
+                    }
+                }
+                if span_children.is_empty() {
+                    None
+                } else {
+                    self.decoration_sources.push(decoration_source);
+                    Some(InlineIfcItem::Span {
+                        source,
+                        style: Some(style),
+                        children: span_children,
+                    })
+                }
+            }
+            CollectedNode::Atomic {
+                source,
+                measurement,
+            } => {
+                self.atomic_sources.push(source);
+                Some(InlineIfcItem::AtomicInlineBox {
+                    source,
+                    measurement,
+                })
+            }
+        }
+    }
+
+    fn atomic_measurement(&self, snapshot: BoxModelSnapshot) -> InlineIfcMeasuredAtomicBox {
+        InlineIfcMeasuredAtomicBox::new(
+            InlineIfcSize::new(snapshot.width, snapshot.height),
+            InlineIfcAtomicMeasureConstraints::new(Some(self.max_width)),
+        )
+    }
+}
+
+fn element_inline_ifc_source_id_for_node(
+    arena: &NodeArena,
+    key: NodeKey,
+) -> Option<InlineIfcSourceId> {
+    arena
+        .get(key)
+        .map(|node| element_inline_ifc_source_id(key, node.element.as_ref()))
+}
+
+fn element_inline_ifc_source_id(key: NodeKey, element: &dyn ElementTrait) -> InlineIfcSourceId {
+    let stable_id = element.stable_id();
+    if stable_id != 0 {
+        return InlineIfcSourceId(stable_id);
+    }
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    InlineIfcSourceId(hasher.finish())
+}
+
+fn inline_ifc_style_from_text_metadata(
+    metadata: TextInlineIfcStyleMetadata,
+    _inherited_source: InlineIfcSourceId,
+    _root_source: InlineIfcSourceId,
+) -> InlineIfcStyle {
+    InlineIfcStyle {
+        font_size: metadata.font_size,
+        line_height: metadata.line_height,
+        font_weight: metadata.font_weight,
+        brush: metadata.brush,
+        font_families: metadata.font_families,
+    }
+}
+
 /// Snapshot of an Element's "previous frame" visual style. Used by
 /// the style-transition emission path (`collect_style_transition_
 /// requests` / `preserve_transform_transition_baseline`) to compute
@@ -2146,6 +4014,69 @@ pub(crate) struct ElementStyleSnapshot {
     box_shadows: Vec<BoxShadow>,
     transform: Transform,
     transform_origin: TransformOrigin,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcRenderMode {
+    Disabled,
+    #[default]
+    DrawRectPackageCandidate,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcRenderFallback {
+    ExistingInlineFragments,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementInlineIfcRenderDecision {
+    ExistingInlineFragments,
+    DrawRectPackageCandidate {
+        fallback: ElementInlineIfcRenderFallback,
+        has_atomic_placement_package: bool,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ElementInlineIfcDrawRectPassMetadata {
+    pub(crate) fill: RectPassParams,
+    pub(crate) border: Option<RectPassParams>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ElementInlineIfcAtomicPlacementMetadata {
+    pub(crate) package: InlineIfcAtomicBoxPlacementPackage,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ElementInlineIfcRolloutPackages {
+    decoration_draw_rect: Option<InlineIfcElementDecorationDrawRectPackage>,
+    atomic_placement: Option<InlineIfcAtomicBoxPlacementPackage>,
+}
+
+impl ElementInlineIfcRolloutPackages {
+    #[allow(dead_code)]
+    pub(crate) fn from_inline_ifc_distributed(
+        package: &InlineIfcDistributedElementPackages,
+    ) -> Self {
+        Self {
+            decoration_draw_rect: package.decoration_draw_rect.clone(),
+            atomic_placement: package.atomic_placement.clone(),
+        }
+    }
+
+    fn has_draw_rect_decoration(&self) -> bool {
+        self.decoration_draw_rect
+            .as_ref()
+            .is_some_and(|package| !package.fragments.is_empty())
+    }
+
+    fn has_atomic_placement(&self) -> bool {
+        self.atomic_placement
+            .as_ref()
+            .is_some_and(|package| !package.placements.is_empty())
+    }
 }
 
 pub struct Element {
@@ -2174,6 +4105,9 @@ pub struct Element {
     pending_inline_measure_context: Option<InlineMeasureContext>,
     last_inline_measure_context: Option<InlineMeasureContext>,
     inline_paint_fragments: Vec<Rect>,
+    inline_ifc_render_mode: ElementInlineIfcRenderMode,
+    inline_ifc_rollout_packages: ElementInlineIfcRolloutPackages,
+    inline_ifc_layout_call_site: ElementInlineIfcLayoutCallSiteState,
     scrollbar_drag: Option<ScrollbarDragState>,
     last_scrollbar_interaction: Option<Instant>,
     scrollbar_shadow_blur_radius: f32,
@@ -2227,10 +4161,227 @@ impl Element {
         self.children = children;
     }
 
+    fn inline_ifc_layout_call_site_mode(&self) -> ElementInlineIfcLayoutCallSiteOptInMode {
+        self.inline_ifc_layout_call_site_gate().resolve()
+    }
+
+    fn inline_ifc_layout_call_site_gate(&self) -> ElementInlineIfcLayoutCallSiteGate {
+        self.inline_ifc_layout_call_site.rollout_config.gate()
+    }
+
+    fn inline_ifc_layout_call_site_is_enabled(&self) -> bool {
+        self.inline_ifc_layout_call_site_gate().is_enabled()
+    }
+
+    fn inline_ifc_layout_call_site_dirty_gate(
+        &self,
+        arena: &NodeArena,
+        placement: LayoutPlacement,
+    ) -> bool {
+        if !self.inline_ifc_layout_call_site_is_enabled() {
+            return false;
+        }
+        if self.inline_ifc_layout_call_site.last_output.is_none() {
+            return true;
+        }
+        if self.last_layout_placement != Some(placement) {
+            return true;
+        }
+        let ifc_dirty_mask = DirtyPassMask::LAYOUT.union(DirtyPassMask::PAINT);
+        if self.dirty_flags.intersects(ifc_dirty_mask) {
+            return true;
+        }
+        record_refreshed_layout_gate_child_candidates(
+            &self.children,
+            arena,
+            ifc_dirty_mask,
+            LayoutGateCandidatePhase::Placement,
+        )
+    }
+
+    fn run_inline_ifc_layout_call_site_opt_in_after_place(
+        &mut self,
+        arena: &mut NodeArena,
+        max_width: f32,
+    ) {
+        let mode = self.inline_ifc_layout_call_site_mode();
+        if matches!(mode, ElementInlineIfcLayoutCallSiteOptInMode::Disabled) {
+            return;
+        }
+
+        let Some(root_key) = arena.find_by_stable_id(self.stable_id()) else {
+            return;
+        };
+        let input = ElementInlineIfcLayoutCallSiteOptInInput {
+            root_key,
+            max_width: max_width.max(1.0),
+            mode,
+        };
+        if self.computed_style.layout != Layout::Inline {
+            self.inline_ifc_layout_call_site.last_output =
+                Some(ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
+                    &input,
+                    ElementInlineIfcLayoutCallSiteOptInStatus::UnsupportedRoot,
+                ));
+            return;
+        }
+
+        let install_targets = element_inline_ifc_layout_call_site_install_targets_from_children(
+            arena,
+            self.children.clone(),
+        );
+        if install_targets.is_empty() {
+            self.inline_ifc_layout_call_site.last_output =
+                Some(ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
+                    &input,
+                    ElementInlineIfcLayoutCallSiteOptInStatus::NoInstallTargets,
+                ));
+            return;
+        }
+
+        let Some(collected) = ElementInlineIfcMetadataCollector::collect_for_taken_root(
+            arena,
+            ElementInlineIfcMetadataCollectorInput::new(root_key, input.max_width),
+            self,
+        ) else {
+            self.inline_ifc_layout_call_site.last_output =
+                Some(ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
+                    &input,
+                    ElementInlineIfcLayoutCallSiteOptInStatus::UnsupportedRoot,
+                ));
+            return;
+        };
+
+        let lifecycle_input =
+            ElementInlineIfcCandidateLifecycleInput::new(root_key, input.max_width)
+                .with_install_targets(install_targets.clone());
+        let lifecycle = match mode {
+            ElementInlineIfcLayoutCallSiteOptInMode::Disabled => unreachable!(),
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation => {
+                ElementInlineIfcCandidateLifecycle::observe_collected(
+                    lifecycle_input,
+                    collected,
+                    &mut self.inline_ifc_layout_call_site.cache,
+                )
+            }
+            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate => {
+                ElementInlineIfcCandidateLifecycle::dry_run_collected(
+                    arena,
+                    lifecycle_input,
+                    collected,
+                    &mut self.inline_ifc_layout_call_site.cache,
+                )
+            }
+        };
+
+        self.inline_ifc_layout_call_site.last_output =
+            Some(ElementInlineIfcLayoutCallSiteOptInOutput {
+                root_key,
+                mode,
+                status: ElementInlineIfcLayoutCallSiteOptInStatus::LifecycleRan,
+                install_targets,
+                lifecycle: Some(lifecycle),
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+            });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_inline_ifc_layout_call_site_opt_in_mode(
+        &mut self,
+        mode: ElementInlineIfcLayoutCallSiteOptInMode,
+    ) {
+        self.inline_ifc_layout_call_site.rollout_config =
+            ElementInlineIfcLayoutCallSiteRolloutConfig::from_mode(mode);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn apply_inline_ifc_layout_call_site_rollout_config_for_test(
+        &mut self,
+        config: ElementInlineIfcLayoutCallSiteRolloutConfig,
+    ) {
+        self.inline_ifc_layout_call_site.rollout_config = config;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline_ifc_layout_call_site_last_output_for_test(
+        &self,
+    ) -> Option<&ElementInlineIfcLayoutCallSiteOptInOutput> {
+        self.inline_ifc_layout_call_site.last_output.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline_ifc_layout_call_site_diagnostic_for_test(
+        &self,
+        arena: &NodeArena,
+    ) -> Option<ElementInlineIfcLayoutCallSiteDiagnostic> {
+        self.inline_ifc_layout_call_site
+            .last_output
+            .as_ref()
+            .map(|output| {
+                output.diagnostic_for_test(arena, self.inline_ifc_layout_call_site.cache.len())
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline_ifc_layout_call_site_cache_len_for_test(&self) -> usize {
+        self.inline_ifc_layout_call_site.cache.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline_ifc_layout_call_site_gate_mode_for_test(
+        &self,
+    ) -> ElementInlineIfcLayoutCallSiteOptInMode {
+        self.inline_ifc_layout_call_site_mode()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline_ifc_layout_call_site_rollout_phase_for_test(
+        &self,
+    ) -> ElementInlineIfcLayoutCallSiteRolloutPhase {
+        self.inline_ifc_layout_call_site.rollout_config.phase()
+    }
+
     fn is_fragmentable_inline_element(&self) -> bool {
         self.computed_style.layout == Layout::Inline
             && self.computed_style.width == SizeValue::Auto
             && self.computed_style.height == SizeValue::Auto
+    }
+
+    fn inline_ifc_style_metadata(&self) -> InlineIfcStyle {
+        InlineIfcStyle {
+            font_size: self.computed_style.font_size,
+            line_height: self.computed_style.line_height,
+            font_weight: self.computed_style.font_weight,
+            brush: self.computed_style.color.to_rgba_u8(),
+            font_families: self.computed_style.font_families.clone(),
+        }
+    }
+
+    fn inline_ifc_decoration_package_source(
+        &self,
+        source: InlineIfcSourceId,
+    ) -> InlineIfcElementDecorationPackageSource {
+        let insets = InlineIfcDecorationBoxInsets::new(
+            self.border_widths.left + self.padding.left,
+            self.border_widths.right + self.padding.right,
+            self.border_widths.top + self.padding.top,
+            self.border_widths.bottom + self.padding.bottom,
+        );
+        let style = InlineIfcElementDecorationDrawRectStyle::new(
+            crate::view::inline_formatting_context::InlineIfcPaintStyleKey {
+                brush: self.computed_style.background_color.to_rgba_u8(),
+            },
+            self.background_color.as_ref().to_rgba_f32(),
+            self.opacity,
+            [
+                self.border_widths.left,
+                self.border_widths.right,
+                self.border_widths.top,
+                self.border_widths.bottom,
+            ],
+            self.border_colors.left.as_ref().to_rgba_f32(),
+        );
+        InlineIfcElementDecorationPackageSource::new(source, insets, style)
     }
 
     pub(crate) fn inline_fragment_rects(&self) -> &[Rect] {

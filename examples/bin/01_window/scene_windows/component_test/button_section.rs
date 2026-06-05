@@ -114,7 +114,6 @@ pub fn ButtonSection(theme: Theme) -> RsxNode {
             <Button
                 variant={Some(ButtonVariant::Contained)}
                 full_width
-                on_click={count_increment.clone()}
             >Full Width</Button>
 
             <Text style={{ color: theme.color.text.secondary.clone() }}>IconButton</Text>

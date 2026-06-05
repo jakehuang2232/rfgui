@@ -11,9 +11,36 @@
 mod tests {
     use super::super::core::Position as LayoutPosition;
     use super::{
-        DirtyFlags, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
-        Layoutable, UiBuildContext, expand_corner_radii_for_spread, main_axis_start_and_gap,
-        normalize_corner_radii, resolve_px_with_base, resolve_signed_px_with_base,
+        DirtyFlags, Element, ElementInlineIfcCandidateLifecycle,
+        ElementInlineIfcCandidateLifecycleInput, ElementInlineIfcCandidateLifecycleInstallStatus,
+        ElementInlineIfcDefaultRolloutBlockedReason, ElementInlineIfcDefaultRolloutDecision,
+        ElementInlineIfcDefaultRolloutDecisionInput,
+        ElementInlineIfcDefaultShadowRunAdoptionAudit,
+        ElementInlineIfcDefaultShadowRunAdoptionAuditInput,
+        ElementInlineIfcDefaultShadowRunAuditBlockedReason,
+        ElementInlineIfcDefaultShadowRunAuditReadiness,
+        ElementInlineIfcRenderDefaultAudit, ElementInlineIfcRenderDefaultAuditBlockedReason,
+        ElementInlineIfcRenderDefaultAuditInput, ElementInlineIfcRenderDefaultAuditReadiness,
+        ElementInlineIfcRenderDefaultAdoptionAudit,
+        ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason,
+        ElementInlineIfcRenderDefaultAdoptionAuditInput,
+        ElementInlineIfcRenderDefaultAdoptionAuditReadiness,
+        ElementInlineIfcRenderDefaultRolloutBlockedReason,
+        ElementInlineIfcRenderDefaultRolloutDecision,
+        ElementInlineIfcRenderDefaultRolloutDecisionInput,
+        ElementInlineIfcRenderDefaultRolloutReadiness,
+        ElementInlineIfcLayoutCallSiteOptIn, ElementInlineIfcLayoutCallSiteOptInInput,
+        ElementInlineIfcLayoutCallSiteOptInMode, ElementInlineIfcLayoutCallSiteOptInStatus,
+        ElementInlineIfcLayoutCallSiteRolloutConfig,
+        ElementInlineIfcLayoutCallSiteRolloutPhase, ElementInlineIfcLayoutCallSiteScenario,
+        ElementInlineIfcMetadataCollector, ElementInlineIfcMetadataCollectorInput,
+        ElementInlineIfcRenderDecision, ElementInlineIfcRenderFallback, ElementInlineIfcRenderMode,
+        ElementInlineIfcRolloutPackages, ElementTrait, EventTarget,
+        LayoutConstraints, LayoutPlacement, Layoutable, UiBuildContext,
+        TextAreaInlineIfcReadiness, TextAreaInlineIfcReadinessBlockedReason,
+        TextAreaInlineIfcReadinessInput, TextAreaInlineIfcReadinessState,
+        expand_corner_radii_for_spread, main_axis_start_and_gap, normalize_corner_radii,
+        resolve_px_with_base, resolve_signed_px_with_base, Rect,
     };
     use super::{reset_test_promoted_build_counts, test_promoted_build_count};
     use crate::style::Layout;
@@ -28,7 +55,14 @@ mod tests {
     use crate::view::base_component::ComputedStyleConsumer;
     use crate::view::base_component::Text;
     use crate::view::base_component::set_style_field_by_id;
-    use crate::view::frame_graph::FrameGraph;
+    use crate::view::frame_graph::{FrameGraph, PassDescriptor, PassDetails};
+    use crate::view::inline_formatting_context::{
+        InlineFormattingContext, InlineIfcAtomicMeasureConstraints, InlineIfcDecorationBoxInsets,
+        InlineIfcElementDecorationDrawRectStyle, InlineIfcElementDecorationPackageSource,
+        InlineIfcElementPackageDistributionInput, InlineIfcElementRootCandidateCache,
+        InlineIfcElementRootSourceBuilder, InlineIfcInput, InlineIfcInvalidation, InlineIfcItem,
+        InlineIfcMeasuredAtomicBox, InlineIfcSize, InlineIfcSourceId, InlineIfcStyle,
+    };
     use crate::view::test_support::{
         child_key, child_snapshot, commit_child, commit_element, measure_and_place, new_test_arena,
         nth_child_snapshot,
@@ -37,6 +71,266 @@ mod tests {
     use rustc_hash::{FxHashMap, FxHashSet};
 
     use std::sync::Arc;
+
+    fn rect_close(actual: Rect, expected: Rect, epsilon: f32) -> bool {
+        (actual.x - expected.x).abs() <= epsilon
+            && (actual.y - expected.y).abs() <= epsilon
+            && (actual.width - expected.width).abs() <= epsilon
+            && (actual.height - expected.height).abs() <= epsilon
+    }
+
+    #[derive(Clone, Debug)]
+    struct InlineElementIfcRenderGraphSummary {
+        pass_names: Vec<String>,
+        draw_rect_descriptors: Vec<PassDescriptor>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct InlineElementIfcProductionMatrixFixture {
+        parent_key: crate::view::node_arena::NodeKey,
+        outer_key: crate::view::node_arena::NodeKey,
+        inner_key: crate::view::node_arena::NodeKey,
+        atomic_key: crate::view::node_arena::NodeKey,
+        sibling_key: crate::view::node_arena::NodeKey,
+        mutable_text_key: crate::view::node_arena::NodeKey,
+        height: f32,
+    }
+
+    fn inline_element_ifc_matrix_constraints(width: f32, height: f32) -> LayoutConstraints {
+        LayoutConstraints {
+            max_width: width,
+            max_height: height,
+            viewport_width: width,
+            viewport_height: height,
+            percent_base_width: Some(width),
+            percent_base_height: Some(height),
+        }
+    }
+
+    fn inline_element_ifc_matrix_placement(width: f32, height: f32) -> LayoutPlacement {
+        LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: width,
+            available_height: height,
+            viewport_width: width,
+            viewport_height: height,
+            percent_base_width: Some(width),
+            percent_base_height: Some(height),
+        }
+    }
+
+    fn build_inline_element_ifc_production_matrix_fixture(
+        parent_width: f32,
+        scenario: ElementInlineIfcLayoutCallSiteScenario,
+    ) -> (
+        crate::view::node_arena::NodeArena,
+        InlineElementIfcProductionMatrixFixture,
+    ) {
+        let mut arena = new_test_arena();
+        let height = 260.0;
+
+        let mut parent = Element::new_with_id(820, 0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Auto);
+        parent_style.insert(PropertyId::Height, ParsedValue::Auto);
+        parent_style.set_line_height(1.2);
+        parent_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#111827")));
+        parent.apply_style(parent_style);
+        parent.apply_inline_ifc_layout_call_site_rollout_config_for_test(
+            ElementInlineIfcLayoutCallSiteRolloutConfig::for_scenario(scenario),
+        );
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Text::from_content_with_id(920, "prefix production text ")),
+        );
+
+        let mut outer = Element::new_with_id(821, 0.0, 0.0, 0.0, 0.0);
+        let mut outer_style = Style::new();
+        outer_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        outer_style.insert(PropertyId::Width, ParsedValue::Auto);
+        outer_style.insert(PropertyId::Height, ParsedValue::Auto);
+        outer_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#e0f2fe")),
+        );
+        outer_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#0c4a6e")));
+        outer_style.set_padding(crate::style::Padding::uniform(Length::px(5.0)));
+        outer_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#0284c7")));
+        outer.apply_style(outer_style);
+        let outer_key = commit_child(&mut arena, parent_key, Box::new(outer));
+
+        let mut mutable_text = Text::from_content_with_id(921, "outer text before ");
+        mutable_text.set_font_size(16.0);
+        mutable_text.set_color(Color::hex("#0f172a"));
+        let mutable_text_key = commit_child(&mut arena, outer_key, Box::new(mutable_text));
+
+        let mut inner = Element::new_with_id(822, 0.0, 0.0, 0.0, 0.0);
+        let mut inner_style = Style::new();
+        inner_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        inner_style.insert(PropertyId::Width, ParsedValue::Auto);
+        inner_style.insert(PropertyId::Height, ParsedValue::Auto);
+        inner_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#dcfce7")),
+        );
+        inner_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#14532d")));
+        inner_style.set_padding(crate::style::Padding::uniform(Length::px(3.0)));
+        inner_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#16a34a")));
+        inner.apply_style(inner_style);
+        let inner_key = commit_child(&mut arena, outer_key, Box::new(inner));
+
+        commit_child(
+            &mut arena,
+            inner_key,
+            Box::new(Text::from_content_with_id(
+                922,
+                "nested inline element span text",
+            )),
+        );
+
+        let mut atomic = Element::new_with_id(823, 0.0, 0.0, 54.0, 22.0);
+        let mut atomic_style = Style::new();
+        atomic_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        atomic_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(54.0)));
+        atomic_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(22.0)));
+        atomic_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#fef3c7")),
+        );
+        atomic.apply_style(atomic_style);
+        let atomic_key = commit_child(&mut arena, outer_key, Box::new(atomic));
+
+        commit_child(
+            &mut arena,
+            outer_key,
+            Box::new(Text::from_content_with_id(923, " outer tail")),
+        );
+
+        let mut sibling = Element::new_with_id(824, 0.0, 0.0, 0.0, 0.0);
+        let mut sibling_style = Style::new();
+        sibling_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        sibling_style.insert(PropertyId::Width, ParsedValue::Auto);
+        sibling_style.insert(PropertyId::Height, ParsedValue::Auto);
+        sibling_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#fee2e2")),
+        );
+        sibling_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#7f1d1d")));
+        sibling_style.set_padding(crate::style::Padding::uniform(Length::px(4.0)));
+        sibling_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#dc2626")));
+        sibling.apply_style(sibling_style);
+        let sibling_key = commit_child(&mut arena, parent_key, Box::new(sibling));
+
+        commit_child(
+            &mut arena,
+            sibling_key,
+            Box::new(Text::from_content_with_id(
+                924,
+                "sibling inline element text",
+            )),
+        );
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Text::from_content_with_id(925, " final text")),
+        );
+
+        (
+            arena,
+            InlineElementIfcProductionMatrixFixture {
+                parent_key,
+                outer_key,
+                inner_key,
+                atomic_key,
+                sibling_key,
+                mutable_text_key,
+                height,
+            },
+        )
+    }
+
+    fn compile_inline_element_render_graph_for_test(
+        arena: &mut crate::view::node_arena::NodeArena,
+        root_key: crate::view::node_arena::NodeKey,
+        width: u32,
+        height: u32,
+    ) -> InlineElementIfcRenderGraphSummary {
+        let mut graph = FrameGraph::new();
+        let mut ctx =
+            UiBuildContext::new(width, height, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
+            crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
+            crate::view::render_pass::clear_pass::ClearInput {
+                pass_context: ctx.graphics_pass_context(),
+                clear_depth_stencil: true,
+            },
+            crate::view::render_pass::clear_pass::ClearOutput {
+                render_target: target,
+            },
+        ));
+        ctx.set_current_target(target);
+
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(root_key, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("inline element build should return state");
+        ctx.set_state(next_state);
+
+        graph
+            .compile()
+            .expect("inline element render graph should compile");
+        let pass_descriptors = graph
+            .pass_descriptors()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let pass_names = pass_descriptors
+            .iter()
+            .map(|descriptor| descriptor.name.to_string())
+            .collect::<Vec<_>>();
+        let draw_rect_descriptors = pass_descriptors
+            .into_iter()
+            .filter(|descriptor| {
+                descriptor.name.contains("draw_rect_pass::DrawRectPass")
+                    || descriptor
+                        .name
+                        .contains("draw_rect_pass::OpaqueRectPass")
+            })
+            .collect::<Vec<_>>();
+
+        InlineElementIfcRenderGraphSummary {
+            pass_names,
+            draw_rect_descriptors,
+        }
+    }
+
+    fn assert_draw_rect_descriptors_are_graphics(
+        descriptors: &[PassDescriptor],
+        expected_min_count: usize,
+    ) {
+        assert!(
+            descriptors.len() >= expected_min_count,
+            "expected at least {expected_min_count} draw rect descriptors, got {descriptors:?}"
+        );
+        for descriptor in descriptors {
+            let PassDetails::Graphics(graphics) = &descriptor.details else {
+                panic!("draw rect descriptor should be graphics: {descriptor:?}");
+            };
+            assert!(
+                !graphics.color_attachments.is_empty(),
+                "draw rect descriptor should write a color target: {descriptor:?}"
+            );
+        }
+    }
 
     #[test]
     fn justify_content_space_evenly_distributes_free_space() {
@@ -6881,6 +7175,5077 @@ mod tests {
             })
             .fold(0.0_f32, f32::max);
         assert!((last.x + last.width - last_line_right - 8.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn inline_element_ifc_decoration_prewire_matches_legacy_fragment_rects() {
+        const WRAPPER_SOURCE: InlineIfcSourceId = InlineIfcSourceId(42);
+        let content = "badge test test test test";
+        let parent_width = 160.0;
+        let inset = 8.0;
+
+        let mut arena = new_test_arena();
+        let mut parent = Element::new(0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(parent_width)));
+        parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
+        wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
+        wrapper_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#93c5fd")),
+        );
+        wrapper_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#2563eb")));
+        wrapper_style.set_padding(crate::style::Padding::uniform(Length::px(7.0)));
+        wrapper.apply_style(wrapper_style);
+        let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Text::from_content(content)),
+        );
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: parent_width,
+                max_height: 160.0,
+                viewport_width: parent_width,
+                viewport_height: 160.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(160.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: parent_width,
+                available_height: 160.0,
+                viewport_width: parent_width,
+                viewport_height: 160.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(160.0),
+            },
+        );
+
+        let legacy_fragments = {
+            let wrapper_el =
+                crate::view::test_support::get_element::<Element>(&arena, wrapper_key);
+            wrapper_el.inline_fragment_rects().to_vec()
+        };
+        assert!(
+            legacy_fragments.len() >= 2,
+            "legacy wrapped inline wrapper should expose per-line paint fragments: {legacy_fragments:?}"
+        );
+
+        let ifc = InlineFormattingContext::build(
+            InlineIfcInput::new(vec![InlineIfcItem::Span {
+                source: WRAPPER_SOURCE,
+                style: Some(InlineIfcStyle {
+                    font_size: 16.0,
+                    line_height: 1.25,
+                    ..InlineIfcStyle::default()
+                }),
+                children: vec![InlineIfcItem::TextSpan {
+                    source: WRAPPER_SOURCE,
+                    text: content.to_string(),
+                    style: None,
+                }],
+            }])
+            .with_max_width(parent_width - inset * 2.0),
+        );
+        let ifc_fragments = ifc.element_decoration_paint_fragments(
+            WRAPPER_SOURCE,
+            InlineIfcDecorationBoxInsets::new(inset, inset, inset, inset),
+        );
+
+        assert_eq!(
+            ifc_fragments.len(),
+            legacy_fragments.len(),
+            "IFC decoration prewire should split the same wrapped span count; legacy={legacy_fragments:?} ifc={ifc_fragments:?}"
+        );
+        assert!(
+            ifc_fragments
+                .iter()
+                .zip(legacy_fragments.iter())
+                .all(|(ifc, legacy)| {
+                    let ifc = ifc.rect;
+                    rect_close(
+                        Rect {
+                            x: ifc.x,
+                            y: ifc.y,
+                            width: ifc.width,
+                            height: ifc.height,
+                        },
+                        *legacy,
+                        0.75,
+                    )
+                }),
+            "IFC decoration fragments should match legacy inline_paint_fragments; legacy={legacy_fragments:?} ifc={ifc_fragments:?}"
+        );
+        let first = ifc_fragments.first().expect("first IFC fragment");
+        let last = ifc_fragments.last().expect("last IFC fragment");
+        assert!(first.is_first_for_source);
+        assert!(last.is_last_for_source);
+    }
+
+    #[test]
+    fn inline_element_ifc_decoration_package_keeps_multiple_sibling_sources_separate() {
+        const FIRST_SOURCE: InlineIfcSourceId = InlineIfcSourceId(51);
+        const SECOND_SOURCE: InlineIfcSourceId = InlineIfcSourceId(52);
+        let first_content = "alpha beta gamma delta";
+        let second_content = "epsilon zeta eta theta";
+        let parent_width = 170.0;
+        let inset = 8.0;
+
+        let mut arena = new_test_arena();
+        let mut parent = Element::new(0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(parent_width)));
+        parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        let mut first = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut first_style = Style::new();
+        first_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        first_style.insert(PropertyId::Width, ParsedValue::Auto);
+        first_style.insert(PropertyId::Height, ParsedValue::Auto);
+        first_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#bfdbfe")),
+        );
+        first_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#2563eb")));
+        first_style.set_padding(crate::style::Padding::uniform(Length::px(7.0)));
+        first.apply_style(first_style);
+        let first_key = commit_child(&mut arena, parent_key, Box::new(first));
+        commit_child(
+            &mut arena,
+            first_key,
+            Box::new(Text::from_content(first_content)),
+        );
+
+        let mut second = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut second_style = Style::new();
+        second_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        second_style.insert(PropertyId::Width, ParsedValue::Auto);
+        second_style.insert(PropertyId::Height, ParsedValue::Auto);
+        second_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#fecaca")),
+        );
+        second_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#dc2626")));
+        second_style.set_padding(crate::style::Padding::uniform(Length::px(7.0)));
+        second.apply_style(second_style);
+        let second_key = commit_child(&mut arena, parent_key, Box::new(second));
+        commit_child(
+            &mut arena,
+            second_key,
+            Box::new(Text::from_content(second_content)),
+        );
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: parent_width,
+                max_height: 220.0,
+                viewport_width: parent_width,
+                viewport_height: 220.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(220.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: parent_width,
+                available_height: 220.0,
+                viewport_width: parent_width,
+                viewport_height: 220.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(220.0),
+            },
+        );
+
+        let first_legacy = crate::view::test_support::get_element::<Element>(&arena, first_key)
+            .inline_fragment_rects()
+            .to_vec();
+        let second_legacy = crate::view::test_support::get_element::<Element>(&arena, second_key)
+            .inline_fragment_rects()
+            .to_vec();
+        assert!(
+            first_legacy.len() >= 2 && second_legacy.len() >= 2,
+            "fixture should wrap both legacy sibling wrappers; first={first_legacy:?} second={second_legacy:?}"
+        );
+
+        let ifc = InlineFormattingContext::build(
+            InlineIfcInput::new(vec![
+                InlineIfcItem::Span {
+                    source: FIRST_SOURCE,
+                    style: Some(InlineIfcStyle {
+                        font_size: 16.0,
+                        line_height: 1.25,
+                        brush: [11, 22, 33, 255],
+                        ..InlineIfcStyle::default()
+                    }),
+                    children: vec![InlineIfcItem::TextSpan {
+                        source: FIRST_SOURCE,
+                        text: first_content.to_string(),
+                        style: None,
+                    }],
+                },
+                InlineIfcItem::Span {
+                    source: SECOND_SOURCE,
+                    style: Some(InlineIfcStyle {
+                        font_size: 16.0,
+                        line_height: 1.25,
+                        brush: [44, 55, 66, 255],
+                        ..InlineIfcStyle::default()
+                    }),
+                    children: vec![InlineIfcItem::TextSpan {
+                        source: SECOND_SOURCE,
+                        text: second_content.to_string(),
+                        style: None,
+                    }],
+                },
+            ])
+            .with_max_width(parent_width - inset * 2.0),
+        );
+        let first_style = InlineIfcElementDecorationDrawRectStyle::from_fill_style(
+            &InlineIfcStyle {
+                brush: [11, 22, 33, 255],
+                ..InlineIfcStyle::default()
+            },
+        );
+        let second_style = InlineIfcElementDecorationDrawRectStyle::from_fill_style(
+            &InlineIfcStyle {
+                brush: [44, 55, 66, 255],
+                ..InlineIfcStyle::default()
+            },
+        );
+        let first_package = ifc.element_decoration_draw_rect_package(
+            FIRST_SOURCE,
+            InlineIfcDecorationBoxInsets::new(inset, inset, inset, inset),
+            first_style,
+        );
+        let second_package = ifc.element_decoration_draw_rect_package(
+            SECOND_SOURCE,
+            InlineIfcDecorationBoxInsets::new(inset, inset, inset, inset),
+            second_style,
+        );
+
+        assert_eq!(first_package.source, FIRST_SOURCE);
+        assert_eq!(second_package.source, SECOND_SOURCE);
+        assert!(
+            first_package
+                .fragments
+                .iter()
+                .all(|fragment| fragment.source == FIRST_SOURCE
+                    && fragment.style_key == first_package.style_key),
+            "first package should not contain second sibling metadata: {first_package:?}"
+        );
+        assert!(
+            second_package
+                .fragments
+                .iter()
+                .all(|fragment| fragment.source == SECOND_SOURCE
+                    && fragment.style_key == second_package.style_key),
+            "second package should not contain first sibling metadata: {second_package:?}"
+        );
+        assert_eq!(
+            first_package.fragments.len(),
+            first_legacy.len(),
+            "first sibling IFC package should split like legacy; legacy={first_legacy:?} package={first_package:?}"
+        );
+        assert_eq!(
+            second_package.fragments.len(),
+            second_legacy.len(),
+            "second sibling IFC package should split like legacy; legacy={second_legacy:?} package={second_package:?}"
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_render_candidate_gate_preserves_legacy_fallback() {
+        const WRAPPER_SOURCE: InlineIfcSourceId = InlineIfcSourceId(77);
+        let content = "inline wrapper background should wrap across lines";
+        let parent_width = 160.0;
+
+        let mut arena = new_test_arena();
+        let mut parent = Element::new(0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(parent_width)));
+        parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        wrapper_style.insert(PropertyId::Width, ParsedValue::Auto);
+        wrapper_style.insert(PropertyId::Height, ParsedValue::Auto);
+        wrapper_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#93c5fd")),
+        );
+        wrapper_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#2563eb")));
+        wrapper.apply_style(wrapper_style);
+        let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+        commit_child(
+            &mut arena,
+            wrapper_key,
+            Box::new(Text::from_content(content)),
+        );
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: parent_width,
+                max_height: 160.0,
+                viewport_width: parent_width,
+                viewport_height: 160.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(160.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: parent_width,
+                available_height: 160.0,
+                viewport_width: parent_width,
+                viewport_height: 160.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(160.0),
+            },
+        );
+
+        let legacy_fragments = crate::view::test_support::get_element::<Element>(&arena, wrapper_key)
+            .inline_fragment_rects()
+            .to_vec();
+        assert!(
+            legacy_fragments.len() >= 2,
+            "fixture should have wrapped legacy fragments: {legacy_fragments:?}"
+        );
+
+        let ifc = InlineFormattingContext::build(
+            InlineIfcInput::new(vec![InlineIfcItem::Span {
+                source: WRAPPER_SOURCE,
+                style: Some(InlineIfcStyle {
+                    font_size: 16.0,
+                    line_height: 1.25,
+                    brush: [147, 197, 253, 255],
+                    ..InlineIfcStyle::default()
+                }),
+                children: vec![InlineIfcItem::TextSpan {
+                    source: WRAPPER_SOURCE,
+                    text: content.to_string(),
+                    style: None,
+                }],
+            }])
+            .with_max_width(parent_width),
+        );
+        let mut draw_style = InlineIfcElementDecorationDrawRectStyle::from_fill_style(
+            &InlineIfcStyle {
+                brush: [147, 197, 253, 255],
+                ..InlineIfcStyle::default()
+            },
+        );
+        draw_style.border_widths = [1.0, 1.0, 1.0, 1.0];
+        draw_style.border_color = [37.0 / 255.0, 99.0 / 255.0, 235.0 / 255.0, 1.0];
+        let package = ifc.element_decoration_draw_rect_package(
+            WRAPPER_SOURCE,
+            InlineIfcDecorationBoxInsets::new(1.0, 1.0, 1.0, 1.0),
+            draw_style,
+        );
+        assert_eq!(package.fragments.len(), legacy_fragments.len());
+
+        let fallback_without_package = {
+            let mut wrapper_el =
+                crate::view::test_support::get_element_mut::<Element>(&mut arena, wrapper_key);
+            assert_eq!(
+                wrapper_el.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::ExistingInlineFragments
+            );
+            wrapper_el.set_inline_ifc_render_mode_for_test(
+                ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            );
+            wrapper_el.inline_ifc_render_decision_for_test()
+        };
+        assert_eq!(
+            fallback_without_package,
+            ElementInlineIfcRenderDecision::ExistingInlineFragments
+        );
+
+        let candidate_metadata = {
+            let mut wrapper_el =
+                crate::view::test_support::get_element_mut::<Element>(&mut arena, wrapper_key);
+            wrapper_el.set_inline_ifc_draw_rect_package_for_test(package.clone());
+            assert_eq!(
+                wrapper_el.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                    fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                    has_atomic_placement_package: false,
+                }
+            );
+            wrapper_el.inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+        };
+        assert_eq!(candidate_metadata.len(), legacy_fragments.len());
+        for ((metadata, legacy), package_fragment) in candidate_metadata
+            .iter()
+            .zip(legacy_fragments.iter())
+            .zip(package.fragments.iter())
+        {
+            assert!(
+                rect_close(
+                    Rect {
+                        x: metadata.fill.position[0],
+                        y: metadata.fill.position[1],
+                        width: metadata.fill.size[0],
+                        height: metadata.fill.size[1],
+                    },
+                    *legacy,
+                    0.75,
+                ),
+                "candidate fill metadata should preserve legacy rects; metadata={metadata:?} legacy={legacy:?}"
+            );
+            assert_eq!(metadata.fill.fill_color, package_fragment.metadata.fill_color);
+            assert_eq!(metadata.fill.opacity, package_fragment.metadata.opacity);
+            assert_eq!(metadata.fill.border_widths, [1.0, 1.0, 1.0, 1.0]);
+            let border = metadata.border.as_ref().expect("border metadata");
+            assert_eq!(border.fill_color, [0.0, 0.0, 0.0, 0.0]);
+            assert_eq!(border.opacity, package_fragment.metadata.opacity);
+            assert_eq!(border.border_widths, [1.0, 1.0, 1.0, 1.0]);
+            assert_eq!(border.border_color, package_fragment.metadata.border_color);
+        }
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(160, 160, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(parent_key, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("build result");
+        ctx.set_state(next_state);
+
+        let pass_names = graph
+            .pass_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect::<Vec<_>>();
+        let rect_like_count = pass_names
+            .iter()
+            .filter(|name| {
+                name.contains("draw_rect_pass::DrawRectPass")
+                    || name.contains("draw_rect_pass::OpaqueRectPass")
+            })
+            .count();
+        assert!(
+            rect_like_count >= package.fragments.len() * 2,
+            "candidate package should build fill/border DrawRect wiring, got {pass_names:?}"
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_rollout_candidate_reads_atomic_placement_without_decorating_it() {
+        const WRAPPER_SOURCE: InlineIfcSourceId = InlineIfcSourceId(81);
+        const ATOMIC_SOURCE: InlineIfcSourceId = InlineIfcSourceId(82);
+
+        let ifc = InlineFormattingContext::build(
+            InlineIfcInput::new(vec![InlineIfcItem::Span {
+                source: WRAPPER_SOURCE,
+                style: Some(InlineIfcStyle {
+                    font_size: 16.0,
+                    line_height: 1.25,
+                    brush: [191, 219, 254, 255],
+                    ..InlineIfcStyle::default()
+                }),
+                children: vec![
+                    InlineIfcItem::TextSpan {
+                        source: WRAPPER_SOURCE,
+                        text: "before ".to_string(),
+                        style: None,
+                    },
+                    InlineIfcItem::AtomicInlineBox {
+                        source: ATOMIC_SOURCE,
+                        measurement: InlineIfcMeasuredAtomicBox::new(
+                            InlineIfcSize::new(42.0, 20.0),
+                            InlineIfcAtomicMeasureConstraints::new(Some(170.0)),
+                        ),
+                    },
+                    InlineIfcItem::TextSpan {
+                        source: WRAPPER_SOURCE,
+                        text: " after".to_string(),
+                        style: None,
+                    },
+                ],
+            }])
+            .with_max_width(170.0),
+        );
+        let snapshot = ifc.text_layout_snapshot();
+        let decoration_package = ifc.element_decoration_draw_rect_package(
+            WRAPPER_SOURCE,
+            InlineIfcDecorationBoxInsets::new(2.0, 2.0, 1.0, 1.0),
+            InlineIfcElementDecorationDrawRectStyle::from_fill_style(&InlineIfcStyle {
+                brush: [191, 219, 254, 255],
+                ..InlineIfcStyle::default()
+            }),
+        );
+        let atomic_package = ifc.atomic_box_placement_package(ATOMIC_SOURCE);
+
+        assert!(!decoration_package.fragments.is_empty());
+        assert_eq!(atomic_package.placements.len(), 1);
+        assert!(
+            snapshot
+                .lines
+                .iter()
+                .flat_map(|line| &line.glyphs)
+                .all(|glyph| glyph.source != ATOMIC_SOURCE),
+            "atomic inline box must stay out of text glyph payload: {snapshot:?}"
+        );
+        assert!(
+            decoration_package
+                .fragments
+                .iter()
+                .all(|fragment| fragment.source != ATOMIC_SOURCE),
+            "atomic inline box must stay out of span decoration payload: {decoration_package:?}"
+        );
+
+        let mut element = Element::new(0.0, 0.0, 0.0, 0.0);
+        element.set_inline_ifc_render_mode_for_test(
+            ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+        );
+        element.set_inline_ifc_draw_rect_package_for_test(decoration_package);
+        element.set_inline_ifc_atomic_placement_package_for_test(atomic_package.clone());
+
+        assert_eq!(
+            element.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: true,
+            }
+        );
+        let metadata = element
+            .inline_ifc_atomic_placement_metadata_for_test()
+            .expect("candidate should expose atomic placement metadata");
+        assert_eq!(metadata.package.source, ATOMIC_SOURCE);
+        assert_eq!(metadata.package.placements, atomic_package.placements);
+        let placement = &metadata.package.placements[0];
+        assert_eq!(placement.source, ATOMIC_SOURCE);
+        assert_eq!(
+            placement.measurement.measured_size,
+            InlineIfcSize::new(42.0, 20.0)
+        );
+        assert!(placement.rect.width > 0.0 && placement.rect.height > 0.0);
+    }
+
+    #[test]
+    fn inline_element_ifc_rollout_candidate_accepts_distributed_packages() {
+        const WRAPPER_SOURCE: InlineIfcSourceId = InlineIfcSourceId(83);
+        const ATOMIC_SOURCE: InlineIfcSourceId = InlineIfcSourceId(84);
+        const MISSING_SOURCE: InlineIfcSourceId = InlineIfcSourceId(85);
+
+        let ifc = InlineFormattingContext::build(
+            InlineIfcInput::new(vec![InlineIfcItem::Span {
+                source: WRAPPER_SOURCE,
+                style: Some(InlineIfcStyle {
+                    font_size: 16.0,
+                    line_height: 1.25,
+                    brush: [216, 180, 254, 255],
+                    ..InlineIfcStyle::default()
+                }),
+                children: vec![
+                    InlineIfcItem::TextSpan {
+                        source: WRAPPER_SOURCE,
+                        text: "distributed wrapper ".to_string(),
+                        style: None,
+                    },
+                    InlineIfcItem::AtomicInlineBox {
+                        source: ATOMIC_SOURCE,
+                        measurement: InlineIfcMeasuredAtomicBox::new(
+                            InlineIfcSize::new(36.0, 18.0),
+                            InlineIfcAtomicMeasureConstraints::new(Some(180.0)),
+                        ),
+                    },
+                    InlineIfcItem::TextSpan {
+                        source: WRAPPER_SOURCE,
+                        text: " candidate".to_string(),
+                        style: None,
+                    },
+                ],
+            }])
+            .with_max_width(180.0),
+        );
+        let mut draw_style = InlineIfcElementDecorationDrawRectStyle::from_fill_style(
+            &InlineIfcStyle {
+                brush: [216, 180, 254, 255],
+                ..InlineIfcStyle::default()
+            },
+        );
+        draw_style.opacity = 0.82;
+        draw_style.border_widths = [1.0, 2.0, 1.0, 2.0];
+        draw_style.border_color = [126.0 / 255.0, 34.0 / 255.0, 206.0 / 255.0, 1.0];
+        let distributor = ifc.element_package_distributor(
+            InlineIfcElementPackageDistributionInput::new()
+                .with_decoration_source(InlineIfcElementDecorationPackageSource::new(
+                    WRAPPER_SOURCE,
+                    InlineIfcDecorationBoxInsets::new(2.0, 2.0, 1.0, 1.0),
+                    draw_style,
+                ))
+                .with_atomic_source(ATOMIC_SOURCE)
+                .with_atomic_source(MISSING_SOURCE),
+        );
+
+        assert!(
+            distributor.package(MISSING_SOURCE).is_none(),
+            "missing sources should not alias another source's package"
+        );
+        let distributed = distributor
+            .package(WRAPPER_SOURCE)
+            .expect("wrapper source should receive distributed package");
+        assert!(distributed.decoration_draw_rect.is_some());
+        assert!(distributed.atomic_placement.is_none());
+        let atomic = distributor
+            .package(ATOMIC_SOURCE)
+            .expect("atomic source should receive distributed package");
+        assert!(atomic.decoration_draw_rect.is_none());
+        assert!(atomic.atomic_placement.is_some());
+
+        let mut element = Element::new(0.0, 0.0, 0.0, 0.0);
+        element.set_inline_ifc_render_mode_for_test(
+            ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+        );
+        element.set_inline_ifc_rollout_packages_for_test(
+            ElementInlineIfcRolloutPackages::from_inline_ifc_distributed(distributed),
+        );
+
+        assert_eq!(
+            element.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            }
+        );
+        let metadata = element.inline_ifc_draw_rect_pass_metadata_for_test([4.0, 5.0]);
+        let package = distributed
+            .decoration_draw_rect
+            .as_ref()
+            .expect("distributed decoration package");
+        assert_eq!(metadata.len(), package.fragments.len());
+        assert!(!metadata.is_empty());
+        for (metadata, fragment) in metadata.iter().zip(package.fragments.iter()) {
+            assert_eq!(
+                metadata.fill.position,
+                [
+                    fragment.metadata.position[0] + 4.0,
+                    fragment.metadata.position[1] + 5.0,
+                ]
+            );
+            assert_eq!(metadata.fill.size, fragment.metadata.size);
+            assert_eq!(metadata.fill.fill_color, draw_style.fill_color);
+            assert_eq!(
+                metadata.border.as_ref().map(|border| border.border_color),
+                Some(draw_style.border_color)
+            );
+        }
+    }
+
+    #[test]
+    fn inline_element_ifc_root_source_builder_caches_and_distributes_production_like_subtree() {
+        const OUTER_SOURCE: InlineIfcSourceId = InlineIfcSourceId(86);
+        const INNER_SOURCE: InlineIfcSourceId = InlineIfcSourceId(87);
+        const ATOMIC_SOURCE: InlineIfcSourceId = InlineIfcSourceId(88);
+        const MISSING_SOURCE: InlineIfcSourceId = InlineIfcSourceId(89);
+
+        let outer_style = InlineIfcStyle {
+            font_size: 16.0,
+            line_height: 1.25,
+            brush: [191, 219, 254, 255],
+            ..InlineIfcStyle::default()
+        };
+        let inner_style = InlineIfcStyle {
+            font_size: 16.0,
+            line_height: 1.25,
+            brush: [254, 202, 202, 255],
+            ..InlineIfcStyle::default()
+        };
+        let mut outer_draw_style =
+            InlineIfcElementDecorationDrawRectStyle::from_fill_style(&outer_style);
+        outer_draw_style.opacity = 0.91;
+        outer_draw_style.border_widths = [2.0, 2.0, 1.0, 1.0];
+        outer_draw_style.border_color = [37.0 / 255.0, 99.0 / 255.0, 235.0 / 255.0, 1.0];
+        let mut inner_draw_style =
+            InlineIfcElementDecorationDrawRectStyle::from_fill_style(&inner_style);
+        inner_draw_style.opacity = 0.83;
+        inner_draw_style.border_widths = [1.0, 1.0, 1.0, 1.0];
+        inner_draw_style.border_color = [220.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0];
+
+        let mut root_builder = InlineIfcElementRootSourceBuilder::new().with_max_width(178.0);
+        root_builder
+            .push_item(InlineIfcItem::Span {
+                source: OUTER_SOURCE,
+                style: Some(outer_style.clone()),
+                children: vec![
+                    InlineIfcItem::TextSpan {
+                        source: OUTER_SOURCE,
+                        text: "outer prefix ".to_string(),
+                        style: None,
+                    },
+                    InlineIfcItem::Span {
+                        source: INNER_SOURCE,
+                        style: Some(inner_style.clone()),
+                        children: vec![InlineIfcItem::TextSpan {
+                            source: INNER_SOURCE,
+                            text: "inner production-like chip".to_string(),
+                            style: None,
+                        }],
+                    },
+                    InlineIfcItem::AtomicInlineBox {
+                        source: ATOMIC_SOURCE,
+                        measurement: InlineIfcMeasuredAtomicBox::new(
+                            InlineIfcSize::new(34.0, 18.0),
+                            InlineIfcAtomicMeasureConstraints::new(Some(178.0)),
+                        ),
+                    },
+                    InlineIfcItem::TextSpan {
+                        source: OUTER_SOURCE,
+                        text: " outer tail wraps".to_string(),
+                        style: None,
+                    },
+                ],
+            })
+            .add_decoration_source(InlineIfcElementDecorationPackageSource::new(
+                OUTER_SOURCE,
+                InlineIfcDecorationBoxInsets::new(2.0, 2.0, 1.0, 1.0),
+                outer_draw_style,
+            ))
+            .add_decoration_source(InlineIfcElementDecorationPackageSource::new(
+                INNER_SOURCE,
+                InlineIfcDecorationBoxInsets::new(1.0, 1.0, 1.0, 1.0),
+                inner_draw_style,
+            ))
+            .add_decoration_source(InlineIfcElementDecorationPackageSource::new(
+                MISSING_SOURCE,
+                InlineIfcDecorationBoxInsets::new(1.0, 1.0, 1.0, 1.0),
+                inner_draw_style,
+            ))
+            .add_atomic_source(ATOMIC_SOURCE)
+            .add_atomic_source(MISSING_SOURCE);
+        let root_source = root_builder.build();
+        let expected_key = root_source.cache_key();
+
+        let mut cache = InlineIfcElementRootCandidateCache::new();
+        let mut outer_element = Element::new(0.0, 0.0, 0.0, 0.0);
+        let first_candidate = outer_element.update_inline_ifc_rollout_packages_from_root_source(
+            &root_source,
+            OUTER_SOURCE,
+            &mut cache,
+        );
+        assert_eq!(first_candidate.cache_key, expected_key);
+        assert_eq!(first_candidate.invalidation, InlineIfcInvalidation::Reshape);
+        assert!(first_candidate.rebuilt);
+        assert_eq!(cache.len(), 1);
+        assert!(first_candidate.decoration_package(OUTER_SOURCE).is_some());
+        assert!(first_candidate.decoration_package(INNER_SOURCE).is_some());
+        assert!(first_candidate.atomic_package(ATOMIC_SOURCE).is_some());
+        assert!(
+            first_candidate.package(MISSING_SOURCE).is_none(),
+            "missing source should not alias any production-like root package"
+        );
+        assert_eq!(
+            outer_element.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            },
+            "render default should use staged packages while retaining legacy fallback"
+        );
+
+        outer_element.set_inline_ifc_render_mode_for_test(
+            ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+        );
+        assert_eq!(
+            outer_element.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            }
+        );
+        assert!(
+            !outer_element
+                .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                .is_empty()
+        );
+
+        let mut inner_element = Element::new(0.0, 0.0, 0.0, 0.0);
+        inner_element
+            .set_inline_ifc_render_mode_for_test(ElementInlineIfcRenderMode::DrawRectPackageCandidate);
+        let second_candidate = inner_element.update_inline_ifc_rollout_packages_from_root_source(
+            &root_source,
+            INNER_SOURCE,
+            &mut cache,
+        );
+        assert_eq!(second_candidate.invalidation, InlineIfcInvalidation::Reuse);
+        assert!(!second_candidate.rebuilt);
+        assert_eq!(cache.len(), 1);
+        assert_eq!(
+            inner_element.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            }
+        );
+
+        let mut missing_element = Element::new(0.0, 0.0, 0.0, 0.0);
+        missing_element.set_inline_ifc_render_mode_for_test(
+            ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+        );
+        let missing_candidate = missing_element.update_inline_ifc_rollout_packages_from_root_source(
+            &root_source,
+            MISSING_SOURCE,
+            &mut cache,
+        );
+        assert_eq!(missing_candidate.invalidation, InlineIfcInvalidation::Reuse);
+        assert_eq!(
+            missing_element.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::ExistingInlineFragments,
+            "source without a distributed package must keep the legacy fallback path"
+        );
+        assert!(
+            missing_element
+                .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_metadata_collector_builds_root_source_from_real_subtree() {
+        let parent_width = 188.0;
+        let mut arena = new_test_arena();
+
+        let mut parent = Element::new_with_id(200, 0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(parent_width)));
+        parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        let mut outer = Element::new_with_id(201, 0.0, 0.0, 0.0, 0.0);
+        let mut outer_style = Style::new();
+        outer_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        outer_style.insert(PropertyId::Width, ParsedValue::Auto);
+        outer_style.insert(PropertyId::Height, ParsedValue::Auto);
+        outer_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#1e3a8a")));
+        outer_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#dbeafe")),
+        );
+        outer_style.set_padding(crate::style::Padding::uniform(Length::px(3.0)));
+        outer_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#1d4ed8")));
+        outer.apply_style(outer_style);
+        let outer_key = commit_child(&mut arena, parent_key, Box::new(outer));
+
+        let mut lead_text = Text::from_content_with_id(301, "outer prefix ");
+        lead_text.set_font_size(15.0);
+        lead_text.set_color(Color::hex("#172554"));
+        let lead_text_key = commit_child(&mut arena, outer_key, Box::new(lead_text));
+
+        let mut inner = Element::new_with_id(202, 0.0, 0.0, 0.0, 0.0);
+        let mut inner_style = Style::new();
+        inner_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        inner_style.insert(PropertyId::Width, ParsedValue::Auto);
+        inner_style.insert(PropertyId::Height, ParsedValue::Auto);
+        inner_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#7f1d1d")));
+        inner_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#fecaca")),
+        );
+        inner_style.set_padding(crate::style::Padding::uniform(Length::px(2.0)));
+        inner_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#dc2626")));
+        inner.apply_style(inner_style);
+        let inner_key = commit_child(&mut arena, outer_key, Box::new(inner));
+
+        let mut inner_text = Text::from_content_with_id(302, "inner chip text");
+        inner_text.set_font_size(13.0);
+        inner_text.set_color(Color::hex("#7f1d1d"));
+        let inner_text_key = commit_child(&mut arena, inner_key, Box::new(inner_text));
+
+        let mut atomic = Element::new_with_id(203, 0.0, 0.0, 34.0, 18.0);
+        let mut atomic_style = Style::new();
+        atomic_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        atomic_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(34.0)));
+        atomic_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(18.0)));
+        atomic_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#bbf7d0")),
+        );
+        atomic.apply_style(atomic_style);
+        let atomic_key = commit_child(&mut arena, outer_key, Box::new(atomic));
+
+        let tail_text_key = commit_child(
+            &mut arena,
+            outer_key,
+            Box::new(Text::from_content_with_id(303, " outer tail wraps")),
+        );
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: parent_width,
+                max_height: 180.0,
+                viewport_width: parent_width,
+                viewport_height: 180.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(180.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: parent_width,
+                available_height: 180.0,
+                viewport_width: parent_width,
+                viewport_height: 180.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(180.0),
+            },
+        );
+
+        let collected = ElementInlineIfcMetadataCollector::collect(
+            &arena,
+            ElementInlineIfcMetadataCollectorInput::new(parent_key, parent_width),
+        )
+        .expect("collector should produce a root source for a real Element subtree");
+        let outer_source = collected
+            .source_for_node(outer_key)
+            .expect("outer source");
+        let inner_source = collected
+            .source_for_node(inner_key)
+            .expect("inner source");
+        let atomic_source = collected
+            .source_for_node(atomic_key)
+            .expect("atomic source");
+        let lead_text_source = collected
+            .source_for_node(lead_text_key)
+            .expect("lead text source");
+        let inner_text_source = collected
+            .source_for_node(inner_text_key)
+            .expect("inner text source");
+        let tail_text_source = collected
+            .source_for_node(tail_text_key)
+            .expect("tail text source");
+
+        assert_eq!(outer_source, InlineIfcSourceId(201));
+        assert_eq!(inner_source, InlineIfcSourceId(202));
+        assert_eq!(atomic_source, InlineIfcSourceId(203));
+        assert_eq!(lead_text_source, InlineIfcSourceId(301));
+        assert_eq!(inner_text_source, InlineIfcSourceId(302));
+        assert_eq!(tail_text_source, InlineIfcSourceId(303));
+
+        let [InlineIfcItem::Span {
+            source: collected_outer,
+            children: outer_children,
+            ..
+        }] = collected.root_source.input.items.as_slice()
+        else {
+            panic!(
+                "collector should flatten the root Element children into one outer span: {:?}",
+                collected.root_source.input.items
+            );
+        };
+        assert_eq!(*collected_outer, outer_source);
+        assert_eq!(outer_children.len(), 4);
+        assert!(matches!(
+            &outer_children[0],
+            InlineIfcItem::TextSpan { source, text, .. }
+                if *source == lead_text_source && text == "outer prefix "
+        ));
+        assert!(matches!(
+            &outer_children[1],
+            InlineIfcItem::Span { source, children, .. }
+                if *source == inner_source
+                    && matches!(
+                        children.as_slice(),
+                        [InlineIfcItem::TextSpan { source, text, .. }]
+                            if *source == inner_text_source && text == "inner chip text"
+                    )
+        ));
+        assert!(matches!(
+            &outer_children[2],
+            InlineIfcItem::AtomicInlineBox {
+                source,
+                measurement,
+            } if *source == atomic_source
+                && (measurement.measured_size.width - 34.0).abs() <= 0.001
+                && (measurement.measured_size.height - 18.0).abs() <= 0.001
+        ));
+        assert!(matches!(
+            &outer_children[3],
+            InlineIfcItem::TextSpan { source, text, .. }
+                if *source == tail_text_source && text == " outer tail wraps"
+        ));
+
+        assert_eq!(
+            collected.root_source.package_distribution.decoration_sources.len(),
+            2
+        );
+        assert!(
+            collected
+                .root_source
+                .package_distribution
+                .decoration_sources
+                .iter()
+                .any(|source| source.source == outer_source)
+        );
+        assert!(
+            collected
+                .root_source
+                .package_distribution
+                .decoration_sources
+                .iter()
+                .any(|source| source.source == inner_source)
+        );
+        assert_eq!(
+            collected.root_source.package_distribution.atomic_sources,
+            vec![atomic_source]
+        );
+
+        let mut cache = InlineIfcElementRootCandidateCache::new();
+        let mut outer_element = crate::view::test_support::get_element_mut::<Element>(
+            &mut arena,
+            outer_key,
+        );
+        let candidate = outer_element.update_inline_ifc_rollout_packages_from_root_source(
+            &collected.root_source,
+            outer_source,
+            &mut cache,
+        );
+        assert!(candidate.rebuilt);
+        assert!(candidate.decoration_package(outer_source).is_some());
+        assert!(candidate.decoration_package(inner_source).is_some());
+        assert!(candidate.atomic_package(atomic_source).is_some());
+        assert!(
+            candidate.package(InlineIfcSourceId(999_999)).is_none(),
+            "missing source must not alias another collected package"
+        );
+        assert_eq!(
+            outer_element.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            },
+            "render default should use collector-staged packages while retaining legacy fallback"
+        );
+        outer_element.set_inline_ifc_render_mode_for_test(
+            ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+        );
+        assert_eq!(
+            outer_element.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            },
+            "explicit candidate mode is required before the collected package affects render decision"
+        );
+        assert!(
+            !outer_element
+                .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                .is_empty()
+        );
+        drop(outer_element);
+
+        let mut atomic_element = crate::view::test_support::get_element_mut::<Element>(
+            &mut arena,
+            atomic_key,
+        );
+        let reused_candidate = atomic_element.update_inline_ifc_rollout_packages_from_root_source(
+            &collected.root_source,
+            atomic_source,
+            &mut cache,
+        );
+        assert_eq!(reused_candidate.invalidation, InlineIfcInvalidation::Reuse);
+        let atomic_metadata = atomic_element
+            .inline_ifc_atomic_placement_metadata_for_test()
+            .expect("atomic source should receive placement metadata");
+        assert_eq!(atomic_metadata.package.source, atomic_source);
+        assert!(!atomic_metadata.package.placements.is_empty());
+    }
+
+    #[test]
+    fn inline_element_ifc_candidate_lifecycle_dry_run_installs_and_reuses_packages() {
+        let parent_width = 188.0;
+        let mut arena = new_test_arena();
+
+        let mut parent = Element::new_with_id(400, 0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(parent_width)));
+        parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        let mut outer = Element::new_with_id(401, 0.0, 0.0, 0.0, 0.0);
+        let mut outer_style = Style::new();
+        outer_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        outer_style.insert(PropertyId::Width, ParsedValue::Auto);
+        outer_style.insert(PropertyId::Height, ParsedValue::Auto);
+        outer_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#1e3a8a")));
+        outer_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#dbeafe")),
+        );
+        outer_style.set_padding(crate::style::Padding::uniform(Length::px(3.0)));
+        outer_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#1d4ed8")));
+        outer.apply_style(outer_style);
+        let outer_key = commit_child(&mut arena, parent_key, Box::new(outer));
+
+        let mut lead_text = Text::from_content_with_id(501, "outer prefix ");
+        lead_text.set_font_size(15.0);
+        lead_text.set_color(Color::hex("#172554"));
+        let lead_text_key = commit_child(&mut arena, outer_key, Box::new(lead_text));
+
+        let mut inner = Element::new_with_id(402, 0.0, 0.0, 0.0, 0.0);
+        let mut inner_style = Style::new();
+        inner_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        inner_style.insert(PropertyId::Width, ParsedValue::Auto);
+        inner_style.insert(PropertyId::Height, ParsedValue::Auto);
+        inner_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#7f1d1d")));
+        inner_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#fecaca")),
+        );
+        inner_style.set_padding(crate::style::Padding::uniform(Length::px(2.0)));
+        inner_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#dc2626")));
+        inner.apply_style(inner_style);
+        let inner_key = commit_child(&mut arena, outer_key, Box::new(inner));
+
+        let mut inner_text = Text::from_content_with_id(502, "inner chip text");
+        inner_text.set_font_size(13.0);
+        inner_text.set_color(Color::hex("#7f1d1d"));
+        commit_child(&mut arena, inner_key, Box::new(inner_text));
+
+        let mut atomic = Element::new_with_id(403, 0.0, 0.0, 34.0, 18.0);
+        let mut atomic_style = Style::new();
+        atomic_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        atomic_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(34.0)));
+        atomic_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(18.0)));
+        atomic_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#bbf7d0")),
+        );
+        atomic.apply_style(atomic_style);
+        let atomic_key = commit_child(&mut arena, outer_key, Box::new(atomic));
+
+        commit_child(
+            &mut arena,
+            outer_key,
+            Box::new(Text::from_content_with_id(503, " outer tail wraps")),
+        );
+
+        let mut unrelated_block = Element::new_with_id(404, 0.0, 0.0, 50.0, 20.0);
+        let mut unrelated_style = Style::new();
+        unrelated_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+        unrelated_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(50.0)));
+        unrelated_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        unrelated_block.apply_style(unrelated_style);
+        let unrelated_key = commit_element(&mut arena, Box::new(unrelated_block));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: parent_width,
+                max_height: 180.0,
+                viewport_width: parent_width,
+                viewport_height: 180.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(180.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: parent_width,
+                available_height: 180.0,
+                viewport_width: parent_width,
+                viewport_height: 180.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(180.0),
+            },
+        );
+
+        let mut cache = InlineIfcElementRootCandidateCache::new();
+        let install_targets = vec![
+            outer_key,
+            inner_key,
+            atomic_key,
+            lead_text_key,
+            unrelated_key,
+            crate::view::node_arena::NodeKey::default(),
+        ];
+        let first = ElementInlineIfcCandidateLifecycle::dry_run(
+            &mut arena,
+            ElementInlineIfcCandidateLifecycleInput::new(parent_key, parent_width)
+                .with_install_targets(install_targets.clone()),
+            &mut cache,
+        )
+        .expect("dry-run lifecycle should collect and stage the real subtree");
+        assert_eq!(first.invalidation, InlineIfcInvalidation::Reshape);
+        assert!(first.rebuilt);
+        assert_eq!(first.cache_len, 1);
+
+        let outer_source = first.source_for_node(outer_key).expect("outer source");
+        let inner_source = first.source_for_node(inner_key).expect("inner source");
+        let atomic_source = first.source_for_node(atomic_key).expect("atomic source");
+        assert_eq!(outer_source, InlineIfcSourceId(401));
+        assert_eq!(inner_source, InlineIfcSourceId(402));
+        assert_eq!(atomic_source, InlineIfcSourceId(403));
+
+        let outer_install = first.install_for_node(outer_key).expect("outer install");
+        assert_eq!(
+            outer_install.status,
+            ElementInlineIfcCandidateLifecycleInstallStatus::Installed
+        );
+        assert!(outer_install.has_decoration_package);
+        assert!(!outer_install.has_atomic_package);
+
+        let inner_install = first.install_for_node(inner_key).expect("inner install");
+        assert_eq!(
+            inner_install.status,
+            ElementInlineIfcCandidateLifecycleInstallStatus::Installed
+        );
+        assert!(inner_install.has_decoration_package);
+        assert!(!inner_install.has_atomic_package);
+
+        let atomic_install = first.install_for_node(atomic_key).expect("atomic install");
+        assert_eq!(
+            atomic_install.status,
+            ElementInlineIfcCandidateLifecycleInstallStatus::Installed
+        );
+        assert!(!atomic_install.has_decoration_package);
+        assert!(atomic_install.has_atomic_package);
+
+        let text_install = first
+            .install_for_node(lead_text_key)
+            .expect("text install result");
+        assert_eq!(
+            text_install.status,
+            ElementInlineIfcCandidateLifecycleInstallStatus::SkippedNonElement
+        );
+        assert_eq!(text_install.source, first.source_for_node(lead_text_key));
+
+        let unrelated_install = first
+            .install_for_node(unrelated_key)
+            .expect("unrelated block install result");
+        assert_eq!(
+            unrelated_install.status,
+            ElementInlineIfcCandidateLifecycleInstallStatus::ClearedMissingSource
+        );
+        assert_eq!(unrelated_install.source, None);
+        assert!(!unrelated_install.has_decoration_package);
+        assert!(!unrelated_install.has_atomic_package);
+
+        let missing_install = first
+            .install_for_node(crate::view::node_arena::NodeKey::default())
+            .expect("missing node install result");
+        assert_eq!(
+            missing_install.status,
+            ElementInlineIfcCandidateLifecycleInstallStatus::MissingNode
+        );
+
+        {
+            let outer_element =
+                crate::view::test_support::get_element::<Element>(&arena, outer_key);
+            assert_eq!(
+                outer_element.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                    fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                    has_atomic_placement_package: false,
+                },
+                "render default should use lifecycle-staged packages while retaining legacy fallback"
+            );
+            assert!(
+                !outer_element
+                    .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                    .is_empty()
+            );
+        }
+        {
+            let mut outer_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, outer_key);
+            outer_element.set_inline_ifc_render_mode_for_test(
+                ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            );
+            assert_eq!(
+                outer_element.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                    fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                    has_atomic_placement_package: false,
+                },
+                "explicit candidate mode is required before staged decoration affects render decision"
+            );
+        }
+        {
+            let atomic_element =
+                crate::view::test_support::get_element::<Element>(&arena, atomic_key);
+            let atomic_metadata = atomic_element
+                .inline_ifc_atomic_placement_metadata_for_test()
+                .expect("atomic child should receive placement metadata");
+            assert_eq!(atomic_metadata.package.source, atomic_source);
+        }
+        {
+            let unrelated_element =
+                crate::view::test_support::get_element::<Element>(&arena, unrelated_key);
+            assert_eq!(
+                unrelated_element.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::ExistingInlineFragments,
+                "unrelated non-inline target must not alias a collected package"
+            );
+            assert!(
+                unrelated_element
+                    .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                    .is_empty()
+            );
+        }
+
+        let second = ElementInlineIfcCandidateLifecycle::dry_run(
+            &mut arena,
+            ElementInlineIfcCandidateLifecycleInput::new(parent_key, parent_width)
+                .with_install_targets(install_targets),
+            &mut cache,
+        )
+        .expect("second dry-run should reuse the cached candidate");
+        assert_eq!(second.cache_key, first.cache_key);
+        assert_eq!(second.invalidation, InlineIfcInvalidation::Reuse);
+        assert!(!second.rebuilt);
+        assert_eq!(second.cache_len, 1);
+    }
+
+    #[test]
+    fn inline_element_ifc_layout_call_site_opt_in_discovers_targets_and_keeps_default_fallback() {
+        let parent_width = 188.0;
+        let mut arena = new_test_arena();
+
+        let mut parent = Element::new_with_id(420, 0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(parent_width)));
+        parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        let mut outer = Element::new_with_id(421, 0.0, 0.0, 0.0, 0.0);
+        let mut outer_style = Style::new();
+        outer_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        outer_style.insert(PropertyId::Width, ParsedValue::Auto);
+        outer_style.insert(PropertyId::Height, ParsedValue::Auto);
+        outer_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#1e3a8a")));
+        outer_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#dbeafe")),
+        );
+        outer_style.set_padding(crate::style::Padding::uniform(Length::px(3.0)));
+        outer_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#1d4ed8")));
+        outer.apply_style(outer_style);
+        let outer_key = commit_child(&mut arena, parent_key, Box::new(outer));
+
+        let mut lead_text = Text::from_content_with_id(521, "outer prefix ");
+        lead_text.set_font_size(15.0);
+        lead_text.set_color(Color::hex("#172554"));
+        let lead_text_key = commit_child(&mut arena, outer_key, Box::new(lead_text));
+
+        let mut inner = Element::new_with_id(422, 0.0, 0.0, 0.0, 0.0);
+        let mut inner_style = Style::new();
+        inner_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        inner_style.insert(PropertyId::Width, ParsedValue::Auto);
+        inner_style.insert(PropertyId::Height, ParsedValue::Auto);
+        inner_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#7f1d1d")));
+        inner_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#fecaca")),
+        );
+        inner_style.set_padding(crate::style::Padding::uniform(Length::px(2.0)));
+        inner_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#dc2626")));
+        inner.apply_style(inner_style);
+        let inner_key = commit_child(&mut arena, outer_key, Box::new(inner));
+
+        let mut inner_text = Text::from_content_with_id(522, "inner chip text");
+        inner_text.set_font_size(13.0);
+        inner_text.set_color(Color::hex("#7f1d1d"));
+        commit_child(&mut arena, inner_key, Box::new(inner_text));
+
+        let mut atomic = Element::new_with_id(423, 0.0, 0.0, 34.0, 18.0);
+        let mut atomic_style = Style::new();
+        atomic_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        atomic_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(34.0)));
+        atomic_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(18.0)));
+        atomic_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#bbf7d0")),
+        );
+        atomic.apply_style(atomic_style);
+        let atomic_key = commit_child(&mut arena, outer_key, Box::new(atomic));
+
+        commit_child(
+            &mut arena,
+            outer_key,
+            Box::new(Text::from_content_with_id(523, " outer tail wraps")),
+        );
+
+        let mut block_root = Element::new_with_id(424, 0.0, 0.0, 50.0, 20.0);
+        let mut block_style = Style::new();
+        block_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+        block_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(50.0)));
+        block_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        block_root.apply_style(block_style);
+        let block_root_key = commit_element(&mut arena, Box::new(block_root));
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: parent_width,
+                max_height: 180.0,
+                viewport_width: parent_width,
+                viewport_height: 180.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(180.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: parent_width,
+                available_height: 180.0,
+                viewport_width: parent_width,
+                viewport_height: 180.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(180.0),
+            },
+        );
+
+        let mut cache = InlineIfcElementRootCandidateCache::new();
+        let disabled = ElementInlineIfcLayoutCallSiteOptIn::run(
+            &mut arena,
+            ElementInlineIfcLayoutCallSiteOptInInput::disabled(parent_key, parent_width),
+            &mut cache,
+        );
+        assert_eq!(
+            disabled.status,
+            ElementInlineIfcLayoutCallSiteOptInStatus::Disabled
+        );
+        assert!(disabled.install_targets.is_empty());
+        assert!(disabled.lifecycle().is_none());
+        assert_eq!(cache.len(), 0);
+        assert!(
+            crate::view::test_support::get_element::<Element>(&arena, outer_key)
+                .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                .is_empty(),
+            "disabled opt-in must not install packages"
+        );
+
+        let first = ElementInlineIfcLayoutCallSiteOptIn::run(
+            &mut arena,
+            ElementInlineIfcLayoutCallSiteOptInInput::dry_run_candidate(parent_key, parent_width),
+            &mut cache,
+        );
+        assert_eq!(
+            first.status,
+            ElementInlineIfcLayoutCallSiteOptInStatus::LifecycleRan
+        );
+        assert_eq!(
+            first.fallback,
+            ElementInlineIfcRenderFallback::ExistingInlineFragments
+        );
+        assert!(first.install_targets.contains(&outer_key));
+        assert!(first.install_targets.contains(&inner_key));
+        assert!(first.install_targets.contains(&atomic_key));
+        assert!(!first.install_targets.contains(&lead_text_key));
+
+        let first_lifecycle = first.lifecycle().expect("opt-in lifecycle output");
+        assert_eq!(first_lifecycle.invalidation, InlineIfcInvalidation::Reshape);
+        assert!(first_lifecycle.rebuilt);
+        assert_eq!(first_lifecycle.cache_len, 1);
+        assert_eq!(
+            first_lifecycle
+                .install_for_node(outer_key)
+                .expect("outer install")
+                .status,
+            ElementInlineIfcCandidateLifecycleInstallStatus::Installed
+        );
+        assert_eq!(
+            first_lifecycle
+                .install_for_node(inner_key)
+                .expect("inner install")
+                .status,
+            ElementInlineIfcCandidateLifecycleInstallStatus::Installed
+        );
+        assert!(
+            first_lifecycle
+                .install_for_node(atomic_key)
+                .expect("atomic install")
+                .has_atomic_package
+        );
+
+        {
+            let outer_element =
+                crate::view::test_support::get_element::<Element>(&arena, outer_key);
+            assert_eq!(
+                outer_element.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                    fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                    has_atomic_placement_package: false,
+                },
+                "render default should use installed packages while retaining legacy fallback"
+            );
+            assert!(
+                !outer_element
+                    .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                    .is_empty()
+            );
+        }
+        {
+            let mut outer_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, outer_key);
+            outer_element.set_inline_ifc_render_mode_for_test(
+                ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            );
+            assert_eq!(
+                outer_element.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                    fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                    has_atomic_placement_package: false,
+                }
+            );
+        }
+
+        let second = ElementInlineIfcLayoutCallSiteOptIn::run(
+            &mut arena,
+            ElementInlineIfcLayoutCallSiteOptInInput::dry_run_candidate(parent_key, parent_width),
+            &mut cache,
+        );
+        let second_lifecycle = second.lifecycle().expect("second lifecycle output");
+        assert_eq!(second_lifecycle.cache_key, first_lifecycle.cache_key);
+        assert_eq!(second_lifecycle.invalidation, InlineIfcInvalidation::Reuse);
+        assert!(!second_lifecycle.rebuilt);
+        assert_eq!(second_lifecycle.cache_len, 1);
+
+        let narrower_width = 126.0;
+        let narrower = ElementInlineIfcLayoutCallSiteOptIn::run(
+            &mut arena,
+            ElementInlineIfcLayoutCallSiteOptInInput::dry_run_candidate(parent_key, narrower_width),
+            &mut cache,
+        );
+        let narrower_lifecycle = narrower.lifecycle().expect("narrower lifecycle output");
+        assert_ne!(narrower_lifecycle.cache_key, first_lifecycle.cache_key);
+        assert_eq!(narrower_lifecycle.invalidation, InlineIfcInvalidation::Reshape);
+        assert!(narrower_lifecycle.rebuilt);
+        assert_eq!(narrower_lifecycle.cache_len, 2);
+
+        let unsupported = ElementInlineIfcLayoutCallSiteOptIn::run(
+            &mut arena,
+            ElementInlineIfcLayoutCallSiteOptInInput::dry_run_candidate(block_root_key, 50.0),
+            &mut cache,
+        );
+        assert_eq!(
+            unsupported.status,
+            ElementInlineIfcLayoutCallSiteOptInStatus::UnsupportedRoot
+        );
+        assert!(unsupported.install_targets.is_empty());
+        assert!(unsupported.lifecycle().is_none());
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn inline_element_ifc_production_layout_call_site_opt_in_owns_cache_and_invalidates() {
+        let parent_width = 188.0;
+        let mut arena = new_test_arena();
+
+        let mut parent = Element::new_with_id(450, 0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Auto);
+        parent_style.insert(PropertyId::Height, ParsedValue::Auto);
+        parent.apply_style(parent_style);
+        parent.set_inline_ifc_layout_call_site_opt_in_mode(
+            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate,
+        );
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        let mut outer = Element::new_with_id(451, 0.0, 0.0, 0.0, 0.0);
+        let mut outer_style = Style::new();
+        outer_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        outer_style.insert(PropertyId::Width, ParsedValue::Auto);
+        outer_style.insert(PropertyId::Height, ParsedValue::Auto);
+        outer_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#1e3a8a")));
+        outer_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#dbeafe")),
+        );
+        outer_style.set_padding(crate::style::Padding::uniform(Length::px(3.0)));
+        outer_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#1d4ed8")));
+        outer.apply_style(outer_style);
+        let outer_key = commit_child(&mut arena, parent_key, Box::new(outer));
+
+        let mut text = Text::from_content_with_id(551, "outer prefix text");
+        text.set_font_size(15.0);
+        text.set_color(Color::hex("#172554"));
+        let text_key = commit_child(&mut arena, outer_key, Box::new(text));
+
+        let mut inner = Element::new_with_id(452, 0.0, 0.0, 0.0, 0.0);
+        let mut inner_style = Style::new();
+        inner_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        inner_style.insert(PropertyId::Width, ParsedValue::Auto);
+        inner_style.insert(PropertyId::Height, ParsedValue::Auto);
+        inner_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#fecaca")),
+        );
+        inner_style.set_padding(crate::style::Padding::uniform(Length::px(2.0)));
+        inner_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#dc2626")));
+        inner.apply_style(inner_style);
+        let inner_key = commit_child(&mut arena, outer_key, Box::new(inner));
+
+        commit_child(
+            &mut arena,
+            inner_key,
+            Box::new(Text::from_content_with_id(552, "inner chip text")),
+        );
+
+        let mut atomic = Element::new_with_id(453, 0.0, 0.0, 34.0, 18.0);
+        let mut atomic_style = Style::new();
+        atomic_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        atomic_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(34.0)));
+        atomic_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(18.0)));
+        atomic.apply_style(atomic_style);
+        let atomic_key = commit_child(&mut arena, outer_key, Box::new(atomic));
+
+        let constraints_for_width = |width: f32| LayoutConstraints {
+            max_width: width,
+            max_height: 180.0,
+            viewport_width: width,
+            viewport_height: 180.0,
+            percent_base_width: Some(width),
+            percent_base_height: Some(180.0),
+        };
+        let placement_for_width = |width: f32| LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: width,
+            available_height: 180.0,
+            viewport_width: width,
+            viewport_height: 180.0,
+            percent_base_width: Some(width),
+            percent_base_height: Some(180.0),
+        };
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            constraints_for_width(parent_width),
+            placement_for_width(parent_width),
+        );
+        let first_output = {
+            let parent_element = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            let output = parent_element
+                .inline_ifc_layout_call_site_last_output_for_test()
+                .expect("production layout pass should run opt-in candidate");
+            assert_eq!(
+                output.status,
+                ElementInlineIfcLayoutCallSiteOptInStatus::LifecycleRan
+            );
+            let lifecycle = output.lifecycle().expect("first lifecycle output");
+            assert_eq!(lifecycle.invalidation, InlineIfcInvalidation::Reshape);
+            assert!(lifecycle.rebuilt);
+            assert_eq!(lifecycle.cache_len, 1);
+            assert_eq!(parent_element.inline_ifc_layout_call_site_cache_len_for_test(), 1);
+            output.clone()
+        };
+        assert!(first_output.install_targets.contains(&outer_key));
+        assert!(first_output.install_targets.contains(&inner_key));
+        assert!(first_output.install_targets.contains(&atomic_key));
+        {
+            let outer_element = crate::view::test_support::get_element::<Element>(&arena, outer_key);
+            assert_eq!(
+                outer_element.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                    fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                    has_atomic_placement_package: false,
+                },
+                "render default uses installed decoration packages while retaining legacy fallback"
+            );
+            assert!(
+                !outer_element
+                    .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                    .is_empty(),
+                "production opt-in layout pass should install descendant decoration packages"
+            );
+        }
+        {
+            let atomic_element =
+                crate::view::test_support::get_element::<Element>(&arena, atomic_key);
+            assert!(
+                atomic_element
+                    .inline_ifc_atomic_placement_metadata_for_test()
+                    .is_some(),
+                "production opt-in layout pass should install atomic placement package"
+            );
+        }
+        {
+            let mut outer_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, outer_key);
+            outer_element.set_inline_ifc_render_mode_for_test(
+                ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            );
+            assert_eq!(
+                outer_element.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                    fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                    has_atomic_placement_package: false,
+                },
+                "explicit candidate mode remains equivalent to the new render default"
+            );
+        }
+
+        {
+            let mut parent_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
+            parent_element.mark_place_dirty();
+        }
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            constraints_for_width(parent_width),
+            placement_for_width(parent_width),
+        );
+        let reuse_key = {
+            let parent_element = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            let lifecycle = parent_element
+                .inline_ifc_layout_call_site_last_output_for_test()
+                .and_then(|output| output.lifecycle())
+                .expect("second lifecycle output");
+            assert_eq!(
+                lifecycle.cache_key,
+                first_output.lifecycle().expect("first lifecycle").cache_key
+            );
+            assert_eq!(lifecycle.invalidation, InlineIfcInvalidation::Reuse);
+            assert!(!lifecycle.rebuilt);
+            lifecycle.cache_key.clone()
+        };
+
+        let narrower_width = 126.0;
+        {
+            let mut parent_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
+            parent_element.mark_place_dirty();
+        }
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            constraints_for_width(narrower_width),
+            placement_for_width(narrower_width),
+        );
+        {
+            let parent_element = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            let lifecycle = parent_element
+                .inline_ifc_layout_call_site_last_output_for_test()
+                .and_then(|output| output.lifecycle())
+                .expect("narrower lifecycle output");
+            assert_ne!(lifecycle.cache_key, reuse_key);
+            assert_eq!(lifecycle.invalidation, InlineIfcInvalidation::Reshape);
+            assert!(lifecycle.rebuilt);
+        }
+
+        {
+            let mut text_element =
+                crate::view::test_support::get_element_mut::<Text>(&arena, text_key);
+            text_element.set_text("outer prefix text with content reshape");
+        }
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            constraints_for_width(narrower_width),
+            placement_for_width(narrower_width),
+        );
+        {
+            let parent_element = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            let lifecycle = parent_element
+                .inline_ifc_layout_call_site_last_output_for_test()
+                .and_then(|output| output.lifecycle())
+                .expect("content lifecycle output");
+            assert_eq!(lifecycle.invalidation, InlineIfcInvalidation::Reshape);
+            assert!(lifecycle.rebuilt);
+        }
+
+        {
+            let mut text_element =
+                crate::view::test_support::get_element_mut::<Text>(&arena, text_key);
+            text_element.set_color(Color::hex("#be123c"));
+        }
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            constraints_for_width(narrower_width),
+            placement_for_width(narrower_width),
+        );
+        {
+            let parent_element = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            let lifecycle = parent_element
+                .inline_ifc_layout_call_site_last_output_for_test()
+                .and_then(|output| output.lifecycle())
+                .expect("paint lifecycle output");
+            assert_eq!(lifecycle.invalidation, InlineIfcInvalidation::RepaintOnly);
+            assert!(lifecycle.rebuilt);
+        }
+
+        let cache_len_before_disabled = {
+            let mut parent_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
+            let len = parent_element.inline_ifc_layout_call_site_cache_len_for_test();
+            parent_element.set_inline_ifc_layout_call_site_opt_in_mode(
+                ElementInlineIfcLayoutCallSiteOptInMode::Disabled,
+            );
+            parent_element.mark_place_dirty();
+            len
+        };
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            constraints_for_width(narrower_width),
+            placement_for_width(narrower_width),
+        );
+        {
+            let parent_element = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            assert_eq!(
+                parent_element.inline_ifc_layout_call_site_cache_len_for_test(),
+                cache_len_before_disabled,
+                "disabled call-site mode must not update the owned cache"
+            );
+            let lifecycle = parent_element
+                .inline_ifc_layout_call_site_last_output_for_test()
+                .and_then(|output| output.lifecycle())
+                .expect("disabled should leave previous output untouched");
+            assert_eq!(lifecycle.invalidation, InlineIfcInvalidation::RepaintOnly);
+        }
+    }
+
+    #[test]
+    fn inline_element_ifc_production_call_site_diagnostic_tracks_demo_like_tree() {
+        let parent_width = 172.0;
+        let mut arena = new_test_arena();
+
+        let mut parent = Element::new_with_id(600, 0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Auto);
+        parent_style.insert(PropertyId::Height, ParsedValue::Auto);
+        parent.apply_style(parent_style);
+        parent.set_inline_ifc_layout_call_site_opt_in_mode(
+            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate,
+        );
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        let mut outer = Element::new_with_id(601, 0.0, 0.0, 0.0, 0.0);
+        let mut outer_style = Style::new();
+        outer_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        outer_style.insert(PropertyId::Width, ParsedValue::Auto);
+        outer_style.insert(PropertyId::Height, ParsedValue::Auto);
+        outer_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#0f172a")));
+        outer_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#dbeafe")),
+        );
+        outer_style.set_padding(crate::style::Padding::uniform(Length::px(6.0)));
+        outer_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#2563eb")));
+        outer.apply_style(outer_style);
+        let outer_key = commit_child(&mut arena, parent_key, Box::new(outer));
+
+        let mut lead = Text::from_content_with_id(701, "Permission prefix ");
+        lead.set_font_size(16.0);
+        lead.set_color(Color::hex("#172554"));
+        commit_child(&mut arena, outer_key, Box::new(lead));
+
+        let mut inner = Element::new_with_id(602, 0.0, 0.0, 0.0, 0.0);
+        let mut inner_style = Style::new();
+        inner_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        inner_style.insert(PropertyId::Width, ParsedValue::Auto);
+        inner_style.insert(PropertyId::Height, ParsedValue::Auto);
+        inner_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#bfdbfe")),
+        );
+        inner_style.set_padding(crate::style::Padding::uniform(Length::px(4.0)));
+        inner_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#1d4ed8")));
+        inner.apply_style(inner_style);
+        let inner_key = commit_child(&mut arena, outer_key, Box::new(inner));
+
+        let mut inner_text = Text::from_content_with_id(
+            702,
+            "restriction including limitation",
+        );
+        inner_text.set_font_size(16.0);
+        inner_text.set_color(Color::hex("#1e40af"));
+        commit_child(&mut arena, inner_key, Box::new(inner_text));
+
+        let mut atomic = Element::new_with_id(603, 0.0, 0.0, 42.0, 20.0);
+        let mut atomic_style = Style::new();
+        atomic_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        atomic_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(42.0)));
+        atomic_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
+        atomic_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#fef3c7")),
+        );
+        atomic.apply_style(atomic_style);
+        let atomic_key = commit_child(&mut arena, outer_key, Box::new(atomic));
+
+        commit_child(
+            &mut arena,
+            outer_key,
+            Box::new(Text::from_content_with_id(703, " suffix text continues")),
+        );
+
+        let constraints_for_width = |width: f32| LayoutConstraints {
+            max_width: width,
+            max_height: 220.0,
+            viewport_width: width,
+            viewport_height: 220.0,
+            percent_base_width: Some(width),
+            percent_base_height: Some(220.0),
+        };
+        let placement_for_width = |width: f32| LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: width,
+            available_height: 220.0,
+            viewport_width: width,
+            viewport_height: 220.0,
+            percent_base_width: Some(width),
+            percent_base_height: Some(220.0),
+        };
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            constraints_for_width(parent_width),
+            placement_for_width(parent_width),
+        );
+        let first_diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("production call-site opt-in should expose diagnostic")
+        };
+        assert_eq!(first_diagnostic.root_key, parent_key);
+        assert_eq!(
+            first_diagnostic.mode,
+            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
+        );
+        assert_eq!(
+            first_diagnostic.status,
+            ElementInlineIfcLayoutCallSiteOptInStatus::LifecycleRan
+        );
+        assert_eq!(
+            first_diagnostic.fallback,
+            ElementInlineIfcRenderFallback::ExistingInlineFragments
+        );
+        assert_eq!(
+            first_diagnostic.invalidation,
+            Some(InlineIfcInvalidation::Reshape)
+        );
+        assert_eq!(first_diagnostic.rebuilt, Some(true));
+        assert_eq!(first_diagnostic.cache_len, 1);
+        assert!(first_diagnostic.install_targets.contains(&outer_key));
+        assert!(first_diagnostic.install_targets.contains(&inner_key));
+        assert!(first_diagnostic.install_targets.contains(&atomic_key));
+
+        let outer_diag = first_diagnostic
+            .target(outer_key)
+            .expect("outer target diagnostic");
+        assert_eq!(
+            outer_diag.install_status,
+            Some(ElementInlineIfcCandidateLifecycleInstallStatus::Installed)
+        );
+        assert!(outer_diag.has_decoration_package);
+        assert!(!outer_diag.has_atomic_package);
+        assert_eq!(
+            outer_diag.render_decision,
+            Some(ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            })
+        );
+
+        let inner_diag = first_diagnostic
+            .target(inner_key)
+            .expect("inner target diagnostic");
+        assert_eq!(
+            inner_diag.install_status,
+            Some(ElementInlineIfcCandidateLifecycleInstallStatus::Installed)
+        );
+        assert!(inner_diag.has_decoration_package);
+        assert!(!inner_diag.has_atomic_package);
+
+        let atomic_diag = first_diagnostic
+            .target(atomic_key)
+            .expect("atomic target diagnostic");
+        assert_eq!(
+            atomic_diag.install_status,
+            Some(ElementInlineIfcCandidateLifecycleInstallStatus::Installed)
+        );
+        assert!(!atomic_diag.has_decoration_package);
+        assert!(atomic_diag.has_atomic_package);
+        assert_eq!(
+            atomic_diag.render_decision,
+            Some(ElementInlineIfcRenderDecision::ExistingInlineFragments)
+        );
+
+        {
+            let mut parent_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
+            parent_element.mark_place_dirty();
+        }
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            constraints_for_width(parent_width),
+            placement_for_width(parent_width),
+        );
+        let reuse_diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("second production diagnostic")
+        };
+        assert_eq!(reuse_diagnostic.cache_key, first_diagnostic.cache_key);
+        assert_eq!(
+            reuse_diagnostic.invalidation,
+            Some(InlineIfcInvalidation::Reuse)
+        );
+        assert_eq!(reuse_diagnostic.rebuilt, Some(false));
+        assert_eq!(reuse_diagnostic.cache_len, 1);
+
+        {
+            let mut parent_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
+            parent_element.set_inline_ifc_layout_call_site_opt_in_mode(
+                ElementInlineIfcLayoutCallSiteOptInMode::Disabled,
+            );
+            parent_element.mark_place_dirty();
+        }
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            constraints_for_width(parent_width),
+            placement_for_width(parent_width),
+        );
+        let disabled_diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("disabled mode should leave previous diagnostic untouched")
+        };
+        assert_eq!(
+            disabled_diagnostic, reuse_diagnostic,
+            "disabled production call-site mode must not refresh diagnostic or cache"
+        );
+
+        {
+            let mut outer_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, outer_key);
+            outer_element.set_inline_ifc_render_mode_for_test(
+                ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            );
+        }
+        let explicit_candidate_diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("candidate diagnostic should read live target render decision")
+        };
+        assert_eq!(
+            explicit_candidate_diagnostic
+                .target(outer_key)
+                .expect("outer target diagnostic")
+                .render_decision,
+            Some(ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            }),
+            "installed packages allow the render default to choose the candidate"
+        );
+        assert_eq!(
+            explicit_candidate_diagnostic
+                .target(inner_key)
+                .expect("inner target diagnostic")
+                .render_decision,
+            Some(ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            })
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_config_gate_smoke_keeps_examples_like_tree_explicit() {
+        let parent_width = 196.0;
+        let mut arena = new_test_arena();
+
+        let mut parent = Element::new_with_id(620, 0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Auto);
+        parent_style.insert(PropertyId::Height, ParsedValue::Auto);
+        parent_style.set_line_height(1.2);
+        parent_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#0f172a")));
+        parent.apply_style(parent_style);
+        parent.apply_inline_ifc_layout_call_site_rollout_config_for_test(
+            ElementInlineIfcLayoutCallSiteRolloutConfig::disabled(),
+        );
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Text::from_content_with_id(720, "Inline text starts here, ")),
+        );
+
+        let mut outer = Element::new_with_id(621, 0.0, 0.0, 0.0, 0.0);
+        let mut outer_style = Style::new();
+        outer_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        outer_style.insert(PropertyId::Width, ParsedValue::Auto);
+        outer_style.insert(PropertyId::Height, ParsedValue::Auto);
+        outer_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#dbeafe")),
+        );
+        outer_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#172554")));
+        outer_style.set_padding(crate::style::Padding::uniform(Length::px(6.0)));
+        outer_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#2563eb")));
+        outer.apply_style(outer_style);
+        let outer_key = commit_child(&mut arena, parent_key, Box::new(outer));
+
+        commit_child(
+            &mut arena,
+            outer_key,
+            Box::new(Text::from_content_with_id(
+                721,
+                "Permission is hereby granted without ",
+            )),
+        );
+
+        let mut inner = Element::new_with_id(622, 0.0, 0.0, 0.0, 0.0);
+        let mut inner_style = Style::new();
+        inner_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        inner_style.insert(PropertyId::Width, ParsedValue::Auto);
+        inner_style.insert(PropertyId::Height, ParsedValue::Auto);
+        inner_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#bfdbfe")),
+        );
+        inner_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#1e40af")));
+        inner_style.set_padding(crate::style::Padding::uniform(Length::px(4.0)));
+        inner_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#1d4ed8")));
+        inner.apply_style(inner_style);
+        let inner_key = commit_child(&mut arena, outer_key, Box::new(inner));
+
+        commit_child(
+            &mut arena,
+            inner_key,
+            Box::new(Text::from_content_with_id(
+                722,
+                "restriction including without limitation",
+            )),
+        );
+
+        let mut atomic = Element::new_with_id(623, 0.0, 0.0, 90.0, 28.0);
+        let mut atomic_style = Style::new();
+        atomic_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        atomic_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(90.0)));
+        atomic_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(28.0)));
+        atomic_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#065f46")),
+        );
+        atomic_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#ecfdf5")));
+        atomic.apply_style(atomic_style);
+        let atomic_key = commit_child(&mut arena, parent_key, Box::new(atomic));
+
+        let mut sibling = Element::new_with_id(624, 0.0, 0.0, 0.0, 0.0);
+        let mut sibling_style = Style::new();
+        sibling_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        sibling_style.insert(PropertyId::Width, ParsedValue::Auto);
+        sibling_style.insert(PropertyId::Height, ParsedValue::Auto);
+        sibling_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#fee2e2")),
+        );
+        sibling_style.insert(PropertyId::Color, ParsedValue::color_like(Color::hex("#7f1d1d")));
+        sibling_style.set_padding(crate::style::Padding::uniform(Length::px(5.0)));
+        sibling_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#dc2626")));
+        sibling.apply_style(sibling_style);
+        let sibling_key = commit_child(&mut arena, parent_key, Box::new(sibling));
+
+        commit_child(
+            &mut arena,
+            sibling_key,
+            Box::new(Text::from_content_with_id(723, "note note note note note")),
+        );
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Text::from_content_with_id(724, " final mixed text")),
+        );
+
+        let constraints_for_width = |width: f32| LayoutConstraints {
+            max_width: width,
+            max_height: 240.0,
+            viewport_width: width,
+            viewport_height: 240.0,
+            percent_base_width: Some(width),
+            percent_base_height: Some(240.0),
+        };
+        let placement_for_width = |width: f32| LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: width,
+            available_height: 240.0,
+            viewport_width: width,
+            viewport_height: 240.0,
+            percent_base_width: Some(width),
+            percent_base_height: Some(240.0),
+        };
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            constraints_for_width(parent_width),
+            placement_for_width(parent_width),
+        );
+        {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            assert_eq!(
+                parent_element.inline_ifc_layout_call_site_gate_mode_for_test(),
+                ElementInlineIfcLayoutCallSiteOptInMode::Disabled,
+                "explicit disabled rollout config must keep rollback no-op"
+            );
+            assert!(
+                parent_element
+                    .inline_ifc_layout_call_site_last_output_for_test()
+                    .is_none(),
+                "explicit disabled gate must not write diagnostic output"
+            );
+            assert_eq!(parent_element.inline_ifc_layout_call_site_cache_len_for_test(), 0);
+        }
+        for key in [outer_key, inner_key, atomic_key, sibling_key] {
+            let element = crate::view::test_support::get_element::<Element>(&arena, key);
+            assert_eq!(
+                element.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::ExistingInlineFragments
+            );
+            assert!(
+                element
+                    .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                    .is_empty(),
+                "disabled gate must not install decoration packages"
+            );
+            assert!(
+                element.inline_ifc_atomic_placement_metadata_for_test().is_none(),
+                "disabled gate must not install atomic packages"
+            );
+        }
+
+        {
+            let mut parent_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
+            parent_element.apply_inline_ifc_layout_call_site_rollout_config_for_test(
+                ElementInlineIfcLayoutCallSiteRolloutConfig::for_scenario(
+                    ElementInlineIfcLayoutCallSiteScenario::ExamplesLikeDryRunCandidate,
+                ),
+            );
+            parent_element.mark_place_dirty();
+        }
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            constraints_for_width(parent_width),
+            placement_for_width(parent_width),
+        );
+
+        let diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            assert_eq!(
+                parent_element.inline_ifc_layout_call_site_gate_mode_for_test(),
+                ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
+            );
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("explicit gate should run production call-site dry-run")
+        };
+        assert_eq!(
+            diagnostic.status,
+            ElementInlineIfcLayoutCallSiteOptInStatus::LifecycleRan
+        );
+        assert_eq!(
+            diagnostic.fallback,
+            ElementInlineIfcRenderFallback::ExistingInlineFragments
+        );
+        assert_eq!(diagnostic.invalidation, Some(InlineIfcInvalidation::Reshape));
+        assert_eq!(diagnostic.rebuilt, Some(true));
+        assert_eq!(diagnostic.cache_len, 1);
+        for key in [outer_key, inner_key, atomic_key, sibling_key] {
+            assert!(
+                diagnostic.install_targets.contains(&key),
+                "examples-like inline target should be discovered: {key:?}"
+            );
+            assert_eq!(
+                diagnostic.target(key).expect("target diagnostic").install_status,
+                Some(ElementInlineIfcCandidateLifecycleInstallStatus::Installed)
+            );
+        }
+        assert!(
+            diagnostic
+                .target(outer_key)
+                .expect("outer diagnostic")
+                .has_decoration_package
+        );
+        assert!(
+            diagnostic
+                .target(inner_key)
+                .expect("inner diagnostic")
+                .has_decoration_package
+        );
+        assert!(
+            diagnostic
+                .target(sibling_key)
+                .expect("sibling diagnostic")
+                .has_decoration_package
+        );
+        assert!(
+            diagnostic
+                .target(atomic_key)
+                .expect("atomic diagnostic")
+                .has_atomic_package
+        );
+            assert_eq!(
+                diagnostic
+                    .target(outer_key)
+                    .expect("outer diagnostic")
+                    .render_decision,
+            Some(ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            }),
+            "installed packages allow the inline Element render default to choose the candidate"
+        );
+
+        {
+            let mut parent_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
+            parent_element.mark_place_dirty();
+        }
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            constraints_for_width(parent_width),
+            placement_for_width(parent_width),
+        );
+        let reuse_diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("scenario opt-in should keep diagnostic available")
+        };
+        assert_eq!(reuse_diagnostic.cache_key, diagnostic.cache_key);
+        assert_eq!(
+            reuse_diagnostic.invalidation,
+            Some(InlineIfcInvalidation::Reuse),
+            "same examples-like scenario input should reuse the IFC candidate cache"
+        );
+        assert_eq!(reuse_diagnostic.rebuilt, Some(false));
+        assert_eq!(
+            reuse_diagnostic.fallback,
+            ElementInlineIfcRenderFallback::ExistingInlineFragments,
+            "scenario opt-in still keeps the legacy render fallback"
+        );
+
+        {
+            let mut sibling_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, sibling_key);
+            sibling_element.set_inline_ifc_render_mode_for_test(
+                ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            );
+        }
+        let candidate_diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("diagnostic reads live render decision")
+        };
+        assert_eq!(
+            candidate_diagnostic
+                .target(sibling_key)
+                .expect("sibling diagnostic")
+                .render_decision,
+            Some(ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            }),
+            "render candidate default reads the installed package"
+        );
+        assert_eq!(
+            candidate_diagnostic
+                .target(outer_key)
+                .expect("outer diagnostic")
+                .render_decision,
+            Some(ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            })
+        );
+
+        let mut unsupported_arena = new_test_arena();
+        let mut unsupported_root = Element::new_with_id(625, 0.0, 0.0, parent_width, 0.0);
+        let mut unsupported_style = Style::new();
+        unsupported_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().into()),
+        );
+        unsupported_root.apply_style(unsupported_style);
+        unsupported_root.apply_inline_ifc_layout_call_site_rollout_config_for_test(
+            ElementInlineIfcLayoutCallSiteRolloutConfig::for_scenario(
+                ElementInlineIfcLayoutCallSiteScenario::UnsupportedRootProbe,
+            ),
+        );
+        let unsupported_key = commit_element(&mut unsupported_arena, Box::new(unsupported_root));
+        measure_and_place(
+            &mut unsupported_arena,
+            unsupported_key,
+            constraints_for_width(parent_width),
+            placement_for_width(parent_width),
+        );
+        let unsupported_diagnostic = {
+            let root =
+                crate::view::test_support::get_element::<Element>(&unsupported_arena, unsupported_key);
+            root.inline_ifc_layout_call_site_diagnostic_for_test(&unsupported_arena)
+                .expect("unsupported scenario should report an explicit status")
+        };
+        assert_eq!(
+            unsupported_diagnostic.status,
+            ElementInlineIfcLayoutCallSiteOptInStatus::UnsupportedRoot
+        );
+        assert_eq!(unsupported_diagnostic.cache_len, 0);
+        assert!(unsupported_diagnostic.target_installs.is_empty());
+    }
+
+    #[test]
+    fn inline_element_ifc_production_call_site_regression_matrix_tracks_invalidations() {
+        let parent_width = 210.0;
+        let (mut arena, fixture) = build_inline_element_ifc_production_matrix_fixture(
+            parent_width,
+            ElementInlineIfcLayoutCallSiteScenario::ExamplesLikeDryRunCandidate,
+        );
+
+        measure_and_place(
+            &mut arena,
+            fixture.parent_key,
+            inline_element_ifc_matrix_constraints(parent_width, fixture.height),
+            inline_element_ifc_matrix_placement(parent_width, fixture.height),
+        );
+        let first_diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("scenario opt-in should expose production diagnostic")
+        };
+        assert_eq!(
+            first_diagnostic.mode,
+            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
+        );
+        assert_eq!(
+            first_diagnostic.status,
+            ElementInlineIfcLayoutCallSiteOptInStatus::LifecycleRan
+        );
+        assert_eq!(
+            first_diagnostic.fallback,
+            ElementInlineIfcRenderFallback::ExistingInlineFragments
+        );
+        assert_eq!(
+            first_diagnostic.invalidation,
+            Some(InlineIfcInvalidation::Reshape)
+        );
+        assert_eq!(first_diagnostic.rebuilt, Some(true));
+        assert_eq!(first_diagnostic.cache_len, 1);
+
+        for key in [
+            fixture.outer_key,
+            fixture.inner_key,
+            fixture.atomic_key,
+            fixture.sibling_key,
+        ] {
+            let target = first_diagnostic
+                .target(key)
+                .expect("matrix inline target should be discovered");
+            assert_eq!(
+                target.install_status,
+                Some(ElementInlineIfcCandidateLifecycleInstallStatus::Installed)
+            );
+            let expected = if target.has_decoration_package {
+                ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                    fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                    has_atomic_placement_package: target.has_atomic_package,
+                }
+            } else {
+                ElementInlineIfcRenderDecision::ExistingInlineFragments
+            };
+            assert_eq!(
+                target.render_decision,
+                Some(expected),
+                "render default should use installed packages and keep legacy fallback otherwise"
+            );
+        }
+        assert!(
+            first_diagnostic
+                .target(fixture.outer_key)
+                .expect("outer target")
+                .has_decoration_package
+        );
+        assert!(
+            first_diagnostic
+                .target(fixture.inner_key)
+                .expect("inner target")
+                .has_decoration_package
+        );
+        assert!(
+            first_diagnostic
+                .target(fixture.sibling_key)
+                .expect("sibling target")
+                .has_decoration_package
+        );
+        assert!(
+            first_diagnostic
+                .target(fixture.atomic_key)
+                .expect("atomic target")
+                .has_atomic_package
+        );
+
+        {
+            let mut parent_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, fixture.parent_key);
+            parent_element.mark_place_dirty();
+        }
+        measure_and_place(
+            &mut arena,
+            fixture.parent_key,
+            inline_element_ifc_matrix_constraints(parent_width, fixture.height),
+            inline_element_ifc_matrix_placement(parent_width, fixture.height),
+        );
+        let reuse_diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("reuse diagnostic")
+        };
+        assert_eq!(reuse_diagnostic.cache_key, first_diagnostic.cache_key);
+        assert_eq!(
+            reuse_diagnostic.invalidation,
+            Some(InlineIfcInvalidation::Reuse)
+        );
+        assert_eq!(reuse_diagnostic.rebuilt, Some(false));
+        assert_eq!(
+            reuse_diagnostic.fallback,
+            ElementInlineIfcRenderFallback::ExistingInlineFragments
+        );
+
+        let narrower_width = 156.0;
+        {
+            let mut parent_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, fixture.parent_key);
+            parent_element.mark_place_dirty();
+        }
+        measure_and_place(
+            &mut arena,
+            fixture.parent_key,
+            inline_element_ifc_matrix_constraints(narrower_width, fixture.height),
+            inline_element_ifc_matrix_placement(narrower_width, fixture.height),
+        );
+        let width_diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("width diagnostic")
+        };
+        assert_ne!(width_diagnostic.cache_key, reuse_diagnostic.cache_key);
+        assert_eq!(
+            width_diagnostic.invalidation,
+            Some(InlineIfcInvalidation::Reshape)
+        );
+        assert_eq!(width_diagnostic.rebuilt, Some(true));
+
+        {
+            let mut text_element =
+                crate::view::test_support::get_element_mut::<Text>(&arena, fixture.mutable_text_key);
+            text_element.set_text("outer text before content changes enough to reshape");
+        }
+        measure_and_place(
+            &mut arena,
+            fixture.parent_key,
+            inline_element_ifc_matrix_constraints(narrower_width, fixture.height),
+            inline_element_ifc_matrix_placement(narrower_width, fixture.height),
+        );
+        let content_diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("content diagnostic")
+        };
+        assert_eq!(
+            content_diagnostic.invalidation,
+            Some(InlineIfcInvalidation::Reshape)
+        );
+        assert_eq!(content_diagnostic.rebuilt, Some(true));
+
+        {
+            let mut text_element =
+                crate::view::test_support::get_element_mut::<Text>(&arena, fixture.mutable_text_key);
+            text_element.set_color(Color::hex("#be123c"));
+        }
+        measure_and_place(
+            &mut arena,
+            fixture.parent_key,
+            inline_element_ifc_matrix_constraints(narrower_width, fixture.height),
+            inline_element_ifc_matrix_placement(narrower_width, fixture.height),
+        );
+        let style_diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("style diagnostic")
+        };
+        assert_eq!(
+            style_diagnostic.invalidation,
+            Some(InlineIfcInvalidation::RepaintOnly)
+        );
+        assert_eq!(style_diagnostic.rebuilt, Some(true));
+
+        {
+            let mut sibling_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, fixture.sibling_key);
+            sibling_element.set_inline_ifc_render_mode_for_test(
+                ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            );
+        }
+        let render_candidate_diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("render decision diagnostic")
+        };
+        assert_eq!(
+            render_candidate_diagnostic
+                .target(fixture.sibling_key)
+                .expect("sibling target")
+                .render_decision,
+            Some(ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            }),
+            "render candidate default reads the installed package"
+        );
+        assert_eq!(
+            render_candidate_diagnostic
+                .target(fixture.outer_key)
+                .expect("outer target")
+                .render_decision,
+            Some(ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            })
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_shadow_observation_reports_without_installing_or_switching_render() {
+        let parent_width = 210.0;
+        let (mut arena, fixture) = build_inline_element_ifc_production_matrix_fixture(
+            parent_width,
+            ElementInlineIfcLayoutCallSiteScenario::DefaultLegacyFallback,
+        );
+        {
+            let mut parent_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, fixture.parent_key);
+            assert_eq!(
+                parent_element.inline_ifc_layout_call_site_rollout_phase_for_test(),
+                ElementInlineIfcLayoutCallSiteRolloutPhase::Disabled,
+                "fixture starts from explicit disabled rollback config"
+            );
+            parent_element.apply_inline_ifc_layout_call_site_rollout_config_for_test(
+                ElementInlineIfcLayoutCallSiteRolloutConfig::production_default_shadow_run_phase(),
+            );
+            assert_eq!(
+                parent_element.inline_ifc_layout_call_site_rollout_phase_for_test(),
+                ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun,
+                "shadow-run phase must only observe candidates"
+            );
+        }
+
+        measure_and_place(
+            &mut arena,
+            fixture.parent_key,
+            inline_element_ifc_matrix_constraints(parent_width, fixture.height),
+            inline_element_ifc_matrix_placement(parent_width, fixture.height),
+        );
+
+        let diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("shadow observation should expose diagnostics")
+        };
+        assert_eq!(
+            diagnostic.mode,
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
+        );
+        assert_eq!(
+            diagnostic.status,
+            ElementInlineIfcLayoutCallSiteOptInStatus::LifecycleRan
+        );
+        assert_eq!(
+            diagnostic.fallback,
+            ElementInlineIfcRenderFallback::ExistingInlineFragments
+        );
+        assert_eq!(
+            diagnostic.invalidation,
+            Some(InlineIfcInvalidation::Reshape)
+        );
+        assert_eq!(diagnostic.rebuilt, Some(true));
+        assert_eq!(diagnostic.cache_len, 1);
+
+        for key in [
+            fixture.outer_key,
+            fixture.inner_key,
+            fixture.atomic_key,
+            fixture.sibling_key,
+        ] {
+            let target = diagnostic
+                .target(key)
+                .expect("shadow observation should report each inline target");
+            assert_eq!(
+                target.install_status,
+                Some(ElementInlineIfcCandidateLifecycleInstallStatus::ObservedOnly),
+                "shadow observation must not install rollout packages"
+            );
+            assert_eq!(
+                target.render_decision,
+                Some(ElementInlineIfcRenderDecision::ExistingInlineFragments),
+                "shadow observation must keep render on legacy fallback"
+            );
+        }
+        assert!(
+            diagnostic
+                .target(fixture.outer_key)
+                .expect("outer target")
+                .has_decoration_package
+        );
+        assert!(
+            diagnostic
+                .target(fixture.inner_key)
+                .expect("inner target")
+                .has_decoration_package
+        );
+        assert!(
+            diagnostic
+                .target(fixture.sibling_key)
+                .expect("sibling target")
+                .has_decoration_package
+        );
+        assert!(
+            diagnostic
+                .target(fixture.atomic_key)
+                .expect("atomic target")
+                .has_atomic_package
+        );
+
+        for key in [
+            fixture.outer_key,
+            fixture.inner_key,
+            fixture.sibling_key,
+        ] {
+            let element = crate::view::test_support::get_element::<Element>(&arena, key);
+            assert!(
+                element
+                    .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                    .is_empty(),
+                "shadow observation must not install decoration packages"
+            );
+        }
+        let atomic = crate::view::test_support::get_element::<Element>(&arena, fixture.atomic_key);
+        assert!(
+            atomic.inline_ifc_atomic_placement_metadata_for_test().is_none(),
+            "shadow observation must not install atomic packages"
+        );
+
+        {
+            let mut sibling_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, fixture.sibling_key);
+            sibling_element.set_inline_ifc_render_mode_for_test(
+                ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            );
+        }
+        let candidate_diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("shadow diagnostic reads live render decisions")
+        };
+        assert_eq!(
+            candidate_diagnostic
+                .target(fixture.sibling_key)
+                .expect("sibling target")
+                .render_decision,
+            Some(ElementInlineIfcRenderDecision::ExistingInlineFragments),
+            "explicit render candidate still falls back when shadow observation did not install packages"
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_production_default_layout_is_shadow_only_observation() {
+        let parent_width = 180.0;
+        let mut arena = new_test_arena();
+
+        let mut parent = Element::new_with_id(850, 0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Auto);
+        parent_style.insert(PropertyId::Height, ParsedValue::Auto);
+        parent_style.set_line_height(1.2);
+        parent.apply_style(parent_style);
+        assert_eq!(
+            parent.inline_ifc_layout_call_site_rollout_phase_for_test(),
+            ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun,
+            "new Element production layout default must only be the shadow-run phase"
+        );
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(Text::from_content_with_id(940, "default shadow prefix ")),
+        );
+
+        let mut child = Element::new_with_id(851, 0.0, 0.0, 0.0, 0.0);
+        let mut child_style = Style::new();
+        child_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        child_style.insert(PropertyId::Width, ParsedValue::Auto);
+        child_style.insert(PropertyId::Height, ParsedValue::Auto);
+        child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#fef3c7")),
+        );
+        child_style.set_padding(crate::style::Padding::uniform(Length::px(4.0)));
+        child.apply_style(child_style);
+        let child_key = commit_child(&mut arena, parent_key, Box::new(child));
+        commit_child(
+            &mut arena,
+            child_key,
+            Box::new(Text::from_content_with_id(941, "inline child")),
+        );
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            inline_element_ifc_matrix_constraints(parent_width, 160.0),
+            inline_element_ifc_matrix_placement(parent_width, 160.0),
+        );
+
+        let diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("production default shadow-run should expose diagnostics")
+        };
+        assert_eq!(
+            diagnostic.mode,
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
+        );
+        assert_eq!(
+            diagnostic.status,
+            ElementInlineIfcLayoutCallSiteOptInStatus::LifecycleRan
+        );
+        assert_eq!(
+            diagnostic.fallback,
+            ElementInlineIfcRenderFallback::ExistingInlineFragments
+        );
+        let target = diagnostic.target(child_key).expect("inline child target");
+        assert_eq!(
+            target.install_status,
+            Some(ElementInlineIfcCandidateLifecycleInstallStatus::ObservedOnly),
+            "production default shadow-run must not install rollout packages"
+        );
+        assert_eq!(
+            target.render_decision,
+            Some(ElementInlineIfcRenderDecision::ExistingInlineFragments)
+        );
+
+        {
+            let child = crate::view::test_support::get_element::<Element>(&arena, child_key);
+            assert!(
+                child
+                    .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                    .is_empty(),
+                "production default shadow-run must not install decoration packages"
+            );
+            assert_eq!(
+                child.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::ExistingInlineFragments
+            );
+        }
+
+        {
+            let mut child =
+                crate::view::test_support::get_element_mut::<Element>(&arena, child_key);
+            child.set_inline_ifc_render_mode_for_test(
+                ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            );
+        }
+        {
+            let child = crate::view::test_support::get_element::<Element>(&arena, child_key);
+            assert_eq!(
+                child.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::ExistingInlineFragments,
+                "explicit render candidate still falls back without installed packages"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_element_ifc_default_rollout_decision_guard_requires_full_checklist() {
+        let default_config = ElementInlineIfcLayoutCallSiteRolloutConfig::default();
+        assert_eq!(
+            default_config.phase(),
+            ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun,
+            "production layout default may only advance to shadow-run observation"
+        );
+        assert_eq!(
+            default_config.mode(),
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
+        );
+        assert_eq!(
+            ElementInlineIfcLayoutCallSiteRolloutConfig::disabled().mode(),
+            ElementInlineIfcLayoutCallSiteOptInMode::Disabled,
+            "explicit disabled config remains the rollback no-op"
+        );
+
+        let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+            ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed(),
+        );
+        assert!(decision.is_allowed());
+        assert!(decision.blocked_reasons().is_empty());
+        assert_eq!(
+            decision.recommended_phase(),
+            ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun
+        );
+        assert_eq!(
+            decision.recommended_config().mode(),
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation,
+            "decision guard may only recommend the layout shadow-run phase"
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_default_rollout_decision_guard_blocks_each_missing_condition() {
+        let blocking_cases = [
+            (
+                ElementInlineIfcDefaultRolloutDecisionInput {
+                    render_gate_independent: false,
+                    ..ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed()
+                },
+                ElementInlineIfcDefaultRolloutBlockedReason::RenderGateNotIndependent,
+            ),
+            (
+                ElementInlineIfcDefaultRolloutDecisionInput {
+                    legacy_fallback_available: false,
+                    ..ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed()
+                },
+                ElementInlineIfcDefaultRolloutBlockedReason::LegacyFallbackMissing,
+            ),
+            (
+                ElementInlineIfcDefaultRolloutDecisionInput {
+                    unsupported_root_and_text_area_boundary_confirmed: false,
+                    ..ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed()
+                },
+                ElementInlineIfcDefaultRolloutBlockedReason::
+                    UnsupportedRootAndTextAreaBoundaryUnconfirmed,
+            ),
+            (
+                ElementInlineIfcDefaultRolloutDecisionInput {
+                    invalidation_guard_confirmed: false,
+                    ..ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed()
+                },
+                ElementInlineIfcDefaultRolloutBlockedReason::InvalidationGuardUnconfirmed,
+            ),
+        ];
+
+        for (input, reason) in blocking_cases {
+            let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(input);
+            assert!(!decision.is_allowed(), "missing {reason:?} must block");
+            assert_eq!(
+                decision.recommended_phase(),
+                ElementInlineIfcLayoutCallSiteRolloutPhase::Disabled
+            );
+            assert_eq!(
+                decision.recommended_config().mode(),
+                ElementInlineIfcLayoutCallSiteOptInMode::Disabled
+            );
+            assert!(
+                decision.blocked_reasons().contains(&reason),
+                "decision should report the exact blocked reason"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_element_ifc_default_rollout_decision_shadow_run_keeps_render_gate_explicit() {
+        let parent_width = 210.0;
+        let (mut arena, fixture) = build_inline_element_ifc_production_matrix_fixture(
+            parent_width,
+            ElementInlineIfcLayoutCallSiteScenario::DefaultLegacyFallback,
+        );
+        let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+            ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed(),
+        );
+        assert!(decision.is_allowed());
+        {
+            let mut parent_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, fixture.parent_key);
+            parent_element.apply_inline_ifc_layout_call_site_rollout_config_for_test(
+                decision.recommended_config(),
+            );
+        }
+
+        measure_and_place(
+            &mut arena,
+            fixture.parent_key,
+            inline_element_ifc_matrix_constraints(parent_width, fixture.height),
+            inline_element_ifc_matrix_placement(parent_width, fixture.height),
+        );
+
+        let diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("decision-recommended shadow run should expose diagnostics")
+        };
+        assert_eq!(
+            diagnostic.mode,
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
+        );
+        assert_eq!(
+            diagnostic.fallback,
+            ElementInlineIfcRenderFallback::ExistingInlineFragments
+        );
+
+        {
+            let sibling =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.sibling_key);
+            assert_eq!(
+                sibling.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::ExistingInlineFragments,
+                "layout shadow-run decision must not enable draw-rect render candidate by default"
+            );
+        }
+
+        {
+            let mut sibling =
+                crate::view::test_support::get_element_mut::<Element>(&arena, fixture.sibling_key);
+            sibling.set_inline_ifc_render_mode_for_test(
+                ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            );
+        }
+        {
+            let sibling =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.sibling_key);
+            assert_eq!(
+                sibling.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::ExistingInlineFragments,
+                "explicit draw-rect render opt-in still falls back without installed packages"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_element_ifc_default_shadow_run_audit_only_allows_shadow_observation() {
+        let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+            ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed(),
+        );
+        let audit = ElementInlineIfcDefaultShadowRunAdoptionAudit::evaluate(
+            ElementInlineIfcDefaultShadowRunAdoptionAuditInput::with_confirmed_observations(
+                decision,
+            ),
+        );
+
+        assert!(audit.is_ready_for_shadow_only_observation());
+        assert_eq!(
+            audit.readiness(),
+            ElementInlineIfcDefaultShadowRunAuditReadiness::ReadyForShadowOnlyObservation
+        );
+        assert!(audit.blocked_reasons().is_empty());
+        assert_eq!(
+            audit.recommended_config().phase(),
+            ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun,
+            "audit may only recommend adopting the shadow-run layout phase"
+        );
+        assert_eq!(
+            audit.recommended_config().mode(),
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
+        );
+        assert!(
+            !audit.allows_render_candidate_default(),
+            "shadow-run adoption audit must not authorize draw-rect render candidate default"
+        );
+        assert_eq!(
+            ElementInlineIfcLayoutCallSiteRolloutConfig::default().phase(),
+            ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun,
+            "production default config is now shadow-only observation"
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_default_shadow_run_audit_blocks_missing_critical_observations() {
+        let blocking_cases = [
+            (
+                {
+                    let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+                        ElementInlineIfcDefaultRolloutDecisionInput {
+                            render_gate_independent: false,
+                            ..ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed()
+                        },
+                    );
+                    ElementInlineIfcDefaultShadowRunAdoptionAuditInput::
+                        with_confirmed_observations(decision)
+                },
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::DecisionBlocked,
+            ),
+            (
+                {
+                    let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+                        ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed(),
+                    );
+                    let mut input = ElementInlineIfcDefaultShadowRunAdoptionAuditInput::
+                        with_confirmed_observations(decision);
+                    input.production_default_config =
+                        ElementInlineIfcLayoutCallSiteRolloutConfig::disabled();
+                    input
+                },
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
+                    ProductionDefaultNotShadowOnlyObservation,
+            ),
+            (
+                {
+                    let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+                        ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed(),
+                    );
+                    let mut input = ElementInlineIfcDefaultShadowRunAdoptionAuditInput::
+                        with_confirmed_observations(decision);
+                    input.shadow_observation_diagnostic_observed = false;
+                    input
+                },
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
+                    ShadowObservationDiagnosticMissing,
+            ),
+            (
+                {
+                    let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+                        ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed(),
+                    );
+                    let mut input = ElementInlineIfcDefaultShadowRunAdoptionAuditInput::
+                        with_confirmed_observations(decision);
+                    input.shadow_observation_installed_packages = true;
+                    input
+                },
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
+                    ShadowObservationInstalledPackages,
+            ),
+            (
+                {
+                    let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+                        ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed(),
+                    );
+                    let mut input = ElementInlineIfcDefaultShadowRunAdoptionAuditInput::
+                        with_confirmed_observations(decision);
+                    input.legacy_fallback_observed = false;
+                    input
+                },
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::LegacyFallbackNotObserved,
+            ),
+            (
+                {
+                    let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+                        ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed(),
+                    );
+                    let mut input = ElementInlineIfcDefaultShadowRunAdoptionAuditInput::
+                        with_confirmed_observations(decision);
+                    input.render_gate_explicit_observed = false;
+                    input
+                },
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
+                    RenderGateExplicitnessUnobserved,
+            ),
+            (
+                {
+                    let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+                        ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed(),
+                    );
+                    let mut input = ElementInlineIfcDefaultShadowRunAdoptionAuditInput::
+                        with_confirmed_observations(decision);
+                    input.unsupported_or_non_inline_no_op_observed = false;
+                    input
+                },
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
+                    UnsupportedOrNonInlineNoOpUnobserved,
+            ),
+            (
+                {
+                    let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+                        ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed(),
+                    );
+                    let mut input = ElementInlineIfcDefaultShadowRunAdoptionAuditInput::
+                        with_confirmed_observations(decision);
+                    input.text_area_boundary_observed = false;
+                    input
+                },
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::TextAreaBoundaryUnobserved,
+            ),
+            (
+                {
+                    let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+                        ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed(),
+                    );
+                    let mut input = ElementInlineIfcDefaultShadowRunAdoptionAuditInput::
+                        with_confirmed_observations(decision);
+                    input.matrix_invalidation_guard_observed = false;
+                    input
+                },
+                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
+                    MatrixInvalidationGuardUnobserved,
+            ),
+        ];
+
+        for (input, reason) in blocking_cases {
+            let audit = ElementInlineIfcDefaultShadowRunAdoptionAudit::evaluate(input);
+            assert!(
+                !audit.is_ready_for_shadow_only_observation(),
+                "missing {reason:?} must block shadow-run adoption"
+            );
+            assert_eq!(
+                audit.readiness(),
+                ElementInlineIfcDefaultShadowRunAuditReadiness::Blocked
+            );
+            assert_eq!(
+                audit.recommended_config().phase(),
+                ElementInlineIfcLayoutCallSiteRolloutPhase::Disabled
+            );
+            assert!(
+                audit.blocked_reasons().contains(&reason),
+                "audit should report the exact blocked reason"
+            );
+            assert!(!audit.allows_render_candidate_default());
+        }
+    }
+
+    #[test]
+    fn inline_element_ifc_default_shadow_run_audit_recommended_config_stays_shadow_only() {
+        let parent_width = 210.0;
+        let (mut arena, fixture) = build_inline_element_ifc_production_matrix_fixture(
+            parent_width,
+            ElementInlineIfcLayoutCallSiteScenario::DefaultLegacyFallback,
+        );
+        let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+            ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed(),
+        );
+        let audit = ElementInlineIfcDefaultShadowRunAdoptionAudit::evaluate(
+            ElementInlineIfcDefaultShadowRunAdoptionAuditInput::with_confirmed_observations(
+                decision,
+            ),
+        );
+        assert!(audit.is_ready_for_shadow_only_observation());
+
+        {
+            let mut parent =
+                crate::view::test_support::get_element_mut::<Element>(&arena, fixture.parent_key);
+            parent.apply_inline_ifc_layout_call_site_rollout_config_for_test(
+                audit.recommended_config(),
+            );
+        }
+        measure_and_place(
+            &mut arena,
+            fixture.parent_key,
+            inline_element_ifc_matrix_constraints(parent_width, fixture.height),
+            inline_element_ifc_matrix_placement(parent_width, fixture.height),
+        );
+
+        let diagnostic = {
+            let parent =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.parent_key);
+            parent
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("audit-recommended shadow run should expose diagnostics")
+        };
+        assert_eq!(
+            diagnostic.mode,
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
+        );
+        assert_eq!(
+            diagnostic.fallback,
+            ElementInlineIfcRenderFallback::ExistingInlineFragments
+        );
+        for target in &diagnostic.target_installs {
+            assert_eq!(
+                target.install_status,
+                Some(ElementInlineIfcCandidateLifecycleInstallStatus::ObservedOnly),
+                "audit-recommended shadow run must not install rollout packages"
+            );
+        }
+
+        let sibling = crate::view::test_support::get_element::<Element>(&arena, fixture.sibling_key);
+        assert_eq!(
+            sibling.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::ExistingInlineFragments
+        );
+        assert!(
+            sibling
+                .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                .is_empty(),
+            "shadow-only adoption must not install draw-rect metadata"
+        );
+    }
+
+    fn inline_element_ifc_ready_shadow_run_audit_for_test(
+    ) -> ElementInlineIfcDefaultShadowRunAdoptionAudit {
+        let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+            ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed(),
+        );
+        ElementInlineIfcDefaultShadowRunAdoptionAudit::evaluate(
+            ElementInlineIfcDefaultShadowRunAdoptionAuditInput::with_confirmed_observations(
+                decision,
+            ),
+        )
+    }
+
+    #[test]
+    fn inline_element_ifc_render_default_audit_only_allows_explicit_candidate_evaluation() {
+        let shadow_audit = inline_element_ifc_ready_shadow_run_audit_for_test();
+        assert!(shadow_audit.is_ready_for_shadow_only_observation());
+
+        let audit = ElementInlineIfcRenderDefaultAudit::evaluate(
+            ElementInlineIfcRenderDefaultAuditInput::with_confirmed_observations(shadow_audit),
+        );
+
+        assert!(audit.is_ready_for_explicit_render_candidate_evaluation());
+        assert_eq!(
+            audit.readiness(),
+            ElementInlineIfcRenderDefaultAuditReadiness::
+                ReadyForExplicitRenderCandidateEvaluation
+        );
+        assert!(audit.blocked_reasons().is_empty());
+        assert_eq!(
+            audit.explicit_candidate_evaluation_mode(),
+            Some(ElementInlineIfcRenderMode::DrawRectPackageCandidate),
+            "render audit may only name the explicit candidate evaluation mode"
+        );
+        assert!(
+            !audit.allows_render_candidate_default(),
+            "render audit must not authorize changing the production render default"
+        );
+        assert_eq!(
+            ElementInlineIfcRenderMode::default(),
+            ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            "inline Element render default is now the draw-rect package candidate"
+        );
+        let element = Element::new(0.0, 0.0, 40.0, 20.0);
+        assert_eq!(
+            element.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::ExistingInlineFragments,
+            "audit pass must not mutate element render decision"
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_render_default_audit_blocks_missing_critical_observations() {
+        let blocking_cases = [
+            (
+                {
+                    let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+                        ElementInlineIfcDefaultRolloutDecisionInput {
+                            render_gate_independent: false,
+                            ..ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed()
+                        },
+                    );
+                    let shadow_audit = ElementInlineIfcDefaultShadowRunAdoptionAudit::evaluate(
+                        ElementInlineIfcDefaultShadowRunAdoptionAuditInput::
+                            with_confirmed_observations(decision),
+                    );
+                    ElementInlineIfcRenderDefaultAuditInput::with_confirmed_observations(
+                        shadow_audit,
+                    )
+                },
+                ElementInlineIfcRenderDefaultAuditBlockedReason::ShadowRunAuditNotReady,
+            ),
+            (
+                {
+                    let shadow_audit = inline_element_ifc_ready_shadow_run_audit_for_test();
+                    ElementInlineIfcRenderDefaultAuditInput {
+                        current_render_default: ElementInlineIfcRenderMode::
+                            DrawRectPackageCandidate,
+                        ..ElementInlineIfcRenderDefaultAuditInput::with_confirmed_observations(
+                            shadow_audit,
+                        )
+                    }
+                },
+                ElementInlineIfcRenderDefaultAuditBlockedReason::RenderDefaultAlreadyCandidate,
+            ),
+            (
+                {
+                    let shadow_audit = inline_element_ifc_ready_shadow_run_audit_for_test();
+                    ElementInlineIfcRenderDefaultAuditInput {
+                        installed_package_lifecycle_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultAuditInput::with_confirmed_observations(
+                            shadow_audit,
+                        )
+                    }
+                },
+                ElementInlineIfcRenderDefaultAuditBlockedReason::
+                    InstalledPackageLifecycleUnconfirmed,
+            ),
+            (
+                {
+                    let shadow_audit = inline_element_ifc_ready_shadow_run_audit_for_test();
+                    ElementInlineIfcRenderDefaultAuditInput {
+                        legacy_fallback_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultAuditInput::with_confirmed_observations(
+                            shadow_audit,
+                        )
+                    }
+                },
+                ElementInlineIfcRenderDefaultAuditBlockedReason::LegacyFallbackUnconfirmed,
+            ),
+            (
+                {
+                    let shadow_audit = inline_element_ifc_ready_shadow_run_audit_for_test();
+                    ElementInlineIfcRenderDefaultAuditInput {
+                        unsupported_or_non_inline_boundary_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultAuditInput::with_confirmed_observations(
+                            shadow_audit,
+                        )
+                    }
+                },
+                ElementInlineIfcRenderDefaultAuditBlockedReason::
+                    UnsupportedOrNonInlineBoundaryUnconfirmed,
+            ),
+            (
+                {
+                    let shadow_audit = inline_element_ifc_ready_shadow_run_audit_for_test();
+                    ElementInlineIfcRenderDefaultAuditInput {
+                        text_area_boundary_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultAuditInput::with_confirmed_observations(
+                            shadow_audit,
+                        )
+                    }
+                },
+                ElementInlineIfcRenderDefaultAuditBlockedReason::TextAreaBoundaryUnconfirmed,
+            ),
+            (
+                {
+                    let shadow_audit = inline_element_ifc_ready_shadow_run_audit_for_test();
+                    ElementInlineIfcRenderDefaultAuditInput {
+                        rollback_disabled_path_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultAuditInput::with_confirmed_observations(
+                            shadow_audit,
+                        )
+                    }
+                },
+                ElementInlineIfcRenderDefaultAuditBlockedReason::RollbackDisabledPathUnconfirmed,
+            ),
+            (
+                {
+                    let shadow_audit = inline_element_ifc_ready_shadow_run_audit_for_test();
+                    ElementInlineIfcRenderDefaultAuditInput {
+                        explicit_render_opt_in_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultAuditInput::with_confirmed_observations(
+                            shadow_audit,
+                        )
+                    }
+                },
+                ElementInlineIfcRenderDefaultAuditBlockedReason::ExplicitRenderOptInUnconfirmed,
+            ),
+            (
+                {
+                    let shadow_audit = inline_element_ifc_ready_shadow_run_audit_for_test();
+                    ElementInlineIfcRenderDefaultAuditInput {
+                        missing_installed_package_fallback_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultAuditInput::with_confirmed_observations(
+                            shadow_audit,
+                        )
+                    }
+                },
+                ElementInlineIfcRenderDefaultAuditBlockedReason::
+                    MissingInstalledPackageFallbackUnconfirmed,
+            ),
+        ];
+
+        for (input, reason) in blocking_cases {
+            let audit = ElementInlineIfcRenderDefaultAudit::evaluate(input);
+            assert!(
+                !audit.is_ready_for_explicit_render_candidate_evaluation(),
+                "missing {reason:?} must block render candidate evaluation readiness"
+            );
+            assert_eq!(
+                audit.readiness(),
+                ElementInlineIfcRenderDefaultAuditReadiness::Blocked
+            );
+            assert_eq!(audit.explicit_candidate_evaluation_mode(), None);
+            assert!(
+                audit.blocked_reasons().contains(&reason),
+                "audit should report the exact blocked reason"
+            );
+            assert!(!audit.allows_render_candidate_default());
+        }
+    }
+
+    #[test]
+    fn inline_element_ifc_render_default_audit_keeps_explicit_opt_in_and_missing_package_fallback() {
+        let parent_width = 210.0;
+        let (mut arena, fixture) = build_inline_element_ifc_production_matrix_fixture(
+            parent_width,
+            ElementInlineIfcLayoutCallSiteScenario::DefaultLegacyFallback,
+        );
+
+        measure_and_place(
+            &mut arena,
+            fixture.parent_key,
+            inline_element_ifc_matrix_constraints(parent_width, fixture.height),
+            inline_element_ifc_matrix_placement(parent_width, fixture.height),
+        );
+
+        let shadow_audit = inline_element_ifc_ready_shadow_run_audit_for_test();
+        let audit = ElementInlineIfcRenderDefaultAudit::evaluate(
+            ElementInlineIfcRenderDefaultAuditInput::with_confirmed_observations(shadow_audit),
+        );
+        assert!(audit.is_ready_for_explicit_render_candidate_evaluation());
+
+        {
+            let sibling =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.sibling_key);
+            assert_eq!(
+                sibling.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::ExistingInlineFragments,
+                "render default must still fallback when shadow-only layout installed no packages"
+            );
+        }
+
+        {
+            let mut sibling =
+                crate::view::test_support::get_element_mut::<Element>(&arena, fixture.sibling_key);
+            sibling.set_inline_ifc_render_mode_for_test(
+                audit
+                    .explicit_candidate_evaluation_mode()
+                    .expect("audit pass should only expose explicit evaluation mode"),
+            );
+        }
+
+        let sibling = crate::view::test_support::get_element::<Element>(&arena, fixture.sibling_key);
+        assert_eq!(
+            sibling.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::ExistingInlineFragments,
+            "explicit draw-rect candidate must still fallback without installed packages"
+        );
+        assert!(
+            sibling
+                .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                .is_empty(),
+            "shadow-only layout default must not provide render candidate packages"
+        );
+    }
+
+    fn inline_element_ifc_ready_render_default_audit_for_test() -> ElementInlineIfcRenderDefaultAudit
+    {
+        let shadow_audit = inline_element_ifc_ready_shadow_run_audit_for_test();
+        ElementInlineIfcRenderDefaultAudit::evaluate(
+            ElementInlineIfcRenderDefaultAuditInput::with_confirmed_observations(shadow_audit),
+        )
+    }
+
+    fn inline_element_ifc_ready_render_default_rollout_decision_for_test(
+    ) -> ElementInlineIfcRenderDefaultRolloutDecision {
+        let render_audit = inline_element_ifc_ready_render_default_audit_for_test();
+        ElementInlineIfcRenderDefaultRolloutDecision::evaluate(
+            ElementInlineIfcRenderDefaultRolloutDecisionInput::with_confirmed_observations(
+                render_audit,
+            ),
+        )
+    }
+
+    #[test]
+    fn inline_element_ifc_render_default_rollout_decision_only_allows_controlled_installed_package_candidate(
+    ) {
+        let render_audit = inline_element_ifc_ready_render_default_audit_for_test();
+        assert!(render_audit.is_ready_for_explicit_render_candidate_evaluation());
+
+        let decision = ElementInlineIfcRenderDefaultRolloutDecision::evaluate(
+            ElementInlineIfcRenderDefaultRolloutDecisionInput::with_confirmed_observations(
+                render_audit,
+            ),
+        );
+
+        assert!(decision.is_ready_for_controlled_installed_package_candidate());
+        assert_eq!(
+            decision.readiness(),
+            ElementInlineIfcRenderDefaultRolloutReadiness::
+                ReadyForControlledInstalledPackageCandidate
+        );
+        assert!(decision.blocked_reasons().is_empty());
+        assert_eq!(
+            decision.explicit_installed_package_candidate_mode(),
+            Some(ElementInlineIfcRenderMode::DrawRectPackageCandidate),
+            "rollout decision may only name an explicit installed-package candidate mode"
+        );
+        assert!(
+            !decision.allows_render_candidate_default(),
+            "rollout decision must not authorize changing the production render default"
+        );
+        assert_eq!(
+            ElementInlineIfcRenderMode::default(),
+            ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            "inline Element render default is now the draw-rect package candidate"
+        );
+        let element = Element::new(0.0, 0.0, 40.0, 20.0);
+        assert_eq!(
+            element.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::ExistingInlineFragments,
+            "rollout decision pass must not mutate element render decision"
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_render_default_rollout_decision_blocks_missing_readiness() {
+        let blocking_cases = [
+            (
+                {
+                    let decision = ElementInlineIfcDefaultRolloutDecision::evaluate(
+                        ElementInlineIfcDefaultRolloutDecisionInput {
+                            render_gate_independent: false,
+                            ..ElementInlineIfcDefaultRolloutDecisionInput::checklist_passed()
+                        },
+                    );
+                    let shadow_audit = ElementInlineIfcDefaultShadowRunAdoptionAudit::evaluate(
+                        ElementInlineIfcDefaultShadowRunAdoptionAuditInput::
+                            with_confirmed_observations(decision),
+                    );
+                    let render_audit = ElementInlineIfcRenderDefaultAudit::evaluate(
+                        ElementInlineIfcRenderDefaultAuditInput::with_confirmed_observations(
+                            shadow_audit,
+                        ),
+                    );
+                    ElementInlineIfcRenderDefaultRolloutDecisionInput::
+                        with_confirmed_observations(render_audit)
+                },
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::RenderAuditNotReady,
+            ),
+            (
+                {
+                    let render_audit = inline_element_ifc_ready_render_default_audit_for_test();
+                    ElementInlineIfcRenderDefaultRolloutDecisionInput {
+                        current_render_default: ElementInlineIfcRenderMode::
+                            DrawRectPackageCandidate,
+                        ..ElementInlineIfcRenderDefaultRolloutDecisionInput::
+                            with_confirmed_observations(render_audit)
+                    }
+                },
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::RenderDefaultAlreadyCandidate,
+            ),
+            (
+                {
+                    let render_audit = inline_element_ifc_ready_render_default_audit_for_test();
+                    ElementInlineIfcRenderDefaultRolloutDecisionInput {
+                        explicit_candidate_evaluation_observed: false,
+                        ..ElementInlineIfcRenderDefaultRolloutDecisionInput::
+                            with_confirmed_observations(render_audit)
+                    }
+                },
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::
+                    ExplicitCandidateEvaluationUnobserved,
+            ),
+            (
+                {
+                    let render_audit = inline_element_ifc_ready_render_default_audit_for_test();
+                    ElementInlineIfcRenderDefaultRolloutDecisionInput {
+                        controlled_installed_package_candidate_observed: false,
+                        ..ElementInlineIfcRenderDefaultRolloutDecisionInput::
+                            with_confirmed_observations(render_audit)
+                    }
+                },
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::
+                    InstalledPackageCandidateUnobserved,
+            ),
+            (
+                {
+                    let render_audit = inline_element_ifc_ready_render_default_audit_for_test();
+                    ElementInlineIfcRenderDefaultRolloutDecisionInput {
+                        current_default_render_decision:
+                            ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                                has_atomic_placement_package: false,
+                            },
+                        ..ElementInlineIfcRenderDefaultRolloutDecisionInput::
+                            with_confirmed_observations(render_audit)
+                    }
+                },
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::LegacyDefaultDecisionChanged,
+            ),
+            (
+                {
+                    let render_audit = inline_element_ifc_ready_render_default_audit_for_test();
+                    ElementInlineIfcRenderDefaultRolloutDecisionInput {
+                        missing_installed_package_fallback_observed: false,
+                        ..ElementInlineIfcRenderDefaultRolloutDecisionInput::
+                            with_confirmed_observations(render_audit)
+                    }
+                },
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::
+                    MissingInstalledPackageFallbackUnobserved,
+            ),
+            (
+                {
+                    let render_audit = inline_element_ifc_ready_render_default_audit_for_test();
+                    ElementInlineIfcRenderDefaultRolloutDecisionInput {
+                        rollback_disabled_path_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultRolloutDecisionInput::
+                            with_confirmed_observations(render_audit)
+                    }
+                },
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::RollbackDisabledPathUnconfirmed,
+            ),
+            (
+                {
+                    let render_audit = inline_element_ifc_ready_render_default_audit_for_test();
+                    ElementInlineIfcRenderDefaultRolloutDecisionInput {
+                        text_area_boundary_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultRolloutDecisionInput::
+                            with_confirmed_observations(render_audit)
+                    }
+                },
+                ElementInlineIfcRenderDefaultRolloutBlockedReason::TextAreaBoundaryUnconfirmed,
+            ),
+        ];
+
+        for (input, reason) in blocking_cases {
+            let decision = ElementInlineIfcRenderDefaultRolloutDecision::evaluate(input);
+            assert!(
+                !decision.is_ready_for_controlled_installed_package_candidate(),
+                "missing {reason:?} must block controlled installed-package readiness"
+            );
+            assert_eq!(
+                decision.readiness(),
+                ElementInlineIfcRenderDefaultRolloutReadiness::Blocked
+            );
+            assert_eq!(decision.explicit_installed_package_candidate_mode(), None);
+            assert!(
+                decision.blocked_reasons().contains(&reason),
+                "decision should report the exact blocked reason"
+            );
+            assert!(!decision.allows_render_candidate_default());
+        }
+    }
+
+    #[test]
+    fn inline_element_ifc_render_default_rollout_decision_keeps_default_fallback_and_rollback() {
+        let parent_width = 210.0;
+        let (mut arena, fixture) = build_inline_element_ifc_production_matrix_fixture(
+            parent_width,
+            ElementInlineIfcLayoutCallSiteScenario::DefaultLegacyFallback,
+        );
+
+        measure_and_place(
+            &mut arena,
+            fixture.parent_key,
+            inline_element_ifc_matrix_constraints(parent_width, fixture.height),
+            inline_element_ifc_matrix_placement(parent_width, fixture.height),
+        );
+
+        let render_audit = inline_element_ifc_ready_render_default_audit_for_test();
+        let decision = ElementInlineIfcRenderDefaultRolloutDecision::evaluate(
+            ElementInlineIfcRenderDefaultRolloutDecisionInput::with_confirmed_observations(
+                render_audit,
+            ),
+        );
+        assert!(decision.is_ready_for_controlled_installed_package_candidate());
+
+        {
+            let sibling =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.sibling_key);
+            assert_eq!(
+                sibling.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::ExistingInlineFragments,
+                "default shadow-only layout still leaves render on legacy fallback without packages"
+            );
+        }
+
+        {
+            let mut sibling =
+                crate::view::test_support::get_element_mut::<Element>(&arena, fixture.sibling_key);
+            sibling.set_inline_ifc_render_mode_for_test(
+                decision
+                    .explicit_installed_package_candidate_mode()
+                    .expect("decision pass should only expose explicit installed-package mode"),
+            );
+        }
+
+        {
+            let sibling =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.sibling_key);
+            assert_eq!(
+                sibling.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::ExistingInlineFragments,
+                "explicit candidate must still fallback without installed packages"
+            );
+            assert!(
+                sibling
+                    .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                    .is_empty(),
+                "default shadow-only layout must not install draw-rect metadata"
+            );
+        }
+
+        {
+            let mut sibling =
+                crate::view::test_support::get_element_mut::<Element>(&arena, fixture.sibling_key);
+            sibling.set_inline_ifc_render_mode_for_test(ElementInlineIfcRenderMode::Disabled);
+        }
+        let sibling = crate::view::test_support::get_element::<Element>(&arena, fixture.sibling_key);
+        assert_eq!(
+            sibling.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::ExistingInlineFragments,
+            "explicit disabled render mode remains the rollback path"
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_controlled_installed_package_candidate_installs_packages_under_guard() {
+        let parent_width = 210.0;
+        let decision = inline_element_ifc_ready_render_default_rollout_decision_for_test();
+        let config = decision
+            .controlled_installed_package_candidate_config()
+            .expect("ready rollout decision should expose controlled layout candidate config");
+        assert_eq!(
+            config.phase(),
+            ElementInlineIfcLayoutCallSiteRolloutPhase::ControlledInstalledPackageCandidate
+        );
+
+        let (mut arena, fixture) = build_inline_element_ifc_production_matrix_fixture(
+            parent_width,
+            ElementInlineIfcLayoutCallSiteScenario::ControlledInstalledPackageCandidate,
+        );
+
+        measure_and_place(
+            &mut arena,
+            fixture.parent_key,
+            inline_element_ifc_matrix_constraints(parent_width, fixture.height),
+            inline_element_ifc_matrix_placement(parent_width, fixture.height),
+        );
+
+        let diagnostic = {
+            let parent =
+                crate::view::test_support::get_element::<Element>(&arena, fixture.parent_key);
+            assert_eq!(
+                parent.inline_ifc_layout_call_site_rollout_phase_for_test(),
+                ElementInlineIfcLayoutCallSiteRolloutPhase::ControlledInstalledPackageCandidate
+            );
+            parent
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("controlled package candidate should expose diagnostic output")
+        };
+        assert_eq!(
+            diagnostic.mode,
+            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
+        );
+        for key in [
+            fixture.outer_key,
+            fixture.inner_key,
+            fixture.sibling_key,
+        ] {
+            let target = diagnostic.target(key).expect("inline Element target");
+            assert_eq!(
+                target.install_status,
+                Some(ElementInlineIfcCandidateLifecycleInstallStatus::Installed)
+            );
+            assert!(target.has_decoration_package);
+
+            let element = crate::view::test_support::get_element::<Element>(&arena, key);
+            assert!(
+                !element
+                    .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                    .is_empty(),
+                "controlled installed-package candidate should install decoration package"
+            );
+            assert_eq!(
+                element.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                    fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                    has_atomic_placement_package: false,
+                },
+                "render default should use the installed package while retaining fallback"
+            );
+        }
+
+        let atomic = diagnostic
+            .target(fixture.atomic_key)
+            .expect("atomic inline Element target");
+        assert_eq!(
+            atomic.install_status,
+            Some(ElementInlineIfcCandidateLifecycleInstallStatus::Installed)
+        );
+        assert!(atomic.has_atomic_package);
+
+        {
+            let mut sibling =
+                crate::view::test_support::get_element_mut::<Element>(&arena, fixture.sibling_key);
+            sibling.set_inline_ifc_render_mode_for_test(ElementInlineIfcRenderMode::Disabled);
+        }
+        let sibling = crate::view::test_support::get_element::<Element>(&arena, fixture.sibling_key);
+        assert_eq!(
+            sibling.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::ExistingInlineFragments,
+            "explicit disabled render mode remains the rollback path after packages are installed"
+        );
+
+        let missing_package_element = Element::new(0.0, 0.0, 40.0, 20.0);
+        assert_eq!(
+            missing_package_element.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::ExistingInlineFragments,
+            "render default candidate must fallback when no installed package is available"
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_render_default_adoption_audit_allows_default_after_controlled_candidate() {
+        let decision = inline_element_ifc_ready_render_default_rollout_decision_for_test();
+        assert!(decision.is_ready_for_controlled_installed_package_candidate());
+
+        let audit = ElementInlineIfcRenderDefaultAdoptionAudit::evaluate(
+            ElementInlineIfcRenderDefaultAdoptionAuditInput::with_confirmed_observations(decision),
+        );
+
+        assert!(audit.is_ready_for_inline_element_render_default());
+        assert_eq!(
+            audit.readiness(),
+            ElementInlineIfcRenderDefaultAdoptionAuditReadiness::ReadyForInlineElementRenderDefault
+        );
+        assert_eq!(
+            audit.recommended_default_mode(),
+            Some(ElementInlineIfcRenderMode::DrawRectPackageCandidate)
+        );
+        assert!(audit.allows_render_candidate_default());
+        assert!(audit.blocked_reasons().is_empty());
+        assert_eq!(
+            ElementInlineIfcRenderMode::default(),
+            ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            "inline Element render default should follow the adoption audit recommendation"
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_render_default_adoption_audit_blocks_missing_safety_observations() {
+        let blocking_cases = [
+            (
+                {
+                    let render_audit = inline_element_ifc_ready_render_default_audit_for_test();
+                    let blocked_decision = ElementInlineIfcRenderDefaultRolloutDecision::evaluate(
+                        ElementInlineIfcRenderDefaultRolloutDecisionInput {
+                            missing_installed_package_fallback_observed: false,
+                            ..ElementInlineIfcRenderDefaultRolloutDecisionInput::
+                                with_confirmed_observations(render_audit)
+                        },
+                    );
+                    ElementInlineIfcRenderDefaultAdoptionAuditInput::
+                        with_confirmed_observations(blocked_decision)
+                },
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::RolloutDecisionNotReady,
+            ),
+            (
+                {
+                    let decision = inline_element_ifc_ready_render_default_rollout_decision_for_test();
+                    ElementInlineIfcRenderDefaultAdoptionAuditInput {
+                        controlled_installed_package_candidate_observed: false,
+                        ..ElementInlineIfcRenderDefaultAdoptionAuditInput::
+                            with_confirmed_observations(decision)
+                    }
+                },
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
+                    ControlledInstalledPackageCandidateMissing,
+            ),
+            (
+                {
+                    let decision = inline_element_ifc_ready_render_default_rollout_decision_for_test();
+                    ElementInlineIfcRenderDefaultAdoptionAuditInput {
+                        controlled_installed_package_diagnostic_observed: false,
+                        ..ElementInlineIfcRenderDefaultAdoptionAuditInput::
+                            with_confirmed_observations(decision)
+                    }
+                },
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
+                    ControlledInstalledPackageDiagnosticMissing,
+            ),
+            (
+                {
+                    let decision = inline_element_ifc_ready_render_default_rollout_decision_for_test();
+                    ElementInlineIfcRenderDefaultAdoptionAuditInput {
+                        default_path_package_available: false,
+                        ..ElementInlineIfcRenderDefaultAdoptionAuditInput::
+                            with_confirmed_observations(decision)
+                    }
+                },
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
+                    DefaultPathPackageUnavailable,
+            ),
+            (
+                {
+                    let decision = inline_element_ifc_ready_render_default_rollout_decision_for_test();
+                    ElementInlineIfcRenderDefaultAdoptionAuditInput {
+                        missing_installed_package_fallback_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultAdoptionAuditInput::
+                            with_confirmed_observations(decision)
+                    }
+                },
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
+                    MissingInstalledPackageFallbackUnconfirmed,
+            ),
+            (
+                {
+                    let decision = inline_element_ifc_ready_render_default_rollout_decision_for_test();
+                    ElementInlineIfcRenderDefaultAdoptionAuditInput {
+                        disabled_rollback_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultAdoptionAuditInput::
+                            with_confirmed_observations(decision)
+                    }
+                },
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::DisabledRollbackUnconfirmed,
+            ),
+            (
+                {
+                    let decision = inline_element_ifc_ready_render_default_rollout_decision_for_test();
+                    ElementInlineIfcRenderDefaultAdoptionAuditInput {
+                        unsupported_or_non_inline_no_op_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultAdoptionAuditInput::
+                            with_confirmed_observations(decision)
+                    }
+                },
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
+                    UnsupportedOrNonInlineNoOpUnconfirmed,
+            ),
+            (
+                {
+                    let decision = inline_element_ifc_ready_render_default_rollout_decision_for_test();
+                    ElementInlineIfcRenderDefaultAdoptionAuditInput {
+                        text_area_boundary_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultAdoptionAuditInput::
+                            with_confirmed_observations(decision)
+                    }
+                },
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::TextAreaBoundaryUnconfirmed,
+            ),
+            (
+                {
+                    let decision = inline_element_ifc_ready_render_default_rollout_decision_for_test();
+                    ElementInlineIfcRenderDefaultAdoptionAuditInput {
+                        legacy_fallback_confirmed: false,
+                        ..ElementInlineIfcRenderDefaultAdoptionAuditInput::
+                            with_confirmed_observations(decision)
+                    }
+                },
+                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::LegacyFallbackUnconfirmed,
+            ),
+        ];
+
+        for (input, reason) in blocking_cases {
+            let audit = ElementInlineIfcRenderDefaultAdoptionAudit::evaluate(input);
+            assert_eq!(
+                audit.readiness(),
+                ElementInlineIfcRenderDefaultAdoptionAuditReadiness::Blocked
+            );
+            assert_eq!(audit.recommended_default_mode(), None);
+            assert!(!audit.allows_render_candidate_default());
+            assert!(
+                audit.blocked_reasons().contains(&reason),
+                "adoption audit should report missing {reason:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_element_ifc_render_default_examples_like_adoption_guard_after_default_switch() {
+        let parent_width = 210.0;
+        assert_eq!(
+            ElementInlineIfcRenderMode::default(),
+            ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            "inline Element render default is now the draw-rect package candidate"
+        );
+        assert_eq!(
+            ElementInlineIfcLayoutCallSiteRolloutConfig::default().phase(),
+            ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun,
+            "layout default must remain shadow-only after render default adoption"
+        );
+
+        let (mut shadow_arena, shadow_fixture) = build_inline_element_ifc_production_matrix_fixture(
+            parent_width,
+            ElementInlineIfcLayoutCallSiteScenario::DefaultCandidateShadowObservation,
+        );
+        measure_and_place(
+            &mut shadow_arena,
+            shadow_fixture.parent_key,
+            inline_element_ifc_matrix_constraints(parent_width, shadow_fixture.height),
+            inline_element_ifc_matrix_placement(parent_width, shadow_fixture.height),
+        );
+        let shadow_diagnostic = {
+            let parent_element = crate::view::test_support::get_element::<Element>(
+                &shadow_arena,
+                shadow_fixture.parent_key,
+            );
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&shadow_arena)
+                .expect("default shadow-only rollout should expose examples-like diagnostic")
+        };
+        assert_eq!(
+            shadow_diagnostic.mode,
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
+        );
+        for key in [
+            shadow_fixture.outer_key,
+            shadow_fixture.inner_key,
+            shadow_fixture.atomic_key,
+            shadow_fixture.sibling_key,
+        ] {
+            let target = shadow_diagnostic
+                .target(key)
+                .expect("shadow diagnostic should include examples-like target");
+            assert_eq!(
+                target.install_status,
+                Some(ElementInlineIfcCandidateLifecycleInstallStatus::ObservedOnly),
+                "default shadow-only layout must not install rollout packages"
+            );
+            assert_eq!(
+                target.render_decision,
+                Some(ElementInlineIfcRenderDecision::ExistingInlineFragments),
+                "render default must fallback while layout default only observes packages"
+            );
+        }
+        for key in [
+            shadow_fixture.outer_key,
+            shadow_fixture.inner_key,
+            shadow_fixture.sibling_key,
+        ] {
+            let element = crate::view::test_support::get_element::<Element>(&shadow_arena, key);
+            assert!(
+                element
+                    .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                    .is_empty(),
+                "shadow-only default must not leave installed draw-rect metadata"
+            );
+            assert_eq!(
+                element.inline_ifc_render_decision_for_test(),
+                ElementInlineIfcRenderDecision::ExistingInlineFragments,
+                "missing installed package remains the render default fallback"
+            );
+        }
+
+        let decision = inline_element_ifc_ready_render_default_rollout_decision_for_test();
+        let controlled_config = decision
+            .controlled_installed_package_candidate_config()
+            .expect("ready rollout decision should expose controlled package config");
+        assert_eq!(
+            controlled_config.phase(),
+            ElementInlineIfcLayoutCallSiteRolloutPhase::ControlledInstalledPackageCandidate
+        );
+        let (mut controlled_arena, controlled_fixture) =
+            build_inline_element_ifc_production_matrix_fixture(
+                parent_width,
+                ElementInlineIfcLayoutCallSiteScenario::ControlledInstalledPackageCandidate,
+            );
+        measure_and_place(
+            &mut controlled_arena,
+            controlled_fixture.parent_key,
+            inline_element_ifc_matrix_constraints(parent_width, controlled_fixture.height),
+            inline_element_ifc_matrix_placement(parent_width, controlled_fixture.height),
+        );
+        let controlled_diagnostic = {
+            let parent_element = crate::view::test_support::get_element::<Element>(
+                &controlled_arena,
+                controlled_fixture.parent_key,
+            );
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&controlled_arena)
+                .expect("controlled installed-package candidate should expose diagnostic")
+        };
+        assert_eq!(
+            controlled_diagnostic.mode,
+            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
+        );
+        for key in [
+            controlled_fixture.outer_key,
+            controlled_fixture.inner_key,
+            controlled_fixture.sibling_key,
+        ] {
+            let target = controlled_diagnostic
+                .target(key)
+                .expect("controlled diagnostic should include decorated inline target");
+            assert_eq!(
+                target.install_status,
+                Some(ElementInlineIfcCandidateLifecycleInstallStatus::Installed)
+            );
+            assert!(target.has_decoration_package);
+            assert_eq!(
+                target.render_decision,
+                Some(ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                    fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                    has_atomic_placement_package: false,
+                }),
+                "installed packages let the render default choose the candidate"
+            );
+        }
+        let atomic_target = controlled_diagnostic
+            .target(controlled_fixture.atomic_key)
+            .expect("controlled diagnostic should include atomic inline target");
+        assert_eq!(
+            atomic_target.install_status,
+            Some(ElementInlineIfcCandidateLifecycleInstallStatus::Installed)
+        );
+        assert!(atomic_target.has_atomic_package);
+        assert_eq!(
+            atomic_target.render_decision,
+            Some(ElementInlineIfcRenderDecision::ExistingInlineFragments),
+            "atomic-only targets do not become decoration draw-rect candidates"
+        );
+
+        {
+            let mut sibling = crate::view::test_support::get_element_mut::<Element>(
+                &controlled_arena,
+                controlled_fixture.sibling_key,
+            );
+            sibling.set_inline_ifc_render_mode_for_test(ElementInlineIfcRenderMode::Disabled);
+        }
+        let sibling = crate::view::test_support::get_element::<Element>(
+            &controlled_arena,
+            controlled_fixture.sibling_key,
+        );
+        assert_eq!(
+            sibling.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::ExistingInlineFragments,
+            "explicit Disabled remains rollback after packages are installed"
+        );
+        let missing_package_element = Element::new(0.0, 0.0, 40.0, 20.0);
+        assert_eq!(
+            missing_package_element.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::ExistingInlineFragments,
+            "missing installed package fallback remains under render default"
+        );
+
+        let mut unsupported_arena = new_test_arena();
+        let mut unsupported_root = Element::new_with_id(842, 0.0, 0.0, parent_width, 0.0);
+        let mut unsupported_style = Style::new();
+        unsupported_style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().into()),
+        );
+        unsupported_root.apply_style(unsupported_style);
+        unsupported_root.apply_inline_ifc_layout_call_site_rollout_config_for_test(
+            ElementInlineIfcLayoutCallSiteRolloutConfig::controlled_installed_package_candidate(),
+        );
+        let unsupported_key = commit_element(&mut unsupported_arena, Box::new(unsupported_root));
+        measure_and_place(
+            &mut unsupported_arena,
+            unsupported_key,
+            inline_element_ifc_matrix_constraints(parent_width, 160.0),
+            inline_element_ifc_matrix_placement(parent_width, 160.0),
+        );
+        let unsupported =
+            crate::view::test_support::get_element::<Element>(&unsupported_arena, unsupported_key);
+        let unsupported_diagnostic = unsupported
+            .inline_ifc_layout_call_site_diagnostic_for_test(&unsupported_arena)
+            .expect("controlled config should report unsupported root status");
+        assert_eq!(
+            unsupported_diagnostic.status,
+            ElementInlineIfcLayoutCallSiteOptInStatus::UnsupportedRoot
+        );
+        assert!(unsupported_diagnostic.target_installs.is_empty());
+        assert_eq!(
+            unsupported.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::ExistingInlineFragments,
+            "unsupported root remains no-op under render default"
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_shadow_observation_keeps_text_area_run_out_of_rollout_targets() {
+        use crate::view::base_component::text_area::TextAreaTextRun;
+
+        let parent_width = 180.0;
+        let mut arena = new_test_arena();
+
+        let mut parent = Element::new_with_id(840, 0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Auto);
+        parent_style.insert(PropertyId::Height, ParsedValue::Auto);
+        parent.apply_style(parent_style);
+        parent.apply_inline_ifc_layout_call_site_rollout_config_for_test(
+            ElementInlineIfcLayoutCallSiteRolloutConfig::for_scenario(
+                ElementInlineIfcLayoutCallSiteScenario::DefaultCandidateShadowObservation,
+            ),
+        );
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        let text_area_run_key = commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(TextAreaTextRun::new(
+                "editable run remains outside rollout".to_string(),
+                0..35,
+            )),
+        );
+
+        let mut child = Element::new_with_id(841, 0.0, 0.0, 0.0, 0.0);
+        let mut child_style = Style::new();
+        child_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        child_style.insert(PropertyId::Width, ParsedValue::Auto);
+        child_style.insert(PropertyId::Height, ParsedValue::Auto);
+        child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#e0f2fe")),
+        );
+        child.apply_style(child_style);
+        let child_key = commit_child(&mut arena, parent_key, Box::new(child));
+        commit_child(
+            &mut arena,
+            child_key,
+            Box::new(Text::from_content_with_id(930, "inline child")),
+        );
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            inline_element_ifc_matrix_constraints(parent_width, 160.0),
+            inline_element_ifc_matrix_placement(parent_width, 160.0),
+        );
+
+        let diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("shadow observation should still run with TextAreaTextRun present")
+        };
+        assert_eq!(
+            diagnostic.mode,
+            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
+        );
+        assert!(
+            diagnostic.install_targets.contains(&child_key),
+            "inline Element child should remain an observation target"
+        );
+        assert!(
+            !diagnostic.install_targets.contains(&text_area_run_key),
+            "TextAreaTextRun must not become an inline Element rollout target"
+        );
+
+        let child_element = crate::view::test_support::get_element::<Element>(&arena, child_key);
+        assert_eq!(
+            child_element.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::ExistingInlineFragments
+        );
+        assert!(
+            child_element
+                .inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0])
+                .is_empty(),
+            "TextArea boundary test still must not install shadow packages"
+        );
+    }
+
+    #[test]
+    fn text_area_inline_ifc_readiness_blocks_current_p7_preflight() {
+        let readiness = TextAreaInlineIfcReadiness::evaluate(
+            TextAreaInlineIfcReadinessInput::current_p7_preflight_observations(),
+        );
+
+        assert_eq!(
+            readiness.readiness(),
+            TextAreaInlineIfcReadinessState::Blocked
+        );
+        assert!(!readiness.is_ready_for_editable_ifc_evaluation());
+        assert!(
+            !readiness.allows_text_area_default_rollout(),
+            "P7 readiness guard must not authorize TextArea default rollout"
+        );
+        for reason in [
+            TextAreaInlineIfcReadinessBlockedReason::EditableIfcPathUnwired,
+            TextAreaInlineIfcReadinessBlockedReason::ProjectionIfcPathUnwired,
+            TextAreaInlineIfcReadinessBlockedReason::ImeIfcPathUnwired,
+            TextAreaInlineIfcReadinessBlockedReason::CaretAffinityIfcPathUnwired,
+            TextAreaInlineIfcReadinessBlockedReason::ScrollFollowIfcPathUnwired,
+        ] {
+            assert!(
+                readiness.blocked_reasons().contains(&reason),
+                "current P7 preflight must block on missing {reason:?}"
+            );
+        }
+        for reason in [
+            TextAreaInlineIfcReadinessBlockedReason::TextAreaTextRunBoundaryUnconfirmed,
+            TextAreaInlineIfcReadinessBlockedReason::InlineElementRolloutBoundaryUnconfirmed,
+            TextAreaInlineIfcReadinessBlockedReason::
+                ReadOnlyTextPreparedPathSeparationUnconfirmed,
+            TextAreaInlineIfcReadinessBlockedReason::LegacyFallbackUnconfirmed,
+        ] {
+            assert!(
+                !readiness.blocked_reasons().contains(&reason),
+                "current P7 preflight has already confirmed {reason:?}"
+            );
+        }
+        assert_eq!(
+            ElementInlineIfcRenderMode::default(),
+            ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            "TextArea readiness guard must not roll back inline Element render default"
+        );
+    }
+
+    #[test]
+    fn text_area_inline_ifc_readiness_requires_each_boundary_observation() {
+        let blocking_cases = [
+            (
+                TextAreaInlineIfcReadinessInput {
+                    text_area_text_run_boundary_confirmed: false,
+                    ..TextAreaInlineIfcReadinessInput::with_all_ifc_paths_wired()
+                },
+                TextAreaInlineIfcReadinessBlockedReason::TextAreaTextRunBoundaryUnconfirmed,
+            ),
+            (
+                TextAreaInlineIfcReadinessInput {
+                    inline_element_rollout_boundary_confirmed: false,
+                    ..TextAreaInlineIfcReadinessInput::with_all_ifc_paths_wired()
+                },
+                TextAreaInlineIfcReadinessBlockedReason::InlineElementRolloutBoundaryUnconfirmed,
+            ),
+            (
+                TextAreaInlineIfcReadinessInput {
+                    read_only_text_prepared_path_separated: false,
+                    ..TextAreaInlineIfcReadinessInput::with_all_ifc_paths_wired()
+                },
+                TextAreaInlineIfcReadinessBlockedReason::
+                    ReadOnlyTextPreparedPathSeparationUnconfirmed,
+            ),
+            (
+                TextAreaInlineIfcReadinessInput {
+                    legacy_fallback_confirmed: false,
+                    ..TextAreaInlineIfcReadinessInput::with_all_ifc_paths_wired()
+                },
+                TextAreaInlineIfcReadinessBlockedReason::LegacyFallbackUnconfirmed,
+            ),
+        ];
+
+        for (input, reason) in blocking_cases {
+            let readiness = TextAreaInlineIfcReadiness::evaluate(input);
+            assert_eq!(
+                readiness.readiness(),
+                TextAreaInlineIfcReadinessState::Blocked
+            );
+            assert!(
+                readiness.blocked_reasons().contains(&reason),
+                "missing {reason:?} must block TextArea IFC readiness"
+            );
+            assert!(!readiness.allows_text_area_default_rollout());
+        }
+    }
+
+    #[test]
+    fn text_area_inline_ifc_readiness_ready_state_still_does_not_authorize_default_rollout() {
+        let readiness = TextAreaInlineIfcReadiness::evaluate(
+            TextAreaInlineIfcReadinessInput::with_all_ifc_paths_wired(),
+        );
+
+        assert_eq!(
+            readiness.readiness(),
+            TextAreaInlineIfcReadinessState::ReadyForEditableIfcEvaluation
+        );
+        assert!(readiness.is_ready_for_editable_ifc_evaluation());
+        assert!(readiness.blocked_reasons().is_empty());
+        assert!(
+            !readiness.allows_text_area_default_rollout(),
+            "readiness only allows a future editable IFC evaluation, not TextArea default rollout"
+        );
+    }
+
+    #[test]
+    fn text_area_inline_ifc_readiness_keeps_text_area_run_out_of_controlled_package_targets() {
+        use crate::view::base_component::text_area::TextAreaTextRun;
+
+        let parent_width = 180.0;
+        let mut arena = new_test_arena();
+
+        let mut parent = Element::new_with_id(850, 0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Auto);
+        parent_style.insert(PropertyId::Height, ParsedValue::Auto);
+        parent.apply_style(parent_style);
+        parent.apply_inline_ifc_layout_call_site_rollout_config_for_test(
+            ElementInlineIfcLayoutCallSiteRolloutConfig::controlled_installed_package_candidate(),
+        );
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        let run_text = "editable run stays legacy";
+        let text_area_run_key = commit_child(
+            &mut arena,
+            parent_key,
+            Box::new(TextAreaTextRun::new(
+                run_text.to_string(),
+                0..run_text.chars().count(),
+            )),
+        );
+
+        let mut inline_child = Element::new_with_id(851, 0.0, 0.0, 0.0, 0.0);
+        let mut child_style = Style::new();
+        child_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        child_style.insert(PropertyId::Width, ParsedValue::Auto);
+        child_style.insert(PropertyId::Height, ParsedValue::Auto);
+        child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#fef3c7")),
+        );
+        inline_child.apply_style(child_style);
+        let inline_child_key = commit_child(&mut arena, parent_key, Box::new(inline_child));
+        commit_child(
+            &mut arena,
+            inline_child_key,
+            Box::new(Text::from_content_with_id(931, "inline package target")),
+        );
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            inline_element_ifc_matrix_constraints(parent_width, 160.0),
+            inline_element_ifc_matrix_placement(parent_width, 160.0),
+        );
+
+        let diagnostic = {
+            let parent_element =
+                crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            parent_element
+                .inline_ifc_layout_call_site_diagnostic_for_test(&arena)
+                .expect("controlled candidate should expose diagnostic")
+        };
+        assert_eq!(
+            diagnostic.mode,
+            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
+        );
+        assert!(
+            diagnostic.install_targets.contains(&inline_child_key),
+            "regular inline Element child remains a controlled package target"
+        );
+        assert!(
+            !diagnostic.install_targets.contains(&text_area_run_key),
+            "TextAreaTextRun must not enter inline Element rollout targets even under controlled candidate"
+        );
+        assert!(
+            diagnostic.target(text_area_run_key).is_none(),
+            "TextAreaTextRun must not get package lifecycle diagnostic"
+        );
+
+        let inline_child = crate::view::test_support::get_element::<Element>(&arena, inline_child_key);
+        assert_eq!(
+            inline_child.inline_ifc_render_decision_for_test(),
+            ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
+                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
+                has_atomic_placement_package: false,
+            },
+            "controlled candidate may install packages for regular inline Element children only"
+        );
+    }
+
+    #[test]
+    fn inline_element_ifc_render_candidate_wiring_keeps_nested_and_sibling_sources_separate() {
+        const OUTER_SOURCE: InlineIfcSourceId = InlineIfcSourceId(91);
+        const INNER_SOURCE: InlineIfcSourceId = InlineIfcSourceId(92);
+        const SIBLING_SOURCE: InlineIfcSourceId = InlineIfcSourceId(93);
+        let parent_width = 360.0;
+
+        let mut arena = new_test_arena();
+        let mut parent = Element::new(0.0, 0.0, parent_width, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(parent_width)));
+        parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        let mut outer = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut outer_style = Style::new();
+        outer_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        outer_style.insert(PropertyId::Width, ParsedValue::Auto);
+        outer_style.insert(PropertyId::Height, ParsedValue::Auto);
+        outer_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#dbeafe")),
+        );
+        outer_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#1d4ed8")));
+        outer.apply_style(outer_style);
+        let outer_key = commit_child(&mut arena, parent_key, Box::new(outer));
+        commit_child(
+            &mut arena,
+            outer_key,
+            Box::new(Text::from_content("outer prefix ")),
+        );
+
+        let mut inner = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut inner_style = Style::new();
+        inner_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        inner_style.insert(PropertyId::Width, ParsedValue::Auto);
+        inner_style.insert(PropertyId::Height, ParsedValue::Auto);
+        inner_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#fecaca")),
+        );
+        inner_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#dc2626")));
+        inner.apply_style(inner_style);
+        let inner_key = commit_child(&mut arena, outer_key, Box::new(inner));
+        commit_child(
+            &mut arena,
+            inner_key,
+            Box::new(Text::from_content("inner chip")),
+        );
+        commit_child(
+            &mut arena,
+            outer_key,
+            Box::new(Text::from_content(" outer tail")),
+        );
+
+        let mut sibling = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut sibling_style = Style::new();
+        sibling_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        sibling_style.insert(PropertyId::Width, ParsedValue::Auto);
+        sibling_style.insert(PropertyId::Height, ParsedValue::Auto);
+        sibling_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#bbf7d0")),
+        );
+        sibling_style.set_border(Border::uniform(Length::px(1.0), &Color::hex("#15803d")));
+        sibling.apply_style(sibling_style);
+        let sibling_key = commit_child(&mut arena, parent_key, Box::new(sibling));
+        commit_child(
+            &mut arena,
+            sibling_key,
+            Box::new(Text::from_content(" sibling inline wrapper")),
+        );
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: parent_width,
+                max_height: 180.0,
+                viewport_width: parent_width,
+                viewport_height: 180.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(180.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: parent_width,
+                available_height: 180.0,
+                viewport_width: parent_width,
+                viewport_height: 180.0,
+                percent_base_width: Some(parent_width),
+                percent_base_height: Some(180.0),
+            },
+        );
+
+        let outer_legacy = crate::view::test_support::get_element::<Element>(&arena, outer_key)
+            .inline_fragment_rects()
+            .to_vec();
+        let inner_legacy = crate::view::test_support::get_element::<Element>(&arena, inner_key)
+            .inline_fragment_rects()
+            .to_vec();
+        let sibling_legacy =
+            crate::view::test_support::get_element::<Element>(&arena, sibling_key)
+                .inline_fragment_rects()
+                .to_vec();
+        assert!(!outer_legacy.is_empty());
+        assert!(!inner_legacy.is_empty());
+        assert!(!sibling_legacy.is_empty());
+
+        let ifc = InlineFormattingContext::build(
+            InlineIfcInput::new(vec![
+                InlineIfcItem::Span {
+                    source: OUTER_SOURCE,
+                    style: Some(InlineIfcStyle {
+                        font_size: 16.0,
+                        line_height: 1.25,
+                        brush: [219, 234, 254, 255],
+                        ..InlineIfcStyle::default()
+                    }),
+                    children: vec![
+                        InlineIfcItem::TextSpan {
+                            source: OUTER_SOURCE,
+                            text: "outer prefix ".to_string(),
+                            style: None,
+                        },
+                        InlineIfcItem::Span {
+                            source: INNER_SOURCE,
+                            style: Some(InlineIfcStyle {
+                                font_size: 16.0,
+                                line_height: 1.25,
+                                brush: [254, 202, 202, 255],
+                                ..InlineIfcStyle::default()
+                            }),
+                            children: vec![InlineIfcItem::TextSpan {
+                                source: INNER_SOURCE,
+                                text: "inner chip".to_string(),
+                                style: None,
+                            }],
+                        },
+                        InlineIfcItem::TextSpan {
+                            source: OUTER_SOURCE,
+                            text: " outer tail".to_string(),
+                            style: None,
+                        },
+                    ],
+                },
+                InlineIfcItem::Span {
+                    source: SIBLING_SOURCE,
+                    style: Some(InlineIfcStyle {
+                        font_size: 16.0,
+                        line_height: 1.25,
+                        brush: [187, 247, 208, 255],
+                        ..InlineIfcStyle::default()
+                    }),
+                    children: vec![InlineIfcItem::TextSpan {
+                        source: SIBLING_SOURCE,
+                        text: " sibling inline wrapper".to_string(),
+                        style: None,
+                    }],
+                },
+            ])
+            .with_max_width(parent_width),
+        );
+
+        let mut outer_style =
+            InlineIfcElementDecorationDrawRectStyle::from_fill_style(&InlineIfcStyle {
+                brush: [219, 234, 254, 255],
+                ..InlineIfcStyle::default()
+            });
+        outer_style.opacity = 0.88;
+        outer_style.border_widths = [1.0, 1.0, 1.0, 1.0];
+        outer_style.border_color = [29.0 / 255.0, 78.0 / 255.0, 216.0 / 255.0, 1.0];
+        let mut inner_style =
+            InlineIfcElementDecorationDrawRectStyle::from_fill_style(&InlineIfcStyle {
+                brush: [254, 202, 202, 255],
+                ..InlineIfcStyle::default()
+            });
+        inner_style.opacity = 0.87;
+        inner_style.border_widths = [1.0, 1.0, 1.0, 1.0];
+        inner_style.border_color = [220.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0];
+        let mut sibling_style =
+            InlineIfcElementDecorationDrawRectStyle::from_fill_style(&InlineIfcStyle {
+                brush: [187, 247, 208, 255],
+                ..InlineIfcStyle::default()
+            });
+        sibling_style.opacity = 0.86;
+        sibling_style.border_widths = [1.0, 1.0, 1.0, 1.0];
+        sibling_style.border_color = [21.0 / 255.0, 128.0 / 255.0, 61.0 / 255.0, 1.0];
+
+        let insets = InlineIfcDecorationBoxInsets::new(1.0, 1.0, 1.0, 1.0);
+        let outer_package =
+            ifc.element_decoration_draw_rect_package(OUTER_SOURCE, insets, outer_style);
+        let inner_package =
+            ifc.element_decoration_draw_rect_package(INNER_SOURCE, insets, inner_style);
+        let sibling_package =
+            ifc.element_decoration_draw_rect_package(SIBLING_SOURCE, insets, sibling_style);
+        assert_eq!(outer_package.fragments.len(), outer_legacy.len());
+        assert_eq!(inner_package.fragments.len(), inner_legacy.len());
+        assert_eq!(sibling_package.fragments.len(), sibling_legacy.len());
+        assert!(
+            outer_package
+                .fragments
+                .iter()
+                .all(|fragment| fragment.source == OUTER_SOURCE),
+            "outer package should not include nested/sibling metadata: {outer_package:?}"
+        );
+        assert!(
+            inner_package
+                .fragments
+                .iter()
+                .all(|fragment| fragment.source == INNER_SOURCE),
+            "inner package should not include outer/sibling metadata: {inner_package:?}"
+        );
+        assert!(
+            sibling_package
+                .fragments
+                .iter()
+                .all(|fragment| fragment.source == SIBLING_SOURCE),
+            "sibling package should not include nested metadata: {sibling_package:?}"
+        );
+
+        let expected_draw_rect_passes = {
+            let mut outer_el =
+                crate::view::test_support::get_element_mut::<Element>(&mut arena, outer_key);
+            outer_el.set_inline_ifc_render_mode_for_test(
+                ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            );
+            outer_el.set_inline_ifc_draw_rect_package_for_test(outer_package.clone());
+            let metadata = outer_el.inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0]);
+            assert_eq!(metadata.len(), outer_legacy.len());
+            for (metadata, package_fragment) in metadata.iter().zip(outer_package.fragments.iter())
+            {
+                assert_eq!(
+                    metadata.fill.position,
+                    package_fragment.metadata.position
+                );
+                assert_eq!(metadata.fill.size, package_fragment.metadata.size);
+                assert_eq!(metadata.fill.fill_color, outer_style.fill_color);
+                assert_eq!(
+                    metadata.border.as_ref().map(|border| border.border_color),
+                    Some(outer_style.border_color)
+                );
+            }
+            metadata.len() * 2
+        } + {
+            let mut inner_el =
+                crate::view::test_support::get_element_mut::<Element>(&mut arena, inner_key);
+            inner_el.set_inline_ifc_render_mode_for_test(
+                ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            );
+            inner_el.set_inline_ifc_draw_rect_package_for_test(inner_package.clone());
+            let metadata = inner_el.inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0]);
+            assert_eq!(metadata.len(), inner_legacy.len());
+            assert!(
+                metadata
+                    .iter()
+                    .all(|metadata| metadata.fill.fill_color == inner_style.fill_color)
+            );
+            metadata.len() * 2
+        } + {
+            let mut sibling_el =
+                crate::view::test_support::get_element_mut::<Element>(&mut arena, sibling_key);
+            sibling_el.set_inline_ifc_render_mode_for_test(
+                ElementInlineIfcRenderMode::DrawRectPackageCandidate,
+            );
+            sibling_el.set_inline_ifc_draw_rect_package_for_test(sibling_package.clone());
+            let metadata = sibling_el.inline_ifc_draw_rect_pass_metadata_for_test([0.0, 0.0]);
+            assert_eq!(metadata.len(), sibling_legacy.len());
+            assert!(
+                metadata
+                    .iter()
+                    .all(|metadata| metadata.fill.fill_color == sibling_style.fill_color)
+            );
+            metadata.len() * 2
+        };
+
+        let summary =
+            compile_inline_element_render_graph_for_test(&mut arena, parent_key, 360, 180);
+        assert_draw_rect_descriptors_are_graphics(
+            &summary.draw_rect_descriptors,
+            expected_draw_rect_passes,
+        );
+        assert!(
+            summary.pass_names.iter().any(|name| name.contains("TextPass")),
+            "nested/sibling render graph should still contain surrounding text passes: {:?}",
+            summary.pass_names
+        );
+    }
+
+    #[derive(Clone, Debug)]
+    struct InlineElementIfcDemoSpec {
+        name: &'static str,
+        max_width: f32,
+        include_atomic_box: bool,
+    }
+
+    #[test]
+    fn inline_element_ifc_demo_coverage_fixes_nested_and_atomic_specs() {
+        const OUTER_SOURCE: InlineIfcSourceId = InlineIfcSourceId(101);
+        const INNER_SOURCE: InlineIfcSourceId = InlineIfcSourceId(102);
+        const ATOMIC_SOURCE: InlineIfcSourceId = InlineIfcSourceId(103);
+
+        let specs = [
+            InlineElementIfcDemoSpec {
+                name: "Inline Element Test nested wrappers",
+                max_width: 150.0,
+                include_atomic_box: false,
+            },
+            InlineElementIfcDemoSpec {
+                name: "Mixed Text / Element atomic chip",
+                max_width: 170.0,
+                include_atomic_box: true,
+            },
+        ];
+
+        for spec in specs {
+            let mut children = vec![
+                InlineIfcItem::TextSpan {
+                    source: OUTER_SOURCE,
+                    text: "Permission prefix ".to_string(),
+                    style: None,
+                },
+                InlineIfcItem::Span {
+                    source: INNER_SOURCE,
+                    style: Some(InlineIfcStyle {
+                        font_size: 16.0,
+                        line_height: 1.25,
+                        brush: [59, 130, 246, 255],
+                        ..InlineIfcStyle::default()
+                    }),
+                    children: vec![InlineIfcItem::TextSpan {
+                        source: INNER_SOURCE,
+                        text: "restriction including limitation".to_string(),
+                        style: None,
+                    }],
+                },
+                InlineIfcItem::TextSpan {
+                    source: OUTER_SOURCE,
+                    text: " suffix text continues".to_string(),
+                    style: None,
+                },
+            ];
+            if spec.include_atomic_box {
+                children.insert(
+                    1,
+                    InlineIfcItem::AtomicInlineBox {
+                        source: ATOMIC_SOURCE,
+                        measurement: InlineIfcMeasuredAtomicBox::new(
+                            InlineIfcSize::new(42.0, 20.0),
+                            InlineIfcAtomicMeasureConstraints::new(Some(spec.max_width)),
+                        ),
+                    },
+                );
+            }
+
+            let ifc = InlineFormattingContext::build(
+                InlineIfcInput::new(vec![InlineIfcItem::Span {
+                    source: OUTER_SOURCE,
+                    style: Some(InlineIfcStyle {
+                        font_size: 16.0,
+                        line_height: 1.25,
+                        brush: [191, 219, 254, 255],
+                        ..InlineIfcStyle::default()
+                    }),
+                    children,
+                }])
+                .with_max_width(spec.max_width),
+            );
+            let snapshot = ifc.text_layout_snapshot();
+            let outer_package = ifc.element_decoration_draw_rect_package(
+                OUTER_SOURCE,
+                InlineIfcDecorationBoxInsets::new(8.0, 8.0, 8.0, 8.0),
+                InlineIfcElementDecorationDrawRectStyle::from_fill_style(&InlineIfcStyle {
+                    brush: [191, 219, 254, 255],
+                    ..InlineIfcStyle::default()
+                }),
+            );
+            let inner_package = ifc.element_decoration_draw_rect_package(
+                INNER_SOURCE,
+                InlineIfcDecorationBoxInsets::new(8.0, 8.0, 8.0, 8.0),
+                InlineIfcElementDecorationDrawRectStyle::from_fill_style(&InlineIfcStyle {
+                    brush: [59, 130, 246, 255],
+                    ..InlineIfcStyle::default()
+                }),
+            );
+            let atomic_package = ifc.atomic_box_placement_package(ATOMIC_SOURCE);
+
+            assert!(
+                !snapshot.lines.is_empty() && snapshot.lines.iter().any(|line| !line.glyphs.is_empty()),
+                "{} should expose text glyph demo payload: {snapshot:?}",
+                spec.name
+            );
+            assert!(
+                !outer_package.fragments.is_empty(),
+                "{} should expose outer decoration draw-rect package",
+                spec.name
+            );
+            assert!(
+                !inner_package.fragments.is_empty(),
+                "{} should expose inner decoration draw-rect package",
+                spec.name
+            );
+            assert!(
+                outer_package
+                    .fragments
+                    .iter()
+                    .all(|fragment| fragment.source == OUTER_SOURCE)
+            );
+            assert!(
+                inner_package
+                    .fragments
+                    .iter()
+                    .all(|fragment| fragment.source == INNER_SOURCE)
+            );
+            if spec.include_atomic_box {
+                assert_eq!(atomic_package.placements.len(), 1);
+                assert_eq!(atomic_package.placements[0].source, ATOMIC_SOURCE);
+                assert!(
+                    snapshot
+                        .lines
+                        .iter()
+                        .flat_map(|line| &line.glyphs)
+                        .all(|glyph| glyph.source != ATOMIC_SOURCE),
+                    "{} atomic box should stay out of glyph payload",
+                    spec.name
+                );
+                assert!(
+                    outer_package
+                        .fragments
+                        .iter()
+                        .all(|fragment| fragment.source != ATOMIC_SOURCE)
+                );
+            } else {
+                assert!(atomic_package.placements.is_empty());
+            }
+        }
     }
 
     #[test]

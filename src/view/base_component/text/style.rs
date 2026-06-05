@@ -8,7 +8,7 @@ use crate::view::base_component::{DirtyFlags, Position, Size};
 use crate::view::renderer_adapter::{StyleCascadeContext, computed_parent_from_style_cascade};
 use crate::view::text_layout::TextLayoutAlignment;
 
-use super::Text;
+use super::{Text, TextInlineIfcStyleMetadata};
 
 #[derive(Debug)]
 pub(crate) struct TextComputedStyleBridge {
@@ -146,6 +146,16 @@ impl Text {
 
     pub fn content(&self) -> &str {
         &self.content
+    }
+
+    pub(crate) fn inline_ifc_text_style_metadata(&self) -> TextInlineIfcStyleMetadata {
+        TextInlineIfcStyleMetadata {
+            font_size: self.font_size,
+            line_height: self.line_height,
+            font_weight: self.font_weight,
+            brush: self.color.to_rgba_u8(),
+            font_families: self.font_families.clone(),
+        }
     }
 
     pub fn set_color<T: ColorLike + 'static>(&mut self, color: T) {

@@ -8,6 +8,8 @@ pub(crate) mod font_system;
 pub mod frame_graph;
 pub mod host_element;
 pub(crate) mod image_resource;
+pub(crate) mod inline_formatting_context;
+pub(crate) mod inline_text_pass_adapter;
 pub(crate) mod layout;
 pub mod node_arena;
 pub mod popup_stack;

@@ -701,7 +701,8 @@ fn parley_font_family(font_families: &[String]) -> FontFamily<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parley::GenericFamily;
+    use parley::{GenericFamily, InlineBox, InlineBoxKind, PositionedLayoutItem};
+    use std::ops::Range;
 
     fn test_layout(content: &str, width: Option<f32>) -> TextLayout {
         build_text_layout(
@@ -715,6 +716,179 @@ mod tests {
             &[],
         )
         .layout
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SpikeNode {
+        Root,
+        OuterSpan,
+        InnerSpan,
+        AtomicBox,
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct SpikeSourceRange {
+        range: Range<usize>,
+        node: SpikeNode,
+        brush: [u8; 4],
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct SpikeLineFragment {
+        line_index: usize,
+        node: SpikeNode,
+        range: Range<usize>,
+        x0: f32,
+        x1: f32,
+        y0: f32,
+        y1: f32,
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct SpikeInlineBoxPlacement {
+        id: u64,
+        line_index: usize,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    }
+
+    struct SpikeIfc {
+        text: String,
+        layout: ParleyLayout<[u8; 4]>,
+        source_ranges: Vec<SpikeSourceRange>,
+        inline_box_node: SpikeNode,
+        inline_box_id: u64,
+    }
+
+    impl SpikeIfc {
+        fn build(width: f32) -> Self {
+            let text = "plain outer strong tail wraps after box".to_string();
+            let outer = text.find("outer").unwrap()..text.find(" wraps").unwrap();
+            let inner = text.find("strong").unwrap()..text.find("strong").unwrap() + "strong".len();
+            let box_index = text.find(" after").unwrap();
+            let source_ranges = vec![
+                SpikeSourceRange {
+                    range: 0..text.len(),
+                    node: SpikeNode::Root,
+                    brush: [1, 1, 1, 255],
+                },
+                SpikeSourceRange {
+                    range: outer.clone(),
+                    node: SpikeNode::OuterSpan,
+                    brush: [2, 2, 2, 255],
+                },
+                SpikeSourceRange {
+                    range: inner.clone(),
+                    node: SpikeNode::InnerSpan,
+                    brush: [3, 3, 3, 255],
+                },
+            ];
+
+            let layout = with_shared_parley_context(|ctx| {
+                let mut builder = ctx.layout.ranged_builder(&mut ctx.font, &text, 1.0, true);
+                builder.push_default(StyleProperty::FontSize(14.0));
+                builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(1.2)));
+                builder.push_default(StyleProperty::TextWrapMode(TextWrapMode::Wrap));
+                builder.push_default(StyleProperty::FontFamily(FontFamily::from("sans-serif")));
+                builder.push_default(StyleProperty::Brush([1, 1, 1, 255]));
+                builder.push(StyleProperty::Brush([2, 2, 2, 255]), outer);
+                builder.push(StyleProperty::Brush([3, 3, 3, 255]), inner.clone());
+                builder.push(StyleProperty::FontWeight(FontWeight::new(700.0)), inner);
+                builder.push_inline_box(InlineBox {
+                    id: 42,
+                    kind: InlineBoxKind::InFlow,
+                    index: box_index,
+                    width: 28.0,
+                    height: 18.0,
+                });
+
+                let mut layout = builder.build(&text);
+                layout.break_all_lines(Some(width));
+                layout.align(ParleyAlignment::Left, AlignmentOptions::default());
+                layout
+            });
+
+            Self {
+                text,
+                layout,
+                source_ranges,
+                inline_box_node: SpikeNode::AtomicBox,
+                inline_box_id: 42,
+            }
+        }
+
+        fn expected_brush_at(&self, byte_index: usize) -> [u8; 4] {
+            self.source_ranges
+                .iter()
+                .filter(|range| {
+                    range.range.start <= byte_index
+                        && byte_index < range.range.end.max(range.range.start + 1)
+                })
+                .last()
+                .map(|range| range.brush)
+                .unwrap_or([1, 1, 1, 255])
+        }
+
+        fn node_for_byte(&self, byte_index: usize) -> SpikeNode {
+            self.source_ranges
+                .iter()
+                .filter(|range| range.range.start <= byte_index && byte_index < range.range.end)
+                .last()
+                .map(|range| range.node)
+                .unwrap_or(SpikeNode::Root)
+        }
+
+        fn line_fragments(&self) -> Vec<SpikeLineFragment> {
+            let mut fragments = Vec::new();
+            for (line_index, line) in self.layout.lines().enumerate() {
+                let line_range = line.text_range();
+                let metrics = line.metrics();
+                for source in &self.source_ranges {
+                    let start = source.range.start.max(line_range.start);
+                    let end = source.range.end.min(line_range.end);
+                    if start >= end {
+                        continue;
+                    }
+                    let start_cursor =
+                        ParleyCursor::from_byte_index(&self.layout, start, Affinity::Downstream)
+                            .geometry(&self.layout, 0.0);
+                    let end_cursor =
+                        ParleyCursor::from_byte_index(&self.layout, end, Affinity::Upstream)
+                            .geometry(&self.layout, 0.0);
+                    fragments.push(SpikeLineFragment {
+                        line_index,
+                        node: source.node,
+                        range: start..end,
+                        x0: start_cursor.x0.min(end_cursor.x0) as f32,
+                        x1: start_cursor.x0.max(end_cursor.x0) as f32,
+                        y0: metrics.block_min_coord,
+                        y1: metrics.block_min_coord + metrics.line_height,
+                    });
+                }
+            }
+            fragments
+        }
+
+        fn inline_box_placements(&self) -> Vec<SpikeInlineBoxPlacement> {
+            let mut boxes = Vec::new();
+            for (line_index, line) in self.layout.lines().enumerate() {
+                for item in line.items() {
+                    if let PositionedLayoutItem::InlineBox(inline_box) = item {
+                        boxes.push(SpikeInlineBoxPlacement {
+                            id: inline_box.id,
+                            line_index,
+                            x: inline_box.x,
+                            y: inline_box.y,
+                            width: inline_box.width,
+                            height: inline_box.height,
+                        });
+                    }
+                }
+            }
+            boxes
+        }
     }
 
     #[test]
@@ -743,6 +917,144 @@ mod tests {
             list[2],
             FontFamilyName::Generic(GenericFamily::SansSerif)
         ));
+    }
+
+    #[test]
+    fn ifc_spike_single_parley_layout_carries_nested_styled_ranges() {
+        let spike = SpikeIfc::build(180.0);
+        let mut saw_outer = false;
+        let mut saw_inner = false;
+
+        for line in spike.layout.lines() {
+            for run in line.runs() {
+                for cluster in run.clusters() {
+                    let range = cluster.text_range();
+                    if range.is_empty() {
+                        continue;
+                    }
+                    let byte = range.start;
+                    let expected = spike.expected_brush_at(byte);
+                    assert_eq!(
+                        cluster.first_style().brush,
+                        expected,
+                        "cluster style should be recoverable from the source range map: range={range:?}",
+                    );
+                    saw_outer |= spike.node_for_byte(byte) == SpikeNode::OuterSpan;
+                    saw_inner |= spike.node_for_byte(byte) == SpikeNode::InnerSpan;
+                }
+            }
+        }
+
+        assert!(
+            saw_outer,
+            "fixture should include the outer span in glyph clusters"
+        );
+        assert!(
+            saw_inner,
+            "fixture should include the nested inner span in glyph clusters"
+        );
+    }
+
+    #[test]
+    fn ifc_spike_positions_measured_atomic_inline_box() {
+        let spike = SpikeIfc::build(180.0);
+        let boxes = spike.inline_box_placements();
+
+        assert_eq!(boxes.len(), 1, "expected one positioned inline box");
+        let inline_box = &boxes[0];
+        assert_eq!(inline_box.id, spike.inline_box_id);
+        assert_eq!(spike.inline_box_node, SpikeNode::AtomicBox);
+        assert!((inline_box.width - 28.0).abs() < 0.01);
+        assert!((inline_box.height - 18.0).abs() < 0.01);
+        assert!(
+            inline_box.x.is_finite() && inline_box.y.is_finite(),
+            "parley should expose a finite inline-box position: {inline_box:?}",
+        );
+    }
+
+    #[test]
+    fn ifc_spike_rebuilds_per_line_fragments_for_inline_decoration() {
+        let spike = SpikeIfc::build(96.0);
+        let fragments = spike.line_fragments();
+
+        let outer_fragments = fragments
+            .iter()
+            .filter(|fragment| fragment.node == SpikeNode::OuterSpan)
+            .collect::<Vec<_>>();
+        assert!(
+            outer_fragments.len() >= 2,
+            "narrow width should split the outer span into per-line decoration fragments: {outer_fragments:?}",
+        );
+        assert!(
+            outer_fragments
+                .windows(2)
+                .all(|pair| pair[0].line_index <= pair[1].line_index),
+            "fragments should preserve visual line order",
+        );
+        assert!(
+            outer_fragments
+                .iter()
+                .all(|fragment| fragment.x1 >= fragment.x0 && fragment.y1 > fragment.y0),
+            "fragment rects should be drawable: {outer_fragments:?}",
+        );
+    }
+
+    #[test]
+    fn ifc_spike_maps_pointer_targets_to_source_ranges_and_inline_box_ids() {
+        let spike = SpikeIfc::build(180.0);
+        let inner_start = spike.text.find("strong").unwrap();
+        let inner_geom =
+            ParleyCursor::from_byte_index(&spike.layout, inner_start + 1, Affinity::Downstream)
+                .geometry(&spike.layout, 0.0);
+        let pointer_byte =
+            ParleyCursor::from_point(&spike.layout, inner_geom.x0 as f32, inner_geom.y0 as f32)
+                .index();
+        assert_eq!(spike.node_for_byte(pointer_byte), SpikeNode::InnerSpan);
+
+        let boxes = spike.inline_box_placements();
+        let inline_box = boxes.first().expect("expected inline box placement");
+        assert_eq!(inline_box.id, spike.inline_box_id);
+        assert_eq!(spike.inline_box_node, SpikeNode::AtomicBox);
+    }
+
+    #[test]
+    fn ifc_spike_style_lookup_uses_source_ranges_not_line_boundaries() {
+        let spike = SpikeIfc::build(180.0);
+        let fragments = spike.line_fragments();
+        let first_line_styles = fragments
+            .iter()
+            .filter(|fragment| fragment.line_index == 0)
+            .map(|fragment| fragment.node)
+            .collect::<Vec<_>>();
+        let mut item_ranges_with_multiple_source_styles = Vec::new();
+        for line in spike.layout.lines() {
+            for item in line.items() {
+                if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                    let range = glyph_run.run().text_range();
+                    let style_count = spike
+                        .source_ranges
+                        .iter()
+                        .filter(|style| {
+                            style.range.start < range.end && range.start < style.range.end
+                        })
+                        .count();
+                    if style_count > 1 {
+                        item_ranges_with_multiple_source_styles.push(range);
+                    }
+                }
+            }
+        }
+
+        assert!(
+            first_line_styles.contains(&SpikeNode::Root)
+                && first_line_styles.contains(&SpikeNode::OuterSpan)
+                && first_line_styles.contains(&SpikeNode::InnerSpan),
+            "one visual line can contain multiple source styles, so later glyph/text pass code must split by source range: {first_line_styles:?}",
+        );
+        assert!(
+            !item_ranges_with_multiple_source_styles.is_empty(),
+            "parley item source ranges can cover multiple rfgui style spans; route style by source range map, not item boundary",
+        );
     }
 
     #[test]
