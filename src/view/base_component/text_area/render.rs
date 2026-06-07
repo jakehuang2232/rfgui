@@ -1967,13 +1967,22 @@ mod tests {
             .iter()
             .find_map(|(content, rect)| content.contains('\u{4E2D}').then_some(rect.y))
             .expect("preedit fragment");
+        let def_y = fragments
+            .iter()
+            .find_map(|(content, rect)| content.contains("def").then_some(rect.y))
+            .expect("def fragment");
+        // The CJK preedit run has a taller ascent than the latin "abc"
+        // run, so sharing a baseline legitimately separates the two
+        // fragment tops by a few pixels. Assert line membership against
+        // the next line's midpoint instead of per-font fragment tops.
+        let line_midpoint = (abc_y + def_y) * 0.5;
         assert!(
-            (preedit_y - abc_y).abs() <= 1.5,
+            preedit_y < line_midpoint,
             "hard-newline tail preedit should stay before newline when space allows: fragments={fragments:?}"
         );
         let (_, caret_y, _) = caret_position(&arena, root);
         assert!(
-            (caret_y - abc_y).abs() <= 1.5,
+            caret_y < line_midpoint,
             "preedit caret should stay with glyph before newline: caret_y={caret_y}, fragments={fragments:?}"
         );
         let rects = arena

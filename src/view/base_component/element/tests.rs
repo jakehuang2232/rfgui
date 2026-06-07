@@ -12330,9 +12330,14 @@ mod tests {
         parent.apply_style(parent_style);
         let parent_key = commit_element(&mut arena, Box::new(parent));
 
-        let mut leading = Element::new(0.0, 0.0, 180.0, 20.0);
+        // Leading width keeps the remaining first-line slot wide enough
+        // for the text's first word: since the inline IFC rollout the
+        // wrapper reports its natural (full-width-wrapped) first line, so
+        // a slot too small for the first word wraps the whole wrapper to
+        // the next line instead of clipping a sliver onto the current one.
+        let mut leading = Element::new(0.0, 0.0, 60.0, 20.0);
         let mut leading_style = Style::new();
-        leading_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(180.0)));
+        leading_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(60.0)));
         leading_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
         leading.apply_style(leading_style);
         commit_child(&mut arena, parent_key, Box::new(leading));
@@ -12391,7 +12396,7 @@ mod tests {
             first_fragment.1.y >= 0.0 && first_fragment.1.y < 8.0,
             "fragments={fragments:?}"
         );
-        assert!(first_fragment.1.x >= 188.0, "fragments={fragments:?}");
+        assert!(first_fragment.1.x >= 68.0, "fragments={fragments:?}");
     }
 
     #[test]
@@ -12877,10 +12882,14 @@ mod tests {
             .with_element_taken(wrapper_key, |el, a| el.get_inline_nodes_size(a))
             .expect("wide inline nodes");
 
+        // The narrow first line must still fit the text's first word:
+        // when it does not, the inner wrap legitimately falls back to the
+        // full-width layout (the outer solver breaks before the element
+        // instead), which would make both measurements identical.
         arena.with_element_taken(wrapper_key, |el, a| {
             el.measure_inline(
                 super::InlineMeasureContext {
-                    first_available_width: 40.0,
+                    first_available_width: 120.0,
                     full_available_width: 200.0,
                     available_height: 1_000_000.0,
                     viewport_width: 200.0,
