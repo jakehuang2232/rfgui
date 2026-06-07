@@ -489,6 +489,7 @@ impl TextArea {
             },
             arena,
         );
+        self.apply_unified_inline_ifc_projection_placements(arena, placement);
     }
 }
 

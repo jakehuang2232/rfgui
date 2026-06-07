@@ -14,6 +14,7 @@ mod edit;
 mod events;
 mod hit_test;
 mod ime_context;
+mod inline_ifc;
 mod layout;
 mod projection;
 mod reconcile;

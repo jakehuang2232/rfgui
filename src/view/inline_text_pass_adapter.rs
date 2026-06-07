@@ -260,6 +260,29 @@ pub(crate) fn inline_prepared_input_to_text_pass_staging_input(
     }
 }
 
+pub(crate) fn inline_ifc_paint_input_to_text_pass_staging_input(
+    input: &InlineIfcTextPassPaintInput,
+    origin: [f32; 2],
+    opacity: f32,
+    fragment_index: u32,
+    scale_factor: f32,
+) -> TextPassPreparedStagingInput {
+    let bridge = InlineTextPassBridgeInput::from_ifc_paint_input(input, opacity, fragment_index);
+    let package = InlineTextPassBridgePackage::from_bridge_input(bridge);
+    let mut prepared_input = build_inline_text_pass_prepared_input(
+        &TextReadOnlyIfcBridgeInput::new("", InlineIfcStyle::default(), opacity, fragment_index),
+        &package,
+        scale_factor,
+    );
+    for glyph in &mut prepared_input.glyphs {
+        glyph.final_paint_pos = [
+            origin[0] + glyph.paint.local_pos[0],
+            origin[1] + glyph.paint.local_pos[1],
+        ];
+    }
+    inline_prepared_input_to_text_pass_staging_input(&prepared_input)
+}
+
 #[cfg(test)]
 pub(crate) fn build_inline_text_pass_bridge_package_for_test(
     input: &InlineIfcTextPassPaintInput,

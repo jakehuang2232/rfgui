@@ -76,10 +76,11 @@ pub(super) struct CaretNavigationMap {
 
 impl CaretNavigationMap {
     /// Build the map from the TextArea's current children. Walks `children`
-    /// in order; each `TextAreaTextRun` contributes its `caret_stops()`
-    /// translated to screen coords. Visual lines that share a vertical band
-    /// (within half a line height) are merged so a sentence split across
-    /// runs still navigates as one row.
+    /// in order; each `TextAreaTextRun` contributes its public
+    /// IFC-backed `caret_stops()` translated to screen coords. The map
+    /// intentionally does not inspect a run's legacy layout internals.
+    /// Visual lines that share a vertical band (within half a line height)
+    /// are merged so a sentence split across runs still navigates as one row.
     pub(super) fn build(text_area: &TextArea, arena: &NodeArena) -> Self {
         let mut raw_lines: Vec<CaretVisualLine> = Vec::new();
         for (idx, &child_key) in text_area.children.iter().enumerate() {
@@ -545,6 +546,74 @@ mod tests {
             "Down should land on a visually lower line; line0_y={line0_y}, target_y={}",
             target_stop.y_top,
         );
+    }
+
+    #[test]
+    fn build_translates_ifc_backed_run_caret_stops_for_wrapped_navigation() {
+        let (text_area_ptr, arena) =
+            build_wrapped_textarea("the quick brown fox jumps over the lazy dog", 80.0);
+        let text_area: &TextArea = unsafe { &*text_area_ptr };
+        let map = CaretNavigationMap::build(text_area, &arena);
+        let run_key = text_area.children.first().copied().expect("run child");
+        let expected_lines = arena
+            .with_element_taken_ref(run_key, |el, _| {
+                let run = el.as_any().downcast_ref::<TextAreaTextRun>()?;
+                let origin_x = run.layout_state.layout_position.x;
+                let origin_y = run.layout_state.layout_position.y;
+                Some(
+                    run.caret_stops()
+                        .into_iter()
+                        .map(|line| {
+                            let stops = line
+                                .stops
+                                .into_iter()
+                                .map(|stop| {
+                                    (
+                                        run.char_range.start + stop.local_char,
+                                        origin_x + stop.local_x,
+                                        origin_y + stop.local_y_top,
+                                        stop.height,
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            (
+                                origin_y + line.local_y_top,
+                                origin_y + line.local_y_bottom,
+                                stops,
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .flatten()
+            .expect("run caret stops");
+
+        assert!(
+            expected_lines.len() >= 2,
+            "fixture should exercise wrapped IFC-backed caret stops"
+        );
+        assert_eq!(map.lines.len(), expected_lines.len());
+        for (actual, (expected_y_top, expected_y_bottom, expected_stops)) in
+            map.lines.iter().zip(expected_lines.iter())
+        {
+            assert_eq!(
+                (actual.y_top, actual.y_bottom),
+                (*expected_y_top, *expected_y_bottom)
+            );
+            assert_eq!(actual.stops.len(), expected_stops.len());
+            for (actual_stop, expected_stop) in actual.stops.iter().zip(expected_stops.iter()) {
+                assert_eq!(
+                    (
+                        actual_stop.char_index,
+                        actual_stop.x,
+                        actual_stop.y_top,
+                        actual_stop.height,
+                    ),
+                    *expected_stop,
+                    "CaretNavigationMap should build from TextAreaTextRun::caret_stops() output"
+                );
+            }
+        }
     }
 
     #[test]

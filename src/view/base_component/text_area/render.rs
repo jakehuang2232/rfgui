@@ -22,6 +22,9 @@ use crate::view::render_pass::DrawRectPass;
 use crate::view::render_pass::draw_rect_pass::{
     DrawRectInput, DrawRectOutput, RectPassParams, RenderTargetIn,
 };
+use crate::view::render_pass::text_pass::{
+    TextInput, TextOutput, TextPassPreparedFragment, TextPassPreparedParams, TextPreparedInputPass,
+};
 
 use super::TextArea;
 use super::run::{TextAreaLineBreak, TextAreaTextRun};
@@ -398,6 +401,20 @@ impl TextArea {
         let Some((sel_start, sel_end)) = self.selection_range_chars() else {
             return Vec::new();
         };
+        if let Some(package) = self.unified_inline_ifc_render_package(arena) {
+            let origin_x = self.layout_state.layout_position.x - self.scroll_x;
+            let origin_y = self.layout_state.layout_position.y - self.scroll_y;
+            return package
+                .selection_rects_for_char_range(sel_start..sel_end)
+                .into_iter()
+                .map(|rect| Rect {
+                    x: origin_x + rect.x,
+                    y: origin_y + rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                })
+                .collect();
+        }
         let mut out = Vec::new();
         for (idx, &child_key) in self.children.iter().enumerate() {
             let Some(child_range) = self.child_char_ranges.get(idx).cloned() else {
@@ -435,7 +452,7 @@ impl TextArea {
         out
     }
 
-    fn projection_selection_context_for_child(
+    pub(super) fn projection_selection_context_for_child(
         &self,
         idx: usize,
         child_key: NodeKey,
@@ -538,6 +555,44 @@ impl Renderable for TextArea {
             ctx.set_current_target(target);
         }
 
+        let unified_render_package = self.unified_inline_ifc_render_package(arena);
+        if let (Some(package), Some(target)) = (&unified_render_package, ctx.current_target()) {
+            let [origin_x, origin_y] = ctx.paint_point(
+                self.layout_state.layout_position.x - self.scroll_x,
+                self.layout_state.layout_position.y - self.scroll_y,
+            );
+            let staging_input = package.text_pass_staging_input([origin_x, origin_y], 1.0, 0, 1.0);
+            if !staging_input.glyphs.is_empty() {
+                let content_rect = package.content_rect();
+                let size = content_rect
+                    .map(|rect| [rect.width.max(1.0), rect.height.max(1.0)])
+                    .unwrap_or([
+                        self.layout_state.layout_size.width.max(1.0),
+                        self.layout_state.layout_size.height.max(1.0),
+                    ]);
+                let pass = TextPreparedInputPass::new(
+                    TextPassPreparedParams {
+                        staging_input,
+                        fragments: vec![TextPassPreparedFragment {
+                            origin: [origin_x, origin_y],
+                            size,
+                        }],
+                        scissor_rect: None,
+                        stencil_clip_id: None,
+                    },
+                    TextInput {
+                        pass_context: ctx.graphics_pass_context(),
+                    },
+                    TextOutput {
+                        render_target: target,
+                        ..Default::default()
+                    },
+                );
+                graph.add_graphics_pass(pass);
+                ctx.set_current_target(target);
+            }
+        }
+
         // Layer 1 — walk arena children (Run / projection self-render).
         //
         // TextArea is promotion-aware (Phase 2): a child that ends up in
@@ -547,6 +602,15 @@ impl Renderable for TextArea {
         // Non-promoted children render inline directly.
         let child_keys: Vec<NodeKey> = self.children.clone();
         for (idx, child_key) in child_keys.into_iter().enumerate() {
+            if unified_render_package.is_some()
+                && arena
+                    .with_element_taken_ref(child_key, |el, _| {
+                        el.as_any().is::<TextAreaTextRun>() || el.as_any().is::<TextAreaLineBreak>()
+                    })
+                    .unwrap_or(false)
+            {
+                continue;
+            }
             let selection_context =
                 self.projection_selection_context_for_child(idx, child_key, arena);
             let child_promoted = arena
@@ -1022,6 +1086,34 @@ mod tests {
             ctx.graphics_pass_context().scissor_rect,
             None,
             "TextArea viewport scissor must not leak to sibling roots",
+        );
+    }
+
+    #[test]
+    fn text_area_inline_ifc_projection_unified_render_skips_per_run_text_passes() {
+        let (mut arena, root) = projection_fixture(3, false);
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(320, 200, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        arena
+            .with_element_taken(root, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("TextArea build returns state");
+
+        let pass_names = graph
+            .pass_descriptors()
+            .into_iter()
+            .map(|desc| desc.name.to_string())
+            .collect::<Vec<_>>();
+        let prepared_text_pass_count = pass_names
+            .iter()
+            .filter(|name| name.ends_with("render_pass::text_pass::TextPreparedInputPass"))
+            .count();
+        assert_eq!(
+            prepared_text_pass_count, 1,
+            "projection TextArea should render plain glyphs once from the TextArea-level unified IFC package, got {pass_names:?}"
         );
     }
 

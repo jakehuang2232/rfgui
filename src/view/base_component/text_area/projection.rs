@@ -1166,7 +1166,8 @@ mod tests {
     use crate::style::Length;
     use crate::ui::{RsxKey, RsxNode, RsxTagDescriptor};
     use crate::view::ElementStylePropSchema;
-    use crate::view::base_component::text_area::TextAreaProjectionSegment;
+    use crate::view::base_component::text_area::inline_ifc::TextAreaUnifiedIfcSourceKind;
+    use crate::view::base_component::text_area::{TextAreaProjectionSegment, TextAreaTextRun};
     use crate::view::base_component::{
         DirtyFlags, ElementTrait, LayoutConstraints, LayoutPlacement, Text, TextArea,
     };
@@ -1371,6 +1372,878 @@ mod tests {
     }
 
     #[test]
+    fn text_area_inline_ifc_projection_fixed_width_wrap_keeps_per_run_payload_diagnostic() {
+        let content = concat!(
+            "Fetch a long environment URL from {{API_HOST}} while the line wraps automatically\n",
+            "/v1/users/{{USER_ID}}/profiles/preferences/activity/export/sessions"
+        );
+        let api_host = char_range_of(content, "{{API_HOST}}");
+        let user_id = char_range_of(content, "{{USER_ID}}");
+
+        let mut text_area = TextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.multiline = true;
+        text_area.auto_wrap = true;
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+            render.range(api_host.clone(), |_text_area_node| {
+                projection_chip_node("API_HOST", 88.0)
+            });
+            render.range(user_id.clone(), |_text_area_node| {
+                projection_chip_node("USER_ID", 72.0)
+            });
+        }));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 168.0,
+                max_height: 360.0,
+                viewport_width: 168.0,
+                viewport_height: 360.0,
+                percent_base_width: Some(168.0),
+                percent_base_height: Some(360.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 168.0,
+                available_height: 360.0,
+                viewport_width: 168.0,
+                viewport_height: 360.0,
+                percent_base_width: Some(168.0),
+                percent_base_height: Some(360.0),
+            },
+        );
+
+        let children = arena.children_of(root);
+        let run_payloads = children
+            .iter()
+            .enumerate()
+            .filter_map(|(child_index, key)| {
+                arena
+                    .with_element_taken_ref(*key, |child, _| {
+                        child.as_any().downcast_ref::<TextAreaTextRun>().map(|run| {
+                            let payload = run
+                                .inline_ifc_staging_payload([0.0, 0.0], child_index as u32, 1.0)
+                                .expect(
+                                    "laid-out TextAreaTextRun should expose IFC staging payload",
+                                );
+                            (run.text.clone(), run.char_range.clone(), payload)
+                        })
+                    })
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        let projection_count = children
+            .iter()
+            .filter(|key| {
+                arena
+                    .with_element_taken_ref(**key, |child, _| {
+                        child.as_any().is::<TextAreaProjectionSegment>()
+                    })
+                    .unwrap_or(false)
+            })
+            .count();
+
+        assert_eq!(projection_count, 2, "expected two atomic projection slots");
+        assert_eq!(
+            run_payloads.len(),
+            4,
+            "projection slicing should leave four plain TextAreaTextRun segments"
+        );
+
+        let run_texts = run_payloads
+            .iter()
+            .map(|(text, _, _)| text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            run_texts,
+            vec![
+                "Fetch a long environment URL from ",
+                " while the line wraps automatically",
+                "/v1/users/",
+                "/profiles/preferences/activity/export/sessions",
+            ],
+            "projection tokens should be removed from plain run payloads",
+        );
+
+        for (run_text, char_range, payload) in &run_payloads {
+            assert_eq!(
+                payload.bridge_input.content, *run_text,
+                "TextArea run IFC payload is still sourced from the individual run"
+            );
+            assert_eq!(payload.char_range, *char_range);
+            assert_eq!(
+                payload.readiness.projection_diagnostic.char_range,
+                *char_range
+            );
+            assert_eq!(
+                payload
+                    .readiness
+                    .projection_diagnostic
+                    .projection_segment_count,
+                0,
+                "per-run payload does not carry TextArea-level projection atomic boxes"
+            );
+            assert!(
+                payload.bridge_input.width_constraint == Some(168.0),
+                "legacy per-run diagnostic payload should still only know its run width constraint",
+            );
+            assert!(payload.bridge_input.allow_wrap);
+        }
+
+        let payload_contents = run_payloads
+            .iter()
+            .map(|(_, _, payload)| payload.bridge_input.content.as_str())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            !payload_contents.contains("API_HOST") && !payload_contents.contains("USER_ID"),
+            "legacy per-run diagnostic payloads do not carry projection atomic boxes"
+        );
+        assert_ne!(
+            payload_contents, content,
+            "the diagnostic only proves old run payloads still exist; it does not describe the visible unified render/layout path"
+        );
+    }
+
+    #[test]
+    fn text_area_inline_ifc_projection_fixed_width_wrap_builds_unified_root_source() {
+        let content = concat!(
+            "Fetch a long environment URL from {{API_HOST}} while the line wraps automatically\n",
+            "/v1/users/{{USER_ID}}/profiles/preferences/activity/export/sessions"
+        );
+        let api_host = char_range_of(content, "{{API_HOST}}");
+        let user_id = char_range_of(content, "{{USER_ID}}");
+
+        let mut text_area = TextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.multiline = true;
+        text_area.auto_wrap = true;
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+            render.range(api_host.clone(), |_text_area_node| {
+                projection_chip_node("API_HOST", 88.0)
+            });
+            render.range(user_id.clone(), |_text_area_node| {
+                projection_chip_node("USER_ID", 72.0)
+            });
+        }));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 168.0,
+                max_height: 360.0,
+                viewport_width: 168.0,
+                viewport_height: 360.0,
+                percent_base_width: Some(168.0),
+                percent_base_height: Some(360.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 168.0,
+                available_height: 360.0,
+                viewport_width: 168.0,
+                viewport_height: 360.0,
+                percent_base_width: Some(168.0),
+                percent_base_height: Some(360.0),
+            },
+        );
+
+        let package = arena
+            .with_element_taken_ref(root, |el, _| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .unified_inline_ifc_root_package(&arena)
+            })
+            .flatten()
+            .expect("TextArea should expose a unified IFC root package");
+
+        assert_eq!(package.width_constraint, Some(168.0));
+        assert!(package.allow_wrap);
+        assert_eq!(package.text_run_count(), 4);
+        assert_eq!(package.projection_segment_count(), 2);
+        assert_eq!(
+            package.input.items.len(),
+            package.source_segments.len(),
+            "each TextArea child source should map to one IFC root item"
+        );
+
+        let source_kinds = package
+            .source_segments
+            .iter()
+            .map(|segment| segment.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            source_kinds,
+            vec![
+                TextAreaUnifiedIfcSourceKind::TextRun,
+                TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox,
+                TextAreaUnifiedIfcSourceKind::TextRun,
+                TextAreaUnifiedIfcSourceKind::LineBreak,
+                TextAreaUnifiedIfcSourceKind::TextRun,
+                TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox,
+                TextAreaUnifiedIfcSourceKind::TextRun,
+            ],
+            "unified root source should preserve TextArea text/projection/newline sequence"
+        );
+
+        let projection_ranges = package
+            .source_segments
+            .iter()
+            .filter(|segment| segment.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox)
+            .map(|segment| segment.char_range.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            projection_ranges,
+            vec![
+                char_range_of(content, "{{API_HOST}}"),
+                char_range_of(content, "{{USER_ID}}"),
+            ],
+            "projection atomic boxes must keep original TextArea char/source ranges"
+        );
+
+        assert_eq!(
+            package.ifc.backing_text(),
+            concat!(
+                "Fetch a long environment URL from  while the line wraps automatically\n",
+                "/v1/users//profiles/preferences/activity/export/sessions"
+            ),
+            "projection tokens should be represented by atomic boxes, not glyph text"
+        );
+        assert_eq!(package.atomic_sources.len(), 2);
+        for source in &package.atomic_sources {
+            let atomic_package = package.ifc.atomic_box_placement_package(*source);
+            assert_eq!(atomic_package.source, *source);
+            assert_eq!(
+                atomic_package.placements.len(),
+                1,
+                "each TextArea projection source should produce one atomic placement"
+            );
+            let placement = &atomic_package.placements[0];
+            assert_eq!(placement.source, *source);
+            assert!(
+                placement.measurement.measured_size.width > 0.0
+                    && placement.measurement.measured_size.height > 0.0,
+                "projection atomic measurement should come from the laid-out projection segment"
+            );
+        }
+    }
+
+    #[test]
+    fn text_area_inline_ifc_projection_fixed_width_wrap_applies_unified_atomic_placement() {
+        let content = concat!(
+            "Fetch a long environment URL from {{API_HOST}} while the line wraps automatically\n",
+            "/v1/users/{{USER_ID}}/profiles/preferences/activity/export/sessions"
+        );
+        let api_host = char_range_of(content, "{{API_HOST}}");
+        let user_id = char_range_of(content, "{{USER_ID}}");
+
+        let mut text_area = TextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.multiline = true;
+        text_area.auto_wrap = true;
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+            render.range(api_host.clone(), |_text_area_node| {
+                projection_chip_node("API_HOST", 88.0)
+            });
+            render.range(user_id.clone(), |_text_area_node| {
+                projection_chip_node("USER_ID", 72.0)
+            });
+        }));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 168.0,
+                max_height: 360.0,
+                viewport_width: 168.0,
+                viewport_height: 360.0,
+                percent_base_width: Some(168.0),
+                percent_base_height: Some(360.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 168.0,
+                available_height: 360.0,
+                viewport_width: 168.0,
+                viewport_height: 360.0,
+                percent_base_width: Some(168.0),
+                percent_base_height: Some(360.0),
+            },
+        );
+
+        let package = arena
+            .with_element_taken_ref(root, |el, _| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .unified_inline_ifc_root_package(&arena)
+            })
+            .flatten()
+            .expect("TextArea should expose a unified IFC root package");
+
+        let projection_segments = package
+            .source_segments
+            .iter()
+            .filter(|segment| segment.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(projection_segments.len(), 2);
+
+        for segment in projection_segments {
+            let atomic_package = package
+                .atomic_package_for_child(segment.child_key)
+                .expect("projection child should have an atomic package");
+            let placement = atomic_package
+                .placements
+                .first()
+                .expect("projection child should have an atomic placement");
+            let snapshot = arena
+                .with_element_taken_ref(segment.child_key, |child, _| child.box_model_snapshot())
+                .expect("projection child snapshot");
+            assert!(
+                (snapshot.x - placement.rect.x).abs() < 0.01,
+                "projection x should be applied from unified atomic placement: snapshot={}, placement={}",
+                snapshot.x,
+                placement.rect.x
+            );
+            assert!(
+                (snapshot.y - placement.rect.y).abs() < 0.01,
+                "projection y should be applied from unified atomic placement: snapshot={}, placement={}",
+                snapshot.y,
+                placement.rect.y
+            );
+            assert!(
+                (snapshot.width - placement.rect.width).abs() < 0.01,
+                "projection width should remain aligned with unified atomic measurement"
+            );
+            assert!(
+                (snapshot.height - placement.rect.height).abs() < 0.01,
+                "projection height should remain aligned with unified atomic measurement"
+            );
+        }
+    }
+
+    #[test]
+    fn text_area_inline_ifc_projection_overlay_sources_match_unified_atomic_placement() {
+        let content = concat!(
+            "Fetch a long environment URL from {{API_HOST}} while the line wraps automatically\n",
+            "/v1/users/{{USER_ID}}/profiles/preferences/activity/export/sessions"
+        );
+        let api_host = char_range_of(content, "{{API_HOST}}");
+        let user_id = char_range_of(content, "{{USER_ID}}");
+
+        let mut text_area = TextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.multiline = true;
+        text_area.auto_wrap = true;
+        text_area.cursor_char = api_host.start + 2;
+        text_area.selection_anchor_char = Some(api_host.start + 1);
+        text_area.selection_focus_char = Some(api_host.start + 2);
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+            render.range(api_host.clone(), |_text_area_node| {
+                projection_chip_node("API_HOST", 88.0)
+            });
+            render.range(user_id.clone(), |_text_area_node| {
+                projection_chip_node("USER_ID", 72.0)
+            });
+        }));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 168.0,
+                max_height: 360.0,
+                viewport_width: 168.0,
+                viewport_height: 360.0,
+                percent_base_width: Some(168.0),
+                percent_base_height: Some(360.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 168.0,
+                available_height: 360.0,
+                viewport_width: 168.0,
+                viewport_height: 360.0,
+                percent_base_width: Some(168.0),
+                percent_base_height: Some(360.0),
+            },
+        );
+
+        let package = arena
+            .with_element_taken_ref(root, |el, _| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .unified_inline_ifc_root_package(&arena)
+            })
+            .flatten()
+            .expect("TextArea should expose a unified IFC root package");
+        let overlay_sources = package.projection_overlay_sources();
+        assert_eq!(overlay_sources.len(), 2);
+
+        let children = arena.children_of(root);
+        let projection_child_index = children
+            .iter()
+            .position(|key| {
+                arena
+                    .with_element_taken_ref(*key, |child, _| {
+                        child.as_any().is::<TextAreaProjectionSegment>()
+                    })
+                    .unwrap_or(false)
+            })
+            .expect("first projection child");
+        let projection_key = children[projection_child_index];
+        let overlay_source = package
+            .projection_overlay_source_for_child(projection_key)
+            .expect("projection overlay source should come from unified IFC root");
+        assert_eq!(
+            overlay_source.char_range,
+            char_range_of(content, "{{API_HOST}}")
+        );
+        assert_eq!(
+            overlay_source.backing_byte_range.start,
+            overlay_source.backing_byte_range.end
+        );
+
+        let selection_context = arena
+            .with_element_taken_ref(root, |el, arena| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .projection_selection_context_for_child(
+                        projection_child_index,
+                        projection_key,
+                        arena,
+                    )
+            })
+            .expect("root exists")
+            .expect("projection selection context should remain available");
+        assert_eq!(selection_context.start, 1);
+        assert_eq!(selection_context.end, 2);
+        assert_eq!(
+            overlay_source.char_range.start + selection_context.start
+                ..overlay_source.char_range.start + selection_context.end,
+            char_range_of(content, "{{API_HOST}}").start + 1
+                ..char_range_of(content, "{{API_HOST}}").start + 2,
+            "projection selection overlay should map through the same TextArea source range as unified IFC"
+        );
+
+        let snapshot = arena
+            .with_element_taken_ref(projection_key, |child, _| child.box_model_snapshot())
+            .expect("projection child snapshot");
+        assert!(
+            (snapshot.x - overlay_source.atomic_rect.x).abs() < 0.01
+                && (snapshot.y - overlay_source.atomic_rect.y).abs() < 0.01
+                && (snapshot.width - overlay_source.atomic_rect.width).abs() < 0.01
+                && (snapshot.height - overlay_source.atomic_rect.height).abs() < 0.01,
+            "projection overlay source should use the same atomic rect applied to the visible projection placement"
+        );
+    }
+
+    #[test]
+    fn text_area_inline_ifc_projection_atomic_placement_honors_vertical_align() {
+        fn projection_y_for(vertical_align: crate::style::VerticalAlign) -> (f32, f32) {
+            let content = "aaa{{BIG}}bbb";
+            let projection_range = char_range_of(content, "{{BIG}}");
+            let mut text_area = TextArea::new();
+            text_area.content = content.to_string();
+            text_area.font_size = 14.0;
+            text_area.line_height = 1.25;
+            text_area.vertical_align = vertical_align;
+            text_area.auto_wrap = true;
+            text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+                render.range(projection_range.clone(), |_text_area_node| {
+                    projection_chip_node("BIG", 88.0)
+                });
+            }));
+
+            let mut arena = crate::view::test_support::new_test_arena();
+            let root = crate::view::test_support::commit_element(
+                &mut arena,
+                Box::new(text_area) as Box<dyn ElementTrait>,
+            );
+            arena.with_element_taken(root, |el, _| {
+                el.as_any_mut()
+                    .downcast_mut::<TextArea>()
+                    .expect("TextArea root")
+                    .set_self_node_key(root);
+            });
+            crate::view::test_support::measure_and_place(
+                &mut arena,
+                root,
+                LayoutConstraints {
+                    max_width: 240.0,
+                    max_height: 120.0,
+                    viewport_width: 240.0,
+                    viewport_height: 120.0,
+                    percent_base_width: Some(240.0),
+                    percent_base_height: Some(120.0),
+                },
+                LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: 240.0,
+                    available_height: 120.0,
+                    viewport_width: 240.0,
+                    viewport_height: 120.0,
+                    percent_base_width: Some(240.0),
+                    percent_base_height: Some(120.0),
+                },
+            );
+
+            let package = arena
+                .with_element_taken_ref(root, |el, _| {
+                    el.as_any()
+                        .downcast_ref::<TextArea>()
+                        .expect("TextArea root")
+                        .unified_inline_ifc_root_package(&arena)
+                })
+                .flatten()
+                .expect("TextArea should expose a unified IFC root package");
+            let projection_child = package
+                .source_segments
+                .iter()
+                .find(|segment| segment.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox)
+                .expect("projection source")
+                .child_key;
+            let placement_y = package
+                .atomic_package_for_child(projection_child)
+                .expect("projection atomic package")
+                .placements
+                .first()
+                .expect("projection atomic placement")
+                .rect
+                .y;
+            let snapshot_y = arena
+                .with_element_taken_ref(projection_child, |child, _| child.box_model_snapshot().y)
+                .expect("projection snapshot");
+            let glyph_y = package
+                .text_pass_staging_input([0.0, 0.0], 1.0, 0, 1.0)
+                .glyphs
+                .first()
+                .expect("plain glyph")
+                .final_paint_pos[1];
+            assert!(
+                (placement_y - snapshot_y).abs() < 0.01,
+                "visible projection placement should stay sourced from unified atomic placement"
+            );
+            (placement_y, glyph_y)
+        }
+
+        let (top_projection_y, top_glyph_y) = projection_y_for(crate::style::VerticalAlign::Top);
+        let (bottom_projection_y, bottom_glyph_y) =
+            projection_y_for(crate::style::VerticalAlign::Bottom);
+
+        assert!(
+            (bottom_projection_y - top_projection_y).abs() < 0.01,
+            "the tallest projection box can stay pinned while shorter glyphs move, top={top_projection_y}, bottom={bottom_projection_y}",
+        );
+        assert!(
+            bottom_glyph_y > top_glyph_y + 1.0,
+            "TextArea unified glyph render must move when vertical_align changes, top={top_glyph_y}, bottom={bottom_glyph_y}",
+        );
+    }
+
+    #[test]
+    fn text_area_inline_ifc_auto_width_projection_keeps_following_text_after_atomic_box() {
+        let content = concat!(
+            "First line with a long value that can wrap when auto wrap is enabled.",
+            "{{API_HOST}}/v1/users/{{USER_ID}}/activity/with/a/very/long/path\n",
+            "Tail line"
+        );
+        let api_host = char_range_of(content, "{{API_HOST}}");
+        let user_id = char_range_of(content, "{{USER_ID}}");
+
+        let mut text_area = TextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.multiline = true;
+        text_area.auto_wrap = true;
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+            render.range(api_host.clone(), |_text_area_node| {
+                auto_projection_chip_node("{{API_HOST}}")
+            });
+            render.range(user_id.clone(), |_text_area_node| {
+                auto_projection_chip_node("{{USER_ID}}")
+            });
+        }));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 360.0,
+                max_height: 176.0,
+                viewport_width: 360.0,
+                viewport_height: 176.0,
+                percent_base_width: Some(360.0),
+                percent_base_height: Some(176.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 360.0,
+                available_height: 176.0,
+                viewport_width: 360.0,
+                viewport_height: 176.0,
+                percent_base_width: Some(360.0),
+                percent_base_height: Some(176.0),
+            },
+        );
+
+        let package = arena
+            .with_element_taken_ref(root, |el, _| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .unified_inline_ifc_root_package(&arena)
+            })
+            .flatten()
+            .expect("TextArea should expose a unified IFC root package");
+        let user_segment = package
+            .source_segments
+            .iter()
+            .find(|segment| {
+                segment.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox
+                    && segment.char_range == char_range_of(content, "{{USER_ID}}")
+            })
+            .expect("USER_ID projection segment");
+        let following_run = package
+            .source_segments
+            .iter()
+            .find(|segment| {
+                segment.kind == TextAreaUnifiedIfcSourceKind::TextRun
+                    && segment.char_range.start == char_range_of(content, "{{USER_ID}}").end
+            })
+            .expect("text run after USER_ID");
+        let atomic = package
+            .atomic_package_for_child(user_segment.child_key)
+            .expect("USER_ID atomic package")
+            .placements
+            .first()
+            .expect("USER_ID atomic placement")
+            .clone();
+        let snapshot = package.ifc.text_layout_snapshot();
+        let following_glyph = snapshot
+            .lines
+            .iter()
+            .flat_map(|line| &line.glyphs)
+            .find(|glyph| glyph.source == following_run.source)
+            .expect("first glyph after USER_ID");
+
+        if following_glyph.y >= atomic.rect.y
+            && following_glyph.y < atomic.rect.y + atomic.rect.height.max(1.0)
+        {
+            assert!(
+                following_glyph.x >= atomic.rect.x + atomic.rect.width - 0.5,
+                "text after USER_ID must not be painted under the projection chip: glyph_x={}, atomic=({}, {}, {}, {})",
+                following_glyph.x,
+                atomic.rect.x,
+                atomic.rect.y,
+                atomic.rect.width,
+                atomic.rect.height,
+            );
+        }
+    }
+
+    #[test]
+    fn text_area_inline_ifc_selection_rects_follow_unified_text_render() {
+        let content = concat!(
+            "First line with a long value that can wrap when auto wrap is enabled.",
+            "{{API_HOST}}/v1/users/{{USER_ID}}/activity/with/a/very/long/path\n",
+            "Tail line"
+        );
+        let api_host = char_range_of(content, "{{API_HOST}}");
+        let user_id = char_range_of(content, "{{USER_ID}}");
+
+        let mut text_area = TextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.multiline = true;
+        text_area.auto_wrap = true;
+        text_area.vertical_align = crate::style::VerticalAlign::Bottom;
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+            render.range(api_host.clone(), |_text_area_node| {
+                auto_projection_chip_node("{{API_HOST}}")
+            });
+            render.range(user_id.clone(), |_text_area_node| {
+                auto_projection_chip_node("{{USER_ID}}")
+            });
+        }));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 360.0,
+                max_height: 176.0,
+                viewport_width: 360.0,
+                viewport_height: 176.0,
+                percent_base_width: Some(360.0),
+                percent_base_height: Some(176.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 360.0,
+                available_height: 176.0,
+                viewport_width: 360.0,
+                viewport_height: 176.0,
+                percent_base_width: Some(360.0),
+                percent_base_height: Some(176.0),
+            },
+        );
+
+        let package = arena
+            .with_element_taken_ref(root, |el, _| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .unified_inline_ifc_root_package(&arena)
+            })
+            .flatten()
+            .expect("TextArea should expose a unified IFC root package");
+        let first_run = package
+            .source_segments
+            .iter()
+            .find(|segment| segment.kind == TextAreaUnifiedIfcSourceKind::TextRun)
+            .expect("first text source");
+        let selected_range = first_run.char_range.start..first_run.char_range.start + 10;
+        let selection_rect = package
+            .selection_rects_for_char_range(selected_range)
+            .into_iter()
+            .next()
+            .expect("unified selection rect");
+        let first_glyph = package
+            .text_pass_staging_input([0.0, 0.0], 1.0, 0, 1.0)
+            .glyphs
+            .into_iter()
+            .find(|glyph| glyph.final_paint_pos[0] >= selection_rect.x - 0.5)
+            .expect("selected staged glyph");
+
+        assert!(
+            first_glyph.final_paint_pos[0] >= selection_rect.x - 0.5
+                && first_glyph.final_paint_pos[0] <= selection_rect.x + selection_rect.width + 0.5,
+            "selection rect must track unified glyph render x, selection=({}, {}, {}, {}), glyph_x={}",
+            selection_rect.x,
+            selection_rect.y,
+            selection_rect.width,
+            selection_rect.height,
+            first_glyph.final_paint_pos[0],
+        );
+        assert!(
+            first_glyph.final_paint_pos[1] >= selection_rect.y - 0.5
+                && first_glyph.final_paint_pos[1] <= selection_rect.y + selection_rect.height + 0.5,
+            "selection rect must track unified glyph render y, selection=({}, {}, {}, {}), glyph_y={}",
+            selection_rect.x,
+            selection_rect.y,
+            selection_rect.width,
+            selection_rect.height,
+            first_glyph.final_paint_pos[1],
+        );
+    }
+
+    #[test]
     fn preedit_inserts_transient_run_on_middle_empty_paragraph() {
         let (arena, root) = plain_textarea_with_preedit("a\n\nb", 2, "\u{4E2D}");
 
@@ -1441,6 +2314,60 @@ mod tests {
         });
         relayout(&mut arena, root);
         (arena, root)
+    }
+
+    fn char_range_of(content: &str, needle: &str) -> std::ops::Range<usize> {
+        let start_byte = content.find(needle).expect("needle exists");
+        let end_byte = start_byte + needle.len();
+        content[..start_byte].chars().count()..content[..end_byte].chars().count()
+    }
+
+    fn projection_chip_node(label: &str, width: f32) -> RsxNode {
+        RsxNode::tagged(
+            "Element",
+            RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+        )
+        .with_prop(
+            "style",
+            ElementStylePropSchema {
+                width: Some(Length::px(width)),
+                height: Some(Length::px(22.0)),
+                ..Default::default()
+            },
+        )
+        .with_child(
+            RsxNode::tagged(
+                "Text",
+                RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
+            )
+            .with_child(RsxNode::text(label)),
+        )
+    }
+
+    fn auto_projection_chip_node(label: &str) -> RsxNode {
+        RsxNode::tagged(
+            "Element",
+            RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+        )
+        .with_prop(
+            "style",
+            ElementStylePropSchema {
+                padding: Some(crate::style::Padding::uniform(Length::px(0.0)).x(Length::px(20.0))),
+                font_size: Some(crate::style::FontSize::Px(24.0)),
+                border: Some(crate::style::Border::uniform(
+                    Length::px(1.0),
+                    &crate::style::Color::hex("#42566f"),
+                )),
+                ..Default::default()
+            },
+        )
+        .with_child(
+            RsxNode::tagged(
+                "Text",
+                RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
+            )
+            .with_child(RsxNode::text(label)),
+        )
     }
 
     fn assert_run_text_range(

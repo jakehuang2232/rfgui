@@ -4252,8 +4252,8 @@ impl TextAreaTextRun {
             &prepared_input,
             &text_pass_staging_input,
         );
-        let caret_lines = self.caret_stops();
-        let caret_stop_snapshots = caret_lines
+        let seed_caret_lines = self.seed_caret_stops_for_ifc_snapshot();
+        let caret_stop_snapshots = seed_caret_lines
             .iter()
             .enumerate()
             .flat_map(|(visual_line_index, line)| {
@@ -4274,9 +4274,9 @@ impl TextAreaTextRun {
             })
             .collect();
         let caret_affinity_diagnostic = TextAreaTextRunInlineIfcCaretAffinityDiagnostic {
-            visual_line_count: caret_lines.len(),
-            caret_stop_count: caret_lines.iter().map(|line| line.stops.len()).sum(),
-            multi_stop_line_count: caret_lines
+            visual_line_count: seed_caret_lines.len(),
+            caret_stop_count: seed_caret_lines.iter().map(|line| line.stops.len()).sum(),
+            multi_stop_line_count: seed_caret_lines
                 .iter()
                 .filter(|line| line.stops.len() > 1)
                 .count(),
@@ -4361,39 +4361,28 @@ impl TextAreaTextRun {
         local_char: usize,
         affinity: super::caret_map::CaretAffinity,
     ) -> Option<(f32, f32, f32)> {
-        let effective = self.effective_text();
-        let target_byte = self.plain_local_char_to_effective_byte(local_char, &effective);
-        if let Some(layout) = self.text_layout.as_ref() {
-            let target_char = effective.get(..target_byte)?.chars().count();
-            let geom = layout.caret_geometry_for_char_with_affinity(
-                &effective,
-                target_char,
-                affinity == super::caret_map::CaretAffinity::Upstream,
-            );
-            let legacy_position = (geom.x, geom.y, geom.height);
-            let _ = self.caret_affinity_placement_read_only_observation(
-                local_char,
-                affinity,
-                legacy_position,
-            );
-            return Some(legacy_position);
+        if self.text_layout.is_some() {
+            return self.caret_affinity_placement_position_from_ifc(local_char, affinity);
         }
-        let legacy_position = self.empty_line_caret_position();
-        let _ = self.caret_affinity_placement_read_only_observation(
-            local_char,
-            affinity,
-            legacy_position,
-        );
-        Some(legacy_position)
+        Some(self.empty_line_caret_position())
     }
 
     #[allow(dead_code)]
-    pub(crate) fn caret_affinity_placement_read_only_observation(
+    pub(crate) fn caret_affinity_placement_position_from_ifc(
         &self,
         local_char: usize,
         affinity: super::caret_map::CaretAffinity,
-        legacy_position: (f32, f32, f32),
-    ) -> Option<((f32, f32, f32), (f32, f32, f32))> {
+    ) -> Option<(f32, f32, f32)> {
+        let adapter = self.caret_affinity_read_only_lookup_adapter_from_ifc()?;
+        let ifc_position = adapter
+            .placement_read_only_adapter()?
+            .local_char_to_run_local_position_with_affinity(0, local_char, affinity)?;
+        Some(ifc_position)
+    }
+
+    fn caret_affinity_read_only_lookup_adapter_from_ifc(
+        &self,
+    ) -> Option<TextAreaEditableIfcCaretAffinityReadOnlyLookupAdapter> {
         let payload = self.inline_ifc_staging_payload([0.0, 0.0], 0, 1.0)?;
         let bridge = TextAreaInlineIfcMetadataBridgeInput::from_evaluation_input(
             TextAreaInlineIfcEvaluationInput::from_staging_payloads(vec![payload]),
@@ -4439,14 +4428,11 @@ impl TextAreaTextRun {
             TextAreaEditableIfcCaretAffinityBehaviorInput::from_equivalence_audit(&audit);
         let evaluation =
             TextAreaEditableIfcCaretAffinityBehaviorEvaluation::evaluate(behavior_input);
-        let adapter =
+        Some(
             TextAreaEditableIfcCaretAffinityReadOnlyLookupAdapter::from_behavior_evaluation(
                 &evaluation,
-            );
-        let read_only_position = adapter
-            .placement_read_only_adapter()?
-            .local_char_to_run_local_position_with_affinity(0, local_char, affinity)?;
-        Some((legacy_position, read_only_position))
+            ),
+        )
     }
 
     /// Caret position when the IME preedit is open inside this Run. Honors
@@ -4683,13 +4669,98 @@ impl TextAreaTextRun {
         if self.is_preedit_run {
             return Some(0);
         }
-        if let Some(layout) = self.text_layout.as_ref() {
-            let effective = self.effective_text();
-            let byte = clamp_utf8_boundary(&effective, layout.hit_byte(x, y));
-            let prefix = effective.get(..byte)?;
-            return Some(prefix.chars().count());
+        if self.text_layout.is_some() {
+            if self.effective_text().is_empty() {
+                return Some(0);
+            }
+            return self.screen_position_to_local_char_from_ifc(x, y);
         }
         None
+    }
+
+    fn screen_position_to_local_char_from_ifc(&self, x: f32, y: f32) -> Option<usize> {
+        let adapter = self.caret_affinity_read_only_lookup_adapter_from_ifc()?;
+        let helper = adapter.behavior_helper()?;
+        let summary = helper.placement_navigation_summary();
+        let visual_line_count = summary.per_run_visual_line_counts.first().copied()?;
+        if visual_line_count == 0 {
+            return None;
+        }
+        let snapshots = helper
+            .caret_stop_snapshots()
+            .iter()
+            .filter(|snapshot| snapshot.run_index == 0)
+            .collect::<Vec<_>>();
+        if snapshots.len()
+            != summary
+                .per_run_caret_stop_counts
+                .first()
+                .copied()
+                .unwrap_or(0)
+        {
+            return None;
+        }
+
+        let mut lines = (0..visual_line_count)
+            .map(|visual_line_index| {
+                let mut line_snapshots = snapshots
+                    .iter()
+                    .copied()
+                    .filter(|snapshot| snapshot.visual_line_index == visual_line_index)
+                    .collect::<Vec<_>>();
+                line_snapshots.sort_by_key(|snapshot| snapshot.stop_index);
+                line_snapshots
+            })
+            .collect::<Vec<_>>();
+        if lines.iter().any(Vec::is_empty) {
+            return None;
+        }
+
+        let line_index = lines
+            .iter()
+            .enumerate()
+            .find_map(|(line_index, line_snapshots)| {
+                let line_top = line_snapshots
+                    .iter()
+                    .map(|snapshot| snapshot.local_y_top)
+                    .fold(f32::INFINITY, f32::min);
+                let line_bottom = line_snapshots
+                    .iter()
+                    .map(|snapshot| snapshot.local_y_top + snapshot.height)
+                    .fold(line_top, f32::max);
+                let is_last = line_index + 1 == lines.len();
+                if y >= line_top && (y < line_bottom || is_last && y <= line_bottom) {
+                    Some(line_index)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| {
+                let first_top = lines
+                    .first()
+                    .and_then(|line| line.first())
+                    .map(|snapshot| snapshot.local_y_top)
+                    .unwrap_or(0.0);
+                if y < first_top {
+                    0
+                } else {
+                    lines.len().saturating_sub(1)
+                }
+            });
+        let line_snapshots = lines.swap_remove(line_index);
+        let first = line_snapshots.first()?;
+        if x <= first.local_x {
+            return Some(first.local_char);
+        }
+        for pair in line_snapshots.windows(2) {
+            let left = pair[0];
+            let right = pair[1];
+            let midpoint = left.local_x + (right.local_x - left.local_x) / 2.0;
+            if x < midpoint {
+                return Some(left.local_char);
+            }
+        }
+        line_snapshots.last().map(|snapshot| snapshot.local_char)
     }
 
     /// Run-local selection range → visual rects (one per visual line covered).
@@ -4813,13 +4884,77 @@ impl TextAreaTextRun {
     /// **run-local** too (`0..self.text.chars().count()`); the builder adds
     /// `char_range.start` for the root content index.
     ///
-    /// Lines come from the shared text layout adapter. Empty paragraphs
-    /// (created by `\n\n` or a trailing `\n`) get
-    /// a synthesized line so caret navigation can land on the blank line.
+    /// Laid-out lines come from the read-only IFC caret affinity snapshot.
+    /// Empty paragraphs (created by `\n\n` or a trailing `\n`) get a
+    /// synthesized line so caret navigation can land on the blank line.
     pub fn caret_stops(&self) -> Vec<RunCaretLine> {
+        if self.text_layout.is_some() {
+            if self.effective_text().is_empty() {
+                return self.empty_line_caret_stops();
+            }
+            return self.caret_stops_from_ifc().unwrap_or_default();
+        }
+
+        self.empty_line_caret_stops()
+    }
+
+    fn caret_stops_from_ifc(&self) -> Option<Vec<RunCaretLine>> {
+        let adapter = self.caret_affinity_read_only_lookup_adapter_from_ifc()?;
+        let helper = adapter.behavior_helper()?;
+        let summary = helper.placement_navigation_summary();
+        let visual_line_count = summary.per_run_visual_line_counts.first().copied()?;
+        if visual_line_count == 0 {
+            return Some(Vec::new());
+        }
+        let snapshots = helper
+            .caret_stop_snapshots()
+            .iter()
+            .filter(|snapshot| snapshot.run_index == 0)
+            .collect::<Vec<_>>();
+        if snapshots.len()
+            != summary
+                .per_run_caret_stop_counts
+                .first()
+                .copied()
+                .unwrap_or(0)
+        {
+            return None;
+        }
+
+        (0..visual_line_count)
+            .map(|visual_line_index| {
+                let line_snapshots = snapshots
+                    .iter()
+                    .copied()
+                    .filter(|snapshot| snapshot.visual_line_index == visual_line_index)
+                    .collect::<Vec<_>>();
+                let first = line_snapshots.first()?;
+                let local_y_top = first.local_y_top;
+                let local_y_bottom = line_snapshots
+                    .iter()
+                    .map(|snapshot| snapshot.local_y_top + snapshot.height)
+                    .fold(local_y_top, f32::max);
+                Some(RunCaretLine {
+                    local_y_top,
+                    local_y_bottom,
+                    stops: line_snapshots
+                        .into_iter()
+                        .map(|snapshot| RunCaretStop {
+                            local_char: snapshot.local_char,
+                            local_x: snapshot.local_x,
+                            local_y_top: snapshot.local_y_top,
+                            height: snapshot.height,
+                        })
+                        .collect(),
+                })
+            })
+            .collect()
+    }
+
+    fn seed_caret_stops_for_ifc_snapshot(&self) -> Vec<RunCaretLine> {
         if let Some(layout) = self.text_layout.as_ref() {
             let effective = self.effective_text();
-            let lines: Vec<RunCaretLine> = layout
+            return layout
                 .visual_caret_lines(&effective)
                 .into_iter()
                 .map(|line| RunCaretLine {
@@ -4837,9 +4972,11 @@ impl TextAreaTextRun {
                         .collect(),
                 })
                 .collect();
-            return lines;
         }
+        self.empty_line_caret_stops()
+    }
 
+    fn empty_line_caret_stops(&self) -> Vec<RunCaretLine> {
         let line_height = self.font_size.max(1.0) * self.line_height.max(0.8);
         vec![RunCaretLine {
             local_y_top: 0.0,
@@ -6029,6 +6166,19 @@ mod read_only_ifc_rollout_tests {
         assert!(payload.readiness.has_inline_preedit);
         assert!(payload.readiness.is_preedit_run);
         assert_eq!(payload.readiness.preedit_cursor, Some((0, 2)));
+        assert_eq!(
+            payload.readiness.caret_affinity_diagnostic.preedit_cursor,
+            Some((0, 2))
+        );
+        assert!(
+            payload
+                .readiness
+                .caret_affinity_diagnostic
+                .caret_stop_snapshots
+                .iter()
+                .all(|snapshot| snapshot.local_char == 0),
+            "preedit-run caret snapshot seeding keeps root insertion at the API boundary"
+        );
         assert!(!payload.render_enabled);
     }
 
@@ -9167,24 +9317,24 @@ mod read_only_ifc_rollout_tests {
     }
 
     #[test]
-    fn text_area_inline_ifc_caret_affinity_helper_summarizes_legacy_caret_shape() {
+    fn text_area_inline_ifc_caret_affinity_helper_provides_ifc_caret_placement() {
         let mut run = TextAreaTextRun::new(
-            "caret helper read only shape follows legacy caret stops".to_string(),
-            0..57,
+            "caret helper provides visible caret placement from ifc adapter".to_string(),
+            0..62,
         );
         let mut arena = NodeArena::new();
         place_run_for_inline_ifc_staging_test(&mut run, &mut arena, 140.0);
-        let legacy_caret_lines = run.caret_stops();
-        let legacy_visual_line_count = legacy_caret_lines.len();
-        let legacy_caret_stop_count = legacy_caret_lines
+        let seed_caret_lines = run.seed_caret_stops_for_ifc_snapshot();
+        let seed_visual_line_count = seed_caret_lines.len();
+        let seed_caret_stop_count = seed_caret_lines
             .iter()
             .map(|line| line.stops.len())
             .sum::<usize>();
-        let legacy_multi_stop_line_count = legacy_caret_lines
+        let seed_multi_stop_line_count = seed_caret_lines
             .iter()
             .filter(|line| line.stops.len() > 1)
             .count();
-        let legacy_caret_stop_snapshots = legacy_caret_lines
+        let seed_caret_stop_snapshots = seed_caret_lines
             .iter()
             .enumerate()
             .flat_map(|(visual_line_index, line)| {
@@ -9264,25 +9414,25 @@ mod read_only_ifc_rollout_tests {
         let summary = helper.placement_navigation_summary();
         let snapshots = helper.caret_stop_snapshots();
 
-        assert_eq!(summary.visual_line_count, legacy_visual_line_count);
-        assert_eq!(summary.caret_stop_count, legacy_caret_stop_count);
-        assert_eq!(summary.multi_stop_line_count, legacy_multi_stop_line_count);
+        assert_eq!(summary.visual_line_count, seed_visual_line_count);
+        assert_eq!(summary.caret_stop_count, seed_caret_stop_count);
+        assert_eq!(summary.multi_stop_line_count, seed_multi_stop_line_count);
         assert_eq!(
             summary.per_run_visual_line_counts,
-            vec![legacy_visual_line_count]
+            vec![seed_visual_line_count]
         );
         assert_eq!(
             summary.per_run_caret_stop_counts,
-            vec![legacy_caret_stop_count]
+            vec![seed_caret_stop_count]
         );
         assert_eq!(
             summary.per_run_multi_stop_line_counts,
-            vec![legacy_multi_stop_line_count]
+            vec![seed_multi_stop_line_count]
         );
         assert!(summary.has_affinity_slots);
         assert_eq!(summary.preedit_cursor_count, 0);
         assert!(summary.preedit_cursors.is_empty());
-        assert_eq!(summary.caret_stop_snapshot_count, legacy_caret_stop_count);
+        assert_eq!(summary.caret_stop_snapshot_count, seed_caret_stop_count);
         assert!(
             summary.run_local_char_indices_available,
             "read-only lookup should carry per-stop local_char"
@@ -9291,13 +9441,13 @@ mod read_only_ifc_rollout_tests {
             summary.run_local_geometry_available,
             "read-only lookup should carry per-stop x/y/height geometry"
         );
-        assert_eq!(snapshots, legacy_caret_stop_snapshots.as_slice());
+        assert_eq!(snapshots, seed_caret_stop_snapshots.as_slice());
         assert_eq!(
             snapshots
                 .iter()
                 .map(|snapshot| snapshot.local_char)
                 .collect::<Vec<_>>(),
-            legacy_caret_stop_snapshots
+            seed_caret_stop_snapshots
                 .iter()
                 .map(|snapshot| snapshot.local_char)
                 .collect::<Vec<_>>()
@@ -9306,9 +9456,9 @@ mod read_only_ifc_rollout_tests {
             snapshots.iter().all(|snapshot| snapshot.height > 0.0),
             "read-only snapshot should preserve usable caret geometry"
         );
-        let first_snapshot = legacy_caret_stop_snapshots
+        let first_snapshot = seed_caret_stop_snapshots
             .first()
-            .expect("legacy caret stops should expose at least one snapshot");
+            .expect("IFC snapshot seed caret stops should expose at least one snapshot");
         assert_eq!(
             helper.stop_geometry_summary(
                 first_snapshot.run_index,
@@ -9325,7 +9475,7 @@ mod read_only_ifc_rollout_tests {
                 height: first_snapshot.height,
             })
         );
-        let expected_local_char_candidates = legacy_caret_stop_snapshots
+        let expected_local_char_candidates = seed_caret_stop_snapshots
             .iter()
             .filter(|snapshot| {
                 snapshot.run_index == first_snapshot.run_index
@@ -9333,7 +9483,7 @@ mod read_only_ifc_rollout_tests {
             })
             .enumerate()
             .map(|(candidate_index, snapshot)| {
-                let affinity = if legacy_caret_stop_snapshots
+                let affinity = if seed_caret_stop_snapshots
                     .iter()
                     .filter(|candidate| {
                         candidate.run_index == first_snapshot.run_index
@@ -9381,38 +9531,7 @@ mod read_only_ifc_rollout_tests {
                 first_snapshot.local_char,
                 super::super::caret_map::CaretAffinity::Downstream,
             )
-            .expect("legacy caret placement should expose downstream geometry");
-        let effective = run.effective_text();
-        let target_byte =
-            run.plain_local_char_to_effective_byte(first_snapshot.local_char, &effective);
-        let target_char = effective
-            .get(..target_byte)
-            .expect("target byte should stay inside effective text")
-            .chars()
-            .count();
-        let direct_legacy_geom = run
-            .text_layout
-            .as_ref()
-            .expect("laid out run should keep legacy text layout")
-            .caret_geometry_for_char_with_affinity(&effective, target_char, false);
-        let direct_legacy_geometry = (
-            direct_legacy_geom.x,
-            direct_legacy_geom.y,
-            direct_legacy_geom.height,
-        );
-        assert_eq!(
-            downstream_geometry, direct_legacy_geometry,
-            "production helper must keep returning the legacy layout geometry"
-        );
-        assert_eq!(
-            run.caret_affinity_placement_read_only_observation(
-                first_snapshot.local_char,
-                super::super::caret_map::CaretAffinity::Downstream,
-                downstream_geometry,
-            ),
-            Some((downstream_geometry, downstream_geometry)),
-            "read-only placement observation should align with the legacy return without replacing it"
-        );
+            .expect("IFC caret placement should expose downstream geometry");
         assert_eq!(
             (
                 downstream_candidate.local_x,
@@ -9420,6 +9539,14 @@ mod read_only_ifc_rollout_tests {
                 downstream_candidate.height,
             ),
             downstream_geometry
+        );
+        assert_eq!(
+            run.caret_affinity_placement_position_from_ifc(
+                first_snapshot.local_char,
+                super::super::caret_map::CaretAffinity::Downstream,
+            ),
+            Some(downstream_geometry),
+            "visible caret placement should be sourced from the IFC placement adapter"
         );
         assert_eq!(
             placement_adapter.local_char_candidate_with_affinity(
@@ -9444,6 +9571,86 @@ mod read_only_ifc_rollout_tests {
             ),
             Some(downstream_geometry)
         );
+        let visible_caret_lines = run.caret_stops();
+        assert_eq!(visible_caret_lines.len(), summary.visual_line_count);
+        assert_eq!(
+            visible_caret_lines
+                .iter()
+                .map(|line| line.stops.len())
+                .sum::<usize>(),
+            summary.caret_stop_count
+        );
+        assert_eq!(
+            visible_caret_lines
+                .iter()
+                .enumerate()
+                .flat_map(|(visual_line_index, line)| {
+                    line.stops
+                        .iter()
+                        .enumerate()
+                        .map(move |(stop_index, stop)| {
+                            TextAreaEditableIfcCaretAffinityStopSnapshot {
+                                run_index: 0,
+                                visual_line_index,
+                                stop_index,
+                                local_char: stop.local_char,
+                                local_x: stop.local_x,
+                                local_y_top: stop.local_y_top,
+                                height: stop.height,
+                            }
+                        })
+                })
+                .collect::<Vec<_>>(),
+            snapshots,
+            "visible caret_stops should be reconstructed from read-only IFC snapshots"
+        );
+        assert_eq!(
+            visible_caret_lines
+                .iter()
+                .map(|line| (line.local_y_top, line.local_y_bottom))
+                .collect::<Vec<_>>(),
+            seed_caret_lines
+                .iter()
+                .map(|line| (line.local_y_top, line.local_y_bottom))
+                .collect::<Vec<_>>(),
+            "IFC snapshot-backed caret_stops should preserve visible line geometry"
+        );
+        let hit_test_pair = snapshots
+            .windows(2)
+            .find(|pair| {
+                pair[0].run_index == 0
+                    && pair[1].run_index == 0
+                    && pair[0].visual_line_index == pair[1].visual_line_index
+                    && pair[1].local_x > pair[0].local_x
+            })
+            .expect("fixture should expose adjacent IFC caret stops on one visual line");
+        let left_snapshot = hit_test_pair[0].clone();
+        let right_snapshot = hit_test_pair[1].clone();
+        let midpoint =
+            left_snapshot.local_x + (right_snapshot.local_x - left_snapshot.local_x) / 2.0;
+        let left_hit_x = left_snapshot.local_x + (midpoint - left_snapshot.local_x) / 2.0;
+        let right_hit_x = midpoint + (right_snapshot.local_x - midpoint) / 2.0;
+        let hit_y = left_snapshot.local_y_top + left_snapshot.height / 2.0;
+        assert_eq!(
+            run.screen_position_to_local_char_from_ifc(left_hit_x, hit_y),
+            Some(left_snapshot.local_char),
+            "IFC helper hit-test should choose the nearest snapshot stop before the midpoint"
+        );
+        assert_eq!(
+            run.screen_position_to_local_char(left_hit_x, hit_y),
+            Some(left_snapshot.local_char),
+            "visible hit-test should be sourced from the IFC snapshot helper"
+        );
+        assert_eq!(
+            run.screen_position_to_local_char_from_ifc(right_hit_x, hit_y),
+            Some(right_snapshot.local_char),
+            "IFC helper hit-test should choose the nearest snapshot stop after the midpoint"
+        );
+        assert_eq!(
+            run.screen_position_to_local_char(right_hit_x, hit_y),
+            Some(right_snapshot.local_char),
+            "visible hit-test should stay aligned with IFC snapshot-derived local chars"
+        );
         assert!(
             helper
                 .local_char_candidate_with_affinity(
@@ -9453,6 +9660,22 @@ mod read_only_ifc_rollout_tests {
                 )
                 .is_none(),
             "missing local_char must not expose affinity candidate"
+        );
+        assert_eq!(
+            run.caret_affinity_placement_position_from_ifc(
+                usize::MAX,
+                super::super::caret_map::CaretAffinity::Downstream,
+            ),
+            None,
+            "missing adapter candidate must not expose IFC placement"
+        );
+        assert_eq!(
+            run.local_char_to_screen_position_with_affinity(
+                usize::MAX,
+                super::super::caret_map::CaretAffinity::Downstream,
+            ),
+            None,
+            "laid-out visible caret placement should require an IFC adapter candidate"
         );
         assert!(!helper.caret_affinity_behavior_path_ready());
         assert!(!adapter.render_enabled());
