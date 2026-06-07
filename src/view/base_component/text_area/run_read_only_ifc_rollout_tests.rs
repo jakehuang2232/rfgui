@@ -8,8 +8,7 @@ use crate::view::node_arena::NodeArena;
 
 #[test]
 fn text_read_only_ifc_staging_stays_separate_from_text_area_prepared_default() {
-    let mut run =
-        TextAreaTextRun::new("text area run uses prepared default".to_string(), 0..35);
+    let mut run = TextAreaTextRun::new("text area run uses prepared default".to_string(), 0..35);
     let mut arena = NodeArena::new();
     run.measure(
         LayoutConstraints {
@@ -653,15 +652,14 @@ fn text_area_inline_ifc_evaluation_preflight_blocks_current_metadata_paths() {
         "laid out run payload should satisfy the run payload requirement"
     );
     assert!(
-        !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcEvaluationPreflightBlockedReason::LegacyFallbackMissing
-        ),
+        !preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcEvaluationPreflightBlockedReason::LegacyFallbackMissing),
         "TextArea staging payload confirms correctness fallback to legacy TextPass"
     );
     assert!(
         !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcEvaluationPreflightBlockedReason::
-                ReadOnlyTextPathSeparationMissing
+            &TextAreaInlineIfcEvaluationPreflightBlockedReason::ReadOnlyTextPathSeparationMissing
         ),
         "TextArea staging payload remains separated from read-only Text prepared path"
     );
@@ -688,9 +686,9 @@ fn text_area_inline_ifc_evaluation_preflight_blocks_missing_or_unlaid_out_run_pa
             .contains(&TextAreaInlineIfcEvaluationPreflightBlockedReason::MissingRunPayload)
     );
     assert!(
-        preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcEvaluationPreflightBlockedReason::LegacyFallbackMissing
-        )
+        preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcEvaluationPreflightBlockedReason::LegacyFallbackMissing)
     );
     assert!(preflight.run_inputs().is_empty());
     assert!(!preflight.render_enabled());
@@ -699,8 +697,7 @@ fn text_area_inline_ifc_evaluation_preflight_blocks_missing_or_unlaid_out_run_pa
 
 #[test]
 fn text_area_inline_ifc_evaluation_preflight_requires_read_only_path_separation() {
-    let mut run =
-        TextAreaTextRun::new("text area evaluation stays separated".to_string(), 0..36);
+    let mut run = TextAreaTextRun::new("text area evaluation stays separated".to_string(), 0..36);
     let mut arena = NodeArena::new();
     place_run_for_inline_ifc_staging_test(&mut run, &mut arena, 180.0);
     let payload = run
@@ -870,15 +867,15 @@ fn text_area_inline_ifc_metadata_bridge_observes_ime_preedit_from_run_payload() 
         "laid out run projection metadata should now be observed diagnostically"
     );
     assert!(
-        !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired
-        ),
+        !preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired),
         "laid out run scroll-follow metadata should now be observed diagnostically"
     );
     assert!(
-        !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcMetadataBridgeBlockedReason::CaretAffinityMetadataUnwired
-        ),
+        !preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcMetadataBridgeBlockedReason::CaretAffinityMetadataUnwired),
         "laid out run caret metadata should now be observed diagnostically"
     );
     assert!(!preflight.render_enabled());
@@ -938,15 +935,15 @@ fn text_area_inline_ifc_metadata_bridge_observes_no_preedit_without_synthesizing
         "plain laid out run projection metadata should now be observed diagnostically"
     );
     assert!(
-        !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired
-        ),
+        !preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired),
         "no-preedit run scroll-follow metadata should now be observed diagnostically"
     );
     assert!(
-        !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcMetadataBridgeBlockedReason::CaretAffinityMetadataUnwired
-        ),
+        !preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcMetadataBridgeBlockedReason::CaretAffinityMetadataUnwired),
         "plain laid out run caret metadata should now be observed diagnostically"
     );
     assert!(!preflight.render_enabled());
@@ -997,9 +994,9 @@ fn text_area_inline_ifc_metadata_bridge_observes_projection_metadata_from_laid_o
         "projection metadata source should be observed even when no projection segments exist"
     );
     assert!(
-        !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired
-        ),
+        !preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired),
         "projection metadata observation should preserve scroll-follow diagnostic metadata"
     );
     assert!(!preflight.render_enabled());
@@ -1042,9 +1039,9 @@ fn text_area_inline_ifc_metadata_bridge_observes_caret_affinity_stops_from_laid_
     );
     assert_eq!(caret_diagnostic.preedit_cursor_count, 0);
     assert!(
-        !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcMetadataBridgeBlockedReason::CaretAffinityMetadataUnwired
-        ),
+        !preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcMetadataBridgeBlockedReason::CaretAffinityMetadataUnwired),
         "caret stops are now observed as diagnostic metadata"
     );
     assert!(
@@ -1054,9 +1051,9 @@ fn text_area_inline_ifc_metadata_bridge_observes_caret_affinity_stops_from_laid_
         "caret/projection metadata observation should no longer report projection unwired"
     );
     assert!(
-        !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired
-        ),
+        !preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired),
         "caret/projection metadata observation should preserve scroll-follow diagnostic metadata"
     );
     assert!(!preflight.render_enabled());
@@ -1159,9 +1156,9 @@ fn text_area_inline_ifc_metadata_bridge_does_not_fake_affinity_slots_when_missin
         TextAreaInlineIfcMetadataBridgePreflightState::ReadyForDiagnosticEvaluation
     );
     assert!(
-        !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcMetadataBridgeBlockedReason::CaretAffinityMetadataUnwired
-        ),
+        !preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcMetadataBridgeBlockedReason::CaretAffinityMetadataUnwired),
         "missing slots should not be mislabeled as an unwired metadata source"
     );
     assert!(
@@ -1171,9 +1168,9 @@ fn text_area_inline_ifc_metadata_bridge_does_not_fake_affinity_slots_when_missin
         "missing caret slots must not hide observed projection metadata"
     );
     assert!(
-        !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired
-        )
+        !preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired)
     );
     assert!(!preflight.render_enabled());
     assert!(!preflight.layout_enabled());
@@ -1228,15 +1225,15 @@ fn text_area_inline_ifc_metadata_bridge_observes_scroll_follow_metadata_from_lai
         "laid out run projection metadata should be observed without marking projection behavior ready"
     );
     assert!(
-        !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired
-        ),
+        !preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired),
         "scroll-follow metadata source should be observed without marking behavior ready"
     );
     assert!(
-        !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcMetadataBridgeBlockedReason::CaretAffinityMetadataUnwired
-        ),
+        !preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcMetadataBridgeBlockedReason::CaretAffinityMetadataUnwired),
         "laid out run caret metadata should be observed without marking caret behavior ready"
     );
     assert!(
@@ -1259,8 +1256,7 @@ fn text_area_inline_ifc_metadata_bridge_observes_scroll_follow_metadata_from_lai
     );
     assert!(
         !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcMetadataBridgeBlockedReason::
-                ReadOnlyTextPathSeparationUnconfirmed
+            &TextAreaInlineIfcMetadataBridgeBlockedReason::ReadOnlyTextPathSeparationUnconfirmed
         ),
         "TextArea bridge remains separated from read-only Text prepared path"
     );
@@ -1299,9 +1295,9 @@ fn text_area_inline_ifc_metadata_bridge_does_not_fake_scroll_follow_source_when_
     assert_eq!(scroll_diagnostic.visual_line_count, 0);
     assert_eq!(scroll_diagnostic.caret_stop_count, 0);
     assert!(
-        !preflight.blocked_reasons().contains(
-            &TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired
-        ),
+        !preflight
+            .blocked_reasons()
+            .contains(&TextAreaInlineIfcMetadataBridgeBlockedReason::ScrollFollowMetadataUnwired),
         "missing scroll source should not be mislabeled as an unwired metadata source"
     );
     assert!(!preflight.render_enabled());
@@ -1646,8 +1642,7 @@ fn text_area_inline_ifc_ime_behavior_prewire_blocks_missing_metadata_source() {
 
 #[test]
 fn text_area_inline_ifc_ime_behavior_prewire_keeps_readiness_audit_diagnostic_only() {
-    let mut run =
-        TextAreaTextRun::new("IME prewire does not authorize rollout".to_string(), 0..39);
+    let mut run = TextAreaTextRun::new("IME prewire does not authorize rollout".to_string(), 0..39);
     run.set_inline_preedit(Some(InlinePreedit {
         insert_at_local: 3,
         preedit_text: "IME".to_string(),
@@ -2778,9 +2773,11 @@ fn text_area_inline_ifc_behavior_path_status_blocks_one_incomplete_prewire() {
         gate.blocked_reasons()
             .contains(&TextAreaEditableIfcBehaviorPathStatusBlockedReason::ImePrewireBlocked)
     );
-    assert!(gate.blocked_reasons().contains(
-        &TextAreaEditableIfcBehaviorPathStatusBlockedReason::ImeDiagnosticNotObserved
-    ));
+    assert!(
+        gate.blocked_reasons().contains(
+            &TextAreaEditableIfcBehaviorPathStatusBlockedReason::ImeDiagnosticNotObserved
+        )
+    );
     assert!(
         gate.report()
             .behavior_path_blocked_reasons
@@ -2924,9 +2921,11 @@ fn text_area_inline_ifc_behavior_path_status_reports_blocked_switch() {
         diagnostic.recommendation(),
         TextAreaEditableIfcBehaviorPathStatusRecommendation::KeepLegacyEditableBehaviorPath
     );
-    assert!(diagnostic.behavior_path_switch_blocked_reasons().contains(
-        &TextAreaEditableIfcBehaviorPathStatusBlockedReason::BehaviorPathsStillNotReady
-    ));
+    assert!(
+        diagnostic.behavior_path_switch_blocked_reasons().contains(
+            &TextAreaEditableIfcBehaviorPathStatusBlockedReason::BehaviorPathsStillNotReady
+        )
+    );
     assert!(diagnostic.report().prepared_render_default_observed);
     assert!(!diagnostic.render_enabled());
     assert!(!diagnostic.layout_enabled());
@@ -2943,13 +2942,15 @@ fn text_area_inline_ifc_behavior_path_status_blocks_diagnostic_only_switch() {
     );
     assert!(diagnostic.blocked_reasons().is_empty());
     assert!(
+        diagnostic
+            .behavior_path_switch_blocked_reasons()
+            .contains(&TextAreaEditableIfcBehaviorPathStatusBlockedReason::StatusObservationOnly)
+    );
+    assert!(
         diagnostic.behavior_path_switch_blocked_reasons().contains(
-            &TextAreaEditableIfcBehaviorPathStatusBlockedReason::StatusObservationOnly
+            &TextAreaEditableIfcBehaviorPathStatusBlockedReason::BehaviorPathsStillNotReady
         )
     );
-    assert!(diagnostic.behavior_path_switch_blocked_reasons().contains(
-        &TextAreaEditableIfcBehaviorPathStatusBlockedReason::BehaviorPathsStillNotReady
-    ));
     assert!(!diagnostic.report().ime_behavior_path_ready);
     assert!(!diagnostic.report().caret_affinity_behavior_path_ready);
     assert!(!diagnostic.report().projection_behavior_path_ready);
@@ -3016,14 +3017,10 @@ fn text_area_inline_ifc_behavior_readiness_report_lists_all_blocked_paths() {
             )
     );
     for reason in [
-        TextAreaEditableIfcBehaviorPathReadinessBlockedReason::
-            ImeBehaviorPathNotReady,
-        TextAreaEditableIfcBehaviorPathReadinessBlockedReason::
-            CaretAffinityBehaviorPathNotReady,
-        TextAreaEditableIfcBehaviorPathReadinessBlockedReason::
-            ProjectionBehaviorPathNotReady,
-        TextAreaEditableIfcBehaviorPathReadinessBlockedReason::
-            ScrollFollowBehaviorPathNotReady,
+        TextAreaEditableIfcBehaviorPathReadinessBlockedReason::ImeBehaviorPathNotReady,
+        TextAreaEditableIfcBehaviorPathReadinessBlockedReason::CaretAffinityBehaviorPathNotReady,
+        TextAreaEditableIfcBehaviorPathReadinessBlockedReason::ProjectionBehaviorPathNotReady,
+        TextAreaEditableIfcBehaviorPathReadinessBlockedReason::ScrollFollowBehaviorPathNotReady,
     ] {
         assert!(
             ready_report.blocked_reasons.contains(&reason),
@@ -3396,10 +3393,9 @@ fn text_area_inline_ifc_caret_affinity_read_only_lookup_reads_behavior_evaluatio
         TextAreaEditableIfcCaretAffinityBehaviorInput::from_equivalence_audit(&audit);
     let evaluation =
         TextAreaEditableIfcCaretAffinityBehaviorEvaluation::evaluate(behavior_input.clone());
-    let adapter =
-        TextAreaEditableIfcCaretAffinityReadOnlyLookupAdapter::from_behavior_evaluation(
-            &evaluation,
-        );
+    let adapter = TextAreaEditableIfcCaretAffinityReadOnlyLookupAdapter::from_behavior_evaluation(
+        &evaluation,
+    );
     let lookup = adapter
         .lookup()
         .expect("observed behavior evaluation should expose read-only lookup");
@@ -3445,10 +3441,9 @@ fn text_area_inline_ifc_caret_affinity_helper_reads_read_only_lookup_metadata() 
         TextAreaEditableIfcCaretAffinityBehaviorInput::from_equivalence_audit(&audit);
     let evaluation =
         TextAreaEditableIfcCaretAffinityBehaviorEvaluation::evaluate(behavior_input.clone());
-    let adapter =
-        TextAreaEditableIfcCaretAffinityReadOnlyLookupAdapter::from_behavior_evaluation(
-            &evaluation,
-        );
+    let adapter = TextAreaEditableIfcCaretAffinityReadOnlyLookupAdapter::from_behavior_evaluation(
+        &evaluation,
+    );
     let helper = adapter
         .behavior_helper()
         .expect("observed read-only lookup should expose caret affinity helper");
@@ -3627,10 +3622,9 @@ fn text_area_inline_ifc_caret_affinity_helper_provides_ifc_caret_placement() {
         TextAreaEditableIfcCaretAffinityBehaviorInput::from_equivalence_audit(&audit);
     let evaluation =
         TextAreaEditableIfcCaretAffinityBehaviorEvaluation::evaluate(behavior_input.clone());
-    let adapter =
-        TextAreaEditableIfcCaretAffinityReadOnlyLookupAdapter::from_behavior_evaluation(
-            &evaluation,
-        );
+    let adapter = TextAreaEditableIfcCaretAffinityReadOnlyLookupAdapter::from_behavior_evaluation(
+        &evaluation,
+    );
     let helper = adapter
         .behavior_helper()
         .expect("observed read-only lookup should expose caret affinity helper");
@@ -3814,8 +3808,8 @@ fn text_area_inline_ifc_caret_affinity_helper_provides_ifc_caret_placement() {
                 line.stops
                     .iter()
                     .enumerate()
-                    .map(move |(stop_index, stop)| {
-                        TextAreaEditableIfcCaretAffinityStopSnapshot {
+                    .map(
+                        move |(stop_index, stop)| TextAreaEditableIfcCaretAffinityStopSnapshot {
                             run_index: 0,
                             visual_line_index,
                             stop_index,
@@ -3823,8 +3817,8 @@ fn text_area_inline_ifc_caret_affinity_helper_provides_ifc_caret_placement() {
                             local_x: stop.local_x,
                             local_y_top: stop.local_y_top,
                             height: stop.height,
-                        }
-                    })
+                        },
+                    )
             })
             .collect::<Vec<_>>(),
         snapshots,
@@ -3852,8 +3846,7 @@ fn text_area_inline_ifc_caret_affinity_helper_provides_ifc_caret_placement() {
         .expect("fixture should expose adjacent IFC caret stops on one visual line");
     let left_snapshot = hit_test_pair[0].clone();
     let right_snapshot = hit_test_pair[1].clone();
-    let midpoint =
-        left_snapshot.local_x + (right_snapshot.local_x - left_snapshot.local_x) / 2.0;
+    let midpoint = left_snapshot.local_x + (right_snapshot.local_x - left_snapshot.local_x) / 2.0;
     let left_hit_x = left_snapshot.local_x + (midpoint - left_snapshot.local_x) / 2.0;
     let right_hit_x = midpoint + (right_snapshot.local_x - midpoint) / 2.0;
     let hit_y = left_snapshot.local_y_top + left_snapshot.height / 2.0;
@@ -3924,14 +3917,12 @@ fn text_area_inline_ifc_caret_affinity_behavior_evaluation_blocks_incomplete_inp
     let mut behavior_input =
         TextAreaEditableIfcCaretAffinityBehaviorInput::from_equivalence_audit(&audit);
     behavior_input.equivalent_candidate_observed = false;
-    behavior_input.caret_affinity_metadata_status =
-        TextAreaInlineIfcMetadataBridgeStatus::Unwired;
+    behavior_input.caret_affinity_metadata_status = TextAreaInlineIfcMetadataBridgeStatus::Unwired;
     behavior_input.caret_stop_count = 0;
     behavior_input.multi_stop_line_count = 0;
     behavior_input.preedit_cursor_count += 1;
 
-    let evaluation =
-        TextAreaEditableIfcCaretAffinityBehaviorEvaluation::evaluate(behavior_input);
+    let evaluation = TextAreaEditableIfcCaretAffinityBehaviorEvaluation::evaluate(behavior_input);
 
     assert_eq!(
         evaluation.state(),
@@ -3968,19 +3959,16 @@ fn text_area_inline_ifc_caret_affinity_read_only_lookup_blocks_incomplete_evalua
     let mut behavior_input =
         TextAreaEditableIfcCaretAffinityBehaviorInput::from_equivalence_audit(&audit);
     behavior_input.equivalent_candidate_observed = false;
-    behavior_input.caret_affinity_metadata_status =
-        TextAreaInlineIfcMetadataBridgeStatus::Unwired;
+    behavior_input.caret_affinity_metadata_status = TextAreaInlineIfcMetadataBridgeStatus::Unwired;
     behavior_input.visual_line_count = 0;
     behavior_input.caret_stop_count = 0;
     behavior_input.multi_stop_line_count = 0;
     behavior_input.preedit_cursor_count += 1;
 
-    let evaluation =
-        TextAreaEditableIfcCaretAffinityBehaviorEvaluation::evaluate(behavior_input);
-    let adapter =
-        TextAreaEditableIfcCaretAffinityReadOnlyLookupAdapter::from_behavior_evaluation(
-            &evaluation,
-        );
+    let evaluation = TextAreaEditableIfcCaretAffinityBehaviorEvaluation::evaluate(behavior_input);
+    let adapter = TextAreaEditableIfcCaretAffinityReadOnlyLookupAdapter::from_behavior_evaluation(
+        &evaluation,
+    );
 
     assert_eq!(
         adapter.state(),
@@ -4001,8 +3989,7 @@ fn text_area_inline_ifc_caret_affinity_read_only_lookup_blocks_incomplete_evalua
 }
 
 #[test]
-fn text_area_inline_ifc_caret_affinity_equivalence_audit_blocks_missing_or_incomplete_sources()
-{
+fn text_area_inline_ifc_caret_affinity_equivalence_audit_blocks_missing_or_incomplete_sources() {
     let (behavior_status, caret_metadata_source, _audit) =
         text_area_inline_ifc_caret_affinity_equivalence_fixture();
     let base_input = TextAreaEditableIfcCaretAffinityEquivalenceAuditInput::
@@ -4058,9 +4045,8 @@ fn text_area_inline_ifc_caret_affinity_equivalence_audit_blocks_missing_or_incom
     missing_metadata_source_input
         .per_run_caret_diagnostics
         .clear();
-    let missing_metadata_source = TextAreaEditableIfcCaretAffinityEquivalenceAudit::evaluate(
-        missing_metadata_source_input,
-    );
+    let missing_metadata_source =
+        TextAreaEditableIfcCaretAffinityEquivalenceAudit::evaluate(missing_metadata_source_input);
     assert_eq!(
         missing_metadata_source.state(),
         TextAreaEditableIfcCaretAffinityEquivalenceAuditState::Blocked
@@ -4153,8 +4139,7 @@ fn text_area_inline_ifc_caret_affinity_equivalence_audit_keeps_other_paths_block
 }
 
 #[test]
-fn text_area_inline_ifc_caret_affinity_equivalence_audit_preserves_layout_with_prepared_default()
- {
+fn text_area_inline_ifc_caret_affinity_equivalence_audit_preserves_layout_with_prepared_default() {
     let (_decision, _caret_metadata_source, audit) =
         text_area_inline_ifc_caret_affinity_equivalence_fixture();
     let mut run = TextAreaTextRun::new(
@@ -4284,8 +4269,7 @@ fn text_area_inline_ifc_projection_equivalence_audit_observes_and_blocks_missing
     for per_run in &mut diagnostic.per_run_projection_diagnostics {
         per_run.projection_segment_count = 0;
     }
-    let no_segments =
-        TextAreaEditableIfcProjectionEquivalenceAudit::evaluate(no_segments_input);
+    let no_segments = TextAreaEditableIfcProjectionEquivalenceAudit::evaluate(no_segments_input);
     assert_eq!(
         no_segments.state(),
         TextAreaEditableIfcBehaviorEquivalenceAuditState::Blocked
@@ -4392,8 +4376,7 @@ fn text_area_inline_ifc_scroll_follow_equivalence_audit_observes_and_blocks_miss
     missing_input.scroll_follow_prewire_state =
         TextAreaEditableIfcScrollFollowBehaviorPathPrewireState::Blocked;
     missing_input.scroll_follow_diagnostic_prewired = false;
-    missing_input.scroll_follow_metadata_status =
-        TextAreaInlineIfcMetadataBridgeStatus::Unwired;
+    missing_input.scroll_follow_metadata_status = TextAreaInlineIfcMetadataBridgeStatus::Unwired;
     missing_input.scroll_follow_metadata_diagnostic = None;
     let missing = TextAreaEditableIfcScrollFollowEquivalenceAudit::evaluate(missing_input);
     assert_eq!(
@@ -4405,8 +4388,7 @@ fn text_area_inline_ifc_scroll_follow_equivalence_audit_observes_and_blocks_miss
             MissingScrollFollowMetadataDiagnostic
     ));
     assert!(missing.blocked_reasons().contains(
-        &TextAreaEditableIfcScrollFollowEquivalenceAuditBlockedReason::
-            ScrollFollowPrewireMissing
+        &TextAreaEditableIfcScrollFollowEquivalenceAuditBlockedReason::ScrollFollowPrewireMissing
     ));
 }
 
@@ -4440,8 +4422,7 @@ fn text_area_inline_ifc_ime_equivalence_audit_observes_preedit_and_blocks_no_pre
     let mut no_preedit_input = ime.input().clone();
     no_preedit_input.ime_prewire_state =
         TextAreaEditableIfcImeBehaviorPathPrewireState::ObservedNoPreedit;
-    no_preedit_input.ime_metadata_status =
-        TextAreaInlineIfcMetadataBridgeStatus::ObservedNoPreedit;
+    no_preedit_input.ime_metadata_status = TextAreaInlineIfcMetadataBridgeStatus::ObservedNoPreedit;
     let diagnostic = no_preedit_input
         .ime_metadata_diagnostic
         .as_mut()
