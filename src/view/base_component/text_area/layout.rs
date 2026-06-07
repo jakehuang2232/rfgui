@@ -447,7 +447,7 @@ impl TextArea {
         let Some(self_key) = self.self_node_key else {
             return false;
         };
-        crate::view::base_component::scroll_rect_into_view_from(
+        crate::view::viewport::dispatch::scroll_rect_into_view_from(
             arena,
             self_key,
             rect,
@@ -2521,7 +2521,7 @@ mod tests {
                 .content_size
                 .width = 280.0;
         });
-        crate::view::base_component::scroll_rect_into_view_from(
+        crate::view::viewport::dispatch::scroll_rect_into_view_from(
             &arena,
             text_area_key,
             crate::ui::Rect::new(240.0, 0.0, 1.0, 18.0),

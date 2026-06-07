@@ -813,7 +813,7 @@ pub(super) fn sample_clean_parent_relayout_for_placement_profile(
     run_layout_for_test(&mut viewport, viewport_w, viewport_h);
 
     let root_key = viewport.scene.ui_root_keys[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,

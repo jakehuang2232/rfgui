@@ -139,7 +139,7 @@ mod tests {
             click_count: 1,
         };
 
-        let handled = rfgui::view::base_component::dispatch_click_from_hit_test(
+        let handled = rfgui::view::dispatch_click_from_hit_test(
             &mut arena,
             root_key,
             &mut click,
@@ -359,12 +359,8 @@ mod tests {
             click_count: 1,
         };
 
-        let handled = rfgui::view::base_component::dispatch_click_from_hit_test(
-            arena,
-            root_key,
-            &mut click,
-            &mut control,
-        );
+        let handled =
+            rfgui::view::dispatch_click_from_hit_test(arena, root_key, &mut click, &mut control);
         assert!(handled);
     }
 

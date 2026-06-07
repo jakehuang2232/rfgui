@@ -1087,7 +1087,7 @@ impl Element {
         bounds: crate::view::base_component::PromotionCompositeBounds,
         paint_offset: [f32; 2],
     ) -> crate::view::base_component::PromotionCompositeBounds {
-        crate::view::base_component::paint_snapped_promotion_composite_bounds(
+        crate::view::viewport::scene_helpers::paint_snapped_promotion_composite_bounds(
             self,
             bounds,
             paint_offset,
@@ -1099,7 +1099,7 @@ impl Element {
         bounds: crate::view::base_component::PromotionCompositeBounds,
         paint_offset: [f32; 2],
     ) -> crate::view::base_component::PromotionCompositeBounds {
-        crate::view::base_component::paint_snapped_promotion_composite_bounds(
+        crate::view::viewport::scene_helpers::paint_snapped_promotion_composite_bounds(
             child,
             bounds,
             paint_offset,
@@ -1841,7 +1841,7 @@ impl Element {
         }
 
         let update_kind = requested_update;
-        let reuse_result = crate::view::base_component::can_reuse_promoted_subtree(
+        let reuse_result = crate::view::viewport::scene_helpers::can_reuse_promoted_subtree(
             child.as_ref(),
             ctx,
             arena,
@@ -1963,7 +1963,7 @@ mod paint_snap_tests {
             height: 20.5,
             corner_radii: [0.0; 4],
         };
-        let snapped = crate::view::base_component::paint_snapped_promotion_composite_bounds(
+        let snapped = crate::view::viewport::scene_helpers::paint_snapped_promotion_composite_bounds(
             &element,
             bounds,
             [0.2, -0.3],

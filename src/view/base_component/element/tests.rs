@@ -54,7 +54,7 @@ mod tests {
     use crate::transition::{LayoutField, VisualField};
     use crate::view::base_component::ComputedStyleConsumer;
     use crate::view::base_component::Text;
-    use crate::view::base_component::set_style_field_by_id;
+    use crate::view::viewport::transitions_tick::set_style_field_by_id;
     use crate::view::frame_graph::{FrameGraph, PassDescriptor, PassDetails};
     use crate::view::inline_formatting_context::{
         InlineFormattingContext, InlineIfcAtomicMeasureConstraints, InlineIfcDecorationBoxInsets,
@@ -2863,7 +2863,7 @@ mod tests {
 
         let mut arena_old = new_test_arena();
         let old_key = commit_element(&mut arena_old, Box::new(old));
-        let layout_snapshots = crate::view::base_component::collect_layout_transition_snapshots(
+        let layout_snapshots = crate::view::viewport::transitions_tick::collect_layout_transition_snapshots(
             &arena_old,
             &[old_key],
         );
@@ -2874,7 +2874,7 @@ mod tests {
         rebuilt.layout_transition_target_x = Some(70.0);
         let mut arena = new_test_arena();
         let rebuilt_key = commit_element(&mut arena, Box::new(rebuilt));
-        crate::view::base_component::seed_layout_transition_snapshots(
+        crate::view::viewport::transitions_tick::seed_layout_transition_snapshots(
             &mut arena,
             &[rebuilt_key],
             &layout_snapshots,
@@ -6012,7 +6012,7 @@ mod tests {
         );
 
         assert!(
-            crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+            crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
                 &mut arena,
                 child_key,
                 DirtyFlags::PAINT,
@@ -6065,7 +6065,7 @@ mod tests {
         arena.mark_dirty(sibling_key, DirtyFlags::PAINT);
 
         assert!(
-            crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+            crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
                 &mut arena,
                 child_key,
                 DirtyFlags::PAINT,
@@ -6106,7 +6106,7 @@ mod tests {
         let root_key = commit_element(&mut arena, Box::new(clean_bridge_element(100.0, 100.0)));
 
         assert!(
-            !crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+            !crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
                 &mut arena,
                 crate::view::node_arena::NodeKey::default(),
                 DirtyFlags::PAINT,
@@ -6135,7 +6135,7 @@ mod tests {
         let child_id = child.stable_id();
         let child_key = commit_child(&mut arena, root_key, Box::new(child));
 
-        assert!(crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        assert!(crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
             &mut arena,
             root_key,
             DirtyFlags::ALL,

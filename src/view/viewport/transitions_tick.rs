@@ -1,4 +1,9 @@
 use super::*;
+use crate::transition::{
+    AnimationRequest, LayoutField, LayoutTrackRequest, StyleTrackRequest, VisualField,
+    VisualTrackRequest,
+};
+use crate::view::base_component::{DirtyFlags, DirtyPassMask, Element, ElementTrait};
 
 pub(super) struct TransitionHostAdapter<'a> {
     pub(super) registered_channels: &'a FxHashSet<ChannelId>,
@@ -110,7 +115,7 @@ impl Viewport {
     }
 
     pub(super) fn cancel_disallowed_transition_tracks(&mut self) -> bool {
-        let allowlist = crate::view::base_component::collect_transition_track_allowlist(
+        let allowlist = crate::view::viewport::transitions_tick::collect_transition_track_allowlist(
             &self.scene.node_arena,
             &self.scene.ui_root_keys,
         );
@@ -239,7 +244,7 @@ impl Viewport {
         });
         let state = root_keys.iter().rev().find_map(|&rk| {
             let root_node = arena.get(rk)?;
-            crate::view::base_component::get_debug_element_render_state_by_id(
+            crate::view::viewport::debug::get_debug_element_render_state_by_id(
                 root_node.element.as_ref(),
                 target,
                 arena,
@@ -247,7 +252,7 @@ impl Viewport {
         });
         let ancestry = root_keys.iter().rev().find_map(|&rk| {
             let root_node = arena.get(rk)?;
-            crate::view::base_component::get_node_ancestry_ids(
+            crate::view::viewport::debug::get_node_ancestry_ids(
                 root_node.element.as_ref(),
                 target,
                 arena,
@@ -255,7 +260,7 @@ impl Viewport {
         });
         let after_signatures = root_keys.iter().rev().find_map(|&rk| {
             let root_node = arena.get(rk)?;
-            crate::view::base_component::get_debug_promotion_signatures_by_id(
+            crate::view::viewport::debug::get_debug_promotion_signatures_by_id(
                 root_node.element.as_ref(),
                 target,
                 arena,
@@ -382,13 +387,13 @@ impl Viewport {
     ) -> bool {
         for &root_key in root_keys.iter().rev() {
             if let Some((x, y)) =
-                crate::view::base_component::get_scroll_offset_by_id(arena, root_key, target)
+                crate::view::viewport::dispatch::get_scroll_offset_by_id(arena, root_key, target)
             {
                 let next = match axis {
                     ScrollAxis::X => (value, y),
                     ScrollAxis::Y => (x, value),
                 };
-                return crate::view::base_component::set_scroll_offset_by_id(
+                return crate::view::viewport::dispatch::set_scroll_offset_by_id(
                     arena, root_key, target, next,
                 );
             }
@@ -414,7 +419,7 @@ impl Viewport {
         let root_keys = self.scene.ui_root_keys.clone();
         let mut layout_requests = Vec::new();
         for &root_key in &root_keys {
-            crate::view::base_component::take_layout_transition_requests(
+            crate::view::viewport::transitions_tick::take_layout_transition_requests(
                 &mut arena,
                 root_key,
                 &mut layout_requests,
@@ -457,7 +462,7 @@ impl Viewport {
         let layout_samples = self.transitions.layout_transition_plugin.take_samples();
         for sample in layout_samples {
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::set_layout_field_by_id(
+                if crate::view::viewport::transitions_tick::set_layout_field_by_id(
                     &mut arena,
                     root_key,
                     sample.target,
@@ -484,13 +489,13 @@ impl Viewport {
         let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let live_node_ids =
-            crate::view::base_component::collect_node_id_allowlist(&arena, &root_keys);
+            crate::view::viewport::transitions_tick::collect_node_id_allowlist(&arena, &root_keys);
         self.transitions
             .animation_plugin
             .prune_targets(&live_node_ids);
         let mut animation_requests = Vec::new();
         for &root_key in &root_keys {
-            crate::view::base_component::take_animation_requests(
+            crate::view::viewport::transitions_tick::take_animation_requests(
                 &mut arena,
                 root_key,
                 &mut animation_requests,
@@ -498,7 +503,7 @@ impl Viewport {
         }
         let mut style_requests = Vec::new();
         for &root_key in &root_keys {
-            crate::view::base_component::take_style_transition_requests(
+            crate::view::viewport::transitions_tick::take_style_transition_requests(
                 &mut arena,
                 root_key,
                 &mut style_requests,
@@ -506,7 +511,7 @@ impl Viewport {
         }
         let mut layout_requests = Vec::new();
         for &root_key in &root_keys {
-            crate::view::base_component::take_layout_transition_requests(
+            crate::view::viewport::transitions_tick::take_layout_transition_requests(
                 &mut arena,
                 root_key,
                 &mut layout_requests,
@@ -514,7 +519,7 @@ impl Viewport {
         }
         let mut visual_requests = Vec::new();
         for &root_key in &root_keys {
-            crate::view::base_component::take_visual_transition_requests(
+            crate::view::viewport::transitions_tick::take_visual_transition_requests(
                 &mut arena,
                 root_key,
                 &mut visual_requests,
@@ -665,7 +670,7 @@ impl Viewport {
         for sample in style_samples {
             let before_signatures = root_keys.iter().rev().find_map(|&rk| {
                 let root_node = arena.get(rk)?;
-                crate::view::base_component::get_debug_promotion_signatures_by_id(
+                crate::view::viewport::debug::get_debug_promotion_signatures_by_id(
                     root_node.element.as_ref(),
                     sample.target,
                     &arena,
@@ -673,7 +678,7 @@ impl Viewport {
             });
             let mut applied = false;
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::set_style_field_by_id(
+                if crate::view::viewport::transitions_tick::set_style_field_by_id(
                     &mut arena,
                     root_key,
                     sample.target,
@@ -700,7 +705,7 @@ impl Viewport {
         let animation_style_samples = self.transitions.animation_plugin.take_style_samples();
         for sample in animation_style_samples {
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::set_style_field_by_id(
+                if crate::view::viewport::transitions_tick::set_style_field_by_id(
                     &mut arena,
                     root_key,
                     sample.target,
@@ -718,7 +723,7 @@ impl Viewport {
         let visual_samples = self.transitions.visual_transition_plugin.take_samples();
         for sample in visual_samples {
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::set_visual_field_by_id(
+                if crate::view::viewport::transitions_tick::set_visual_field_by_id(
                     &mut arena,
                     root_key,
                     sample.target,
@@ -733,7 +738,7 @@ impl Viewport {
         let layout_samples = self.transitions.layout_transition_plugin.take_samples();
         for sample in layout_samples {
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::set_layout_field_by_id(
+                if crate::view::viewport::transitions_tick::set_layout_field_by_id(
                     &mut arena,
                     root_key,
                     sample.target,
@@ -749,7 +754,7 @@ impl Viewport {
         let animation_layout_samples = self.transitions.animation_plugin.take_layout_samples();
         for sample in animation_layout_samples {
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::set_layout_field_by_id(
+                if crate::view::viewport::transitions_tick::set_layout_field_by_id(
                     &mut arena,
                     root_key,
                     sample.target,
@@ -787,7 +792,7 @@ impl Viewport {
         let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let live_node_ids =
-            crate::view::base_component::collect_node_id_allowlist(&arena, &root_keys);
+            crate::view::viewport::transitions_tick::collect_node_id_allowlist(&arena, &root_keys);
         self.transitions
             .animation_plugin
             .prune_targets(&live_node_ids);
@@ -852,7 +857,7 @@ impl Viewport {
         for sample in self.transitions.style_transition_plugin.take_samples() {
             let before_signatures = root_keys.iter().rev().find_map(|&rk| {
                 let root_node = arena.get(rk)?;
-                crate::view::base_component::get_debug_promotion_signatures_by_id(
+                crate::view::viewport::debug::get_debug_promotion_signatures_by_id(
                     root_node.element.as_ref(),
                     sample.target,
                     &arena,
@@ -860,7 +865,7 @@ impl Viewport {
             });
             let mut applied = false;
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::set_style_field_by_id(
+                if crate::view::viewport::transitions_tick::set_style_field_by_id(
                     &mut arena,
                     root_key,
                     sample.target,
@@ -883,7 +888,7 @@ impl Viewport {
         }
         for sample in self.transitions.animation_plugin.take_style_samples() {
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::set_style_field_by_id(
+                if crate::view::viewport::transitions_tick::set_style_field_by_id(
                     &mut arena,
                     root_key,
                     sample.target,
@@ -897,7 +902,7 @@ impl Viewport {
         }
         for sample in self.transitions.visual_transition_plugin.take_samples() {
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::set_visual_field_by_id(
+                if crate::view::viewport::transitions_tick::set_visual_field_by_id(
                     &mut arena,
                     root_key,
                     sample.target,
@@ -911,7 +916,7 @@ impl Viewport {
         }
         for sample in self.transitions.layout_transition_plugin.take_samples() {
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::set_layout_field_by_id(
+                if crate::view::viewport::transitions_tick::set_layout_field_by_id(
                     &mut arena,
                     root_key,
                     sample.target,
@@ -925,7 +930,7 @@ impl Viewport {
         }
         for sample in self.transitions.animation_plugin.take_layout_samples() {
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::set_layout_field_by_id(
+                if crate::view::viewport::transitions_tick::set_layout_field_by_id(
                     &mut arena,
                     root_key,
                     sample.target,
@@ -946,4 +951,578 @@ impl Viewport {
             || visual_result.keep_running
             || layout_result.keep_running
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LayoutTransitionSnapshotSeed {
+    pub layout_x: f32,
+    pub layout_y: f32,
+    pub flow_x: f32,
+    pub flow_y: f32,
+    pub layout_width: f32,
+    pub layout_height: f32,
+    pub parent_layout_x: f32,
+    pub parent_layout_y: f32,
+}
+
+pub(crate) fn collect_layout_transition_snapshots(
+    arena: &crate::view::node_arena::NodeArena,
+    root_keys: &[crate::view::node_arena::NodeKey],
+) -> FxHashMap<u64, LayoutTransitionSnapshotSeed> {
+    let mut out = FxHashMap::default();
+
+    fn walk(
+        arena: &crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        parent_layout_x: f32,
+        parent_layout_y: f32,
+        out: &mut FxHashMap<u64, LayoutTransitionSnapshotSeed>,
+    ) {
+        let Some(node) = arena.get(key) else { return };
+        let snapshot = node.element.box_model_snapshot();
+        let can_seed_snapshot = node
+            .element
+            .as_any()
+            .downcast_ref::<Element>()
+            .map(Element::can_seed_layout_transition_snapshot)
+            .unwrap_or(true);
+        let (flow_x, flow_y) = node
+            .element
+            .as_any()
+            .downcast_ref::<Element>()
+            .map(Element::layout_flow_origin)
+            .unwrap_or((snapshot.x, snapshot.y));
+        if can_seed_snapshot {
+            out.insert(
+                node.element.stable_id(),
+                LayoutTransitionSnapshotSeed {
+                    layout_x: snapshot.x,
+                    layout_y: snapshot.y,
+                    flow_x,
+                    flow_y,
+                    layout_width: snapshot.width,
+                    layout_height: snapshot.height,
+                    parent_layout_x,
+                    parent_layout_y,
+                },
+            );
+        }
+
+        let (next_parent_x, next_parent_y) = node
+            .element
+            .as_any()
+            .downcast_ref::<Element>()
+            .map(Element::child_layout_origin)
+            .unwrap_or((snapshot.x, snapshot.y));
+
+        let children: Vec<_> = node.children.clone();
+        drop(node);
+        for child_key in children {
+            walk(arena, child_key, next_parent_x, next_parent_y, out);
+        }
+    }
+
+    for &root_key in root_keys {
+        walk(arena, root_key, 0.0, 0.0, &mut out);
+    }
+
+    out
+}
+
+pub(crate) fn seed_layout_transition_snapshots(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_keys: &[crate::view::node_arena::NodeKey],
+    snapshots: &FxHashMap<u64, LayoutTransitionSnapshotSeed>,
+) {
+    fn apply(
+        arena: &mut crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        snapshots: &FxHashMap<u64, LayoutTransitionSnapshotSeed>,
+    ) {
+        let _ = arena.with_element_taken(key, |element, arena| {
+            if let Some(seed) = snapshots.get(&element.stable_id()) {
+                if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
+                    el.seed_layout_transition_snapshot(
+                        seed.layout_x,
+                        seed.layout_y,
+                        seed.flow_x,
+                        seed.flow_y,
+                        seed.layout_width,
+                        seed.layout_height,
+                        seed.parent_layout_x,
+                        seed.parent_layout_y,
+                    );
+                }
+            }
+            let children: Vec<_> = element.children().to_vec();
+            for child_key in children {
+                apply(arena, child_key, snapshots);
+            }
+        });
+    }
+
+    for &root_key in root_keys {
+        apply(arena, root_key, snapshots);
+    }
+}
+
+pub(crate) fn take_style_transition_requests(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    out: &mut Vec<StyleTrackRequest>,
+) {
+    let _ = arena.with_element_taken_ref(root_key, |element, arena| {
+        let children: Vec<_> = element.children().to_vec();
+        for child_key in children.into_iter().rev() {
+            take_style_transition_requests(arena, child_key, out);
+        }
+        out.extend(element.take_style_transition_requests());
+    });
+}
+
+pub(crate) fn take_animation_requests(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    out: &mut Vec<AnimationRequest>,
+) {
+    let _ = arena.with_element_taken(root_key, |element, arena| {
+        let children: Vec<_> = element.children().to_vec();
+        for child_key in children.into_iter().rev() {
+            take_animation_requests(arena, child_key, out);
+        }
+        out.extend(element.take_animation_requests());
+    });
+}
+
+pub(crate) fn take_layout_transition_requests(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    out: &mut Vec<LayoutTrackRequest>,
+) {
+    let _ = arena.with_element_taken(root_key, |element, arena| {
+        let children: Vec<_> = element.children().to_vec();
+        for child_key in children.into_iter().rev() {
+            take_layout_transition_requests(arena, child_key, out);
+        }
+        out.extend(element.take_layout_transition_requests());
+    });
+}
+
+pub(crate) fn take_visual_transition_requests(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    out: &mut Vec<VisualTrackRequest>,
+) {
+    let _ = arena.with_element_taken(root_key, |element, arena| {
+        let children: Vec<_> = element.children().to_vec();
+        for child_key in children.into_iter().rev() {
+            take_visual_transition_requests(arena, child_key, out);
+        }
+        out.extend(element.take_visual_transition_requests());
+    });
+}
+
+pub(crate) fn collect_transition_track_allowlist(
+    arena: &crate::view::node_arena::NodeArena,
+    root_keys: &[crate::view::node_arena::NodeKey],
+) -> FxHashSet<TrackKey<TrackTarget>> {
+    let mut out = FxHashSet::default();
+
+    fn walk(
+        arena: &crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        out: &mut FxHashSet<TrackKey<TrackTarget>>,
+    ) {
+        let Some(node) = arena.get(key) else { return };
+        if let Some(element) = node.element.as_any().downcast_ref::<Element>() {
+            for channel in element.active_transition_channels() {
+                out.insert(TrackKey {
+                    target: node.element.stable_id(),
+                    channel,
+                });
+            }
+        }
+        let children: Vec<_> = node.children.clone();
+        drop(node);
+        for child_key in children {
+            walk(arena, child_key, out);
+        }
+    }
+
+    for &root_key in root_keys {
+        walk(arena, root_key, &mut out);
+    }
+
+    out
+}
+
+pub(crate) fn collect_node_id_allowlist(
+    arena: &crate::view::node_arena::NodeArena,
+    root_keys: &[crate::view::node_arena::NodeKey],
+) -> FxHashSet<u64> {
+    let mut out = FxHashSet::default();
+
+    fn walk(
+        arena: &crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        out: &mut FxHashSet<u64>,
+    ) {
+        let Some(node) = arena.get(key) else { return };
+        out.insert(node.element.stable_id());
+        let children: Vec<_> = node.children.clone();
+        drop(node);
+        for child_key in children {
+            walk(arena, child_key, out);
+        }
+    }
+
+    for &root_key in root_keys {
+        walk(arena, root_key, &mut out);
+    }
+
+    out
+}
+
+pub(crate) fn reconcile_transition_runtime_state(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_keys: &[crate::view::node_arena::NodeKey],
+    active_channels_by_node: &FxHashMap<u64, FxHashSet<ChannelId>>,
+) -> bool {
+    fn walk(
+        arena: &mut crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        active_channels_by_node: &FxHashMap<u64, FxHashSet<ChannelId>>,
+    ) -> bool {
+        arena
+            .mutate_element_with_invalidation(key, |element, cx| {
+                let mut changed = false;
+                let node_id = element.stable_id();
+                if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
+                    changed |= el
+                        .reconcile_transition_runtime_state(active_channels_by_node.get(&node_id));
+                }
+                if changed {
+                    cx.invalidate(element.local_dirty_flags());
+                }
+                let children: Vec<_> = element.children().to_vec();
+                for child_key in children {
+                    changed |= walk(cx.arena(), child_key, active_channels_by_node);
+                }
+                changed
+            })
+            .unwrap_or(false)
+    }
+
+    let mut changed = false;
+    for &root_key in root_keys {
+        changed |= walk(arena, root_key, active_channels_by_node);
+    }
+    changed
+}
+
+pub(crate) fn set_style_field_by_id(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    stable_id: u64,
+    field: StyleField,
+    value: StyleValue,
+) -> bool {
+    set_arena_dirty_style_field_by_id(arena, root_key, stable_id, field, &value)
+}
+
+fn set_arena_dirty_style_field_by_id(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    stable_id: u64,
+    field: StyleField,
+    value: &StyleValue,
+) -> bool {
+    let Some(target_key) = arena.find_by_stable_id(stable_id) else {
+        return false;
+    };
+    if arena.root_for(target_key) != root_key {
+        return false;
+    }
+    if !matches!(
+        (field, value),
+        (StyleField::Opacity, StyleValue::Scalar(_))
+            | (StyleField::BackgroundColor, StyleValue::Color(_))
+            | (StyleField::Color, StyleValue::Color(_))
+            | (StyleField::BorderTopColor, StyleValue::Color(_))
+            | (StyleField::BorderRightColor, StyleValue::Color(_))
+            | (StyleField::BorderBottomColor, StyleValue::Color(_))
+            | (StyleField::BorderLeftColor, StyleValue::Color(_))
+            | (StyleField::BorderRadius, StyleValue::Scalar(_))
+            | (StyleField::BoxShadow, StyleValue::BoxShadow(_))
+            | (StyleField::Transform, StyleValue::Transform(_))
+            | (StyleField::Transform, StyleValue::TransformProgress { .. })
+            | (StyleField::TransformOrigin, StyleValue::TransformOrigin(_))
+            | (
+                StyleField::TransformOrigin,
+                StyleValue::TransformOriginProgress { .. }
+            )
+    ) {
+        return false;
+    }
+
+    arena
+        .mutate_element_with_invalidation(target_key, |element, cx| {
+            let Some(element) = element.as_any_mut().downcast_mut::<Element>() else {
+                return false;
+            };
+            match (field, value) {
+                (StyleField::Opacity, StyleValue::Scalar(value)) => {
+                    element.set_opacity_with_invalidation(*value, cx);
+                }
+                (StyleField::BackgroundColor, StyleValue::Color(color)) => {
+                    element.set_background_color_value_with_invalidation(*color, cx);
+                }
+                (StyleField::Color, StyleValue::Color(color)) => {
+                    element.set_foreground_color_with_invalidation(*color, cx);
+                }
+                (StyleField::BorderTopColor, StyleValue::Color(color)) => {
+                    element.set_border_top_color_with_invalidation(*color, cx);
+                }
+                (StyleField::BorderRightColor, StyleValue::Color(color)) => {
+                    element.set_border_right_color_with_invalidation(*color, cx);
+                }
+                (StyleField::BorderBottomColor, StyleValue::Color(color)) => {
+                    element.set_border_bottom_color_with_invalidation(*color, cx);
+                }
+                (StyleField::BorderLeftColor, StyleValue::Color(color)) => {
+                    element.set_border_left_color_with_invalidation(*color, cx);
+                }
+                (StyleField::BorderRadius, StyleValue::Scalar(value)) => {
+                    element.set_border_radius_transition_sample_with_invalidation(*value, cx);
+                }
+                (StyleField::BoxShadow, StyleValue::BoxShadow(box_shadows)) => {
+                    element.set_box_shadows_with_invalidation(box_shadows.clone(), cx);
+                }
+                (StyleField::Transform, StyleValue::Transform(transform)) => {
+                    element.set_transform_value_with_invalidation(transform.clone(), cx);
+                }
+                (StyleField::Transform, StyleValue::TransformProgress { from, to, progress }) => {
+                    element.set_transform_progress_value_with_invalidation(
+                        from.clone(),
+                        to.clone(),
+                        *progress,
+                        cx,
+                    );
+                }
+                (StyleField::TransformOrigin, StyleValue::TransformOrigin(transform_origin)) => {
+                    element.set_transform_origin_value_with_invalidation(*transform_origin, cx);
+                }
+                (
+                    StyleField::TransformOrigin,
+                    StyleValue::TransformOriginProgress { from, to, progress },
+                ) => {
+                    element.set_transform_origin_progress_value_with_invalidation(
+                        *from, *to, *progress, cx,
+                    );
+                }
+                _ => {
+                    return false;
+                }
+            }
+            true
+        })
+        .unwrap_or(false)
+}
+
+#[allow(dead_code)]
+fn set_style_field_by_id_inner(
+    root: &mut dyn ElementTrait,
+    arena: &mut crate::view::node_arena::NodeArena,
+    stable_id: u64,
+    field: StyleField,
+    value: StyleValue,
+) -> bool {
+    if root.stable_id() == stable_id {
+        if let Some(element) = root.as_any_mut().downcast_mut::<Element>() {
+            match field {
+                StyleField::Opacity => {
+                    if let StyleValue::Scalar(value) = value {
+                        element.set_opacity(value);
+                    } else {
+                        return false;
+                    }
+                }
+                StyleField::BorderRadius => {
+                    if let StyleValue::Scalar(value) = value {
+                        element.set_border_radius_transition_sample(value);
+                    } else {
+                        return false;
+                    }
+                }
+                StyleField::BackgroundColor => {
+                    if let StyleValue::Color(color) = value {
+                        element.set_background_color_value(color);
+                    } else {
+                        return false;
+                    }
+                }
+                StyleField::Color => {
+                    if let StyleValue::Color(color) = value {
+                        element.set_foreground_color(color);
+                    } else {
+                        return false;
+                    }
+                }
+                StyleField::BorderTopColor => {
+                    if let StyleValue::Color(color) = value {
+                        element.set_border_top_color(color);
+                    } else {
+                        return false;
+                    }
+                }
+                StyleField::BorderRightColor => {
+                    if let StyleValue::Color(color) = value {
+                        element.set_border_right_color(color);
+                    } else {
+                        return false;
+                    }
+                }
+                StyleField::BorderBottomColor => {
+                    if let StyleValue::Color(color) = value {
+                        element.set_border_bottom_color(color);
+                    } else {
+                        return false;
+                    }
+                }
+                StyleField::BorderLeftColor => {
+                    if let StyleValue::Color(color) = value {
+                        element.set_border_left_color(color);
+                    } else {
+                        return false;
+                    }
+                }
+                StyleField::BoxShadow => {
+                    if let StyleValue::BoxShadow(box_shadows) = value {
+                        element.set_box_shadows(box_shadows);
+                    } else {
+                        return false;
+                    }
+                }
+                StyleField::Transform => match value {
+                    StyleValue::Transform(transform) => {
+                        element.set_transform_value(transform);
+                    }
+                    StyleValue::TransformProgress { from, to, progress } => {
+                        element.set_transform_progress_value(from, to, progress);
+                    }
+                    _ => {
+                        return false;
+                    }
+                },
+                StyleField::TransformOrigin => match value {
+                    StyleValue::TransformOrigin(transform_origin) => {
+                        element.set_transform_origin_value(transform_origin);
+                    }
+                    StyleValue::TransformOriginProgress { from, to, progress } => {
+                        element.set_transform_origin_progress_value(from, to, progress);
+                    }
+                    _ => return false,
+                },
+            }
+            return true;
+        }
+        return false;
+    }
+    let children: Vec<_> = root.children().to_vec();
+    for child_key in children {
+        if set_style_field_by_id(arena, child_key, stable_id, field, value.clone()) {
+            return true;
+        }
+    }
+    false
+}
+
+pub(crate) fn set_layout_field_by_id(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    node_id: u64,
+    field: LayoutField,
+    value: f32,
+) -> bool {
+    let Some(target_key) = arena.find_by_stable_id(node_id) else {
+        return false;
+    };
+    if arena.root_for(target_key) != root_key {
+        return false;
+    }
+
+    arena
+        .mutate_element_with_invalidation(target_key, |element, cx| {
+            let Some(element) = element.as_any_mut().downcast_mut::<Element>() else {
+                return false;
+            };
+            match field {
+                LayoutField::Width => element.set_layout_transition_width(value),
+                LayoutField::Height => element.set_layout_transition_height(value),
+                LayoutField::X | LayoutField::Y => return false,
+            }
+            cx.invalidate(DirtyFlags::ALL);
+            true
+        })
+        .unwrap_or(false)
+}
+
+#[allow(dead_code)]
+fn set_layout_field_by_id_inner(
+    root: &mut dyn ElementTrait,
+    arena: &mut crate::view::node_arena::NodeArena,
+    node_id: u64,
+    field: LayoutField,
+    value: f32,
+) -> bool {
+    if root.stable_id() == node_id {
+        if let Some(element) = root.as_any_mut().downcast_mut::<Element>() {
+            match field {
+                LayoutField::Width => element.set_layout_transition_width(value),
+                LayoutField::Height => element.set_layout_transition_height(value),
+                LayoutField::X | LayoutField::Y => return false,
+            }
+            return true;
+        }
+        return false;
+    }
+    let children: Vec<_> = root.children().to_vec();
+    for child_key in children {
+        if set_layout_field_by_id(arena, child_key, node_id, field, value) {
+            if let Some(element) = root.as_any_mut().downcast_mut::<Element>() {
+                element.mark_layout_dirty();
+            }
+            return true;
+        }
+    }
+    false
+}
+
+pub(crate) fn set_visual_field_by_id(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    node_id: u64,
+    field: VisualField,
+    value: f32,
+) -> bool {
+    let Some(target_key) = arena.find_by_stable_id(node_id) else {
+        return false;
+    };
+    if arena.root_for(target_key) != root_key {
+        return false;
+    }
+
+    arena
+        .mutate_element_with_invalidation(target_key, |element, cx| {
+            let Some(element) = element.as_any_mut().downcast_mut::<Element>() else {
+                return false;
+            };
+            match field {
+                VisualField::X => element.set_layout_transition_x(value),
+                VisualField::Y => element.set_layout_transition_y(value),
+            }
+            cx.invalidate(DirtyPassMask::RUNTIME);
+            return true;
+        })
+        .unwrap_or(false)
 }

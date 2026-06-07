@@ -150,13 +150,15 @@ fn layout_transition_field_update_invalidates_frame_box_model_cache() {
         .element
         .stable_id();
 
-    assert!(crate::view::base_component::set_layout_field_by_id(
-        &mut viewport.scene.node_arena,
-        root_key,
-        child_id,
-        crate::transition::LayoutField::Height,
-        55.0,
-    ));
+    assert!(
+        crate::view::viewport::transitions_tick::set_layout_field_by_id(
+            &mut viewport.scene.node_arena,
+            root_key,
+            child_id,
+            crate::transition::LayoutField::Height,
+            55.0,
+        )
+    );
 
     viewport.refresh_frame_box_models();
 
@@ -191,21 +193,23 @@ fn transition_runtime_reconcile_marks_arena_dirty_when_clearing_layout_state() {
         .element
         .stable_id();
 
-    assert!(crate::view::base_component::set_layout_field_by_id(
-        &mut viewport.scene.node_arena,
-        root_key,
-        child_id,
-        crate::transition::LayoutField::Width,
-        72.0,
-    ));
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    assert!(
+        crate::view::viewport::transitions_tick::set_layout_field_by_id(
+            &mut viewport.scene.node_arena,
+            root_key,
+            child_id,
+            crate::transition::LayoutField::Width,
+            72.0,
+        )
+    );
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
     );
 
     assert!(
-        crate::view::base_component::reconcile_transition_runtime_state(
+        crate::view::viewport::transitions_tick::reconcile_transition_runtime_state(
             &mut viewport.scene.node_arena,
             &[root_key],
             &rustc_hash::FxHashMap::default(),
@@ -255,13 +259,15 @@ fn visual_transition_field_update_marks_arena_runtime_dirty() {
         .element
         .stable_id();
 
-    assert!(crate::view::base_component::set_visual_field_by_id(
-        &mut viewport.scene.node_arena,
-        root_key,
-        child_id,
-        crate::transition::VisualField::X,
-        12.0,
-    ));
+    assert!(
+        crate::view::viewport::transitions_tick::set_visual_field_by_id(
+            &mut viewport.scene.node_arena,
+            root_key,
+            child_id,
+            crate::transition::VisualField::X,
+            12.0,
+        )
+    );
 
     assert!(
         viewport
@@ -304,7 +310,7 @@ fn scroll_offset_update_marks_arena_runtime_dirty() {
         .element
         .stable_id();
 
-    assert!(crate::view::base_component::set_scroll_offset_by_id(
+    assert!(crate::view::viewport::dispatch::set_scroll_offset_by_id(
         &viewport.scene.node_arena,
         root_key,
         root_id,
@@ -340,7 +346,7 @@ fn text_area_viewport(content: &str) -> (Viewport, crate::view::node_arena::Node
     run_layout_for_test(&mut viewport, 320.0, 160.0);
     let root_key = viewport.scene.ui_root_keys[0];
     viewport.refresh_frame_box_models();
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -412,7 +418,7 @@ fn generic_click_dispatch_marks_arena_paint_dirty_without_box_model_recollect() 
     run_layout_for_test(&mut viewport, 120.0, 80.0);
     let root_key = viewport.scene.ui_root_keys[0];
     viewport.refresh_frame_box_models();
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         DirtyFlags::ALL,
@@ -493,7 +499,7 @@ fn refresh_frame_box_models_clears_arena_shadow_dirty() {
         .union(crate::view::base_component::DirtyFlags::HIT_TEST);
 
     assert!(
-        crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+        crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
             &mut viewport.scene.node_arena,
             root_key,
             crate::view::base_component::DirtyFlags::ALL,
@@ -567,7 +573,7 @@ fn layout_pass_clears_consumed_arena_layout_place_and_box_dirty() {
 
     let root_key = viewport.scene.ui_root_keys[0];
     let child_key = viewport.scene.node_arena.children_of(root_key)[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,

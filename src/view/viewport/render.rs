@@ -139,7 +139,9 @@ impl Viewport {
         let mut snapshots_by_id: FxHashMap<u64, crate::view::base_component::BoxModelSnapshot> =
             FxHashMap::default();
         for &root_key in &self.scene.ui_root_keys {
-            for snapshot in crate::view::base_component::collect_box_models(root_key, arena) {
+            for snapshot in
+                crate::view::viewport::scene_helpers::collect_box_models(root_key, arena)
+            {
                 snapshots_by_id.insert(snapshot.node_id, snapshot);
             }
         }
@@ -511,7 +513,7 @@ impl Viewport {
                     let node = arena.get(root_key).unwrap();
                     let element = node.element.as_ref();
                     (
-                        crate::view::base_component::can_reuse_promoted_subtree(
+                        crate::view::viewport::scene_helpers::can_reuse_promoted_subtree(
                             element, &ctx, &arena,
                         ),
                         element.promotion_composite_bounds(),
@@ -705,7 +707,7 @@ impl Viewport {
         if executed {
             let root_keys = self.scene.ui_root_keys.clone();
             for root_key in root_keys {
-                crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+                crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
                     &mut self.scene.node_arena,
                     root_key,
                     crate::view::base_component::DirtyFlags::PAINT,
@@ -854,10 +856,11 @@ impl Viewport {
                 &self.scene.ui_root_keys,
                 &mut self.scene.scroll_offsets,
             );
-            let layout_snapshots = crate::view::base_component::collect_layout_transition_snapshots(
-                &self.scene.node_arena,
-                &self.scene.ui_root_keys,
-            );
+            let layout_snapshots =
+                crate::view::viewport::transitions_tick::collect_layout_transition_snapshots(
+                    &self.scene.node_arena,
+                    &self.scene.ui_root_keys,
+                );
             let (converted_descriptors, conversion_errors) =
                 crate::view::renderer_adapter::rsx_to_descriptors_with_context(
                     root,
@@ -907,7 +910,7 @@ impl Viewport {
             {
                 let mut arena = std::mem::take(&mut self.scene.node_arena);
                 let root_keys = self.scene.ui_root_keys.clone();
-                crate::view::base_component::seed_layout_transition_snapshots(
+                crate::view::viewport::transitions_tick::seed_layout_transition_snapshots(
                     &mut arena,
                     &root_keys,
                     &layout_snapshots,
@@ -929,11 +932,12 @@ impl Viewport {
         let reconciled_transition_state = {
             let mut arena = std::mem::take(&mut self.scene.node_arena);
             let root_keys = self.scene.ui_root_keys.clone();
-            let result = crate::view::base_component::reconcile_transition_runtime_state(
-                &mut arena,
-                &root_keys,
-                &active_channels_by_node(&self.transitions.transition_claims),
-            );
+            let result =
+                crate::view::viewport::transitions_tick::reconcile_transition_runtime_state(
+                    &mut arena,
+                    &root_keys,
+                    &active_channels_by_node(&self.transitions.transition_claims),
+                );
             self.scene.node_arena = arena;
             result
         };

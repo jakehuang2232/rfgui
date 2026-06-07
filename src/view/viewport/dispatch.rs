@@ -1,4 +1,7 @@
 use super::*;
+use crate::view::base_component::{
+    BoxModelSnapshot, DirtyPassMask, Element, ElementTrait, hit_test,
+};
 
 impl Viewport {
     pub(super) fn hit_test_pointer_target(
@@ -54,7 +57,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             if let Some((root_key, target_key)) = hit_target {
-                if crate::view::base_component::dispatch_pointer_down_to_target(
+                if crate::view::viewport::dispatch::dispatch_pointer_down_to_target(
                     &arena,
                     root_key,
                     target_key,
@@ -70,7 +73,7 @@ impl Viewport {
             // Promote the popup that absorbed the click to the top of the
             // stack so subsequent renders + hit-tests treat it as topmost.
             let target_id = event.meta.target_id();
-            if let Some(sid) = crate::view::base_component::nearest_viewport_clip_ancestor_id(
+            if let Some(sid) = crate::view::viewport::dispatch::nearest_viewport_clip_ancestor_id(
                 &self.scene.node_arena,
                 target_id,
             ) {
@@ -180,7 +183,7 @@ impl Viewport {
             let (arena, mut control) = self.borrow_for_dispatch();
             if let Some(target_id) = control.viewport.pointer_capture_node_id() {
                 for &root_key in root_keys.iter().rev() {
-                    if crate::view::base_component::dispatch_pointer_up_to_target(
+                    if crate::view::viewport::dispatch::dispatch_pointer_up_to_target(
                         &arena,
                         root_key,
                         target_id,
@@ -194,7 +197,7 @@ impl Viewport {
                 control.viewport.set_pointer_capture_node_id(None);
             } else {
                 if let Some((root_key, target_key)) = hit_target {
-                    if crate::view::base_component::dispatch_pointer_up_to_target(
+                    if crate::view::viewport::dispatch::dispatch_pointer_up_to_target(
                         &arena,
                         root_key,
                         target_key,
@@ -273,7 +276,7 @@ impl Viewport {
             let (arena, mut control) = self.borrow_for_dispatch();
             if let Some(target_id) = control.viewport.pointer_capture_node_id() {
                 for &root_key in root_keys.iter().rev() {
-                    if crate::view::base_component::dispatch_pointer_move_to_target(
+                    if crate::view::viewport::dispatch::dispatch_pointer_move_to_target(
                         &arena,
                         root_key,
                         target_id,
@@ -289,7 +292,7 @@ impl Viewport {
                 }
             } else {
                 if let Some((root_key, target_key)) = hit_target {
-                    if crate::view::base_component::dispatch_pointer_move_to_target(
+                    if crate::view::viewport::dispatch::dispatch_pointer_move_to_target(
                         &arena,
                         root_key,
                         target_key,
@@ -390,7 +393,7 @@ impl Viewport {
                 event.meta.attach_dispatch_ctx(&*self);
                 let (arena, mut control) = self.borrow_for_dispatch();
                 for &root_key in root_keys.iter().rev() {
-                    if crate::view::base_component::dispatch_context_menu_to_target(
+                    if crate::view::viewport::dispatch::dispatch_context_menu_to_target(
                         &arena,
                         root_key,
                         pending_click.target_id,
@@ -414,7 +417,7 @@ impl Viewport {
                 event.meta.attach_dispatch_ctx(&*self);
                 let (arena, mut control) = self.borrow_for_dispatch();
                 for &root_key in root_keys.iter().rev() {
-                    if crate::view::base_component::dispatch_click_to_target(
+                    if crate::view::viewport::dispatch::dispatch_click_to_target(
                         &arena,
                         root_key,
                         pending_click.target_id,
@@ -488,7 +491,7 @@ impl Viewport {
             wheel_event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             if let Some((root_key, target_key)) = wheel_hit {
-                if crate::view::base_component::dispatch_wheel_to_target(
+                if crate::view::viewport::dispatch::dispatch_wheel_to_target(
                     arena,
                     root_key,
                     target_key,
@@ -529,24 +532,24 @@ impl Viewport {
             .map(|n| n.element.stable_id())
             .unwrap_or(0);
         if let Some(&root_key) = root_keys.get(root_index) {
-            if let Some(from) = crate::view::base_component::get_scroll_offset_by_id(
+            if let Some(from) = crate::view::viewport::dispatch::get_scroll_offset_by_id(
                 &self.scene.node_arena,
                 root_key,
                 target_stable_id,
             ) {
-                let _ = crate::view::base_component::dispatch_scroll_to_target(
+                let _ = crate::view::viewport::dispatch::dispatch_scroll_to_target(
                     &self.scene.node_arena,
                     root_key,
                     target_key,
                     delta_x,
                     delta_y,
                 );
-                if let Some(to) = crate::view::base_component::get_scroll_offset_by_id(
+                if let Some(to) = crate::view::viewport::dispatch::get_scroll_offset_by_id(
                     &self.scene.node_arena,
                     root_key,
                     target_stable_id,
                 ) {
-                    let _ = crate::view::base_component::set_scroll_offset_by_id(
+                    let _ = crate::view::viewport::dispatch::set_scroll_offset_by_id(
                         &self.scene.node_arena,
                         root_key,
                         target_stable_id,
@@ -614,7 +617,7 @@ impl Viewport {
         // Walk up from hit_target via arena.parent_of, stopping at the first
         // ancestor that reports `can_scroll_by`. Determine which root it sits
         // under by walking further up to the root.
-        let handler_key = crate::view::base_component::find_scroll_handler_from_target(
+        let handler_key = crate::view::viewport::dispatch::find_scroll_handler_from_target(
             arena, hit_target, hit_target, delta_x, delta_y,
         )?;
         // Find the root that contains handler_key.
@@ -647,7 +650,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_key_down_bubble(
+                if crate::view::viewport::dispatch::dispatch_key_down_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -683,7 +686,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_key_up_bubble(
+                if crate::view::viewport::dispatch::dispatch_key_up_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -734,7 +737,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_text_input_bubble(
+                if crate::view::viewport::dispatch::dispatch_text_input_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -788,7 +791,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_ime_preedit_bubble(
+                if crate::view::viewport::dispatch::dispatch_ime_preedit_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -829,7 +832,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_ime_commit_bubble(
+                if crate::view::viewport::dispatch::dispatch_ime_commit_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -865,7 +868,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_ime_enabled_bubble(
+                if crate::view::viewport::dispatch::dispatch_ime_enabled_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -902,7 +905,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_ime_disabled_bubble(
+                if crate::view::viewport::dispatch::dispatch_ime_disabled_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -942,7 +945,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_copy_bubble(
+                if crate::view::viewport::dispatch::dispatch_copy_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -990,7 +993,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_cut_bubble(
+                if crate::view::viewport::dispatch::dispatch_cut_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -1035,7 +1038,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_paste_bubble(
+                if crate::view::viewport::dispatch::dispatch_paste_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -1079,7 +1082,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_drag_start_bubble(
+                if crate::view::viewport::dispatch::dispatch_drag_start_bubble(
                     &arena,
                     root_key,
                     source_id,
@@ -1116,7 +1119,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_drag_over_bubble(
+                if crate::view::viewport::dispatch::dispatch_drag_over_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -1136,7 +1139,7 @@ impl Viewport {
     /// Fire [`crate::ui::DragLeaveEvent`] at `target_id`. Non-bubbling.
     fn dispatch_drag_leave_event(&mut self, target_id: NodeId) -> bool {
         let (arena, mut control) = self.borrow_for_dispatch();
-        crate::view::base_component::dispatch_drag_leave_to_key(&arena, target_id, &mut control)
+        crate::view::viewport::dispatch::dispatch_drag_leave_to_key(&arena, target_id, &mut control)
     }
 
     /// Fire [`crate::ui::DropEvent`] at `target_id` with the resolved
@@ -1160,7 +1163,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_drop_bubble(
+                if crate::view::viewport::dispatch::dispatch_drop_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -1196,7 +1199,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_drag_end_bubble(
+                if crate::view::viewport::dispatch::dispatch_drag_end_bubble(
                     &arena,
                     root_key,
                     source_id,
@@ -1329,7 +1332,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_focus_bubble(
+                if crate::view::viewport::dispatch::dispatch_focus_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -1372,7 +1375,7 @@ impl Viewport {
             event.meta.attach_dispatch_ctx(&*self);
             let (arena, mut control) = self.borrow_for_dispatch();
             for &root_key in root_keys.iter().rev() {
-                if crate::view::base_component::dispatch_blur_bubble(
+                if crate::view::viewport::dispatch::dispatch_blur_bubble(
                     &arena,
                     root_key,
                     target_id,
@@ -1643,7 +1646,7 @@ impl Viewport {
                 }
                 EventCommand::ScrollIntoView { target_id, options } => {
                     let root_keys = self.scene.ui_root_keys.clone();
-                    let scrolled = crate::view::base_component::scroll_into_view_impl(
+                    let scrolled = crate::view::viewport::dispatch::scroll_into_view_impl(
                         &self.scene.node_arena,
                         &root_keys,
                         target_id,
@@ -1893,5 +1896,1684 @@ fn synthetic_pointer_data(
         pointer_type: crate::platform::input::PointerType::Mouse,
         pressure: 0.0,
         timestamp: crate::time::Instant::now(),
+    }
+}
+
+/// Build the `target → root` path (DOM `composedPath` order) for the given
+/// target key, by walking the arena parent chain from `target_key` upward.
+///
+/// Stops at the root (parent=None) or when `root_key` is reached (inclusive).
+/// Ordering matches DOM `composedPath()`: target first, root last. Elements
+/// are emitted as `NodeId` (alias for `NodeKey`) — the event layer uses
+/// NodeKey end-to-end now.
+fn composed_path_for_target(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+) -> Vec<crate::ui::NodeId> {
+    let mut path = Vec::new();
+    let mut current = Some(target_key);
+    while let Some(k) = current {
+        path.push(k);
+        if k == root_key {
+            return path;
+        }
+        current = arena.parent_of(k);
+    }
+    // target_key not reachable from root_key — return empty per contract.
+    Vec::new()
+}
+
+pub fn dispatch_pointer_down_from_hit_test(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    event: &mut PointerDownEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let Some(target_key) = hit_test(
+        arena,
+        root_key,
+        event.pointer.viewport_x,
+        event.pointer.viewport_y,
+    ) else {
+        return false;
+    };
+    event.meta.set_target_id(target_key);
+    event
+        .meta
+        .set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_pointer_down_bubble(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_pointer_down_to_target(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut PointerDownEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    event.meta.set_target_id(target_key);
+    event
+        .meta
+        .set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_pointer_down_bubble(arena, target_key, event, control)
+}
+
+/// Walk the parent chain from `target` upward and return the `stable_id`
+/// of the nearest viewport-clip absolute ancestor (or `target` itself if
+/// it qualifies). Used by dispatch to promote the popup that absorbed
+/// the pointer event to the top of the popup stack.
+pub fn nearest_viewport_clip_ancestor_id(
+    arena: &crate::view::node_arena::NodeArena,
+    target: crate::view::node_arena::NodeKey,
+) -> Option<u64> {
+    let mut current = Some(target);
+    while let Some(k) = current {
+        let (sid_opt, parent) = {
+            let node = arena.get(k)?;
+            let parent = node.parent;
+            let sid = node
+                .element
+                .as_any()
+                .downcast_ref::<Element>()
+                .filter(|el| el.should_append_to_root_viewport_render())
+                .map(|el| el.stable_id())
+                .filter(|s| *s != 0);
+            (sid, parent)
+        };
+        if let Some(sid) = sid_opt {
+            return Some(sid);
+        }
+        current = parent;
+    }
+    None
+}
+
+pub fn dispatch_pointer_up_from_hit_test(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    event: &mut PointerUpEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let Some(target_key) = hit_test(
+        arena,
+        root_key,
+        event.pointer.viewport_x,
+        event.pointer.viewport_y,
+    ) else {
+        return false;
+    };
+    event.meta.set_target_id(target_key);
+    event
+        .meta
+        .set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_pointer_up_bubble(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_pointer_up_to_target(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut PointerUpEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    event.meta.set_target_id(target_key);
+    event
+        .meta
+        .set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_pointer_up_bubble(arena, target_key, event, control)
+}
+
+pub fn dispatch_pointer_move_from_hit_test(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    event: &mut PointerMoveEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let Some(target_key) = hit_test(
+        arena,
+        root_key,
+        event.pointer.viewport_x,
+        event.pointer.viewport_y,
+    ) else {
+        return false;
+    };
+    event.meta.set_target_id(target_key);
+    event
+        .meta
+        .set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_pointer_move_bubble(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_pointer_move_to_target(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut PointerMoveEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    event.meta.set_target_id(target_key);
+    event
+        .meta
+        .set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_pointer_move_bubble(arena, target_key, event, control)
+}
+
+pub fn dispatch_click_from_hit_test(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    event: &mut ClickEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let Some(target_key) = hit_test(
+        arena,
+        root_key,
+        event.pointer.viewport_x,
+        event.pointer.viewport_y,
+    ) else {
+        return false;
+    };
+    event.meta.set_target_id(target_key);
+    event
+        .meta
+        .set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_click_bubble(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_click_to_target(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut ClickEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    event.meta.set_target_id(target_key);
+    event
+        .meta
+        .set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_click_bubble(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_context_menu_to_target(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::ContextMenuEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    event.meta.set_target_id(target_key);
+    event
+        .meta
+        .set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_context_menu_bubble(arena, target_key, event, control)
+}
+
+pub fn dispatch_scroll_from_hit_test(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    viewport_x: f32,
+    viewport_y: f32,
+    delta_x: f32,
+    delta_y: f32,
+) -> bool {
+    let Some(target_key) = hit_test(arena, root_key, viewport_x, viewport_y) else {
+        return false;
+    };
+    dispatch_scroll_bubble(arena, target_key, delta_x, delta_y)
+}
+
+pub(crate) fn find_scroll_handler_from_target(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    delta_x: f32,
+    delta_y: f32,
+) -> Option<crate::view::node_arena::NodeKey> {
+    find_scroll_handler_bubble(arena, target_key, delta_x, delta_y)
+}
+
+pub(crate) fn dispatch_scroll_to_target(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    delta_x: f32,
+    delta_y: f32,
+) -> bool {
+    dispatch_scroll_bubble(arena, target_key, delta_x, delta_y)
+}
+
+/// Scroll `target_key` into view inside its nearest scrollable ancestor.
+/// Returns `true` when a scrollable ancestor was found and a non-zero
+/// delta applied. Currently implements DOM `ScrollAlignment::Nearest`
+/// for both axes regardless of `options.block` / `options.inline` —
+/// Start / Center / End variants are recognised but fall back to
+/// Nearest until a future pass computes precise alignment deltas.
+pub(crate) fn scroll_into_view_impl(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_keys: &[crate::view::node_arena::NodeKey],
+    target_key: crate::view::node_arena::NodeKey,
+    options: crate::ui::ScrollIntoViewOptions,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    let Some(target_rect) = arena.get(target_key).map(|n| {
+        let snapshot = n.element.box_model_snapshot();
+        crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height)
+    }) else {
+        return false;
+    };
+    scroll_rect_into_view_from(arena, target_key, target_rect, options, true, false)
+}
+
+pub(crate) fn scroll_rect_into_view_from(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    target_rect: crate::ui::Rect,
+    options: crate::ui::ScrollIntoViewOptions,
+    include_target: bool,
+    reveal_all_ancestors: bool,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+
+    let mut current = if include_target {
+        Some(target_key)
+    } else {
+        arena.parent_of(target_key)
+    };
+    let mut rect = target_rect;
+    let mut scrolled = false;
+    let _ = options; // Start/Center/End: future work.
+
+    while let Some(scroller_key) = current {
+        current = arena.parent_of(scroller_key);
+        let Some(scroller_rect) = arena.get(scroller_key).map(|n| {
+            let snapshot = n.element.box_model_snapshot();
+            crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height)
+        }) else {
+            continue;
+        };
+
+        let (dx, dy) = nearest_scroll_delta(rect, scroller_rect);
+        if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
+            continue;
+        }
+
+        let changed = arena
+            .mutate_element_ref_with_invalidation(scroller_key, |element, cx| {
+                let before = element.get_scroll_offset();
+                let handled = element.scroll_by(dx, dy);
+                let after = element.get_scroll_offset();
+                let actual_dx = after.0 - before.0;
+                let actual_dy = after.1 - before.1;
+                if handled {
+                    rect.x -= actual_dx;
+                    rect.y -= actual_dy;
+                }
+                if handled && before != after {
+                    cx.invalidate(DirtyPassMask::RUNTIME);
+                }
+                handled
+            })
+            .unwrap_or(false);
+        scrolled |= changed;
+        if changed && !reveal_all_ancestors {
+            break;
+        }
+    }
+
+    scrolled
+}
+
+fn nearest_scroll_delta(
+    target_rect: crate::ui::Rect,
+    scroller_rect: crate::ui::Rect,
+) -> (f32, f32) {
+    let mut dy = 0.0;
+    if target_rect.y < scroller_rect.y {
+        dy = target_rect.y - scroller_rect.y;
+    } else if target_rect.y + target_rect.height > scroller_rect.y + scroller_rect.height {
+        dy = (target_rect.y + target_rect.height) - (scroller_rect.y + scroller_rect.height);
+    }
+    let mut dx = 0.0;
+    if target_rect.x < scroller_rect.x {
+        dx = target_rect.x - scroller_rect.x;
+    } else if target_rect.x + target_rect.width > scroller_rect.x + scroller_rect.width {
+        dx = (target_rect.x + target_rect.width) - (scroller_rect.x + scroller_rect.width);
+    }
+    (dx, dy)
+}
+
+pub fn get_scroll_offset_by_id(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    stable_id: u64,
+) -> Option<(f32, f32)> {
+    let node = arena.get(root_key)?;
+    if node.element.stable_id() == stable_id {
+        return Some(node.element.get_scroll_offset());
+    }
+    let children: Vec<_> = node.children.clone();
+    drop(node);
+    for child_key in children {
+        if let Some(offset) = get_scroll_offset_by_id(arena, child_key, stable_id) {
+            return Some(offset);
+        }
+    }
+    None
+}
+
+pub fn set_scroll_offset_by_id(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    stable_id: u64,
+    offset: (f32, f32),
+) -> bool {
+    fn walk(
+        arena: &crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        stable_id: u64,
+        offset: (f32, f32),
+    ) -> bool {
+        let Some(node) = arena.get(key) else {
+            return false;
+        };
+        if node.element.stable_id() == stable_id {
+            drop(node);
+            return arena
+                .mutate_element_ref_with_invalidation(key, |element, cx| {
+                    let before = element.get_scroll_offset();
+                    element.set_scroll_offset(offset);
+                    if before != offset {
+                        cx.invalidate(DirtyPassMask::RUNTIME);
+                    }
+                    true
+                })
+                .unwrap_or(false);
+        }
+        let children = node.children.clone();
+        drop(node);
+        for child_key in children {
+            if walk(arena, child_key, stable_id, offset) {
+                return true;
+            }
+        }
+        false
+    }
+
+    walk(arena, root_key, stable_id, offset)
+}
+
+pub(crate) fn dispatch_key_down_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut KeyDownEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_key_down_impl(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_key_up_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut KeyUpEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_key_up_impl(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_text_input_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut TextInputEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_text_input_impl(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_ime_preedit_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut ImePreeditEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_ime_preedit_impl(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_focus_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut FocusEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_focus_impl(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_blur_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut BlurEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_blur_impl(arena, target_key, event, control)
+}
+
+pub(super) fn local_point_for_node(
+    node: &dyn ElementTrait,
+    snapshot: &BoxModelSnapshot,
+    viewport_x: f32,
+    viewport_y: f32,
+) -> (f32, f32) {
+    let (paint_x, paint_y) = node
+        .as_any()
+        .downcast_ref::<Element>()
+        .and_then(|element| element.map_viewport_to_paint_space(viewport_x, viewport_y))
+        .unwrap_or((viewport_x, viewport_y));
+    (paint_x - snapshot.x, paint_y - snapshot.y)
+}
+
+/// Bubble a pointer-down event from `target_key` up the arena parent chain.
+/// Dispatches to target first, then each ancestor (via `arena.parent_of`)
+/// until the root is reached or `stop_propagation` is called.
+fn dispatch_pointer_down_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut PointerDownEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    let mut at_target = true;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        event.meta.set_phase(if at_target {
+            crate::ui::EventPhase::AtTarget
+        } else {
+            crate::ui::EventPhase::Bubbling
+        });
+        let next = arena.parent_of(key);
+        let did = arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                let node_id = element.stable_id();
+                let snapshot = element.box_model_snapshot();
+                let (local_x, local_y) = local_point_for_node(
+                    element.as_ref(),
+                    &snapshot,
+                    event.pointer.viewport_x,
+                    event.pointer.viewport_y,
+                );
+                event.pointer.local_x = local_x;
+                event.pointer.local_y = local_y;
+                let ct = crate::ui::EventTarget::snapshot(
+                    key,
+                    crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+                );
+                event.meta.set_current_target(ct);
+                let _ = node_id;
+                element.dispatch_pointer_down(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        if at_target && !event.meta.bubbles() {
+            break;
+        }
+        at_target = false;
+        current = next;
+    }
+    event.meta.set_phase(crate::ui::EventPhase::None);
+    dispatched
+}
+
+fn dispatch_pointer_up_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut PointerUpEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    let mut at_target = true;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        event.meta.set_phase(if at_target {
+            crate::ui::EventPhase::AtTarget
+        } else {
+            crate::ui::EventPhase::Bubbling
+        });
+        let next = arena.parent_of(key);
+        let did = arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                let snapshot = element.box_model_snapshot();
+                let (local_x, local_y) = local_point_for_node(
+                    element.as_ref(),
+                    &snapshot,
+                    event.pointer.viewport_x,
+                    event.pointer.viewport_y,
+                );
+                event.pointer.local_x = local_x;
+                event.pointer.local_y = local_y;
+                let ct = crate::ui::EventTarget::snapshot(
+                    key,
+                    crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+                );
+                event.meta.set_current_target(ct);
+                element.dispatch_pointer_up(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        if at_target && !event.meta.bubbles() {
+            break;
+        }
+        at_target = false;
+        current = next;
+    }
+    event.meta.set_phase(crate::ui::EventPhase::None);
+    dispatched
+}
+
+fn dispatch_pointer_move_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut PointerMoveEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    let mut at_target = true;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        event.meta.set_phase(if at_target {
+            crate::ui::EventPhase::AtTarget
+        } else {
+            crate::ui::EventPhase::Bubbling
+        });
+        let next = arena.parent_of(key);
+        let did = arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                let snapshot = element.box_model_snapshot();
+                let (local_x, local_y) = local_point_for_node(
+                    element.as_ref(),
+                    &snapshot,
+                    event.pointer.viewport_x,
+                    event.pointer.viewport_y,
+                );
+                event.pointer.local_x = local_x;
+                event.pointer.local_y = local_y;
+                let ct = crate::ui::EventTarget::snapshot(
+                    key,
+                    crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+                );
+                event.meta.set_current_target(ct);
+                element.dispatch_pointer_move(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        if at_target && !event.meta.bubbles() {
+            break;
+        }
+        at_target = false;
+        current = next;
+    }
+    event.meta.set_phase(crate::ui::EventPhase::None);
+    dispatched
+}
+
+fn dispatch_wheel_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::WheelEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    let mut at_target = true;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        event.meta.set_phase(if at_target {
+            crate::ui::EventPhase::AtTarget
+        } else {
+            crate::ui::EventPhase::Bubbling
+        });
+        let next = arena.parent_of(key);
+        let did = arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                let snapshot = element.box_model_snapshot();
+                let (local_x, local_y) = local_point_for_node(
+                    element.as_ref(),
+                    &snapshot,
+                    event.viewport_x,
+                    event.viewport_y,
+                );
+                event.local_x = local_x;
+                event.local_y = local_y;
+                let ct = crate::ui::EventTarget::snapshot(
+                    key,
+                    crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+                );
+                event.meta.set_current_target(ct);
+                element.dispatch_wheel(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        if at_target && !event.meta.bubbles() {
+            break;
+        }
+        at_target = false;
+        current = next;
+    }
+    event.meta.set_phase(crate::ui::EventPhase::None);
+    dispatched
+}
+
+#[allow(dead_code)]
+pub(crate) fn dispatch_wheel_from_hit_test(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::WheelEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let Some(target_key) = hit_test(arena, root_key, event.viewport_x, event.viewport_y) else {
+        return false;
+    };
+    event.meta.set_target_id(target_key);
+    event
+        .meta
+        .set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_wheel_bubble(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_wheel_to_target(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::WheelEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    event.meta.set_target_id(target_key);
+    event
+        .meta
+        .set_path(composed_path_for_target(arena, root_key, target_key));
+    dispatch_wheel_bubble(arena, target_key, event, control)
+}
+
+fn dispatch_context_menu_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::ContextMenuEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    let mut at_target = true;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        event.meta.set_phase(if at_target {
+            crate::ui::EventPhase::AtTarget
+        } else {
+            crate::ui::EventPhase::Bubbling
+        });
+        let next = arena.parent_of(key);
+        let did = arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                let snapshot = element.box_model_snapshot();
+                let (local_x, local_y) = local_point_for_node(
+                    element.as_ref(),
+                    &snapshot,
+                    event.pointer.viewport_x,
+                    event.pointer.viewport_y,
+                );
+                event.pointer.local_x = local_x;
+                event.pointer.local_y = local_y;
+                let ct = crate::ui::EventTarget::snapshot(
+                    key,
+                    crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+                );
+                event.meta.set_current_target(ct);
+                element.dispatch_context_menu(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        if at_target && !event.meta.bubbles() {
+            break;
+        }
+        at_target = false;
+        current = next;
+    }
+    event.meta.set_phase(crate::ui::EventPhase::None);
+    dispatched
+}
+
+fn dispatch_click_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut ClickEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    let mut at_target = true;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        event.meta.set_phase(if at_target {
+            crate::ui::EventPhase::AtTarget
+        } else {
+            crate::ui::EventPhase::Bubbling
+        });
+        let next = arena.parent_of(key);
+        let did = arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                let snapshot = element.box_model_snapshot();
+                let (local_x, local_y) = local_point_for_node(
+                    element.as_ref(),
+                    &snapshot,
+                    event.pointer.viewport_x,
+                    event.pointer.viewport_y,
+                );
+                event.pointer.local_x = local_x;
+                event.pointer.local_y = local_y;
+                let ct = crate::ui::EventTarget::snapshot(
+                    key,
+                    crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+                );
+                event.meta.set_current_target(ct);
+                element.dispatch_click(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        if at_target && !event.meta.bubbles() {
+            break;
+        }
+        at_target = false;
+        current = next;
+    }
+    event.meta.set_phase(crate::ui::EventPhase::None);
+    dispatched
+}
+
+/// Bubble a scroll event from `target_key` upward, letting the deepest
+/// ancestor that can scroll consume the delta.
+fn dispatch_scroll_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    dx: f32,
+    dy: f32,
+) -> bool {
+    let mut current = Some(target_key);
+    while let Some(key) = current {
+        let next = arena.parent_of(key);
+        let handled = arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                let before = element.get_scroll_offset();
+                let handled = element.scroll_by(dx, dy);
+                if handled && before != element.get_scroll_offset() {
+                    cx.invalidate(DirtyPassMask::RUNTIME);
+                }
+                handled
+            })
+            .unwrap_or(false);
+        if handled {
+            return true;
+        }
+        current = next;
+    }
+    false
+}
+
+fn find_scroll_handler_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    dx: f32,
+    dy: f32,
+) -> Option<crate::view::node_arena::NodeKey> {
+    let mut current = Some(target_key);
+    while let Some(key) = current {
+        let can = arena
+            .get(key)
+            .is_some_and(|n| n.element.can_scroll_by(dx, dy));
+        if can {
+            return Some(key);
+        }
+        current = arena.parent_of(key);
+    }
+    None
+}
+
+fn dispatch_key_down_impl(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut KeyDownEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    let mut at_target = true;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        event.meta.set_phase(if at_target {
+            crate::ui::EventPhase::AtTarget
+        } else {
+            crate::ui::EventPhase::Bubbling
+        });
+        let next = arena.parent_of(key);
+        let did = arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                event.meta.set_current_target_id(key);
+                element.dispatch_key_down(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        if at_target && !event.meta.bubbles() {
+            break;
+        }
+        at_target = false;
+        current = next;
+    }
+    event.meta.set_phase(crate::ui::EventPhase::None);
+    dispatched
+}
+
+fn dispatch_key_up_impl(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut KeyUpEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    let mut at_target = true;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        event.meta.set_phase(if at_target {
+            crate::ui::EventPhase::AtTarget
+        } else {
+            crate::ui::EventPhase::Bubbling
+        });
+        let next = arena.parent_of(key);
+        let did = arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                event.meta.set_current_target_id(key);
+                element.dispatch_key_up(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        if at_target && !event.meta.bubbles() {
+            break;
+        }
+        at_target = false;
+        current = next;
+    }
+    event.meta.set_phase(crate::ui::EventPhase::None);
+    dispatched
+}
+
+fn dispatch_focus_impl(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut FocusEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    let mut at_target = true;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        event.meta.set_phase(if at_target {
+            crate::ui::EventPhase::AtTarget
+        } else {
+            crate::ui::EventPhase::Bubbling
+        });
+        let next = arena.parent_of(key);
+        let did = arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                event.meta.set_current_target_id(key);
+                element.dispatch_focus(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        if at_target && !event.meta.bubbles() {
+            break;
+        }
+        at_target = false;
+        current = next;
+    }
+    event.meta.set_phase(crate::ui::EventPhase::None);
+    dispatched
+}
+
+fn dispatch_text_input_impl(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut TextInputEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    let mut at_target = true;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        event.meta.set_phase(if at_target {
+            crate::ui::EventPhase::AtTarget
+        } else {
+            crate::ui::EventPhase::Bubbling
+        });
+        let next = arena.parent_of(key);
+        let did = arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                event.meta.set_current_target_id(key);
+                element.dispatch_text_input(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        if at_target && !event.meta.bubbles() {
+            break;
+        }
+        at_target = false;
+        current = next;
+    }
+    event.meta.set_phase(crate::ui::EventPhase::None);
+    dispatched
+}
+
+fn dispatch_ime_preedit_impl(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut ImePreeditEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    let mut at_target = true;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        event.meta.set_phase(if at_target {
+            crate::ui::EventPhase::AtTarget
+        } else {
+            crate::ui::EventPhase::Bubbling
+        });
+        let next = arena.parent_of(key);
+        let did = arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                event.meta.set_current_target_id(key);
+                element.dispatch_ime_preedit(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        if at_target && !event.meta.bubbles() {
+            break;
+        }
+        at_target = false;
+        current = next;
+    }
+    event.meta.set_phase(crate::ui::EventPhase::None);
+    dispatched
+}
+
+fn dispatch_blur_impl(
+    arena: &crate::view::node_arena::NodeArena,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut BlurEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    let mut current = Some(target_key);
+    let mut dispatched = false;
+    let mut at_target = true;
+    while let Some(key) = current {
+        if event.meta.propagation_stopped() {
+            break;
+        }
+        event.meta.set_phase(if at_target {
+            crate::ui::EventPhase::AtTarget
+        } else {
+            crate::ui::EventPhase::Bubbling
+        });
+        let next = arena.parent_of(key);
+        let did = arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                event.meta.set_current_target_id(key);
+                element.dispatch_blur(event, control, cx.arena(), key);
+                cx.invalidate(element.local_dirty_flags());
+                true
+            })
+            .unwrap_or(false);
+        dispatched |= did;
+        if at_target && !event.meta.bubbles() {
+            break;
+        }
+        at_target = false;
+        current = next;
+    }
+    event.meta.set_phase(crate::ui::EventPhase::None);
+    dispatched
+}
+
+macro_rules! define_focused_target_bubble {
+    ($impl_fn:ident, $event_ty:ty, $dispatch_method:ident) => {
+        fn $impl_fn(
+            arena: &crate::view::node_arena::NodeArena,
+            target_key: crate::view::node_arena::NodeKey,
+            event: &mut $event_ty,
+            control: &mut ViewportControl<'_>,
+        ) -> bool {
+            let mut current = Some(target_key);
+            let mut dispatched = false;
+            let mut at_target = true;
+            while let Some(key) = current {
+                if event.meta.propagation_stopped() {
+                    break;
+                }
+                event.meta.set_phase(if at_target {
+                    crate::ui::EventPhase::AtTarget
+                } else {
+                    crate::ui::EventPhase::Bubbling
+                });
+                let next = arena.parent_of(key);
+                let did = arena
+                    .mutate_element_ref_with_invalidation(key, |element, cx| {
+                        event.meta.set_current_target_id(key);
+                        element.$dispatch_method(event, control, cx.arena(), key);
+                        cx.invalidate(element.local_dirty_flags());
+                        true
+                    })
+                    .unwrap_or(false);
+                dispatched |= did;
+                if at_target && !event.meta.bubbles() {
+                    break;
+                }
+                at_target = false;
+                current = next;
+            }
+            event.meta.set_phase(crate::ui::EventPhase::None);
+            dispatched
+        }
+    };
+}
+
+define_focused_target_bubble!(
+    dispatch_ime_commit_impl,
+    crate::ui::ImeCommitEvent,
+    dispatch_ime_commit
+);
+define_focused_target_bubble!(
+    dispatch_ime_enabled_impl,
+    crate::ui::ImeEnabledEvent,
+    dispatch_ime_enabled
+);
+define_focused_target_bubble!(
+    dispatch_ime_disabled_impl,
+    crate::ui::ImeDisabledEvent,
+    dispatch_ime_disabled
+);
+define_focused_target_bubble!(dispatch_copy_impl, crate::ui::CopyEvent, dispatch_copy);
+define_focused_target_bubble!(dispatch_cut_impl, crate::ui::CutEvent, dispatch_cut);
+define_focused_target_bubble!(dispatch_paste_impl, crate::ui::PasteEvent, dispatch_paste);
+
+macro_rules! define_pointer_target_bubble {
+    ($impl_fn:ident, $event_ty:ty, $dispatch_method:ident) => {
+        fn $impl_fn(
+            arena: &crate::view::node_arena::NodeArena,
+            target_key: crate::view::node_arena::NodeKey,
+            event: &mut $event_ty,
+            control: &mut ViewportControl<'_>,
+        ) -> bool {
+            let mut current = Some(target_key);
+            let mut dispatched = false;
+            let mut at_target = true;
+            while let Some(key) = current {
+                if event.meta.propagation_stopped() {
+                    break;
+                }
+                event.meta.set_phase(if at_target {
+                    crate::ui::EventPhase::AtTarget
+                } else {
+                    crate::ui::EventPhase::Bubbling
+                });
+                let next = arena.parent_of(key);
+                let did = arena
+                    .mutate_element_ref_with_invalidation(key, |element, cx| {
+                        let snapshot = element.box_model_snapshot();
+                        let (local_x, local_y) = local_point_for_node(
+                            element.as_ref(),
+                            &snapshot,
+                            event.pointer.viewport_x,
+                            event.pointer.viewport_y,
+                        );
+                        event.pointer.local_x = local_x;
+                        event.pointer.local_y = local_y;
+                        let ct = crate::ui::EventTarget::snapshot(
+                            key,
+                            crate::ui::Rect::new(
+                                snapshot.x,
+                                snapshot.y,
+                                snapshot.width,
+                                snapshot.height,
+                            ),
+                            crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+                        );
+                        event.meta.set_current_target(ct);
+                        element.$dispatch_method(event, control, cx.arena(), key);
+                        cx.invalidate(element.local_dirty_flags());
+                        true
+                    })
+                    .unwrap_or(false);
+                dispatched |= did;
+                if at_target && !event.meta.bubbles() {
+                    break;
+                }
+                at_target = false;
+                current = next;
+            }
+            event.meta.set_phase(crate::ui::EventPhase::None);
+            dispatched
+        }
+    };
+}
+
+pub(crate) fn dispatch_ime_commit_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::ImeCommitEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_ime_commit_impl(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_ime_enabled_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::ImeEnabledEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_ime_enabled_impl(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_ime_disabled_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::ImeDisabledEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_ime_disabled_impl(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_copy_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::CopyEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_copy_impl(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_cut_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::CutEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_cut_impl(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_paste_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::PasteEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_paste_impl(arena, target_key, event, control)
+}
+
+// ---------------------------------------------------------------------
+// Drag & drop bubble dispatchers
+// ---------------------------------------------------------------------
+
+define_pointer_target_bubble!(
+    dispatch_drag_start_impl,
+    crate::ui::DragStartEvent,
+    dispatch_drag_start
+);
+define_pointer_target_bubble!(
+    dispatch_drag_over_impl,
+    crate::ui::DragOverEvent,
+    dispatch_drag_over
+);
+define_pointer_target_bubble!(dispatch_drop_impl, crate::ui::DropEvent, dispatch_drop);
+define_pointer_target_bubble!(
+    dispatch_drag_end_impl,
+    crate::ui::DragEndEvent,
+    dispatch_drag_end
+);
+
+pub(crate) fn dispatch_drag_start_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::DragStartEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_drag_start_impl(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_drag_over_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::DragOverEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_drag_over_impl(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_drop_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::DropEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_drop_impl(arena, target_key, event, control)
+}
+
+pub(crate) fn dispatch_drag_end_bubble(
+    arena: &crate::view::node_arena::NodeArena,
+    _root_key: crate::view::node_arena::NodeKey,
+    target_key: crate::view::node_arena::NodeKey,
+    event: &mut crate::ui::DragEndEvent,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    if !arena.contains_key(target_key) {
+        return false;
+    }
+    dispatch_drag_end_impl(arena, target_key, event, control)
+}
+
+/// Fire [`DragLeaveEvent`] at a specific node. Non-bubbling (no-bubble
+/// counterpart of `DragOver`), so no ancestor walk — matches
+/// `PointerLeaveEvent` shape.
+pub(crate) fn dispatch_drag_leave_to_key(
+    arena: &crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    control: &mut ViewportControl<'_>,
+) -> bool {
+    arena
+        .mutate_element_ref_with_invalidation(key, |element, cx| {
+            let snapshot = element.box_model_snapshot();
+            let target = crate::ui::EventTarget::snapshot(
+                key,
+                crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+            );
+            let mut meta = crate::ui::EventMeta::with_target(target);
+            meta.set_bubbles(false);
+            meta.set_source(crate::ui::EventSource::Synthetic);
+            let mut event = crate::ui::DragLeaveEvent { meta };
+            element.dispatch_drag_leave(&mut event, control, cx.arena(), key);
+            cx.invalidate(element.local_dirty_flags());
+            true
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::style::Color;
+    use crate::style::{Length, ParsedValue, Position, PropertyId, ScrollDirection, Style};
+    use crate::ui::{
+        ClickEvent, DataTransfer, DragEffect, DragOverEvent, EventMeta, Modifiers, NodeId,
+        PointerButton, PointerButtons, PointerDownEvent, PointerEventData,
+    };
+    use crate::view::base_component::{Element, EventTarget, LayoutConstraints, LayoutPlacement};
+    use crate::view::test_support::{
+        commit_child, commit_element, measure_and_place, new_test_arena,
+    };
+    use crate::view::{Viewport, ViewportControl};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    fn constraints(w: f32, h: f32) -> LayoutConstraints {
+        LayoutConstraints {
+            max_width: w,
+            max_height: h,
+            viewport_width: w,
+            percent_base_width: Some(w),
+            percent_base_height: Some(h),
+            viewport_height: h,
+        }
+    }
+
+    fn placement(w: f32, h: f32) -> LayoutPlacement {
+        LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: w,
+            available_height: h,
+            viewport_width: w,
+            percent_base_width: Some(w),
+            percent_base_height: Some(h),
+            viewport_height: h,
+        }
+    }
+
+    #[test]
+    fn drag_over_bubble_recomputes_local_pointer_for_current_target() {
+        let observed_local = Rc::new(Cell::new(None::<(i32, i32)>));
+
+        let root = Element::new(0.0, 0.0, 200.0, 120.0);
+        let mut child = Element::new(0.0, 0.0, 100.0, 40.0);
+        let child_observed = observed_local.clone();
+        child.on_drag_over(move |event, _control| {
+            child_observed.set(Some((
+                event.pointer.local_x.round() as i32,
+                event.pointer.local_y.round() as i32,
+            )));
+            event.accept(DragEffect::Move);
+        });
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(20.0))
+                    .top(Length::px(30.0)),
+            ),
+        );
+        child.apply_style(child_style);
+
+        let mut arena = new_test_arena();
+        let root_key = commit_element(&mut arena, Box::new(root));
+        let child_key = commit_child(&mut arena, root_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            root_key,
+            constraints(200.0, 120.0),
+            placement(200.0, 120.0),
+        );
+
+        let mut viewport = Viewport::new();
+        let mut control = ViewportControl::new(&mut viewport);
+        let mut event = DragOverEvent {
+            meta: EventMeta::new(child_key),
+            pointer: PointerEventData {
+                viewport_x: 25.0,
+                viewport_y: 45.0,
+                local_x: 0.0,
+                local_y: 0.0,
+                button: None,
+                buttons: PointerButtons::default(),
+                modifiers: Modifiers::default(),
+                pointer_id: 0,
+                pointer_type: crate::platform::input::PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: crate::time::Instant::now(),
+            },
+            data: DataTransfer::new(),
+            drop_effect: None,
+        };
+
+        assert!(dispatch_drag_over_bubble(
+            &arena,
+            root_key,
+            child_key,
+            &mut event,
+            &mut control,
+        ));
+        assert_eq!(observed_local.get(), Some((5, 15)));
+        assert_eq!(event.drop_effect, Some(DragEffect::Move));
+    }
+
+    #[test]
+    fn click_on_scrollbar_does_not_reach_click_handlers() {
+        let mut root = Element::new(0.0, 0.0, 120.0, 120.0);
+        let mut root_style = Style::new();
+        root_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#101010")),
+        );
+        root_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        root.apply_style(root_style);
+
+        let child_clicked = Rc::new(Cell::new(false));
+        let mut child = Element::new(0.0, 0.0, 120.0, 360.0);
+        child.set_background_color_value(Color::rgb(255, 0, 0));
+        let child_clicked_flag = child_clicked.clone();
+        child.on_click(move |_, _| child_clicked_flag.set(true));
+
+        let root_clicked = Rc::new(Cell::new(false));
+        let root_clicked_flag = root_clicked.clone();
+        root.on_click(move |_, _| root_clicked_flag.set(true));
+
+        let mut arena = new_test_arena();
+        let root_key = commit_element(&mut arena, Box::new(root));
+        let _child_key = commit_child(&mut arena, root_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            root_key,
+            constraints(120.0, 120.0),
+            placement(120.0, 120.0),
+        );
+        arena.with_element_taken(root_key, |el, _a| {
+            if let Some(e) = el.as_any_mut().downcast_mut::<Element>() {
+                let _ = e.set_hovered(true);
+            }
+        });
+
+        let mut viewport = Viewport::new();
+        let mut control = ViewportControl::new(&mut viewport);
+        let mut click = ClickEvent {
+            meta: EventMeta::new(NodeId::default()),
+            pointer: PointerEventData {
+                viewport_x: 115.0,
+                viewport_y: 60.0,
+                local_x: 0.0,
+                local_y: 0.0,
+                button: Some(PointerButton::Left),
+                buttons: PointerButtons::default(),
+                modifiers: Modifiers::default(),
+                pointer_id: 0,
+                pointer_type: crate::platform::input::PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: crate::time::Instant::now(),
+            },
+            click_count: 1,
+        };
+
+        let handled = dispatch_click_from_hit_test(&mut arena, root_key, &mut click, &mut control);
+        assert!(handled);
+        assert!(!child_clicked.get());
+        assert!(!root_clicked.get());
+    }
+
+    #[test]
+    fn mouse_down_on_scrollbar_requests_focus_keep() {
+        let mut root = Element::new(0.0, 0.0, 120.0, 120.0);
+        let mut root_style = Style::new();
+        root_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::hex("#101010")),
+        );
+        root_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        root.apply_style(root_style);
+        let mut child = Element::new(0.0, 0.0, 120.0, 360.0);
+        child.set_background_color_value(Color::rgb(255, 0, 0));
+
+        let mut arena = new_test_arena();
+        let root_key = commit_element(&mut arena, Box::new(root));
+        let _child_key = commit_child(&mut arena, root_key, Box::new(child));
+
+        measure_and_place(
+            &mut arena,
+            root_key,
+            constraints(120.0, 120.0),
+            placement(120.0, 120.0),
+        );
+        arena.with_element_taken(root_key, |el, _a| {
+            if let Some(e) = el.as_any_mut().downcast_mut::<Element>() {
+                let _ = e.set_hovered(true);
+            }
+        });
+
+        let mut viewport = Viewport::new();
+        let meta = EventMeta::new(NodeId::default());
+        let mut control = ViewportControl::new(&mut viewport);
+        let mut down = PointerDownEvent {
+            meta: meta.clone(),
+            pointer: PointerEventData {
+                viewport_x: 115.0,
+                viewport_y: 60.0,
+                local_x: 0.0,
+                local_y: 0.0,
+                button: Some(PointerButton::Left),
+                buttons: PointerButtons::default(),
+                modifiers: Modifiers::default(),
+                pointer_id: 0,
+                pointer_type: crate::platform::input::PointerType::Mouse,
+                pressure: 0.0,
+                timestamp: crate::time::Instant::now(),
+            },
+            viewport: meta.viewport(),
+        };
+
+        let handled =
+            dispatch_pointer_down_from_hit_test(&mut arena, root_key, &mut down, &mut control);
+        assert!(handled);
+        assert!(down.meta.focus_change_suppressed());
     }
 }

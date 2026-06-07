@@ -57,7 +57,7 @@ impl Viewport {
                         .rev()
                         .find_map(|&rk| {
                             let root_node = self.scene.node_arena.get(rk)?;
-                            crate::view::base_component::get_node_ancestry_ids(
+                            crate::view::viewport::debug::get_node_ancestry_ids(
                                 root_node.element.as_ref(),
                                 target,
                                 &self.scene.node_arena,
@@ -145,7 +145,7 @@ impl Viewport {
         layer_target: crate::view::render_pass::draw_rect_pass::RenderTargetOut,
     ) {
         let composite_bounds =
-            crate::view::base_component::paint_snapped_promotion_composite_bounds(
+            crate::view::viewport::scene_helpers::paint_snapped_promotion_composite_bounds(
                 root,
                 root.promotion_composite_bounds(),
                 ctx.paint_offset(),

@@ -1,4 +1,5 @@
 use super::*;
+use crate::view::base_component::{DebugElementRenderState, Element, ElementTrait};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -1163,6 +1164,89 @@ pub(super) fn build_reuse_overlay_geometry(
         );
     }
     (vertices, indices)
+}
+
+pub(crate) fn get_debug_element_render_state_by_id(
+    root: &dyn ElementTrait,
+    stable_id: u64,
+    arena: &crate::view::node_arena::NodeArena,
+) -> Option<DebugElementRenderState> {
+    if root.stable_id() == stable_id {
+        return root
+            .as_any()
+            .downcast_ref::<Element>()
+            .map(Element::debug_render_state);
+    }
+    for child_key in root.children() {
+        let Some(child_node) = arena.get(*child_key) else {
+            continue;
+        };
+        if let Some(state) =
+            get_debug_element_render_state_by_id(child_node.element.as_ref(), stable_id, arena)
+        {
+            return Some(state);
+        }
+    }
+    None
+}
+
+pub(crate) fn get_debug_promotion_signatures_by_id(
+    root: &dyn ElementTrait,
+    stable_id: u64,
+    arena: &crate::view::node_arena::NodeArena,
+) -> Option<(u64, u64)> {
+    if root.stable_id() == stable_id {
+        return Some((
+            root.promotion_self_signature(),
+            root.promotion_clip_intersection_signature(arena),
+        ));
+    }
+    for child_key in root.children() {
+        let Some(child_node) = arena.get(*child_key) else {
+            continue;
+        };
+        if let Some(signatures) =
+            get_debug_promotion_signatures_by_id(child_node.element.as_ref(), stable_id, arena)
+        {
+            return Some(signatures);
+        }
+    }
+    None
+}
+
+pub(crate) fn get_node_ancestry_ids(
+    root: &dyn ElementTrait,
+    node_id: u64,
+    arena: &crate::view::node_arena::NodeArena,
+) -> Option<Vec<u64>> {
+    fn walk(
+        node: &dyn ElementTrait,
+        target_id: u64,
+        path: &mut Vec<u64>,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> bool {
+        path.push(node.stable_id());
+        if node.stable_id() == target_id {
+            return true;
+        }
+        for child_key in node.children() {
+            let Some(child_node) = arena.get(*child_key) else {
+                continue;
+            };
+            if walk(child_node.element.as_ref(), target_id, path, arena) {
+                return true;
+            }
+        }
+        path.pop();
+        false
+    }
+
+    let mut path = Vec::new();
+    if walk(root, node_id, &mut path, arena) {
+        Some(path)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

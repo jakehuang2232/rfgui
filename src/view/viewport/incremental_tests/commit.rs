@@ -238,7 +238,7 @@ fn incremental_commit_applies_style_update_preserves_node_key() {
     viewport.render_rsx(&first).expect("cold render");
     assert_eq!(viewport.scene.ui_root_keys.len(), 1);
     let original_key = viewport.scene.ui_root_keys[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         original_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -416,7 +416,7 @@ fn incremental_commit_applies_set_text_preserves_node_key() {
     viewport.render_rsx(&first).expect("cold render");
     assert_eq!(viewport.scene.ui_root_keys.len(), 1);
     let original_key = viewport.scene.ui_root_keys[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         original_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -1659,7 +1659,7 @@ fn placement_only_path_resolves_node_key_without_stable_id_index() {
         Some(second_child),
         "duplicate stable_id index points at the last inserted node",
     );
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut arena,
         root_key,
         DirtyFlags::ALL,

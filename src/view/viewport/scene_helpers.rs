@@ -1,6 +1,12 @@
 //! Scene tree helpers — hover, scroll, snapshots, transform updates, box models.
 
+use super::dispatch::local_point_for_node;
 use super::*;
+use crate::ui::{PointerEnterEvent, PointerLeaveEvent};
+use crate::view::base_component::{
+    BoxModelSnapshot, DirtyFlags, ElementTrait, PromotionCompositeBounds, UiBuildContext,
+    round_layout_value,
+};
 
 impl Viewport {
     pub(super) fn cancel_pointer_interactions(
@@ -9,7 +15,8 @@ impl Viewport {
     ) -> bool {
         let mut changed = false;
         for &root_key in root_keys {
-            changed |= crate::view::base_component::cancel_pointer_interactions(arena, root_key);
+            changed |=
+                crate::view::viewport::scene_helpers::cancel_pointer_interactions(arena, root_key);
         }
         changed
     }
@@ -21,7 +28,7 @@ impl Viewport {
     ) -> bool {
         let mut changed = false;
         for &root_key in root_keys {
-            if crate::view::base_component::update_hover_state(arena, root_key, target) {
+            if crate::view::viewport::scene_helpers::update_hover_state(arena, root_key, target) {
                 changed = true;
             }
         }
@@ -35,7 +42,7 @@ impl Viewport {
         next_target: Option<crate::view::node_arena::NodeKey>,
         pointer: crate::ui::PointerEventData,
     ) -> (bool, bool) {
-        let transition_dispatched = crate::view::base_component::dispatch_hover_transition(
+        let transition_dispatched = crate::view::viewport::scene_helpers::dispatch_hover_transition(
             arena,
             root_keys,
             *hovered_node_id,
@@ -377,8 +384,10 @@ impl Viewport {
                 continue;
             }
 
-            let snapshots =
-                crate::view::base_component::collect_box_models(root_key, &self.scene.node_arena);
+            let snapshots = crate::view::viewport::scene_helpers::collect_box_models(
+                root_key,
+                &self.scene.node_arena,
+            );
             #[cfg(test)]
             {
                 self.compositor.box_model_refresh_stats.collected_roots += 1;
@@ -388,11 +397,422 @@ impl Viewport {
                 .frame_box_model_cache
                 .insert(root_key, snapshots.clone());
             self.compositor.frame_box_models.extend(snapshots);
-            crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+            crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
                 &mut self.scene.node_arena,
                 root_key,
                 flags,
             );
         }
+    }
+}
+
+pub(crate) fn collect_box_models(
+    root_key: crate::view::node_arena::NodeKey,
+    arena: &crate::view::node_arena::NodeArena,
+) -> Vec<BoxModelSnapshot> {
+    fn walk(
+        node: &dyn ElementTrait,
+        arena: &crate::view::node_arena::NodeArena,
+        out: &mut Vec<BoxModelSnapshot>,
+    ) {
+        out.push(node.box_model_snapshot());
+        for child_key in node.children() {
+            if let Some(child_node) = arena.get(*child_key) {
+                walk(child_node.element.as_ref(), arena, out);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    if let Some(root_node) = arena.get(root_key) {
+        walk(root_node.element.as_ref(), arena, &mut out);
+    }
+    out
+}
+
+/// Recursive walker kept as a reference / correctness oracle. The hot
+/// layout paths now read [`NodeArena::cached_subtree_dirty`] instead,
+/// which is refreshed once per pass by
+/// [`NodeArena::refresh_subtree_dirty_cache`]. Kept `pub(crate)` + allow
+/// dead for any future slow-path callers and for parity with existing
+/// tests.
+#[allow(dead_code)]
+pub(crate) fn subtree_dirty_flags(
+    root: &dyn ElementTrait,
+    arena: &crate::view::node_arena::NodeArena,
+) -> DirtyFlags {
+    let mut flags = root.local_dirty_flags();
+    for child_key in root.children() {
+        if let Some(child_node) = arena.get(*child_key) {
+            flags = flags.union(subtree_dirty_flags(child_node.element.as_ref(), arena));
+        }
+    }
+    flags
+}
+
+fn clear_subtree_dirty_flags_by_key(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    flags: DirtyFlags,
+) -> bool {
+    let children = arena.children_of(root_key);
+    let Some(mut root_node) = arena.get_mut(root_key) else {
+        return false;
+    };
+    root_node.element.clear_local_dirty_flags(flags);
+    drop(root_node);
+
+    for child_key in children {
+        clear_subtree_dirty_flags_by_key(arena, child_key, flags);
+    }
+    true
+}
+
+#[allow(dead_code)]
+pub(crate) fn clear_subtree_dirty_flags_with_arena_dirty(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    flags: DirtyFlags,
+) -> bool {
+    if !clear_subtree_dirty_flags_by_key(arena, root_key, flags) {
+        return false;
+    }
+
+    arena.clear_arena_dirty_subtree(root_key, flags);
+    true
+}
+
+pub(crate) fn can_reuse_promoted_subtree(
+    node: &dyn ElementTrait,
+    _ctx: &UiBuildContext,
+    arena: &crate::view::node_arena::NodeArena,
+) -> bool {
+    fn walk(node: &dyn ElementTrait, arena: &crate::view::node_arena::NodeArena) -> bool {
+        for child_key in node.children() {
+            let Some(child_node) = arena.get(*child_key) else {
+                continue;
+            };
+            if !walk(child_node.element.as_ref(), arena) {
+                return false;
+            }
+        }
+        true
+    }
+
+    walk(node, arena)
+}
+
+pub(crate) fn paint_snapped_promotion_composite_bounds(
+    node: &dyn ElementTrait,
+    bounds: PromotionCompositeBounds,
+    paint_offset: [f32; 2],
+) -> PromotionCompositeBounds {
+    let snap = node.box_model_snapshot();
+    let dx = round_layout_value(snap.x + paint_offset[0]) - snap.x;
+    let dy = round_layout_value(snap.y + paint_offset[1]) - snap.y;
+    PromotionCompositeBounds {
+        x: bounds.x + dx,
+        y: bounds.y + dy,
+        ..bounds
+    }
+}
+
+pub(crate) fn update_hover_state(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    target_key: Option<crate::view::node_arena::NodeKey>,
+) -> bool {
+    fn walk(
+        arena: &crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        target_key: Option<crate::view::node_arena::NodeKey>,
+    ) -> (bool, bool) {
+        arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                let mut contains_target = target_key == Some(key);
+                let mut changed = false;
+                let children: Vec<_> = element.children().to_vec();
+                for child_key in children.into_iter().rev() {
+                    let (child_contains_target, child_changed) =
+                        walk(cx.arena(), child_key, target_key);
+                    contains_target |= child_contains_target;
+                    changed |= child_changed;
+                }
+                changed |= element.set_hovered(contains_target);
+                if changed {
+                    cx.invalidate(element.local_dirty_flags());
+                }
+                (contains_target, changed)
+            })
+            .unwrap_or((false, false))
+    }
+
+    walk(arena, root_key, target_key).1
+}
+
+/// Build a root-to-target path using `arena.parent_of`. Returns empty when
+/// `target_key` is not reachable from any provided root.
+pub(crate) fn hover_path_for_target(
+    arena: &crate::view::node_arena::NodeArena,
+    root_keys: &[crate::view::node_arena::NodeKey],
+    target_key: Option<crate::view::node_arena::NodeKey>,
+) -> Vec<crate::view::node_arena::NodeKey> {
+    let Some(target_key) = target_key else {
+        return Vec::new();
+    };
+    if !arena.contains_key(target_key) {
+        return Vec::new();
+    }
+
+    // Walk up from target, collecting keys.
+    let mut up = Vec::new();
+    let mut cur = Some(target_key);
+    while let Some(k) = cur {
+        up.push(k);
+        cur = arena.parent_of(k);
+    }
+    // Verify the uppermost ancestor is one of the roots.
+    let root_reached = up.last().copied();
+    if let Some(last) = root_reached {
+        if root_keys.iter().any(|&r| r == last) {
+            up.reverse();
+            return up;
+        }
+    }
+    Vec::new()
+}
+
+fn dispatch_pointer_enter_to_key(
+    arena: &crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    related: Option<crate::view::node_arena::NodeKey>,
+    pointer: crate::ui::PointerEventData,
+) -> bool {
+    arena
+        .mutate_element_ref_with_invalidation(key, |element, cx| {
+            let snapshot = element.box_model_snapshot();
+            let (local_x, local_y) = local_point_for_node(
+                element.as_ref(),
+                &snapshot,
+                pointer.viewport_x,
+                pointer.viewport_y,
+            );
+            let mut pointer = pointer;
+            pointer.local_x = local_x;
+            pointer.local_y = local_y;
+            let target = crate::ui::EventTarget::snapshot(
+                key,
+                crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+            );
+            let mut meta = crate::ui::EventMeta::with_target(target);
+            meta.set_related_target(related.map(crate::ui::EventTarget::bare));
+            meta.set_bubbles(false);
+            meta.set_source(crate::ui::EventSource::Synthetic);
+            let mut event = PointerEnterEvent { meta, pointer };
+            element.dispatch_pointer_enter(&mut event, cx.arena(), key);
+            cx.invalidate(element.local_dirty_flags());
+            true
+        })
+        .unwrap_or(false)
+}
+
+fn dispatch_pointer_leave_to_key(
+    arena: &crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    related: Option<crate::view::node_arena::NodeKey>,
+    pointer: crate::ui::PointerEventData,
+) -> bool {
+    arena
+        .mutate_element_ref_with_invalidation(key, |element, cx| {
+            let snapshot = element.box_model_snapshot();
+            let (local_x, local_y) = local_point_for_node(
+                element.as_ref(),
+                &snapshot,
+                pointer.viewport_x,
+                pointer.viewport_y,
+            );
+            let mut pointer = pointer;
+            pointer.local_x = local_x;
+            pointer.local_y = local_y;
+            let target = crate::ui::EventTarget::snapshot(
+                key,
+                crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
+            );
+            let mut meta = crate::ui::EventMeta::with_target(target);
+            meta.set_related_target(related.map(crate::ui::EventTarget::bare));
+            meta.set_bubbles(false);
+            meta.set_source(crate::ui::EventSource::Synthetic);
+            let mut event = PointerLeaveEvent { meta, pointer };
+            element.dispatch_pointer_leave(&mut event, cx.arena(), key);
+            cx.invalidate(element.local_dirty_flags());
+            true
+        })
+        .unwrap_or(false)
+}
+
+pub(crate) fn dispatch_hover_transition(
+    arena: &crate::view::node_arena::NodeArena,
+    root_keys: &[crate::view::node_arena::NodeKey],
+    previous_target: Option<crate::view::node_arena::NodeKey>,
+    next_target: Option<crate::view::node_arena::NodeKey>,
+    pointer: crate::ui::PointerEventData,
+) -> bool {
+    if previous_target == next_target {
+        return false;
+    }
+
+    let previous_path = hover_path_for_target(arena, root_keys, previous_target);
+    let next_path = hover_path_for_target(arena, root_keys, next_target);
+
+    let mut common_prefix_len = 0;
+    while common_prefix_len < previous_path.len()
+        && common_prefix_len < next_path.len()
+        && previous_path[common_prefix_len] == next_path[common_prefix_len]
+    {
+        common_prefix_len += 1;
+    }
+
+    let mut dispatched = false;
+
+    for &k in previous_path[common_prefix_len..].iter().rev() {
+        if dispatch_pointer_leave_to_key(arena, k, next_target, pointer) {
+            dispatched = true;
+        }
+    }
+
+    for &k in &next_path[common_prefix_len..] {
+        if dispatch_pointer_enter_to_key(arena, k, previous_target, pointer) {
+            dispatched = true;
+        }
+    }
+
+    dispatched
+}
+
+pub(crate) fn cancel_pointer_interactions(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+) -> bool {
+    fn walk(
+        arena: &crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+    ) -> bool {
+        arena
+            .mutate_element_ref_with_invalidation(key, |element, cx| {
+                let mut changed = element.cancel_pointer_interaction();
+                let children: Vec<_> = element.children().to_vec();
+                for child_key in children.into_iter().rev() {
+                    changed |= walk(cx.arena(), child_key);
+                }
+                if changed {
+                    cx.invalidate(element.local_dirty_flags());
+                }
+                changed
+            })
+            .unwrap_or(false)
+    }
+
+    walk(arena, root_key)
+}
+
+#[cfg(test)]
+mod hover_tests {
+    use super::*;
+
+    use crate::ui::{Modifiers, PointerButtons, PointerEventData};
+    use crate::view::base_component::{Element, LayoutConstraints, LayoutPlacement};
+    use crate::view::test_support::{commit_child, commit_element, new_test_arena};
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn test_pointer_data() -> PointerEventData {
+        PointerEventData {
+            viewport_x: 0.0,
+            viewport_y: 0.0,
+            local_x: 0.0,
+            local_y: 0.0,
+            button: None,
+            buttons: PointerButtons::default(),
+            modifiers: Modifiers::default(),
+            pointer_id: 0,
+            pointer_type: crate::platform::input::PointerType::Mouse,
+            pressure: 0.0,
+            timestamp: crate::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn hover_transition_dispatches_enter_leave_on_changed_ancestors_only() {
+        let order = Rc::new(RefCell::new(Vec::new()));
+
+        let mut root = Element::new(0.0, 0.0, 120.0, 120.0);
+        let root_order = order.clone();
+        root.on_pointer_enter(move |_event| root_order.borrow_mut().push("root-enter"));
+        let root_order = order.clone();
+        root.on_pointer_leave(move |_event| root_order.borrow_mut().push("root-leave"));
+
+        let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
+        let parent_order = order.clone();
+        parent.on_pointer_enter(move |_event| parent_order.borrow_mut().push("parent-enter"));
+        let parent_order = order.clone();
+        parent.on_pointer_leave(move |_event| parent_order.borrow_mut().push("parent-leave"));
+
+        let mut child = Element::new(0.0, 0.0, 60.0, 60.0);
+        let child_order = order.clone();
+        child.on_pointer_enter(move |_event| child_order.borrow_mut().push("child-enter"));
+        let child_order = order.clone();
+        child.on_pointer_leave(move |_event| child_order.borrow_mut().push("child-leave"));
+
+        let mut arena = new_test_arena();
+        let root_key = commit_element(&mut arena, Box::new(root));
+        let parent_key = commit_child(&mut arena, root_key, Box::new(parent));
+        let child_key = commit_child(&mut arena, parent_key, Box::new(child));
+
+        let roots = [root_key];
+
+        assert!(dispatch_hover_transition(
+            &mut arena,
+            &roots,
+            None,
+            Some(child_key),
+            test_pointer_data()
+        ));
+        assert_eq!(
+            order.borrow().as_slice(),
+            &["root-enter", "parent-enter", "child-enter"]
+        );
+
+        order.borrow_mut().clear();
+        assert!(dispatch_hover_transition(
+            &mut arena,
+            &roots,
+            Some(child_key),
+            Some(parent_key),
+            test_pointer_data(),
+        ));
+        assert_eq!(order.borrow().as_slice(), &["child-leave"]);
+
+        order.borrow_mut().clear();
+        assert!(dispatch_hover_transition(
+            &mut arena,
+            &roots,
+            Some(parent_key),
+            None,
+            test_pointer_data(),
+        ));
+        assert_eq!(order.borrow().as_slice(), &["parent-leave", "root-leave"]);
+
+        order.borrow_mut().clear();
+        assert!(!dispatch_hover_transition(
+            &mut arena,
+            &roots,
+            Some(root_key),
+            Some(root_key),
+            test_pointer_data(),
+        ));
+        assert!(order.borrow().is_empty());
     }
 }

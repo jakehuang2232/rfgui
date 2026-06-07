@@ -124,7 +124,7 @@ fn phase_5a_axis_placement_eligibility_counts_dirty_and_clean_children() {
         .first()
         .copied()
         .expect("retained root has first child");
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -395,7 +395,7 @@ fn phase_5d_flex_clean_base_only_subtree_replays_without_stale_hit_test() {
     let leaf_key = viewport.scene.node_arena.children_of(wrapper_key)[0];
     let wrapper_before = box_model_snapshot_for_node(&viewport, wrapper_key);
     let leaf_before = box_model_snapshot_for_node(&viewport, leaf_key);
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -445,7 +445,7 @@ fn phase_5d_flex_dirty_descendant_does_not_replay_skip() {
     let root_key = viewport.scene.ui_root_keys[0];
     let wrapper_key = viewport.scene.node_arena.children_of(root_key)[0];
     let dirty_leaf = viewport.scene.node_arena.children_of(wrapper_key)[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -473,7 +473,7 @@ fn phase_5d_flex_context_changes_do_not_replay_skip() {
         .expect("cold render");
     run_layout_for_test(&mut viewport, 240.0, 80.0);
     let root_key = viewport.scene.ui_root_keys[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -487,7 +487,7 @@ fn phase_5d_flex_context_changes_do_not_replay_skip() {
     assert_eq!(gap_profile.skipped_child_place_calls, 0);
     assert_eq!(gap_profile.child_place_calls, 2);
 
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -512,7 +512,7 @@ fn phase_5d_flex_available_size_change_does_not_replay_skip() {
     run_layout_for_test(&mut viewport, 240.0, 80.0);
 
     let root_key = viewport.scene.ui_root_keys[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -607,7 +607,7 @@ fn layout_gate_profile_counts_clean_children_as_candidates_without_skipping() {
         .expect("cold render");
     run_layout_for_test(&mut viewport, 120.0, 80.0);
     let root_key = viewport.scene.ui_root_keys[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -639,7 +639,7 @@ fn placement_skip_clean_child_does_not_call_place_and_preserves_box_models() {
     let children = viewport.scene.node_arena.children_of(root_key);
     let first_before = box_model_snapshot_for_node(&viewport, children[0]);
     let second_before = box_model_snapshot_for_node(&viewport, children[1]);
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -677,7 +677,7 @@ fn placement_skip_clean_child_is_visible_in_layout_trace() {
         .expect("cold render");
     run_layout_for_test(&mut viewport, 120.0, 80.0);
     let root_key = viewport.scene.ui_root_keys[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -730,7 +730,7 @@ fn placement_skip_clean_nested_non_axis_subtree_does_not_call_place() {
     let leaf_key = viewport.scene.node_arena.children_of(wrapper_key)[0];
     let wrapper_before = box_model_snapshot_for_node(&viewport, wrapper_key);
     let leaf_before = box_model_snapshot_for_node(&viewport, leaf_key);
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -769,7 +769,7 @@ fn placement_skip_clean_nested_subtree_preserves_descendant_hit_test() {
     let wrapper_key = viewport.scene.node_arena.children_of(root_key)[0];
     let leaf_key = viewport.scene.node_arena.children_of(wrapper_key)[0];
     let leaf_before = box_model_snapshot_for_node(&viewport, leaf_key);
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -804,7 +804,7 @@ fn layout_gate_profile_excludes_dirty_child_and_still_places_it() {
         .expect("cold render");
     run_layout_for_test(&mut viewport, 120.0, 80.0);
     let root_key = viewport.scene.ui_root_keys[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -847,7 +847,7 @@ fn placement_skip_does_not_skip_dirty_child() {
         .expect("cold render");
     run_layout_for_test(&mut viewport, 120.0, 80.0);
     let root_key = viewport.scene.ui_root_keys[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -874,7 +874,7 @@ fn placement_skip_does_not_skip_nested_subtree_with_dirty_descendant() {
         .expect("cold render");
     run_layout_for_test(&mut viewport, 120.0, 80.0);
     let root_key = viewport.scene.ui_root_keys[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -903,7 +903,7 @@ fn placement_skip_does_not_skip_when_child_placement_context_changes() {
         .expect("cold render");
     run_layout_for_test(&mut viewport, 120.0, 80.0);
     let root_key = viewport.scene.ui_root_keys[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -931,7 +931,7 @@ fn placement_skip_does_not_skip_nested_subtree_when_context_changes() {
         .expect("cold render");
     run_layout_for_test(&mut viewport, 120.0, 80.0);
     let root_key = viewport.scene.ui_root_keys[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -966,13 +966,13 @@ fn placement_skip_does_not_skip_scroll_offset_context_change() {
         .expect("root exists")
         .element
         .stable_id();
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
     );
 
-    assert!(crate::view::base_component::set_scroll_offset_by_id(
+    assert!(crate::view::viewport::dispatch::set_scroll_offset_by_id(
         &viewport.scene.node_arena,
         root_key,
         root_id,
@@ -1006,14 +1006,16 @@ fn placement_skip_does_not_skip_nested_subtree_with_active_layout_transition_run
         .element
         .stable_id();
 
-    assert!(crate::view::base_component::set_layout_field_by_id(
-        &mut viewport.scene.node_arena,
-        root_key,
-        wrapper_id,
-        crate::transition::LayoutField::Width,
-        72.0,
-    ));
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    assert!(
+        crate::view::viewport::transitions_tick::set_layout_field_by_id(
+            &mut viewport.scene.node_arena,
+            root_key,
+            wrapper_id,
+            crate::transition::LayoutField::Width,
+            72.0,
+        )
+    );
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,
@@ -1092,7 +1094,7 @@ fn placement_skip_ignores_paint_only_dirty_and_reuses_box_model_cache() {
     run_layout_for_test(&mut viewport, 120.0, 80.0);
     viewport.refresh_frame_box_models();
     let root_key = viewport.scene.ui_root_keys[0];
-    crate::view::base_component::clear_subtree_dirty_flags_with_arena_dirty(
+    crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
         crate::view::base_component::DirtyFlags::ALL,

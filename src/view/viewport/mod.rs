@@ -4,7 +4,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 #[cfg(test)]
 mod clipboard_tests;
 mod debug;
-mod dispatch;
+pub(crate) mod dispatch;
 mod frame;
 mod gpu_resources;
 #[cfg(test)]
@@ -13,10 +13,10 @@ mod input;
 mod lifecycle;
 mod promotion_runtime;
 mod render;
-mod scene_helpers;
+pub(crate) mod scene_helpers;
 #[cfg(any())]
 mod tests;
-mod transitions_tick;
+pub(crate) mod transitions_tick;
 
 use crate::style::{ColorLike, Cursor, HexColor, PropertyId, Style};
 use crate::time::Instant;
@@ -71,6 +71,12 @@ use self::debug::{
     record_debug_style_promotion, record_debug_style_request, record_debug_style_sample,
     record_debug_style_sample_record, reuse_overlay_color, style_field_requires_relayout,
     take_debug_reuse_path, take_debug_style_sample_records, trace_promoted_build_frame_marker,
+};
+pub use self::dispatch::{
+    dispatch_click_from_hit_test, dispatch_pointer_down_from_hit_test,
+    dispatch_pointer_move_from_hit_test, dispatch_pointer_up_from_hit_test,
+    dispatch_scroll_from_hit_test, get_scroll_offset_by_id, nearest_viewport_clip_ancestor_id,
+    set_scroll_offset_by_id,
 };
 pub use self::frame::FrameParts;
 use self::frame::{
