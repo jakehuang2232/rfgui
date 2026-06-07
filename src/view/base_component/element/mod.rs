@@ -4181,8 +4181,31 @@ impl Element {
         if !self.inline_ifc_layout_call_site_is_enabled() {
             return false;
         }
-        if self.inline_ifc_layout_call_site.last_output.is_none() {
+        // Only inline roots can ever become IFC layout call-sites; the
+        // after-place opt-in is an `UnsupportedRoot` no-op for everything
+        // else, so a non-inline element must not lose its placement skip
+        // (and must not double-record gate candidates) on this gate.
+        if self.computed_style.layout != Layout::Inline {
+            return false;
+        }
+        let Some(last_output) = self.inline_ifc_layout_call_site.last_output.as_ref() else {
             return true;
+        };
+        // Only a root that actually installed rollout packages onto its
+        // descendants needs the extra paint-sensitive re-place to keep
+        // those packages fresh. No-op opt-ins (unsupported root, no
+        // install targets) and shadow observation (collect + diagnostics
+        // only, installs nothing) gain nothing from re-running place: any
+        // change that could flip their status (children added/removed,
+        // layout switch) already sets LAYOUT dirt that the regular
+        // placement gate sees.
+        let has_installed_packages = last_output.lifecycle.as_ref().is_some_and(|lifecycle| {
+            lifecycle.installs.iter().any(|install| {
+                install.status == ElementInlineIfcCandidateLifecycleInstallStatus::Installed
+            })
+        });
+        if !has_installed_packages {
+            return false;
         }
         if self.last_layout_placement != Some(placement) {
             return true;
@@ -4191,12 +4214,12 @@ impl Element {
         if self.dirty_flags.intersects(ifc_dirty_mask) {
             return true;
         }
-        record_refreshed_layout_gate_child_candidates(
-            &self.children,
-            arena,
-            ifc_dirty_mask,
-            LayoutGateCandidatePhase::Placement,
-        )
+        // The placement gate that runs just before this one already
+        // refreshed the per-pass subtree dirty cache; query it without
+        // recording another round of gate candidates.
+        self.children
+            .iter()
+            .any(|&child_key| arena.subtree_dirty_intersects(child_key, ifc_dirty_mask))
     }
 
     fn run_inline_ifc_layout_call_site_opt_in_after_place(
