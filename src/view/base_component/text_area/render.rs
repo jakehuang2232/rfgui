@@ -62,42 +62,27 @@ impl TextArea {
             ));
         }
 
-        for &child_key in self.children.iter() {
-            if let Some(pos) = arena
-                .with_element_taken_ref(child_key, |el, _| {
-                    let run = el.as_any().downcast_ref::<TextAreaTextRun>()?;
-                    if run.inline_preedit.is_none() && !run.is_preedit_run() {
-                        return None;
-                    }
-                    let (x, y_top, lh) = run.preedit_caret_local_position()?;
-                    Some((
-                        run.layout_state.layout_position.x + x,
-                        run.layout_state.layout_position.y + y_top,
-                        lh,
-                    ))
-                })
-                .flatten()
-            {
-                return Some(pos);
+        let cursor_host_is_projection = self.cursor_host_is_projection(arena);
+        if let Some(package) = self.unified_inline_ifc_render_package(arena) {
+            let origin_x = self.layout_state.layout_position.x - self.scroll_x;
+            let origin_y = self.layout_state.layout_position.y - self.scroll_y;
+            if let Some(geometry) = package.preedit_caret_geometry_for_char(self.cursor_char) {
+                return Some((
+                    origin_x + geometry.x,
+                    origin_y + geometry.y_top,
+                    geometry.height,
+                ));
+            }
+            drop(package);
+            if !(cursor_host_is_projection && !self.ime_preedit.is_empty()) {
+                let map = super::caret_map::CaretNavigationMap::build(self, arena);
+                if let Some(stop) = map.caret_stop_for_char(self.cursor_char, self.cursor_affinity)
+                {
+                    return Some((stop.x, stop.y_top, stop.height));
+                }
             }
         }
 
-        let cursor_host_is_projection = self
-            .child_char_ranges
-            .iter()
-            .enumerate()
-            .find_map(|(idx, range)| {
-                (self.cursor_char >= range.start && self.cursor_char < range.end).then_some(idx)
-            })
-            .and_then(|idx| self.children.get(idx).copied())
-            .map(|key| {
-                !arena
-                    .with_element_taken_ref(key, |el, _| {
-                        el.as_any().is::<TextAreaTextRun>() || el.as_any().is::<TextAreaLineBreak>()
-                    })
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
         if !cursor_host_is_projection {
             let map = super::caret_map::CaretNavigationMap::build(self, arena);
             if let Some(stop) = map.caret_stop_for_char(self.cursor_char, self.cursor_affinity) {
@@ -147,35 +132,37 @@ impl TextArea {
             .unwrap_or(false);
 
         if host_is_text {
-            return arena.with_element_taken_ref(key, |el, _| {
-                if let Some(line_break) = el.as_any().downcast_ref::<TextAreaLineBreak>() {
-                    let local = self.cursor_char.saturating_sub(range.start).min(1);
-                    let line = line_break
-                        .caret_stops()
-                        .into_iter()
-                        .find(|line| line.stops.iter().any(|stop| stop.local_char == local))?;
-                    let stop = line
-                        .stops
-                        .into_iter()
-                        .find(|stop| stop.local_char == local)?;
+            // Text runs resolve through the unified package: run-level
+            // caret geometry was removed with the legacy shaping engine.
+            if let Some(package) = self.unified_inline_ifc_render_package(arena) {
+                let origin_x = self.layout_state.layout_position.x - self.scroll_x;
+                let origin_y = self.layout_state.layout_position.y - self.scroll_y;
+                if let Some(geometry) =
+                    package.caret_geometry_for_char(self.cursor_char, self.cursor_affinity)
+                {
                     return Some((
-                        line_break.layout_state.layout_position.x + stop.local_x,
-                        line_break.layout_state.layout_position.y + stop.local_y_top,
-                        stop.height,
+                        origin_x + geometry.x,
+                        origin_y + geometry.y_top,
+                        geometry.height,
                     ));
                 }
-                let run = el.as_any().downcast_ref::<TextAreaTextRun>()?;
-                let (x, y_top, lh) = if run.inline_preedit.is_some() {
-                    run.preedit_caret_local_position()?
-                } else {
-                    let start = run.char_range.start;
-                    let visible_chars = run.text.chars().count();
-                    let local = self.cursor_char.saturating_sub(start).min(visible_chars);
-                    run.local_char_to_screen_position_with_affinity(local, self.cursor_affinity)?
-                };
-                let screen_x = run.layout_state.layout_position.x + x;
-                let screen_y = run.layout_state.layout_position.y + y_top;
-                Some((screen_x, screen_y, lh))
+            }
+            return arena.with_element_taken_ref(key, |el, _| {
+                let line_break = el.as_any().downcast_ref::<TextAreaLineBreak>()?;
+                let local = self.cursor_char.saturating_sub(range.start).min(1);
+                let line = line_break
+                    .caret_stops()
+                    .into_iter()
+                    .find(|line| line.stops.iter().any(|stop| stop.local_char == local))?;
+                let stop = line
+                    .stops
+                    .into_iter()
+                    .find(|stop| stop.local_char == local)?;
+                Some((
+                    line_break.layout_state.layout_position.x + stop.local_x,
+                    line_break.layout_state.layout_position.y + stop.local_y_top,
+                    stop.height,
+                ))
             })?;
         }
 
@@ -275,6 +262,17 @@ impl TextArea {
         {
             return Some(pos);
         }
+        if affinity == CaretAffinity::Downstream
+            && let Some(next_line) = map.lines.get(line_idx + 1)
+            && next_line
+                .stops
+                .first()
+                .is_some_and(|s| s.char_index == self.cursor_char + 1)
+            && let Some(pos) =
+                projection_lower_fragment_head(arena, projection_key, next_line.y_top)
+        {
+            return Some(pos);
+        }
 
         // Fallback: the descendant reported a `y` that disagrees with
         // the map (e.g. legacy `Text` inline path snapping a gap byte
@@ -304,36 +302,54 @@ impl TextArea {
         base + preedit_cursor_char_offset(self.ime_preedit.as_str(), self.ime_preedit_cursor)
     }
 
+    fn cursor_host_is_projection(&self, arena: &NodeArena) -> bool {
+        self.child_char_ranges
+            .iter()
+            .enumerate()
+            .find_map(|(idx, range)| {
+                (self.cursor_char >= range.start && self.cursor_char < range.end).then_some(idx)
+            })
+            .and_then(|idx| self.children.get(idx).copied())
+            .map(|key| {
+                !arena
+                    .with_element_taken_ref(key, |el, _| {
+                        el.as_any().is::<TextAreaTextRun>() || el.as_any().is::<TextAreaLineBreak>()
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    }
+
     /// Walk Run children, collect each Run's preedit underline rects, and
     /// translate to screen coords. When the caret sits inside a projection,
     /// TextArea only draws the IME underline overlay inside the projection;
     /// the projection remains responsible for text rendering.
     fn preedit_underline_screen_rects(&self, arena: &NodeArena) -> Vec<Rect> {
+        if let Some(package) = self.unified_inline_ifc_render_package(arena) {
+            let origin_x = self.layout_state.layout_position.x - self.scroll_x;
+            let origin_y = self.layout_state.layout_position.y - self.scroll_y;
+            let rects = package
+                .preedit_underline_rects()
+                .into_iter()
+                .map(|rect| Rect {
+                    x: origin_x + rect.x,
+                    y: origin_y + rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                })
+                .collect::<Vec<_>>();
+            if !rects.is_empty() {
+                return rects;
+            }
+        }
+
         if !self.ime_preedit.is_empty()
             && let Some(rects) = self.projection_preedit_underline_screen_rects(arena)
         {
             return rects;
         }
 
-        let mut out = Vec::new();
-        for &child_key in self.children.iter() {
-            arena.with_element_taken_ref(child_key, |el, _| {
-                let Some(run) = el.as_any().downcast_ref::<TextAreaTextRun>() else {
-                    return;
-                };
-                let origin_x = run.layout_state.layout_position.x;
-                let origin_y = run.layout_state.layout_position.y;
-                for r in run.preedit_underline_rects() {
-                    out.push(Rect {
-                        x: origin_x + r.x,
-                        y: origin_y + r.y,
-                        width: r.width,
-                        height: r.height,
-                    });
-                }
-            });
-        }
-        out
+        Vec::new()
     }
 
     fn projection_preedit_underline_screen_rects(&self, arena: &NodeArena) -> Option<Vec<Rect>> {
@@ -415,41 +431,10 @@ impl TextArea {
                 })
                 .collect();
         }
-        let mut out = Vec::new();
-        for (idx, &child_key) in self.children.iter().enumerate() {
-            let Some(child_range) = self.child_char_ranges.get(idx).cloned() else {
-                continue;
-            };
-            if child_range.end <= sel_start || child_range.start >= sel_end {
-                continue;
-            }
-
-            let is_run = arena
-                .with_element_taken_ref(child_key, |el, _| el.as_any().is::<TextAreaTextRun>())
-                .unwrap_or(false);
-            if is_run {
-                arena.with_element_taken_ref(child_key, |el, _| {
-                    let Some(run) = el.as_any().downcast_ref::<TextAreaTextRun>() else {
-                        return;
-                    };
-                    let cr = run.char_range.clone();
-                    let local_start = sel_start.saturating_sub(cr.start);
-                    let local_end = sel_end.saturating_sub(cr.start).min(cr.end - cr.start);
-                    let origin_x = run.layout_state.layout_position.x;
-                    let origin_y = run.layout_state.layout_position.y;
-                    for r in run.local_selection_rects(local_start, local_end) {
-                        out.push(Rect {
-                            x: origin_x + r.x,
-                            y: origin_y + r.y,
-                            width: r.width,
-                            height: r.height,
-                        });
-                    }
-                });
-                continue;
-            }
-        }
-        out
+        // No unified package means no text runs to select; projection
+        // selections render inside the projection via
+        // `TextAreaSelectionRenderContext`.
+        Vec::new()
     }
 
     pub(super) fn projection_selection_context_for_child(
@@ -640,6 +625,7 @@ impl Renderable for TextArea {
                 ctx = c;
             }
         }
+        drop(unified_render_package);
 
         // Layer 1.5 — IME preedit underline (above glyphs, below caret).
         if let Some(target) = ctx.current_target() {
@@ -781,23 +767,6 @@ fn collect_projection_visual_line_heads(
                 if let Some(text) = el.as_any().downcast_ref::<Text>() {
                     return Some(text.visual_line_heads());
                 }
-                if let Some(run) = el.as_any().downcast_ref::<TextAreaTextRun>() {
-                    let origin_x = run.layout_state.layout_position.x;
-                    let origin_y = run.layout_state.layout_position.y;
-                    return Some(
-                        run.caret_stops()
-                            .into_iter()
-                            .filter_map(|line| {
-                                let head = line.stops.first()?;
-                                Some((
-                                    origin_x + head.local_x,
-                                    origin_y + head.local_y_top,
-                                    head.height,
-                                ))
-                            })
-                            .collect(),
-                    );
-                }
                 None
             })
             .flatten()
@@ -851,17 +820,6 @@ fn query_caret_on(
 ) -> Option<(f32, f32, f32)> {
     arena
         .with_element_taken_ref(key, |el, _| {
-            if let Some(run) = el.as_any().downcast_ref::<TextAreaTextRun>() {
-                let visible = run.text.chars().count();
-                let local = local_char.min(visible);
-                let (x, y_top, lh) =
-                    run.local_char_to_screen_position_with_affinity(local, affinity)?;
-                return Some((
-                    run.layout_state.layout_position.x + x,
-                    run.layout_state.layout_position.y + y_top,
-                    lh,
-                ));
-            }
             if let Some(text) = el.as_any().downcast_ref::<Text>() {
                 let visible = text.content().chars().count();
                 let local = local_char.min(visible);
@@ -904,24 +862,6 @@ fn query_selection_on(
 ) -> Option<Vec<Rect>> {
     arena
         .with_element_taken_ref(key, |el, _| {
-            if let Some(run) = el.as_any().downcast_ref::<TextAreaTextRun>() {
-                let visible = run.text.chars().count();
-                let start = local_start.min(visible);
-                let end = local_end.min(visible);
-                let origin_x = run.layout_state.layout_position.x;
-                let origin_y = run.layout_state.layout_position.y;
-                let rects = run
-                    .local_selection_rects(start, end)
-                    .into_iter()
-                    .map(|rect| Rect {
-                        x: origin_x + rect.x,
-                        y: origin_y + rect.y,
-                        width: rect.width,
-                        height: rect.height,
-                    })
-                    .collect();
-                return Some(rects);
-            }
             if let Some(text) = el.as_any().downcast_ref::<Text>() {
                 let visible = text.content().chars().count();
                 let start = local_start.min(visible);
@@ -1028,6 +968,104 @@ mod tests {
     }
 
     #[test]
+    fn unified_ifc_staging_applies_vertical_align_to_paint_local_pos() {
+        let mut text_area = TextArea::new();
+        text_area.content = "abXYZcd".to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.vertical_align = crate::style::VerticalAlign::Bottom;
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+            render.range(2..5, |_text_area_node| {
+                RsxNode::tagged(
+                    "Element",
+                    RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+                )
+                .with_prop(
+                    "style",
+                    ElementStylePropSchema {
+                        width: Some(Length::px(90.0)),
+                        height: Some(Length::px(42.0)),
+                        ..Default::default()
+                    },
+                )
+            });
+        }));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 300.0,
+                max_height: 300.0,
+                viewport_width: 300.0,
+                viewport_height: 300.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+            LayoutPlacement {
+                parent_x: 10.0,
+                parent_y: 20.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 300.0,
+                available_height: 300.0,
+                viewport_width: 300.0,
+                viewport_height: 300.0,
+                percent_base_width: None,
+                percent_base_height: None,
+            },
+        );
+
+        arena
+            .with_element_taken_ref(root, |el, arena| {
+                let text_area = el
+                    .as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root");
+                let package = text_area
+                    .unified_inline_ifc_render_package(arena)
+                    .expect("unified render package");
+                let origin = [7.0_f32, 11.0_f32];
+                let paint_input = package.ifc.text_pass_paint_input();
+                let staging = package.text_pass_staging_input(origin, 1.0, 0, 1.0);
+                assert!(!staging.glyphs.is_empty(), "fixture should stage glyphs");
+                let mut saw_vertical_shift = false;
+                for (staged, raw) in staging.glyphs.iter().zip(paint_input.glyphs.iter()) {
+                    let raw_local_y = raw.baseline_y + raw.glyph_y;
+                    if (staged.paint.local_pos[1] - raw_local_y).abs() > 0.5 {
+                        saw_vertical_shift = true;
+                    }
+                    assert!(
+                        (staged.final_paint_pos[0] - (origin[0] + staged.paint.local_pos[0]))
+                            .abs()
+                            < 1e-3
+                            && (staged.final_paint_pos[1]
+                                - (origin[1] + staged.paint.local_pos[1]))
+                                .abs()
+                                < 1e-3,
+                        "prepared pass consumes paint.local_pos; it must stay in sync with final_paint_pos",
+                    );
+                }
+                assert!(
+                    saw_vertical_shift,
+                    "fixture should exercise a nonzero vertical-align delta"
+                );
+            })
+            .expect("root exists");
+    }
+
+    #[test]
     fn viewport_scissor_uses_text_area_viewport_not_content_width() {
         let mut text_area = TextArea::new();
         text_area.layout_state.layout_position =
@@ -1114,6 +1152,34 @@ mod tests {
         assert_eq!(
             prepared_text_pass_count, 1,
             "projection TextArea should render plain glyphs once from the TextArea-level unified IFC package, got {pass_names:?}"
+        );
+    }
+
+    #[test]
+    fn text_area_inline_ifc_plain_unified_render_skips_per_run_text_passes() {
+        let (mut arena, root) = wrapped_plain_fixture("plain root render", 240.0);
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(320, 200, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        arena
+            .with_element_taken(root, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("TextArea build returns state");
+
+        let pass_names = graph
+            .pass_descriptors()
+            .into_iter()
+            .map(|desc| desc.name.to_string())
+            .collect::<Vec<_>>();
+        let prepared_text_pass_count = pass_names
+            .iter()
+            .filter(|name| name.ends_with("render_pass::text_pass::TextPreparedInputPass"))
+            .count();
+        assert_eq!(
+            prepared_text_pass_count, 1,
+            "plain TextArea should render glyphs once from the TextArea-level unified IFC package, got {pass_names:?}"
         );
     }
 
@@ -1306,21 +1372,71 @@ mod tests {
                     .as_any()
                     .downcast_ref::<TextArea>()
                     .expect("TextArea root");
-                text_area
-                    .children
+                let Some(package) = text_area.unified_inline_ifc_render_package(arena) else {
+                    return Vec::new();
+                };
+                let origin = [
+                    text_area.layout_state.layout_position.x - text_area.scroll_x,
+                    text_area.layout_state.layout_position.y - text_area.scroll_y,
+                ];
+                let paint_input = package.ifc.text_pass_paint_input();
+                let staging_input = package.text_pass_staging_input(origin, 1.0, 0, 1.0);
+                let backing = package.ifc.backing_text().to_string();
+                let text_sources = package
+                    .source_segments
                     .iter()
-                    .flat_map(|key| {
-                        arena
-                            .with_element_taken_ref(*key, |child, _| {
-                                child
-                                    .as_any()
-                                    .downcast_ref::<super::super::run::TextAreaTextRun>()
-                                    .map(|run| run.inline_text_pass_fragment_positions())
-                                    .unwrap_or_default()
-                            })
-                            .unwrap_or_default()
+                    .filter(|segment| {
+                        segment.kind
+                            == super::super::inline_ifc::TextAreaUnifiedIfcSourceKind::TextRun
                     })
-                    .collect::<Vec<_>>()
+                    .map(|segment| segment.source)
+                    .collect::<Vec<_>>();
+
+                let mut out = Vec::new();
+                for line in &paint_input.lines {
+                    for source in &text_sources {
+                        let mut left: Option<f32> = None;
+                        let mut right: Option<f32> = None;
+                        let mut start: Option<usize> = None;
+                        let mut end: Option<usize> = None;
+                        for (glyph, staged) in
+                            paint_input.glyphs.iter().zip(staging_input.glyphs.iter())
+                        {
+                            if glyph.line_index != line.line_index || glyph.source != *source {
+                                continue;
+                            }
+                            let x = staged.final_paint_pos[0];
+                            left = Some(left.map_or(x, |current| current.min(x)));
+                            right = Some(right.map_or(x + glyph.advance, |current| {
+                                current.max(x + glyph.advance)
+                            }));
+                            start = Some(start.map_or(glyph.cluster_range.start, |current| {
+                                current.min(glyph.cluster_range.start)
+                            }));
+                            end = Some(end.map_or(glyph.cluster_range.end, |current| {
+                                current.max(glyph.cluster_range.end)
+                            }));
+                        }
+                        let (Some(left), Some(right), Some(start), Some(end)) =
+                            (left, right, start, end)
+                        else {
+                            continue;
+                        };
+                        if start >= end || right <= left {
+                            continue;
+                        }
+                        out.push((
+                            backing[start..end].to_string(),
+                            Rect {
+                                x: left,
+                                y: origin[1] + line.y,
+                                width: (right - left).max(0.0),
+                                height: line.height.max(1.0),
+                            },
+                        ));
+                    }
+                }
+                out
             })
             .expect("root exists")
     }
@@ -1330,16 +1446,10 @@ mod tests {
         let (arena, root) = projection_fixture(2, false);
         let snap = projection_snapshot(&arena, root);
         let (x, y, height) = caret_position(&arena, root);
-        let line_h = 14.0 * 1.25;
 
         assert!((x - snap.x).abs() < 0.5, "x={x}, snap.x={}", snap.x);
-        assert!((height - line_h).abs() < 0.01, "height={height}");
-        assert!(
-            (y - (snap.y + (snap.height - line_h) * 0.5)).abs() < 0.5,
-            "y={y}, snap.y={}, snap.height={}",
-            snap.y,
-            snap.height
-        );
+        assert!((height - snap.height).abs() < 0.01, "height={height}");
+        assert!((y - snap.y).abs() < 0.5, "y={y}, snap.y={}", snap.y);
     }
 
     #[test]
@@ -1350,24 +1460,25 @@ mod tests {
         let expected_x = snap.x + snap.width / 3.0;
 
         assert!((x - expected_x).abs() < 0.5, "x={x}, expected={expected_x}");
-        assert!((height - 17.5).abs() < 0.01, "height={height}");
+        assert!((height - snap.height).abs() < 0.01, "height={height}");
     }
 
     #[test]
-    fn projection_caret_uses_real_text_coordinates_when_available() {
+    fn projection_caret_uses_root_atomic_geometry_when_text_descendant_exists() {
         let (arena, root) = projection_fixture(4, true);
         let (x, y, height) = caret_position(&arena, root);
-        let text_key = first_text_descendant(&arena, projection_key(&arena, root));
-        let text_snap = snapshot(&arena, text_key);
         let expected = arena
-            .with_element_taken_ref(text_key, |el, _| {
-                el.as_any()
-                    .downcast_ref::<Text>()
-                    .expect("Text descendant")
-                    .local_char_to_screen_position(2)
-                    .expect("text caret position")
+            .with_element_taken_ref(root, |el, arena| {
+                let text_area = el
+                    .as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root");
+                let map = super::super::caret_map::CaretNavigationMap::build(text_area, arena);
+                map.caret_stop_for_char(4, text_area.cursor_affinity)
+                    .map(|stop| (stop.x, stop.y_top, stop.height))
             })
-            .expect("text key exists");
+            .flatten()
+            .expect("root projection caret stop");
 
         assert!(
             (x - expected.0).abs() < 0.5,
@@ -1384,17 +1495,18 @@ mod tests {
             "height={height}, expected={}",
             expected.2
         );
+        let projection_snap = projection_snapshot(&arena, root);
         assert!(
-            x >= text_snap.x - 0.5 && x <= text_snap.x + text_snap.width + 0.5,
-            "caret x should be inside text bounds: x={x}, text=({}, {})",
-            text_snap.x,
-            text_snap.width
+            x >= projection_snap.x - 0.5 && x <= projection_snap.x + projection_snap.width + 0.5,
+            "caret x should be inside projection bounds: x={x}, projection=({}, {})",
+            projection_snap.x,
+            projection_snap.width
         );
         assert!(
-            y >= text_snap.y - 0.5 && y <= text_snap.y + text_snap.height + 0.5,
-            "caret y should be inside text bounds: y={y}, text=({}, {})",
-            text_snap.y,
-            text_snap.height
+            y >= projection_snap.y - 0.5 && y <= projection_snap.y + projection_snap.height + 0.5,
+            "caret y should be inside projection bounds: y={y}, projection=({}, {})",
+            projection_snap.y,
+            projection_snap.height
         );
     }
 
@@ -1461,22 +1573,10 @@ mod tests {
         );
     }
 
-    /// Integration check for "projection 內 cursor_affinity 沒作用".
-    /// Sets up a TextArea whose projection wraps a long path-like Text
-    /// across multiple visual lines; sets the caret to a wrap-tail char
-    /// inside the projection; asserts that with `Upstream` affinity the
-    /// caret y resolves to the **upper** visual line (i.e. the affinity
-    /// actually flows into the projection's text descendant). The
-    /// pre-fix path returned the lower line's head for any soft-wrapped
-    /// Text inside a projection because `query_caret_on` dropped the
-    /// affinity argument before forwarding to `Text`.
-    /// Repro of the live `textarea_test` scenario. Content has a
-    /// `{{USER_ID}}`-style badge projection mid-paragraph that wraps
-    /// across two visual lines (the projection box itself splits, like
-    /// a CSS inline-block on the boundary). The caret-affinity override
-    /// must let cursor at the lower-line head of the badge render at
-    /// the upper line's tail when `Upstream`, and at the lower head
-    /// when `Downstream`.
+    /// TextArea caret geometry now comes from the unified root IFC. A
+    /// projected badge contributes root-level atomic caret stops, so
+    /// affinity is resolved by the root line boundary rather than by
+    /// probing the projection's descendant Text.
     #[test]
     fn projection_badge_wrap_caret_affinity() {
         use crate::view::base_component::text_area::caret_map::CaretAffinity;
@@ -1566,68 +1666,46 @@ mod tests {
             },
         );
 
-        // Inspect the navigation map to confirm the badge truly
-        // wrapped (otherwise the test fixture failed to repro).
-        let (upper_tail_char, lower_head_char, upper_y, lower_y) = arena
+        let probe_chars = [usr_start, (usr_start + usr_end) / 2, usr_end];
+        arena
             .with_element_taken_ref(root, |el, arena| {
                 let ta = el.as_any().downcast_ref::<TextArea>().unwrap();
                 let map = super::super::caret_map::CaretNavigationMap::build(ta, arena);
-                eprintln!("[badge test] map has {} visual lines", map.lines.len());
-                for (i, line) in map.lines.iter().enumerate() {
-                    let chars: Vec<usize> = line.stops.iter().map(|s| s.char_index).collect();
-                    eprintln!("  line {i} y_top={} stops={:?}", line.y_top, chars);
+                for char_index in probe_chars {
+                    assert!(
+                        map.caret_stop_for_char(char_index, CaretAffinity::Downstream)
+                            .is_some(),
+                        "root map should expose projection atomic caret stop for char {char_index}"
+                    );
                 }
-                // Find a wrap inside USER_ID badge.
-                let mut upper_tail = None;
-                let mut lower_head = None;
-                let mut upper_y = 0.0;
-                let mut lower_y = 0.0;
-                for (idx, line) in map.lines.iter().enumerate() {
-                    if idx + 1 < map.lines.len() {
-                        let next = &map.lines[idx + 1];
-                        let last = line.stops.last().map(|s| s.char_index).unwrap_or(0);
-                        let first = next.stops.first().map(|s| s.char_index).unwrap_or(0);
-                        if last >= usr_start
-                            && last < usr_end
-                            && first > usr_start
-                            && first <= usr_end
-                        {
-                            upper_tail = Some(last);
-                            lower_head = Some(first);
-                            upper_y = line.y_top;
-                            lower_y = next.y_top;
-                            break;
-                        }
-                    }
-                }
-                Some((upper_tail?, lower_head?, upper_y, lower_y))
             })
-            .flatten()
-            .expect("USER_ID badge should split across two visual lines");
-        eprintln!(
-            "[badge test] upper_tail={upper_tail_char} lower_head={lower_head_char} upper_y={upper_y} lower_y={lower_y}",
-        );
+            .expect("TextArea root");
 
-        // Cursor at lower-head with Upstream → upper line.
         for affinity in [CaretAffinity::Upstream, CaretAffinity::Downstream] {
+            let cursor = (usr_start + usr_end) / 2;
             arena.with_element_taken(root, |el, _| {
                 let ta = el
                     .as_any_mut()
                     .downcast_mut::<TextArea>()
                     .expect("TextArea root");
-                ta.cursor_char = lower_head_char;
+                ta.cursor_char = cursor;
                 ta.cursor_affinity = affinity;
             });
-            let (cx, cy, _) = caret_position(&arena, root);
-            eprintln!("[badge test] {affinity:?}: ({cx}, {cy})");
-            let expect_y = match affinity {
-                CaretAffinity::Upstream => upper_y,
-                CaretAffinity::Downstream => lower_y,
-            };
+            let (cx, cy, height) = caret_position(&arena, root);
+            let expected = arena
+                .with_element_taken_ref(root, |el, arena| {
+                    let ta = el.as_any().downcast_ref::<TextArea>().unwrap();
+                    let map = super::super::caret_map::CaretNavigationMap::build(ta, arena);
+                    map.caret_stop_for_char(cursor, affinity)
+                        .map(|stop| (stop.x, stop.y_top, stop.height))
+                })
+                .flatten()
+                .expect("root stop for cursor");
             assert!(
-                (cy - expect_y).abs() < (lower_y - upper_y) * 0.5,
-                "[badge] affinity={affinity:?} cursor={lower_head_char}: caret y={cy} \
-                 should match {expect_y} (upper={upper_y}, lower={lower_y})",
+                (cx - expected.0).abs() < 0.5
+                    && (cy - expected.1).abs() < 0.5
+                    && (height - expected.2).abs() < 0.5,
+                "caret should consume root projection geometry for {affinity:?}: caret=({cx},{cy},{height}) root={expected:?}",
             );
         }
     }
@@ -1698,116 +1776,36 @@ mod tests {
             },
         );
 
-        // Discover wrap structure inside the projection's Text descendant
-        // by walking each char and recording when y jumps. The wrap-tail
-        // char is the LAST char on the upper line (i.e. the one whose y
-        // matches the upper line, with the next char's y on the lower).
         let proj_key = projection_key(&arena, root);
-        let text_key = first_text_descendant(&arena, proj_key);
-        let inner = "/activity/with/a/very/long/path";
-        let (wrap_local_char, upper_y, lower_y) = arena
-            .with_element_taken_ref(text_key, |el, _| {
-                let text = el.as_any().downcast_ref::<Text>().expect("Text");
-                let mut prev_y: Option<f32> = None;
-                let mut upper: Option<f32> = None;
-                let mut lower: Option<f32> = None;
-                let mut wrap_char: Option<usize> = None;
-                for c in 0..=inner.chars().count() {
-                    let (_, y, _) = text.local_char_to_screen_position(c)?;
-                    if let Some(py) = prev_y {
-                        if y > py + 0.5 && wrap_char.is_none() {
-                            wrap_char = Some(c.saturating_sub(1));
-                            upper = Some(py);
-                            lower = Some(y);
-                            break;
-                        }
-                    }
-                    prev_y = Some(y);
-                }
-                Some((wrap_char?, upper?, lower?))
-            })
-            .flatten()
-            .expect("wrap boundary discoverable");
-
-        // ── Case A: gap-byte caret = upper line regardless of affinity.
-        // (cursor_char in TextArea-source space; projection covers 2..34.)
-        // The boundary cursor (= first source char that *could* belong
-        // to either visual line) is `wrap_local_char + 1` — that's the
-        // first char whose probe via Text returns the upper tail
-        // because of the inline-path `<= frag_chars` capture. Affinity
-        // disambiguates: `Upstream` keeps the caret on the upper
-        // line's tail; `Downstream` moves it to the lower line's head.
-        let boundary_cursor = 2 + wrap_local_char;
-        let mut boundary_up: Option<f32> = None;
-        let mut boundary_down: Option<f32> = None;
+        let projection_rect = snapshot(&arena, proj_key);
+        let cursor = 2 + "/activity/with/a/very/long/path".chars().count() / 2;
+        let mut positions = Vec::new();
         for affinity in [CaretAffinity::Upstream, CaretAffinity::Downstream] {
             arena.with_element_taken(root, |el, _| {
                 let ta = el
                     .as_any_mut()
                     .downcast_mut::<TextArea>()
                     .expect("TextArea root");
-                ta.cursor_char = boundary_cursor;
+                ta.cursor_char = cursor;
                 ta.cursor_affinity = affinity;
             });
-            let (_, y, _) = caret_position(&arena, root);
-            match affinity {
-                CaretAffinity::Upstream => boundary_up = Some(y),
-                CaretAffinity::Downstream => boundary_down = Some(y),
-            }
+            positions.push((affinity, caret_position(&arena, root)));
         }
-        let bup = boundary_up.unwrap();
-        let bdown = boundary_down.unwrap();
-        assert!(
-            bup < bdown,
-            "[boundary] Upstream y ({bup}) on upper line, Downstream y ({bdown}) on lower",
-        );
-        assert!(
-            (bup - upper_y).abs() < (lower_y - upper_y) * 0.5,
-            "[boundary] Upstream y ({bup}) should match upper line ({upper_y})",
-        );
-        assert!(
-            (bdown - lower_y).abs() < (lower_y - upper_y) * 0.5,
-            "[boundary] Downstream y ({bdown}) should match lower line ({lower_y})",
-        );
 
-        // ── Case B: lower-head char (the *next* char past the gap) — this
-        // is where affinity actually splits. Upstream pins the caret to
-        // the upper line's tail; Downstream lands on the lower line's
-        // head. This is what Cmd+Right relies on when the wrap point
-        // happens to coincide with a non-leading run's first glyph.
-        let lower_head_cursor = boundary_cursor + 1;
-        let mut upstream_y: Option<f32> = None;
-        let mut downstream_y: Option<f32> = None;
-        for affinity in [CaretAffinity::Upstream, CaretAffinity::Downstream] {
-            arena.with_element_taken(root, |el, _| {
-                let ta = el
-                    .as_any_mut()
-                    .downcast_mut::<TextArea>()
-                    .expect("TextArea root");
-                ta.cursor_char = lower_head_cursor;
-                ta.cursor_affinity = affinity;
-            });
-            let (_, y, _) = caret_position(&arena, root);
-            match affinity {
-                CaretAffinity::Upstream => upstream_y = Some(y),
-                CaretAffinity::Downstream => downstream_y = Some(y),
-            }
+        for (affinity, (x, y, height)) in positions {
+            assert!(
+                projection_rect.x <= x && x <= projection_rect.x + projection_rect.width,
+                "{affinity:?} root caret x should stay inside projection atomic box: x={x}, rect={projection_rect:?}"
+            );
+            assert!(
+                projection_rect.y <= y && y <= projection_rect.y + projection_rect.height,
+                "{affinity:?} root caret y should stay inside projection atomic box: y={y}, rect={projection_rect:?}"
+            );
+            assert!(
+                height > 0.0,
+                "{affinity:?} root caret should expose visible height"
+            );
         }
-        let up_y = upstream_y.unwrap();
-        let down_y = downstream_y.unwrap();
-        assert!(
-            up_y < down_y,
-            "[lower-head] Upstream y ({up_y}) should be on upper line, \
-             Downstream y ({down_y}) on lower",
-        );
-        assert!(
-            (up_y - upper_y).abs() < (lower_y - upper_y) * 0.5,
-            "[lower-head] Upstream y ({up_y}) should match upper line ({upper_y})",
-        );
-        assert!(
-            (down_y - lower_y).abs() < (lower_y - upper_y) * 0.5,
-            "[lower-head] Downstream y ({down_y}) should match lower line ({lower_y})",
-        );
     }
 
     #[test]
@@ -2004,7 +2002,9 @@ mod tests {
         use super::super::caret_map::CaretAffinity;
 
         let content = "abcdefgh\nz";
-        let width = 70.0;
+        // Tight enough that the first preedit glyph cannot fit on the
+        // prefix line even with the wrap epsilon slack.
+        let width = 66.0;
         let cursor = 8;
         let (arena, root) = plain_preedit_fixture_with_options(
             content,

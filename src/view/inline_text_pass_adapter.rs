@@ -1,8 +1,4 @@
 use crate::view::inline_formatting_context::{
-    InlineFormattingContext, InlineIfcInput, InlineIfcItem, InlineIfcLayoutOptions,
-    InlineIfcSourceId, InlineIfcStyle,
-};
-use crate::view::inline_formatting_context::{
     InlineIfcTextPassGlyphInput, InlineIfcTextPassPaintInput,
 };
 use crate::view::render_pass::text_pass::{
@@ -133,59 +129,6 @@ impl InlineTextPassBridgePackage {
     }
 }
 
-/// Staging input for the first Text read-only IFC bridge call-site.
-///
-/// `origin` is the fragment paint origin from the current Text render path.
-/// The bridge package still stores glyph-local paint positions; callers can
-/// derive final paint positions with `final_paint_pos()`.
-///
-/// `width_constraint` and `allow_wrap` are converted into IFC layout options by
-/// the staging helper. `layout_size` is retained as call-site metadata for the
-/// later `TextPassParams` insertion step.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct TextReadOnlyIfcBridgeInput {
-    pub(crate) content: String,
-    pub(crate) style: InlineIfcStyle,
-    pub(crate) text_color: [f32; 4],
-    pub(crate) opacity: f32,
-    pub(crate) fragment_index: u32,
-    pub(crate) origin: [f32; 2],
-    pub(crate) layout_size: [f32; 2],
-    pub(crate) width_constraint: Option<f32>,
-    pub(crate) allow_wrap: bool,
-}
-
-impl TextReadOnlyIfcBridgeInput {
-    pub(crate) fn new(
-        content: impl Into<String>,
-        style: InlineIfcStyle,
-        opacity: f32,
-        fragment_index: u32,
-    ) -> Self {
-        let text_color = brush_to_text_color_for_legacy_bridge(style.brush);
-        Self {
-            content: content.into(),
-            style,
-            text_color,
-            opacity,
-            fragment_index,
-            origin: [0.0, 0.0],
-            layout_size: [0.0, 0.0],
-            width_constraint: None,
-            allow_wrap: false,
-        }
-    }
-
-    pub(crate) fn with_text_color(mut self, text_color: [f32; 4]) -> Self {
-        self.text_color = text_color;
-        self
-    }
-
-    pub(crate) fn final_paint_pos(&self, local_pos: [f32; 2]) -> [f32; 2] {
-        [self.origin[0] + local_pos[0], self.origin[1] + local_pos[1]]
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineTextPassPreparedInput {
     pub(crate) scale_factor: f32,
@@ -204,7 +147,7 @@ pub(crate) struct InlineTextPassPreparedGlyph {
 }
 
 pub(crate) fn build_inline_text_pass_prepared_input(
-    input: &TextReadOnlyIfcBridgeInput,
+    origin: [f32; 2],
     package: &InlineTextPassBridgePackage,
     scale_factor: f32,
 ) -> InlineTextPassPreparedInput {
@@ -237,7 +180,10 @@ pub(crate) fn build_inline_text_pass_prepared_input(
                 raster_key: text_raster_key_for_raster_input(&glyph.raster, scale_factor),
                 paint: glyph.paint,
                 raster: glyph.raster.clone(),
-                final_paint_pos: input.final_paint_pos(glyph.paint.local_pos),
+                final_paint_pos: [
+                    origin[0] + glyph.paint.local_pos[0],
+                    origin[1] + glyph.paint.local_pos[1],
+                ],
             })
             .collect(),
     }
@@ -267,19 +213,36 @@ pub(crate) fn inline_ifc_paint_input_to_text_pass_staging_input(
     fragment_index: u32,
     scale_factor: f32,
 ) -> TextPassPreparedStagingInput {
-    let bridge = InlineTextPassBridgeInput::from_ifc_paint_input(input, opacity, fragment_index);
-    let package = InlineTextPassBridgePackage::from_bridge_input(bridge);
-    let mut prepared_input = build_inline_text_pass_prepared_input(
-        &TextReadOnlyIfcBridgeInput::new("", InlineIfcStyle::default(), opacity, fragment_index),
-        &package,
+    inline_ifc_paint_input_to_text_pass_staging_input_with_color(
+        input,
+        origin,
+        opacity,
+        fragment_index,
         scale_factor,
-    );
-    for glyph in &mut prepared_input.glyphs {
-        glyph.final_paint_pos = [
-            origin[0] + glyph.paint.local_pos[0],
-            origin[1] + glyph.paint.local_pos[1],
-        ];
+        None,
+    )
+}
+
+/// Like [`inline_ifc_paint_input_to_text_pass_staging_input`], overriding
+/// every glyph's paint color. Standalone Text keeps its brush out of the
+/// shaping cache key and injects the live color here instead.
+pub(crate) fn inline_ifc_paint_input_to_text_pass_staging_input_with_color(
+    input: &InlineIfcTextPassPaintInput,
+    origin: [f32; 2],
+    opacity: f32,
+    fragment_index: u32,
+    scale_factor: f32,
+    color_override: Option<[f32; 4]>,
+) -> TextPassPreparedStagingInput {
+    let mut bridge =
+        InlineTextPassBridgeInput::from_ifc_paint_input(input, opacity, fragment_index);
+    if let Some(color) = color_override {
+        for glyph in &mut bridge.glyphs {
+            glyph.paint.color = color;
+        }
     }
+    let package = InlineTextPassBridgePackage::from_bridge_input(bridge);
+    let prepared_input = build_inline_text_pass_prepared_input(origin, &package, scale_factor);
     inline_prepared_input_to_text_pass_staging_input(&prepared_input)
 }
 
@@ -290,12 +253,6 @@ pub(crate) fn build_inline_text_pass_bridge_package_for_test(
     fragment_index: u32,
 ) -> InlineTextPassBridgePackage {
     InlineTextPassBridgePackage::from_ifc_paint_input(input, opacity, fragment_index)
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct InlineTextPassPreparedEquivalentProbe {
-    pub(crate) prepared_input: InlineTextPassPreparedInput,
 }
 
 #[cfg(test)]
@@ -363,69 +320,6 @@ pub(crate) fn inline_text_pass_prepare_comparable_package_for_test(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn inline_text_pass_prepared_equivalent_probe_for_test(
-    input: &TextReadOnlyIfcBridgeInput,
-    package: &InlineTextPassBridgePackage,
-    scale_factor: f32,
-) -> InlineTextPassPreparedEquivalentProbe {
-    InlineTextPassPreparedEquivalentProbe {
-        prepared_input: build_inline_text_pass_prepared_input(input, package, scale_factor),
-    }
-}
-
-/// Builds the IFC -> TextPass bridge payload for the Text read-only staging path.
-///
-/// This intentionally models only the glyph-local package. Fragment origin is
-/// carried by `TextReadOnlyIfcBridgeInput`, but final position application,
-/// clipping, and final TextPass insertion remain owned by the current Text
-/// render path until the formal call site switch.
-pub(crate) fn build_text_read_only_ifc_bridge_package_from_input(
-    input: &TextReadOnlyIfcBridgeInput,
-) -> InlineTextPassBridgePackage {
-    let ifc_input = InlineIfcInput::new(vec![InlineIfcItem::TextSpan {
-        source: InlineIfcSourceId(131),
-        text: input.content.clone(),
-        style: Some(input.style.clone()),
-    }]);
-    let layout_options = InlineIfcLayoutOptions::new(input.width_constraint, input.allow_wrap);
-    let paint_input = InlineFormattingContext::build_with_options(ifc_input, layout_options)
-        .text_pass_paint_input();
-    let mut bridge = InlineTextPassBridgeInput::from_ifc_paint_input(
-        &paint_input,
-        input.opacity,
-        input.fragment_index,
-    );
-    for glyph in &mut bridge.glyphs {
-        glyph.paint.color = input.text_color;
-    }
-    InlineTextPassBridgePackage::from_bridge_input(bridge)
-}
-
-/// Compatibility wrapper for the initial Text read-only IFC helper.
-#[cfg(test)]
-pub(crate) fn build_text_read_only_ifc_bridge_package(
-    content: &str,
-    style: InlineIfcStyle,
-    opacity: f32,
-    fragment_index: u32,
-) -> InlineTextPassBridgePackage {
-    let input = TextReadOnlyIfcBridgeInput::new(content, style, opacity, fragment_index);
-    build_text_read_only_ifc_bridge_package_from_input(&input)
-}
-
-#[cfg(test)]
-pub(crate) fn text_read_only_ifc_prepare_comparable_package_for_test(
-    content: &str,
-    style: InlineIfcStyle,
-    opacity: f32,
-    fragment_index: u32,
-    scale_factor: f32,
-) -> InlineTextPassPrepareComparablePackage {
-    let package = build_text_read_only_ifc_bridge_package(content, style, opacity, fragment_index);
-    inline_text_pass_prepare_comparable_package_for_test(&package, scale_factor)
-}
-
 pub(crate) fn inline_ifc_glyph_to_text_pass_raster_input(
     glyph: &InlineIfcTextPassGlyphInput,
 ) -> TextPassRasterGlyphInput {
@@ -450,15 +344,6 @@ pub(crate) fn inline_ifc_glyph_to_text_pass_paint_input(
         opacity,
         fragment_index,
     }
-}
-
-fn brush_to_text_color_for_legacy_bridge(brush: [u8; 4]) -> [f32; 4] {
-    [
-        brush[0] as f32 / 255.0,
-        brush[1] as f32 / 255.0,
-        brush[2] as f32 / 255.0,
-        brush[3] as f32 / 255.0,
-    ]
 }
 
 #[cfg(test)]
@@ -488,9 +373,8 @@ mod tests {
     };
     use crate::view::render_pass::text_pass::{
         CachedRasterImage, TextRasterKey, rasterize_text_pass_glyph_input,
-        text_raster_key_for_raster_input, text_raster_key_for_text_glyph,
+        text_raster_key_for_raster_input,
     };
-    use crate::view::text_layout::{TextGlyph, TextLayoutAlignment, build_text_layout};
     use rustc_hash::FxHashMap;
     use swash::scale::ScaleContext as SwashScaleContext;
 
@@ -548,85 +432,8 @@ mod tests {
             .expect("IFC bridge fixture should produce a renderable glyph")
     }
 
-    fn first_text_glyph_for_text(content: &str, style: &InlineIfcStyle) -> TextGlyph {
-        build_text_layout(
-            content,
-            None,
-            true,
-            style.font_size,
-            style.line_height,
-            style.font_weight,
-            TextLayoutAlignment::Left,
-            &style.font_families,
-        )
-        .layout
-        .lines()
-        .into_iter()
-        .flat_map(|line| line.glyphs)
-        .find(|glyph| glyph.font_data.is_some())
-        .expect("Text layout fixture should produce a renderable glyph")
-    }
-
     fn paint_input_for_items(items: Vec<InlineIfcItem>) -> InlineIfcTextPassPaintInput {
         InlineFormattingContext::build(InlineIfcInput::new(items)).text_pass_paint_input()
-    }
-
-    fn brush_to_expected_text_color(brush: [u8; 4]) -> [f32; 4] {
-        [
-            brush[0] as f32 / 255.0,
-            brush[1] as f32 / 255.0,
-            brush[2] as f32 / 255.0,
-            brush[3] as f32 / 255.0,
-        ]
-    }
-
-    fn assert_f32_close(actual: f32, expected: f32) {
-        assert!(
-            (actual - expected).abs() <= 0.001,
-            "expected {actual} to be close to {expected}"
-        );
-    }
-
-    fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
-        assert_f32_close(actual[0], expected[0]);
-        assert_f32_close(actual[1], expected[1]);
-    }
-
-    fn text_read_only_existing_path_glyphs(
-        content: &str,
-        style: &InlineIfcStyle,
-    ) -> Vec<(TextPassRasterGlyphInput, [f32; 2])> {
-        text_read_only_existing_path_glyphs_with_layout(content, style, None, true)
-    }
-
-    fn text_read_only_existing_path_glyphs_with_layout(
-        content: &str,
-        style: &InlineIfcStyle,
-        width: Option<f32>,
-        allow_wrap: bool,
-    ) -> Vec<(TextPassRasterGlyphInput, [f32; 2])> {
-        build_text_layout(
-            content,
-            width,
-            allow_wrap,
-            style.font_size,
-            style.line_height,
-            style.font_weight,
-            TextLayoutAlignment::Left,
-            &style.font_families,
-        )
-        .layout
-        .lines()
-        .into_iter()
-        .flat_map(|line| {
-            let baseline_y = line.y + line.baseline;
-            line.glyphs.into_iter().filter_map(move |glyph| {
-                let raster = TextPassRasterGlyphInput::from_text_glyph(&glyph)?;
-                let local_pos = [line.x + glyph.x, baseline_y + glyph.y];
-                Some((raster, local_pos))
-            })
-        })
-        .collect()
     }
 
     #[test]
@@ -702,69 +509,6 @@ mod tests {
         .expect("bridged IFC glyph should rasterize through the existing TextPass helper");
 
         assert!(!image.data.is_empty());
-        assert_eq!(raster_cache.len(), 1);
-    }
-
-    #[test]
-    fn bridge_raster_payload_matches_existing_text_glyph_path_for_same_text() {
-        let content = "Parity";
-        let style = parity_style();
-        let bridged = first_ifc_bridge_glyph_for_text(content, &style);
-        let text_glyph = first_text_glyph_for_text(content, &style);
-        let text_raster = TextPassRasterGlyphInput::from_text_glyph(&text_glyph)
-            .expect("TextGlyph should carry a complete font handle");
-        let scale_factor = 1.25;
-
-        assert_eq!(bridged.raster.glyph_id, text_raster.glyph_id);
-        assert_eq!(bridged.raster.font_size, text_raster.font_size);
-        assert_eq!(bridged.raster.font_data_id, text_raster.font_data_id);
-        assert_eq!(bridged.raster.font_index, text_raster.font_index);
-        assert_eq!(
-            bridged.raster.normalized_coords_hash,
-            text_raster.normalized_coords_hash
-        );
-        assert_eq!(
-            bridged
-                .raster
-                .font_data
-                .as_ref()
-                .map(|font| (font.data.id(), font.index)),
-            text_raster
-                .font_data
-                .as_ref()
-                .map(|font| (font.data.id(), font.index))
-        );
-
-        let text_key = text_raster_key_for_text_glyph(&text_glyph, scale_factor)
-            .expect("TextGlyph should produce a raster key");
-        let text_input_key = text_raster_key_for_raster_input(&text_raster, scale_factor)
-            .expect("neutral TextGlyph input should produce a raster key");
-        let bridge_key = text_raster_key_for_raster_input(&bridged.raster, scale_factor)
-            .expect("bridged IFC input should produce a raster key");
-        assert_eq!(text_input_key, text_key);
-        assert_eq!(bridge_key, text_key);
-
-        let mut scale_context = SwashScaleContext::new();
-        let mut raster_cache = FxHashMap::<TextRasterKey, CachedRasterImage>::default();
-        let text_image = rasterize_text_pass_glyph_input(
-            &mut scale_context,
-            &mut raster_cache,
-            201,
-            &text_raster,
-            scale_factor,
-        )
-        .expect("existing TextGlyph-neutral input should rasterize");
-        let bridged_image = rasterize_text_pass_glyph_input(
-            &mut scale_context,
-            &mut raster_cache,
-            202,
-            &bridged.raster,
-            scale_factor,
-        )
-        .expect("bridged IFC input should rasterize with the same key");
-
-        assert!(!text_image.data.is_empty());
-        assert!(!bridged_image.data.is_empty());
         assert_eq!(raster_cache.len(), 1);
     }
 
@@ -1183,313 +927,6 @@ mod tests {
                 .sum::<usize>(),
             comparable.glyphs.len()
         );
-        assert!(
-            comparable
-                .glyphs
-                .iter()
-                .all(|glyph| glyph.batch_index.is_some() && glyph.raster_key.is_some())
-        );
-    }
-
-    #[test]
-    fn text_read_only_opt_in_comparable_matches_existing_text_pass_semantics() {
-        let content = "ReadOnly";
-        let mut style = parity_style();
-        style.brush = [12, 80, 200, 204];
-        style.font_size = 19.0;
-        style.line_height = 24.0;
-        style.font_weight = 600;
-        let opacity = 0.375;
-        let fragment_index = 23;
-        let scale_factor = 1.25;
-
-        let comparable = text_read_only_ifc_prepare_comparable_package_for_test(
-            content,
-            style.clone(),
-            opacity,
-            fragment_index,
-            scale_factor,
-        );
-        let existing = text_read_only_existing_path_glyphs(content, &style);
-
-        assert_eq!(comparable.glyphs.len(), existing.len());
-        assert_eq!(comparable.batches.len(), 1);
-        assert_eq!(
-            comparable.batches[0].glyph_indices,
-            (0..comparable.glyphs.len()).collect::<Vec<_>>()
-        );
-
-        let expected_color = brush_to_expected_text_color(style.brush);
-        for (comparable_glyph, (text_raster, text_local_pos)) in
-            comparable.glyphs.iter().zip(existing.iter())
-        {
-            assert_eq!(comparable_glyph.raster.glyph_id, text_raster.glyph_id);
-            assert_eq!(comparable_glyph.raster.font_size, text_raster.font_size);
-            assert_eq!(
-                comparable_glyph.raster.font_data_id,
-                text_raster.font_data_id
-            );
-            assert_eq!(comparable_glyph.raster.font_index, text_raster.font_index);
-            assert_eq!(
-                comparable_glyph.raster.normalized_coords_hash,
-                text_raster.normalized_coords_hash
-            );
-            assert_eq!(
-                comparable_glyph.raster_key,
-                text_raster_key_for_raster_input(text_raster, scale_factor)
-            );
-
-            assert_eq!(comparable_glyph.paint.color, expected_color);
-            assert_eq!(comparable_glyph.paint.opacity, opacity);
-            assert_eq!(comparable_glyph.paint.fragment_index, fragment_index);
-            assert_vec2_close(comparable_glyph.paint.local_pos, *text_local_pos);
-            assert!(comparable_glyph.batch_index.is_some());
-            assert!(comparable_glyph.raster_key.is_some());
-        }
-    }
-
-    #[test]
-    fn text_read_only_staging_input_matches_legacy_wrapper_package() {
-        let content = "Staging";
-        let style = parity_style();
-        let opacity = 0.6875;
-        let fragment_index = 31;
-
-        let input =
-            TextReadOnlyIfcBridgeInput::new(content, style.clone(), opacity, fragment_index);
-        let from_input = build_text_read_only_ifc_bridge_package_from_input(&input);
-        let from_wrapper =
-            build_text_read_only_ifc_bridge_package(content, style, opacity, fragment_index);
-
-        assert_eq!(from_input, from_wrapper);
-        assert!(
-            from_input
-                .glyphs
-                .iter()
-                .all(|glyph| glyph.paint.opacity == opacity
-                    && glyph.paint.fragment_index == fragment_index)
-        );
-    }
-
-    #[test]
-    fn text_read_only_staging_origin_derives_final_paint_position() {
-        let mut input = TextReadOnlyIfcBridgeInput::new("Origin", parity_style(), 0.5, 32);
-        input.origin = [42.0, 18.5];
-        input.layout_size = [160.0, 24.0];
-        input.width_constraint = Some(160.0);
-        input.allow_wrap = true;
-
-        let mut zero_origin = input.clone();
-        zero_origin.origin = [0.0, 0.0];
-        let zero_origin_package = build_text_read_only_ifc_bridge_package_from_input(&zero_origin);
-        let package = build_text_read_only_ifc_bridge_package_from_input(&input);
-        let first_glyph = package
-            .glyphs
-            .iter()
-            .find(|glyph| glyph.raster.font_data.is_some())
-            .expect("Text staging input should produce a renderable glyph");
-        let zero_origin_glyph = zero_origin_package
-            .glyphs
-            .iter()
-            .find(|glyph| glyph.raster.font_data.is_some())
-            .expect("zero-origin staging input should produce a renderable glyph");
-        let final_pos = input.final_paint_pos(first_glyph.paint.local_pos);
-
-        assert_vec2_close(
-            first_glyph.paint.local_pos,
-            zero_origin_glyph.paint.local_pos,
-        );
-        assert_vec2_close(
-            final_pos,
-            [
-                input.origin[0] + first_glyph.paint.local_pos[0],
-                input.origin[1] + first_glyph.paint.local_pos[1],
-            ],
-        );
-        assert_eq!(first_glyph.paint.opacity, input.opacity);
-        assert_eq!(first_glyph.paint.fragment_index, input.fragment_index);
-    }
-
-    #[test]
-    fn text_read_only_staging_no_width_constraint_keeps_existing_single_flow() {
-        let input = TextReadOnlyIfcBridgeInput::new("No width constraint", parity_style(), 0.8, 33);
-        let package = build_text_read_only_ifc_bridge_package_from_input(&input);
-        let existing = text_read_only_existing_path_glyphs_with_layout(
-            &input.content,
-            &input.style,
-            None,
-            false,
-        );
-
-        assert_eq!(package.glyphs.len(), existing.len());
-        for (glyph, (text_raster, text_local_pos)) in package.glyphs.iter().zip(existing.iter()) {
-            assert_eq!(glyph.raster.glyph_id, text_raster.glyph_id);
-            assert_eq!(glyph.raster.font_size, text_raster.font_size);
-            assert_vec2_close(glyph.paint.local_pos, *text_local_pos);
-        }
-    }
-
-    #[test]
-    fn text_read_only_staging_wraps_when_enabled_with_narrow_width() {
-        let mut narrow = TextReadOnlyIfcBridgeInput::new(
-            "Wrap staging text across lines",
-            parity_style(),
-            0.8,
-            33,
-        );
-        narrow.origin = [10.0, 20.0];
-        narrow.layout_size = [54.0, 96.0];
-        narrow.width_constraint = Some(54.0);
-        narrow.allow_wrap = true;
-        let scale_factor = 1.0;
-
-        let mut wide = narrow.clone();
-        wide.origin = [80.0, 120.0];
-        wide.layout_size = [320.0, 24.0];
-        wide.width_constraint = Some(320.0);
-        wide.allow_wrap = false;
-
-        let narrow_package = build_text_read_only_ifc_bridge_package_from_input(&narrow);
-        let wide_package = build_text_read_only_ifc_bridge_package_from_input(&wide);
-        let narrow_existing = text_read_only_existing_path_glyphs_with_layout(
-            &narrow.content,
-            &narrow.style,
-            narrow.width_constraint,
-            true,
-        );
-        let comparable =
-            inline_text_pass_prepare_comparable_package_for_test(&narrow_package, scale_factor);
-
-        assert_eq!(narrow_package.glyphs.len(), wide_package.glyphs.len());
-        assert_eq!(comparable.glyphs.len(), narrow_existing.len());
-        assert!(
-            narrow_package
-                .glyphs
-                .iter()
-                .any(|glyph| glyph.paint.local_pos[1] > wide_package.glyphs[0].paint.local_pos[1])
-        );
-        for (comparable_glyph, (text_raster, text_local_pos)) in
-            comparable.glyphs.iter().zip(narrow_existing.iter())
-        {
-            assert_eq!(
-                comparable_glyph.paint.color,
-                brush_to_expected_text_color(narrow.style.brush)
-            );
-            assert_eq!(comparable_glyph.paint.opacity, narrow.opacity);
-            assert_eq!(comparable_glyph.paint.fragment_index, narrow.fragment_index);
-            assert_eq!(comparable_glyph.raster.glyph_id, text_raster.glyph_id);
-            assert_eq!(
-                comparable_glyph.raster_key,
-                text_raster_key_for_raster_input(text_raster, scale_factor)
-            );
-            assert_vec2_close(comparable_glyph.paint.local_pos, *text_local_pos);
-        }
-    }
-
-    #[test]
-    fn text_read_only_staging_does_not_wrap_when_disabled_with_narrow_width() {
-        let mut nowrap = TextReadOnlyIfcBridgeInput::new(
-            "No wrap staging text across lines",
-            parity_style(),
-            0.75,
-            35,
-        );
-        nowrap.width_constraint = Some(48.0);
-        nowrap.allow_wrap = false;
-
-        let mut unconstrained = nowrap.clone();
-        unconstrained.width_constraint = None;
-
-        let nowrap_package = build_text_read_only_ifc_bridge_package_from_input(&nowrap);
-        let unconstrained_package =
-            build_text_read_only_ifc_bridge_package_from_input(&unconstrained);
-        let existing = text_read_only_existing_path_glyphs_with_layout(
-            &nowrap.content,
-            &nowrap.style,
-            nowrap.width_constraint,
-            false,
-        );
-
-        assert_eq!(nowrap_package, unconstrained_package);
-        assert_eq!(nowrap_package.glyphs.len(), existing.len());
-        for (glyph, (text_raster, text_local_pos)) in nowrap_package.glyphs.iter().zip(existing) {
-            assert_eq!(glyph.raster.glyph_id, text_raster.glyph_id);
-            assert_vec2_close(glyph.paint.local_pos, text_local_pos);
-        }
-    }
-
-    #[test]
-    fn text_read_only_staging_preserves_color_opacity_fragment_and_raster_key() {
-        let mut style = parity_style();
-        style.brush = [180, 30, 90, 230];
-        let mut input = TextReadOnlyIfcBridgeInput::new("Payload", style.clone(), 0.25, 34);
-        input.origin = [5.0, 7.0];
-        input.layout_size = [140.0, 26.0];
-        input.width_constraint = Some(140.0);
-        input.allow_wrap = false;
-        let scale_factor = 1.75;
-
-        let package = build_text_read_only_ifc_bridge_package_from_input(&input);
-        let comparable =
-            inline_text_pass_prepare_comparable_package_for_test(&package, scale_factor);
-        let existing = text_read_only_existing_path_glyphs(&input.content, &style);
-        let expected_color = brush_to_expected_text_color(style.brush);
-
-        assert_eq!(comparable.glyphs.len(), existing.len());
-        for (comparable_glyph, (text_raster, _)) in comparable.glyphs.iter().zip(existing.iter()) {
-            assert_eq!(comparable_glyph.paint.color, expected_color);
-            assert_eq!(comparable_glyph.paint.opacity, input.opacity);
-            assert_eq!(comparable_glyph.paint.fragment_index, input.fragment_index);
-            assert_eq!(
-                comparable_glyph.raster_key,
-                text_raster_key_for_raster_input(text_raster, scale_factor)
-            );
-            assert_eq!(
-                input.final_paint_pos(comparable_glyph.paint.local_pos),
-                [
-                    input.origin[0] + comparable_glyph.paint.local_pos[0],
-                    input.origin[1] + comparable_glyph.paint.local_pos[1],
-                ]
-            );
-        }
-    }
-
-    #[test]
-    fn text_read_only_opt_in_package_keeps_atomic_inline_box_out_of_glyph_path() {
-        const TEXT_SOURCE: InlineIfcSourceId = InlineIfcSourceId(141);
-        const BOX_SOURCE: InlineIfcSourceId = InlineIfcSourceId(142);
-
-        let ifc = InlineFormattingContext::build(InlineIfcInput::new(vec![
-            InlineIfcItem::TextSpan {
-                source: TEXT_SOURCE,
-                text: "T".to_string(),
-                style: Some(parity_style()),
-            },
-            InlineIfcItem::AtomicInlineBox {
-                source: BOX_SOURCE,
-                measurement: measured_box(21.0, 11.0),
-            },
-            InlineIfcItem::TextSpan {
-                source: TEXT_SOURCE,
-                text: "X".to_string(),
-                style: Some(parity_style()),
-            },
-        ]));
-        let snapshot = ifc.text_layout_snapshot();
-        let paint_input = snapshot.text_pass_paint_input();
-        let package = build_inline_text_pass_bridge_package_for_test(&paint_input, 0.75, 3);
-        let comparable = inline_text_pass_prepare_comparable_package_for_test(&package, 1.0);
-
-        assert_eq!(snapshot.inline_boxes.len(), 1);
-        assert_eq!(snapshot.inline_boxes[0].source, BOX_SOURCE);
-        assert!(
-            paint_input
-                .glyphs
-                .iter()
-                .all(|glyph| glyph.source != BOX_SOURCE)
-        );
-        assert_eq!(package.glyphs.len(), paint_input.glyphs.len());
-        assert_eq!(comparable.glyphs.len(), paint_input.glyphs.len());
         assert!(
             comparable
                 .glyphs

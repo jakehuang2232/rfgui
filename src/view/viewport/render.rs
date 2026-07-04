@@ -354,6 +354,9 @@ impl Viewport {
         crate::view::base_component::set_text_measure_profile_enabled(
             self.debug_options.trace_render_time,
         );
+        crate::view::base_component::set_layout_place_profile_enabled(
+            self.debug_options.trace_render_time,
+        );
         let layout_started_at = Instant::now();
         let layout_result = self.run_layout_pass();
         timings.layout_measure_ms = layout_result.measure_ms;
@@ -736,6 +739,7 @@ impl Viewport {
             );
         }
         crate::view::base_component::set_text_measure_profile_enabled(false);
+        crate::view::base_component::set_layout_place_profile_enabled(false);
         if self.debug_options.trace_reuse_path {
             let mut reuse_records = reuse_records;
             println!("{}", format_reuse_path_trace(&mut reuse_records));
@@ -1263,7 +1267,7 @@ impl Viewport {
         let submit_ms = submit_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let present_started_at = Instant::now();
-        frame.render_texture.present();
+        queue.present(frame.render_texture);
         let present_ms = present_started_at.elapsed().as_secs_f64() * 1000.0;
         self.frame.frame_presented = true;
         EndFrameProfile {

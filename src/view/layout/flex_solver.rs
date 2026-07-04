@@ -8,9 +8,7 @@
 //! `measure` recursion).
 
 use crate::style::{Layout, SizeValue};
-use crate::view::base_component::{
-    FlexProps, InlineNodeSize, LayoutConstraints, resolve_px_with_base,
-};
+use crate::view::base_component::{FlexProps, LayoutConstraints, resolve_px_with_base};
 use crate::view::layout::types::{FlexLayoutInfo, FlexLineItem};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
@@ -66,7 +64,7 @@ pub(crate) fn compute_flex_info(
     arena: &mut NodeArena,
 ) -> FlexLayoutInfo {
     let FlexSolverInputs {
-        layout_kind,
+        layout_kind: _layout_kind,
         children,
         absolute_mask,
         is_row,
@@ -142,14 +140,8 @@ pub(crate) fn compute_flex_info(
             .copied()
             .map(|child_index| FlexLineItem {
                 child_index,
-                node_index: 0,
                 main: child_sizes[child_index].0,
                 cross: child_sizes[child_index].1,
-                main_offset: 0.0,
-                cross_offset: 0.0,
-                baseline: 0.0,
-                vertical_align: crate::style::VerticalAlign::Baseline,
-                force_break_after: false,
             })
             .collect::<Vec<_>>();
         let line_present = total_main > 0.0 || line_cross > 0.0;
@@ -169,10 +161,6 @@ pub(crate) fn compute_flex_info(
             } else {
                 Vec::new()
             },
-            // Real-flex path (Layout::Flex with grow/shrink) is non-inline:
-            // ascent/descent unused; carry zeros to keep vec lengths aligned.
-            line_ascent: if line_present { vec![0.0] } else { Vec::new() },
-            line_descent: if line_present { vec![0.0] } else { Vec::new() },
             total_main,
             total_cross: line_cross,
         };
@@ -183,89 +171,27 @@ pub(crate) fn compute_flex_info(
         if absolute_mask.get(child_index).copied().unwrap_or(false) {
             continue;
         }
-        let node_sizes = {
-            let Some(child_node) = arena.get(*child_key) else {
-                continue;
-            };
-            if matches!(layout_kind, Layout::Inline) {
-                child_node.element.get_inline_nodes_size(arena)
-            } else {
-                let (w, h) = child_node.element.measured_size();
-                vec![InlineNodeSize {
-                    width: w,
-                    height: h,
-                    ..Default::default()
-                }]
-            }
-        };
-        if node_sizes.is_empty() {
-            inline_nodes.push(FlexLineItem {
-                child_index,
-                node_index: 0,
-                main: 0.0,
-                cross: 0.0,
-                main_offset: 0.0,
-                cross_offset: 0.0,
-                baseline: 0.0,
-                vertical_align: crate::style::VerticalAlign::Baseline,
-                force_break_after: false,
-            });
+        let Some(child_node) = arena.get(*child_key) else {
             continue;
-        }
-        for (node_index, node) in node_sizes.into_iter().enumerate() {
-            let node_main = if is_row {
-                node.width.max(0.0)
-            } else {
-                node.height.max(0.0)
-            };
-            let node_cross = if is_row {
-                node.height.max(0.0)
-            } else {
-                node.width.max(0.0)
-            };
-            inline_nodes.push(FlexLineItem {
-                child_index,
-                node_index,
-                main: node_main,
-                cross: node_cross,
-                main_offset: 0.0,
-                cross_offset: 0.0,
-                // Inline path: surface fragment baseline so per-line
-                // ascent (D2) and per-fragment alignment (D3) can be
-                // computed downstream. Flex/Flow already pass through
-                // the default 0 (cross-axis non-inline path).
-                baseline: node.baseline,
-                vertical_align: node.vertical_align,
-                force_break_after: node.force_break_after,
-            });
-        }
+        };
+        let (w, h) = child_node.element.measured_size();
+        inline_nodes.push(FlexLineItem {
+            child_index,
+            main: if is_row { w.max(0.0) } else { h.max(0.0) },
+            cross: if is_row { h.max(0.0) } else { w.max(0.0) },
+        });
     }
 
-    let is_inline = matches!(layout_kind, Layout::Inline);
     let mut lines: Vec<Vec<FlexLineItem>> = Vec::new();
     let mut line_main_sum: Vec<f32> = Vec::new();
-    // Sprint 5 cleanup: inline path no longer writes line_cross_max.
-    // Flex/Flow continue to populate it for their cross-axis place
-    // pipeline. Length matches `lines.len()` only for the non-inline
-    // path; inline-path consumers must read line_ascent + line_descent.
     let mut line_cross_max: Vec<f32> = Vec::new();
-    // Per `docs/design/inline-baseline.md` D2: line_box_h = max(baseline)
-    // + max(cross - baseline). Tracked only for the inline path; Flex/Flow
-    // lines push 0 placeholders so vec lengths stay aligned with `lines`.
-    let mut line_ascent: Vec<f32> = Vec::new();
-    let mut line_descent: Vec<f32> = Vec::new();
     let mut current = Vec::new();
     let mut current_main = 0.0;
     let mut current_cross = 0.0;
-    let mut current_ascent = 0.0_f32;
-    let mut current_descent = 0.0_f32;
-    let mut force_break_pending = false;
 
     for item in inline_nodes {
         let item_main = item.main;
         let item_cross = item.cross;
-        let item_ascent = item.baseline;
-        let item_descent = (item_cross - item.baseline).max(0.0);
         let inserts_gap = current
             .last()
             .is_some_and(|prev: &FlexLineItem| prev.child_index != item.child_index);
@@ -276,75 +202,44 @@ pub(crate) fn compute_flex_info(
         } else {
             current_main + item_main
         };
-        let must_wrap =
-            !current.is_empty() && (force_break_pending || (wrap && next_main > main_limit));
+        let must_wrap = !current.is_empty() && wrap && next_main > main_limit;
         if must_wrap {
             lines.push(current);
             line_main_sum.push(current_main);
-            if !is_inline {
-                line_cross_max.push(current_cross);
-            }
-            line_ascent.push(if is_inline { current_ascent } else { 0.0 });
-            line_descent.push(if is_inline { current_descent } else { 0.0 });
+            line_cross_max.push(current_cross);
             current = Vec::new();
             current_main = 0.0;
             current_cross = 0.0;
-            current_ascent = 0.0;
-            current_descent = 0.0;
         }
-        force_break_pending = item.force_break_after;
         if current.is_empty() {
             current_main = item_main;
             current_cross = item_cross;
-            current_ascent = item_ascent;
-            current_descent = item_descent;
         } else if current
             .last()
             .is_some_and(|prev: &FlexLineItem| prev.child_index != item.child_index)
         {
             current_main += gap + item_main;
             current_cross = current_cross.max(item_cross);
-            current_ascent = current_ascent.max(item_ascent);
-            current_descent = current_descent.max(item_descent);
         } else {
             current_main += item_main;
             current_cross = current_cross.max(item_cross);
-            current_ascent = current_ascent.max(item_ascent);
-            current_descent = current_descent.max(item_descent);
         }
         current.push(item);
     }
     if !current.is_empty() {
         lines.push(current);
         line_main_sum.push(current_main);
-        if !is_inline {
-            line_cross_max.push(current_cross);
-        }
-        line_ascent.push(if is_inline { current_ascent } else { 0.0 });
-        line_descent.push(if is_inline { current_descent } else { 0.0 });
+        line_cross_max.push(current_cross);
     }
 
     let total_main = line_main_sum.iter().fold(0.0f32, |a, &b| a.max(b));
-    let total_cross = if is_inline {
-        // Inline content height drives auto-sized parents and gap sums
-        // between lines — must match what `place.rs`/`inline_fragment.rs`
-        // see when they advance the cross cursor (D2 line_box_h).
-        let lines_sum = line_ascent
-            .iter()
-            .zip(line_descent.iter())
-            .map(|(a, d)| a + d)
-            .sum::<f32>();
-        lines_sum + gap * (line_ascent.len().saturating_sub(1) as f32)
-    } else {
-        line_cross_max.iter().sum::<f32>() + gap * (line_cross_max.len().saturating_sub(1) as f32)
-    };
+    let total_cross =
+        line_cross_max.iter().sum::<f32>() + gap * (line_cross_max.len().saturating_sub(1) as f32);
 
     FlexLayoutInfo {
         lines,
         line_main_sum,
         line_cross_max,
-        line_ascent,
-        line_descent,
         total_main,
         total_cross,
     }

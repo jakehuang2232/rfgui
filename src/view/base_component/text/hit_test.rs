@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 
 use crate::ui::Rect;
-use crate::view::base_component::Position;
+use crate::view::inline_formatting_context::InlineIfcCaretAffinity;
 
 use super::Text;
 
@@ -78,92 +78,85 @@ impl Text {
         let total_chars = self.content.chars().count();
         let target_char = local_char.min(total_chars);
 
-        // Inline path: walk inline_plan fragments accumulating char
-        // counts; the fragment hosting `target_char` provides the layout
-        // and a screen position.
-        if let Some(plan) = self.inline_plan.as_ref()
-            && !plan.runs.is_empty()
-        {
-            let mut consumed_chars = 0_usize;
-            let mut last_fragment_end_screen: Option<(f32, f32, f32)> = None;
-            for fragment in plan.runs.iter() {
-                let frag_chars = fragment.content.chars().count();
-                let frag_origin = fragment.position.unwrap_or(Position { x: 0.0, y: 0.0 });
-                let in_fragment_char = target_char.saturating_sub(consumed_chars);
-                if in_fragment_char <= frag_chars {
-                    let local_byte = fragment
-                        .content
-                        .char_indices()
-                        .nth(in_fragment_char)
-                        .map(|(b, _)| b)
-                        .unwrap_or(fragment.content.len());
-                    if let Some(layout) = fragment.text_layout.as_ref() {
-                        let geom = layout.cursor_geometry(local_byte, upstream);
-                        return Some((frag_origin.x + geom.x, frag_origin.y + geom.y, geom.height));
-                    }
-                    return None;
+        // Inline-IFC-owned path: the owning root installed per-line
+        // boundary geometry; answer from it directly.
+        if let Some(lines) = self.inline_ifc_owned_lines.as_ref() {
+            let boundary = target_char;
+            for (idx, line) in lines.iter().enumerate() {
+                if boundary < line.char_range.start || boundary >= line.char_range.end {
+                    continue;
                 }
-                consumed_chars += frag_chars;
-                let line_height = fragment
-                    .text_layout
-                    .as_ref()
-                    .and_then(|layout| layout.visual_line_heads().first().copied())
-                    .map(|head| head.height)
-                    .unwrap_or(fragment.height.max(1.0));
-                last_fragment_end_screen = Some((
-                    frag_origin.x + fragment.width.max(0.0),
-                    frag_origin.y,
-                    line_height,
-                ));
+                if upstream && boundary == line.char_range.start && idx > 0 {
+                    let prev = &lines[idx - 1];
+                    let tail_x = prev
+                        .caret_xs
+                        .last()
+                        .copied()
+                        .unwrap_or(prev.text_rect.x + prev.text_rect.width);
+                    return Some((tail_x, prev.text_rect.y, prev.text_rect.height.max(1.0)));
+                }
+                if !upstream
+                    && boundary + 1 == line.char_range.end
+                    && lines
+                        .get(idx + 1)
+                        .is_some_and(|next| next.char_range.start == boundary)
+                {
+                    let next = &lines[idx + 1];
+                    let x = next.caret_xs.first().copied().unwrap_or(next.text_rect.x);
+                    return Some((x, next.text_rect.y, next.text_rect.height.max(1.0)));
+                }
+                let x = line
+                    .caret_xs
+                    .get(boundary - line.char_range.start)
+                    .copied()
+                    .unwrap_or(line.text_rect.x);
+                return Some((x, line.text_rect.y, line.text_rect.height.max(1.0)));
             }
-            return last_fragment_end_screen;
+            let last = lines.last()?;
+            let tail_x = last
+                .caret_xs
+                .last()
+                .copied()
+                .unwrap_or(last.text_rect.x + last.text_rect.width);
+            return Some((tail_x, last.text_rect.y, last.text_rect.height.max(1.0)));
         }
 
-        // Block / non-inline path.
-        if let Some(layout) = self.text_layout.as_ref() {
-            let geom = layout.caret_geometry_for_char_with_affinity(
-                self.content.as_str(),
-                target_char,
-                upstream,
-            );
-            return Some((
-                self.layout_state.layout_position.x + geom.x,
-                self.layout_state.layout_position.y + geom.y,
-                geom.height,
-            ));
-        }
-        None
+        // Standalone path: query the measure-installed shaped context.
+        let context = self.shaped_context.as_ref()?;
+        let byte_index = byte_index_at_char(&self.content, target_char);
+        let affinity = if upstream {
+            InlineIfcCaretAffinity::Upstream
+        } else {
+            InlineIfcCaretAffinity::Downstream
+        };
+        let geom = context.caret_geometry_for_byte(byte_index, affinity)?;
+        Some((
+            self.layout_state.layout_position.x + geom.x,
+            self.layout_state.layout_position.y + geom.y,
+            geom.height,
+        ))
     }
 
     pub(crate) fn visual_caret_screen_lines(&self) -> Vec<TextCaretLine> {
-        if let Some(plan) = self.inline_plan.as_ref()
-            && !plan.runs.is_empty()
-        {
-            let mut out = Vec::new();
-            let mut consumed_chars = 0_usize;
-            for fragment in plan.runs.iter() {
-                let frag_chars = fragment.content.chars().count();
-                let origin = fragment.position.unwrap_or(Position { x: 0.0, y: 0.0 });
-                if let Some(layout) = fragment.text_layout.as_ref() {
-                    for line in layout.visual_caret_lines(fragment.content.as_str()) {
-                        out.push(TextCaretLine {
-                            y_top: origin.y + line.y_top,
-                            y_bottom: origin.y + line.y_bottom,
-                            stops: line
-                                .stops
-                                .into_iter()
-                                .map(|stop| TextCaretStop {
-                                    local_char: consumed_chars + stop.char_index,
-                                    x: origin.x + stop.x,
-                                    y_top: origin.y + stop.y_top,
-                                    height: stop.height,
-                                })
-                                .collect(),
-                        });
-                    }
-                }
-                consumed_chars += frag_chars;
-            }
+        if let Some(lines) = self.inline_ifc_owned_lines.as_ref() {
+            let mut out = lines
+                .iter()
+                .map(|line| TextCaretLine {
+                    y_top: line.text_rect.y,
+                    y_bottom: line.text_rect.y + line.text_rect.height,
+                    stops: line
+                        .caret_xs
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, &x)| TextCaretStop {
+                            local_char: line.char_range.start + idx,
+                            x,
+                            y_top: line.text_rect.y,
+                            height: line.text_rect.height.max(1.0),
+                        })
+                        .collect(),
+                })
+                .collect::<Vec<_>>();
             for idx in 1..out.len() {
                 let Some(prev_tail) = out[idx - 1].stops.last().copied() else {
                     continue;
@@ -188,29 +181,90 @@ impl Text {
             return out;
         }
 
-        if let Some(layout) = self.text_layout.as_ref() {
-            let origin = self.layout_state.layout_position;
-            return layout
-                .visual_caret_lines(self.content.as_str())
-                .into_iter()
-                .map(|line| TextCaretLine {
-                    y_top: origin.y + line.y_top,
-                    y_bottom: origin.y + line.y_bottom,
-                    stops: line
-                        .stops
-                        .into_iter()
-                        .map(|stop| TextCaretStop {
-                            local_char: stop.char_index,
-                            x: origin.x + stop.x,
-                            y_top: origin.y + stop.y_top,
-                            height: stop.height,
-                        })
-                        .collect(),
-                })
-                .collect();
+        let Some(context) = self.shaped_context.as_ref() else {
+            return Vec::new();
+        };
+        let origin = self.layout_state.layout_position;
+        let snapshot = context.text_layout_snapshot_ref();
+        let mut lines: Vec<TextCaretLine> = snapshot
+            .lines
+            .iter()
+            .map(|line| TextCaretLine {
+                y_top: origin.y + line.y,
+                y_bottom: origin.y + line.y + line.height.max(1.0),
+                stops: Vec::new(),
+            })
+            .collect();
+        if lines.is_empty() {
+            let Some(geom) = context.caret_geometry_for_byte(0, InlineIfcCaretAffinity::Downstream)
+            else {
+                return Vec::new();
+            };
+            lines.push(TextCaretLine {
+                y_top: origin.y + geom.y,
+                y_bottom: origin.y + geom.y + geom.height.max(1.0),
+                stops: Vec::new(),
+            });
         }
 
-        Vec::new()
+        if self.content.is_empty() {
+            if let Some(geom) =
+                context.caret_geometry_for_byte(0, InlineIfcCaretAffinity::Downstream)
+            {
+                push_screen_caret_stop(
+                    &mut lines,
+                    TextCaretStop {
+                        local_char: 0,
+                        x: origin.x,
+                        y_top: origin.y + geom.y,
+                        height: geom.height.max(1.0),
+                    },
+                );
+            }
+            normalize_screen_caret_lines(&mut lines);
+            return lines;
+        }
+
+        let char_count = self.content.chars().count();
+        for char_index in 0..=char_count {
+            let byte_index = byte_index_at_char(&self.content, char_index);
+            let Some(downstream) =
+                context.caret_geometry_for_byte(byte_index, InlineIfcCaretAffinity::Downstream)
+            else {
+                continue;
+            };
+            push_screen_caret_stop(
+                &mut lines,
+                TextCaretStop {
+                    local_char: char_index,
+                    x: origin.x + downstream.x,
+                    y_top: origin.y + downstream.y,
+                    height: downstream.height.max(1.0),
+                },
+            );
+
+            let Some(upstream) =
+                context.caret_geometry_for_byte(byte_index, InlineIfcCaretAffinity::Upstream)
+            else {
+                continue;
+            };
+            if (upstream.y - downstream.y).abs() > downstream.height.max(1.0) * 0.25
+                || (upstream.x - downstream.x).abs() > 0.5
+            {
+                push_screen_caret_stop(
+                    &mut lines,
+                    TextCaretStop {
+                        local_char: char_index,
+                        x: origin.x + upstream.x,
+                        y_top: origin.y + upstream.y,
+                        height: upstream.height.max(1.0),
+                    },
+                );
+            }
+        }
+
+        normalize_screen_caret_lines(&mut lines);
+        lines
     }
 
     /// Screen-space leading-edge positions of every visual line, in y
@@ -224,39 +278,34 @@ impl Text {
     /// `TextArea` calls this to render the lower-line head when its
     /// affinity logic decides the caret belongs to the new visual line.
     pub fn visual_line_heads(&self) -> Vec<(f32, f32, f32)> {
-        if let Some(plan) = self.inline_plan.as_ref()
-            && !plan.runs.is_empty()
-        {
-            return plan
-                .runs
+        if let Some(lines) = self.inline_ifc_owned_lines.as_ref() {
+            return lines
                 .iter()
-                .flat_map(|fragment| {
-                    let origin = fragment.position.unwrap_or(Position { x: 0.0, y: 0.0 });
-                    if let Some(layout) = fragment.text_layout.as_ref() {
-                        return layout
-                            .visual_line_heads()
-                            .into_iter()
-                            .map(move |head| (origin.x + head.x, origin.y + head.y, head.height))
-                            .collect::<Vec<_>>();
-                    }
-                    Vec::new()
-                })
-                .collect();
-        }
-        if let Some(layout) = self.text_layout.as_ref() {
-            return layout
-                .visual_line_heads()
-                .into_iter()
-                .map(|head| {
+                .map(|line| {
                     (
-                        self.layout_state.layout_position.x + head.x,
-                        self.layout_state.layout_position.y + head.y,
-                        head.height,
+                        line.caret_xs.first().copied().unwrap_or(line.text_rect.x),
+                        line.text_rect.y,
+                        line.text_rect.height.max(1.0),
                     )
                 })
                 .collect();
         }
-        Vec::new()
+
+        let Some(context) = self.shaped_context.as_ref() else {
+            return Vec::new();
+        };
+        context
+            .text_layout_snapshot_ref()
+            .lines
+            .iter()
+            .map(|line| {
+                (
+                    self.layout_state.layout_position.x + line.x,
+                    self.layout_state.layout_position.y + line.y,
+                    line.height,
+                )
+            })
+            .collect()
     }
 
     /// Translate a local char selection range into screen-space selection
@@ -269,37 +318,44 @@ impl Text {
             return Vec::new();
         }
 
-        if let Some(plan) = self.inline_plan.as_ref()
-            && !plan.runs.is_empty()
-        {
+        if let Some(lines) = self.inline_ifc_owned_lines.as_ref() {
             let mut out = Vec::new();
-            let mut consumed_chars = 0_usize;
-            for fragment in plan.runs.iter() {
-                let frag_chars = fragment.content.chars().count();
-                let frag_start = consumed_chars;
-                let frag_end = consumed_chars + frag_chars;
-                consumed_chars = frag_end;
-
-                if frag_end <= start_char || frag_start >= end_char {
+            for line in lines {
+                // Boundaries on this line span [start, end); chars span
+                // [start, end - 1) plus a trailing wrap segment when the
+                // selection continues past the line tail.
+                let bounds_start = line.char_range.start;
+                let bounds_end = line.char_range.end;
+                if bounds_end <= bounds_start {
                     continue;
                 }
-                let origin = fragment.position.unwrap_or(Position { x: 0.0, y: 0.0 });
-                let fragment_start = start_char.saturating_sub(frag_start);
-                let fragment_end = end_char.saturating_sub(frag_start).min(frag_chars);
-                if let Some(layout) = fragment.text_layout.as_ref() {
-                    for rect in layout.selection_rects(
-                        fragment.content.as_str(),
-                        fragment_start,
-                        fragment_end,
-                    ) {
-                        out.push(Rect {
-                            x: origin.x + rect.x,
-                            y: origin.y + rect.y,
-                            width: rect.width,
-                            height: rect.height,
-                        });
-                    }
+                let sel_left_boundary = start_char.max(bounds_start);
+                if sel_left_boundary >= bounds_end || end_char <= bounds_start {
                     continue;
+                }
+                let left = line
+                    .caret_xs
+                    .get(sel_left_boundary - bounds_start)
+                    .copied()
+                    .unwrap_or(line.text_rect.x);
+                let right = if end_char < bounds_end {
+                    line.caret_xs
+                        .get(end_char - bounds_start)
+                        .copied()
+                        .unwrap_or(line.text_rect.x + line.text_rect.width)
+                } else {
+                    line.caret_xs
+                        .last()
+                        .copied()
+                        .unwrap_or(line.text_rect.x + line.text_rect.width)
+                };
+                if right > left {
+                    out.push(Rect {
+                        x: left,
+                        y: line.text_rect.y,
+                        width: right - left,
+                        height: line.text_rect.height.max(1.0),
+                    });
                 }
             }
             return out;
@@ -308,19 +364,21 @@ impl Text {
         let total_chars = self.content.chars().count();
         let start = start_char.min(total_chars);
         let end = end_char.min(total_chars);
-        if let Some(layout) = self.text_layout.as_ref() {
-            return layout
-                .selection_rects(self.content.as_str(), start, end)
-                .into_iter()
-                .map(|rect| Rect {
-                    x: self.layout_state.layout_position.x + rect.x,
-                    y: self.layout_state.layout_position.y + rect.y,
-                    width: rect.width,
-                    height: rect.height,
-                })
-                .collect();
-        }
-        Vec::new()
+        let Some(context) = self.shaped_context.as_ref() else {
+            return Vec::new();
+        };
+        let start_byte = byte_index_at_char(&self.content, start);
+        let end_byte = byte_index_at_char(&self.content, end);
+        context
+            .selection_rects_for_global_range(start_byte..end_byte)
+            .into_iter()
+            .map(|selection| Rect {
+                x: self.layout_state.layout_position.x + selection.rect.x,
+                y: self.layout_state.layout_position.y + selection.rect.y,
+                width: selection.rect.width,
+                height: selection.rect.height,
+            })
+            .collect()
     }
 
     /// Hit-test a screen-space `(x, y)` to a local char index inside
@@ -328,53 +386,52 @@ impl Text {
     /// text's actual rendered bounds (so callers can fall back instead
     /// of attaching the cursor to clicks that miss the text).
     pub fn screen_position_to_local_char(&self, x: f32, y: f32) -> Option<usize> {
-        // Inline path: locate the fragment whose position+size contains
-        // the click; query that fragment's adapter layout and map back by accumulating
-        // preceding fragments' char counts. Returning `None` when the
-        // click misses every fragment (so callers don't snap a click in
-        // empty space inside the outer Element to a phantom char).
-        if let Some(plan) = self.inline_plan.as_ref()
-            && !plan.runs.is_empty()
-        {
-            let mut consumed_chars = 0_usize;
-            for fragment in plan.runs.iter() {
-                let origin = fragment.position.unwrap_or(Position { x: 0.0, y: 0.0 });
-                let frag_x = origin.x;
-                let frag_y = origin.y;
-                let inside = x >= frag_x
-                    && x <= frag_x + fragment.width.max(0.0)
-                    && y >= frag_y
-                    && y <= frag_y + fragment.height.max(0.0);
-                if inside {
-                    let local_x = x - frag_x;
-                    let local_y = y - frag_y;
-                    if let Some(layout) = fragment.text_layout.as_ref() {
-                        let byte = clamp_utf8_boundary(
-                            &fragment.content,
-                            layout.hit_byte(local_x, local_y),
-                        );
-                        return Some(consumed_chars + fragment.content[..byte].chars().count());
-                    }
-                    return None;
+        // Inline-IFC-owned path: locate the installed line containing the
+        // click and snap to the nearest caret boundary. Returns `None`
+        // when the click misses every line (so callers don't snap a click
+        // in empty space inside the outer Element to a phantom char).
+        if let Some(lines) = self.inline_ifc_owned_lines.as_ref() {
+            for line in lines {
+                let inside = x >= line.rect.x
+                    && x <= line.rect.x + line.rect.width.max(0.0)
+                    && y >= line.rect.y
+                    && y <= line.rect.y + line.rect.height.max(0.0);
+                if !inside {
+                    continue;
                 }
-                consumed_chars += fragment.content.chars().count();
+                let mut best: Option<(f32, usize)> = None;
+                for (idx, &caret_x) in line.caret_xs.iter().enumerate() {
+                    let distance = (caret_x - x).abs();
+                    if best.is_none_or(|(best_distance, _)| distance < best_distance) {
+                        best = Some((distance, line.char_range.start + idx));
+                    }
+                }
+                return best.map(|(_, boundary)| boundary);
             }
             return None;
         }
 
-        // Block / non-inline path.
-        if let Some(layout) = self.text_layout.as_ref() {
-            let local_x = x - self.layout_state.layout_position.x;
-            let local_y = y - self.layout_state.layout_position.y;
-            let bounds_w = self.layout_state.layout_size.width.max(0.0);
-            let bounds_h = self.layout_state.layout_size.height.max(0.0);
-            if local_x < 0.0 || local_y < 0.0 || local_x > bounds_w || local_y > bounds_h {
+        // Standalone path: bounds-check, then snap through the shaped
+        // context's hit test.
+        let context = self.shaped_context.as_ref()?;
+        let local_x = x - self.layout_state.layout_position.x;
+        let local_y = y - self.layout_state.layout_position.y;
+        let bounds_w = self.layout_state.layout_size.width.max(0.0);
+        let bounds_h = self.layout_state.layout_size.height.max(0.0);
+        if local_x < 0.0 || local_y < 0.0 || local_x > bounds_w || local_y > bounds_h {
+            return None;
+        }
+        let hit = context.hit_test_point(local_x, local_y)?;
+        let byte = match hit.target {
+            crate::view::inline_formatting_context::InlineIfcHitTarget::Text {
+                byte_index, ..
+            } => byte_index,
+            crate::view::inline_formatting_context::InlineIfcHitTarget::InlineBox { .. } => {
                 return None;
             }
-            let byte = clamp_utf8_boundary(&self.content, layout.hit_byte(local_x, local_y));
-            return Some(self.content[..byte].chars().count());
-        }
-        None
+        };
+        let byte = clamp_utf8_boundary(&self.content, byte);
+        Some(self.content[..byte].chars().count())
     }
 }
 
@@ -382,10 +439,70 @@ impl Text {
 // Private helpers
 // ---------------------------------------------------------------------------
 
+fn byte_index_at_char(content: &str, char_index: usize) -> usize {
+    content
+        .char_indices()
+        .nth(char_index)
+        .map(|(byte, _)| byte)
+        .unwrap_or(content.len())
+}
+
 fn clamp_utf8_boundary(content: &str, byte_index: usize) -> usize {
     let mut byte = byte_index.min(content.len());
     while byte > 0 && !content.is_char_boundary(byte) {
         byte -= 1;
     }
     byte
+}
+
+/// Group a caret stop into the line whose vertical band contains it,
+/// creating a new line when none matches (legacy grouping semantics).
+fn push_screen_caret_stop(lines: &mut Vec<TextCaretLine>, stop: TextCaretStop) {
+    let line_idx = lines
+        .iter()
+        .position(|line| {
+            let height = (line.y_bottom - line.y_top).max(stop.height).max(1.0);
+            (line.y_top - stop.y_top).abs() <= height * 0.5
+        })
+        .unwrap_or_else(|| {
+            lines.push(TextCaretLine {
+                y_top: stop.y_top,
+                y_bottom: stop.y_top + stop.height.max(1.0),
+                stops: Vec::new(),
+            });
+            lines.len() - 1
+        });
+    let line = &mut lines[line_idx];
+    line.y_top = line.y_top.min(stop.y_top);
+    line.y_bottom = line.y_bottom.max(stop.y_top + stop.height.max(1.0));
+    line.stops.push(stop);
+}
+
+/// Sort lines by y and stops by x, dedupe stops that share a char index
+/// keeping the rightmost, and drop lines without stops (legacy
+/// normalization semantics).
+fn normalize_screen_caret_lines(lines: &mut Vec<TextCaretLine>) {
+    lines.sort_by(|a, b| {
+        a.y_top
+            .partial_cmp(&b.y_top)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for line in lines.iter_mut() {
+        line.stops
+            .sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+        let mut deduped: Vec<TextCaretStop> = Vec::with_capacity(line.stops.len());
+        for stop in line.stops.drain(..) {
+            if let Some(last) = deduped.last_mut()
+                && last.local_char == stop.local_char
+            {
+                if stop.x > last.x {
+                    *last = stop;
+                }
+                continue;
+            }
+            deduped.push(stop);
+        }
+        line.stops = deduped;
+    }
+    lines.retain(|line| !line.stops.is_empty());
 }

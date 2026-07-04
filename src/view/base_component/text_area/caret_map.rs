@@ -75,13 +75,36 @@ pub(super) struct CaretNavigationMap {
 }
 
 impl CaretNavigationMap {
-    /// Build the map from the TextArea's current children. Walks `children`
-    /// in order; each `TextAreaTextRun` contributes its public
-    /// IFC-backed `caret_stops()` translated to screen coords. The map
-    /// intentionally does not inspect a run's legacy layout internals.
-    /// Visual lines that share a vertical band (within half a line height)
-    /// are merged so a sentence split across runs still navigates as one row.
+    /// Build the map from the TextArea's unified IFC root package.
+    /// Falls back to child stops only when no root package exists yet.
+    /// Visual lines that share a vertical band are normalized so a
+    /// sentence split across runs/projections still navigates as one row.
     pub(super) fn build(text_area: &TextArea, arena: &NodeArena) -> Self {
+        if let Some(package) = text_area.unified_inline_ifc_render_package(arena) {
+            let origin_x = text_area.layout_state.layout_position.x - text_area.scroll_x;
+            let origin_y = text_area.layout_state.layout_position.y - text_area.scroll_y;
+            let mut lines = package
+                .visual_caret_lines()
+                .into_iter()
+                .map(|line| CaretVisualLine {
+                    y_top: origin_y + line.y_top,
+                    y_bottom: origin_y + line.y_bottom,
+                    stops: line
+                        .stops
+                        .into_iter()
+                        .map(|stop| CaretStop {
+                            char_index: stop.char_index,
+                            x: origin_x + stop.x,
+                            y_top: origin_y + stop.y_top,
+                            height: stop.height,
+                        })
+                        .collect(),
+                })
+                .collect::<Vec<_>>();
+            normalize_caret_navigation_lines(&mut lines);
+            return Self { lines };
+        }
+
         let mut raw_lines: Vec<CaretVisualLine> = Vec::new();
         for (idx, &child_key) in text_area.children.iter().enumerate() {
             let is_text_child = arena
@@ -90,25 +113,20 @@ impl CaretNavigationMap {
                 })
                 .unwrap_or(false);
             if is_text_child {
+                // Text runs are covered by the unified package path above
+                // (a TextArea with any text child always builds a package);
+                // only LineBreak carries standalone caret geometry here.
                 let lines = arena
                     .with_element_taken_ref(child_key, |el, _| {
-                        let (origin_x, origin_y, char_offset, caret_lines) =
-                            if let Some(run) = el.as_any().downcast_ref::<TextAreaTextRun>() {
-                                (
-                                    run.layout_state.layout_position.x,
-                                    run.layout_state.layout_position.y,
-                                    run.char_range.start,
-                                    run.caret_stops(),
-                                )
-                            } else {
-                                let line_break = el.as_any().downcast_ref::<TextAreaLineBreak>()?;
-                                (
-                                    line_break.layout_state.layout_position.x,
-                                    line_break.layout_state.layout_position.y,
-                                    line_break.char_range.start,
-                                    line_break.caret_stops(),
-                                )
-                            };
+                        let (origin_x, origin_y, char_offset, caret_lines) = {
+                            let line_break = el.as_any().downcast_ref::<TextAreaLineBreak>()?;
+                            (
+                                line_break.layout_state.layout_position.x,
+                                line_break.layout_state.layout_position.y,
+                                line_break.char_range.start,
+                                line_break.caret_stops(),
+                            )
+                        };
                         let mut translated: Vec<CaretVisualLine> = Vec::new();
                         for line in caret_lines {
                             let stops = line
@@ -549,48 +567,38 @@ mod tests {
     }
 
     #[test]
-    fn build_translates_ifc_backed_run_caret_stops_for_wrapped_navigation() {
+    fn build_translates_unified_root_caret_stops_for_wrapped_navigation() {
         let (text_area_ptr, arena) =
             build_wrapped_textarea("the quick brown fox jumps over the lazy dog", 80.0);
         let text_area: &TextArea = unsafe { &*text_area_ptr };
         let map = CaretNavigationMap::build(text_area, &arena);
-        let run_key = text_area.children.first().copied().expect("run child");
-        let expected_lines = arena
-            .with_element_taken_ref(run_key, |el, _| {
-                let run = el.as_any().downcast_ref::<TextAreaTextRun>()?;
-                let origin_x = run.layout_state.layout_position.x;
-                let origin_y = run.layout_state.layout_position.y;
-                Some(
-                    run.caret_stops()
-                        .into_iter()
-                        .map(|line| {
-                            let stops = line
-                                .stops
-                                .into_iter()
-                                .map(|stop| {
-                                    (
-                                        run.char_range.start + stop.local_char,
-                                        origin_x + stop.local_x,
-                                        origin_y + stop.local_y_top,
-                                        stop.height,
-                                    )
-                                })
-                                .collect::<Vec<_>>();
-                            (
-                                origin_y + line.local_y_top,
-                                origin_y + line.local_y_bottom,
-                                stops,
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                )
+        let origin_x = text_area.layout_state.layout_position.x - text_area.scroll_x;
+        let origin_y = text_area.layout_state.layout_position.y - text_area.scroll_y;
+        let expected_lines = text_area
+            .unified_inline_ifc_render_package(&arena)
+            .expect("root package")
+            .visual_caret_lines()
+            .into_iter()
+            .map(|line| {
+                let stops = line
+                    .stops
+                    .into_iter()
+                    .map(|stop| {
+                        (
+                            stop.char_index,
+                            origin_x + stop.x,
+                            origin_y + stop.y_top,
+                            stop.height,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                (origin_y + line.y_top, origin_y + line.y_bottom, stops)
             })
-            .flatten()
-            .expect("run caret stops");
+            .collect::<Vec<_>>();
 
         assert!(
             expected_lines.len() >= 2,
-            "fixture should exercise wrapped IFC-backed caret stops"
+            "fixture should exercise wrapped root IFC-backed caret stops"
         );
         assert_eq!(map.lines.len(), expected_lines.len());
         for (actual, (expected_y_top, expected_y_bottom, expected_stops)) in
@@ -610,7 +618,7 @@ mod tests {
                         actual_stop.height,
                     ),
                     *expected_stop,
-                    "CaretNavigationMap should build from TextAreaTextRun::caret_stops() output"
+                    "CaretNavigationMap should build from TextArea unified root caret stops"
                 );
             }
         }
@@ -676,22 +684,23 @@ mod tests {
                 })
             })
             .expect("adapter should synthesize a shared boundary stop at the wrap");
-        let run_key = text_area.children.first().copied().expect("run child");
-        let (up, down) = arena
-            .with_element_taken_ref(run_key, |el, _| {
-                let run = el.as_any().downcast_ref::<TextAreaTextRun>()?;
-                let u = run.local_char_to_screen_position_with_affinity(
-                    boundary_char,
-                    CaretAffinity::Upstream,
-                )?;
-                let d = run.local_char_to_screen_position_with_affinity(
-                    boundary_char,
-                    CaretAffinity::Downstream,
-                )?;
-                Some((u, d))
-            })
-            .flatten()
-            .expect("probes resolve");
+        let (up, down) = {
+            let package = text_area
+                .unified_inline_ifc_render_package(&arena)
+                .expect("unified package");
+            let origin_x = text_area.layout_state.layout_position.x - text_area.scroll_x;
+            let origin_y = text_area.layout_state.layout_position.y - text_area.scroll_y;
+            let u = package
+                .caret_geometry_for_char(boundary_char, CaretAffinity::Upstream)
+                .expect("upstream caret");
+            let d = package
+                .caret_geometry_for_char(boundary_char, CaretAffinity::Downstream)
+                .expect("downstream caret");
+            (
+                (origin_x + u.x, origin_y + u.y_top, u.height),
+                (origin_x + d.x, origin_y + d.y_top, d.height),
+            )
+        };
         assert!(
             up.1 < down.1,
             "Upstream y ({}) on upper line, Downstream y ({}) on lower",
@@ -723,22 +732,23 @@ mod tests {
         let text_area: &crate::view::base_component::TextArea = unsafe { &*text_area_ptr };
         let map = CaretNavigationMap::build(text_area, &arena);
         let lower_head = map.lines[1].stops.first().unwrap().char_index;
-        let run_key = text_area.children.first().copied().expect("run child");
-        let (up, down) = arena
-            .with_element_taken_ref(run_key, |el, _| {
-                let run = el.as_any().downcast_ref::<TextAreaTextRun>()?;
-                let u = run.local_char_to_screen_position_with_affinity(
-                    lower_head,
-                    CaretAffinity::Upstream,
-                )?;
-                let d = run.local_char_to_screen_position_with_affinity(
-                    lower_head,
-                    CaretAffinity::Downstream,
-                )?;
-                Some((u, d))
-            })
-            .flatten()
-            .expect("probes resolve");
+        let (up, down) = {
+            let package = text_area
+                .unified_inline_ifc_render_package(&arena)
+                .expect("unified package");
+            let origin_x = text_area.layout_state.layout_position.x - text_area.scroll_x;
+            let origin_y = text_area.layout_state.layout_position.y - text_area.scroll_y;
+            let u = package
+                .caret_geometry_for_char(lower_head, CaretAffinity::Upstream)
+                .expect("upstream caret");
+            let d = package
+                .caret_geometry_for_char(lower_head, CaretAffinity::Downstream)
+                .expect("downstream caret");
+            (
+                (origin_x + u.x, origin_y + u.y_top, u.height),
+                (origin_x + d.x, origin_y + d.y_top, d.height),
+            )
+        };
         assert!(
             up.1 < down.1,
             "Upstream y on upper line, Downstream on lower"
@@ -1266,7 +1276,6 @@ mod tests {
                         .caret_screen_position(arena)
                 })
                 .flatten();
-            eprintln!("[{label}] cursor={cursor} content={content:?} pos={pos:?}");
             assert!(pos.is_some(), "{label}: caret should resolve");
         }
         check("", 0, "fully empty");
@@ -1445,33 +1454,6 @@ fn projection_text_lines(
                     .collect::<Vec<_>>();
                 return (!lines.is_empty()).then_some(lines);
             }
-            if let Some(run) = el.as_any().downcast_ref::<TextAreaTextRun>() {
-                let visible = run.text.chars().count().min(span);
-                let origin_x = run.layout_state.layout_position.x;
-                let origin_y = run.layout_state.layout_position.y;
-                let lines = run
-                    .caret_stops()
-                    .into_iter()
-                    .map(|line| CaretVisualLine {
-                        y_top: origin_y + line.local_y_top,
-                        y_bottom: origin_y + line.local_y_bottom,
-                        stops: line
-                            .stops
-                            .into_iter()
-                            .filter_map(|stop| {
-                                (stop.local_char <= visible).then_some(CaretStop {
-                                    char_index: char_offset + stop.local_char,
-                                    x: origin_x + stop.local_x,
-                                    y_top: origin_y + stop.local_y_top,
-                                    height: stop.height,
-                                })
-                            })
-                            .collect(),
-                    })
-                    .filter(|line| !line.stops.is_empty())
-                    .collect::<Vec<_>>();
-                return (!lines.is_empty()).then_some(lines);
-            }
             None
         })
         .flatten();
@@ -1486,17 +1468,6 @@ fn projection_text_lines(
                 if let Some(text) = el.as_any().downcast_ref::<Text>() {
                     let visible = text.content().chars().count();
                     text.local_char_to_screen_position(local.min(visible))
-                } else if let Some(run) = el.as_any().downcast_ref::<TextAreaTextRun>() {
-                    let visible = run.text.chars().count();
-                    let local_clamped = local.min(visible);
-                    run.local_char_to_screen_position(local_clamped)
-                        .map(|(x, y_top, h)| {
-                            (
-                                run.layout_state.layout_position.x + x,
-                                run.layout_state.layout_position.y + y_top,
-                                h,
-                            )
-                        })
                 } else {
                     None
                 }
@@ -1684,4 +1655,36 @@ fn merge_visual_lines(lines: Vec<CaretVisualLine>) -> Vec<CaretVisualLine> {
         }
     }
     out
+}
+
+fn normalize_caret_navigation_lines(lines: &mut Vec<CaretVisualLine>) {
+    lines.sort_by(|a, b| {
+        a.y_top
+            .partial_cmp(&b.y_top)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let merged = merge_visual_lines(std::mem::take(lines));
+    *lines = merged;
+    for line in lines.iter_mut() {
+        line.stops
+            .sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+        let mut deduped: Vec<CaretStop> = Vec::with_capacity(line.stops.len());
+        for stop in line.stops.drain(..) {
+            if let Some(existing) = deduped
+                .iter_mut()
+                .find(|existing| existing.char_index == stop.char_index)
+            {
+                if stop.x > existing.x {
+                    *existing = stop;
+                }
+                continue;
+            }
+            deduped.push(stop);
+        }
+        line.stops = deduped;
+        for stop in line.stops.iter_mut() {
+            stop.y_top = line.y_top;
+            stop.height = (line.y_bottom - line.y_top).max(1.0);
+        }
+    }
 }

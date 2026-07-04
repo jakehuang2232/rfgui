@@ -5,7 +5,6 @@
 //! submodules; the data types they exchange live in `types`.
 
 pub(crate) mod flex_solver;
-pub(crate) mod inline_fragment;
 pub(crate) mod measure;
 pub(crate) mod place;
 mod types;

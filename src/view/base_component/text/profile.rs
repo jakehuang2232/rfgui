@@ -12,17 +12,12 @@ static TEXT_MEASURE_PROFILE_ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct TextMeasureProfile {
-    pub measure_inline_calls: usize,
-    pub measure_inline_ms: f64,
     pub ensure_shaped_base_buffer_calls: usize,
     pub ensure_shaped_base_buffer_cache_hits: usize,
     pub ensure_shaped_base_buffer_ms: f64,
     pub relayout_from_base_calls: usize,
     pub relayout_from_base_cache_hits: usize,
     pub relayout_from_base_ms: f64,
-    pub collect_wrapped_inline_fragments_calls: usize,
-    pub collect_wrapped_inline_fragments_cache_hits: usize,
-    pub collect_wrapped_inline_fragments_ms: f64,
     pub first_wrapped_fragment_calls: usize,
     pub first_wrapped_fragment_cache_hits: usize,
     pub first_wrapped_fragment_ms: f64,

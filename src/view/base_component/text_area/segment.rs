@@ -8,25 +8,18 @@
 //! preedit at arena-walk time, replacing the v1 RSX-time
 //! `<Provider<TextAreaImeContext>>` mechanism).
 //!
-//! Layout: forwards inline measure / place to its children, reporting
-//! the children's content size as its own measured size. Renderable is a
-//! no-op — children draw themselves; the segment is structurally
-//! invisible.
+//! Layout: forwards measure / place to its children, reporting the
+//! children's content size as its own measured size. Renderable is a no-op
+//! — children draw themselves; the segment is structurally invisible.
 
 use std::ops::Range;
 
-use crate::style::{
-    Align, CrossSize, FlowDirection, JustifyContent, Layout, Length, VerticalAlign,
-};
+use crate::style::VerticalAlign;
 use crate::view::base_component::{
-    BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, InlineMeasureContext,
-    InlineNodeSize, InlinePlacement, LayoutConstraints, LayoutPlacement, Layoutable, Position,
-    Rect, Renderable, Size, UiBuildContext,
+    BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, LayoutConstraints,
+    LayoutPlacement, Layoutable, Position, Rect, Renderable, Size, UiBuildContext,
 };
 use crate::view::frame_graph::FrameGraph;
-use crate::view::layout::inline_fragment::{PlaceInlineFragmentInputs, place_inline_fragment};
-use crate::view::layout::measure::{MeasureAxisInputs, measure_axis};
-use crate::view::layout::place::{PlaceAxisChildrenInputs, place_axis_children};
 use crate::view::layout::{FlexLayoutInfo, LayoutState};
 use crate::view::node_arena::NodeKey;
 
@@ -49,6 +42,7 @@ pub(crate) struct TextAreaProjectionSegment {
     layout_state: LayoutState,
     flex_info: Option<FlexLayoutInfo>,
     vertical_align: VerticalAlign,
+    owner_inline_baseline: f32,
     auto_wrap: bool,
     inline_full_available_width: f32,
     inline_paint_fragments: Vec<Rect>,
@@ -67,6 +61,7 @@ impl Default for TextAreaProjectionSegment {
             layout_state: LayoutState::new(0.0, 0.0, 0.0, 0.0),
             flex_info: None,
             vertical_align: VerticalAlign::Baseline,
+            owner_inline_baseline: 0.0,
             auto_wrap: true,
             inline_full_available_width: 0.0,
             inline_paint_fragments: Vec::new(),
@@ -113,6 +108,16 @@ impl TextAreaProjectionSegment {
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::LAYOUT);
     }
 
+    pub(crate) fn set_owner_inline_baseline(&mut self, font_size: f32, _line_height: f32) {
+        let font_size = font_size.max(1.0);
+        let baseline = (font_size * 0.875).max(0.0);
+        if (self.owner_inline_baseline - baseline).abs() <= f32::EPSILON {
+            return;
+        }
+        self.owner_inline_baseline = baseline;
+        self.dirty_flags = self.dirty_flags.union(DirtyFlags::LAYOUT);
+    }
+
     pub(crate) fn set_auto_wrap(&mut self, auto_wrap: bool) {
         if self.auto_wrap == auto_wrap {
             return;
@@ -128,45 +133,76 @@ impl TextAreaProjectionSegment {
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
         let inner_width = constraints.max_width.max(0.0);
+        let child_max_height = constraints.max_height.max(0.0);
         self.inline_full_available_width = inner_width;
-        let absolute_mask = vec![false; self.children.len()];
-        let outputs = measure_axis(
-            MeasureAxisInputs {
-                layout: Layout::Inline,
-                children: &self.children,
-                absolute_mask: &absolute_mask,
-                is_row: true,
-                is_real_flex: false,
-                solver_wrap: self.auto_wrap,
-                solver_gap: 0.0,
-                main_limit: inner_width,
-                inner_width,
-                child_available_width: inner_width,
-                child_available_height: constraints.max_height.max(0.0),
-                child_percent_base_width: constraints.percent_base_width,
-                child_percent_base_height: constraints.percent_base_height,
-                viewport_width: constraints.viewport_width,
-                viewport_height: constraints.viewport_height,
-                inline_wrap: self.auto_wrap,
-                inline_gap: 0.0,
-                inline_first_available_width: Some(inner_width),
-            },
-            arena,
-        );
-        self.layout_state.content_size = outputs.content_size;
-        let reported_width = outputs
-            .flex_info
-            .line_main_sum
-            .iter()
-            .fold(0.0_f32, |acc, &line_width| {
-                acc.max(self.reported_line_width(line_width))
+        let mut measured_rect: Option<Rect> = None;
+        for child_key in self.children.clone() {
+            arena.with_element_taken(child_key, |child, arena| {
+                child.measure(
+                    LayoutConstraints {
+                        max_width: inner_width,
+                        max_height: child_max_height,
+                        viewport_width: constraints.viewport_width,
+                        viewport_height: constraints.viewport_height,
+                        percent_base_width: constraints.percent_base_width,
+                        percent_base_height: constraints.percent_base_height,
+                    },
+                    arena,
+                );
+                let (width, height) = child.measured_size();
+                measured_rect = Some(merge_rect(
+                    measured_rect,
+                    Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width,
+                        height,
+                    },
+                ));
             });
+        }
+        let content_size = measured_rect
+            .map(|rect| Size {
+                width: rect.width.max(0.0),
+                height: rect.height.max(0.0),
+            })
+            .unwrap_or(Size {
+                width: 0.0,
+                height: 0.0,
+            });
+        self.layout_state.content_size = content_size;
+        let reported_width = self.reported_line_width(content_size.width);
         self.layout_state.layout_size = Size {
             width: reported_width,
-            height: outputs.content_size.height,
+            height: content_size.height,
         };
         self.layout_state.layout_inner_size = self.layout_state.layout_size;
-        self.flex_info = Some(outputs.flex_info);
+        self.flex_info = Some(FlexLayoutInfo {
+            lines: if content_size.width > 0.0 || content_size.height > 0.0 {
+                vec![Vec::new()]
+            } else {
+                Vec::new()
+            },
+            line_main_sum: if content_size.width > 0.0 || content_size.height > 0.0 {
+                vec![reported_width]
+            } else {
+                Vec::new()
+            },
+            line_cross_max: if content_size.width > 0.0 || content_size.height > 0.0 {
+                vec![content_size.height]
+            } else {
+                Vec::new()
+            },
+            total_main: reported_width,
+            total_cross: content_size.height,
+        });
+        self.dirty_flags = self
+            .dirty_flags
+            .without(DirtyFlags::LAYOUT)
+            .union(DirtyFlags::PLACE)
+            .union(DirtyFlags::BOX_MODEL)
+            .union(DirtyFlags::HIT_TEST)
+            .union(DirtyFlags::PAINT);
     }
 
     fn reported_line_width(&self, line_width: f32) -> f32 {
@@ -185,6 +221,20 @@ impl TextAreaProjectionSegment {
             .iter()
             .fold(0.0_f32, |acc, &w| acc.max(w));
         Some(info)
+    }
+
+    fn clamp_reported_inline_geometry(&mut self) {
+        let max_width = self.inline_full_available_width.max(0.0);
+        if max_width <= 0.0 {
+            return;
+        }
+        self.layout_state.layout_size.width = self.layout_state.layout_size.width.min(max_width);
+        self.layout_state.layout_inner_size.width =
+            self.layout_state.layout_inner_size.width.min(max_width);
+        self.layout_state.content_size.width = self.layout_state.content_size.width.min(max_width);
+        for fragment in &mut self.inline_paint_fragments {
+            fragment.width = fragment.width.min(max_width);
+        }
     }
 }
 
@@ -210,53 +260,30 @@ impl Layoutable for TextAreaProjectionSegment {
         self.layout_state.layout_flow_position = self.layout_state.layout_position;
         self.layout_state.layout_flow_inner_position = self.layout_state.layout_inner_position;
 
-        let Some(info) = self.placement_flex_info() else {
-            return;
-        };
-        place_axis_children(
-            PlaceAxisChildrenInputs {
-                layout: Layout::Inline,
-                children: &self.children,
-                flex_info: info,
-                is_row: true,
-                gap: 0.0,
-                main_limit: placement.available_width,
-                cross_limit: placement.available_height,
-                origin_x: x,
-                origin_y: y,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                child_available_width: placement.available_width,
-                child_available_height: placement.available_height,
-                child_parent_hit_test_clip: None,
-                viewport_width: placement.viewport_width,
-                viewport_height: placement.viewport_height,
-                child_percent_base_width: placement.percent_base_width,
-                child_percent_base_height: placement.percent_base_height,
-                align: Align::Start,
-                justify_content: JustifyContent::Start,
-                cross_size: CrossSize::Fit,
-            },
-            arena,
-        );
-    }
-
-    fn measure_inline(
-        &mut self,
-        context: InlineMeasureContext,
-        arena: &mut crate::view::node_arena::NodeArena,
-    ) {
-        self.measure_with_inline_first_width(
-            LayoutConstraints {
-                max_width: context.full_available_width.max(0.0),
-                max_height: 1_000_000.0,
-                viewport_width: context.viewport_width,
-                viewport_height: context.viewport_height,
-                percent_base_width: context.percent_base_width,
-                percent_base_height: context.percent_base_height,
-            },
-            context.first_available_width,
-            arena,
+        for child_key in self.children.clone() {
+            arena.with_element_taken(child_key, |child, arena| {
+                child.set_layout_offset(0.0, 0.0);
+                child.place(
+                    LayoutPlacement {
+                        parent_x: x,
+                        parent_y: y,
+                        visual_offset_x: 0.0,
+                        visual_offset_y: 0.0,
+                        available_width: placement.available_width,
+                        available_height: placement.available_height,
+                        viewport_width: placement.viewport_width,
+                        viewport_height: placement.viewport_height,
+                        percent_base_width: placement.percent_base_width,
+                        percent_base_height: placement.percent_base_height,
+                    },
+                    arena,
+                );
+            });
+        }
+        self.dirty_flags = self.dirty_flags.without(
+            DirtyFlags::PLACE
+                .union(DirtyFlags::BOX_MODEL)
+                .union(DirtyFlags::HIT_TEST),
         );
     }
 
@@ -275,84 +302,28 @@ impl Layoutable for TextAreaProjectionSegment {
         self.layout_state.layout_size.height = height.max(0.0);
     }
 
-    fn get_inline_nodes_size(
-        &self,
-        _arena: &crate::view::node_arena::NodeArena,
-    ) -> Vec<InlineNodeSize> {
-        let vertical_align = self.vertical_align;
-        let Some(info) = self.flex_info.as_ref() else {
-            let (width, height) = self.measured_size();
-            return vec![InlineNodeSize {
-                width,
-                height,
-                baseline: height,
-                vertical_align,
-                ..Default::default()
-            }];
-        };
-        info.lines
-            .iter()
-            .enumerate()
-            .map(|(line_idx, _)| {
-                let baseline = info.line_ascent.get(line_idx).copied().unwrap_or(0.0);
-                let descent = info.line_descent.get(line_idx).copied().unwrap_or(0.0);
-                let last = info.lines.len().saturating_sub(1);
-                let reported_width = self
-                    .reported_line_width(info.line_main_sum.get(line_idx).copied().unwrap_or(0.0));
-                InlineNodeSize {
-                    width: reported_width,
-                    height: (baseline + descent).max(0.0),
-                    baseline,
-                    vertical_align,
-                    force_break_after: line_idx < last,
-                    ..Default::default()
-                }
-            })
-            .collect()
-    }
-
-    fn place_inline(
-        &mut self,
-        placement: InlinePlacement,
-        arena: &mut crate::view::node_arena::NodeArena,
-    ) {
-        let flex_info = self.placement_flex_info();
-        let absolute_mask = vec![false; self.children.len()];
-        place_inline_fragment(
-            PlaceInlineFragmentInputs {
-                placement,
-                children: &self.children,
-                absolute_mask: &absolute_mask,
-                flex_info: flex_info.as_ref(),
-                left_inset: 0.0,
-                right_inset: 0.0,
-                top_inset: 0.0,
-                bottom_inset: 0.0,
-                gap_length: Length::px(0.0),
-                direction: FlowDirection::Row,
-                align: Align::Start,
-            },
-            &mut self.layout_state,
-            &mut self.inline_paint_fragments,
-            arena,
-        );
-        self.flow_offset = Position {
-            x: self.layout_state.layout_position.x - placement.parent_x - placement.visual_offset_x,
-            y: self.layout_state.layout_position.y - placement.parent_y - placement.visual_offset_y,
-        };
-        self.dirty_flags = self.dirty_flags.without(
-            DirtyFlags::PLACE
-                .union(DirtyFlags::BOX_MODEL)
-                .union(DirtyFlags::HIT_TEST),
-        );
-    }
-
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.flow_offset = Position { x, y };
     }
 
     fn inline_relative_position(&self) -> (f32, f32) {
         (self.flow_offset.x, self.flow_offset.y)
+    }
+}
+
+fn merge_rect(current: Option<Rect>, next: Rect) -> Rect {
+    let Some(current) = current else {
+        return next;
+    };
+    let left = current.x.min(next.x);
+    let top = current.y.min(next.y);
+    let right = (current.x + current.width.max(0.0)).max(next.x + next.width.max(0.0));
+    let bottom = (current.y + current.height.max(0.0)).max(next.y + next.height.max(0.0));
+    Rect {
+        x: left,
+        y: top,
+        width: (right - left).max(0.0),
+        height: (bottom - top).max(0.0),
     }
 }
 
@@ -387,6 +358,16 @@ impl EventTarget for TextAreaProjectionSegment {
 }
 
 impl ElementTrait for TextAreaProjectionSegment {
+    fn placement_eligibility_metadata(
+        &self,
+    ) -> crate::view::node_arena::PlacementEligibilityMetadata {
+        // Conservative: the TextArea family manages an internal projection /
+        // IME / caret subtree whose placement is not yet proven stable under
+        // ancestor-skip, so it blocks placement-skip for now (preserving the
+        // pre-trait behavior). Text/Image/Svg leaves are transparent instead.
+        crate::view::node_arena::PlacementEligibilityMetadata::non_base_blocker()
+    }
+
     fn stable_id(&self) -> u64 {
         self.node_id
     }

@@ -1,33 +1,16 @@
-//! Text cache types: LRU + measure / shape / inline-plan cache keys.
+//! Text cache types: LRU + measure / shape cache keys.
 
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use crate::view::text_layout::{TextLayout, TextLayoutAlignment};
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(in crate::view::base_component) struct InlinePlanCacheKey {
-    pub(super) first_width_milli: i32,
-    pub(super) full_width_milli: i32,
-    pub(super) text_wrap: u8,
-}
+use crate::view::inline_formatting_context::{InlineFormattingContext, InlineIfcAlignment};
 
 #[derive(Clone)]
-pub(in crate::view::base_component) struct MeasuredTextLayout {
-    pub(in crate::view::base_component) text_layout: Arc<TextLayout>,
+pub(in crate::view::base_component) struct MeasuredTextIfc {
+    pub(in crate::view::base_component) context: Arc<InlineFormattingContext>,
     pub(in crate::view::base_component) width: f32,
     pub(in crate::view::base_component) height: f32,
-}
-
-impl MeasuredTextLayout {
-    pub(super) fn first_inline_baseline(&self) -> f32 {
-        self.text_layout
-            .lines()
-            .first()
-            .map(|line| line.baseline)
-            .unwrap_or(0.0)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -92,7 +75,7 @@ impl<K: Eq + std::hash::Hash + Clone, V> LruCache<K, V> {
 }
 
 thread_local! {
-    pub(super) static MEASURE_TEXT_CACHE: RefCell<LruCache<TextMeasureCacheKey, MeasuredTextLayout>> =
+    pub(super) static MEASURE_TEXT_CACHE: RefCell<LruCache<TextMeasureCacheKey, MeasuredTextIfc>> =
         RefCell::new(LruCache::new());
 }
 
@@ -100,10 +83,11 @@ thread_local! {
 pub(super) struct TextMeasureCacheKey {
     pub(super) content: String,
     pub(super) max_width_milli: i32,
+    pub(super) allow_wrap: bool,
     pub(super) font_size_milli: i32,
     pub(super) line_height_milli: i32,
     pub(super) font_weight: u16,
-    pub(super) align: u8,
+    pub(super) align: InlineIfcAlignment,
     pub(super) font_families: Vec<String>,
 }
 
@@ -114,29 +98,21 @@ pub(super) fn quantize_milli(value: f32) -> i32 {
 pub(super) fn make_measure_cache_key(
     content: &str,
     max_width: Option<f32>,
+    allow_wrap: bool,
     font_size: f32,
     line_height: f32,
     font_weight: u16,
-    align: TextLayoutAlignment,
+    align: InlineIfcAlignment,
     font_families: &[String],
 ) -> TextMeasureCacheKey {
     TextMeasureCacheKey {
         content: content.to_string(),
         max_width_milli: max_width.map(quantize_milli).unwrap_or(-1),
+        allow_wrap,
         font_size_milli: quantize_milli(font_size),
         line_height_milli: quantize_milli(line_height),
         font_weight,
-        align: text_layout_alignment_cache_key(align),
+        align,
         font_families: font_families.to_vec(),
-    }
-}
-
-fn text_layout_alignment_cache_key(align: TextLayoutAlignment) -> u8 {
-    match align {
-        TextLayoutAlignment::Left => 0,
-        TextLayoutAlignment::Center => 1,
-        TextLayoutAlignment::Right => 2,
-        TextLayoutAlignment::Justified => 3,
-        TextLayoutAlignment::End => 4,
     }
 }

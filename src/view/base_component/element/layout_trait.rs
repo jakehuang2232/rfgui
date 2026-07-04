@@ -4,10 +4,47 @@ fn record_refreshed_layout_gate_child_candidates(
     mask: DirtyFlags,
     phase: LayoutGateCandidatePhase,
 ) -> bool {
-    for &child_key in children {
-        arena.refresh_subtree_dirty_cache(child_key);
-    }
+    // The gate reads the cached subtree dirty aggregates refreshed once
+    // per pass at the roots (viewport render.rs / test_support). A full
+    // per-child subtree refresh here made every traversal O(n × depth):
+    // each node was re-aggregated once per ancestor. Mid-pass dirty
+    // changes only clear bits in this pass's mask or add bits outside it
+    // (PAINT/RUNTIME), so a stale cache is conservatively dirty — it can
+    // trigger a redundant place, never skip a required one.
     record_layout_gate_child_candidates(children, arena, mask, phase)
+}
+
+fn measure_inline_ifc_root_child(
+    child_key: crate::view::node_arena::NodeKey,
+    constraints: LayoutConstraints,
+    arena: &mut crate::view::node_arena::NodeArena,
+) {
+    arena.with_element_taken(child_key, |child, arena| {
+        if child.as_any().is::<Text>() {
+            child.clear_local_dirty_flags(DirtyPassMask::LAYOUT);
+            return;
+        }
+
+        child.measure(constraints, arena);
+    });
+}
+
+fn measure_inline_ifc_root_children(
+    children: &[crate::view::node_arena::NodeKey],
+    absolute_mask: &[bool],
+    constraints: LayoutConstraints,
+    arena: &mut crate::view::node_arena::NodeArena,
+) {
+    for (child_index, child_key) in children.iter().copied().enumerate() {
+        if absolute_mask.get(child_index).copied().unwrap_or(false) {
+            arena.with_element_taken(child_key, |child, arena| {
+                child.measure(constraints, arena);
+            });
+            continue;
+        }
+
+        measure_inline_ifc_root_child(child_key, constraints, arena);
+    }
 }
 
 impl Layoutable for Element {
@@ -38,16 +75,37 @@ impl Layoutable for Element {
             DirtyPassMask::LAYOUT,
             LayoutGateCandidatePhase::Measure,
         );
-        let inline_measure_context_changed = self.is_fragmentable_inline_element()
-            && self.pending_inline_measure_context != self.last_inline_measure_context;
-
-        if !self.layout_dirty
-            && !child_layout_dirty
-            && !inline_measure_context_changed
-            && self.last_layout_proposal == Some(proposal)
+        if !self.layout_dirty && !child_layout_dirty && self.last_layout_proposal == Some(proposal)
         {
             return;
         }
+
+        with_layout_place_profile(|p| {
+            if self.layout_dirty {
+                p.measure_ran_self_dirty += 1;
+            } else if child_layout_dirty {
+                p.measure_ran_child_dirty += 1;
+            } else {
+                p.measure_ran_proposal_changed += 1;
+                if let Some(old) = self.last_layout_proposal {
+                    if old.width != proposal.width || old.height != proposal.height {
+                        p.proposal_changed_size += 1;
+                    }
+                    if old.viewport_width != proposal.viewport_width
+                        || old.viewport_height != proposal.viewport_height
+                    {
+                        p.proposal_changed_viewport += 1;
+                    }
+                    if old.percent_base_width != proposal.percent_base_width
+                        || old.percent_base_height != proposal.percent_base_height
+                    {
+                        p.proposal_changed_percent_base += 1;
+                    }
+                } else {
+                    p.proposal_changed_first += 1;
+                }
+            }
+        });
 
         self.measure_self(proposal);
         self.apply_size_constraints(proposal, false);
@@ -56,7 +114,7 @@ impl Layoutable for Element {
         // that depend on our inner size.
         let is_axis_layout = matches!(
             self.computed_style.layout,
-            Layout::Inline | Layout::Flex { .. } | Layout::Flow { .. }
+            Layout::Flex { .. } | Layout::Flow { .. }
         );
         if is_axis_layout {
             self.measure_flex_children(proposal, arena);
@@ -108,21 +166,29 @@ impl Layoutable for Element {
                 None
             };
 
-            let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
-            for child_key in child_keys {
-                arena.with_element_taken(child_key, |child, arena| {
-                    child.measure(
-                        LayoutConstraints {
-                            max_width: child_available_width,
-                            max_height: child_available_height,
-                            viewport_width: proposal.viewport_width,
-                            viewport_height: proposal.viewport_height,
-                            percent_base_width: child_percent_base_width,
-                            percent_base_height: child_percent_base_height,
-                        },
-                        arena,
-                    );
-                });
+            let child_constraints = LayoutConstraints {
+                max_width: child_available_width,
+                max_height: child_available_height,
+                viewport_width: proposal.viewport_width,
+                viewport_height: proposal.viewport_height,
+                percent_base_width: child_percent_base_width,
+                percent_base_height: child_percent_base_height,
+            };
+            if self.computed_style.layout == Layout::Inline && !self.inline_ifc_owned_by_root {
+                let absolute_mask = self.compute_children_absolute_mask(arena);
+                measure_inline_ifc_root_children(
+                    &self.children,
+                    &absolute_mask,
+                    child_constraints,
+                    arena,
+                );
+            } else {
+                let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
+                for child_key in child_keys {
+                    arena.with_element_taken(child_key, |child, arena| {
+                        child.measure(child_constraints, arena);
+                    });
+                }
             }
 
             if self.computed_style.width == SizeValue::Auto
@@ -131,11 +197,30 @@ impl Layoutable for Element {
                 let mask = self.compute_children_absolute_mask(arena);
                 self.update_size_from_measured_children(arena, &mask);
             }
+
+            // Inline IFC root: the shaped line stack, not the per-child
+            // union, is the auto size of this box.
+            if self.computed_style.layout == Layout::Inline && !self.inline_ifc_owned_by_root {
+                if let Some((content_w, content_h)) =
+                    self.measure_inline_ifc_root_content_size(arena, inner_w)
+                    && (content_w > 0.0 || content_h > 0.0)
+                {
+                    self.layout_state.content_size = Size {
+                        width: content_w,
+                        height: content_h,
+                    };
+                    if self.computed_style.width == SizeValue::Auto {
+                        self.core.set_width(content_w + insets.horizontal());
+                    }
+                    if self.computed_style.height == SizeValue::Auto {
+                        self.core.set_height(content_h + insets.vertical());
+                    }
+                }
+            }
         }
         self.apply_size_constraints(proposal, true);
 
         self.last_layout_proposal = Some(proposal);
-        self.last_inline_measure_context = self.pending_inline_measure_context;
         self.layout_dirty = false;
         self.dirty_flags = self.dirty_flags.without(DirtyPassMask::LAYOUT);
     }
@@ -170,8 +255,8 @@ impl Layoutable for Element {
         }
 
         self.begin_place_scope(placement);
-        LAYOUT_PLACE_PROFILE.with(|profile| {
-            profile.borrow_mut().node_count += 1;
+        with_layout_place_profile(|profile| {
+            profile.node_count += 1;
         });
         let context = placement.context();
         let proposal = LayoutProposal {
@@ -183,7 +268,7 @@ impl Layoutable for Element {
             percent_base_height: context.percent_base_height,
         };
         self.resolve_lengths_from_parent_inner(proposal);
-        let place_self_started_at = Instant::now();
+        let place_self_started_at = layout_place_profile_enabled().then(Instant::now);
         self.place_self(
             proposal,
             placement.parent_x,
@@ -191,10 +276,12 @@ impl Layoutable for Element {
             placement.visual_offset_x,
             placement.visual_offset_y,
         );
-        let place_self_elapsed_ms = place_self_started_at.elapsed().as_secs_f64() * 1000.0;
-        LAYOUT_PLACE_PROFILE.with(|profile| {
-            profile.borrow_mut().place_self_ms += place_self_elapsed_ms;
-        });
+        if let Some(started_at) = place_self_started_at {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            with_layout_place_profile(|profile| {
+                profile.place_self_ms += elapsed_ms;
+            });
+        }
         self.register_anchor_snapshot();
         self.push_ancestor_anchor_scope();
         self.resolve_corner_radii_from_self_box(proposal);
@@ -254,7 +341,7 @@ impl Layoutable for Element {
                 child_layout_inner_size.width,
                 child_layout_inner_size.height,
             );
-        let place_children_started_at = Instant::now();
+        let place_children_started_at = layout_place_profile_enabled().then(Instant::now);
         self.place_children(
             proposal.viewport_width,
             proposal.viewport_height,
@@ -266,14 +353,13 @@ impl Layoutable for Element {
             child_layout_inner_size.height,
             arena,
         );
-        let place_children_elapsed_ms = place_children_started_at.elapsed().as_secs_f64() * 1000.0;
-        LAYOUT_PLACE_PROFILE.with(|profile| {
-            profile.borrow_mut().place_children_ms += place_children_elapsed_ms;
-        });
-        self.run_inline_ifc_layout_call_site_opt_in_after_place(
-            arena,
-            child_layout_inner_size.width,
-        );
+        if let Some(started_at) = place_children_started_at {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            with_layout_place_profile(|profile| {
+                profile.place_children_ms += elapsed_ms;
+            });
+        }
+        self.run_inline_ifc_root_after_place(arena, placement, child_layout_inner_size.width);
         self.pop_ancestor_anchor_scope();
         self.end_place_scope();
         self.last_layout_placement = Some(placement);
@@ -389,217 +475,6 @@ impl Layoutable for Element {
         {
             self.core.set_position(x, y);
             self.mark_place_dirty();
-        }
-    }
-
-    fn measure_inline(
-        &mut self,
-        context: InlineMeasureContext,
-        arena: &mut crate::view::node_arena::NodeArena,
-    ) {
-        if self.is_fragmentable_inline_element() {
-            self.pending_inline_measure_context = Some(context);
-            self.measure(
-                LayoutConstraints {
-                    max_width: context.full_available_width.max(0.0),
-                    max_height: 1_000_000.0,
-                    viewport_width: context.viewport_width,
-                    viewport_height: context.viewport_height,
-                    percent_base_width: context.percent_base_width,
-                    percent_base_height: context.percent_base_height,
-                },
-                arena,
-            );
-            self.pending_inline_measure_context = None;
-        } else {
-            self.measure(
-                LayoutConstraints {
-                    max_width: context.first_available_width.max(0.0),
-                    max_height: 1_000_000.0,
-                    viewport_width: context.viewport_width,
-                    viewport_height: context.viewport_height,
-                    percent_base_width: context.percent_base_width,
-                    percent_base_height: context.percent_base_height,
-                },
-                arena,
-            );
-        }
-    }
-
-    fn get_inline_nodes_size(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-    ) -> Vec<InlineNodeSize> {
-        if self.is_fragmentable_inline_element() {
-            let left_inset = (self.border_widths.left + self.padding.left).max(0.0);
-            let right_inset = (self.border_widths.right + self.padding.right).max(0.0);
-            let inline_fragment_available_width = |line_idx: usize, line_count: usize| {
-                self.last_inline_measure_context.map(|context| {
-                    // Bound every fragment by the *full* line width it was
-                    // actually wrapped at, NOT the remaining first-line slot.
-                    // The inner content already chose its own wrap — including
-                    // moving a too-wide first word down to a full-width line
-                    // (`Text::first_line_width_for_word_boundary`). Capping the
-                    // first fragment to the tiny `first_available_width` residue
-                    // would report a full-width first line as narrow, so the
-                    // outer inline solver keeps it on the current line and clips
-                    // it to a sliver (e.g. "Permission…copy" → "Pe"). Reporting
-                    // the natural width lets the outer solver wrap the whole
-                    // element down when its first line genuinely doesn't fit the
-                    // remaining slot, matching the inner wrap decision.
-                    context.full_available_width
-                        - if line_idx == 0 { left_inset } else { 0.0 }
-                        - if line_idx + 1 == line_count {
-                            right_inset
-                        } else {
-                            0.0
-                        }
-                })
-            };
-            let inline_child_count = self
-                .children
-                .iter()
-                .enumerate()
-                .filter(|(idx, _)| !self.child_is_absolute(*idx, arena))
-                .count();
-            if inline_child_count > 1 {
-                if let Some(info) = self.flex_info.as_ref() {
-                    let line_count = info.lines.len();
-                    return info
-                        .lines
-                        .iter()
-                        .enumerate()
-                        .map(|(line_idx, _line_items)| InlineNodeSize {
-                            width: inline_fragment_available_width(line_idx, line_count)
-                                .map(|available| {
-                                    info.line_main_sum[line_idx].max(0.0).min(available.max(0.0))
-                                })
-                                .unwrap_or_else(|| info.line_main_sum[line_idx].max(0.0))
-                                + if line_idx == 0 { left_inset } else { 0.0 }
-                                + if line_idx + 1 == line_count {
-                                    right_inset
-                                } else {
-                                    0.0
-                                },
-                            // Match CSS inline formatting: vertical padding/border paints
-                            // outside the line box and must not increase line height.
-                            // Inner line box height per D2 = ascent + descent
-                            // (collapses to line_cross_max for pure-element /
-                            // pure-text rows); the outer line then sees a
-                            // consistent (height, baseline) pair so its own
-                            // ascent/descent calc is well-defined.
-                            height: (info.line_ascent.get(line_idx).copied().unwrap_or(0.0)
-                                + info.line_descent.get(line_idx).copied().unwrap_or(0.0))
-                            .max(0.0),
-                            // Per `docs/design/inline-baseline.md` D1, a
-                            // fragmentable inline element exposes each
-                            // fragment's inner `line_ascent` as its
-                            // baseline (relative to the line box top —
-                            // outer vertical padding/border paint outside
-                            // and are not added here).
-                            baseline: info.line_ascent.get(line_idx).copied().unwrap_or(0.0),
-                            // D7: every outer fragment shares this
-                            // element's own `vertical-align` (the inner
-                            // line items keep their own values — they're
-                            // placed by the element's inner inline solver
-                            // independently).
-                            vertical_align: self.computed_style.vertical_align,
-                            ..Default::default()
-                        })
-                        .collect();
-                }
-                return Vec::new();
-            }
-            let mut nodes = Vec::new();
-            for (idx, child_key) in self.children.iter().enumerate() {
-                if self.child_is_absolute(idx, arena) {
-                    continue;
-                }
-                if let Some(child_node) = arena.get(*child_key) {
-                    // Child's element borrow — forward but with a fresh arena ref.
-                    nodes.extend(child_node.element.get_inline_nodes_size(arena));
-                }
-            }
-            let node_count = nodes.len();
-            for (idx, node) in nodes.iter_mut().enumerate() {
-                if let Some(available) = inline_fragment_available_width(idx, node_count) {
-                    node.width = node.width.min(available.max(0.0));
-                }
-            }
-            if let Some(first) = nodes.first_mut() {
-                first.width += left_inset;
-            }
-            if let Some(last) = nodes.last_mut() {
-                last.width += right_inset;
-            }
-            // D7: every outer fragment shares this wrapper's own
-            // `vertical-align`. Inner placement already used the
-            // children's own values; here we overwrite the values
-            // exposed to the outer inline solver so it sees the wrapper
-            // as a single inline-block-like node with one alignment.
-            let wrapper_va = self.computed_style.vertical_align;
-            for node in &mut nodes {
-                node.vertical_align = wrapper_va;
-            }
-            return nodes;
-        }
-        let (width, height) = self.measured_size();
-        vec![InlineNodeSize {
-            width,
-            height,
-            baseline: height,
-            vertical_align: self.computed_style.vertical_align,
-            ..Default::default()
-        }]
-    }
-
-    fn place_inline(
-        &mut self,
-        placement: InlinePlacement,
-        arena: &mut crate::view::node_arena::NodeArena,
-    ) {
-        if self.is_fragmentable_inline_element() {
-            let left_inset = (self.border_widths.left + self.padding.left).max(0.0);
-            let right_inset = (self.border_widths.right + self.padding.right).max(0.0);
-            let top_inset = (self.border_widths.top + self.padding.top).max(0.0);
-            let bottom_inset = (self.border_widths.bottom + self.padding.bottom).max(0.0);
-            let absolute_mask = self.compute_children_absolute_mask(arena);
-            crate::view::layout::inline_fragment::place_inline_fragment(
-                crate::view::layout::inline_fragment::PlaceInlineFragmentInputs {
-                    placement,
-                    children: &self.children,
-                    absolute_mask: &absolute_mask,
-                    flex_info: self.flex_info.as_ref(),
-                    left_inset,
-                    right_inset,
-                    top_inset,
-                    bottom_inset,
-                    gap_length: self.computed_style.gap,
-                    direction: self.computed_style.layout_axis_direction(),
-                    align: self.computed_style.layout_axis_align(),
-                },
-                &mut self.layout_state,
-                &mut self.inline_paint_fragments,
-                arena,
-            );
-            self.dirty_flags = self.dirty_flags.without(DirtyPassMask::PLACEMENT);
-        } else {
-            self.set_layout_offset(placement.offset_x, placement.offset_y);
-            self.place(
-                LayoutPlacement {
-                    parent_x: placement.parent_x,
-                    parent_y: placement.parent_y,
-                    visual_offset_x: placement.visual_offset_x,
-                    visual_offset_y: placement.visual_offset_y,
-                    available_width: placement.available_width,
-                    available_height: placement.available_height,
-                    viewport_width: placement.viewport_width,
-                    viewport_height: placement.viewport_height,
-                    percent_base_width: placement.percent_base_width,
-                    percent_base_height: placement.percent_base_height,
-                },
-                arena,
-            );
         }
     }
 }

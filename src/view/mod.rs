@@ -22,7 +22,6 @@ mod renderer_adapter;
 mod renderer_adapter_tests;
 pub(crate) mod svg_resource;
 mod tags;
-pub(crate) mod text_layout;
 /// The retained viewport runtime and platform-facing integration surface.
 pub mod viewport;
 

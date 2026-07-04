@@ -998,6 +998,53 @@ impl Element {
         }
     }
 
+    /// Translation fast-path: shift this node's already-resolved absolute
+    /// geometry by `(dx, dy)` without re-running place. Valid only when a
+    /// pure ancestor move left this node's relative layout untouched (the
+    /// caller gates on `subtree_dirty_intersects` + translatable
+    /// eligibility). Relative state (`core.position`, sizes, `flex_info`,
+    /// clip *sizes*) is invariant under translation and left alone; only
+    /// the absolute outputs move.
+    pub(crate) fn translate_placed_geometry(&mut self, dx: f32, dy: f32) {
+        let shift_pos = |p: &mut Position| {
+            p.x += dx;
+            p.y += dy;
+        };
+        shift_pos(&mut self.layout_state.layout_position);
+        shift_pos(&mut self.layout_state.layout_inner_position);
+        shift_pos(&mut self.layout_state.layout_flow_position);
+        shift_pos(&mut self.layout_state.layout_flow_inner_position);
+
+        let shift_rect = |r: &mut Rect| {
+            r.x += dx;
+            r.y += dy;
+        };
+        if let Some(rect) = self.hit_test_clip_rect.as_mut() {
+            shift_rect(rect);
+        }
+        if let Some(rect) = self.anchor_parent_clip_rect.as_mut() {
+            shift_rect(rect);
+        }
+        if let Some(rect) = self.absolute_clip_rect.as_mut() {
+            shift_rect(rect);
+        }
+        if let Some(rect) = self.last_child_hit_test_clip_rect.as_mut() {
+            shift_rect(rect);
+        }
+        self.last_parent_layout_x += dx;
+        self.last_parent_layout_y += dy;
+        if let Some(placement) = self.last_layout_placement.as_mut() {
+            placement.parent_x += dx;
+            placement.parent_y += dy;
+        }
+        // The resolved transform bakes the absolute layout origin (see
+        // `compute_transform_matrix`), so refresh it after the shift. Cheap
+        // no-op when the node has no `transform`.
+        self.update_resolved_transform();
+        // `should_render` is invariant: the node and its clip moved by the
+        // same `(dx, dy)`, so the frame-vs-clip overlap is unchanged.
+    }
+
     fn begin_place_scope(&self, placement: LayoutPlacement) {
         PLACEMENT_RUNTIME.with(|runtime| {
             let mut runtime = runtime.borrow_mut();
@@ -1209,20 +1256,6 @@ impl Element {
             (width, height)
         })
     }
-
-    fn child_is_absolute(&self, index: usize, arena: &crate::view::node_arena::NodeArena) -> bool {
-        self.children
-            .get(index)
-            .and_then(|k| arena.get(*k))
-            .and_then(|node| {
-                node.element
-                    .as_any()
-                    .downcast_ref::<Element>()
-                    .map(|el| el.computed_style.position.mode() == PositionMode::Absolute)
-            })
-            .unwrap_or(false)
-    }
-
     /// Build a parallel `Vec<bool>` matching `self.children` indices where
     /// each entry is `child_is_absolute(idx)`. Running this once at the top
     /// of `place_children` (and then re-using the slice across the two
@@ -1314,6 +1347,13 @@ impl Element {
             contains_absolute_descendant: self.is_absolute_positioned_for_hit_test()
                 || self.has_absolute_descendant_for_hit_test,
             contains_runtime_layout_state: self.active_layout_transition_runtime_state(),
+            // Element implements `translate_in_place`, so it is translatable
+            // on its own behalf — except as an inline-formatting-context
+            // host, whose descendant glyph boxes are installed at absolute
+            // coordinates that `translate_placed_geometry` does not reach.
+            // Exclude any inline container so such a subtree falls back to a
+            // full re-place.
+            contains_non_translatable_host: self.computed_style.layout == Layout::Inline,
         }
     }
 
@@ -1362,31 +1402,7 @@ impl Element {
             return Some(PlacementSkipFailureReason::HitTestClipMismatch);
         }
         for child_key in &self.children {
-            let Some(child_node) = arena.get(*child_key) else {
-                return Some(PlacementSkipFailureReason::NonBaseElement);
-            };
-            let Some(child) = child_node.element.as_any().downcast_ref::<Element>() else {
-                return Some(PlacementSkipFailureReason::NonBaseElement);
-            };
-            if child.anchor_name.is_some() {
-                return Some(PlacementSkipFailureReason::AnchorName);
-            }
-            if child.computed_style.position.anchor_ref().is_some() {
-                return Some(PlacementSkipFailureReason::AnchorRef);
-            }
-            if child.is_absolute_positioned_for_hit_test() {
-                return Some(PlacementSkipFailureReason::AbsoluteDescendant);
-            }
-            if child.has_absolute_descendant_for_hit_test {
-                return Some(PlacementSkipFailureReason::AbsoluteDescendant);
-            }
-            if child.active_layout_transition_runtime_state() {
-                return Some(PlacementSkipFailureReason::RuntimeState);
-            }
-            if child.dirty_flags.intersects(DirtyPassMask::PLACEMENT) {
-                return Some(PlacementSkipFailureReason::PlacementDirtySelf);
-            }
-            if let Some(reason) = child.clean_placement_skip_subtree_failure(arena) {
+            if let Some(reason) = clean_placement_skip_node_failure(arena, *child_key) {
                 return Some(reason);
             }
         }
@@ -1487,12 +1503,18 @@ impl Element {
             width: (self.layout_state.layout_inner_size.width + overscan * 2.0).max(0.0),
             height: (self.layout_state.layout_inner_size.height + overscan * 2.0).max(0.0),
         });
+        // Inline is NOT an axis layout here: its children are placed by the
+        // inline IFC install (`run_inline_ifc_root_after_place`), not the
+        // flex/flow solver. Routing inline through `place_flex_children`
+        // would place every inline child twice (old solver + IFC) — the S1
+        // regression. This must mirror the measure side, which already
+        // excludes Inline.
         let is_axis_layout = matches!(
             self.computed_style.layout,
-            Layout::Inline | Layout::Flex { .. } | Layout::Flow { .. }
+            Layout::Flex { .. } | Layout::Flow { .. }
         );
         if is_axis_layout {
-            let place_flex_started_at = Instant::now();
+            let place_flex_started_at = layout_place_profile_enabled().then(Instant::now);
             self.place_flex_children(
                 child_inner_width,
                 child_inner_height,
@@ -1505,17 +1527,19 @@ impl Element {
                 child_parent_hit_test_clip,
                 arena,
             );
-            let place_flex_elapsed_ms = place_flex_started_at.elapsed().as_secs_f64() * 1000.0;
-            LAYOUT_PLACE_PROFILE.with(|profile| {
-                let mut profile = profile.borrow_mut();
-                profile.place_flex_children_ms += place_flex_elapsed_ms;
-                match self.computed_style.layout {
-                    Layout::Inline => profile.place_layout_inline_ms += place_flex_elapsed_ms,
-                    Layout::Flex { .. } => profile.place_layout_flex_ms += place_flex_elapsed_ms,
-                    Layout::Flow { .. } => profile.place_layout_flow_ms += place_flex_elapsed_ms,
-                    Layout::Grid => {}
-                }
-            });
+            if let Some(started_at) = place_flex_started_at {
+                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+                let layout = self.computed_style.layout;
+                with_layout_place_profile(|profile| {
+                    profile.place_flex_children_ms += elapsed_ms;
+                    match layout {
+                        Layout::Inline => profile.place_layout_inline_ms += elapsed_ms,
+                        Layout::Flex { .. } => profile.place_layout_flex_ms += elapsed_ms,
+                        Layout::Flow { .. } => profile.place_layout_flow_ms += elapsed_ms,
+                        Layout::Grid => {}
+                    }
+                });
+            }
         } else {
             let origin_x = self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x;
             let origin_y = self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y;
@@ -1523,14 +1547,18 @@ impl Element {
                 self.layout_state.layout_position.x - self.layout_state.layout_flow_position.x;
             let visual_offset_y =
                 self.layout_state.layout_position.y - self.layout_state.layout_flow_position.y;
-            let non_axis_children_started_at = Instant::now();
+            let non_axis_children_started_at = layout_place_profile_enabled().then(Instant::now);
             let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
             // Build the is-absolute mask once: each call is arena.get +
             // RefCell::borrow + downcast, and this loop used to do it twice
             // per child (non-abs then abs pass), with more redundant calls
             // from update_content_size_from_children.
             let absolute_mask = self.compute_children_absolute_mask(arena);
+            let in_flow_owned_by_inline_ifc = matches!(self.computed_style.layout, Layout::Inline);
             for (idx, child_key) in child_keys.iter().copied().enumerate() {
+                if in_flow_owned_by_inline_ifc {
+                    break;
+                }
                 if absolute_mask.get(idx).copied().unwrap_or(false) {
                     continue;
                 }
@@ -1552,34 +1580,34 @@ impl Element {
                     placement,
                     child_parent_hit_test_clip,
                 ) {
-                    LAYOUT_PLACE_PROFILE.with(|profile| {
-                        profile.borrow_mut().placement_skip_failures.record(reason);
+                    with_layout_place_profile(|profile| {
+                        profile.placement_skip_failures.record(reason);
                     });
                 } else {
-                    LAYOUT_PLACE_PROFILE.with(|profile| {
-                        profile.borrow_mut().skipped_child_place_calls += 1;
+                    with_layout_place_profile(|profile| {
+                        profile.skipped_child_place_calls += 1;
                     });
                     continue;
                 }
-                LAYOUT_PLACE_PROFILE.with(|profile| {
-                    profile.borrow_mut().child_place_calls += 1;
+                with_layout_place_profile(|profile| {
+                    profile.child_place_calls += 1;
                 });
                 arena.with_element_taken(child_key, |child, arena| {
                     child.place(placement, arena);
                 });
             }
-            let non_axis_children_elapsed_ms =
-                non_axis_children_started_at.elapsed().as_secs_f64() * 1000.0;
-            LAYOUT_PLACE_PROFILE.with(|profile| {
-                profile.borrow_mut().non_axis_child_place_ms += non_axis_children_elapsed_ms;
-            });
-            let absolute_children_started_at = Instant::now();
+            if let Some(started_at) = non_axis_children_started_at {
+                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+                with_layout_place_profile(|profile| {
+                    profile.non_axis_child_place_ms += elapsed_ms;
+                });
+            }
+            let absolute_children_started_at = layout_place_profile_enabled().then(Instant::now);
             for (idx, child_key) in child_keys.iter().copied().enumerate() {
                 if !absolute_mask.get(idx).copied().unwrap_or(false) {
                     continue;
                 }
-                LAYOUT_PLACE_PROFILE.with(|profile| {
-                    let mut profile = profile.borrow_mut();
+                with_layout_place_profile(|profile| {
                     profile.child_place_calls += 1;
                     profile.absolute_child_place_calls += 1;
                 });
@@ -1601,36 +1629,41 @@ impl Element {
                     );
                 });
             }
-            let absolute_children_elapsed_ms =
-                absolute_children_started_at.elapsed().as_secs_f64() * 1000.0;
-            LAYOUT_PLACE_PROFILE.with(|profile| {
-                profile.borrow_mut().absolute_child_place_ms += absolute_children_elapsed_ms;
-            });
+            if let Some(started_at) = absolute_children_started_at {
+                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+                with_layout_place_profile(|profile| {
+                    profile.absolute_child_place_ms += elapsed_ms;
+                });
+            }
         }
         // Mask is scoped per-branch above (axis layout builds its own);
         // recompute once here so both branches feed the helper without
         // paying for another per-child downcast inside it.
         let absolute_mask_for_content = self.compute_children_absolute_mask(arena);
-        let update_content_size_started_at = Instant::now();
+        let update_content_size_started_at = layout_place_profile_enabled().then(Instant::now);
         self.update_content_size_from_children(arena, &absolute_mask_for_content);
-        let update_content_size_elapsed_ms =
-            update_content_size_started_at.elapsed().as_secs_f64() * 1000.0;
-        LAYOUT_PLACE_PROFILE.with(|profile| {
-            profile.borrow_mut().update_content_size_ms += update_content_size_elapsed_ms;
-        });
-        let clamp_scroll_started_at = Instant::now();
+        if let Some(started_at) = update_content_size_started_at {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            with_layout_place_profile(|profile| {
+                profile.update_content_size_ms += elapsed_ms;
+            });
+        }
+        let clamp_scroll_started_at = layout_place_profile_enabled().then(Instant::now);
         self.clamp_scroll_offset();
-        let clamp_scroll_elapsed_ms = clamp_scroll_started_at.elapsed().as_secs_f64() * 1000.0;
-        LAYOUT_PLACE_PROFILE.with(|profile| {
-            profile.borrow_mut().clamp_scroll_ms += clamp_scroll_elapsed_ms;
-        });
-        let recompute_hit_test_started_at = Instant::now();
+        if let Some(started_at) = clamp_scroll_started_at {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            with_layout_place_profile(|profile| {
+                profile.clamp_scroll_ms += elapsed_ms;
+            });
+        }
+        let recompute_hit_test_started_at = layout_place_profile_enabled().then(Instant::now);
         self.recompute_absolute_descendant_for_hit_test(arena);
-        let recompute_hit_test_elapsed_ms =
-            recompute_hit_test_started_at.elapsed().as_secs_f64() * 1000.0;
-        LAYOUT_PLACE_PROFILE.with(|profile| {
-            profile.borrow_mut().recompute_hit_test_ms += recompute_hit_test_elapsed_ms;
-        });
+        if let Some(started_at) = recompute_hit_test_started_at {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            with_layout_place_profile(|profile| {
+                profile.recompute_hit_test_ms += elapsed_ms;
+            });
+        }
         self.pop_child_clip_scope();
         self.pop_hit_test_clip_scope();
     }
@@ -1756,5 +1789,61 @@ impl Element {
             },
             arena,
         );
+    }
+}
+
+/// Recursively verify a node's subtree can skip re-placement. `Element`
+/// children contribute their own anchor/absolute/runtime/clip checks;
+/// non-Element nodes (Text/Image/Svg/TextArea family) contribute no
+/// blockers of their own — their declared placement-eligibility metadata
+/// is transparent — so the walk passes through them into any Element
+/// descendant. The caller has already verified the whole subtree is
+/// PLACEMENT-clean, so per-node dirty re-checks are only kept on the
+/// Element path for parity with the cached metadata.
+fn clean_placement_skip_node_failure(
+    arena: &crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+) -> Option<PlacementSkipFailureReason> {
+    let Some(node) = arena.get(key) else {
+        return Some(PlacementSkipFailureReason::NonBaseElement);
+    };
+    if let Some(child) = node.element.as_any().downcast_ref::<Element>() {
+        if child.anchor_name.is_some() {
+            return Some(PlacementSkipFailureReason::AnchorName);
+        }
+        if child.computed_style.position.anchor_ref().is_some() {
+            return Some(PlacementSkipFailureReason::AnchorRef);
+        }
+        if child.is_absolute_positioned_for_hit_test() {
+            return Some(PlacementSkipFailureReason::AbsoluteDescendant);
+        }
+        if child.has_absolute_descendant_for_hit_test {
+            return Some(PlacementSkipFailureReason::AbsoluteDescendant);
+        }
+        if child.active_layout_transition_runtime_state() {
+            return Some(PlacementSkipFailureReason::RuntimeState);
+        }
+        if child.dirty_flags.intersects(DirtyPassMask::PLACEMENT) {
+            return Some(PlacementSkipFailureReason::PlacementDirtySelf);
+        }
+        child.clean_placement_skip_subtree_failure(arena)
+    } else {
+        // Non-Element node: honour the blockers it declares for itself
+        // (e.g. the TextArea family blocks), then recurse into its arena
+        // children so any Element descendant is still verified.
+        if let Some(reason) = node
+            .element
+            .placement_eligibility_metadata()
+            .first_blocker()
+        {
+            return Some(reason);
+        }
+        drop(node);
+        for child_key in arena.children_of(key) {
+            if let Some(reason) = clean_placement_skip_node_failure(arena, child_key) {
+                return Some(reason);
+            }
+        }
+        None
     }
 }

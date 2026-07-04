@@ -94,8 +94,14 @@ pub(crate) fn measure_and_place(
     constraints: LayoutConstraints,
     placement: LayoutPlacement,
 ) {
+    // Mirror the viewport's per-pass dirty refresh (render.rs): the
+    // measure/place gates read the cached subtree dirty aggregates.
+    arena.refresh_subtree_dirty_cache(root);
     arena.with_element_taken(root, |el, a| {
         el.measure(constraints, a);
+    });
+    arena.refresh_subtree_dirty_cache(root);
+    arena.with_element_taken(root, |el, a| {
         el.place(placement, a);
     });
 }

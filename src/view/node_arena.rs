@@ -19,7 +19,7 @@ use rustc_hash::FxHashMap;
 use slotmap::SlotMap;
 use std::cell::{Ref, RefCell, RefMut};
 
-use crate::view::base_component::{DirtyFlags, Element, ElementTrait, PlacementSkipFailureReason};
+use crate::view::base_component::{DirtyFlags, ElementTrait, PlacementSkipFailureReason};
 
 /// Placeholder element swapped into a slot while its real element is
 /// being operated on outside the arena (see
@@ -158,12 +158,19 @@ impl Node {
 /// a separate arena cache and must remain the first guard before this
 /// metadata is consulted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PlacementEligibilityMetadata {
+pub struct PlacementEligibilityMetadata {
     pub contains_non_base_element: bool,
     pub contains_anchor_name: bool,
     pub contains_anchor_ref: bool,
     pub contains_absolute_descendant: bool,
     pub contains_runtime_layout_state: bool,
+    /// True if the subtree contains any host that has not opted into the
+    /// translation fast-path (`ElementTrait::translate_in_place`). A pure
+    /// ancestor move can only be replayed as a cheap subtree translation
+    /// when every node knows how to shift its own absolute geometry; an
+    /// un-opted host forces the full re-place fallback. Independent of
+    /// `first_blocker` so the existing placement-skip paths are unaffected.
+    pub contains_non_translatable_host: bool,
 }
 
 impl Default for PlacementEligibilityMetadata {
@@ -173,6 +180,10 @@ impl Default for PlacementEligibilityMetadata {
 }
 
 impl PlacementEligibilityMetadata {
+    /// A fully transparent, translation-capable leaf: no placement-skip
+    /// blockers and safe to shift via `translate_in_place`. Used by hosts
+    /// that have opted into the translation fast-path (`Element`, `Text`,
+    /// `Image`, `Svg`).
     pub(crate) const fn empty() -> Self {
         Self {
             contains_non_base_element: false,
@@ -180,6 +191,18 @@ impl PlacementEligibilityMetadata {
             contains_anchor_ref: false,
             contains_absolute_descendant: false,
             contains_runtime_layout_state: false,
+            contains_non_translatable_host: false,
+        }
+    }
+
+    /// A transparent leaf that has NOT opted into the translation
+    /// fast-path: it contributes no placement-skip blocker (so stationary
+    /// subtrees containing it can still skip) but forces the full re-place
+    /// fallback for a moving ancestor. This is the `ElementTrait` default.
+    pub(crate) const fn opaque_to_translation() -> Self {
+        Self {
+            contains_non_translatable_host: true,
+            ..Self::empty()
         }
     }
 
@@ -190,7 +213,28 @@ impl PlacementEligibilityMetadata {
             contains_anchor_ref: false,
             contains_absolute_descendant: false,
             contains_runtime_layout_state: false,
+            contains_non_translatable_host: true,
         }
+    }
+
+    /// A node that deliberately blocks placement-skip for its subtree
+    /// (no anchor/absolute/runtime claim, just "do not skip me").
+    pub const fn non_base_blocker() -> Self {
+        Self {
+            contains_non_base_element: true,
+            contains_anchor_name: false,
+            contains_anchor_ref: false,
+            contains_absolute_descendant: false,
+            contains_runtime_layout_state: false,
+            contains_non_translatable_host: true,
+        }
+    }
+
+    /// Whether a pure ancestor move over this subtree can be replayed as a
+    /// cheap translation instead of a full re-place. Requires no
+    /// placement-skip blocker AND every host opted into translation.
+    pub(crate) fn is_translatable(self) -> bool {
+        self.first_blocker().is_none() && !self.contains_non_translatable_host
     }
 
     fn union(self, rhs: Self) -> Self {
@@ -203,6 +247,8 @@ impl PlacementEligibilityMetadata {
                 || rhs.contains_absolute_descendant,
             contains_runtime_layout_state: self.contains_runtime_layout_state
                 || rhs.contains_runtime_layout_state,
+            contains_non_translatable_host: self.contains_non_translatable_host
+                || rhs.contains_non_translatable_host,
         }
     }
 
@@ -666,13 +712,11 @@ impl NodeArena {
     }
 
     fn local_placement_eligibility_metadata(node: &Node) -> PlacementEligibilityMetadata {
-        let Some(element) = node.element.as_any().downcast_ref::<Element>() else {
-            return PlacementEligibilityMetadata {
-                contains_non_base_element: true,
-                ..PlacementEligibilityMetadata::empty()
-            };
-        };
-        element.local_placement_eligibility_metadata()
+        // Each node declares the blockers it personally contributes; leaves
+        // (Text/Image/Svg) and pass-through wrappers default to transparent
+        // so a clean stationary subtree containing them stays skippable.
+        // Descendant blockers are unioned separately by the subtree walk.
+        node.element.placement_eligibility_metadata()
     }
 
     /// Fast read of Phase 5b cached placement eligibility metadata.
@@ -766,11 +810,12 @@ impl NodeArena {
                 return last;
             };
 
-            let (children, parent, mut aggregate) = {
+            let (children, parent, previous, mut aggregate) = {
                 let node = cell.borrow();
                 (
                     node.children.clone(),
                     node.parent,
+                    node.cached_subtree_dirty,
                     node.element
                         .local_dirty_flags()
                         .union(node.arena_local_dirty),
@@ -783,6 +828,13 @@ impl NodeArena {
 
             cell.borrow_mut().cached_subtree_dirty = aggregate;
             last = aggregate;
+            // Ancestor aggregates take this node's cache as their input;
+            // when it did not change they are already consistent — stop
+            // the climb. This keeps the common no-dirty-change access
+            // O(children) instead of O(depth × children).
+            if aggregate == previous {
+                break;
+            }
             current = parent;
         }
         last
@@ -855,7 +907,13 @@ impl NodeArena {
             cell.borrow_mut().cached_subtree_dirty = aggregate;
         }
 
-        self.repair_cached_subtree_dirty_ancestors(key);
+        // The post-order loop above already wrote fresh aggregates for the
+        // whole subtree (including `key`), so the ancestor climb must start
+        // at the parent: repair's no-change early-out would otherwise see
+        // `key` unchanged and stop before reaching stale ancestors.
+        if let Some(parent) = self.parent_of(key) {
+            self.repair_cached_subtree_dirty_ancestors(parent);
+        }
     }
 
     /// Fast O(1) read of the cached aggregate dirty flags for the subtree

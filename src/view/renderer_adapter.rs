@@ -214,6 +214,9 @@ pub(crate) fn element_base_style_from_inherited(cascade: &StyleCascadeContext) -
             ParsedValue::VerticalAlign(vertical_align),
         );
     }
+    if let Some(text_wrap) = cascade.inherited_text_wrap() {
+        base_style.insert(PropertyId::TextWrap, ParsedValue::TextWrap(text_wrap));
+    }
     base_style
 }
 

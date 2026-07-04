@@ -5,8 +5,8 @@ use crate::style::{
     TextWrap, compute_style_with_context,
 };
 use crate::view::base_component::{DirtyFlags, Position, Size};
+use crate::view::inline_formatting_context::InlineIfcAlignment;
 use crate::view::renderer_adapter::{StyleCascadeContext, computed_parent_from_style_cascade};
-use crate::view::text_layout::TextLayoutAlignment;
 
 use super::{Text, TextInlineIfcStyleMetadata};
 
@@ -237,7 +237,7 @@ impl Text {
         self.font_weight_explicit = true;
     }
 
-    pub(crate) fn set_align(&mut self, align: TextLayoutAlignment) {
+    pub(crate) fn set_align(&mut self, align: InlineIfcAlignment) {
         if self.align != align {
             self.align = align;
             self.mark_measure_dirty();
@@ -246,9 +246,9 @@ impl Text {
 
     pub fn set_text_align(&mut self, align: TextAlign) {
         self.set_align(match align {
-            TextAlign::Left => TextLayoutAlignment::Left,
-            TextAlign::Center => TextLayoutAlignment::Center,
-            TextAlign::Right => TextLayoutAlignment::Right,
+            TextAlign::Left => InlineIfcAlignment::Left,
+            TextAlign::Center => InlineIfcAlignment::Center,
+            TextAlign::Right => InlineIfcAlignment::Right,
         });
     }
 
@@ -480,20 +480,5 @@ impl Text {
             changed = true;
         }
         changed
-    }
-
-    #[cfg(test)]
-    pub(crate) fn inline_fragment_positions(&self) -> Vec<(String, Position)> {
-        self.inline_plan
-            .as_ref()
-            .map(|plan| plan.runs.as_slice())
-            .unwrap_or(&[])
-            .iter()
-            .filter_map(|fragment| {
-                fragment
-                    .position
-                    .map(|position| (fragment.content.clone(), position))
-            })
-            .collect()
     }
 }

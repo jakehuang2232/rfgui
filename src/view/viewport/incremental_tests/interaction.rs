@@ -476,6 +476,31 @@ fn component_test_button_section_rerender_false_to_true_hit_tests_without_scroll
     let hit_y = contained_snapshot.y + contained_snapshot.height * 0.5;
     let target =
         crate::view::base_component::hit_test(&viewport.scene.node_arena, root_key, hit_x, hit_y);
+    {
+        let bm_btn = viewport
+            .scene
+            .node_arena
+            .get(button_key)
+            .unwrap()
+            .element
+            .box_model_snapshot();
+        let bm_txt = viewport
+            .scene
+            .node_arena
+            .get(contained_key)
+            .unwrap()
+            .element
+            .box_model_snapshot();
+        eprintln!("DBG hit=({hit_x},{hit_y}) target={target:?}");
+        eprintln!(
+            "DBG button {button_key:?} x={} y={} w={} h={} render={}",
+            bm_btn.x, bm_btn.y, bm_btn.width, bm_btn.height, bm_btn.should_render
+        );
+        eprintln!(
+            "DBG text   {contained_key:?} x={} y={} w={} h={} render={}",
+            bm_txt.x, bm_txt.y, bm_txt.width, bm_txt.height, bm_txt.should_render
+        );
+    }
     assert!(
         matches!(target, Some(target) if target == contained_key || target == button_key),
         "hit at component-test-like expanded button ({hit_x}, {hit_y}) should target the button branch before any scroll; got {target:?}, button={button_key:?}, text={contained_key:?}",

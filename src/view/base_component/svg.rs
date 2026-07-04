@@ -292,6 +292,24 @@ impl ElementTrait for Svg {
         self.element.box_model_snapshot()
     }
 
+    fn placement_eligibility_metadata(
+        &self,
+    ) -> crate::view::node_arena::PlacementEligibilityMetadata {
+        self.element.placement_eligibility_metadata()
+    }
+
+    fn last_placement(&self) -> Option<crate::view::base_component::LayoutPlacement> {
+        self.element.last_placement()
+    }
+
+    fn hit_test_clip_rect(&self) -> Option<crate::view::base_component::Rect> {
+        self.element.hit_test_clip_rect()
+    }
+
+    fn translate_in_place(&mut self, dx: f32, dy: f32) {
+        self.element.translate_in_place(dx, dy);
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }

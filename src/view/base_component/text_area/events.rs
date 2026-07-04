@@ -148,9 +148,22 @@ impl TextArea {
                 target - 1
             };
 
-            let target_affinity = self
+            let mut target_affinity = self
                 .affinity_matching_y(arena, target, reference_y)
                 .unwrap_or_else(|| self.affinity_nearest_y(arena, target, reference_y));
+            if right
+                && target_affinity == CaretAffinity::Upstream
+                && self
+                    .content
+                    .chars()
+                    .nth(target.saturating_sub(1))
+                    .is_some_and(|ch| ch == '\n')
+                && self
+                    .caret_position_for(arena, target, CaretAffinity::Downstream)
+                    .is_some()
+            {
+                target_affinity = CaretAffinity::Downstream;
+            }
             let Some((target_x, target_y, _)) =
                 self.caret_position_for(arena, target, target_affinity)
             else {

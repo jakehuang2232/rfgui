@@ -1,16 +1,13 @@
 //! `Layoutable` impl for Text.
 
 use crate::style::TextWrap;
-use crate::time::Instant;
 use crate::view::base_component::{
-    DirtyFlags, FlexProps, InlineMeasureContext, InlineNodeSize, InlinePlacement,
-    LayoutConstraints, LayoutPlacement, Layoutable, Position, Size,
+    DirtyFlags, FlexProps, LayoutConstraints, LayoutPlacement, Layoutable, Position, Size,
 };
 use crate::view::node_arena::NodeArena;
 
 use super::Text;
-use super::cache::MeasuredTextLayout;
-use super::profile::{record_text_measure_profile, text_measure_profile_enabled};
+use super::cache::MeasuredTextIfc;
 
 impl Layoutable for Text {
     fn measured_size(&self) -> (f32, f32) {
@@ -58,150 +55,7 @@ impl Layoutable for Text {
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::RUNTIME);
     }
 
-    fn measure_inline(&mut self, context: InlineMeasureContext, _arena: &mut NodeArena) {
-        if !self.dirty_flags.intersects(DirtyFlags::LAYOUT)
-            && self.last_inline_measure_context == Some(context)
-        {
-            return;
-        }
-        let started_at = text_measure_profile_enabled().then(Instant::now);
-        self.inline_plan = None;
-        self.last_inline_measure_context = Some(context);
-
-        if self.content.is_empty() {
-            self.size = Size {
-                width: 0.0,
-                height: 0.0,
-            };
-            self.render_size = self.size;
-            self.dirty_flags = self.dirty_flags.without(DirtyFlags::LAYOUT).union(
-                DirtyFlags::PLACE
-                    .union(DirtyFlags::BOX_MODEL)
-                    .union(DirtyFlags::HIT_TEST)
-                    .union(DirtyFlags::PAINT),
-            );
-            if let Some(started_at) = started_at {
-                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-                record_text_measure_profile(|profile| {
-                    profile.measure_inline_calls += 1;
-                    profile.measure_inline_ms += elapsed_ms;
-                });
-            }
-            return;
-        }
-
-        let plan = self.build_inline_plan(
-            context.first_available_width.max(1.0),
-            context.full_available_width.max(1.0),
-        );
-        self.inline_plan = Some(plan.clone());
-        self.size = Size {
-            width: plan.max_width.max(0.0),
-            height: plan.max_height.max(0.0),
-        };
-        self.render_size = Size {
-            width: plan.max_width.max(0.0),
-            height: plan.max_height.max(0.0),
-        };
-        self.dirty_flags = self.dirty_flags.without(DirtyFlags::LAYOUT).union(
-            DirtyFlags::PLACE
-                .union(DirtyFlags::BOX_MODEL)
-                .union(DirtyFlags::HIT_TEST)
-                .union(DirtyFlags::PAINT),
-        );
-        if let Some(started_at) = started_at {
-            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-            record_text_measure_profile(|profile| {
-                profile.measure_inline_calls += 1;
-                profile.measure_inline_ms += elapsed_ms;
-            });
-        }
-    }
-
-    fn get_inline_nodes_size(&self, _arena: &NodeArena) -> Vec<InlineNodeSize> {
-        let runs = self
-            .inline_plan
-            .as_ref()
-            .map(|plan| plan.runs.as_slice())
-            .unwrap_or(&[]);
-        let last = runs.len().saturating_sub(1);
-        runs.iter()
-            .enumerate()
-            .map(|(idx, fragment)| InlineNodeSize {
-                width: fragment.width,
-                height: fragment.height,
-                baseline: fragment.baseline,
-                vertical_align: self.vertical_align,
-                // Each fragment is one visual line already wrapped by the text
-                // layout adapter. Force a break after every fragment except
-                // the last so the parent inline solver does not pack two
-                // pre-wrapped text lines side-by-side.
-                force_break_after: idx < last,
-            })
-            .collect()
-    }
-
-    fn place_inline(&mut self, placement: InlinePlacement, _arena: &mut NodeArena) {
-        let Some(plan) = self.inline_plan.as_mut() else {
-            return;
-        };
-        if placement.node_index == 0 {
-            for fragment in &mut plan.runs {
-                fragment.position = None;
-            }
-            self.layout_state.layout_position = Position {
-                x: placement.x,
-                y: placement.y,
-            };
-            self.layout_state.layout_size = Size {
-                width: 0.0,
-                height: 0.0,
-            };
-            self.layout_state.should_render = false;
-        }
-
-        let Some(fragment) = plan.runs.get_mut(placement.node_index) else {
-            return;
-        };
-        fragment.position = Some(Position {
-            x: placement.x,
-            y: placement.y,
-        });
-
-        let left = placement.x;
-        let top = placement.y;
-        let right = placement.x + fragment.width.max(0.0);
-        let bottom = placement.y + fragment.height.max(0.0);
-        if self.layout_state.should_render {
-            let current_right =
-                self.layout_state.layout_position.x + self.layout_state.layout_size.width;
-            let current_bottom =
-                self.layout_state.layout_position.y + self.layout_state.layout_size.height;
-            self.layout_state.layout_position.x = self.layout_state.layout_position.x.min(left);
-            self.layout_state.layout_position.y = self.layout_state.layout_position.y.min(top);
-            self.layout_state.layout_size.width =
-                current_right.max(right) - self.layout_state.layout_position.x;
-            self.layout_state.layout_size.height =
-                current_bottom.max(bottom) - self.layout_state.layout_position.y;
-        } else {
-            self.layout_state.layout_position = Position { x: left, y: top };
-            self.layout_state.layout_size = Size {
-                width: (right - left).max(0.0),
-                height: (bottom - top).max(0.0),
-            };
-        }
-        self.layout_state.should_render =
-            self.layout_state.layout_size.width > 0.0 && self.layout_state.layout_size.height > 0.0;
-        self.dirty_flags = self.dirty_flags.without(
-            DirtyFlags::PLACE
-                .union(DirtyFlags::BOX_MODEL)
-                .union(DirtyFlags::HIT_TEST),
-        );
-    }
-
     fn measure(&mut self, constraints: LayoutConstraints, _arena: &mut NodeArena) {
-        self.inline_plan = None;
-        self.last_inline_measure_context = None;
         self.layout_override_width = None;
         self.layout_override_height = None;
         let parent_width_is_constrained = constraints.percent_base_width.is_some();
@@ -209,15 +63,15 @@ impl Layoutable for Text {
         if self.allow_wrap != next_allow_wrap {
             self.allow_wrap = next_allow_wrap;
         }
-        self.text_layout = None;
+        self.shaped_context = None;
 
         if !self.auto_width && !self.auto_height {
             let layout = self.relayout_from_base(Some(self.size.width.max(1.0)), self.allow_wrap);
-            self.text_layout = Some(layout.text_layout);
+            self.shaped_context = Some(layout.context);
             self.dirty_flags = self.dirty_flags.without(DirtyFlags::LAYOUT);
             return;
         }
-        let mut intrinsic_layout: Option<MeasuredTextLayout> = None;
+        let mut intrinsic_layout: Option<MeasuredTextIfc> = None;
         if self.auto_width {
             let next_intrinsic_layout = match self.cached_intrinsic_layout.as_ref() {
                 Some((revision, layout)) if *revision == self.measure_revision => layout.clone(),
@@ -251,7 +105,7 @@ impl Layoutable for Text {
                     Some((self.measure_revision, effective_width, layout.height));
                 self.size.height = layout.height.max(1.0);
                 self.render_size.height = layout.height.max(1.0);
-                self.text_layout = Some(layout.text_layout.clone());
+                self.shaped_context = Some(layout.context.clone());
             } else {
                 let layout = self.relayout_from_base(Some(effective_width), self.allow_wrap);
                 let measured_height = layout.height;
@@ -259,7 +113,7 @@ impl Layoutable for Text {
                     Some((self.measure_revision, effective_width, measured_height));
                 self.size.height = measured_height.max(1.0);
                 self.render_size.height = measured_height.max(1.0);
-                self.text_layout = Some(layout.text_layout);
+                self.shaped_context = Some(layout.context);
             }
         } else {
             let final_width = if self.auto_width {
@@ -271,10 +125,10 @@ impl Layoutable for Text {
                 && !self.allow_wrap
                 && (final_width - layout.width.max(1.0)).abs() <= 0.01
             {
-                self.text_layout = Some(layout.text_layout);
+                self.shaped_context = Some(layout.context);
             } else {
                 let layout = self.relayout_from_base(Some(final_width), self.allow_wrap);
-                self.text_layout = Some(layout.text_layout);
+                self.shaped_context = Some(layout.context);
             }
         }
         self.dirty_flags = self.dirty_flags.without(DirtyFlags::LAYOUT);

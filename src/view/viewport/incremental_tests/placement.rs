@@ -91,8 +91,9 @@ fn phase_5a_axis_placement_eligibility_observes_retained_flow_without_skipping()
             .axis_placement_eligibility
             .blockers
             .non_base_element,
-        2,
-        "retained accordion children contain text descendants, so Phase 5a records a blocker"
+        0,
+        "text descendants no longer block placement-skip (they declare \
+         transparent placement eligibility via ElementTrait)"
     );
 
     let place_trace_root = super::super::debug::TraceRenderNode::with_children(
@@ -103,8 +104,8 @@ fn phase_5a_axis_placement_eligibility_observes_retained_flow_without_skipping()
     let place_trace = super::super::debug::format_trace_render_tree(&place_trace_root);
     assert!(place_trace.contains("axis_placement_eligibility (candidates=2"));
     assert!(place_trace.contains("flow=2"));
-    assert!(place_trace.contains("axis_placement_blockers (total=2"));
-    assert!(place_trace.contains("non_base_element=2"));
+    assert!(place_trace.contains("axis_placement_blockers (total=0"));
+    assert!(place_trace.contains("non_base_element=0"));
 }
 
 #[test]
@@ -343,9 +344,12 @@ fn phase_5c_axis_trace_summarizes_retained_flow_hit_rate_without_skipping() {
     assert_eq!(axis.clean_subtree_child_places, 2);
     assert_eq!(axis.dirty_subtree_child_places, 0);
     assert_eq!(axis.flow_child_places, 2);
-    assert_eq!(axis.potential_replay_child_places, 0);
-    assert_eq!(axis.flow_potential_replay_child_places, 0);
-    assert_eq!(axis.blockers.non_base_element, 2);
+    // Text descendants are transparent now, so the flow children record no
+    // non-base blocker and become replay candidates instead (their replay
+    // still fails for flow, so they are placed rather than skipped).
+    assert_eq!(axis.potential_replay_child_places, 2);
+    assert_eq!(axis.flow_potential_replay_child_places, 2);
+    assert_eq!(axis.blockers.non_base_element, 0);
 
     let place_trace_root = super::super::debug::TraceRenderNode::with_children(
         "place",
@@ -354,10 +358,9 @@ fn phase_5c_axis_trace_summarizes_retained_flow_hit_rate_without_skipping() {
     );
     let place_trace = super::super::debug::format_trace_render_tree(&place_trace_root);
     assert!(place_trace.contains("axis_placement_eligibility (candidates=2"));
-    assert!(place_trace.contains("potential_replay=0"));
+    assert!(place_trace.contains("potential_replay=2"));
     assert!(place_trace.contains("flow=2"));
     assert!(place_trace.contains("axis_placement_potential_replay_by_layout"));
-    assert!(place_trace.contains("flow=0"));
 }
 
 #[test]
@@ -571,11 +574,15 @@ fn phase_5d_flow_and_inline_child_place_counts_do_not_drop() {
             .flow_child_places,
         2
     );
-    assert_eq!(inline_text.child_place_calls, 1);
+    // S1 inline IFC cutover: owned inline children are installed by the
+    // root's IFC plan (`run_inline_ifc_root_after_place`), not routed
+    // through the per-child place path — so no child_place is recorded
+    // and nothing is "skipped" either.
+    assert_eq!(inline_text.child_place_calls, 0);
     assert_eq!(inline_text.skipped_child_place_calls, 0);
     assert_eq!(
         inline_text.axis_placement_eligibility.inline_child_places,
-        1
+        0
     );
 }
 
@@ -587,16 +594,18 @@ fn phase_5c_axis_trace_counts_inline_non_base_blockers_without_skipping() {
         80.0,
     );
     let axis = inline_text.axis_placement_eligibility;
-
-    assert_eq!(inline_text.child_place_calls, 1);
+    // S1 inline IFC cutover: the Text child is owned by the inline root's
+    // IFC install plan, so the axis placement path never visits it — no
+    // child_place, no skip, no replay candidacy, and no non-base blocker.
+    assert_eq!(inline_text.child_place_calls, 0);
     assert_eq!(inline_text.skipped_child_place_calls, 0);
     assert_eq!(axis.candidate_child_places, inline_text.child_place_calls);
-    assert_eq!(axis.clean_subtree_child_places, 1);
+    assert_eq!(axis.clean_subtree_child_places, 0);
     assert_eq!(axis.dirty_subtree_child_places, 0);
-    assert_eq!(axis.inline_child_places, 1);
+    assert_eq!(axis.inline_child_places, 0);
     assert_eq!(axis.potential_replay_child_places, 0);
     assert_eq!(axis.inline_potential_replay_child_places, 0);
-    assert_eq!(axis.blockers.non_base_element, 1);
+    assert_eq!(axis.blockers.non_base_element, 0);
 }
 
 #[test]

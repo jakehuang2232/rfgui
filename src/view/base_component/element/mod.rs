@@ -6,7 +6,7 @@ use crate::style::ColorLike;
 use crate::style::{
     Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle,
     Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length, PositionMode, ScrollDirection,
-    SizeValue, Style, StyleComputeContext, Transform, TransformKind, TransformOrigin,
+    SizeValue, Style, StyleComputeContext, TextWrap, Transform, TransformKind, TransformOrigin,
     TransitionProperty, TransitionTiming, compute_style_with_context,
     interpolate_transform_with_reference_box,
 };
@@ -25,23 +25,29 @@ use crate::ui::{
     PointerDownEvent, PointerEnterEvent, PointerLeaveEvent, PointerMoveEvent, PointerUpEvent,
 };
 use crate::view::base_component::round_layout_value;
+use crate::view::base_component::text::TextIfcOwnedLine;
 use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::{AttachmentTarget, FrameGraph, ResourceLifetime, TextureDesc};
 use crate::view::inline_formatting_context::{
-    InlineIfcAtomicBoxPlacementPackage, InlineIfcAtomicMeasureConstraints, InlineIfcCacheKey,
-    InlineIfcDecorationBoxInsets, InlineIfcDistributedElementPackages,
+    InlineFormattingContext, InlineIfcAtomicBoxPlacementPackage, InlineIfcAtomicMeasureConstraints,
+    InlineIfcCacheKey, InlineIfcDecorationBoxInsets, InlineIfcDistributedElementPackages,
     InlineIfcElementDecorationDrawRectPackage, InlineIfcElementDecorationDrawRectStyle,
     InlineIfcElementDecorationPackageSource, InlineIfcElementRootCandidate,
     InlineIfcElementRootCandidateCache, InlineIfcElementRootSource,
-    InlineIfcElementRootSourceBuilder, InlineIfcInvalidation, InlineIfcItem,
-    InlineIfcMeasuredAtomicBox, InlineIfcSize, InlineIfcSourceId, InlineIfcStyle,
+    InlineIfcElementRootSourceBuilder, InlineIfcItem, InlineIfcMeasuredAtomicBox,
+    InlineIfcPaintRect, InlineIfcSize, InlineIfcSourceId, InlineIfcSourceKind, InlineIfcStyle,
+    InlineIfcTextLayoutSnapshot, InlineIfcTextPassPaintInput,
 };
+use crate::view::inline_text_pass_adapter::inline_ifc_paint_input_to_text_pass_staging_input;
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::promotion::{PromotedLayerUpdateKind, PromotionNodeInfo};
 use crate::view::render_pass::draw_rect_pass::DrawRectInput;
 use crate::view::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::render_target::GraphicsPassContext;
+use crate::view::render_pass::text_pass::{
+    TextInput, TextOutput, TextPassPreparedFragment, TextPassPreparedParams, TextPreparedInputPass,
+};
 use crate::view::render_pass::{
     DrawRectPass, GraphicsPass, OpaqueRectPass, RectRenderMode, ShadowMesh, ShadowModuleSpec,
     ShadowParams, build_shadow_module,
@@ -313,11 +319,29 @@ pub(crate) struct LayoutPlaceProfile {
     pub child_place_calls: usize,
     pub skipped_child_place_calls: usize,
     pub absolute_child_place_calls: usize,
+    /// Translation fast-path: subtree roots replayed as a cheap shift
+    /// instead of a full re-place, and the total nodes shifted across them.
+    pub translated_subtree_roots: usize,
+    pub translated_subtree_nodes: usize,
     pub update_content_size_ms: f64,
     pub clamp_scroll_ms: f64,
     pub recompute_hit_test_ms: f64,
     pub placement_skip_failures: PlacementSkipFailureCounters,
     pub axis_placement_eligibility: AxisPlacementEligibilityProfile,
+    /// Inline-IFC measure outcomes: cheap reuse (no collect), content-size
+    /// short-circuit (collect, no geometry), full reshape.
+    pub ifc_measure_cheap: usize,
+    pub ifc_measure_shortcircuit: usize,
+    pub ifc_measure_full: usize,
+    /// Why each measured element did not skip: its own LAYOUT dirt, a
+    /// dirty descendant, or a changed proposal (size constraint).
+    pub measure_ran_self_dirty: usize,
+    pub measure_ran_child_dirty: usize,
+    pub measure_ran_proposal_changed: usize,
+    pub proposal_changed_size: usize,
+    pub proposal_changed_viewport: usize,
+    pub proposal_changed_percent_base: usize,
+    pub proposal_changed_first: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -452,6 +476,22 @@ thread_local! {
         RefCell::new(LayoutGateCandidateProfile::default());
 }
 
+thread_local! {
+    static LAYOUT_PLACE_PROFILE_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Gate for the layout/place profiling instrumentation. When disabled
+/// (the default), the hot loops skip every timestamp and counter update;
+/// the viewport enables it only while the render-time trace is on.
+/// Thread-local like the profile itself, so parallel tests stay isolated.
+pub(crate) fn set_layout_place_profile_enabled(enabled: bool) {
+    LAYOUT_PLACE_PROFILE_ENABLED.with(|cell| cell.set(enabled));
+}
+
+pub(crate) fn layout_place_profile_enabled() -> bool {
+    LAYOUT_PLACE_PROFILE_ENABLED.with(|cell| cell.get())
+}
+
 pub(crate) fn reset_layout_place_profile() {
     LAYOUT_PLACE_PROFILE.with(|profile| {
         *profile.borrow_mut() = LayoutPlaceProfile::default();
@@ -465,7 +505,10 @@ pub(crate) fn take_layout_place_profile() -> LayoutPlaceProfile {
 /// Mutate the per-frame layout-place profile via a closure.
 /// `pub(crate)` so layout-pipeline modules (e.g. `crate::view::layout::place`)
 /// can record profile counters without exposing the thread-local directly.
-pub(crate) fn with_layout_place_profile<R>(f: impl FnOnce(&mut LayoutPlaceProfile) -> R) -> R {
+pub(crate) fn with_layout_place_profile(f: impl FnOnce(&mut LayoutPlaceProfile)) {
+    if !layout_place_profile_enabled() {
+        return;
+    }
     LAYOUT_PLACE_PROFILE.with(|profile| f(&mut profile.borrow_mut()))
 }
 
@@ -501,6 +544,9 @@ fn record_layout_gate_child_candidates(
         }
     }
 
+    if !layout_place_profile_enabled() {
+        return dirty_children > 0;
+    }
     LAYOUT_GATE_CANDIDATE_PROFILE.with(|profile| {
         let mut profile = profile.borrow_mut();
         match phase {
@@ -1200,76 +1246,31 @@ impl LayoutPlacement {
             percent_base_height: self.percent_base_height,
         }
     }
-}
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct InlineMeasureContext {
-    pub first_available_width: f32,
-    pub full_available_width: f32,
-    pub available_height: f32,
-    pub viewport_width: f32,
-    pub viewport_height: f32,
-    pub percent_base_width: Option<f32>,
-    pub percent_base_height: Option<f32>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct InlineNodeSize {
-    pub width: f32,
-    pub height: f32,
-    /// Distance from the fragment's top to its baseline (cross-axis).
-    /// Surfaces typography baseline for `Layout::Inline` cross-axis
-    /// alignment per `docs/design/inline-baseline.md`. Conventions:
-    /// - Text / TextAreaTextRun fragment: text layout adapter baseline
-    ///   for the first visual line.
-    /// - Non-fragmentable Element: `height` (bottom edge).
-    /// - Fragmentable Inline element fragment: that fragment's inner
-    ///   `line_ascent` (relative to its line box top, excluding outer
-    ///   vertical padding/border which paint outside the line box).
-    /// - Default / empty: `0.0`.
-    pub baseline: f32,
-    /// Cross-axis alignment effective for this fragment. Initial
-    /// `Baseline`; per `docs/design/inline-baseline.md` D5/D5a
-    /// `Layoutable` producers fill this from their inherited value
-    /// (`ComputedStyle.vertical_align` for Element, dedicated field for
-    /// Text / TextAreaTextRun). Read by the inline place pipeline (D3).
-    pub vertical_align: crate::style::VerticalAlign,
-    /// Hard line break after this fragment. Honored by the inline solver
-    /// even when `solver_wrap` (soft overflow wrap) is disabled — this is
-    /// how `\n` paragraphs in `TextArea` produce new lines while
-    /// `auto_wrap` is off.
-    pub force_break_after: bool,
-}
-
-impl Default for InlineNodeSize {
-    fn default() -> Self {
-        Self {
-            width: 0.0,
-            height: 0.0,
-            baseline: 0.0,
-            vertical_align: crate::style::VerticalAlign::Baseline,
-            force_break_after: false,
+    /// If `self` differs from `previous` *only* by the parent origin
+    /// (`parent_x` / `parent_y`), return that `(dx, dy)` delta — the signal
+    /// that this placement is a pure translation and can be replayed as a
+    /// cheap subtree shift instead of a full re-place. Every other field
+    /// (available size, viewport, percent base, visual offset) must match
+    /// exactly, since those feed the relative layout that translation must
+    /// leave untouched. Returns `None` when anything else changed.
+    pub(crate) fn translation_only_delta(self, previous: LayoutPlacement) -> Option<(f32, f32)> {
+        let same_non_origin = self.visual_offset_x == previous.visual_offset_x
+            && self.visual_offset_y == previous.visual_offset_y
+            && self.available_width == previous.available_width
+            && self.available_height == previous.available_height
+            && self.viewport_width == previous.viewport_width
+            && self.viewport_height == previous.viewport_height
+            && self.percent_base_width == previous.percent_base_width
+            && self.percent_base_height == previous.percent_base_height;
+        if !same_non_origin {
+            return None;
         }
+        Some((
+            self.parent_x - previous.parent_x,
+            self.parent_y - previous.parent_y,
+        ))
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct InlinePlacement {
-    pub node_index: usize,
-    pub x: f32,
-    pub y: f32,
-    pub offset_x: f32,
-    pub offset_y: f32,
-    pub parent_x: f32,
-    pub parent_y: f32,
-    pub visual_offset_x: f32,
-    pub visual_offset_y: f32,
-    pub available_width: f32,
-    pub available_height: f32,
-    pub viewport_width: f32,
-    pub viewport_height: f32,
-    pub percent_base_width: Option<f32>,
-    pub percent_base_height: Option<f32>,
 }
 
 /// Flex-relevant properties for a single element, packed row/col so the flex
@@ -1440,62 +1441,6 @@ pub trait Layoutable {
         (0.0, 0.0)
     }
     fn set_layout_offset(&mut self, _x: f32, _y: f32) {}
-    fn measure_inline(
-        &mut self,
-        context: InlineMeasureContext,
-        arena: &mut crate::view::node_arena::NodeArena,
-    ) {
-        self.measure(
-            LayoutConstraints {
-                max_width: context.first_available_width.max(0.0),
-                max_height: 1_000_000.0,
-                viewport_width: context.viewport_width,
-                viewport_height: context.viewport_height,
-                percent_base_width: context.percent_base_width,
-                percent_base_height: context.percent_base_height,
-            },
-            arena,
-        );
-    }
-    fn get_inline_nodes_size(
-        &self,
-        _arena: &crate::view::node_arena::NodeArena,
-    ) -> Vec<InlineNodeSize> {
-        let (width, height) = self.measured_size();
-        vec![InlineNodeSize {
-            width,
-            height,
-            // Non-fragmentable element: baseline = bottom edge
-            // (`docs/design/inline-baseline.md` D1). User wanting
-            // text-baseline alignment for `<Element><Text/></Element>`
-            // must drop the Element wrapper (Phase 2 will add
-            // baseline-from-children).
-            baseline: height,
-            ..Default::default()
-        }]
-    }
-    fn place_inline(
-        &mut self,
-        placement: InlinePlacement,
-        arena: &mut crate::view::node_arena::NodeArena,
-    ) {
-        self.set_layout_offset(placement.offset_x, placement.offset_y);
-        self.place(
-            LayoutPlacement {
-                parent_x: placement.parent_x,
-                parent_y: placement.parent_y,
-                visual_offset_x: placement.visual_offset_x,
-                visual_offset_y: placement.visual_offset_y,
-                available_width: placement.available_width,
-                available_height: placement.available_height,
-                viewport_width: placement.viewport_width,
-                viewport_height: placement.viewport_height,
-                percent_base_width: placement.percent_base_width,
-                percent_base_height: placement.percent_base_height,
-            },
-            arena,
-        );
-    }
 }
 
 pub trait EventTarget {
@@ -1898,6 +1843,51 @@ pub trait ElementTrait:
 
     fn clear_local_dirty_flags(&mut self, _flags: DirtyFlags) {}
 
+    /// Placement-skip eligibility this node contributes to its own subtree
+    /// aggregate. The default is a transparent leaf — no blockers — so a
+    /// stationary, placement-clean subtree containing it (e.g. a `Text`
+    /// label, `Image`, or `Svg`) can still skip re-placement when an
+    /// ancestor re-places. A node only needs to override this if its own
+    /// placement depends on something other than its parent's position
+    /// (anchors, absolute positioning, active layout-transition state);
+    /// `Element` does exactly that. Descendant blockers are unioned
+    /// separately by the arena walk, so a transparent wrapper never hides
+    /// a real blocker beneath it.
+    fn placement_eligibility_metadata(
+        &self,
+    ) -> crate::view::node_arena::PlacementEligibilityMetadata {
+        // Default: transparent to placement-skip, but opaque to the
+        // translation fast-path. A host opts into cheap ancestor-move
+        // replay by overriding both this (to `empty()`/translatable) AND
+        // `translate_in_place`. Keeping the default opaque means a new
+        // host type is correct-by-default (falls back to full re-place).
+        crate::view::node_arena::PlacementEligibilityMetadata::opaque_to_translation()
+    }
+
+    /// Shift this node's already-placed absolute geometry by `(dx, dy)`
+    /// without re-running layout. Called by the translation fast-path when
+    /// a pure ancestor move leaves relative layout unchanged. Default is a
+    /// no-op; only reached for hosts that advertised themselves as
+    /// translatable via `placement_eligibility_metadata`, so the default
+    /// is never invoked on the fast path in practice.
+    fn translate_in_place(&mut self, _dx: f32, _dy: f32) {}
+
+    /// The `LayoutPlacement` this node was last placed with, if any.
+    /// Powers the translation fast-path's "differs only by a uniform
+    /// translation?" check. Default `None` (host opted out / never placed).
+    fn last_placement(&self) -> Option<LayoutPlacement> {
+        None
+    }
+
+    /// This node's resolved hit-test clip rect, if it keeps one. The
+    /// translation fast-path uses it to confirm the inherited clip moved
+    /// rigidly with the subtree. Default `None` (leaf hosts without a clip,
+    /// e.g. `Text`, hit-test by box model alone, so they impose no clip
+    /// constraint on translation).
+    fn hit_test_clip_rect(&self) -> Option<Rect> {
+        None
+    }
+
     /// Child node keys. Default returns empty — leaf elements (Text,
     /// Image, Svg) don't need to override. Containers override to expose
     /// their arena-backed child list so sibling walkers can traverse.
@@ -2167,1593 +2157,469 @@ impl ElementInlineIfcMetadataCollectorOutput {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ElementInlineIfcCandidateLifecycleInput {
-    pub(crate) root_key: NodeKey,
-    pub(crate) max_width: f32,
-    pub(crate) install_targets: Vec<NodeKey>,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcCandidateLifecycleInput {
-    pub(crate) fn new(root_key: NodeKey, max_width: f32) -> Self {
-        Self {
-            root_key,
-            max_width: max_width.max(1.0),
-            install_targets: Vec::new(),
-        }
-    }
-
-    pub(crate) fn with_install_targets(mut self, install_targets: Vec<NodeKey>) -> Self {
-        self.install_targets = install_targets;
-        self
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcCandidateLifecycleInstallStatus {
-    ObservedOnly,
-    Installed,
-    ClearedMissingSource,
-    SkippedNonElement,
-    MissingNode,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ElementInlineIfcCandidateLifecycleInstall {
-    pub(crate) node_key: NodeKey,
-    pub(crate) source: Option<InlineIfcSourceId>,
-    pub(crate) status: ElementInlineIfcCandidateLifecycleInstallStatus,
-    pub(crate) has_decoration_package: bool,
-    pub(crate) has_atomic_package: bool,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ElementInlineIfcCandidateLifecycleOutput {
-    pub(crate) cache_key: InlineIfcCacheKey,
-    pub(crate) invalidation: InlineIfcInvalidation,
-    pub(crate) rebuilt: bool,
-    pub(crate) cache_len: usize,
-    pub(crate) sources_by_node: FxHashMap<NodeKey, InlineIfcSourceId>,
-    pub(crate) installs: Vec<ElementInlineIfcCandidateLifecycleInstall>,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcCandidateLifecycleOutput {
-    pub(crate) fn source_for_node(&self, key: NodeKey) -> Option<InlineIfcSourceId> {
-        self.sources_by_node.get(&key).copied()
-    }
-
-    pub(crate) fn install_for_node(
-        &self,
-        key: NodeKey,
-    ) -> Option<&ElementInlineIfcCandidateLifecycleInstall> {
-        self.installs.iter().find(|install| install.node_key == key)
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcLayoutCallSiteOptInMode {
-    #[default]
-    Disabled,
-    ShadowObservation,
-    DryRunCandidate,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcLayoutCallSiteGate {
-    requested_mode: ElementInlineIfcLayoutCallSiteOptInMode,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcLayoutCallSiteGate {
-    pub(crate) fn disabled() -> Self {
-        Self {
-            requested_mode: ElementInlineIfcLayoutCallSiteOptInMode::Disabled,
-        }
-    }
-
-    pub(crate) fn explicit_dry_run_candidate() -> Self {
-        Self {
-            requested_mode: ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate,
-        }
-    }
-
-    pub(crate) fn explicit_shadow_observation() -> Self {
-        Self {
-            requested_mode: ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation,
-        }
-    }
-
-    pub(crate) fn resolve(self) -> ElementInlineIfcLayoutCallSiteOptInMode {
-        match self.requested_mode {
-            ElementInlineIfcLayoutCallSiteOptInMode::Disabled => {
-                ElementInlineIfcLayoutCallSiteOptInMode::Disabled
-            }
-            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation => {
-                ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
-            }
-            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate => {
-                ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
-            }
-        }
-    }
-
-    pub(crate) fn is_enabled(self) -> bool {
-        matches!(
-            self.resolve(),
-            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
-                | ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
-        )
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcLayoutCallSiteRolloutPhase {
-    #[default]
-    Disabled,
-    ProductionDefaultShadowRun,
-    ControlledInstalledPackageCandidate,
-    ExplicitDryRunCandidate,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcLayoutCallSiteRolloutPhase {
-    pub(crate) fn mode(self) -> ElementInlineIfcLayoutCallSiteOptInMode {
-        match self {
-            Self::Disabled => ElementInlineIfcLayoutCallSiteOptInMode::Disabled,
-            Self::ProductionDefaultShadowRun => {
-                ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation
-            }
-            Self::ControlledInstalledPackageCandidate => {
-                ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
-            }
-            Self::ExplicitDryRunCandidate => {
-                ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate
-            }
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcLayoutCallSiteRolloutConfig {
-    phase: ElementInlineIfcLayoutCallSiteRolloutPhase,
-}
-
-impl Default for ElementInlineIfcLayoutCallSiteRolloutConfig {
-    fn default() -> Self {
-        Self::production_default_shadow_run_phase()
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcDefaultRolloutBlockedReason {
-    RenderGateNotIndependent,
-    LegacyFallbackMissing,
-    UnsupportedRootAndTextAreaBoundaryUnconfirmed,
-    InvalidationGuardUnconfirmed,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcDefaultRolloutDecisionInput {
-    pub(crate) render_gate_independent: bool,
-    pub(crate) legacy_fallback_available: bool,
-    pub(crate) unsupported_root_and_text_area_boundary_confirmed: bool,
-    pub(crate) invalidation_guard_confirmed: bool,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcDefaultRolloutDecisionInput {
-    pub(crate) fn checklist_passed() -> Self {
-        Self {
-            render_gate_independent: true,
-            legacy_fallback_available: true,
-            unsupported_root_and_text_area_boundary_confirmed: true,
-            invalidation_guard_confirmed: true,
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcDefaultRolloutDecision {
-    recommended_phase: ElementInlineIfcLayoutCallSiteRolloutPhase,
-    blocked_reasons: Vec<ElementInlineIfcDefaultRolloutBlockedReason>,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcDefaultRolloutDecision {
-    pub(crate) fn evaluate(input: ElementInlineIfcDefaultRolloutDecisionInput) -> Self {
-        let mut blocked_reasons = Vec::new();
-        if !input.render_gate_independent {
-            blocked_reasons
-                .push(ElementInlineIfcDefaultRolloutBlockedReason::RenderGateNotIndependent);
-        }
-        if !input.legacy_fallback_available {
-            blocked_reasons
-                .push(ElementInlineIfcDefaultRolloutBlockedReason::LegacyFallbackMissing);
-        }
-        if !input.unsupported_root_and_text_area_boundary_confirmed {
-            blocked_reasons.push(
-                ElementInlineIfcDefaultRolloutBlockedReason::
-                    UnsupportedRootAndTextAreaBoundaryUnconfirmed,
-            );
-        }
-        if !input.invalidation_guard_confirmed {
-            blocked_reasons
-                .push(ElementInlineIfcDefaultRolloutBlockedReason::InvalidationGuardUnconfirmed);
-        }
-
-        let recommended_phase = if blocked_reasons.is_empty() {
-            ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun
-        } else {
-            ElementInlineIfcLayoutCallSiteRolloutPhase::Disabled
-        };
-        Self {
-            recommended_phase,
-            blocked_reasons,
-        }
-    }
-
-    pub(crate) fn is_allowed(&self) -> bool {
-        self.blocked_reasons.is_empty()
-    }
-
-    pub(crate) fn recommended_phase(&self) -> ElementInlineIfcLayoutCallSiteRolloutPhase {
-        self.recommended_phase
-    }
-
-    pub(crate) fn recommended_config(&self) -> ElementInlineIfcLayoutCallSiteRolloutConfig {
-        ElementInlineIfcLayoutCallSiteRolloutConfig {
-            phase: self.recommended_phase,
-        }
-    }
-
-    pub(crate) fn blocked_reasons(&self) -> &[ElementInlineIfcDefaultRolloutBlockedReason] {
-        &self.blocked_reasons
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcDefaultShadowRunAuditBlockedReason {
-    DecisionBlocked,
-    ProductionDefaultNotShadowOnlyObservation,
-    ShadowObservationDiagnosticMissing,
-    ShadowObservationInstalledPackages,
-    LegacyFallbackNotObserved,
-    RenderGateExplicitnessUnobserved,
-    UnsupportedOrNonInlineNoOpUnobserved,
-    TextAreaBoundaryUnobserved,
-    MatrixInvalidationGuardUnobserved,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcDefaultShadowRunAdoptionAuditInput {
-    pub(crate) decision: ElementInlineIfcDefaultRolloutDecision,
-    pub(crate) production_default_config: ElementInlineIfcLayoutCallSiteRolloutConfig,
-    pub(crate) shadow_observation_diagnostic_observed: bool,
-    pub(crate) shadow_observation_installed_packages: bool,
-    pub(crate) legacy_fallback_observed: bool,
-    pub(crate) render_gate_explicit_observed: bool,
-    pub(crate) unsupported_or_non_inline_no_op_observed: bool,
-    pub(crate) text_area_boundary_observed: bool,
-    pub(crate) matrix_invalidation_guard_observed: bool,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcDefaultShadowRunAdoptionAuditInput {
-    pub(crate) fn with_confirmed_observations(
-        decision: ElementInlineIfcDefaultRolloutDecision,
-    ) -> Self {
-        Self {
-            decision,
-            production_default_config: ElementInlineIfcLayoutCallSiteRolloutConfig::default(),
-            shadow_observation_diagnostic_observed: true,
-            shadow_observation_installed_packages: false,
-            legacy_fallback_observed: true,
-            render_gate_explicit_observed: true,
-            unsupported_or_non_inline_no_op_observed: true,
-            text_area_boundary_observed: true,
-            matrix_invalidation_guard_observed: true,
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcDefaultShadowRunAuditReadiness {
-    Blocked,
-    ReadyForShadowOnlyObservation,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcDefaultShadowRunAdoptionAudit {
-    readiness: ElementInlineIfcDefaultShadowRunAuditReadiness,
-    recommended_config: ElementInlineIfcLayoutCallSiteRolloutConfig,
-    blocked_reasons: Vec<ElementInlineIfcDefaultShadowRunAuditBlockedReason>,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcDefaultShadowRunAdoptionAudit {
-    pub(crate) fn evaluate(input: ElementInlineIfcDefaultShadowRunAdoptionAuditInput) -> Self {
-        let mut blocked_reasons = Vec::new();
-        if !input.decision.is_allowed()
-            || input.decision.recommended_phase()
-                != ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun
-        {
-            blocked_reasons
-                .push(ElementInlineIfcDefaultShadowRunAuditBlockedReason::DecisionBlocked);
-        }
-        if input.production_default_config.phase()
-            != ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun
-        {
-            blocked_reasons.push(
-                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
-                    ProductionDefaultNotShadowOnlyObservation,
-            );
-        }
-        if !input.shadow_observation_diagnostic_observed {
-            blocked_reasons.push(
-                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
-                    ShadowObservationDiagnosticMissing,
-            );
-        }
-        if input.shadow_observation_installed_packages {
-            blocked_reasons.push(
-                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
-                    ShadowObservationInstalledPackages,
-            );
-        }
-        if !input.legacy_fallback_observed {
-            blocked_reasons.push(
-                ElementInlineIfcDefaultShadowRunAuditBlockedReason::LegacyFallbackNotObserved,
-            );
-        }
-        if !input.render_gate_explicit_observed {
-            blocked_reasons.push(
-                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
-                    RenderGateExplicitnessUnobserved,
-            );
-        }
-        if !input.unsupported_or_non_inline_no_op_observed {
-            blocked_reasons.push(
-                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
-                    UnsupportedOrNonInlineNoOpUnobserved,
-            );
-        }
-        if !input.text_area_boundary_observed {
-            blocked_reasons.push(
-                ElementInlineIfcDefaultShadowRunAuditBlockedReason::TextAreaBoundaryUnobserved,
-            );
-        }
-        if !input.matrix_invalidation_guard_observed {
-            blocked_reasons.push(
-                ElementInlineIfcDefaultShadowRunAuditBlockedReason::
-                    MatrixInvalidationGuardUnobserved,
-            );
-        }
-
-        let readiness = if blocked_reasons.is_empty() {
-            ElementInlineIfcDefaultShadowRunAuditReadiness::ReadyForShadowOnlyObservation
-        } else {
-            ElementInlineIfcDefaultShadowRunAuditReadiness::Blocked
-        };
-        let recommended_config = if blocked_reasons.is_empty() {
-            input.decision.recommended_config()
-        } else {
-            ElementInlineIfcLayoutCallSiteRolloutConfig::disabled()
-        };
-        Self {
-            readiness,
-            recommended_config,
-            blocked_reasons,
-        }
-    }
-
-    pub(crate) fn readiness(&self) -> ElementInlineIfcDefaultShadowRunAuditReadiness {
-        self.readiness
-    }
-
-    pub(crate) fn is_ready_for_shadow_only_observation(&self) -> bool {
-        matches!(
-            self.readiness,
-            ElementInlineIfcDefaultShadowRunAuditReadiness::ReadyForShadowOnlyObservation
-        )
-    }
-
-    pub(crate) fn recommended_config(&self) -> ElementInlineIfcLayoutCallSiteRolloutConfig {
-        self.recommended_config
-    }
-
-    pub(crate) fn blocked_reasons(&self) -> &[ElementInlineIfcDefaultShadowRunAuditBlockedReason] {
-        &self.blocked_reasons
-    }
-
-    pub(crate) fn allows_render_candidate_default(&self) -> bool {
-        false
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcRenderDefaultAuditBlockedReason {
-    ShadowRunAuditNotReady,
-    RenderDefaultAlreadyCandidate,
-    InstalledPackageLifecycleUnconfirmed,
-    LegacyFallbackUnconfirmed,
-    UnsupportedOrNonInlineBoundaryUnconfirmed,
-    TextAreaBoundaryUnconfirmed,
-    RollbackDisabledPathUnconfirmed,
-    ExplicitRenderOptInUnconfirmed,
-    MissingInstalledPackageFallbackUnconfirmed,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcRenderDefaultAuditInput {
-    pub(crate) shadow_run_audit: ElementInlineIfcDefaultShadowRunAdoptionAudit,
-    pub(crate) current_render_default: ElementInlineIfcRenderMode,
-    pub(crate) installed_package_lifecycle_confirmed: bool,
-    pub(crate) legacy_fallback_confirmed: bool,
-    pub(crate) unsupported_or_non_inline_boundary_confirmed: bool,
-    pub(crate) text_area_boundary_confirmed: bool,
-    pub(crate) rollback_disabled_path_confirmed: bool,
-    pub(crate) explicit_render_opt_in_confirmed: bool,
-    pub(crate) missing_installed_package_fallback_confirmed: bool,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcRenderDefaultAuditInput {
-    pub(crate) fn with_confirmed_observations(
-        shadow_run_audit: ElementInlineIfcDefaultShadowRunAdoptionAudit,
-    ) -> Self {
-        Self {
-            shadow_run_audit,
-            current_render_default: ElementInlineIfcRenderMode::Disabled,
-            installed_package_lifecycle_confirmed: true,
-            legacy_fallback_confirmed: true,
-            unsupported_or_non_inline_boundary_confirmed: true,
-            text_area_boundary_confirmed: true,
-            rollback_disabled_path_confirmed: true,
-            explicit_render_opt_in_confirmed: true,
-            missing_installed_package_fallback_confirmed: true,
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcRenderDefaultAuditReadiness {
-    Blocked,
-    ReadyForExplicitRenderCandidateEvaluation,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcRenderDefaultAudit {
-    readiness: ElementInlineIfcRenderDefaultAuditReadiness,
-    explicit_candidate_evaluation_mode: Option<ElementInlineIfcRenderMode>,
-    blocked_reasons: Vec<ElementInlineIfcRenderDefaultAuditBlockedReason>,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcRenderDefaultAudit {
-    pub(crate) fn evaluate(input: ElementInlineIfcRenderDefaultAuditInput) -> Self {
-        let mut blocked_reasons = Vec::new();
-        if !input
-            .shadow_run_audit
-            .is_ready_for_shadow_only_observation()
-        {
-            blocked_reasons
-                .push(ElementInlineIfcRenderDefaultAuditBlockedReason::ShadowRunAuditNotReady);
-        }
-        if input.current_render_default != ElementInlineIfcRenderMode::Disabled {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAuditBlockedReason::RenderDefaultAlreadyCandidate,
-            );
-        }
-        if !input.installed_package_lifecycle_confirmed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAuditBlockedReason::
-                    InstalledPackageLifecycleUnconfirmed,
-            );
-        }
-        if !input.legacy_fallback_confirmed {
-            blocked_reasons
-                .push(ElementInlineIfcRenderDefaultAuditBlockedReason::LegacyFallbackUnconfirmed);
-        }
-        if !input.unsupported_or_non_inline_boundary_confirmed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAuditBlockedReason::
-                    UnsupportedOrNonInlineBoundaryUnconfirmed,
-            );
-        }
-        if !input.text_area_boundary_confirmed {
-            blocked_reasons
-                .push(ElementInlineIfcRenderDefaultAuditBlockedReason::TextAreaBoundaryUnconfirmed);
-        }
-        if !input.rollback_disabled_path_confirmed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAuditBlockedReason::RollbackDisabledPathUnconfirmed,
-            );
-        }
-        if !input.explicit_render_opt_in_confirmed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAuditBlockedReason::ExplicitRenderOptInUnconfirmed,
-            );
-        }
-        if !input.missing_installed_package_fallback_confirmed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAuditBlockedReason::
-                    MissingInstalledPackageFallbackUnconfirmed,
-            );
-        }
-
-        let readiness = if blocked_reasons.is_empty() {
-            ElementInlineIfcRenderDefaultAuditReadiness::ReadyForExplicitRenderCandidateEvaluation
-        } else {
-            ElementInlineIfcRenderDefaultAuditReadiness::Blocked
-        };
-        let explicit_candidate_evaluation_mode = if blocked_reasons.is_empty() {
-            Some(ElementInlineIfcRenderMode::DrawRectPackageCandidate)
-        } else {
-            None
-        };
-        Self {
-            readiness,
-            explicit_candidate_evaluation_mode,
-            blocked_reasons,
-        }
-    }
-
-    pub(crate) fn readiness(&self) -> ElementInlineIfcRenderDefaultAuditReadiness {
-        self.readiness
-    }
-
-    pub(crate) fn is_ready_for_explicit_render_candidate_evaluation(&self) -> bool {
-        matches!(
-            self.readiness,
-            ElementInlineIfcRenderDefaultAuditReadiness::ReadyForExplicitRenderCandidateEvaluation
-        )
-    }
-
-    pub(crate) fn explicit_candidate_evaluation_mode(&self) -> Option<ElementInlineIfcRenderMode> {
-        self.explicit_candidate_evaluation_mode
-    }
-
-    pub(crate) fn blocked_reasons(&self) -> &[ElementInlineIfcRenderDefaultAuditBlockedReason] {
-        &self.blocked_reasons
-    }
-
-    pub(crate) fn allows_render_candidate_default(&self) -> bool {
-        false
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcRenderDefaultRolloutBlockedReason {
-    RenderAuditNotReady,
-    RenderDefaultAlreadyCandidate,
-    ExplicitCandidateEvaluationUnobserved,
-    InstalledPackageCandidateUnobserved,
-    LegacyDefaultDecisionChanged,
-    MissingInstalledPackageFallbackUnobserved,
-    RollbackDisabledPathUnconfirmed,
-    TextAreaBoundaryUnconfirmed,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcRenderDefaultRolloutDecisionInput {
-    pub(crate) render_audit: ElementInlineIfcRenderDefaultAudit,
-    pub(crate) current_render_default: ElementInlineIfcRenderMode,
-    pub(crate) current_default_render_decision: ElementInlineIfcRenderDecision,
-    pub(crate) explicit_candidate_evaluation_observed: bool,
-    pub(crate) controlled_installed_package_candidate_observed: bool,
-    pub(crate) missing_installed_package_fallback_observed: bool,
-    pub(crate) rollback_disabled_path_confirmed: bool,
-    pub(crate) text_area_boundary_confirmed: bool,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcRenderDefaultRolloutDecisionInput {
-    pub(crate) fn with_confirmed_observations(
-        render_audit: ElementInlineIfcRenderDefaultAudit,
-    ) -> Self {
-        Self {
-            render_audit,
-            current_render_default: ElementInlineIfcRenderMode::Disabled,
-            current_default_render_decision:
-                ElementInlineIfcRenderDecision::ExistingInlineFragments,
-            explicit_candidate_evaluation_observed: true,
-            controlled_installed_package_candidate_observed: true,
-            missing_installed_package_fallback_observed: true,
-            rollback_disabled_path_confirmed: true,
-            text_area_boundary_confirmed: true,
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcRenderDefaultRolloutReadiness {
-    Blocked,
-    ReadyForControlledInstalledPackageCandidate,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcRenderDefaultRolloutDecision {
-    readiness: ElementInlineIfcRenderDefaultRolloutReadiness,
-    explicit_installed_package_candidate_mode: Option<ElementInlineIfcRenderMode>,
-    blocked_reasons: Vec<ElementInlineIfcRenderDefaultRolloutBlockedReason>,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcRenderDefaultRolloutDecision {
-    pub(crate) fn evaluate(input: ElementInlineIfcRenderDefaultRolloutDecisionInput) -> Self {
-        let mut blocked_reasons = Vec::new();
-        if !input
-            .render_audit
-            .is_ready_for_explicit_render_candidate_evaluation()
-        {
-            blocked_reasons
-                .push(ElementInlineIfcRenderDefaultRolloutBlockedReason::RenderAuditNotReady);
-        }
-        if input.current_render_default != ElementInlineIfcRenderMode::Disabled {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultRolloutBlockedReason::RenderDefaultAlreadyCandidate,
-            );
-        }
-        if !input.explicit_candidate_evaluation_observed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultRolloutBlockedReason::
-                    ExplicitCandidateEvaluationUnobserved,
-            );
-        }
-        if !input.controlled_installed_package_candidate_observed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultRolloutBlockedReason::
-                    InstalledPackageCandidateUnobserved,
-            );
-        }
-        if input.current_default_render_decision
-            != ElementInlineIfcRenderDecision::ExistingInlineFragments
-        {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultRolloutBlockedReason::LegacyDefaultDecisionChanged,
-            );
-        }
-        if !input.missing_installed_package_fallback_observed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultRolloutBlockedReason::
-                    MissingInstalledPackageFallbackUnobserved,
-            );
-        }
-        if !input.rollback_disabled_path_confirmed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultRolloutBlockedReason::RollbackDisabledPathUnconfirmed,
-            );
-        }
-        if !input.text_area_boundary_confirmed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultRolloutBlockedReason::TextAreaBoundaryUnconfirmed,
-            );
-        }
-
-        let readiness = if blocked_reasons.is_empty() {
-            ElementInlineIfcRenderDefaultRolloutReadiness::
-                ReadyForControlledInstalledPackageCandidate
-        } else {
-            ElementInlineIfcRenderDefaultRolloutReadiness::Blocked
-        };
-        let explicit_installed_package_candidate_mode = if blocked_reasons.is_empty() {
-            Some(ElementInlineIfcRenderMode::DrawRectPackageCandidate)
-        } else {
-            None
-        };
-        Self {
-            readiness,
-            explicit_installed_package_candidate_mode,
-            blocked_reasons,
-        }
-    }
-
-    pub(crate) fn readiness(&self) -> ElementInlineIfcRenderDefaultRolloutReadiness {
-        self.readiness
-    }
-
-    pub(crate) fn is_ready_for_controlled_installed_package_candidate(&self) -> bool {
-        matches!(
-            self.readiness,
-            ElementInlineIfcRenderDefaultRolloutReadiness::
-                ReadyForControlledInstalledPackageCandidate
-        )
-    }
-
-    pub(crate) fn explicit_installed_package_candidate_mode(
-        &self,
-    ) -> Option<ElementInlineIfcRenderMode> {
-        self.explicit_installed_package_candidate_mode
-    }
-
-    pub(crate) fn controlled_installed_package_candidate_config(
-        &self,
-    ) -> Option<ElementInlineIfcLayoutCallSiteRolloutConfig> {
-        self.is_ready_for_controlled_installed_package_candidate()
-            .then(
-                ElementInlineIfcLayoutCallSiteRolloutConfig::controlled_installed_package_candidate,
-            )
-    }
-
-    pub(crate) fn blocked_reasons(&self) -> &[ElementInlineIfcRenderDefaultRolloutBlockedReason] {
-        &self.blocked_reasons
-    }
-
-    pub(crate) fn allows_render_candidate_default(&self) -> bool {
-        false
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason {
-    RolloutDecisionNotReady,
-    ControlledInstalledPackageCandidateMissing,
-    ControlledInstalledPackageDiagnosticMissing,
-    DefaultPathPackageUnavailable,
-    MissingInstalledPackageFallbackUnconfirmed,
-    DisabledRollbackUnconfirmed,
-    UnsupportedOrNonInlineNoOpUnconfirmed,
-    TextAreaBoundaryUnconfirmed,
-    LegacyFallbackUnconfirmed,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcRenderDefaultAdoptionAuditInput {
-    pub(crate) rollout_decision: ElementInlineIfcRenderDefaultRolloutDecision,
-    pub(crate) controlled_installed_package_candidate_observed: bool,
-    pub(crate) controlled_installed_package_diagnostic_observed: bool,
-    pub(crate) default_path_package_available: bool,
-    pub(crate) missing_installed_package_fallback_confirmed: bool,
-    pub(crate) disabled_rollback_confirmed: bool,
-    pub(crate) unsupported_or_non_inline_no_op_confirmed: bool,
-    pub(crate) text_area_boundary_confirmed: bool,
-    pub(crate) legacy_fallback_confirmed: bool,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcRenderDefaultAdoptionAuditInput {
-    pub(crate) fn with_confirmed_observations(
-        rollout_decision: ElementInlineIfcRenderDefaultRolloutDecision,
-    ) -> Self {
-        Self {
-            rollout_decision,
-            controlled_installed_package_candidate_observed: true,
-            controlled_installed_package_diagnostic_observed: true,
-            default_path_package_available: true,
-            missing_installed_package_fallback_confirmed: true,
-            disabled_rollback_confirmed: true,
-            unsupported_or_non_inline_no_op_confirmed: true,
-            text_area_boundary_confirmed: true,
-            legacy_fallback_confirmed: true,
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcRenderDefaultAdoptionAuditReadiness {
-    Blocked,
-    ReadyForInlineElementRenderDefault,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcRenderDefaultAdoptionAudit {
-    readiness: ElementInlineIfcRenderDefaultAdoptionAuditReadiness,
-    recommended_default_mode: Option<ElementInlineIfcRenderMode>,
-    blocked_reasons: Vec<ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason>,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcRenderDefaultAdoptionAudit {
-    pub(crate) fn evaluate(input: ElementInlineIfcRenderDefaultAdoptionAuditInput) -> Self {
-        let mut blocked_reasons = Vec::new();
-        if !input
-            .rollout_decision
-            .is_ready_for_controlled_installed_package_candidate()
-        {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::RolloutDecisionNotReady,
-            );
-        }
-        if !input.controlled_installed_package_candidate_observed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
-                    ControlledInstalledPackageCandidateMissing,
-            );
-        }
-        if !input.controlled_installed_package_diagnostic_observed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
-                    ControlledInstalledPackageDiagnosticMissing,
-            );
-        }
-        if !input.default_path_package_available {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
-                    DefaultPathPackageUnavailable,
-            );
-        }
-        if !input.missing_installed_package_fallback_confirmed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
-                    MissingInstalledPackageFallbackUnconfirmed,
-            );
-        }
-        if !input.disabled_rollback_confirmed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::DisabledRollbackUnconfirmed,
-            );
-        }
-        if !input.unsupported_or_non_inline_no_op_confirmed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::
-                    UnsupportedOrNonInlineNoOpUnconfirmed,
-            );
-        }
-        if !input.text_area_boundary_confirmed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::TextAreaBoundaryUnconfirmed,
-            );
-        }
-        if !input.legacy_fallback_confirmed {
-            blocked_reasons.push(
-                ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason::LegacyFallbackUnconfirmed,
-            );
-        }
-
-        let readiness = if blocked_reasons.is_empty() {
-            ElementInlineIfcRenderDefaultAdoptionAuditReadiness::ReadyForInlineElementRenderDefault
-        } else {
-            ElementInlineIfcRenderDefaultAdoptionAuditReadiness::Blocked
-        };
-        let recommended_default_mode = if blocked_reasons.is_empty() {
-            Some(ElementInlineIfcRenderMode::DrawRectPackageCandidate)
-        } else {
-            None
-        };
-        Self {
-            readiness,
-            recommended_default_mode,
-            blocked_reasons,
-        }
-    }
-
-    pub(crate) fn readiness(&self) -> ElementInlineIfcRenderDefaultAdoptionAuditReadiness {
-        self.readiness
-    }
-
-    pub(crate) fn is_ready_for_inline_element_render_default(&self) -> bool {
-        matches!(
-            self.readiness,
-            ElementInlineIfcRenderDefaultAdoptionAuditReadiness::ReadyForInlineElementRenderDefault
-        )
-    }
-
-    pub(crate) fn recommended_default_mode(&self) -> Option<ElementInlineIfcRenderMode> {
-        self.recommended_default_mode
-    }
-
-    pub(crate) fn blocked_reasons(
-        &self,
-    ) -> &[ElementInlineIfcRenderDefaultAdoptionAuditBlockedReason] {
-        &self.blocked_reasons
-    }
-
-    pub(crate) fn allows_render_candidate_default(&self) -> bool {
-        self.is_ready_for_inline_element_render_default()
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TextAreaInlineIfcReadinessBlockedReason {
-    EditableIfcPathUnwired,
-    ProjectionIfcPathUnwired,
-    ImeIfcPathUnwired,
-    CaretAffinityIfcPathUnwired,
-    ScrollFollowIfcPathUnwired,
-    TextAreaTextRunBoundaryUnconfirmed,
-    InlineElementRolloutBoundaryUnconfirmed,
-    ReadOnlyTextPreparedPathSeparationUnconfirmed,
-    LegacyFallbackUnconfirmed,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct TextAreaInlineIfcReadinessInput {
-    pub(crate) editable_ifc_path_wired: bool,
-    pub(crate) projection_ifc_path_wired: bool,
-    pub(crate) ime_ifc_path_wired: bool,
-    pub(crate) caret_affinity_ifc_path_wired: bool,
-    pub(crate) scroll_follow_ifc_path_wired: bool,
-    pub(crate) text_area_text_run_boundary_confirmed: bool,
-    pub(crate) inline_element_rollout_boundary_confirmed: bool,
-    pub(crate) read_only_text_prepared_path_separated: bool,
-    pub(crate) legacy_fallback_confirmed: bool,
-}
-
-#[allow(dead_code)]
-impl TextAreaInlineIfcReadinessInput {
-    pub(crate) fn current_p7_preflight_observations() -> Self {
-        Self {
-            editable_ifc_path_wired: false,
-            projection_ifc_path_wired: false,
-            ime_ifc_path_wired: false,
-            caret_affinity_ifc_path_wired: false,
-            scroll_follow_ifc_path_wired: false,
-            text_area_text_run_boundary_confirmed: true,
-            inline_element_rollout_boundary_confirmed: true,
-            read_only_text_prepared_path_separated: true,
-            legacy_fallback_confirmed: true,
-        }
-    }
-
-    pub(crate) fn with_all_ifc_paths_wired() -> Self {
-        Self {
-            editable_ifc_path_wired: true,
-            projection_ifc_path_wired: true,
-            ime_ifc_path_wired: true,
-            caret_affinity_ifc_path_wired: true,
-            scroll_follow_ifc_path_wired: true,
-            text_area_text_run_boundary_confirmed: true,
-            inline_element_rollout_boundary_confirmed: true,
-            read_only_text_prepared_path_separated: true,
-            legacy_fallback_confirmed: true,
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TextAreaInlineIfcReadinessState {
-    Blocked,
-    ReadyForEditableIfcEvaluation,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TextAreaInlineIfcReadiness {
-    readiness: TextAreaInlineIfcReadinessState,
-    blocked_reasons: Vec<TextAreaInlineIfcReadinessBlockedReason>,
-}
-
-#[allow(dead_code)]
-impl TextAreaInlineIfcReadiness {
-    pub(crate) fn evaluate(input: TextAreaInlineIfcReadinessInput) -> Self {
-        let mut blocked_reasons = Vec::new();
-        if !input.editable_ifc_path_wired {
-            blocked_reasons.push(TextAreaInlineIfcReadinessBlockedReason::EditableIfcPathUnwired);
-        }
-        if !input.projection_ifc_path_wired {
-            blocked_reasons.push(TextAreaInlineIfcReadinessBlockedReason::ProjectionIfcPathUnwired);
-        }
-        if !input.ime_ifc_path_wired {
-            blocked_reasons.push(TextAreaInlineIfcReadinessBlockedReason::ImeIfcPathUnwired);
-        }
-        if !input.caret_affinity_ifc_path_wired {
-            blocked_reasons
-                .push(TextAreaInlineIfcReadinessBlockedReason::CaretAffinityIfcPathUnwired);
-        }
-        if !input.scroll_follow_ifc_path_wired {
-            blocked_reasons
-                .push(TextAreaInlineIfcReadinessBlockedReason::ScrollFollowIfcPathUnwired);
-        }
-        if !input.text_area_text_run_boundary_confirmed {
-            blocked_reasons
-                .push(TextAreaInlineIfcReadinessBlockedReason::TextAreaTextRunBoundaryUnconfirmed);
-        }
-        if !input.inline_element_rollout_boundary_confirmed {
-            blocked_reasons.push(
-                TextAreaInlineIfcReadinessBlockedReason::InlineElementRolloutBoundaryUnconfirmed,
-            );
-        }
-        if !input.read_only_text_prepared_path_separated {
-            blocked_reasons.push(
-                TextAreaInlineIfcReadinessBlockedReason::
-                    ReadOnlyTextPreparedPathSeparationUnconfirmed,
-            );
-        }
-        if !input.legacy_fallback_confirmed {
-            blocked_reasons
-                .push(TextAreaInlineIfcReadinessBlockedReason::LegacyFallbackUnconfirmed);
-        }
-
-        let readiness = if blocked_reasons.is_empty() {
-            TextAreaInlineIfcReadinessState::ReadyForEditableIfcEvaluation
-        } else {
-            TextAreaInlineIfcReadinessState::Blocked
-        };
-        Self {
-            readiness,
-            blocked_reasons,
-        }
-    }
-
-    pub(crate) fn readiness(&self) -> TextAreaInlineIfcReadinessState {
-        self.readiness
-    }
-
-    pub(crate) fn is_ready_for_editable_ifc_evaluation(&self) -> bool {
-        matches!(
-            self.readiness,
-            TextAreaInlineIfcReadinessState::ReadyForEditableIfcEvaluation
-        )
-    }
-
-    pub(crate) fn blocked_reasons(&self) -> &[TextAreaInlineIfcReadinessBlockedReason] {
-        &self.blocked_reasons
-    }
-
-    pub(crate) fn allows_text_area_default_rollout(&self) -> bool {
-        false
-    }
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcLayoutCallSiteRolloutConfig {
-    pub(crate) fn disabled() -> Self {
-        Self {
-            phase: ElementInlineIfcLayoutCallSiteRolloutPhase::Disabled,
-        }
-    }
-
-    pub(crate) fn explicit_dry_run_candidate() -> Self {
-        Self {
-            phase: ElementInlineIfcLayoutCallSiteRolloutPhase::ExplicitDryRunCandidate,
-        }
-    }
-
-    pub(crate) fn explicit_shadow_observation() -> Self {
-        Self::production_default_shadow_run_phase()
-    }
-
-    pub(crate) fn production_default_shadow_run_phase() -> Self {
-        Self {
-            phase: ElementInlineIfcLayoutCallSiteRolloutPhase::ProductionDefaultShadowRun,
-        }
-    }
-
-    pub(crate) fn controlled_installed_package_candidate() -> Self {
-        Self {
-            phase: ElementInlineIfcLayoutCallSiteRolloutPhase::ControlledInstalledPackageCandidate,
-        }
-    }
-
-    pub(crate) fn from_mode(mode: ElementInlineIfcLayoutCallSiteOptInMode) -> Self {
-        match mode {
-            ElementInlineIfcLayoutCallSiteOptInMode::Disabled => Self::disabled(),
-            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation => {
-                Self::production_default_shadow_run_phase()
-            }
-            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate => {
-                Self::explicit_dry_run_candidate()
-            }
-        }
-    }
-
-    pub(crate) fn phase(self) -> ElementInlineIfcLayoutCallSiteRolloutPhase {
-        self.phase
-    }
-
-    pub(crate) fn mode(self) -> ElementInlineIfcLayoutCallSiteOptInMode {
-        self.phase.mode()
-    }
-
-    pub(crate) fn gate(self) -> ElementInlineIfcLayoutCallSiteGate {
-        match self.mode() {
-            ElementInlineIfcLayoutCallSiteOptInMode::Disabled => {
-                ElementInlineIfcLayoutCallSiteGate::disabled()
-            }
-            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation => {
-                ElementInlineIfcLayoutCallSiteGate::explicit_shadow_observation()
-            }
-            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate => {
-                ElementInlineIfcLayoutCallSiteGate::explicit_dry_run_candidate()
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_scenario(scenario: ElementInlineIfcLayoutCallSiteScenario) -> Self {
-        match scenario {
-            ElementInlineIfcLayoutCallSiteScenario::DefaultLegacyFallback => Self::disabled(),
-            ElementInlineIfcLayoutCallSiteScenario::DefaultCandidateShadowObservation => {
-                Self::production_default_shadow_run_phase()
-            }
-            ElementInlineIfcLayoutCallSiteScenario::ControlledInstalledPackageCandidate => {
-                Self::controlled_installed_package_candidate()
-            }
-            ElementInlineIfcLayoutCallSiteScenario::DemoLikeDryRunCandidate
-            | ElementInlineIfcLayoutCallSiteScenario::ExamplesLikeDryRunCandidate
-            | ElementInlineIfcLayoutCallSiteScenario::UnsupportedRootProbe => {
-                Self::explicit_dry_run_candidate()
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcLayoutCallSiteScenario {
-    DefaultLegacyFallback,
-    DefaultCandidateShadowObservation,
-    ControlledInstalledPackageCandidate,
-    DemoLikeDryRunCandidate,
-    ExamplesLikeDryRunCandidate,
-    UnsupportedRootProbe,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ElementInlineIfcLayoutCallSiteOptInInput {
-    pub(crate) root_key: NodeKey,
-    pub(crate) max_width: f32,
-    pub(crate) mode: ElementInlineIfcLayoutCallSiteOptInMode,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcLayoutCallSiteOptInInput {
-    pub(crate) fn disabled(root_key: NodeKey, max_width: f32) -> Self {
-        Self {
-            root_key,
-            max_width: max_width.max(1.0),
-            mode: ElementInlineIfcLayoutCallSiteOptInMode::Disabled,
-        }
-    }
-
-    pub(crate) fn dry_run_candidate(root_key: NodeKey, max_width: f32) -> Self {
-        Self {
-            root_key,
-            max_width: max_width.max(1.0),
-            mode: ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate,
-        }
-    }
-
-    pub(crate) fn shadow_observation(root_key: NodeKey, max_width: f32) -> Self {
-        Self {
-            root_key,
-            max_width: max_width.max(1.0),
-            mode: ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation,
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcLayoutCallSiteOptInStatus {
-    Disabled,
-    UnsupportedRoot,
-    NoInstallTargets,
-    LifecycleRan,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ElementInlineIfcLayoutCallSiteOptInOutput {
-    pub(crate) root_key: NodeKey,
-    pub(crate) mode: ElementInlineIfcLayoutCallSiteOptInMode,
-    pub(crate) status: ElementInlineIfcLayoutCallSiteOptInStatus,
-    pub(crate) install_targets: Vec<NodeKey>,
-    pub(crate) lifecycle: Option<ElementInlineIfcCandidateLifecycleOutput>,
-    pub(crate) fallback: ElementInlineIfcRenderFallback,
-}
-
-#[allow(dead_code)]
-impl ElementInlineIfcLayoutCallSiteOptInOutput {
-    fn no_op(
-        input: &ElementInlineIfcLayoutCallSiteOptInInput,
-        status: ElementInlineIfcLayoutCallSiteOptInStatus,
-    ) -> Self {
-        Self {
-            root_key: input.root_key,
-            mode: input.mode,
-            status,
-            install_targets: Vec::new(),
-            lifecycle: None,
-            fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
-        }
-    }
-
-    pub(crate) fn lifecycle(&self) -> Option<&ElementInlineIfcCandidateLifecycleOutput> {
-        self.lifecycle.as_ref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn diagnostic_for_test(
-        &self,
-        arena: &NodeArena,
-        cache_len: usize,
-    ) -> ElementInlineIfcLayoutCallSiteDiagnostic {
-        let lifecycle = self.lifecycle();
-        let mut target_installs = Vec::new();
-        for &target in &self.install_targets {
-            let install = lifecycle.and_then(|lifecycle| lifecycle.install_for_node(target));
-            let render_decision = arena.get(target).and_then(|node| {
-                node.element
-                    .as_any()
-                    .downcast_ref::<Element>()
-                    .map(|element| element.inline_ifc_render_decision_for_test())
-            });
-            target_installs.push(ElementInlineIfcLayoutCallSiteTargetDiagnostic {
-                node_key: target,
-                source: install.and_then(|install| install.source),
-                install_status: install.map(|install| install.status),
-                has_decoration_package: install
-                    .map(|install| install.has_decoration_package)
-                    .unwrap_or(false),
-                has_atomic_package: install
-                    .map(|install| install.has_atomic_package)
-                    .unwrap_or(false),
-                render_decision,
-            });
-        }
-
-        ElementInlineIfcLayoutCallSiteDiagnostic {
-            root_key: self.root_key,
-            mode: self.mode,
-            status: self.status,
-            fallback: self.fallback,
-            cache_len,
-            cache_key: lifecycle.map(|lifecycle| lifecycle.cache_key.clone()),
-            invalidation: lifecycle.map(|lifecycle| lifecycle.invalidation),
-            rebuilt: lifecycle.map(|lifecycle| lifecycle.rebuilt),
-            install_targets: self.install_targets.clone(),
-            target_installs,
-        }
-    }
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ElementInlineIfcLayoutCallSiteTargetDiagnostic {
-    pub(crate) node_key: NodeKey,
-    pub(crate) source: Option<InlineIfcSourceId>,
-    pub(crate) install_status: Option<ElementInlineIfcCandidateLifecycleInstallStatus>,
-    pub(crate) has_decoration_package: bool,
-    pub(crate) has_atomic_package: bool,
-    pub(crate) render_decision: Option<ElementInlineIfcRenderDecision>,
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ElementInlineIfcLayoutCallSiteDiagnostic {
-    pub(crate) root_key: NodeKey,
-    pub(crate) mode: ElementInlineIfcLayoutCallSiteOptInMode,
-    pub(crate) status: ElementInlineIfcLayoutCallSiteOptInStatus,
-    pub(crate) fallback: ElementInlineIfcRenderFallback,
-    pub(crate) cache_len: usize,
-    pub(crate) cache_key: Option<InlineIfcCacheKey>,
-    pub(crate) invalidation: Option<InlineIfcInvalidation>,
-    pub(crate) rebuilt: Option<bool>,
-    pub(crate) install_targets: Vec<NodeKey>,
-    pub(crate) target_installs: Vec<ElementInlineIfcLayoutCallSiteTargetDiagnostic>,
-}
-
-#[cfg(test)]
-impl ElementInlineIfcLayoutCallSiteDiagnostic {
-    pub(crate) fn target(
-        &self,
-        key: NodeKey,
-    ) -> Option<&ElementInlineIfcLayoutCallSiteTargetDiagnostic> {
-        self.target_installs
-            .iter()
-            .find(|target| target.node_key == key)
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcLayoutCallSiteOptIn;
-
-#[allow(dead_code)]
-impl ElementInlineIfcLayoutCallSiteOptIn {
-    pub(crate) fn run(
-        arena: &mut NodeArena,
-        input: ElementInlineIfcLayoutCallSiteOptInInput,
-        cache: &mut InlineIfcElementRootCandidateCache,
-    ) -> ElementInlineIfcLayoutCallSiteOptInOutput {
-        if matches!(
-            input.mode,
-            ElementInlineIfcLayoutCallSiteOptInMode::Disabled
-        ) {
-            return ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
-                &input,
-                ElementInlineIfcLayoutCallSiteOptInStatus::Disabled,
-            );
-        }
-
-        if !element_inline_ifc_supports_layout_call_site_root(arena, input.root_key) {
-            return ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
-                &input,
-                ElementInlineIfcLayoutCallSiteOptInStatus::UnsupportedRoot,
-            );
-        }
-
-        let install_targets =
-            element_inline_ifc_layout_call_site_install_targets(arena, input.root_key);
-        if install_targets.is_empty() {
-            return ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
-                &input,
-                ElementInlineIfcLayoutCallSiteOptInStatus::NoInstallTargets,
-            );
-        }
-
-        let lifecycle_input =
-            ElementInlineIfcCandidateLifecycleInput::new(input.root_key, input.max_width)
-                .with_install_targets(install_targets.clone());
-        let lifecycle = match input.mode {
-            ElementInlineIfcLayoutCallSiteOptInMode::Disabled => None,
-            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation => {
-                ElementInlineIfcCandidateLifecycle::observe(arena, lifecycle_input, cache)
-            }
-            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate => {
-                ElementInlineIfcCandidateLifecycle::dry_run(arena, lifecycle_input, cache)
-            }
-        };
-        let Some(lifecycle) = lifecycle else {
-            return ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
-                &input,
-                ElementInlineIfcLayoutCallSiteOptInStatus::UnsupportedRoot,
-            );
-        };
-
-        ElementInlineIfcLayoutCallSiteOptInOutput {
-            root_key: input.root_key,
-            mode: input.mode,
-            status: ElementInlineIfcLayoutCallSiteOptInStatus::LifecycleRan,
-            install_targets,
-            lifecycle: Some(lifecycle),
-            fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
-        }
-    }
-}
-
 #[derive(Default)]
 struct ElementInlineIfcLayoutCallSiteState {
-    rollout_config: ElementInlineIfcLayoutCallSiteRolloutConfig,
     cache: InlineIfcElementRootCandidateCache,
-    last_output: Option<ElementInlineIfcLayoutCallSiteOptInOutput>,
+    current: Option<ElementInlineIfcRootInstall>,
+    /// Plan computed during measure (origin-independent). When measure
+    /// runs it reshapes the IFC and stashes the fresh plan here; place
+    /// consumes it. When measure is skipped (a pure move), this stays
+    /// `None` and place reuses `current` with new origins.
+    pending: Option<ElementInlineIfcPendingPlan>,
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ElementInlineIfcCandidateLifecycle;
+struct ElementInlineIfcPendingPlan {
+    cache_key: InlineIfcCacheKey,
+    children_snapshot: Vec<NodeKey>,
+    content_top_offset: f32,
+    content_size: (f32, f32),
+    plan: Vec<InlineIfcNodeInstallOp>,
+}
 
-#[allow(dead_code)]
-impl ElementInlineIfcCandidateLifecycle {
-    pub(crate) fn dry_run(
-        arena: &mut NodeArena,
-        input: ElementInlineIfcCandidateLifecycleInput,
-        cache: &mut InlineIfcElementRootCandidateCache,
-    ) -> Option<ElementInlineIfcCandidateLifecycleOutput> {
-        let collected = ElementInlineIfcMetadataCollector::collect(
-            arena,
-            ElementInlineIfcMetadataCollectorInput::new(input.root_key, input.max_width),
-        )?;
-        Some(Self::dry_run_collected(arena, input, collected, cache))
-    }
+/// Live install record for an inline IFC root: the cache key whose shaped
+/// context backs the root's glyph pass, the origin-independent install plan
+/// (so a pure move re-applies it without re-shaping), and the children
+/// snapshot it was built from (so a structural change invalidates it).
+struct ElementInlineIfcRootInstall {
+    cache_key: InlineIfcCacheKey,
+    children_snapshot: Vec<NodeKey>,
+    content_top_offset: f32,
+    /// IFC content size (insets excluded) for this shaping, so measure can
+    /// return it without rebuilding geometry when the IFC is unchanged.
+    content_size: (f32, f32),
+    /// Inner width this shaping was built at; a width change reshapes.
+    inner_width: f32,
+    plan: Vec<InlineIfcNodeInstallOp>,
+    installed_nodes: Vec<NodeKey>,
+}
 
-    pub(crate) fn observe(
-        arena: &NodeArena,
-        input: ElementInlineIfcCandidateLifecycleInput,
-        cache: &mut InlineIfcElementRootCandidateCache,
-    ) -> Option<ElementInlineIfcCandidateLifecycleOutput> {
-        let collected = ElementInlineIfcMetadataCollector::collect(
-            arena,
-            ElementInlineIfcMetadataCollectorInput::new(input.root_key, input.max_width),
-        )?;
-        Some(Self::observe_collected(input, collected, cache))
-    }
+/// One descendant's install in IFC content coordinates (origin-independent).
+/// Applying it shifts everything by the root's current origin, so a window
+/// move reuses the plan and only re-applies origins.
+enum InlineIfcNodeInstallOp {
+    Span {
+        node_key: NodeKey,
+        /// Decoration package with `text_top` already folded in; positions
+        /// are content-coord and get the origin added at apply time.
+        package: Option<InlineIfcDistributedElementPackages>,
+        /// Content-coord paint fragments (text-top folded).
+        paint_fragments: Vec<InlineIfcPaintRect>,
+    },
+    Text {
+        node_key: NodeKey,
+        /// Content-coord owned lines (shifted to absolute at apply time).
+        lines: Vec<TextIfcOwnedLine>,
+    },
+    Atomic {
+        node_key: NodeKey,
+        rect: InlineIfcPaintRect,
+    },
+}
 
-    fn observe_collected(
-        input: ElementInlineIfcCandidateLifecycleInput,
-        collected: ElementInlineIfcMetadataCollectorOutput,
-        cache: &mut InlineIfcElementRootCandidateCache,
-    ) -> ElementInlineIfcCandidateLifecycleOutput {
-        let candidate = cache.update(&collected.root_source);
-        let mut install_targets = input.install_targets;
-        if install_targets.is_empty() {
-            install_targets = collected.sources_by_node.keys().copied().collect();
-            install_targets.sort_by_key(|key| format!("{key:?}"));
-        }
-
-        let installs = install_targets
-            .into_iter()
-            .map(|target| {
-                let source = collected.source_for_node(target);
-                let packages = source.and_then(|source| candidate.package(source));
-                ElementInlineIfcCandidateLifecycleInstall {
-                    node_key: target,
-                    source,
-                    status: ElementInlineIfcCandidateLifecycleInstallStatus::ObservedOnly,
-                    has_decoration_package: packages
-                        .and_then(|packages| packages.decoration_draw_rect.as_ref())
-                        .is_some_and(|package| !package.fragments.is_empty()),
-                    has_atomic_package: packages
-                        .and_then(|packages| packages.atomic_placement.as_ref())
-                        .is_some_and(|package| !package.placements.is_empty()),
-                }
-            })
-            .collect();
-
-        ElementInlineIfcCandidateLifecycleOutput {
-            cache_key: candidate.cache_key,
-            invalidation: candidate.invalidation,
-            rebuilt: candidate.rebuilt,
-            cache_len: cache.len(),
-            sources_by_node: collected.sources_by_node,
-            installs,
-        }
-    }
-
-    fn dry_run_collected(
-        arena: &mut NodeArena,
-        input: ElementInlineIfcCandidateLifecycleInput,
-        collected: ElementInlineIfcMetadataCollectorOutput,
-        cache: &mut InlineIfcElementRootCandidateCache,
-    ) -> ElementInlineIfcCandidateLifecycleOutput {
-        let candidate = cache.update(&collected.root_source);
-        let mut install_targets = input.install_targets;
-        if install_targets.is_empty() {
-            install_targets = collected.sources_by_node.keys().copied().collect();
-            install_targets.sort_by_key(|key| format!("{key:?}"));
-        }
-
-        let mut installs = Vec::new();
-        for target in install_targets {
-            let source = collected.source_for_node(target);
-            let Some(mut node) = arena.get_mut(target) else {
-                installs.push(ElementInlineIfcCandidateLifecycleInstall {
-                    node_key: target,
-                    source,
-                    status: ElementInlineIfcCandidateLifecycleInstallStatus::MissingNode,
-                    has_decoration_package: false,
-                    has_atomic_package: false,
-                });
-                continue;
-            };
-            let Some(element) = node.element.as_any_mut().downcast_mut::<Element>() else {
-                installs.push(ElementInlineIfcCandidateLifecycleInstall {
-                    node_key: target,
-                    source,
-                    status: ElementInlineIfcCandidateLifecycleInstallStatus::SkippedNonElement,
-                    has_decoration_package: false,
-                    has_atomic_package: false,
-                });
-                continue;
-            };
-
-            let packages = source.and_then(|source| candidate.package(source));
-            element.install_inline_ifc_rollout_packages_from_candidate(packages);
-            let installed = element.inline_ifc_rollout_packages.clone();
-            installs.push(ElementInlineIfcCandidateLifecycleInstall {
-                node_key: target,
-                source,
-                status: if packages.is_some() {
-                    ElementInlineIfcCandidateLifecycleInstallStatus::Installed
-                } else {
-                    ElementInlineIfcCandidateLifecycleInstallStatus::ClearedMissingSource
-                },
-                has_decoration_package: installed.has_draw_rect_decoration(),
-                has_atomic_package: installed.has_atomic_placement(),
-            });
-        }
-
-        ElementInlineIfcCandidateLifecycleOutput {
-            cache_key: candidate.cache_key,
-            invalidation: candidate.invalidation,
-            rebuilt: candidate.rebuilt,
-            cache_len: cache.len(),
-            sources_by_node: collected.sources_by_node,
-            installs,
+impl InlineIfcNodeInstallOp {
+    fn node_key(&self) -> NodeKey {
+        match self {
+            Self::Span { node_key, .. }
+            | Self::Text { node_key, .. }
+            | Self::Atomic { node_key, .. } => *node_key,
         }
     }
 }
 
-fn element_inline_ifc_supports_layout_call_site_root(arena: &NodeArena, key: NodeKey) -> bool {
-    arena
-        .get(key)
-        .and_then(|node| {
-            node.element
-                .as_any()
-                .downcast_ref::<Element>()
-                .map(|element| element.computed_style.layout == Layout::Inline)
-        })
-        .unwrap_or(false)
+/// Union of absolute rects; zero rect when empty.
+fn bounding_rect(rects: &[crate::ui::Rect]) -> crate::ui::Rect {
+    let mut iter = rects.iter();
+    let Some(first) = iter.next() else {
+        return crate::ui::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        };
+    };
+    let mut left = first.x;
+    let mut top = first.y;
+    let mut right = first.x + first.width.max(0.0);
+    let mut bottom = first.y + first.height.max(0.0);
+    for rect in iter {
+        left = left.min(rect.x);
+        top = top.min(rect.y);
+        right = right.max(rect.x + rect.width.max(0.0));
+        bottom = bottom.max(rect.y + rect.height.max(0.0));
+    }
+    crate::ui::Rect {
+        x: left,
+        y: top,
+        width: (right - left).max(0.0),
+        height: (bottom - top).max(0.0),
+    }
 }
 
-fn element_inline_ifc_layout_call_site_install_targets(
+/// Clear any inline-IFC install state from a descendant node.
+fn clear_inline_ifc_node_install(arena: &mut NodeArena, node_key: NodeKey) {
+    arena.with_element_taken(node_key, |child, _arena| {
+        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+            element.install_inline_ifc_rollout_packages_from_candidate(None);
+            element.inline_paint_fragments = Vec::new();
+            element.inline_ifc_owned_by_root = false;
+        } else if let Some(text) = child.as_any_mut().downcast_mut::<Text>() {
+            text.clear_inline_ifc_owned_geometry();
+        }
+    });
+}
+
+/// Geometry extracted from a shaped inline IFC root context, in content
+/// coordinates (before the content-top normalization shift).
+struct InlineIfcRootGeometry {
+    content_top_offset: f32,
+    content_size: (f32, f32),
+    nodes: Vec<InlineIfcRootNodeGeometry>,
+}
+
+struct InlineIfcRootNodeGeometry {
+    node_key: NodeKey,
+    kind: InlineIfcRootNodeGeometryKind,
+}
+
+enum InlineIfcRootNodeGeometryKind {
+    /// Fragmentable inline element: one rect per visual line it spans.
+    Span {
+        fragments: Vec<InlineIfcPaintRect>,
+        text_top_offsets: Vec<(usize, f32)>,
+    },
+    /// Text node owned by the root: per-line rects plus caret stops.
+    Text { lines: Vec<TextIfcOwnedLine> },
+    /// Atomic inline box: its vertical-align-adjusted line placement.
+    Atomic { rect: InlineIfcPaintRect },
+}
+
+fn inline_ifc_root_geometry(
+    context: Option<&InlineFormattingContext>,
     arena: &NodeArena,
+    sources_by_node: &FxHashMap<NodeKey, InlineIfcSourceId>,
     root_key: NodeKey,
-) -> Vec<NodeKey> {
-    element_inline_ifc_layout_call_site_install_targets_from_children(
-        arena,
-        arena.children_of(root_key),
-    )
-}
+) -> Option<InlineIfcRootGeometry> {
+    let context = context?;
+    let snapshot = context.text_layout_snapshot();
+    let content_top_offset = snapshot
+        .lines
+        .iter()
+        .map(|line| line.y)
+        .fold(0.0f32, f32::min);
 
-fn element_inline_ifc_layout_call_site_install_targets_from_children(
-    arena: &NodeArena,
-    root_children: Vec<NodeKey>,
-) -> Vec<NodeKey> {
-    fn walk(
-        arena: &NodeArena,
-        key: NodeKey,
-        seen: &mut FxHashSet<NodeKey>,
-        out: &mut Vec<NodeKey>,
-    ) {
-        for child_key in arena.children_of(key) {
-            if !seen.insert(child_key) {
-                continue;
+    let mut content: Option<InlineIfcPaintRect> = None;
+    let merge = |rect: InlineIfcPaintRect, content: &mut Option<InlineIfcPaintRect>| {
+        let merged = match content.take() {
+            None => rect,
+            Some(current) => {
+                let left = current.x.min(rect.x);
+                let top = current.y.min(rect.y);
+                let right = (current.x + current.width.max(0.0)).max(rect.x + rect.width.max(0.0));
+                let bottom =
+                    (current.y + current.height.max(0.0)).max(rect.y + rect.height.max(0.0));
+                InlineIfcPaintRect {
+                    x: left,
+                    y: top,
+                    width: (right - left).max(0.0),
+                    height: (bottom - top).max(0.0),
+                }
             }
-            let is_inline_element = arena
-                .get(child_key)
-                .and_then(|node| {
-                    node.element
-                        .as_any()
-                        .downcast_ref::<Element>()
-                        .map(|element| element.computed_style.layout == Layout::Inline)
-                })
-                .unwrap_or(false);
-            if is_inline_element {
-                out.push(child_key);
-            }
-            walk(arena, child_key, seen, out);
-        }
-    }
+        };
+        *content = Some(merged);
+    };
+    let mut ordered: Vec<(NodeKey, InlineIfcSourceId)> = sources_by_node
+        .iter()
+        .map(|(&node_key, &source)| (node_key, source))
+        .filter(|&(node_key, _)| node_key != root_key)
+        .collect();
+    ordered.sort_by_key(|(node_key, _)| format!("{node_key:?}"));
 
-    let mut seen = FxHashSet::default();
-    let mut targets = Vec::new();
-    for child_key in root_children {
-        if !seen.insert(child_key) {
+    let mut nodes = Vec::new();
+    for (node_key, source) in ordered {
+        let Some(node) = arena.get(node_key) else {
+            continue;
+        };
+        if node.element.as_any().is::<Text>() {
+            let lines = text_ifc_owned_lines_for_source(context, &snapshot, source);
+            for line in &lines {
+                merge(
+                    InlineIfcPaintRect {
+                        x: line.rect.x,
+                        y: line.rect.y,
+                        width: line.rect.width,
+                        height: line.rect.height,
+                    },
+                    &mut content,
+                );
+            }
+            nodes.push(InlineIfcRootNodeGeometry {
+                node_key,
+                kind: InlineIfcRootNodeGeometryKind::Text { lines },
+            });
             continue;
         }
-        let is_inline_element = arena
-            .get(child_key)
-            .and_then(|node| {
-                node.element
-                    .as_any()
-                    .downcast_ref::<Element>()
-                    .map(|element| element.computed_style.layout == Layout::Inline)
-            })
-            .unwrap_or(false);
-        if is_inline_element {
-            targets.push(child_key);
+        let is_span = node
+            .element
+            .as_any()
+            .downcast_ref::<Element>()
+            .is_some_and(Element::is_fragmentable_inline_element);
+        if is_span {
+            // The decoration distributor already computed this span's
+            // per-line extents (its own glyphs plus nested children).
+            let raw_fragments = snapshot
+                .decorations
+                .iter()
+                .filter(|fragment| fragment.source == source)
+                .collect::<Vec<_>>();
+            let fragments = raw_fragments
+                .iter()
+                .map(|fragment| fragment.rect)
+                .collect::<Vec<_>>();
+            let text_top_offsets = raw_fragments
+                .iter()
+                .filter_map(|fragment| {
+                    context
+                        .text_top_for_line_range(fragment.line_index, &fragment.range)
+                        .map(|text_top| (fragment.line_index, text_top - fragment.rect.y))
+                })
+                .collect::<Vec<_>>();
+            for rect in &fragments {
+                merge(*rect, &mut content);
+            }
+            nodes.push(InlineIfcRootNodeGeometry {
+                node_key,
+                kind: InlineIfcRootNodeGeometryKind::Span {
+                    fragments,
+                    text_top_offsets,
+                },
+            });
+            continue;
         }
-        walk(arena, child_key, &mut seen, &mut targets);
+
+        let package = context.atomic_box_placement_package(source);
+        let Some(placement) = package.placements.first() else {
+            continue;
+        };
+        let vertical_align = node
+            .element
+            .as_any()
+            .downcast_ref::<Element>()
+            .map(|element| element.computed_style.vertical_align)
+            .unwrap_or(crate::style::VerticalAlign::Baseline);
+        let mut rect = placement.rect;
+        if let Some(line) = snapshot.lines.get(placement.line_index) {
+            let item_height = rect.height.max(0.0);
+            let align_offset = baseline_cross_offset(
+                line.baseline,
+                line.height,
+                item_height,
+                item_height,
+                vertical_align,
+            );
+            rect.y = line.y + align_offset;
+        }
+        merge(rect, &mut content);
+        nodes.push(InlineIfcRootNodeGeometry {
+            node_key,
+            kind: InlineIfcRootNodeGeometryKind::Atomic { rect },
+        });
     }
-    targets
+
+    let content_size = content
+        .map(|rect| {
+            (
+                (rect.x + rect.width).max(0.0),
+                (rect.y + rect.height - content_top_offset).max(0.0),
+            )
+        })
+        .unwrap_or((0.0, 0.0));
+
+    Some(InlineIfcRootGeometry {
+        content_top_offset,
+        content_size,
+        nodes,
+    })
 }
 
+/// Convert geometry into an origin-independent install plan: fold each
+/// span's `text_top` offset into its content-coord decoration package and
+/// paint fragments so applying the plan is a pure origin shift.
+fn build_inline_ifc_install_plan(
+    geometry: InlineIfcRootGeometry,
+    collected: &ElementInlineIfcMetadataCollectorOutput,
+    candidate: &InlineIfcElementRootCandidate,
+) -> Vec<InlineIfcNodeInstallOp> {
+    let mut plan = Vec::with_capacity(geometry.nodes.len());
+    for node_geometry in geometry.nodes {
+        let node_key = node_geometry.node_key;
+        match node_geometry.kind {
+            InlineIfcRootNodeGeometryKind::Span {
+                fragments,
+                text_top_offsets,
+            } => {
+                let text_top_for = |line_index: usize| {
+                    text_top_offsets
+                        .iter()
+                        .find(|(index, _)| *index == line_index)
+                        .map(|(_, offset)| *offset)
+                        .unwrap_or(0.0)
+                };
+                let mut package = collected
+                    .source_for_node(node_key)
+                    .and_then(|source| candidate.package(source).cloned());
+                // Paint fragments (hit-test geometry) come from each
+                // decoration fragment's `rect`, with text-top folded in;
+                // fall back to the span's per-line glyph extents.
+                let paint_fragments = package
+                    .as_ref()
+                    .and_then(|package| package.decoration_draw_rect.as_ref())
+                    .map(|package| {
+                        package
+                            .fragments
+                            .iter()
+                            .map(|fragment| {
+                                let mut rect = fragment.rect;
+                                rect.y += text_top_for(fragment.line_index);
+                                rect
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or(fragments);
+                // Fold text-top into the content-coord package positions so
+                // apply is a pure origin shift.
+                if let Some(package) = package
+                    .as_mut()
+                    .and_then(|package| package.decoration_draw_rect.as_mut())
+                {
+                    for fragment in &mut package.fragments {
+                        fragment.metadata.position[1] += text_top_for(fragment.line_index);
+                    }
+                }
+                plan.push(InlineIfcNodeInstallOp::Span {
+                    node_key,
+                    package,
+                    paint_fragments,
+                });
+            }
+            InlineIfcRootNodeGeometryKind::Text { lines } => {
+                plan.push(InlineIfcNodeInstallOp::Text { node_key, lines });
+            }
+            InlineIfcRootNodeGeometryKind::Atomic { rect } => {
+                plan.push(InlineIfcNodeInstallOp::Atomic { node_key, rect });
+            }
+        }
+    }
+    plan
+}
+
+/// Per-line geometry for a Text node shaped inside an inline IFC root:
+/// line rects plus caret-stop x positions for every char boundary, all in
+/// IFC content coordinates (caller shifts to absolute).
+fn text_ifc_owned_lines_for_source(
+    context: &InlineFormattingContext,
+    snapshot: &InlineIfcTextLayoutSnapshot,
+    source: InlineIfcSourceId,
+) -> Vec<TextIfcOwnedLine> {
+    let Some(byte_range) = context
+        .source_ranges()
+        .iter()
+        .find(|range| range.source == source && range.kind == InlineIfcSourceKind::Text)
+        .map(|range| range.range.clone())
+    else {
+        return Vec::new();
+    };
+    let text = &context.backing_text()[byte_range.clone()];
+
+    let mut lines: Vec<(usize, Vec<(usize, f32)>, TextIfcOwnedLine)> = Vec::new();
+    for stop in context
+        .visual_caret_stops_ref()
+        .iter()
+        .filter(|stop| stop.source == source)
+    {
+        if stop.byte_index < byte_range.start || stop.byte_index > byte_range.end {
+            continue;
+        }
+        let local_char = text[..stop.byte_index.saturating_sub(byte_range.start)]
+            .chars()
+            .count();
+        let line_rect = snapshot
+            .lines
+            .get(stop.line_index)
+            .map(|line| crate::ui::Rect {
+                x: line.x,
+                y: line.y,
+                width: line.width,
+                height: line.height,
+            })
+            .unwrap_or(crate::ui::Rect {
+                x: stop.x,
+                y: stop.y,
+                width: 0.0,
+                height: stop.height,
+            });
+        match lines
+            .iter_mut()
+            .find(|(line_index, _, _)| *line_index == stop.line_index)
+        {
+            Some((_, stops, line)) => {
+                stops.push((local_char, stop.x));
+                line.char_range.start = line.char_range.start.min(local_char);
+                line.char_range.end = line.char_range.end.max(local_char + 1);
+            }
+            _ => {
+                lines.push((
+                    stop.line_index,
+                    vec![(local_char, stop.x)],
+                    TextIfcOwnedLine {
+                        rect: line_rect,
+                        text_rect: line_rect,
+                        char_range: local_char..local_char + 1,
+                        caret_xs: Vec::new(),
+                    },
+                ));
+            }
+        }
+    }
+
+    // Each line keeps both the line box (`rect`, used for layout bounds and
+    // caret height) and the baseline-aligned text box (`text_rect`, where
+    // the glyphs actually paint — used for fragment-position observation
+    // and selection). A tall sibling inline box inflates the former only.
+    let text_line_rects = context.source_text_line_rects(source);
+    let mut out: Vec<TextIfcOwnedLine> = Vec::with_capacity(lines.len());
+    for (line_index, mut stops, mut line) in lines {
+        stops.sort_by_key(|(local_char, _)| *local_char);
+        stops.dedup_by_key(|(local_char, _)| *local_char);
+        line.caret_xs = stops.into_iter().map(|(_, x)| x).collect();
+        if let Some((_, rect)) = text_line_rects
+            .iter()
+            .find(|(index, _)| *index == line_index)
+        {
+            line.text_rect = crate::ui::Rect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            };
+        } else {
+            line.text_rect = line.rect;
+        }
+        // Tighten x to the caret extent (covers trailing whitespace the
+        // glyph run omits); glyphless boundaries keep the line rect.
+        if let (Some(&first), Some(&last)) = (line.caret_xs.first(), line.caret_xs.last()) {
+            let left = first.min(last);
+            let right = first.max(last);
+            if right > left {
+                line.rect.x = left;
+                line.rect.width = right - left;
+                line.text_rect.x = left;
+                line.text_rect.width = right - left;
+            }
+        }
+        out.push(line);
+    }
+    out
+}
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ElementInlineIfcMetadataCollector;
@@ -3776,7 +2642,18 @@ impl ElementInlineIfcMetadataCollector {
         };
         state.sources_by_node.insert(input.root_key, root_source);
 
-        let mut builder = InlineIfcElementRootSourceBuilder::new().with_max_width(state.max_width);
+        let allow_wrap = arena
+            .get(input.root_key)
+            .and_then(|node| {
+                node.element
+                    .as_any()
+                    .downcast_ref::<Element>()
+                    .map(|root| root.computed_style.text_wrap != TextWrap::NoWrap)
+            })
+            .unwrap_or(true);
+        let mut builder = InlineIfcElementRootSourceBuilder::new()
+            .with_max_width(state.max_width)
+            .with_allow_wrap(allow_wrap);
         for child_key in root_children {
             if let Some(item) = state.collect_item(child_key, root_source) {
                 builder.push_item(item);
@@ -3814,7 +2691,10 @@ impl ElementInlineIfcMetadataCollector {
         };
         state.sources_by_node.insert(input.root_key, root_source);
 
-        let mut builder = InlineIfcElementRootSourceBuilder::new().with_max_width(state.max_width);
+        let allow_wrap = root.computed_style.text_wrap != TextWrap::NoWrap;
+        let mut builder = InlineIfcElementRootSourceBuilder::new()
+            .with_max_width(state.max_width)
+            .with_allow_wrap(allow_wrap);
         for child_key in root.children.iter().copied() {
             if let Some(item) = state.collect_item(child_key, root_source) {
                 builder.push_item(item);
@@ -3870,6 +2750,15 @@ impl ElementInlineIfcMetadataCollectorState<'_> {
         let collected = {
             let node = self.arena.get(key)?;
             let element = node.element.as_ref();
+            if element
+                .as_any()
+                .downcast_ref::<Element>()
+                .is_some_and(|element| {
+                    element.computed_style.position.mode() == PositionMode::Absolute
+                })
+            {
+                return None;
+            }
             let source = element_inline_ifc_source_id(key, element);
             let snapshot = element.box_model_snapshot();
             self.sources_by_node.insert(key, source);
@@ -4016,28 +2905,6 @@ pub(crate) struct ElementStyleSnapshot {
     transform_origin: TransformOrigin,
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcRenderMode {
-    Disabled,
-    #[default]
-    DrawRectPackageCandidate,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcRenderFallback {
-    ExistingInlineFragments,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ElementInlineIfcRenderDecision {
-    ExistingInlineFragments,
-    DrawRectPackageCandidate {
-        fallback: ElementInlineIfcRenderFallback,
-        has_atomic_placement_package: bool,
-    },
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct ElementInlineIfcDrawRectPassMetadata {
     pub(crate) fill: RectPassParams,
@@ -4056,7 +2923,6 @@ pub(crate) struct ElementInlineIfcRolloutPackages {
 }
 
 impl ElementInlineIfcRolloutPackages {
-    #[allow(dead_code)]
     pub(crate) fn from_inline_ifc_distributed(
         package: &InlineIfcDistributedElementPackages,
     ) -> Self {
@@ -4064,18 +2930,6 @@ impl ElementInlineIfcRolloutPackages {
             decoration_draw_rect: package.decoration_draw_rect.clone(),
             atomic_placement: package.atomic_placement.clone(),
         }
-    }
-
-    fn has_draw_rect_decoration(&self) -> bool {
-        self.decoration_draw_rect
-            .as_ref()
-            .is_some_and(|package| !package.fragments.is_empty())
-    }
-
-    fn has_atomic_placement(&self) -> bool {
-        self.atomic_placement
-            .as_ref()
-            .is_some_and(|package| !package.placements.is_empty())
     }
 }
 
@@ -4102,10 +2956,11 @@ pub struct Element {
     opacity: f32,
     scroll_direction: ScrollDirection,
     scroll_offset: Position,
-    pending_inline_measure_context: Option<InlineMeasureContext>,
-    last_inline_measure_context: Option<InlineMeasureContext>,
     inline_paint_fragments: Vec<Rect>,
-    inline_ifc_render_mode: ElementInlineIfcRenderMode,
+    /// True while an ancestor inline IFC root owns this fragmentable
+    /// inline element's geometry: its measure/place become shells and its
+    /// fragments/packages are installed by the owning root.
+    inline_ifc_owned_by_root: bool,
     inline_ifc_rollout_packages: ElementInlineIfcRolloutPackages,
     inline_ifc_layout_call_site: ElementInlineIfcLayoutCallSiteState,
     scrollbar_drag: Option<ScrollbarDragState>,
@@ -4161,57 +3016,25 @@ impl Element {
         self.children = children;
     }
 
-    fn inline_ifc_layout_call_site_mode(&self) -> ElementInlineIfcLayoutCallSiteOptInMode {
-        self.inline_ifc_layout_call_site_gate().resolve()
-    }
-
-    fn inline_ifc_layout_call_site_gate(&self) -> ElementInlineIfcLayoutCallSiteGate {
-        self.inline_ifc_layout_call_site.rollout_config.gate()
-    }
-
-    fn inline_ifc_layout_call_site_is_enabled(&self) -> bool {
-        self.inline_ifc_layout_call_site_gate().is_enabled()
-    }
-
+    /// Placement-skip buster for inline IFC roots: a root whose layout
+    /// inputs changed must re-run place so the shaped candidate, installed
+    /// packages, and descendant geometry stay fresh.
     fn inline_ifc_layout_call_site_dirty_gate(
         &self,
         arena: &NodeArena,
         placement: LayoutPlacement,
     ) -> bool {
-        if !self.inline_ifc_layout_call_site_is_enabled() {
+        if self.computed_style.layout != Layout::Inline || self.inline_ifc_owned_by_root {
             return false;
         }
-        // Only inline roots can ever become IFC layout call-sites; the
-        // after-place opt-in is an `UnsupportedRoot` no-op for everything
-        // else, so a non-inline element must not lose its placement skip
-        // (and must not double-record gate candidates) on this gate.
-        if self.computed_style.layout != Layout::Inline {
-            return false;
-        }
-        let Some(last_output) = self.inline_ifc_layout_call_site.last_output.as_ref() else {
+        if self.inline_ifc_layout_call_site.current.is_none() {
             return true;
-        };
-        // Only a root that actually installed rollout packages onto its
-        // descendants needs the extra paint-sensitive re-place to keep
-        // those packages fresh. No-op opt-ins (unsupported root, no
-        // install targets) and shadow observation (collect + diagnostics
-        // only, installs nothing) gain nothing from re-running place: any
-        // change that could flip their status (children added/removed,
-        // layout switch) already sets LAYOUT dirt that the regular
-        // placement gate sees.
-        let has_installed_packages = last_output.lifecycle.as_ref().is_some_and(|lifecycle| {
-            lifecycle.installs.iter().any(|install| {
-                install.status == ElementInlineIfcCandidateLifecycleInstallStatus::Installed
-            })
-        });
-        if !has_installed_packages {
-            return false;
         }
         if self.last_layout_placement != Some(placement) {
             return true;
         }
-        let ifc_dirty_mask = DirtyPassMask::LAYOUT.union(DirtyPassMask::PAINT);
-        if self.dirty_flags.intersects(ifc_dirty_mask) {
+        let self_dirty_mask = DirtyPassMask::LAYOUT.union(DirtyPassMask::PAINT);
+        if self.dirty_flags.intersects(self_dirty_mask) {
             return true;
         }
         // The placement gate that runs just before this one already
@@ -4219,149 +3042,437 @@ impl Element {
         // recording another round of gate candidates.
         self.children
             .iter()
-            .any(|&child_key| arena.subtree_dirty_intersects(child_key, ifc_dirty_mask))
+            .any(|&child_key| arena.subtree_dirty_intersects(child_key, DirtyPassMask::LAYOUT))
     }
 
-    fn run_inline_ifc_layout_call_site_opt_in_after_place(
+    /// The inline IFC root pipeline, run after `place_self`: shape (or
+    /// reuse) the candidate, distribute decoration/atomic packages to
+    /// descendant inline elements, hand text geometry to descendant Text
+    /// nodes, and place atomic inline boxes at their line positions.
+    fn run_inline_ifc_root_after_place(
         &mut self,
         arena: &mut NodeArena,
-        max_width: f32,
+        placement: LayoutPlacement,
+        inner_width: f32,
     ) {
-        let mode = self.inline_ifc_layout_call_site_mode();
-        if matches!(mode, ElementInlineIfcLayoutCallSiteOptInMode::Disabled) {
+        if self.computed_style.layout != Layout::Inline || self.inline_ifc_owned_by_root {
+            self.clear_inline_ifc_root_installs(arena);
+            return;
+        }
+        if arena.find_by_stable_id(self.stable_id()).is_none() {
+            self.clear_inline_ifc_root_installs(arena);
             return;
         }
 
-        let Some(root_key) = arena.find_by_stable_id(self.stable_id()) else {
-            return;
-        };
-        let input = ElementInlineIfcLayoutCallSiteOptInInput {
-            root_key,
-            max_width: max_width.max(1.0),
-            mode,
-        };
-        if self.computed_style.layout != Layout::Inline {
-            self.inline_ifc_layout_call_site.last_output =
-                Some(ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
-                    &input,
-                    ElementInlineIfcLayoutCallSiteOptInStatus::UnsupportedRoot,
-                ));
-            return;
+        // 1. Measure stashed a fresh plan this frame (content/size changed):
+        //    consume it.
+        // 2. No pending and we already have an install with the same
+        //    children: a pure move — reuse the cached plan, only origins
+        //    changed. This is what makes dragging a window cheap.
+        // 3. Otherwise (first install, structural change without a measure):
+        //    shape from scratch.
+        let (cache_key, children_snapshot, top_offset, content_size, plan) =
+            if let Some(pending) = self.inline_ifc_layout_call_site.pending.take() {
+                (
+                    pending.cache_key,
+                    pending.children_snapshot,
+                    pending.content_top_offset,
+                    pending.content_size,
+                    pending.plan,
+                )
+            } else if let Some(install) = self.inline_ifc_layout_call_site.current.take() {
+                if install.children_snapshot == self.children {
+                    self.apply_inline_ifc_install_plan(
+                        arena,
+                        &install.plan,
+                        install.content_top_offset,
+                        placement,
+                    );
+                    self.inline_ifc_layout_call_site.current = Some(install);
+                    let absolute_mask = self.compute_children_absolute_mask(arena);
+                    self.update_content_size_from_children(arena, &absolute_mask);
+                    return;
+                }
+                // Children changed without a measure pass: fall through to a
+                // full reshape, clearing the stale install first.
+                for node_key in install.installed_nodes {
+                    clear_inline_ifc_node_install(arena, node_key);
+                }
+                match self.compute_inline_ifc_plan(arena, inner_width) {
+                    Some(built) => built,
+                    None => {
+                        self.dirty_flags = self.dirty_flags.union(DirtyPassMask::PAINT);
+                        return;
+                    }
+                }
+            } else {
+                match self.compute_inline_ifc_plan(arena, inner_width) {
+                    Some(built) => built,
+                    None => return,
+                }
+            };
+
+        let previously_installed: Vec<NodeKey> = self
+            .inline_ifc_layout_call_site
+            .current
+            .take()
+            .map(|install| install.installed_nodes)
+            .unwrap_or_default();
+
+        let installed_nodes =
+            self.apply_inline_ifc_install_plan(arena, &plan, top_offset, placement);
+
+        for stale_key in previously_installed {
+            if installed_nodes.contains(&stale_key) {
+                continue;
+            }
+            clear_inline_ifc_node_install(arena, stale_key);
         }
 
-        let install_targets = element_inline_ifc_layout_call_site_install_targets_from_children(
+        self.inline_ifc_layout_call_site.current = Some(ElementInlineIfcRootInstall {
+            cache_key,
+            children_snapshot,
+            content_top_offset: top_offset,
+            content_size,
+            inner_width,
+            plan,
+            installed_nodes,
+        });
+
+        // Children just moved; the scroll-content extent computed during
+        // place_children is stale.
+        let absolute_mask = self.compute_children_absolute_mask(arena);
+        self.update_content_size_from_children(arena, &absolute_mask);
+    }
+
+    /// Shape the IFC and build an origin-independent install plan from
+    /// scratch. Used by place when there is no measure-stashed plan and no
+    /// reusable install (first install, or a structural change).
+    fn compute_inline_ifc_plan(
+        &mut self,
+        arena: &NodeArena,
+        inner_width: f32,
+    ) -> Option<(
+        InlineIfcCacheKey,
+        Vec<NodeKey>,
+        f32,
+        (f32, f32),
+        Vec<InlineIfcNodeInstallOp>,
+    )> {
+        let root_key = arena.find_by_stable_id(self.stable_id())?;
+        let collected = ElementInlineIfcMetadataCollector::collect_for_taken_root(
             arena,
+            ElementInlineIfcMetadataCollectorInput::new(root_key, inner_width),
+            self,
+        )?;
+        let candidate = self
+            .inline_ifc_layout_call_site
+            .cache
+            .update(&collected.root_source);
+        let geometry = inline_ifc_root_geometry(
+            self.inline_ifc_layout_call_site
+                .cache
+                .context_for(&candidate.cache_key),
+            arena,
+            &collected.sources_by_node,
+            root_key,
+        )?;
+        let top_offset = geometry.content_top_offset;
+        let content_size = geometry.content_size;
+        let plan = build_inline_ifc_install_plan(geometry, &collected, &candidate);
+        Some((
+            candidate.cache_key,
             self.children.clone(),
-        );
-        if install_targets.is_empty() {
-            self.inline_ifc_layout_call_site.last_output =
-                Some(ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
-                    &input,
-                    ElementInlineIfcLayoutCallSiteOptInStatus::NoInstallTargets,
-                ));
-            return;
+            top_offset,
+            content_size,
+            plan,
+        ))
+    }
+
+    /// Apply an origin-independent install plan: shift each op by the root's
+    /// current origin and write the geometry into descendants. Returns the
+    /// installed node keys (plan order).
+    fn apply_inline_ifc_install_plan(
+        &mut self,
+        arena: &mut NodeArena,
+        plan: &[InlineIfcNodeInstallOp],
+        top_offset: f32,
+        placement: LayoutPlacement,
+    ) -> Vec<NodeKey> {
+        let origin_x = self.layout_state.layout_inner_position.x - self.scroll_offset.x;
+        let origin_y = self.layout_state.layout_inner_position.y - self.scroll_offset.y;
+        let flow_origin_x = self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x;
+        let flow_origin_y = self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y;
+        let visual_offset_x =
+            self.layout_state.layout_position.x - self.layout_state.layout_flow_position.x;
+        let visual_offset_y =
+            self.layout_state.layout_position.y - self.layout_state.layout_flow_position.y;
+
+        // Children placed here must see the same clip scopes that
+        // place_children gives in-flow children, or their should_render
+        // and hit-test clips resolve against the wrong ancestor state.
+        let child_parent_hit_test_clip = self.current_child_hit_test_clip_rect();
+        self.push_hit_test_clip_scope(child_parent_hit_test_clip);
+        let overscan = Self::SHOULD_RENDER_OVERSCAN_PX.max(0.0);
+        self.push_child_clip_scope(Rect {
+            x: self.layout_state.layout_inner_position.x - overscan,
+            y: self.layout_state.layout_inner_position.y - overscan,
+            width: (self.layout_state.layout_inner_size.width + overscan * 2.0).max(0.0),
+            height: (self.layout_state.layout_inner_size.height + overscan * 2.0).max(0.0),
+        });
+
+        let mut installed_nodes = Vec::with_capacity(plan.len());
+        for op in plan {
+            installed_nodes.push(op.node_key());
+            match op {
+                InlineIfcNodeInstallOp::Span {
+                    node_key,
+                    package,
+                    paint_fragments,
+                } => {
+                    let mut package = package.clone();
+                    if let Some(package) = package
+                        .as_mut()
+                        .and_then(|package| package.decoration_draw_rect.as_mut())
+                    {
+                        for fragment in &mut package.fragments {
+                            fragment.metadata.position[0] += origin_x;
+                            fragment.metadata.position[1] += origin_y - top_offset;
+                        }
+                    }
+                    let absolute = paint_fragments
+                        .iter()
+                        .map(|rect| Rect {
+                            x: origin_x + rect.x,
+                            y: origin_y + rect.y - top_offset,
+                            width: rect.width,
+                            height: rect.height,
+                        })
+                        .collect::<Vec<_>>();
+                    let bounds = bounding_rect(
+                        &absolute
+                            .iter()
+                            .map(|rect| crate::ui::Rect {
+                                x: rect.x,
+                                y: rect.y,
+                                width: rect.width,
+                                height: rect.height,
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                    arena.with_element_taken(*node_key, |child, _arena| {
+                        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+                            element.install_inline_ifc_rollout_packages_from_candidate(
+                                package.as_ref(),
+                            );
+                            element.inline_ifc_owned_by_root = true;
+                            element.place_as_inline_ifc_owned_box(bounds);
+                            element.inline_paint_fragments = absolute;
+                        }
+                    });
+                }
+                InlineIfcNodeInstallOp::Text { node_key, lines } => {
+                    let absolute = lines
+                        .iter()
+                        .cloned()
+                        .map(|line| line.shifted(origin_x, origin_y - top_offset))
+                        .collect::<Vec<_>>();
+                    arena.with_element_taken(*node_key, |child, _arena| {
+                        if let Some(text) = child.as_any_mut().downcast_mut::<Text>() {
+                            let bounds = bounding_rect(
+                                &absolute.iter().map(|line| line.rect).collect::<Vec<_>>(),
+                            );
+                            text.place_as_inline_ifc_owned_box(bounds);
+                            text.install_inline_ifc_owned_geometry(absolute);
+                        }
+                    });
+                }
+                InlineIfcNodeInstallOp::Atomic { node_key, rect } => {
+                    arena.with_element_taken(*node_key, |child, arena| {
+                        // Bake the line placement into the parent origin:
+                        // not every atomic host honours set_layout_offset
+                        // (TextAreaTextRun places at parent + visual only).
+                        child.set_layout_offset(0.0, 0.0);
+                        child.place(
+                            LayoutPlacement {
+                                parent_x: flow_origin_x + rect.x,
+                                parent_y: flow_origin_y + rect.y - top_offset,
+                                visual_offset_x,
+                                visual_offset_y,
+                                available_width: rect.width.max(1.0),
+                                available_height: rect.height.max(1.0),
+                                viewport_width: placement.viewport_width,
+                                viewport_height: placement.viewport_height,
+                                percent_base_width: placement.percent_base_width,
+                                percent_base_height: placement.percent_base_height,
+                            },
+                            arena,
+                        );
+                    });
+                }
+            }
         }
 
+        self.pop_child_clip_scope();
+        self.pop_hit_test_clip_scope();
+        installed_nodes
+    }
+
+    /// Shell placement for a node whose geometry is owned by an inline
+    /// IFC root: adopt the bounding box so arena hit-testing and bbox
+    /// queries see the fragment union, without running a layout pass.
+    pub(crate) fn place_as_inline_ifc_owned_box(&mut self, bounds: crate::ui::Rect) {
+        self.layout_state.layout_position = Position {
+            x: bounds.x,
+            y: bounds.y,
+        };
+        self.layout_state.layout_flow_position = self.layout_state.layout_position;
+        self.layout_state.layout_inner_position = self.layout_state.layout_position;
+        self.layout_state.layout_size = Size {
+            width: bounds.width,
+            height: bounds.height,
+        };
+        self.layout_state.layout_inner_size = self.layout_state.layout_size;
+        self.layout_state.should_render = bounds.width > 0.0 && bounds.height > 0.0;
+    }
+
+    /// Tear down a previous install when this element stops being an
+    /// inline IFC root (layout switch, children removed, collector miss).
+    fn clear_inline_ifc_root_installs(&mut self, arena: &mut NodeArena) {
+        let Some(install) = self.inline_ifc_layout_call_site.current.take() else {
+            return;
+        };
+        for node_key in install.installed_nodes {
+            clear_inline_ifc_node_install(arena, node_key);
+        }
+        self.dirty_flags = self.dirty_flags.union(DirtyPassMask::PAINT);
+    }
+
+    /// Shape (or reuse) the candidate during measure and return the IFC
+    /// content size this inline root should adopt as its auto size
+    /// (insets not included).
+    fn measure_inline_ifc_root_content_size(
+        &mut self,
+        arena: &NodeArena,
+        inner_width: f32,
+    ) -> Option<(f32, f32)> {
+        if self.computed_style.layout != Layout::Inline || self.inline_ifc_owned_by_root {
+            self.inline_ifc_layout_call_site.pending = None;
+            return None;
+        }
+        // Cheapest path: the install is still valid (same children, same
+        // width, and no descendant changed content/size) — the IFC shaping
+        // is unchanged, so skip collect + cache hashing entirely. This is
+        // what makes re-measuring an inline root during an ancestor move
+        // (where the subtree is layout-clean) effectively free.
+        if let Some(install) = self.inline_ifc_layout_call_site.current.as_ref() {
+            let width_unchanged = (install.inner_width - inner_width).abs() <= f32::EPSILON;
+            let layout_clean = !self.dirty_flags.intersects(DirtyPassMask::LAYOUT)
+                && !self.children.iter().any(|&child_key| {
+                    arena.subtree_dirty_intersects(child_key, DirtyPassMask::LAYOUT)
+                });
+            if install.children_snapshot == self.children && width_unchanged && layout_clean {
+                self.inline_ifc_layout_call_site.pending = None;
+                LAYOUT_PLACE_PROFILE.with(|p| p.borrow_mut().ifc_measure_cheap += 1);
+                return Some(install.content_size);
+            }
+        }
+        let Some(root_key) = arena.find_by_stable_id(self.stable_id()) else {
+            self.inline_ifc_layout_call_site.pending = None;
+            return None;
+        };
         let Some(collected) = ElementInlineIfcMetadataCollector::collect_for_taken_root(
             arena,
-            ElementInlineIfcMetadataCollectorInput::new(root_key, input.max_width),
+            ElementInlineIfcMetadataCollectorInput::new(root_key, inner_width),
             self,
         ) else {
-            self.inline_ifc_layout_call_site.last_output =
-                Some(ElementInlineIfcLayoutCallSiteOptInOutput::no_op(
-                    &input,
-                    ElementInlineIfcLayoutCallSiteOptInStatus::UnsupportedRoot,
-                ));
-            return;
+            self.inline_ifc_layout_call_site.pending = None;
+            return None;
         };
-
-        let lifecycle_input =
-            ElementInlineIfcCandidateLifecycleInput::new(root_key, input.max_width)
-                .with_install_targets(install_targets.clone());
-        let lifecycle = match mode {
-            ElementInlineIfcLayoutCallSiteOptInMode::Disabled => unreachable!(),
-            ElementInlineIfcLayoutCallSiteOptInMode::ShadowObservation => {
-                ElementInlineIfcCandidateLifecycle::observe_collected(
-                    lifecycle_input,
-                    collected,
-                    &mut self.inline_ifc_layout_call_site.cache,
-                )
+        let candidate = self
+            .inline_ifc_layout_call_site
+            .cache
+            .update(&collected.root_source);
+        // If the shaping and children are identical to the current install,
+        // the geometry/plan are unchanged — return the cached content size
+        // and leave `pending` clear so place reuses the existing plan. This
+        // is the common case while only positions change around the root.
+        if let Some(install) = self.inline_ifc_layout_call_site.current.as_ref() {
+            if install.cache_key == candidate.cache_key
+                && install.children_snapshot == self.children
+            {
+                self.inline_ifc_layout_call_site.pending = None;
+                LAYOUT_PLACE_PROFILE.with(|p| p.borrow_mut().ifc_measure_shortcircuit += 1);
+                return Some(install.content_size);
             }
-            ElementInlineIfcLayoutCallSiteOptInMode::DryRunCandidate => {
-                ElementInlineIfcCandidateLifecycle::dry_run_collected(
-                    arena,
-                    lifecycle_input,
-                    collected,
-                    &mut self.inline_ifc_layout_call_site.cache,
-                )
-            }
+        }
+        LAYOUT_PLACE_PROFILE.with(|p| p.borrow_mut().ifc_measure_full += 1);
+        let Some(geometry) = inline_ifc_root_geometry(
+            self.inline_ifc_layout_call_site
+                .cache
+                .context_for(&candidate.cache_key),
+            arena,
+            &collected.sources_by_node,
+            root_key,
+        ) else {
+            self.inline_ifc_layout_call_site.pending = None;
+            return None;
         };
-
-        self.inline_ifc_layout_call_site.last_output =
-            Some(ElementInlineIfcLayoutCallSiteOptInOutput {
-                root_key,
-                mode,
-                status: ElementInlineIfcLayoutCallSiteOptInStatus::LifecycleRan,
-                install_targets,
-                lifecycle: Some(lifecycle),
-                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
-            });
+        // Stash the origin-independent plan so the upcoming place phase
+        // reuses this shaping instead of redoing collect + geometry.
+        let content_size = geometry.content_size;
+        let top_offset = geometry.content_top_offset;
+        let plan = build_inline_ifc_install_plan(geometry, &collected, &candidate);
+        self.inline_ifc_layout_call_site.pending = Some(ElementInlineIfcPendingPlan {
+            cache_key: candidate.cache_key,
+            children_snapshot: self.children.clone(),
+            content_top_offset: top_offset,
+            content_size,
+            plan,
+        });
+        Some(content_size)
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_inline_ifc_layout_call_site_opt_in_mode(
-        &mut self,
-        mode: ElementInlineIfcLayoutCallSiteOptInMode,
-    ) {
-        self.inline_ifc_layout_call_site.rollout_config =
-            ElementInlineIfcLayoutCallSiteRolloutConfig::from_mode(mode);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn apply_inline_ifc_layout_call_site_rollout_config_for_test(
-        &mut self,
-        config: ElementInlineIfcLayoutCallSiteRolloutConfig,
-    ) {
-        self.inline_ifc_layout_call_site.rollout_config = config;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn inline_ifc_layout_call_site_last_output_for_test(
+    /// Render input for the unified glyph pass of this inline IFC root:
+    /// the shaped paint payload plus the content-top normalization offset.
+    pub(crate) fn inline_ifc_root_render_input(
         &self,
-    ) -> Option<&ElementInlineIfcLayoutCallSiteOptInOutput> {
-        self.inline_ifc_layout_call_site.last_output.as_ref()
+    ) -> Option<(InlineIfcTextPassPaintInput, f32)> {
+        let install = self.inline_ifc_layout_call_site.current.as_ref()?;
+        let context = self
+            .inline_ifc_layout_call_site
+            .cache
+            .context_for(&install.cache_key)?;
+        Some((context.text_pass_paint_input(), install.content_top_offset))
     }
 
-    #[cfg(test)]
-    pub(crate) fn inline_ifc_layout_call_site_diagnostic_for_test(
+    /// Staging input for the unified glyph pass, with the content-top
+    /// normalization applied. The prepared pass positions glyphs from
+    /// `paint.local_pos` plus the fragment origin; `final_paint_pos` only
+    /// feeds probes, so both must carry the offset to stay in sync.
+    pub(crate) fn inline_ifc_root_staging_input(
         &self,
-        arena: &NodeArena,
-    ) -> Option<ElementInlineIfcLayoutCallSiteDiagnostic> {
-        self.inline_ifc_layout_call_site
-            .last_output
-            .as_ref()
-            .map(|output| {
-                output.diagnostic_for_test(arena, self.inline_ifc_layout_call_site.cache.len())
-            })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn inline_ifc_layout_call_site_cache_len_for_test(&self) -> usize {
-        self.inline_ifc_layout_call_site.cache.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn inline_ifc_layout_call_site_gate_mode_for_test(
-        &self,
-    ) -> ElementInlineIfcLayoutCallSiteOptInMode {
-        self.inline_ifc_layout_call_site_mode()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn inline_ifc_layout_call_site_rollout_phase_for_test(
-        &self,
-    ) -> ElementInlineIfcLayoutCallSiteRolloutPhase {
-        self.inline_ifc_layout_call_site.rollout_config.phase()
+        origin: [f32; 2],
+        opacity: f32,
+    ) -> Option<crate::view::render_pass::text_pass::TextPassPreparedStagingInput> {
+        let install = self.inline_ifc_layout_call_site.current.as_ref()?;
+        let context = self
+            .inline_ifc_layout_call_site
+            .cache
+            .context_for(&install.cache_key)?;
+        let top_offset = install.content_top_offset;
+        let mut staging_input = inline_ifc_paint_input_to_text_pass_staging_input(
+            context.text_pass_paint_input_ref(),
+            origin,
+            opacity,
+            0,
+            1.0,
+        );
+        for staged in &mut staging_input.glyphs {
+            staged.paint.local_pos[1] -= top_offset;
+            staged.final_paint_pos[1] -= top_offset;
+        }
+        Some(staging_input)
     }
 
     fn is_fragmentable_inline_element(&self) -> bool {
@@ -4651,6 +3762,24 @@ impl ElementStyleSnapshot {
 impl ElementTrait for Element {
     fn stable_id(&self) -> u64 {
         self.core.id
+    }
+
+    fn placement_eligibility_metadata(
+        &self,
+    ) -> crate::view::node_arena::PlacementEligibilityMetadata {
+        self.local_placement_eligibility_metadata()
+    }
+
+    fn last_placement(&self) -> Option<LayoutPlacement> {
+        self.last_layout_placement
+    }
+
+    fn hit_test_clip_rect(&self) -> Option<Rect> {
+        self.hit_test_clip_rect
+    }
+
+    fn translate_in_place(&mut self, dx: f32, dy: f32) {
+        self.translate_placed_geometry(dx, dy);
     }
 
     fn box_model_snapshot(&self) -> BoxModelSnapshot {

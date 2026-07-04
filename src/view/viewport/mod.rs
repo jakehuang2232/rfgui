@@ -518,6 +518,7 @@ impl Viewport {
                     desired_maximum_frame_latency: 2,
                     alpha_mode: wgpu::CompositeAlphaMode::Auto,
                     view_formats: vec![],
+                    color_space: wgpu::SurfaceColorSpace::Auto,
                 },
                 surface_target_format: wgpu::TextureFormat::Bgra8Unorm,
                 device: None,

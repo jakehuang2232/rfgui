@@ -722,7 +722,7 @@ mod hover_tests {
     use super::*;
 
     use crate::ui::{Modifiers, PointerButtons, PointerEventData};
-    use crate::view::base_component::{Element, LayoutConstraints, LayoutPlacement};
+    use crate::view::base_component::Element;
     use crate::view::test_support::{commit_child, commit_element, new_test_arena};
 
     use std::cell::RefCell;

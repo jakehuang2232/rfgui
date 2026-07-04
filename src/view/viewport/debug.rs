@@ -334,18 +334,6 @@ pub(super) fn build_text_measure_trace_nodes(
 ) -> Vec<TraceRenderNode> {
     let entries: &[(&str, usize, Option<usize>, f64)] = &[
         (
-            "text.measure_inline",
-            profile.measure_inline_calls,
-            None,
-            profile.measure_inline_ms,
-        ),
-        (
-            "text.collect_wrapped_inline_fragments",
-            profile.collect_wrapped_inline_fragments_calls,
-            Some(profile.collect_wrapped_inline_fragments_cache_hits),
-            profile.collect_wrapped_inline_fragments_ms,
-        ),
-        (
             "text.first_wrapped_fragment",
             profile.first_wrapped_fragment_calls,
             Some(profile.first_wrapped_fragment_cache_hits),
@@ -408,6 +396,28 @@ pub(super) fn build_layout_place_trace_nodes(
         TraceRenderNode::new("place_layout_inline", profile.place_layout_inline_ms),
         TraceRenderNode::new("place_layout_flex", profile.place_layout_flex_ms),
         TraceRenderNode::new("place_layout_flow", profile.place_layout_flow_ms),
+        TraceRenderNode::new(
+            format!(
+                "ifc_measure (cheap={}, shortcircuit={}, full={})",
+                profile.ifc_measure_cheap,
+                profile.ifc_measure_shortcircuit,
+                profile.ifc_measure_full,
+            ),
+            0.0,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "measure_ran (self_dirty={}, child_dirty={}, proposal_changed={} [size={}, viewport={}, percent_base={}, first={}])",
+                profile.measure_ran_self_dirty,
+                profile.measure_ran_child_dirty,
+                profile.measure_ran_proposal_changed,
+                profile.proposal_changed_size,
+                profile.proposal_changed_viewport,
+                profile.proposal_changed_percent_base,
+                profile.proposal_changed_first,
+            ),
+            0.0,
+        ),
         TraceRenderNode::new(
             format!(
                 "axis_placement_eligibility (candidates={}, clean_subtree={}, dirty_subtree={}, potential_replay={}, inline={}, flex={}, flow={})",
@@ -483,6 +493,13 @@ pub(super) fn build_layout_place_trace_nodes(
             format!(
                 "skipped_child_place (calls={})",
                 profile.skipped_child_place_calls
+            ),
+            0.0,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "translated_subtree (roots={}, nodes={})",
+                profile.translated_subtree_roots, profile.translated_subtree_nodes
             ),
             0.0,
         ),

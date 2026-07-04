@@ -61,10 +61,19 @@ impl InlineIfcInput {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub(crate) enum InlineIfcAlignment {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct InlineIfcLayoutOptions {
     pub(crate) max_width: Option<f32>,
     pub(crate) allow_wrap: bool,
+    pub(crate) align: InlineIfcAlignment,
 }
 
 impl InlineIfcLayoutOptions {
@@ -76,7 +85,13 @@ impl InlineIfcLayoutOptions {
                 None
             },
             allow_wrap,
+            align: InlineIfcAlignment::Left,
         }
+    }
+
+    pub(crate) fn with_align(mut self, align: InlineIfcAlignment) -> Self {
+        self.align = align;
+        self
     }
 
     fn from_input(input: &InlineIfcInput) -> Self {
@@ -89,6 +104,7 @@ impl Default for InlineIfcLayoutOptions {
         Self {
             max_width: None,
             allow_wrap: true,
+            align: InlineIfcAlignment::Left,
         }
     }
 }
@@ -305,6 +321,7 @@ pub(crate) enum InlineIfcContentKeyItem {
 pub(crate) struct InlineIfcLayoutKey {
     pub(crate) max_width_bits: Option<u32>,
     pub(crate) allow_wrap: bool,
+    pub(crate) align: InlineIfcAlignment,
 }
 
 impl InlineIfcLayoutKey {
@@ -312,6 +329,7 @@ impl InlineIfcLayoutKey {
         Self {
             max_width_bits: options.max_width.map(f32::to_bits),
             allow_wrap: options.allow_wrap,
+            align: options.align,
         }
     }
 }
@@ -552,7 +570,16 @@ impl InlineIfcCache {
     }
 
     pub(crate) fn update(&mut self, input: InlineIfcInput) -> InlineIfcCacheUpdate<'_> {
-        let cache_key = input.cache_key();
+        let layout_options = InlineIfcLayoutOptions::from_input(&input);
+        self.update_with_options(input, layout_options)
+    }
+
+    pub(crate) fn update_with_options(
+        &mut self,
+        input: InlineIfcInput,
+        layout_options: InlineIfcLayoutOptions,
+    ) -> InlineIfcCacheUpdate<'_> {
+        let cache_key = input.cache_key_with_layout_options(layout_options);
         let shape_key = InlineIfcShapeCacheKey::from_cache_key(&cache_key);
         let invalidation = self
             .entries
@@ -572,7 +599,7 @@ impl InlineIfcCache {
             };
         }
 
-        let context = InlineFormattingContext::build(input);
+        let context = InlineFormattingContext::build_with_options(input, layout_options);
         let shape_key = InlineIfcShapeCacheKey::from_cache_key(context.cache_key());
         self.entries.insert(
             shape_key.clone(),
@@ -958,19 +985,23 @@ impl InlineIfcElementPackageDistributionInput {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineIfcElementRootSource {
     pub(crate) input: InlineIfcInput,
+    pub(crate) layout_options: InlineIfcLayoutOptions,
     pub(crate) package_distribution: InlineIfcElementPackageDistributionInput,
 }
 
 impl InlineIfcElementRootSource {
     pub(crate) fn new(input: InlineIfcInput) -> Self {
+        let layout_options = InlineIfcLayoutOptions::from_input(&input);
         Self {
             input,
+            layout_options,
             package_distribution: InlineIfcElementPackageDistributionInput::new(),
         }
     }
 
     pub(crate) fn cache_key(&self) -> InlineIfcCacheKey {
-        self.input.cache_key()
+        self.input
+            .cache_key_with_layout_options(self.layout_options)
     }
 
     pub(crate) fn with_package_distribution(
@@ -986,16 +1017,27 @@ impl InlineIfcElementRootSource {
 pub(crate) struct InlineIfcElementRootSourceBuilder {
     items: Vec<InlineIfcItem>,
     max_width: Option<f32>,
+    allow_wrap: bool,
     package_distribution: InlineIfcElementPackageDistributionInput,
 }
 
 impl InlineIfcElementRootSourceBuilder {
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self {
+            items: Vec::new(),
+            max_width: None,
+            allow_wrap: true,
+            package_distribution: InlineIfcElementPackageDistributionInput::new(),
+        }
     }
 
     pub(crate) fn with_max_width(mut self, max_width: f32) -> Self {
         self.max_width = Some(max_width.max(1.0));
+        self
+    }
+
+    pub(crate) fn with_allow_wrap(mut self, allow_wrap: bool) -> Self {
+        self.allow_wrap = allow_wrap;
         self
     }
 
@@ -1022,8 +1064,10 @@ impl InlineIfcElementRootSourceBuilder {
         if let Some(max_width) = self.max_width {
             input = input.with_max_width(max_width);
         }
+        let layout_options = InlineIfcLayoutOptions::new(input.max_width, self.allow_wrap);
         InlineIfcElementRootSource {
             input,
+            layout_options,
             package_distribution: self.package_distribution,
         }
     }
@@ -1074,7 +1118,9 @@ impl InlineIfcElementRootCandidateCache {
         &mut self,
         source: &InlineIfcElementRootSource,
     ) -> InlineIfcElementRootCandidate {
-        let update = self.cache.update(source.input.clone());
+        let update = self
+            .cache
+            .update_with_options(source.input.clone(), source.layout_options);
         let cache_key = update.entry.cache_key().clone();
         let package_distributor = update
             .entry
@@ -1090,6 +1136,20 @@ impl InlineIfcElementRootCandidateCache {
 
     pub(crate) fn len(&self) -> usize {
         self.cache.len()
+    }
+
+    /// Borrow the shaped context for a candidate produced by [`Self::update`].
+    /// Returns `None` if the entry was evicted or never built.
+    pub(crate) fn context_for(
+        &self,
+        cache_key: &InlineIfcCacheKey,
+    ) -> Option<&InlineFormattingContext> {
+        match self.cache.lookup_key(cache_key) {
+            InlineIfcCacheLookup::Reuse(entry) | InlineIfcCacheLookup::RepaintOnly(entry) => {
+                Some(entry.context())
+            }
+            InlineIfcCacheLookup::Miss { .. } => None,
+        }
     }
 }
 
@@ -1222,9 +1282,12 @@ impl InlineIfcTextLayoutSnapshot {
                     source: glyph.source,
                     cluster_range: glyph.cluster_range.clone(),
                     glyph_id: glyph.glyph_id,
-                    x: line.x + glyph.x,
+                    // Parley positioned glyphs are absolute in layout space
+                    // (alignment shift included); line.x must not be added
+                    // again or aligned lines paint double-shifted.
+                    x: glyph.x,
                     baseline_y,
-                    glyph_x: glyph.x,
+                    glyph_x: glyph.x - line.x,
                     glyph_y: glyph.y - baseline_y,
                     advance: glyph.advance,
                     font_size: glyph.font_size,
@@ -1392,6 +1455,20 @@ pub(crate) struct InlineFormattingContext {
     style_ranges: Vec<InlineIfcStyleRange>,
     inline_boxes: Vec<InlineIfcBoxMapping>,
     cache_key: InlineIfcCacheKey,
+    // Memoized derivations: walking the parley layout (cluster/source
+    // resolution, font lookups) is the dominant per-frame cost for inline
+    // roots. The context is immutable once built and cached, so the glyph
+    // list and the snapshot are computed lazily once and reused.
+    glyph_items_cache: std::cell::OnceCell<Vec<InlineIfcGlyphItem>>,
+    snapshot_cache: std::cell::OnceCell<InlineIfcTextLayoutSnapshot>,
+    // Visual caret stops run two parley cursor queries per glyph, and the
+    // geometry builder asks for them once per text source. Memoize so the
+    // whole-layout stop set is built once and filtered per source.
+    caret_stops_cache: std::cell::OnceCell<Vec<InlineIfcCaretStop>>,
+    // The text-pass paint payload is consumed every paint frame by the
+    // unified glyph passes; memoize so steady-state repaints borrow
+    // instead of re-materializing per-glyph vectors.
+    paint_input_cache: std::cell::OnceCell<InlineIfcTextPassPaintInput>,
 }
 
 impl InlineFormattingContext {
@@ -1423,6 +1500,10 @@ impl InlineFormattingContext {
             style_ranges: builder.style_ranges,
             inline_boxes: builder.inline_boxes,
             cache_key,
+            glyph_items_cache: std::cell::OnceCell::new(),
+            snapshot_cache: std::cell::OnceCell::new(),
+            caret_stops_cache: std::cell::OnceCell::new(),
+            paint_input_cache: std::cell::OnceCell::new(),
         }
     }
 
@@ -1525,6 +1606,17 @@ impl InlineFormattingContext {
     }
 
     pub(crate) fn glyph_items(&self) -> Vec<InlineIfcGlyphItem> {
+        self.glyph_items_ref().to_vec()
+    }
+
+    /// Memoized glyph list. Built once per shaped context; every caller
+    /// after the first borrows instead of re-walking the parley layout.
+    pub(crate) fn glyph_items_ref(&self) -> &[InlineIfcGlyphItem] {
+        self.glyph_items_cache
+            .get_or_init(|| self.compute_glyph_items())
+    }
+
+    fn compute_glyph_items(&self) -> Vec<InlineIfcGlyphItem> {
         let mut output = Vec::new();
         for (line_index, line) in self.layout.lines().enumerate() {
             let mut consumed_glyphs_by_run = HashMap::<usize, usize>::new();
@@ -1585,7 +1677,7 @@ impl InlineFormattingContext {
 
     pub(crate) fn glyph_groups(&self) -> Vec<InlineIfcGlyphGroup> {
         let mut groups = Vec::<InlineIfcGlyphGroup>::new();
-        for glyph in self.glyph_items() {
+        for glyph in self.glyph_items_ref().iter().cloned() {
             if let Some(group) = groups.last_mut() {
                 if group.line_index == glyph.line_index
                     && group.source == glyph.source
@@ -1621,6 +1713,16 @@ impl InlineFormattingContext {
     }
 
     pub(crate) fn text_layout_snapshot(&self) -> InlineIfcTextLayoutSnapshot {
+        self.text_layout_snapshot_ref().clone()
+    }
+
+    /// Memoized layout snapshot. Built once per shaped context.
+    pub(crate) fn text_layout_snapshot_ref(&self) -> &InlineIfcTextLayoutSnapshot {
+        self.snapshot_cache
+            .get_or_init(|| self.compute_text_layout_snapshot())
+    }
+
+    fn compute_text_layout_snapshot(&self) -> InlineIfcTextLayoutSnapshot {
         let paint_glyphs = self.text_paint_glyphs();
         let inline_boxes = self.inline_box_placements();
         let decorations = self.decoration_paint_fragments();
@@ -1669,12 +1771,44 @@ impl InlineFormattingContext {
     }
 
     pub(crate) fn text_pass_paint_input(&self) -> InlineIfcTextPassPaintInput {
-        self.text_layout_snapshot().text_pass_paint_input()
+        self.text_pass_paint_input_ref().clone()
+    }
+
+    /// Memoized paint payload. Built once per shaped context; every paint
+    /// frame after the first borrows instead of rebuilding.
+    pub(crate) fn text_pass_paint_input_ref(&self) -> &InlineIfcTextPassPaintInput {
+        self.paint_input_cache
+            .get_or_init(|| self.text_layout_snapshot_ref().text_pass_paint_input())
+    }
+
+    /// Measured content size matching the legacy text engine's formula:
+    /// max glyph right edge across lines by max line bottom, floored at
+    /// 1.0 per axis; (1.0, 1.0) when nothing shaped.
+    pub(crate) fn measure_content_size(&self) -> (f32, f32) {
+        let snapshot = self.text_layout_snapshot_ref();
+        let mut max_width = 0.0f32;
+        let mut max_bottom = 0.0f32;
+        let mut line_count = 0usize;
+        for line in &snapshot.lines {
+            line_count += 1;
+            let glyph_right = line
+                .glyphs
+                .iter()
+                .map(|glyph| glyph.x + glyph.advance.max(0.0))
+                .fold(0.0f32, f32::max);
+            max_width = max_width.max(glyph_right);
+            max_bottom = max_bottom.max(line.y + line.height);
+        }
+        if line_count == 0 {
+            return (1.0, 1.0);
+        }
+        (max_width.max(1.0), max_bottom.max(1.0))
     }
 
     pub(crate) fn text_paint_glyphs(&self) -> Vec<InlineIfcPaintGlyph> {
-        self.glyph_items()
-            .into_iter()
+        self.glyph_items_ref()
+            .iter()
+            .cloned()
             .map(InlineIfcPaintGlyph::from)
             .collect()
     }
@@ -1792,6 +1926,148 @@ impl InlineFormattingContext {
         InlineIfcAtomicBoxPlacementPackage { source, placements }
     }
 
+    /// Per-line bounding rects of the glyph runs contributed by `source`,
+    /// in IFC content coordinates. Used as the hit-test/selection geometry
+    /// for text owned by a unified inline IFC root.
+    pub(crate) fn source_line_rects(&self, source: InlineIfcSourceId) -> Vec<InlineIfcPaintRect> {
+        let snapshot = self.text_layout_snapshot_ref();
+        let mut rects = Vec::new();
+        for line in &snapshot.lines {
+            let mut left: Option<f32> = None;
+            let mut right: Option<f32> = None;
+            for glyph in line.glyphs.iter().filter(|glyph| glyph.source == source) {
+                let start = glyph.x;
+                left = Some(left.map_or(start, |current| current.min(start)));
+                right = Some(right.map_or(start + glyph.advance, |current| {
+                    current.max(start + glyph.advance)
+                }));
+            }
+            let (Some(left), Some(right)) = (left, right) else {
+                continue;
+            };
+            if right <= left {
+                continue;
+            }
+            rects.push(InlineIfcPaintRect {
+                x: left,
+                y: line.y,
+                width: right - left,
+                height: line.height,
+            });
+        }
+        rects
+    }
+
+    /// Per-line rects of `source`'s text where `y`/`height` track the text
+    /// box (parley run ascent/descent above and below the baseline) rather
+    /// than the full line box, so a Text node owned by a unified root
+    /// reports the position its glyphs actually paint at. Returns
+    /// `(line_index, rect)` pairs in IFC content coordinates.
+    pub(crate) fn source_text_line_rects(
+        &self,
+        source: InlineIfcSourceId,
+    ) -> Vec<(usize, InlineIfcPaintRect)> {
+        // Map run index → (ascent, descent) so we can size the text box
+        // off the actual font metrics parley used for each run.
+        let mut run_metrics: HashMap<usize, (f32, f32)> = HashMap::new();
+        for line in self.layout.lines() {
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                    continue;
+                };
+                let run = glyph_run.run();
+                let metrics = run.metrics();
+                run_metrics.insert(run.index(), (metrics.ascent, metrics.descent));
+            }
+        }
+
+        // glyph_items carries the per-glyph source (innermost, nesting-aware)
+        // and run index, plus the baseline-relative line geometry.
+        let glyphs = self.glyph_items_ref();
+        // Precompute per-line baseline and inline offset so the glyph loop
+        // is O(glyphs), not O(glyphs × lines).
+        let line_baselines: Vec<f32> = self
+            .layout
+            .lines()
+            .map(|line| line.metrics().baseline)
+            .collect();
+        let mut by_line: std::collections::BTreeMap<usize, (f32, f32, f32, f32)> =
+            std::collections::BTreeMap::new();
+        for glyph in glyphs.iter().filter(|glyph| glyph.source == source) {
+            // Positioned glyph x is absolute (alignment offset included).
+            let left = glyph.x;
+            let right = left + glyph.advance;
+            let (ascent, descent) = run_metrics
+                .get(&glyph.run_index)
+                .copied()
+                .unwrap_or((glyph.font_size * 0.88, glyph.font_size * 0.2));
+            let entry = by_line
+                .entry(glyph.line_index)
+                .or_insert((f32::MAX, f32::MIN, 0.0, 0.0));
+            entry.0 = entry.0.min(left);
+            entry.1 = entry.1.max(right);
+            entry.2 = entry.2.max(ascent);
+            entry.3 = entry.3.max(descent);
+        }
+
+        by_line
+            .into_iter()
+            .filter_map(|(line_index, (left, right, ascent, descent))| {
+                if right <= left {
+                    return None;
+                }
+                let baseline = line_baselines.get(line_index).copied()?;
+                Some((
+                    line_index,
+                    InlineIfcPaintRect {
+                        x: left,
+                        y: baseline - ascent,
+                        width: right - left,
+                        height: (ascent + descent).max(1.0),
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    pub(crate) fn text_top_for_line_range(
+        &self,
+        line_index: usize,
+        range: &Range<usize>,
+    ) -> Option<f32> {
+        let mut run_metrics: HashMap<usize, (f32, f32)> = HashMap::new();
+        for line in self.layout.lines() {
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                    continue;
+                };
+                let run = glyph_run.run();
+                let metrics = run.metrics();
+                run_metrics.insert(run.index(), (metrics.ascent, metrics.descent));
+            }
+        }
+
+        let baseline = self
+            .layout
+            .lines()
+            .nth(line_index)
+            .map(|line| line.metrics().baseline)?;
+        let ascent = self
+            .glyph_items_ref()
+            .iter()
+            .filter(|glyph| {
+                glyph.line_index == line_index
+                    && glyph.cluster_range.start < range.end
+                    && glyph.cluster_range.end > range.start
+            })
+            .filter_map(|glyph| run_metrics.get(&glyph.run_index).map(|(ascent, _)| *ascent))
+            .fold(None, |current: Option<f32>, ascent| {
+                Some(current.map_or(ascent, |current| current.max(ascent)))
+            })?;
+
+        Some(baseline - ascent)
+    }
+
     pub(crate) fn element_package_distributor(
         &self,
         input: InlineIfcElementPackageDistributionInput,
@@ -1896,8 +2172,18 @@ impl InlineFormattingContext {
     }
 
     pub(crate) fn visual_caret_stops(&self) -> Vec<InlineIfcCaretStop> {
+        self.visual_caret_stops_ref().to_vec()
+    }
+
+    /// Memoized whole-layout caret stops (built once per shaped context).
+    pub(crate) fn visual_caret_stops_ref(&self) -> &[InlineIfcCaretStop] {
+        self.caret_stops_cache
+            .get_or_init(|| self.compute_visual_caret_stops())
+    }
+
+    fn compute_visual_caret_stops(&self) -> Vec<InlineIfcCaretStop> {
         let mut stops = Vec::<InlineIfcCaretStop>::new();
-        let glyphs = self.glyph_items();
+        let glyphs = self.glyph_items_ref();
         let inline_box_placements = self.inline_box_placements();
         let line_text_ranges = self
             .layout
@@ -2654,7 +2940,7 @@ fn build_parley_layout(
             TextWrapMode::NoWrap
         }));
         if layout_options.allow_wrap {
-            builder.push_default(StyleProperty::OverflowWrap(OverflowWrap::Anywhere));
+            builder.push_default(StyleProperty::OverflowWrap(OverflowWrap::BreakWord));
         }
         builder.push_default(StyleProperty::FontFamily(parley_font_family(
             &default_style.font_families,
@@ -2698,10 +2984,29 @@ fn build_parley_layout(
         }
 
         let mut layout = builder.build(backing_text);
-        layout.break_all_lines(layout_options.max_width);
-        layout.align(ParleyAlignment::Left, AlignmentOptions::default());
+        // Legacy-compatible slack: measured content that fits within a
+        // couple of float-error pixels of the constraint must not wrap.
+        layout.break_all_lines(
+            layout_options
+                .max_width
+                .map(|width| width + INLINE_IFC_WRAP_EPSILON),
+        );
+        layout.align(
+            to_parley_alignment(layout_options.align),
+            AlignmentOptions::default(),
+        );
         layout
     })
+}
+
+const INLINE_IFC_WRAP_EPSILON: f32 = 2.0;
+
+fn to_parley_alignment(align: InlineIfcAlignment) -> ParleyAlignment {
+    match align {
+        InlineIfcAlignment::Left => ParleyAlignment::Left,
+        InlineIfcAlignment::Center => ParleyAlignment::Center,
+        InlineIfcAlignment::Right => ParleyAlignment::Right,
+    }
 }
 
 fn parley_font_family(font_families: &[String]) -> FontFamily<'_> {
@@ -2885,6 +3190,137 @@ mod tests {
             cache_invalidation(&input, &same_input),
             InlineIfcInvalidation::Reuse
         );
+    }
+
+    fn plain_text_input(text: &str) -> InlineIfcInput {
+        InlineIfcInput::new(vec![InlineIfcItem::TextSpan {
+            source: ROOT,
+            text: text.to_string(),
+            style: Some(style([1, 1, 1, 255], 400)),
+        }])
+    }
+
+    #[test]
+    fn wrap_epsilon_keeps_snug_content_on_one_line() {
+        let text = "epsilon slack";
+        let unconstrained = InlineFormattingContext::build_with_options(
+            plain_text_input(text),
+            InlineIfcLayoutOptions::new(None, false),
+        );
+        let intrinsic_width = unconstrained
+            .text_pass_paint_input()
+            .glyphs
+            .iter()
+            .map(|glyph| glyph.x + glyph.advance)
+            .fold(0.0f32, f32::max);
+        assert!(intrinsic_width > 10.0, "fixture should shape glyphs");
+        let line_count = |max_width: f32| {
+            InlineFormattingContext::build_with_options(
+                plain_text_input(text),
+                InlineIfcLayoutOptions::new(Some(max_width), true),
+            )
+            .text_layout_snapshot()
+            .lines
+            .len()
+        };
+
+        assert_eq!(
+            line_count(intrinsic_width - 1.0),
+            1,
+            "content within the 2px slack must not wrap"
+        );
+        assert!(
+            line_count(intrinsic_width - 3.0) > 1,
+            "content beyond the slack must wrap"
+        );
+    }
+
+    #[test]
+    fn layout_align_shifts_lines_within_the_constraint() {
+        let text = "align me";
+        let max_width = 220.0;
+        let glyph_extent = |align: InlineIfcAlignment| {
+            let glyphs = InlineFormattingContext::build_with_options(
+                plain_text_input(text),
+                InlineIfcLayoutOptions::new(Some(max_width), true).with_align(align),
+            )
+            .text_pass_paint_input()
+            .glyphs;
+            let left = glyphs.iter().map(|glyph| glyph.x).fold(f32::MAX, f32::min);
+            let right = glyphs
+                .iter()
+                .map(|glyph| glyph.x + glyph.advance)
+                .fold(0.0f32, f32::max);
+            (left, right)
+        };
+
+        let (left_l, _) = glyph_extent(InlineIfcAlignment::Left);
+        let (left_c, _) = glyph_extent(InlineIfcAlignment::Center);
+        let (left_r, right_r) = glyph_extent(InlineIfcAlignment::Right);
+        assert!(left_l.abs() <= 1.0, "left-aligned line starts at zero");
+        assert!(left_c > left_l + 1.0, "center must shift right of left");
+        assert!(left_r > left_c + 1.0, "right must shift right of center");
+        assert!(
+            ((left_c - left_l) - (left_r - left_c)).abs() <= 1.0,
+            "center should sit halfway between left and right"
+        );
+        assert!(
+            right_r <= max_width + INLINE_IFC_WRAP_EPSILON + 0.01,
+            "right-aligned glyphs must stay inside the constraint, right={right_r}"
+        );
+    }
+
+    /// Safety net for dropping the legacy 240-char cluster-break guard
+    /// (`parley_safe_text`): long real-world content must still shape
+    /// without hanging or producing degenerate output.
+    #[test]
+    fn shaping_survives_long_content_without_chunk_guard() {
+        let long_ascii = "a".repeat(100_000);
+        let ifc = InlineFormattingContext::build_with_options(
+            plain_text_input(&long_ascii),
+            InlineIfcLayoutOptions::new(Some(400.0), true),
+        );
+        let lines = ifc.text_layout_snapshot().lines.len();
+        assert!(
+            lines > 100,
+            "100k ascii should wrap into many lines: {lines}"
+        );
+
+        let long_cjk = "\u{4E2D}".repeat(10_000);
+        let ifc = InlineFormattingContext::build_with_options(
+            plain_text_input(&long_cjk),
+            InlineIfcLayoutOptions::new(Some(400.0), true),
+        );
+        let lines = ifc.text_layout_snapshot().lines.len();
+        assert!(lines > 100, "10k CJK should wrap into many lines: {lines}");
+    }
+
+    /// Parley (through 0.11) counts a shaping cluster's chars in a `u8`
+    /// (`map_len` in `shape::fill_cluster_in_place`), so a single grapheme
+    /// segment with thousands of combining marks used to panic with "attempt
+    /// to add with overflow". The `icu_segmenter` shim now splits oversized
+    /// grapheme segments at the boundary level (byte offsets untouched, see
+    /// `vendor/icu_segmenter_rfgui_shim`), replacing the legacy
+    /// zero-width-space insertion (`parley_safe_text`).
+    #[test]
+    fn shaping_survives_overlong_combining_cluster() {
+        let combining = format!("a{}", "\u{0301}".repeat(2_000));
+        let ifc = InlineFormattingContext::build_with_options(
+            plain_text_input(&combining),
+            InlineIfcLayoutOptions::new(Some(400.0), true),
+        );
+        assert!(!ifc.text_layout_snapshot().lines.is_empty());
+    }
+
+    #[test]
+    fn layout_cache_key_distinguishes_alignment() {
+        let input = plain_text_input("align key");
+        let left =
+            input.cache_key_with_layout_options(InlineIfcLayoutOptions::new(Some(100.0), true));
+        let center = input.cache_key_with_layout_options(
+            InlineIfcLayoutOptions::new(Some(100.0), true).with_align(InlineIfcAlignment::Center),
+        );
+        assert_ne!(left, center, "alignment must participate in the shape key");
     }
 
     #[test]
@@ -4336,9 +4772,9 @@ mod tests {
             glyph.normalized_coords_hash
         );
         assert_eq!(adapted.font_size, glyph.font_size);
-        assert_eq!(adapted.x, line.x + glyph.x);
+        assert_eq!(adapted.x, glyph.x);
         assert_eq!(adapted.baseline_y, line.y + line.baseline);
-        assert_eq!(adapted.glyph_x, glyph.x);
+        assert_eq!(adapted.glyph_x, glyph.x - line.x);
         assert_eq!(adapted.glyph_y, glyph.y - (line.y + line.baseline));
         assert_eq!(adapted.advance, glyph.advance);
         assert_eq!(adapted.color, brush_to_text_color(glyph.batch_key.brush));

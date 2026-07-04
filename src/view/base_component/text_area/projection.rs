@@ -516,6 +516,7 @@ impl TextArea {
                 return;
             };
             segment.set_vertical_align(self.vertical_align);
+            segment.set_owner_inline_baseline(self.font_size, self.line_height);
             segment.set_auto_wrap(self.auto_wrap);
             cx.invalidate(segment.local_dirty_flags());
         });
@@ -753,6 +754,8 @@ impl TextArea {
             segment_index,
             range,
             self.vertical_align,
+            self.font_size,
+            self.line_height,
             self.auto_wrap,
             children,
         );
@@ -814,11 +817,9 @@ impl TextArea {
         // When TextArea has wrap disabled, projection subtrees must also not
         // wrap. Without this cascade, a `<Text>` inside a projection keeps
         // its default `TextWrap::Wrap` and the outer measure pass passes
-        // down a tight `first_available_width` once preceding inline content
-        // has consumed line space — Text then emits multi-fragment output
-        // with `force_break_after=true` on non-last fragments, and the
-        // outer flex_solver breaks the line via `force_break_pending` even
-        // though `solver_wrap=false`.
+        // down a tight width once preceding inline content has consumed
+        // line space. The projection Text then wraps and pushes the
+        // trailing run to a new visual line even though `solver_wrap=false`.
         if !self.auto_wrap {
             style.insert(
                 PropertyId::TextWrap,
@@ -1134,6 +1135,8 @@ fn wrap_projection_children(
     segment_index: usize,
     range: Range<usize>,
     vertical_align: crate::style::VerticalAlign,
+    font_size: f32,
+    line_height: f32,
     auto_wrap: bool,
     children: Vec<crate::view::renderer_adapter::ElementDescriptor>,
 ) -> crate::view::renderer_adapter::ElementDescriptor {
@@ -1143,6 +1146,7 @@ fn wrap_projection_children(
     let mut wrapper = TextAreaProjectionSegment::with_stable_id(wrapper_id);
     wrapper.set_char_range(range);
     wrapper.set_vertical_align(vertical_align);
+    wrapper.set_owner_inline_baseline(font_size, line_height);
     wrapper.set_auto_wrap(auto_wrap);
 
     crate::view::renderer_adapter::ElementDescriptor {
@@ -1372,7 +1376,7 @@ mod tests {
     }
 
     #[test]
-    fn text_area_inline_ifc_projection_fixed_width_wrap_keeps_per_run_payload_diagnostic() {
+    fn text_area_projection_fixed_width_wrap_keeps_plain_run_slicing() {
         let content = concat!(
             "Fetch a long environment URL from {{API_HOST}} while the line wraps automatically\n",
             "/v1/users/{{USER_ID}}/profiles/preferences/activity/export/sessions"
@@ -1432,20 +1436,15 @@ mod tests {
         );
 
         let children = arena.children_of(root);
-        let run_payloads = children
+        let run_segments = children
             .iter()
-            .enumerate()
-            .filter_map(|(child_index, key)| {
+            .filter_map(|key| {
                 arena
                     .with_element_taken_ref(*key, |child, _| {
-                        child.as_any().downcast_ref::<TextAreaTextRun>().map(|run| {
-                            let payload = run
-                                .inline_ifc_staging_payload([0.0, 0.0], child_index as u32, 1.0)
-                                .expect(
-                                    "laid-out TextAreaTextRun should expose IFC staging payload",
-                                );
-                            (run.text.clone(), run.char_range.clone(), payload)
-                        })
+                        child
+                            .as_any()
+                            .downcast_ref::<TextAreaTextRun>()
+                            .map(|run| (run.text.clone(), run.char_range.clone()))
                     })
                     .flatten()
             })
@@ -1463,14 +1462,14 @@ mod tests {
 
         assert_eq!(projection_count, 2, "expected two atomic projection slots");
         assert_eq!(
-            run_payloads.len(),
+            run_segments.len(),
             4,
             "projection slicing should leave four plain TextAreaTextRun segments"
         );
 
-        let run_texts = run_payloads
+        let run_texts = run_segments
             .iter()
-            .map(|(text, _, _)| text.as_str())
+            .map(|(text, _)| text.as_str())
             .collect::<Vec<_>>();
         assert_eq!(
             run_texts,
@@ -1480,46 +1479,29 @@ mod tests {
                 "/v1/users/",
                 "/profiles/preferences/activity/export/sessions",
             ],
-            "projection tokens should be removed from plain run payloads",
+            "projection tokens should be removed from plain run slices",
         );
 
-        for (run_text, char_range, payload) in &run_payloads {
+        for (run_text, char_range) in &run_segments {
             assert_eq!(
-                payload.bridge_input.content, *run_text,
-                "TextArea run IFC payload is still sourced from the individual run"
+                run_text.chars().count(),
+                char_range.end.saturating_sub(char_range.start),
+                "plain run char range should describe the sliced run text"
             );
-            assert_eq!(payload.char_range, *char_range);
-            assert_eq!(
-                payload.readiness.projection_diagnostic.char_range,
-                *char_range
-            );
-            assert_eq!(
-                payload
-                    .readiness
-                    .projection_diagnostic
-                    .projection_segment_count,
-                0,
-                "per-run payload does not carry TextArea-level projection atomic boxes"
-            );
-            assert!(
-                payload.bridge_input.width_constraint == Some(168.0),
-                "legacy per-run diagnostic payload should still only know its run width constraint",
-            );
-            assert!(payload.bridge_input.allow_wrap);
         }
 
-        let payload_contents = run_payloads
+        let run_contents = run_segments
             .iter()
-            .map(|(_, _, payload)| payload.bridge_input.content.as_str())
+            .map(|(text, _)| text.as_str())
             .collect::<Vec<_>>()
             .join("");
         assert!(
-            !payload_contents.contains("API_HOST") && !payload_contents.contains("USER_ID"),
-            "legacy per-run diagnostic payloads do not carry projection atomic boxes"
+            !run_contents.contains("API_HOST") && !run_contents.contains("USER_ID"),
+            "plain run slices do not carry projection atomic boxes"
         );
         assert_ne!(
-            payload_contents, content,
-            "the diagnostic only proves old run payloads still exist; it does not describe the visible unified render/layout path"
+            run_contents, content,
+            "plain run slices alone do not describe the visible unified render/layout path"
         );
     }
 
@@ -1662,6 +1644,109 @@ mod tests {
                 "projection atomic measurement should come from the laid-out projection segment"
             );
         }
+    }
+
+    #[test]
+    fn text_area_projection_tall_child_keeps_unified_ifc_geometry_height() {
+        let content = "before {{TALL}} after";
+        let tall_range = char_range_of(content, "{{TALL}}");
+        let tall_height = 240.0;
+
+        let mut text_area = TextArea::new();
+        text_area.content = content.to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.multiline = true;
+        text_area.auto_wrap = true;
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+            render.range(tall_range.clone(), move |_text_area_node| {
+                tall_projection_block_node(96.0, tall_height)
+            });
+        }));
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 180.0,
+                max_height: 2_000.0,
+                viewport_width: 180.0,
+                viewport_height: 2_000.0,
+                percent_base_width: Some(180.0),
+                percent_base_height: Some(2_000.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 180.0,
+                available_height: 2_000.0,
+                viewport_width: 180.0,
+                viewport_height: 2_000.0,
+                percent_base_width: Some(180.0),
+                percent_base_height: Some(2_000.0),
+            },
+        );
+
+        let package = arena
+            .with_element_taken_ref(root, |el, _| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .unified_inline_ifc_root_package(&arena)
+            })
+            .flatten()
+            .expect("TextArea should expose a unified IFC root package");
+        let projection_segment = package
+            .source_segments
+            .iter()
+            .find(|segment| segment.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox)
+            .cloned()
+            .expect("projection source segment");
+        let atomic_package = package
+            .atomic_package_for_child(projection_segment.child_key)
+            .expect("projection child should have an atomic package");
+        let placement = atomic_package
+            .placements
+            .first()
+            .expect("projection child should have an atomic placement");
+        let projection_snapshot = arena
+            .with_element_taken_ref(projection_segment.child_key, |child, _| {
+                child.box_model_snapshot()
+            })
+            .expect("projection child snapshot");
+        let content_size = package.content_size();
+
+        assert!(
+            placement.measurement.measured_size.height >= tall_height - 0.01,
+            "atomic measurement should keep the tall projection height: measured={}",
+            placement.measurement.measured_size.height
+        );
+        assert!(
+            placement.rect.height >= tall_height - 0.01,
+            "atomic placement rect should keep the tall projection height: rect={}",
+            placement.rect.height
+        );
+        assert!(
+            projection_snapshot.height >= tall_height - 0.01,
+            "projection snapshot should keep the tall child height: snapshot={projection_snapshot:?}"
+        );
+        assert!(
+            content_size.height >= tall_height - 0.01,
+            "TextArea unified IFC content size should include tall projection height: content_size={content_size:?}"
+        );
     }
 
     #[test]
@@ -2341,6 +2426,21 @@ mod tests {
                 RsxTagDescriptor::for_tag::<crate::view::tags::Text>(),
             )
             .with_child(RsxNode::text(label)),
+        )
+    }
+
+    fn tall_projection_block_node(width: f32, height: f32) -> RsxNode {
+        RsxNode::tagged(
+            "Element",
+            RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+        )
+        .with_prop(
+            "style",
+            ElementStylePropSchema {
+                width: Some(Length::px(width)),
+                height: Some(Length::px(height)),
+                ..Default::default()
+            },
         )
     }
 

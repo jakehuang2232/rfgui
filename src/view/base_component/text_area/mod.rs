@@ -106,6 +106,8 @@ pub struct TextArea {
     pub(crate) child_slots: Vec<crate::view::base_component::text_area::projection::ChildSlot>,
     pub(crate) self_node_key: Option<NodeKey>,
     pub(crate) children_dirty: bool,
+    pub(crate) unified_inline_ifc_root_cache:
+        std::cell::RefCell<inline_ifc::TextAreaUnifiedIfcRootCache>,
 
     // layout output
     pub(crate) flow_offset: crate::view::base_component::Position,
@@ -168,6 +170,7 @@ impl Default for TextArea {
             child_slots: Vec::new(),
             self_node_key: None,
             children_dirty: true,
+            unified_inline_ifc_root_cache: std::cell::RefCell::default(),
 
             flow_offset: crate::view::base_component::Position { x: 0.0, y: 0.0 },
             layout_state: LayoutState::new(0.0, 0.0, 0.0, 0.0),
@@ -276,6 +279,16 @@ impl TextArea {
 }
 
 impl ElementTrait for TextArea {
+    fn placement_eligibility_metadata(
+        &self,
+    ) -> crate::view::node_arena::PlacementEligibilityMetadata {
+        // Conservative: the TextArea family manages an internal projection /
+        // IME / caret subtree whose placement is not yet proven stable under
+        // ancestor-skip, so it blocks placement-skip for now (preserving the
+        // pre-trait behavior). Text/Image/Svg leaves are transparent instead.
+        crate::view::node_arena::PlacementEligibilityMetadata::non_base_blocker()
+    }
+
     fn stable_id(&self) -> u64 {
         self.node_id
     }

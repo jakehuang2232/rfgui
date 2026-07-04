@@ -82,29 +82,6 @@ impl crate::view::base_component::Layoutable for PaintDirtyOnClickElement {
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.element.set_layout_offset(x, y);
     }
-
-    fn measure_inline(
-        &mut self,
-        context: crate::view::base_component::InlineMeasureContext,
-        arena: &mut crate::view::node_arena::NodeArena,
-    ) {
-        self.element.measure_inline(context, arena);
-    }
-
-    fn get_inline_nodes_size(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-    ) -> Vec<crate::view::base_component::InlineNodeSize> {
-        self.element.get_inline_nodes_size(arena)
-    }
-
-    fn place_inline(
-        &mut self,
-        placement: crate::view::base_component::InlinePlacement,
-        arena: &mut crate::view::node_arena::NodeArena,
-    ) {
-        self.element.place_inline(placement, arena);
-    }
 }
 
 impl crate::view::base_component::EventTarget for PaintDirtyOnClickElement {
@@ -777,6 +754,7 @@ pub(super) fn run_layout_for_test_with_gate_profile(
     };
     crate::view::base_component::reset_layout_gate_candidate_profile();
     crate::view::base_component::reset_layout_place_profile();
+    crate::view::base_component::set_layout_place_profile_enabled(true);
     let mut arena = std::mem::take(&mut viewport.scene.node_arena);
     let root_keys = viewport.scene.ui_root_keys.clone();
     for &root in &root_keys {
@@ -796,6 +774,7 @@ pub(super) fn run_layout_for_test_with_gate_profile(
         });
     }
     viewport.scene.node_arena = arena;
+    crate::view::base_component::set_layout_place_profile_enabled(false);
     (
         crate::view::base_component::take_layout_gate_candidate_profile(),
         crate::view::base_component::take_layout_place_profile(),

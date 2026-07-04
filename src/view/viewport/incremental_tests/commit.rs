@@ -921,23 +921,9 @@ fn incremental_commit_vertical_align_keeps_fragmentable_badge_text_aligned() {
         .inline_fragment_positions()[0]
         .1
         .y;
-    let wrapper_nodes = viewport
-        .scene
-        .node_arena
-        .with_element_taken(badge_key, |element, arena| {
-            element.get_inline_nodes_size(arena)
-        })
-        .expect("badge wrapper");
-
     assert!(
         (lead_y - badge_y).abs() < 0.5,
         "fragmentable badge text must track sibling inline text after incremental vertical-align update: lead_y={lead_y}, badge_y={badge_y}"
-    );
-    assert!(
-        wrapper_nodes
-            .iter()
-            .all(|node| node.vertical_align == VerticalAlign::Middle),
-        "fragmentable badge wrapper must expose the updated inherited vertical_align, got {wrapper_nodes:?}"
     );
 }
 
@@ -1101,19 +1087,6 @@ fn incremental_commit_reset_element_style_restores_inherited_text_base() {
     assert_eq!(
         viewport.scene.node_arena.children_of(root_key)[0],
         wrapper_key
-    );
-    let wrapper_nodes = viewport
-        .scene
-        .node_arena
-        .with_element_taken(wrapper_key, |element, arena| {
-            element.get_inline_nodes_size(arena)
-        })
-        .expect("wrapper element");
-    assert!(
-        wrapper_nodes
-            .iter()
-            .all(|node| node.vertical_align == VerticalAlign::Bottom),
-        "removing an Element style should leave its inherited text base intact, got {wrapper_nodes:?}"
     );
 }
 

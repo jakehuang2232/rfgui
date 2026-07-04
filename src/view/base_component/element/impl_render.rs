@@ -50,12 +50,12 @@ impl Element {
         force_self_opaque: bool,
         allow_transform: bool,
     ) -> BuildState {
-        let accumulated_render_transform = self
-            .resolved_transform
-            .map(|transform| match ctx.current_render_transform() {
-                Some(parent) => parent * transform,
-                None => transform,
-            });
+        let accumulated_render_transform =
+            self.resolved_transform
+                .map(|transform| match ctx.current_render_transform() {
+                    Some(parent) => parent * transform,
+                    None => transform,
+                });
         ctx.set_current_render_transform(accumulated_render_transform);
         trace_promoted_build(
             "base",
@@ -138,28 +138,33 @@ impl Element {
                 let viewport = ctx.viewport();
                 let taken_state = ctx.state_clone();
                 let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
-                let next_ctx = arena
-                    .with_element_taken(child_key, |child, arena| {
-                        let ctx_local = ctx_in;
-                        if ctx_local.is_node_promoted(child.stable_id()) {
-                            return ctx_local;
-                        }
-                        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                            let vp = ctx_local.viewport();
-                            let next_state = element
-                                .build_base_descendants_only(graph, arena, ctx_local, false);
-                            UiBuildContext::from_parts(vp, next_state)
-                        } else {
-                            let vp = ctx_local.viewport();
-                            let next_state = child.build(graph, arena, ctx_local);
-                            UiBuildContext::from_parts(vp, next_state)
-                        }
-                    });
+                let next_ctx = arena.with_element_taken(child_key, |child, arena| {
+                    let ctx_local = ctx_in;
+                    if ctx_local.is_node_promoted(child.stable_id()) {
+                        return ctx_local;
+                    }
+                    if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+                        let vp = ctx_local.viewport();
+                        let next_state =
+                            element.build_base_descendants_only(graph, arena, ctx_local, false);
+                        UiBuildContext::from_parts(vp, next_state)
+                    } else {
+                        let vp = ctx_local.viewport();
+                        let next_state = child.build(graph, arena, ctx_local);
+                        UiBuildContext::from_parts(vp, next_state)
+                    }
+                });
                 if let Some(c) = next_ctx {
                     ctx = c;
                 }
             }
         }
+
+        // The unified inline IFC glyph pass paints AFTER the in-flow
+        // children: owned spans draw their decoration rects during the
+        // child walk above, and glyphs must layer on top of those
+        // backgrounds (web z-order: span background under span text).
+        self.build_inline_ifc_root_glyph_pass(graph, &mut ctx);
 
         // End the parent's child clip scope (stencil + scissor + clip_id)
         // before rendering overflow children. Overflow children — Viewport-
@@ -179,31 +184,30 @@ impl Element {
                 let viewport = ctx.viewport();
                 let taken_state = ctx.state_clone();
                 let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
-                let next_ctx = arena
-                    .with_element_taken(child_key, |child, arena| {
-                        let mut ctx_local = ctx_in;
-                        if child
-                            .as_any()
-                            .downcast_ref::<Element>()
-                            .is_some_and(Element::should_append_to_root_viewport_render)
-                        {
-                            ctx_local.append_to_defer(child_key, child.stable_id());
-                            return ctx_local;
-                        }
-                        if ctx_local.is_node_promoted(child.stable_id()) {
-                            return ctx_local;
-                        }
-                        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                            let vp = ctx_local.viewport();
-                            let next_state = element
-                                .build_base_descendants_only(graph, arena, ctx_local, false);
-                            UiBuildContext::from_parts(vp, next_state)
-                        } else {
-                            let vp = ctx_local.viewport();
-                            let next_state = child.build(graph, arena, ctx_local);
-                            UiBuildContext::from_parts(vp, next_state)
-                        }
-                    });
+                let next_ctx = arena.with_element_taken(child_key, |child, arena| {
+                    let mut ctx_local = ctx_in;
+                    if child
+                        .as_any()
+                        .downcast_ref::<Element>()
+                        .is_some_and(Element::should_append_to_root_viewport_render)
+                    {
+                        ctx_local.append_to_defer(child_key, child.stable_id());
+                        return ctx_local;
+                    }
+                    if ctx_local.is_node_promoted(child.stable_id()) {
+                        return ctx_local;
+                    }
+                    if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+                        let vp = ctx_local.viewport();
+                        let next_state =
+                            element.build_base_descendants_only(graph, arena, ctx_local, false);
+                        UiBuildContext::from_parts(vp, next_state)
+                    } else {
+                        let vp = ctx_local.viewport();
+                        let next_state = child.build(graph, arena, ctx_local);
+                        UiBuildContext::from_parts(vp, next_state)
+                    }
+                });
                 if let Some(c) = next_ctx {
                     ctx = c;
                 }
@@ -265,20 +269,6 @@ impl Element {
             None
         };
 
-        let inline_wrap = matches!(self.computed_style.layout_flow_wrap(), FlowWrap::Wrap);
-        let inline_gap = resolve_px(
-            self.computed_style.gap,
-            inner_w,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        let inline_horizontal_insets = insets.horizontal().max(0.0);
-        let inline_first_available_width =
-            self.pending_inline_measure_context.map(|context| {
-                (context.first_available_width - inline_horizontal_insets)
-                    .max(0.0)
-                    .min(inner_w)
-            });
         let absolute_mask = self.compute_children_absolute_mask(arena);
         let is_row = matches!(
             self.computed_style.layout_axis_direction(),
@@ -304,16 +294,12 @@ impl Element {
                 solver_wrap,
                 solver_gap,
                 main_limit,
-                inner_width: inner_w,
                 child_available_width,
                 child_available_height,
                 child_percent_base_width,
                 child_percent_base_height,
                 viewport_width: proposal.viewport_width,
                 viewport_height: proposal.viewport_height,
-                inline_wrap,
-                inline_gap,
-                inline_first_available_width,
             },
             arena,
         );
@@ -372,14 +358,8 @@ impl Element {
         );
         ctx.set_state(shadow_state);
 
-        if self.is_fragmentable_inline_element() && !self.inline_paint_fragments.is_empty() {
-            if matches!(
-                self.inline_ifc_render_decision(),
-                ElementInlineIfcRenderDecision::DrawRectPackageCandidate { .. }
-            ) {
-                return self.build_inline_ifc_draw_rect_package_render_pipeline(graph, ctx, opacity);
-            }
-            return self.build_inline_fragment_render_pipeline(graph, ctx, fill_color, opacity);
+        if self.inline_ifc_owned_by_root {
+            return self.build_inline_ifc_draw_rect_package_render_pipeline(graph, ctx, opacity);
         }
 
         let max_bw = (self
@@ -404,7 +384,10 @@ impl Element {
                     self.layout_state.layout_position.x,
                     self.layout_state.layout_position.y,
                 ),
-                size: [self.layout_state.layout_size.width, self.layout_state.layout_size.height],
+                size: [
+                    self.layout_state.layout_size.width,
+                    self.layout_state.layout_size.height,
+                ],
                 fill_color,
                 opacity,
                 gradient: gradient_paint,
@@ -428,7 +411,10 @@ impl Element {
                     self.layout_state.layout_position.x,
                     self.layout_state.layout_position.y,
                 ),
-                size: [self.layout_state.layout_size.width, self.layout_state.layout_size.height],
+                size: [
+                    self.layout_state.layout_size.width,
+                    self.layout_state.layout_size.height,
+                ],
                 fill_color: [0.0, 0.0, 0.0, 0.0],
                 opacity,
                 border_gradient: border_gradient_paint,
@@ -450,105 +436,62 @@ impl Element {
         ctx.into_state()
     }
 
-    fn build_inline_fragment_render_pipeline(
+    /// Unified glyph pass for an inline IFC root: every descendant text
+    /// glyph shaped by the root's context renders in one prepared-input
+    /// pass at the root's content origin.
+    fn build_inline_ifc_root_glyph_pass(
         &mut self,
         graph: &mut FrameGraph,
-        mut ctx: UiBuildContext,
-        fill_color: [f32; 4],
-        opacity: f32,
-    ) -> BuildState {
-        for fragment in self.inline_paint_fragments.clone() {
-            let max_bw = (fragment.width.min(fragment.height)) * 0.5;
-            let left = self.border_widths.left.clamp(0.0, max_bw);
-            let right = self.border_widths.right.clamp(0.0, max_bw);
-            let top = self.border_widths.top.clamp(0.0, max_bw);
-            let bottom = self.border_widths.bottom.clamp(0.0, max_bw);
-            let outer_radii = normalize_corner_radii(
-                self.border_radii,
-                fragment.width.max(0.0),
-                fragment.height.max(0.0),
-            );
-
-            let mut fill_pass = DrawRectPass::new(
-                RectPassParams {
-                    position: ctx.paint_point(fragment.x, fragment.y),
-                    size: [fragment.width, fragment.height],
-                    fill_color,
-                    opacity,
-                    ..Default::default()
-                },
-                DrawRectInput::default(),
-                DrawRectOutput::default(),
-            );
-            fill_pass.set_render_mode(RectRenderMode::FillOnly);
-            fill_pass.set_border_widths(left, right, top, bottom);
-            fill_pass.set_border_radii(outer_radii.to_array());
-            self.push_rect_pass_auto(graph, &mut ctx, fill_pass);
-
-            if left <= 0.0 && right <= 0.0 && top <= 0.0 && bottom <= 0.0 {
-                continue;
-            }
-
-            let mut border_pass = DrawRectPass::new(
-                RectPassParams {
-                    position: ctx.paint_point(fragment.x, fragment.y),
-                    size: [fragment.width, fragment.height],
-                    fill_color: [0.0, 0.0, 0.0, 0.0],
-                    opacity,
-                    ..Default::default()
-                },
-                DrawRectInput::default(),
-                DrawRectOutput::default(),
-            );
-            border_pass.set_render_mode(RectRenderMode::BorderOnly);
-            border_pass.set_border_side_colors(
-                self.border_colors.left.as_ref().to_rgba_f32(),
-                self.border_colors.right.as_ref().to_rgba_f32(),
-                self.border_colors.top.as_ref().to_rgba_f32(),
-                self.border_colors.bottom.as_ref().to_rgba_f32(),
-            );
-            border_pass.set_border_widths(left, right, top, bottom);
-            border_pass.set_border_radii(outer_radii.to_array());
-            self.push_rect_pass_auto(graph, &mut ctx, border_pass);
-        }
-        ctx.into_state()
-    }
-
-    fn inline_ifc_render_decision(&self) -> ElementInlineIfcRenderDecision {
-        if matches!(
-            self.inline_ifc_render_mode,
-            ElementInlineIfcRenderMode::DrawRectPackageCandidate
-        ) && self.inline_ifc_rollout_packages.has_draw_rect_decoration()
-        {
-            ElementInlineIfcRenderDecision::DrawRectPackageCandidate {
-                fallback: ElementInlineIfcRenderFallback::ExistingInlineFragments,
-                has_atomic_placement_package: self
-                    .inline_ifc_rollout_packages
-                    .atomic_placement
-                    .as_ref()
-                    .is_some_and(|package| !package.placements.is_empty()),
-            }
+        ctx: &mut UiBuildContext,
+    ) {
+        let Some(target) = ctx.current_target() else {
+            return;
+        };
+        let opacity = if ctx.is_node_promoted(self.stable_id()) {
+            1.0
         } else {
-            ElementInlineIfcRenderDecision::ExistingInlineFragments
+            self.opacity.clamp(0.0, 1.0)
+        };
+        if opacity <= 0.0 {
+            return;
         }
+        let [origin_x, origin_y] = ctx.paint_point(
+            self.layout_state.layout_inner_position.x - self.scroll_offset.x,
+            self.layout_state.layout_inner_position.y - self.scroll_offset.y,
+        );
+        let Some(staging_input) = self.inline_ifc_root_staging_input([origin_x, origin_y], opacity)
+        else {
+            return;
+        };
+        if staging_input.glyphs.is_empty() {
+            return;
+        }
+        let size = [
+            self.layout_state.layout_inner_size.width.max(1.0),
+            self.layout_state.layout_inner_size.height.max(1.0),
+        ];
+        let pass = TextPreparedInputPass::new(
+            TextPassPreparedParams {
+                staging_input,
+                fragments: vec![TextPassPreparedFragment {
+                    origin: [origin_x, origin_y],
+                    size,
+                }],
+                scissor_rect: None,
+                stencil_clip_id: None,
+            },
+            TextInput {
+                pass_context: ctx.graphics_pass_context(),
+            },
+            TextOutput {
+                render_target: target,
+                ..Default::default()
+            },
+        );
+        graph.add_graphics_pass(pass);
+        ctx.set_current_target(target);
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn update_inline_ifc_rollout_packages_from_root_source(
-        &mut self,
-        root_source: &InlineIfcElementRootSource,
-        element_source: InlineIfcSourceId,
-        cache: &mut InlineIfcElementRootCandidateCache,
-    ) -> InlineIfcElementRootCandidate {
-        let candidate = cache.update(root_source);
-        self.inline_ifc_rollout_packages = candidate
-            .package(element_source)
-            .map(ElementInlineIfcRolloutPackages::from_inline_ifc_distributed)
-            .unwrap_or_default();
-        candidate
-    }
-
-    #[allow(dead_code)]
     fn install_inline_ifc_rollout_packages_from_candidate(
         &mut self,
         packages: Option<&InlineIfcDistributedElementPackages>,
@@ -556,50 +499,6 @@ impl Element {
         self.inline_ifc_rollout_packages = packages
             .map(ElementInlineIfcRolloutPackages::from_inline_ifc_distributed)
             .unwrap_or_default();
-    }
-
-    #[cfg(test)]
-    fn inline_ifc_render_decision_for_test(&self) -> ElementInlineIfcRenderDecision {
-        self.inline_ifc_render_decision()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_inline_ifc_render_mode_for_test(
-        &mut self,
-        mode: ElementInlineIfcRenderMode,
-    ) {
-        self.inline_ifc_render_mode = mode;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_inline_ifc_draw_rect_package_for_test(
-        &mut self,
-        package: InlineIfcElementDecorationDrawRectPackage,
-    ) {
-        self.inline_ifc_rollout_packages.decoration_draw_rect = Some(package);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_inline_ifc_atomic_placement_package_for_test(
-        &mut self,
-        package: InlineIfcAtomicBoxPlacementPackage,
-    ) {
-        self.inline_ifc_rollout_packages.atomic_placement = Some(package);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_inline_ifc_rollout_packages_for_test(
-        &mut self,
-        packages: ElementInlineIfcRolloutPackages,
-    ) {
-        self.inline_ifc_rollout_packages = packages;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn inline_ifc_atomic_placement_metadata_for_test(
-        &self,
-    ) -> Option<ElementInlineIfcAtomicPlacementMetadata> {
-        self.inline_ifc_atomic_placement_metadata()
     }
 
     fn inline_ifc_atomic_placement_metadata(
@@ -612,28 +511,6 @@ impl Element {
             .cloned()
             .map(|package| ElementInlineIfcAtomicPlacementMetadata { package })
     }
-
-    #[cfg(test)]
-    pub(crate) fn inline_ifc_draw_rect_pass_metadata_for_test(
-        &self,
-        paint_offset: [f32; 2],
-    ) -> Vec<ElementInlineIfcDrawRectPassMetadata> {
-        let Some(package) = self
-            .inline_ifc_rollout_packages
-            .decoration_draw_rect
-            .as_ref()
-        else {
-            return Vec::new();
-        };
-        package
-            .fragments
-            .iter()
-            .map(|fragment| {
-                self.inline_ifc_fragment_draw_rect_pass_metadata(fragment, paint_offset)
-            })
-            .collect()
-    }
-
     fn inline_ifc_fragment_draw_rect_pass_metadata(
         &self,
         fragment: &crate::view::inline_formatting_context::InlineIfcElementDecorationDrawRect,
@@ -693,7 +570,7 @@ impl Element {
         &mut self,
         graph: &mut FrameGraph,
         mut ctx: UiBuildContext,
-        opacity: f32,
+        _opacity: f32,
     ) -> BuildState {
         let _atomic_placement_count = self
             .inline_ifc_atomic_placement_metadata()
@@ -705,12 +582,7 @@ impl Element {
             .as_ref()
             .cloned()
         else {
-            return self.build_inline_fragment_render_pipeline(
-                graph,
-                ctx,
-                self.background_color.as_ref().to_rgba_f32(),
-                opacity,
-            );
+            return ctx.into_state();
         };
         for fragment in package.fragments {
             let pass_metadata =
@@ -953,17 +825,17 @@ impl Element {
         if self.box_shadows.is_empty() {
             return ctx.into_state();
         }
-        let fragment_rects = if self.is_fragmentable_inline_element() && !self.inline_paint_fragments.is_empty()
-        {
-            self.inline_paint_fragments.clone()
-        } else {
-            vec![Rect {
-                x: self.layout_state.layout_position.x,
-                y: self.layout_state.layout_position.y,
-                width: self.layout_state.layout_size.width.max(0.0),
-                height: self.layout_state.layout_size.height.max(0.0),
-            }]
-        };
+        let fragment_rects =
+            if self.is_fragmentable_inline_element() && !self.inline_paint_fragments.is_empty() {
+                self.inline_paint_fragments.clone()
+            } else {
+                vec![Rect {
+                    x: self.layout_state.layout_position.x,
+                    y: self.layout_state.layout_position.y,
+                    width: self.layout_state.layout_size.width.max(0.0),
+                    height: self.layout_state.layout_size.height.max(0.0),
+                }]
+            };
         let shadows = self.box_shadows.clone();
         for fragment in fragment_rects {
             if fragment.width <= 0.0 || fragment.height <= 0.0 {
@@ -1052,7 +924,10 @@ impl Element {
         target
     }
 
-    fn transformed_quad_positions(&self, bounds: crate::view::base_component::PromotionCompositeBounds) -> [[f32; 2]; 4] {
+    fn transformed_quad_positions(
+        &self,
+        bounds: crate::view::base_component::PromotionCompositeBounds,
+    ) -> [[f32; 2]; 4] {
         let corners = [
             Vec3::new(bounds.x, bounds.y + bounds.height, 0.0),
             Vec3::new(bounds.x + bounds.width, bounds.y + bounds.height, 0.0),
@@ -1137,8 +1012,13 @@ impl Element {
                 render_target: layer_target,
             },
         ));
-        let layer_state =
-            self.build_base_descendants_only_inner(graph, arena, layer_ctx, force_self_opaque, false);
+        let layer_state = self.build_base_descendants_only_inner(
+            graph,
+            arena,
+            layer_ctx,
+            force_self_opaque,
+            false,
+        );
         ctx.state.merge_child_side_effects(&layer_state);
 
         let parent_target = ctx.current_target().unwrap_or_else(|| {
@@ -1282,13 +1162,7 @@ impl Element {
                         .map(|n| n.element.stable_id())
                         .unwrap_or(0);
                     if ctx.is_node_promoted(child_id) {
-                        Self::build_promoted_child(
-                            graph,
-                            arena,
-                            &mut ctx,
-                            child_key,
-                            mask_target,
-                        );
+                        Self::build_promoted_child(graph, arena, &mut ctx, child_key, mask_target);
                         continue;
                     }
                     let viewport = ctx.viewport();
@@ -1342,13 +1216,7 @@ impl Element {
                         continue;
                     }
                     if ctx.is_node_promoted(child_id) {
-                        Self::build_promoted_child(
-                            graph,
-                            arena,
-                            &mut ctx,
-                            child_key,
-                            mask_target,
-                        );
+                        Self::build_promoted_child(graph, arena, &mut ctx, child_key, mask_target);
                         continue;
                     }
                     let viewport = ctx.viewport();
@@ -1592,7 +1460,9 @@ impl Element {
         // Defer list pre-seeded from `NodeArena::defer_render_nodes` at
         // frame start, so reused promoted layers no longer need to walk
         // their subtree to surface viewport-clip descendants.
-        let base_target = ctx.current_target().expect("promoted layer target should exist");
+        let base_target = ctx
+            .current_target()
+            .expect("promoted layer target should exist");
         let base_state = if can_reuse_base {
             ctx.into_state()
         } else {
@@ -1610,7 +1480,8 @@ impl Element {
         };
 
         let probe_ctx = UiBuildContext::from_parts(viewport.clone(), base_state.clone());
-        let has_composited_descendants = self.has_composited_promoted_descendants(arena, &probe_ctx);
+        let has_composited_descendants =
+            self.has_composited_promoted_descendants(arena, &probe_ctx);
         let requested_composition_update_kind = probe_ctx
             .promoted_composition_update_kind(self.stable_id())
             .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster);
@@ -1664,10 +1535,7 @@ impl Element {
             if can_reuse_base {
                 return base_state;
             }
-            return self.render_scrollbars(
-                graph,
-                UiBuildContext::from_parts(viewport, base_state),
-            );
+            return self.render_scrollbars(graph, UiBuildContext::from_parts(viewport, base_state));
         }
 
         let mut compose_ctx = UiBuildContext::from_parts(viewport, base_state);
@@ -1810,9 +1678,7 @@ impl Element {
         }
         if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
             if let Some(reason) = element.inline_promotion_rendering_reason(arena) {
-                if reason == "child-scissor-clip-inline"
-                    || reason == "child-stencil-clip-inline"
-                {
+                if reason == "child-scissor-clip-inline" || reason == "child-stencil-clip-inline" {
                     // Child clip geometry is tracked in promotion signatures; do not block
                     // promoted child reuse solely because the container clips its children.
                 } else {
@@ -1963,11 +1829,12 @@ mod paint_snap_tests {
             height: 20.5,
             corner_radii: [0.0; 4],
         };
-        let snapped = crate::view::viewport::scene_helpers::paint_snapped_promotion_composite_bounds(
-            &element,
-            bounds,
-            [0.2, -0.3],
-        );
+        let snapped =
+            crate::view::viewport::scene_helpers::paint_snapped_promotion_composite_bounds(
+                &element,
+                bounds,
+                [0.2, -0.3],
+            );
 
         assert!((snapped.x - 8.25).abs() < 0.001);
         assert!((snapped.y - 17.5).abs() < 0.001);
@@ -2040,8 +1907,7 @@ mod paint_snap_tests {
             height: 20.5,
             corner_radii: [0.0; 4],
         };
-        let visual_bounds =
-            element.paint_snapped_own_composite_bounds(source_bounds, [0.2, -0.3]);
+        let visual_bounds = element.paint_snapped_own_composite_bounds(source_bounds, [0.2, -0.3]);
 
         let raw_transformed = element.transformed_quad_positions(source_bounds);
         let snapped =

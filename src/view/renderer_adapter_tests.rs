@@ -1312,11 +1312,9 @@ fn text_area_auto_wrap_false_cascades_nowrap_to_projection_text() {
     // Repro for the bug where `auto_wrap=false` on TextArea did not
     // disable wrapping inside projection subtrees: the projection's inner
     // <Text> kept its default TextWrap::Wrap, and once preceding inline
-    // content consumed line space the small `first_available_width` made
-    // Text emit multiple fragments with `force_break_after=true` on the
-    // non-last ones — leaking through Element::get_inline_nodes_size into
-    // the outer flex_solver, which then broke the line via
-    // `force_break_pending` even though `solver_wrap=false`.
+    // content consumed line space, projection Text could still wrap and
+    // force the trailing run to a new visual line even though
+    // `solver_wrap=false`.
     use crate::style::TextWrap;
 
     let tree = host_text_area_node()
@@ -1360,8 +1358,7 @@ fn text_area_auto_wrap_false_keeps_projection_and_trailing_run_on_same_line() {
     // End-to-end repro of the visual bug: with `auto_wrap=false`, a
     // projection placed mid-line (after a wide preceding run that consumed
     // most of the available width) used to wrap the projection's inner
-    // Text and inject a `force_break_after` into the outer flex_solver,
-    // pushing the trailing plain Run onto a new line. With the cascade
+    // Text, pushing the trailing plain Run onto a new line. With the cascade
     // fix, the projection emits a single non-breaking fragment and the
     // outer line stays intact (overflowing horizontally instead — the
     // expected NoWrap behavior).

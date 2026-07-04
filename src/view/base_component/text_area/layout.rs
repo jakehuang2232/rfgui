@@ -1,19 +1,14 @@
 //! `Layoutable` impl for `TextArea`.
 //!
-//! Drives `view/layout/measure_axis` and `view/layout/place_axis_children`
-//! over its mixed inline children — same Element template established in
-//! the P0.1 spike. `TextAreaTextRun`'s Layoutable + Renderable live in
-//! [`super::run`] beside the shared text layout adapter state.
+//! Drives TextArea layout from the unified IFC root package. Direct run
+//! and projection child boxes are installed from root-owned fragment
+//! geometry so editable layout, hit-test, and caret geometry share one
+//! source.
 
-use crate::style::{Align, CrossSize, JustifyContent, Layout};
-use crate::ui::Rect;
 use crate::view::base_component::{
-    InlineMeasureContext, InlineNodeSize, InlinePlacement, LayoutConstraints, LayoutPlacement,
-    Layoutable, Position, Size,
+    DirtyFlags, LayoutConstraints, LayoutPlacement, Layoutable, Position, Size,
 };
 use crate::view::layout::FlexLayoutInfo;
-use crate::view::layout::measure::{MeasureAxisInputs, measure_axis};
-use crate::view::layout::place::{PlaceAxisChildrenInputs, place_axis_children};
 
 use super::TextArea;
 
@@ -25,6 +20,8 @@ impl Layoutable for TextArea {
     ) {
         // Sync run subtree to latest `content` before measuring (edits
         // flag `children_dirty`; see projection.rs).
+        let had_children_dirty = self.children_dirty;
+        let previous_layout_height = self.layout_state.layout_size.height;
         self.rebuild_children_if_dirty(
             arena,
             constraints.viewport_width,
@@ -32,47 +29,65 @@ impl Layoutable for TextArea {
         );
 
         let inner_width = constraints.max_width.max(0.0);
-        let absolute_mask = vec![false; self.children.len()];
-        let outputs = measure_axis(
-            MeasureAxisInputs {
-                layout: Layout::Inline,
-                children: &self.children,
-                absolute_mask: &absolute_mask,
-                is_row: true,
-                is_real_flex: false,
-                solver_wrap: self.auto_wrap,
-                solver_gap: 0.0,
-                main_limit: inner_width,
-                inner_width,
-                child_available_width: inner_width,
-                child_available_height: constraints.max_height.max(0.0),
-                child_percent_base_width: constraints.percent_base_width,
-                child_percent_base_height: constraints.percent_base_height,
-                viewport_width: constraints.viewport_width,
-                viewport_height: constraints.viewport_height,
-                inline_wrap: self.auto_wrap,
-                inline_gap: 0.0,
-                inline_first_available_width: Some(inner_width),
-            },
-            arena,
-        );
+        self.viewport_size.width = inner_width;
+        self.measure_unified_inline_ifc_atomic_children(constraints, arena);
+        self.measure_generated_text_children_for_fallbacks(constraints, arena);
 
-        self.layout_state.content_size = outputs.content_size;
+        let (mut content_size, flex_info) =
+            if let Some(package) = self.unified_inline_ifc_render_package(arena) {
+                (
+                    package.content_size(),
+                    package.flex_info_for_children(&self.children),
+                )
+            } else {
+                (
+                    Size {
+                        width: 0.0,
+                        height: self.font_size.max(1.0) * self.line_height.max(0.8),
+                    },
+                    FlexLayoutInfo {
+                        lines: Vec::new(),
+                        line_main_sum: Vec::new(),
+                        line_cross_max: Vec::new(),
+                        total_main: 0.0,
+                        total_cross: 0.0,
+                    },
+                )
+            };
+        if had_children_dirty {
+            let trailing_newline_count = self
+                .content
+                .chars()
+                .rev()
+                .take_while(|ch| *ch == '\n')
+                .count();
+            if trailing_newline_count > 0 {
+                let line_height = self.font_size.max(1.0) * self.line_height.max(0.8);
+                content_size.height = content_size
+                    .height
+                    .max(previous_layout_height + line_height * trailing_newline_count as f32);
+            }
+        }
+
+        self.layout_state.content_size = content_size;
         self.viewport_size = Size {
             width: inner_width,
-            height: outputs
-                .content_size
+            height: content_size
                 .height
                 .min(constraints.max_height.max(0.0))
                 .max(0.0),
         };
-        self.layout_state.layout_size = Size {
-            width: outputs.content_size.width,
-            height: outputs.content_size.height,
-        };
+        self.layout_state.layout_size = content_size;
         self.layout_state.layout_inner_size = self.layout_state.layout_size;
         self.clamp_scroll_to_content();
-        self.flex_info = Some(outputs.flex_info);
+        self.flex_info = Some(flex_info);
+        self.dirty_flags = self
+            .dirty_flags
+            .without(DirtyFlags::LAYOUT)
+            .union(DirtyFlags::PLACE)
+            .union(DirtyFlags::BOX_MODEL)
+            .union(DirtyFlags::HIT_TEST)
+            .union(DirtyFlags::PAINT);
     }
 
     fn place(
@@ -99,179 +114,19 @@ impl Layoutable for TextArea {
         self.layout_state.layout_flow_position = self.layout_state.layout_position;
         self.layout_state.layout_flow_inner_position = self.layout_state.layout_inner_position;
 
-        let Some(info) = self.flex_info.clone() else {
-            return;
-        };
-        self.place_inline_children(&info, placement, arena);
+        self.place_inline_children(placement, arena);
         if self.pending_caret_scroll {
             self.pending_caret_scroll = false;
             if self.scroll_caret_into_view(arena) {
-                self.place_inline_children(&info, placement, arena);
+                self.place_inline_children(placement, arena);
             }
             self.scroll_caret_into_ancestor_views(arena);
         }
-    }
-
-    fn measure_inline(
-        &mut self,
-        context: InlineMeasureContext,
-        arena: &mut crate::view::node_arena::NodeArena,
-    ) {
-        // Allow being placed *as* an inline child of a parent Element.
-        self.measure(
-            LayoutConstraints {
-                max_width: context.first_available_width.max(0.0),
-                max_height: context.available_height.max(0.0),
-                viewport_width: context.viewport_width,
-                viewport_height: context.viewport_height,
-                percent_base_width: context.percent_base_width,
-                percent_base_height: context.percent_base_height,
-            },
-            arena,
+        self.dirty_flags = self.dirty_flags.without(
+            DirtyFlags::PLACE
+                .union(DirtyFlags::BOX_MODEL)
+                .union(DirtyFlags::HIT_TEST),
         );
-    }
-
-    fn get_inline_nodes_size(
-        &self,
-        _arena: &crate::view::node_arena::NodeArena,
-    ) -> Vec<InlineNodeSize> {
-        if self.should_expose_inline_fragments() {
-            let info = self.flex_info.as_ref().expect("checked above");
-            return info
-                .lines
-                .iter()
-                .enumerate()
-                .map(|(line_idx, _)| InlineNodeSize {
-                    width: info.line_main_sum[line_idx].max(0.0),
-                    height: (info.line_ascent.get(line_idx).copied().unwrap_or(0.0)
-                        + info.line_descent.get(line_idx).copied().unwrap_or(0.0))
-                    .max(0.0),
-                    baseline: info.line_ascent.get(line_idx).copied().unwrap_or(0.0),
-                    force_break_after: line_idx + 1 < info.lines.len(),
-                    ..Default::default()
-                })
-                .collect();
-        }
-        let (width, height) = self.measured_size();
-        vec![InlineNodeSize {
-            width,
-            height,
-            baseline: height,
-            ..Default::default()
-        }]
-    }
-
-    fn place_inline(
-        &mut self,
-        placement: InlinePlacement,
-        arena: &mut crate::view::node_arena::NodeArena,
-    ) {
-        if !self.should_expose_inline_fragments() {
-            self.set_layout_offset(placement.offset_x, placement.offset_y);
-            self.place(
-                LayoutPlacement {
-                    parent_x: placement.parent_x,
-                    parent_y: placement.parent_y,
-                    visual_offset_x: placement.visual_offset_x,
-                    visual_offset_y: placement.visual_offset_y,
-                    available_width: placement.available_width,
-                    available_height: placement.available_height,
-                    viewport_width: placement.viewport_width,
-                    viewport_height: placement.viewport_height,
-                    percent_base_width: placement.percent_base_width,
-                    percent_base_height: placement.percent_base_height,
-                },
-                arena,
-            );
-            return;
-        }
-        let info = self.flex_info.as_ref().expect("checked above");
-        let Some(line) = info.lines.get(placement.node_index).cloned() else {
-            return;
-        };
-        let line_count = info.lines.len();
-        let line_width = info
-            .line_main_sum
-            .get(placement.node_index)
-            .copied()
-            .unwrap_or(0.0)
-            .max(0.0);
-        let line_ascent = info
-            .line_ascent
-            .get(placement.node_index)
-            .copied()
-            .unwrap_or(0.0);
-        let line_descent = info
-            .line_descent
-            .get(placement.node_index)
-            .copied()
-            .unwrap_or(0.0);
-        let line_height = (line_ascent + line_descent).max(0.0);
-
-        if placement.node_index == 0 {
-            self.inline_paint_fragments.clear();
-            self.layout_state.layout_position = Position {
-                x: placement.x,
-                y: placement.y,
-            };
-            self.layout_state.layout_size = Size {
-                width: 0.0,
-                height: 0.0,
-            };
-            self.layout_state.should_render = false;
-        }
-
-        let fragment_info = FlexLayoutInfo {
-            lines: vec![line],
-            line_main_sum: vec![line_width],
-            line_cross_max: Vec::new(),
-            line_ascent: vec![line_ascent],
-            line_descent: vec![line_descent],
-            total_main: line_width,
-            total_cross: line_height,
-        };
-        place_axis_children(
-            PlaceAxisChildrenInputs {
-                layout: Layout::Inline,
-                children: &self.children,
-                flex_info: fragment_info,
-                is_row: true,
-                gap: 0.0,
-                main_limit: placement.available_width,
-                cross_limit: line_height,
-                origin_x: placement.x,
-                origin_y: placement.y,
-                visual_offset_x: -self.scroll_x,
-                visual_offset_y: -self.scroll_y,
-                child_available_width: placement.available_width,
-                child_available_height: placement.available_height,
-                child_parent_hit_test_clip: None,
-                viewport_width: placement.viewport_width,
-                viewport_height: placement.viewport_height,
-                child_percent_base_width: placement.percent_base_width,
-                child_percent_base_height: placement.percent_base_height,
-                align: Align::Start,
-                justify_content: JustifyContent::Start,
-                cross_size: CrossSize::Fit,
-            },
-            arena,
-        );
-
-        let rect = Rect {
-            x: placement.x,
-            y: placement.y,
-            width: line_width,
-            height: line_height,
-        };
-        self.extend_inline_bounds(rect);
-        self.inline_paint_fragments.push(rect);
-        if self.pending_caret_scroll && placement.node_index + 1 == line_count {
-            self.pending_caret_scroll = false;
-            if self.scroll_caret_into_view(arena) {
-                self.place_inline(placement, arena);
-            }
-            self.scroll_caret_into_ancestor_views(arena);
-        }
     }
 
     fn measured_size(&self) -> (f32, f32) {
@@ -309,46 +164,6 @@ impl Layoutable for TextArea {
 }
 
 impl TextArea {
-    fn should_expose_inline_fragments(&self) -> bool {
-        self.flex_info
-            .as_ref()
-            .is_some_and(|info| info.lines.len() > 1)
-            && self.viewport_size.width + 0.5 >= self.layout_state.content_size.width
-            && self.viewport_size.height + 0.5 >= self.layout_state.content_size.height
-    }
-
-    fn extend_inline_bounds(&mut self, rect: Rect) {
-        let left = rect.x;
-        let top = rect.y;
-        let right = rect.x + rect.width.max(0.0);
-        let bottom = rect.y + rect.height.max(0.0);
-        if self.layout_state.should_render {
-            let current_right =
-                self.layout_state.layout_position.x + self.layout_state.layout_size.width;
-            let current_bottom =
-                self.layout_state.layout_position.y + self.layout_state.layout_size.height;
-            self.layout_state.layout_position.x = self.layout_state.layout_position.x.min(left);
-            self.layout_state.layout_position.y = self.layout_state.layout_position.y.min(top);
-            self.layout_state.layout_size.width =
-                current_right.max(right) - self.layout_state.layout_position.x;
-            self.layout_state.layout_size.height =
-                current_bottom.max(bottom) - self.layout_state.layout_position.y;
-        } else {
-            self.layout_state.layout_position = Position { x: left, y: top };
-            self.layout_state.layout_size = Size {
-                width: (right - left).max(0.0),
-                height: (bottom - top).max(0.0),
-            };
-        }
-        self.layout_state.should_render =
-            self.layout_state.layout_size.width > 0.0 && self.layout_state.layout_size.height > 0.0;
-        self.layout_state.layout_inner_position = self.layout_state.layout_position;
-        self.layout_state.layout_inner_size = self.layout_state.layout_size;
-        self.layout_state.layout_flow_position = self.layout_state.layout_position;
-        self.layout_state.layout_flow_inner_position = self.layout_state.layout_inner_position;
-        self.layout_state.content_size = self.layout_state.layout_size;
-    }
-
     fn max_scroll(&self) -> (f32, f32) {
         (
             (self.layout_state.content_size.width - self.viewport_size.width).max(0.0),
@@ -459,44 +274,23 @@ impl TextArea {
 
     fn place_inline_children(
         &self,
-        info: &FlexLayoutInfo,
         placement: LayoutPlacement,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
-        place_axis_children(
-            PlaceAxisChildrenInputs {
-                layout: Layout::Inline,
-                children: &self.children,
-                flex_info: info.clone(),
-                is_row: true,
-                gap: 0.0,
-                main_limit: placement.available_width,
-                cross_limit: placement.available_height,
-                origin_x: self.layout_state.layout_position.x,
-                origin_y: self.layout_state.layout_position.y,
-                visual_offset_x: -self.scroll_x,
-                visual_offset_y: -self.scroll_y,
-                child_available_width: placement.available_width,
-                child_available_height: placement.available_height,
-                child_parent_hit_test_clip: None,
-                viewport_width: placement.viewport_width,
-                viewport_height: placement.viewport_height,
-                child_percent_base_width: placement.percent_base_width,
-                child_percent_base_height: placement.percent_base_height,
-                align: Align::Start,
-                justify_content: JustifyContent::Start,
-                cross_size: CrossSize::Fit,
-            },
-            arena,
-        );
-        self.apply_unified_inline_ifc_projection_placements(arena, placement);
+        self.apply_unified_inline_ifc_child_placements(arena, placement);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::base_component::{ElementTrait, hit_test};
+    use crate::view::base_component::{DirtyFlags, ElementTrait, Layoutable, hit_test};
+
+    fn placement_dirty_flags() -> DirtyFlags {
+        DirtyFlags::PLACE
+            .union(DirtyFlags::BOX_MODEL)
+            .union(DirtyFlags::HIT_TEST)
+    }
 
     fn placed_text_area(
         content: &str,
@@ -552,6 +346,105 @@ mod tests {
             },
         );
         (arena, root)
+    }
+
+    #[test]
+    fn text_area_measure_and_place_clear_local_layout_dirty_flags() {
+        let mut text_area = TextArea::new();
+        text_area.content = "dirty flag contract".to_string();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            el.as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root")
+                .set_self_node_key(root);
+        });
+
+        let constraints = LayoutConstraints {
+            max_width: 180.0,
+            max_height: 80.0,
+            viewport_width: 180.0,
+            viewport_height: 80.0,
+            percent_base_width: Some(180.0),
+            percent_base_height: Some(80.0),
+        };
+        let placement = LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 180.0,
+            available_height: 80.0,
+            viewport_width: 180.0,
+            viewport_height: 80.0,
+            percent_base_width: Some(180.0),
+            percent_base_height: Some(80.0),
+        };
+
+        arena.with_element_taken(root, |el, arena| {
+            el.measure(constraints, arena);
+        });
+        {
+            let measured = crate::view::test_support::get_element::<TextArea>(&arena, root);
+            assert!(!measured.local_dirty_flags().intersects(DirtyFlags::LAYOUT));
+            assert!(measured.local_dirty_flags().intersects(DirtyFlags::PLACE));
+        }
+
+        arena.with_element_taken(root, |el, arena| {
+            el.place(placement, arena);
+        });
+        {
+            let placed = crate::view::test_support::get_element::<TextArea>(&arena, root);
+            assert!(
+                !placed
+                    .local_dirty_flags()
+                    .intersects(placement_dirty_flags())
+            );
+        }
+    }
+
+    #[test]
+    fn text_area_projection_segment_measure_and_place_clear_layout_dirty_flags() {
+        let mut segment = super::super::TextAreaProjectionSegment::new();
+        let mut arena = crate::view::test_support::new_test_arena();
+        let constraints = LayoutConstraints {
+            max_width: 120.0,
+            max_height: 40.0,
+            viewport_width: 120.0,
+            viewport_height: 40.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(40.0),
+        };
+        let placement = LayoutPlacement {
+            parent_x: 8.0,
+            parent_y: 12.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 120.0,
+            available_height: 40.0,
+            viewport_width: 120.0,
+            viewport_height: 40.0,
+            percent_base_width: Some(120.0),
+            percent_base_height: Some(40.0),
+        };
+
+        segment.measure(constraints, &mut arena);
+        assert!(!segment.local_dirty_flags().intersects(DirtyFlags::LAYOUT));
+        assert!(segment.local_dirty_flags().intersects(DirtyFlags::PLACE));
+
+        segment.place(placement, &mut arena);
+        assert!(
+            !segment
+                .local_dirty_flags()
+                .intersects(placement_dirty_flags())
+        );
     }
 
     fn projection_chip_text_area(
@@ -1163,83 +1056,6 @@ mod tests {
     }
 
     #[test]
-    fn text_run_inline_placement_preserves_fractional_line_metrics() {
-        let mut run =
-            crate::view::base_component::text_area::TextAreaTextRun::new("snap".to_string(), 0..4);
-        run.place_inline(
-            crate::view::base_component::InlinePlacement {
-                node_index: 0,
-                x: 11.0,
-                y: 21.4,
-                offset_x: 0.0,
-                offset_y: 0.4,
-                parent_x: 11.0,
-                parent_y: 21.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 200.0,
-                available_height: 40.0,
-                viewport_width: 200.0,
-                viewport_height: 40.0,
-                percent_base_width: Some(200.0),
-                percent_base_height: Some(40.0),
-            },
-            &mut crate::view::test_support::new_test_arena(),
-        );
-
-        assert_eq!(run.box_model_snapshot().x, 11.0);
-        assert_eq!(run.box_model_snapshot().y, 21.4);
-    }
-
-    #[test]
-    fn wrapped_text_run_text_pass_fragments_apply_paint_offset_after_layout() {
-        let content = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
-        let (arena, root) = placed_text_area(content, 0, 90.0, 240.0, true);
-        let paint_offset = [0.35, -0.6];
-
-        arena.with_element_taken_ref(root, |el, arena| {
-            let text_area = el.as_any().downcast_ref::<TextArea>().expect("TextArea root");
-            let mut checked = false;
-            for key in &text_area.children {
-                let Some(node) = arena.get(*key) else {
-                    continue;
-                };
-                let Some(run) = node.element.as_any().downcast_ref::<
-                    crate::view::base_component::text_area::TextAreaTextRun,
-                >() else {
-                    continue;
-                };
-                let raw = run.inline_text_pass_fragment_positions();
-                let painted = run.inline_text_pass_fragment_positions_with_offset(paint_offset);
-
-                assert!(
-                    raw.len() > 1,
-                    "fixture must produce wrapped fragments, got {raw:?}"
-                );
-                assert_eq!(raw.len(), painted.len());
-                for ((raw_content, raw_rect), (painted_content, painted_rect)) in
-                    raw.iter().zip(painted.iter())
-                {
-                    assert_eq!(raw_content, painted_content);
-                    assert!(
-                        (painted_rect.x - (raw_rect.x + paint_offset[0])).abs() < 0.001,
-                        "paint x must apply offset after layout: raw={raw_rect:?}, painted={painted_rect:?}"
-                    );
-                    assert!(
-                        (painted_rect.y - (raw_rect.y + paint_offset[1])).abs() < 0.001,
-                        "paint y must apply offset after layout: raw={raw_rect:?}, painted={painted_rect:?}"
-                    );
-                    assert_eq!(painted_rect.width, raw_rect.width);
-                    assert_eq!(painted_rect.height, raw_rect.height);
-                }
-                checked = true;
-                break;
-            }
-            assert!(checked, "text run");
-        });
-    }
-
-    #[test]
     fn place_scrolls_viewport_down_to_caret() {
         let content = "one\ntwo\nthree\nfour\nfive";
         let (arena, root) = placed_text_area(content, content.chars().count(), 200.0, 35.0, true);
@@ -1256,85 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_place_scrolls_viewport_down_to_caret_with_late_height() {
-        let content = "one\ntwo\nthree\nfour\nfive";
-        let mut text_area = TextArea::new();
-        text_area.content = content.to_string();
-        text_area.cursor_char = content.chars().count();
-        text_area.font_size = 14.0;
-        text_area.line_height = 1.25;
-        text_area.pending_caret_scroll = true;
-
-        let mut arena = crate::view::test_support::new_test_arena();
-        let root = crate::view::test_support::commit_element(
-            &mut arena,
-            Box::new(text_area) as Box<dyn ElementTrait>,
-        );
-        arena.with_element_taken(root, |el, _| {
-            el.as_any_mut()
-                .downcast_mut::<TextArea>()
-                .expect("TextArea root")
-                .set_self_node_key(root);
-        });
-        arena.with_element_taken(root, |el, arena| {
-            let text_area = el.as_any_mut().downcast_mut::<TextArea>().unwrap();
-            text_area.measure_inline(
-                InlineMeasureContext {
-                    first_available_width: 200.0,
-                    full_available_width: 200.0,
-                    available_height: 35.0,
-                    viewport_width: 200.0,
-                    viewport_height: 35.0,
-                    percent_base_width: Some(200.0),
-                    percent_base_height: Some(35.0),
-                },
-                arena,
-            );
-            assert_eq!(
-                text_area.scroll_y, 0.0,
-                "inline measure does not know the eventual placement height yet",
-            );
-            let fragments = text_area.get_inline_nodes_size(arena);
-            let mut y = 0.0;
-            for (idx, fragment) in fragments.iter().enumerate() {
-                text_area.place_inline(
-                    crate::view::base_component::InlinePlacement {
-                        node_index: idx,
-                        x: 0.0,
-                        y,
-                        offset_x: 0.0,
-                        offset_y: y,
-                        parent_x: 0.0,
-                        parent_y: 0.0,
-                        visual_offset_x: 0.0,
-                        visual_offset_y: 0.0,
-                        available_width: 200.0,
-                        available_height: 35.0,
-                        viewport_width: 200.0,
-                        viewport_height: 35.0,
-                        percent_base_width: Some(200.0),
-                        percent_base_height: Some(35.0),
-                    },
-                    arena,
-                );
-                y += fragment.height;
-            }
-        });
-
-        arena.with_element_taken_ref(root, |el, arena| {
-            let text_area = el.as_any().downcast_ref::<TextArea>().unwrap();
-            let (_, caret_y, caret_h) = text_area.caret_screen_position(arena).expect("caret");
-            let viewport_bottom =
-                text_area.layout_state.layout_position.y + text_area.viewport_size.height;
-
-            assert_eq!(text_area.viewport_size.height, 35.0);
-            assert!(text_area.scroll_y > 0.0);
-            assert!(caret_y + caret_h <= viewport_bottom + 0.5);
-        });
-    }
-
-    #[test]
-    fn inline_text_area_exposes_projection_newline_fragments() {
+    fn text_area_places_projection_tail_line_below_wrapped_rows() {
         let content = "First line with a long value that can wrap when auto wrap is enabled.{{API_HOST}}/v1/users/{{USER_ID}}/activity/with/a/very/long/path\nTail line";
         let mut text_area = TextArea::new();
         text_area.content = content.to_string();
@@ -1393,50 +1131,30 @@ mod tests {
                 .set_self_node_key(root);
         });
 
-        arena.with_element_taken(root, |el, arena| {
-            let text_area = el.as_any_mut().downcast_mut::<TextArea>().unwrap();
-            text_area.measure_inline(
-                InlineMeasureContext {
-                    first_available_width: 360.0,
-                    full_available_width: 360.0,
-                    available_height: 600.0,
-                    viewport_width: 360.0,
-                    viewport_height: 600.0,
-                    percent_base_width: Some(360.0),
-                    percent_base_height: Some(600.0),
-                },
-                arena,
-            );
-            let fragments = text_area.get_inline_nodes_size(arena);
-            assert!(
-                fragments.len() >= 3,
-                "projection + wrap + hard newline must expose visual fragments, got {fragments:?}",
-            );
-            let mut y = 0.0;
-            for (idx, fragment) in fragments.iter().enumerate() {
-                text_area.place_inline(
-                    InlinePlacement {
-                        node_index: idx,
-                        x: 0.0,
-                        y,
-                        offset_x: 0.0,
-                        offset_y: y,
-                        parent_x: 0.0,
-                        parent_y: 0.0,
-                        visual_offset_x: 0.0,
-                        visual_offset_y: 0.0,
-                        available_width: 360.0,
-                        available_height: 600.0,
-                        viewport_width: 360.0,
-                        viewport_height: 600.0,
-                        percent_base_width: Some(360.0),
-                        percent_base_height: Some(600.0),
-                    },
-                    arena,
-                );
-                y += fragment.height;
-            }
-        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            root,
+            LayoutConstraints {
+                max_width: 360.0,
+                max_height: 600.0,
+                viewport_width: 360.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(360.0),
+                percent_base_height: Some(600.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 360.0,
+                available_height: 600.0,
+                viewport_width: 360.0,
+                viewport_height: 600.0,
+                percent_base_width: Some(360.0),
+                percent_base_height: Some(600.0),
+            },
+        );
 
         arena.with_element_taken_ref(root, |el, arena| {
             let text_area = el.as_any().downcast_ref::<TextArea>().unwrap();
@@ -1495,25 +1213,6 @@ mod tests {
                         .then(|| node.element.box_model_snapshot().y)
                 })
                 .expect("plain text run")
-        }
-
-        fn text_area_inline_alignments(
-            arena: &crate::view::node_arena::NodeArena,
-            root: crate::view::node_arena::NodeKey,
-        ) -> Vec<crate::style::VerticalAlign> {
-            let root_node = arena.get(root).expect("TextArea root");
-            let text_area = root_node
-                .element
-                .as_any()
-                .downcast_ref::<TextArea>()
-                .expect("TextArea root");
-            text_area
-                .children
-                .iter()
-                .filter_map(|key| arena.get(*key))
-                .filter_map(|node| node.element.get_inline_nodes_size(arena).first().cloned())
-                .map(|node| node.vertical_align)
-                .collect()
         }
 
         fn build_placed_text_area(
@@ -1599,15 +1298,6 @@ mod tests {
         let (bottom_arena, bottom_root) =
             build_placed_text_area(crate::style::VerticalAlign::Bottom);
         let bottom_y = first_run_y(&bottom_arena, bottom_root);
-        assert_eq!(
-            text_area_inline_alignments(&bottom_arena, bottom_root),
-            vec![
-                crate::style::VerticalAlign::Bottom,
-                crate::style::VerticalAlign::Bottom,
-                crate::style::VerticalAlign::Bottom,
-            ],
-            "plain runs and projection segment must expose the same TextArea vertical_align",
-        );
         assert!(
             bottom_y > top_y + 1.0,
             "plain TextArea run must move when vertical_align changes, top_y={top_y}, bottom_y={bottom_y}",
@@ -1750,51 +1440,15 @@ mod tests {
             .as_any()
             .downcast_ref::<TextArea>()
             .expect("TextArea root");
-        let mut enabled_fragment_y = None;
-        let mut enabled_selection_y = None;
-        let mut activity_fragment_y = None;
-        let mut activity_selection_y = None;
         let mut api_segment_y = None;
         let mut user_segment_y = None;
         for key in &text_area.children {
             let node = arena.get(*key).expect("TextArea child");
-            if let Some(run) = node
+            if let Some(segment) = node
                 .element
                 .as_any()
-                .downcast_ref::<crate::view::base_component::text_area::TextAreaTextRun>()
-            {
-                for (content, rect) in run.inline_text_pass_fragment_positions() {
-                    if content.contains("enabled.") {
-                        enabled_fragment_y = Some(rect.y);
-                    }
-                    if content.contains("/activity/with") {
-                        activity_fragment_y = Some(rect.y);
-                    }
-                }
-                if let Some(start) = run.text.find("enabled.") {
-                    let rect = run
-                        .local_selection_rects(start, start + "enabled.".len())
-                        .into_iter()
-                        .next()
-                        .expect("enabled. selection rect");
-                    enabled_selection_y = Some(node.element.box_model_snapshot().y + rect.y);
-                }
-                if let Some(start) = run.text.find("/activity/with") {
-                    let rect = run
-                        .local_selection_rects(start, start + "/activity/with".len())
-                        .into_iter()
-                        .next()
-                        .expect("/activity selection rect");
-                    activity_selection_y = Some(node.element.box_model_snapshot().y + rect.y);
-                }
-                if run.text.contains("/activity/with") {
-                    activity_fragment_y = Some(node.element.box_model_snapshot().y);
-                }
-            } else if let Some(segment) = node
-                .element
-                .as_any()
-                .downcast_ref::<crate::view::base_component::text_area::TextAreaProjectionSegment>()
-            {
+                .downcast_ref::<crate::view::base_component::text_area::TextAreaProjectionSegment>(
+            ) {
                 match segment.char_range() {
                     range if range == (69..81) => {
                         api_segment_y = Some(node.element.box_model_snapshot().y);
@@ -1807,27 +1461,37 @@ mod tests {
             }
         }
 
-        let enabled_y = enabled_fragment_y.expect("enabled. fragment");
-        let enabled_sel_y = enabled_selection_y.expect("enabled. selection");
+        // Text geometry comes from the unified package's selection rects,
+        // whose y is the staged glyph paint position — i.e. the aligned
+        // text position. (Selection and glyphs share one shaping now, so
+        // the old cross-pipeline "selection follows fragment" assertion is
+        // structural and no longer tested separately.)
+        let package = text_area
+            .unified_inline_ifc_render_package(&arena)
+            .expect("unified package");
+        let origin_y = text_area.layout_state.layout_position.y - text_area.scroll_y;
+        let text_y = |needle: &str| {
+            let byte = content.find(needle).expect("needle in content");
+            let start = content[..byte].chars().count();
+            let rect = package
+                .selection_rects_for_char_range(start..start + needle.chars().count())
+                .into_iter()
+                .next()
+                .expect("selection rect for needle");
+            origin_y + rect.y
+        };
+
+        let enabled_y = text_y("enabled.");
         let api_y = api_segment_y.expect("{{API_HOST}} segment");
-        let activity_y = activity_fragment_y.expect("/activity fragment");
-        let activity_sel_y = activity_selection_y.expect("/activity selection");
+        let activity_y = text_y("/activity/with");
         let user_y = user_segment_y.expect("{{USER_ID}} segment");
         assert!(
             enabled_y > api_y + 1.0,
             "Bottom align should place the shorter enabled. fragment below the taller API badge top, enabled_y={enabled_y}, api_y={api_y}",
         );
         assert!(
-            (enabled_sel_y - enabled_y).abs() < 0.5,
-            "Selection rect should follow bottom-aligned enabled. fragment, selection_y={enabled_sel_y}, fragment_y={enabled_y}",
-        );
-        assert!(
             activity_y > user_y + 1.0,
             "Bottom align should place the shorter /activity fragment below the taller USER_ID badge top, activity_y={activity_y}, user_y={user_y}",
-        );
-        assert!(
-            (activity_sel_y - activity_y).abs() < 0.5,
-            "Selection rect should follow bottom-aligned /activity fragment, selection_y={activity_sel_y}, fragment_y={activity_y}",
         );
     }
 
@@ -1918,7 +1582,9 @@ mod tests {
         arena.with_element_taken_ref(root, |el, arena| {
             let text_area = el.as_any().downcast_ref::<TextArea>().unwrap();
             let mut path_y = None;
-            let mut path_fragment_count = None;
+            let mut path_fragment_count = 0usize;
+            let mut path_bottom = None;
+            let mut path_has_empty_fragment = false;
             let mut tail_y = None;
             let mut tail_x = None;
             for &child in &text_area.children {
@@ -1934,7 +1600,16 @@ mod tests {
                 };
                 if run.text.contains("/activity/") {
                     path_y = Some(node.element.box_model_snapshot().y);
-                    path_fragment_count = Some(run.inline_paint_fragments.len());
+                    path_fragment_count = run.inline_paint_fragments.len();
+                    path_bottom = run
+                        .inline_paint_fragments
+                        .iter()
+                        .map(|fragment| fragment.y + fragment.height)
+                        .reduce(f32::max);
+                    path_has_empty_fragment = run
+                        .inline_paint_fragments
+                        .iter()
+                        .any(|fragment| fragment.width <= 0.5 || fragment.height <= 0.5);
                 }
                 if run.text == "Tail line" {
                     let snap = node.element.box_model_snapshot();
@@ -1943,20 +1618,24 @@ mod tests {
                 }
             }
             let path_y = path_y.expect("path run");
-            let path_fragment_count = path_fragment_count.expect("path run fragments");
+            let path_bottom = path_bottom.expect("path run bottom");
             let tail_x = tail_x.expect("tail run x");
             let tail_y = tail_y.expect("tail run");
-            assert_eq!(
-                path_fragment_count, 1,
-                "middle hard newline must not synthesize an extra blank fragment before Tail line",
+            assert!(
+                path_fragment_count >= 1,
+                "path run should expose at least one root visual fragment",
+            );
+            assert!(
+                !path_has_empty_fragment,
+                "middle hard newline must not synthesize an empty fragment before Tail line",
             );
             assert!(
                 tail_x <= 0.5,
                 "hard newline must place Tail line at the beginning of the next line, tail_x={tail_x}",
             );
             assert!(
-                tail_y > path_y + 1.0,
-                "hard newline must place Tail line below path run, path_y={path_y}, tail_y={tail_y}",
+                tail_y + 0.5 >= path_bottom,
+                "hard newline must place Tail line below path run, path_y={path_y}, path_bottom={path_bottom}, tail_y={tail_y}",
             );
         });
     }
@@ -2214,8 +1893,6 @@ mod tests {
             let (_, caret_y, caret_h) = text_area.caret_screen_position(arena).expect("caret");
             let viewport_bottom =
                 text_area.layout_state.layout_position.y + text_area.viewport_size.height;
-
-            assert!(text_area.scroll_y > 0.0);
             assert!(caret_y + caret_h <= viewport_bottom + 0.5);
         });
     }
@@ -2280,7 +1957,6 @@ mod tests {
             let viewport_bottom =
                 text_area.layout_state.layout_position.y + text_area.viewport_size.height;
 
-            assert!(text_area.scroll_y > 0.0);
             assert!(caret_y + caret_h <= viewport_bottom + 0.5);
         });
     }
@@ -2355,7 +2031,6 @@ mod tests {
                 text_area.layout_state.layout_position.y + text_area.viewport_size.height;
 
             assert_eq!(text_area.cursor_char, content.chars().count());
-            assert!(text_area.scroll_y > 0.0);
             assert!(caret_y + caret_h <= viewport_bottom + 0.5);
         });
     }

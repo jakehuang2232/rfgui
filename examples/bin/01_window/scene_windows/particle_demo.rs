@@ -4,9 +4,8 @@ use crate::rfgui::ui::{
     ViewportHandle, component, use_viewport,
 };
 use crate::rfgui::view::base_component::{
-    BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, InlineMeasureContext,
-    InlineNodeSize, InlinePlacement, LayoutConstraints, LayoutPlacement, Layoutable, Renderable,
-    UiBuildContext,
+    BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, LayoutConstraints,
+    LayoutPlacement, Layoutable, Renderable, UiBuildContext,
 };
 use crate::rfgui::view::frame_graph::slot::{InSlot, OutSlot};
 use crate::rfgui::view::frame_graph::texture_resource::{TextureDesc, TextureResource};
@@ -351,7 +350,7 @@ fn get_or_create_resources(
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[vertex_layout],
+                buffers: &[Some(vertex_layout)],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -592,44 +591,6 @@ impl Layoutable for ParticleCanvas {
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.offset_x = x;
         self.offset_y = y;
-    }
-    fn measure_inline(&mut self, ctx: InlineMeasureContext, arena: &mut rfgui::view::NodeArena) {
-        self.measure(
-            LayoutConstraints {
-                max_width: ctx.first_available_width,
-                max_height: 1_000_000.0,
-                viewport_width: ctx.viewport_width,
-                viewport_height: ctx.viewport_height,
-                percent_base_width: ctx.percent_base_width,
-                percent_base_height: ctx.percent_base_height,
-            },
-            arena,
-        );
-    }
-    fn get_inline_nodes_size(&self, _arena: &rfgui::view::NodeArena) -> Vec<InlineNodeSize> {
-        vec![InlineNodeSize {
-            width: self.target_w,
-            height: self.target_h,
-            ..Default::default()
-        }]
-    }
-    fn place_inline(&mut self, p: InlinePlacement, arena: &mut rfgui::view::NodeArena) {
-        self.set_layout_offset(p.offset_x, p.offset_y);
-        self.place(
-            LayoutPlacement {
-                parent_x: p.parent_x,
-                parent_y: p.parent_y,
-                visual_offset_x: p.visual_offset_x,
-                visual_offset_y: p.visual_offset_y,
-                available_width: p.available_width,
-                available_height: p.available_height,
-                viewport_width: p.viewport_width,
-                viewport_height: p.viewport_height,
-                percent_base_width: p.percent_base_width,
-                percent_base_height: p.percent_base_height,
-            },
-            arena,
-        );
     }
 }
 

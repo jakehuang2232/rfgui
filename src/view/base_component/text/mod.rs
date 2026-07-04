@@ -2,18 +2,17 @@ use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 use crate::style::{ColorLike, Cursor, HexColor, TextWrap};
-use crate::view::text_layout::{TextLayout, TextLayoutAlignment};
+use crate::view::inline_formatting_context::{InlineFormattingContext, InlineIfcAlignment};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use super::{BoxModelSnapshot, ElementTrait, InlineMeasureContext, Position, Size};
+use super::{BoxModelSnapshot, ElementTrait, Position, Size};
 use crate::view::layout::LayoutState;
 use crate::view::promotion::PromotionNodeInfo;
 
 mod cache;
 mod events;
 mod hit_test;
-mod inline_plan;
 mod layout;
 mod measure;
 mod profile;
@@ -24,24 +23,40 @@ mod style;
 #[cfg(test)]
 mod tests;
 
-use self::cache::{InlinePlanCacheKey, MeasuredTextLayout, TextLayoutCacheKey};
+use self::cache::{MeasuredTextIfc, TextLayoutCacheKey};
 
-use self::inline_plan::InlineTextPlan;
 pub(in crate::view::base_component) use self::measure::measure_text_layout;
 
 pub(crate) use self::hit_test::{
     TextAreaSelectionRenderContext, with_text_area_selection_render_context,
 };
 
-#[cfg(test)]
-use crate::view::inline_text_pass_adapter::{
-    InlineTextPassBridgePackage, InlineTextPassPreparedEquivalentProbe,
-    InlineTextPassPreparedInput, TextReadOnlyIfcBridgeInput,
-};
-#[cfg(test)]
-use crate::view::render_pass::text_pass::{
-    TextPassPreparedStagingInput, TextPassPreparedStagingProbe,
-};
+/// Per-visual-line geometry installed by an inline IFC root that owns this
+/// Text node's glyphs. `rect` is the full line box (layout bounds, caret
+/// height); `text_rect` is the baseline-aligned glyph box (where text
+/// paints, used for fragment-position and selection geometry). `caret_xs`
+/// holds one x per char boundary (`len == char_range.len() + 1`).
+/// Coordinates are absolute viewport space once installed.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextIfcOwnedLine {
+    pub(crate) rect: crate::ui::Rect,
+    pub(crate) text_rect: crate::ui::Rect,
+    pub(crate) char_range: std::ops::Range<usize>,
+    pub(crate) caret_xs: Vec<f32>,
+}
+
+impl TextIfcOwnedLine {
+    pub(crate) fn shifted(mut self, dx: f32, dy: f32) -> Self {
+        self.rect.x += dx;
+        self.rect.y += dy;
+        self.text_rect.x += dx;
+        self.text_rect.y += dy;
+        for x in &mut self.caret_xs {
+            *x += dx;
+        }
+        self
+    }
+}
 
 pub struct Text {
     pub(super) position: Position,
@@ -55,25 +70,24 @@ pub struct Text {
     pub(super) font_size: f32,
     pub(super) line_height: f32,
     pub(super) font_weight: u16,
-    pub(super) align: TextLayoutAlignment,
+    pub(super) align: InlineIfcAlignment,
     pub(super) opacity: f32,
     pub(super) auto_width: bool,
     pub(super) auto_height: bool,
     pub(super) text_wrap: TextWrap,
     pub(super) cursor: Cursor,
     /// Effective `vertical-align` for this Text node. Default
-    /// `Baseline`; written by parent cascade or explicit prop. Read by
-    /// `get_inline_nodes_size` to fan out into the inline solver.
+    /// `Baseline`; written by parent cascade or explicit prop.
     pub(super) vertical_align: crate::style::VerticalAlign,
     pub(super) allow_wrap: bool,
     pub(super) measure_revision: u64,
-    pub(super) cached_intrinsic_layout: Option<(u64, MeasuredTextLayout)>,
+    pub(super) cached_intrinsic_layout: Option<(u64, MeasuredTextIfc)>,
     pub(super) cached_height_for_width: Option<(u64, f32, f32)>,
-    pub(super) layout_cache: FxHashMap<TextLayoutCacheKey, MeasuredTextLayout>,
-    pub(super) inline_plan_cache: FxHashMap<InlinePlanCacheKey, InlineTextPlan>,
-    pub(super) text_layout: Option<Arc<TextLayout>>,
-    pub(super) inline_plan: Option<InlineTextPlan>,
-    pub(super) last_inline_measure_context: Option<InlineMeasureContext>,
+    pub(super) layout_cache: FxHashMap<TextLayoutCacheKey, MeasuredTextIfc>,
+    /// Shaped context installed by the last measure; render and the
+    /// hit-test/caret APIs consume this same context.
+    pub(super) shaped_context: Option<Arc<InlineFormattingContext>>,
+    pub(super) inline_ifc_owned_lines: Option<Vec<TextIfcOwnedLine>>,
     pub(super) node_id: u64,
     pub(super) parent_id: Option<u64>,
     pub(super) dirty_flags: super::DirtyFlags,
@@ -92,37 +106,6 @@ pub struct Text {
     pub(super) cursor_explicit: bool,
     pub(super) text_wrap_explicit: bool,
     pub(super) line_height_explicit: bool,
-    pub(super) read_only_ifc_staging_mode: TextReadOnlyIfcStagingMode,
-    #[cfg(test)]
-    pub(super) read_only_ifc_staging_probe: Option<TextReadOnlyIfcStagingProbe>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-// P6 staged rollout gate: read-only non-inline Text now defaults to the
-// prepared candidate, while `Disabled` remains the explicit rollback path.
-#[allow(dead_code)]
-pub(crate) enum TextReadOnlyIfcStagingMode {
-    /// Explicit rollback/disable mode. Read-only Text keeps the existing
-    /// TextPass fragment path and does not build IFC probe metadata.
-    Disabled,
-    /// Build IFC bridge/prepared metadata for tests and comparison, but still
-    /// render through the existing TextPass path.
-    ProbeOnly,
-    /// Formal default candidate branch: read-only non-inline Text renders
-    /// through the IFC prepared-input pass while the existing TextPass path
-    /// remains the defined fallback.
-    RenderPreparedInput,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TextReadOnlyIfcFallback {
-    ExistingTextPass,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TextReadOnlyIfcRenderDecision {
-    ExistingTextPass { capture_probe: bool },
-    PreparedCandidate { fallback: TextReadOnlyIfcFallback },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -132,55 +115,6 @@ pub(crate) struct TextInlineIfcStyleMetadata {
     pub(crate) font_weight: u16,
     pub(crate) brush: [u8; 4],
     pub(crate) font_families: Vec<String>,
-}
-
-impl TextReadOnlyIfcRenderDecision {
-    pub(crate) fn captures_probe(self) -> bool {
-        match self {
-            Self::ExistingTextPass { capture_probe } => capture_probe,
-            Self::PreparedCandidate { .. } => true,
-        }
-    }
-
-    pub(crate) fn uses_prepared_render_pass(self) -> bool {
-        matches!(self, Self::PreparedCandidate { .. })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn fallback(self) -> Option<TextReadOnlyIfcFallback> {
-        match self {
-            Self::ExistingTextPass { .. } => None,
-            Self::PreparedCandidate { fallback } => Some(fallback),
-        }
-    }
-}
-
-impl TextReadOnlyIfcStagingMode {
-    pub(crate) fn render_decision(self) -> TextReadOnlyIfcRenderDecision {
-        match self {
-            Self::Disabled => TextReadOnlyIfcRenderDecision::ExistingTextPass {
-                capture_probe: false,
-            },
-            Self::ProbeOnly => TextReadOnlyIfcRenderDecision::ExistingTextPass {
-                capture_probe: true,
-            },
-            Self::RenderPreparedInput => TextReadOnlyIfcRenderDecision::PreparedCandidate {
-                fallback: TextReadOnlyIfcFallback::ExistingTextPass,
-            },
-        }
-    }
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct TextReadOnlyIfcStagingProbe {
-    pub(crate) mode: TextReadOnlyIfcStagingMode,
-    pub(crate) input: TextReadOnlyIfcBridgeInput,
-    pub(crate) package: InlineTextPassBridgePackage,
-    pub(crate) prepared_input: InlineTextPassPreparedInput,
-    pub(crate) prepared_equivalent: InlineTextPassPreparedEquivalentProbe,
-    pub(crate) text_pass_staging_input: TextPassPreparedStagingInput,
-    pub(crate) text_pass_staging_probe: TextPassPreparedStagingProbe,
 }
 
 pub(crate) use self::profile::{
@@ -228,7 +162,7 @@ impl Text {
             font_size: 16.0,
             line_height: 1.25,
             font_weight: 400,
-            align: TextLayoutAlignment::Left,
+            align: InlineIfcAlignment::Left,
             opacity: 1.0,
             auto_width: false,
             auto_height: false,
@@ -240,10 +174,8 @@ impl Text {
             cached_intrinsic_layout: None,
             cached_height_for_width: None,
             layout_cache: FxHashMap::default(),
-            inline_plan_cache: FxHashMap::default(),
-            text_layout: None,
-            inline_plan: None,
-            last_inline_measure_context: None,
+            shaped_context: None,
+            inline_ifc_owned_lines: None,
             dirty_flags: super::DirtyFlags::ALL,
             last_layout_placement: None,
             layout_state: LayoutState::new(x, y, width, height),
@@ -254,15 +186,71 @@ impl Text {
             cursor_explicit: false,
             text_wrap_explicit: false,
             line_height_explicit: false,
-            read_only_ifc_staging_mode: TextReadOnlyIfcStagingMode::RenderPreparedInput,
-            #[cfg(test)]
-            read_only_ifc_staging_probe: None,
         }
     }
 
+    /// Shell placement for a node whose geometry is owned by an inline
+    /// IFC root: adopt the bounding box so arena hit-testing and bbox
+    /// queries see the fragment union, without running a layout pass.
+    pub(crate) fn place_as_inline_ifc_owned_box(&mut self, bounds: crate::ui::Rect) {
+        self.layout_state.layout_position = Position {
+            x: bounds.x,
+            y: bounds.y,
+        };
+        self.layout_state.layout_flow_position = self.layout_state.layout_position;
+        self.layout_state.layout_inner_position = self.layout_state.layout_position;
+        self.layout_state.layout_size = Size {
+            width: bounds.width,
+            height: bounds.height,
+        };
+        self.layout_state.layout_inner_size = self.layout_state.layout_size;
+        self.layout_state.should_render = bounds.width > 0.0 && bounds.height > 0.0;
+    }
+
+    /// Install per-line geometry from the inline IFC root that owns this
+    /// Text node's glyphs. While owned, the Text neither self-renders nor
+    /// answers geometry queries from its own layout; everything reads the
+    /// installed lines.
+    pub(crate) fn install_inline_ifc_owned_geometry(&mut self, lines: Vec<TextIfcOwnedLine>) {
+        if self.inline_ifc_owned_lines.as_deref() != Some(lines.as_slice()) {
+            self.dirty_flags = self.dirty_flags.union(super::DirtyPassMask::PAINT);
+        }
+        self.inline_ifc_owned_lines = Some(lines);
+    }
+
+    pub(crate) fn clear_inline_ifc_owned_geometry(&mut self) {
+        if self.inline_ifc_owned_lines.take().is_some() {
+            self.dirty_flags = self.dirty_flags.union(super::DirtyPassMask::PAINT);
+        }
+    }
+
+    /// Test observation: per visual line owned by an inline IFC root,
+    /// the line's text slice and its absolute origin.
     #[cfg(test)]
-    pub(crate) fn set_read_only_ifc_staging_mode(&mut self, mode: TextReadOnlyIfcStagingMode) {
-        self.read_only_ifc_staging_mode = mode;
+    pub(crate) fn inline_fragment_positions(&self) -> Vec<(String, Position)> {
+        let Some(lines) = self.inline_ifc_owned_lines.as_ref() else {
+            return Vec::new();
+        };
+        let chars: Vec<char> = self.content.chars().collect();
+        lines
+            .iter()
+            .map(|line| {
+                let start = line.char_range.start.min(chars.len());
+                let end = line.char_range.end.min(chars.len());
+                let content: String = chars[start..end].iter().collect();
+                (
+                    content,
+                    Position {
+                        x: line.text_rect.x,
+                        y: line.text_rect.y,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn is_inline_ifc_owned(&self) -> bool {
+        self.inline_ifc_owned_lines.is_some()
     }
 
     #[cfg(test)]
@@ -300,6 +288,37 @@ impl ElementTrait for Text {
             height: self.layout_state.layout_size.height,
             border_radius: 0.0,
             should_render: self.layout_state.should_render,
+        }
+    }
+
+    fn placement_eligibility_metadata(
+        &self,
+    ) -> crate::view::node_arena::PlacementEligibilityMetadata {
+        // A standalone Text leaf renders its glyphs relative to
+        // `layout_position` at draw time (see `text/render.rs`), so a pure
+        // ancestor move is correctly handled by `translate_in_place`. An
+        // inline-IFC-owned Text installs absolute glyph boxes instead, but
+        // such a Text always sits under an inline Element root that is
+        // itself non-translatable, so the whole subtree falls back there.
+        crate::view::node_arena::PlacementEligibilityMetadata::empty()
+    }
+
+    fn last_placement(&self) -> Option<crate::view::base_component::LayoutPlacement> {
+        self.last_layout_placement
+    }
+
+    fn translate_in_place(&mut self, dx: f32, dy: f32) {
+        let shift = |p: &mut crate::view::base_component::Position| {
+            p.x += dx;
+            p.y += dy;
+        };
+        shift(&mut self.layout_state.layout_position);
+        shift(&mut self.layout_state.layout_inner_position);
+        shift(&mut self.layout_state.layout_flow_position);
+        shift(&mut self.layout_state.layout_flow_inner_position);
+        if let Some(placement) = self.last_layout_placement.as_mut() {
+            placement.parent_x += dx;
+            placement.parent_y += dy;
         }
     }
 
@@ -366,19 +385,14 @@ impl ElementTrait for Text {
             .max(0.0)
             .to_bits()
             .hash(&mut hasher);
-        let inline_runs = self
-            .inline_plan
-            .as_ref()
-            .map(|plan| plan.runs.as_slice())
-            .unwrap_or(&[]);
-        for fragment in inline_runs {
-            fragment.content.hash(&mut hasher);
-            fragment.width.to_bits().hash(&mut hasher);
-            fragment.height.to_bits().hash(&mut hasher);
-            if let Some(position) = fragment.position {
-                position.x.to_bits().hash(&mut hasher);
-                position.y.to_bits().hash(&mut hasher);
-            }
+        let owned_lines = self.inline_ifc_owned_lines.as_deref().unwrap_or(&[]);
+        for line in owned_lines {
+            line.rect.x.to_bits().hash(&mut hasher);
+            line.rect.y.to_bits().hash(&mut hasher);
+            line.rect.width.to_bits().hash(&mut hasher);
+            line.rect.height.to_bits().hash(&mut hasher);
+            line.char_range.start.hash(&mut hasher);
+            line.char_range.end.hash(&mut hasher);
         }
         hasher.finish()
     }
