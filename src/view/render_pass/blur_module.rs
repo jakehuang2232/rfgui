@@ -429,7 +429,7 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> BlurR
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[wgpu::VertexBufferLayout {
+            buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<BlurVertex>() as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &[
@@ -444,7 +444,7 @@ fn create_resources(device: &wgpu::Device, format: wgpu::TextureFormat) -> BlurR
                         shader_location: 1,
                     },
                 ],
-            }],
+            })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {

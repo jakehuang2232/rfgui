@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use naga_oil::compose::{Composer, NagaModuleDescriptor, ShaderDefValue, ShaderType};
 use rustc_hash::FxHashMap;
 
@@ -69,17 +67,31 @@ pub(crate) fn build_rect_shader(device: &wgpu::Device, key: RectShaderKey) -> wg
         })
         .unwrap_or_else(|e| panic!("compose rect shader (key={:?}): {}", key, e));
 
+    let shader_source =
+        compose_rect_shader_wgsl(module).unwrap_or_else(|e| panic!("emit rect WGSL: {}", e));
+
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(&format!("Rect Shader {:?}", key)),
-        source: wgpu::ShaderSource::Naga(Cow::Owned(module)),
+        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
     })
+}
+
+fn compose_rect_shader_wgsl(module: naga29::Module) -> Result<String, String> {
+    let info = naga29::valid::Validator::new(
+        naga29::valid::ValidationFlags::default(),
+        naga29::valid::Capabilities::default(),
+    )
+    .validate(&module)
+    .map_err(|e| e.to_string())?;
+    naga29::back::wgsl::write_string(&module, &info, naga29::back::wgsl::WriterFlags::empty())
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn compose(key: RectShaderKey) -> Result<naga::Module, String> {
+    fn compose(key: RectShaderKey) -> Result<naga29::Module, String> {
         let mut composer = Composer::default();
         let mut defs: FxHashMap<String, ShaderDefValue> = FxHashMap::default();
         let mut set = |n: &str| {

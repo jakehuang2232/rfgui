@@ -21,7 +21,7 @@ rfgui-components = { path = "../lib/rfgui-components" }
 rfgui-segmenter = { path = "../lib/rfgui-segmenter" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 winit = "0.30.13"
-wgpu = "29.0.1"
+wgpu = "30.0.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 smol_str = "0.3"
 
