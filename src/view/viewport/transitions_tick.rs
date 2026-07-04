@@ -115,21 +115,25 @@ impl Viewport {
     }
 
     pub(super) fn cancel_disallowed_transition_tracks(&mut self) -> bool {
-        let allowlist = crate::view::viewport::transitions_tick::collect_transition_track_allowlist(
-            &self.scene.node_arena,
-            &self.scene.ui_root_keys,
-        );
+        // The allowlist walk visits the whole tree; only style-driven
+        // claims consume it, so skip the walk entirely when none are
+        // active (the common idle frame).
         let active_keys = self
             .transitions
             .transition_claims
             .keys()
             .copied()
+            .filter(|key| Self::is_style_driven_transition_channel(key.channel))
             .collect::<Vec<_>>();
+        if active_keys.is_empty() {
+            return false;
+        }
+        let allowlist = crate::view::viewport::transitions_tick::collect_transition_track_allowlist(
+            &self.scene.node_arena,
+            &self.scene.ui_root_keys,
+        );
         let mut canceled = false;
         for key in active_keys {
-            if !Self::is_style_driven_transition_channel(key.channel) {
-                continue;
-            }
             if allowlist.contains(&key) {
                 continue;
             }
@@ -418,12 +422,17 @@ impl Viewport {
         let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut layout_requests = Vec::new();
-        for &root_key in &root_keys {
-            crate::view::viewport::transitions_tick::take_layout_transition_requests(
-                &mut arena,
-                root_key,
-                &mut layout_requests,
-            );
+        // Whole-tree walk; only needed when some element queued a request
+        // since the last collection (read-only peek: the post-layout
+        // collection this frame consumes and clears the flag).
+        if crate::view::base_component::transition_requests_pending() {
+            for &root_key in &root_keys {
+                crate::view::viewport::transitions_tick::take_layout_transition_requests(
+                    &mut arena,
+                    root_key,
+                    &mut layout_requests,
+                );
+            }
         }
         if !layout_requests.is_empty() {
             let mut host = TransitionHostAdapter {
@@ -488,42 +497,52 @@ impl Viewport {
     ) -> PostLayoutTransitionResult {
         let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
-        let live_node_ids =
-            crate::view::viewport::transitions_tick::collect_node_id_allowlist(&arena, &root_keys);
-        self.transitions
-            .animation_plugin
-            .prune_targets(&live_node_ids);
+        // Building the live-id set is a whole-tree walk; only needed when
+        // the animation plugin holds state that pruning could clear.
+        if self.transitions.animation_plugin.has_prunable_targets() {
+            let live_node_ids = crate::view::viewport::transitions_tick::collect_node_id_allowlist(
+                &arena, &root_keys,
+            );
+            self.transitions
+                .animation_plugin
+                .prune_targets(&live_node_ids);
+        }
         let mut animation_requests = Vec::new();
-        for &root_key in &root_keys {
-            crate::view::viewport::transitions_tick::take_animation_requests(
-                &mut arena,
-                root_key,
-                &mut animation_requests,
-            );
-        }
         let mut style_requests = Vec::new();
-        for &root_key in &root_keys {
-            crate::view::viewport::transitions_tick::take_style_transition_requests(
-                &mut arena,
-                root_key,
-                &mut style_requests,
-            );
-        }
         let mut layout_requests = Vec::new();
-        for &root_key in &root_keys {
-            crate::view::viewport::transitions_tick::take_layout_transition_requests(
-                &mut arena,
-                root_key,
-                &mut layout_requests,
-            );
-        }
         let mut visual_requests = Vec::new();
-        for &root_key in &root_keys {
-            crate::view::viewport::transitions_tick::take_visual_transition_requests(
-                &mut arena,
-                root_key,
-                &mut visual_requests,
-            );
+        // Four whole-tree walks; skip them all when no element queued a
+        // request since the last collection. Take-and-clear so a request
+        // queued after this point is seen by the next frame.
+        if crate::view::base_component::take_transition_requests_pending() {
+            for &root_key in &root_keys {
+                crate::view::viewport::transitions_tick::take_animation_requests(
+                    &mut arena,
+                    root_key,
+                    &mut animation_requests,
+                );
+            }
+            for &root_key in &root_keys {
+                crate::view::viewport::transitions_tick::take_style_transition_requests(
+                    &mut arena,
+                    root_key,
+                    &mut style_requests,
+                );
+            }
+            for &root_key in &root_keys {
+                crate::view::viewport::transitions_tick::take_layout_transition_requests(
+                    &mut arena,
+                    root_key,
+                    &mut layout_requests,
+                );
+            }
+            for &root_key in &root_keys {
+                crate::view::viewport::transitions_tick::take_visual_transition_requests(
+                    &mut arena,
+                    root_key,
+                    &mut visual_requests,
+                );
+            }
         }
         for request in animation_requests {
             self.transitions.animation_plugin.start_animator(request);
@@ -791,11 +810,16 @@ impl Viewport {
     pub(super) fn sync_inflight_transition_state(&mut self) -> bool {
         let mut arena = std::mem::take(&mut self.scene.node_arena);
         let root_keys = self.scene.ui_root_keys.clone();
-        let live_node_ids =
-            crate::view::viewport::transitions_tick::collect_node_id_allowlist(&arena, &root_keys);
-        self.transitions
-            .animation_plugin
-            .prune_targets(&live_node_ids);
+        // Building the live-id set is a whole-tree walk; only needed when
+        // the animation plugin holds state that pruning could clear.
+        if self.transitions.animation_plugin.has_prunable_targets() {
+            let live_node_ids = crate::view::viewport::transitions_tick::collect_node_id_allowlist(
+                &arena, &root_keys,
+            );
+            self.transitions
+                .animation_plugin
+                .prune_targets(&live_node_ids);
+        }
         let now = Instant::now();
         let epoch = self.transitions.transition_epoch.get_or_insert(now);
         let frame = TransitionFrame {
@@ -1142,9 +1166,12 @@ pub(crate) fn collect_transition_track_allowlist(
                 });
             }
         }
-        let children: Vec<_> = node.children.clone();
+        let child_count = node.children.len();
         drop(node);
-        for child_key in children {
+        for index in 0..child_count {
+            let Some(child_key) = arena.child_key_at(key, index) else {
+                break;
+            };
             walk(arena, child_key, out);
         }
     }
@@ -1169,9 +1196,12 @@ pub(crate) fn collect_node_id_allowlist(
     ) {
         let Some(node) = arena.get(key) else { return };
         out.insert(node.element.stable_id());
-        let children: Vec<_> = node.children.clone();
+        let child_count = node.children.len();
         drop(node);
-        for child_key in children {
+        for index in 0..child_count {
+            let Some(child_key) = arena.child_key_at(key, index) else {
+                break;
+            };
             walk(arena, child_key, out);
         }
     }

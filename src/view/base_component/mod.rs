@@ -374,9 +374,12 @@ pub fn has_animation_frame_request(
     if node.element.wants_animation_frame() {
         return true;
     }
-    let children: Vec<_> = node.children.clone();
+    let child_count = node.children.len();
     drop(node);
-    for child_key in children {
+    for index in 0..child_count {
+        let Some(child_key) = arena.child_key_at(root_key, index) else {
+            break;
+        };
         if has_animation_frame_request(arena, child_key) {
             return true;
         }

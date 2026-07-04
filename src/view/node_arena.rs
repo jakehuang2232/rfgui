@@ -623,6 +623,14 @@ impl NodeArena {
             .unwrap_or_default()
     }
 
+    /// Allocation-free child access for hot whole-tree walks: one slot
+    /// borrow per lookup instead of cloning the child Vec per node.
+    pub fn child_key_at(&self, key: NodeKey, index: usize) -> Option<NodeKey> {
+        self.slots
+            .get(key)
+            .and_then(|cell| cell.borrow().children.get(index).copied())
+    }
+
     pub fn parent_of(&self, key: NodeKey) -> Option<NodeKey> {
         self.slots.get(key).and_then(|cell| cell.borrow().parent)
     }
@@ -810,10 +818,10 @@ impl NodeArena {
                 return last;
             };
 
-            let (children, parent, previous, mut aggregate) = {
+            let (child_count, parent, previous, mut aggregate) = {
                 let node = cell.borrow();
                 (
-                    node.children.clone(),
+                    node.children.len(),
                     node.parent,
                     node.cached_subtree_dirty,
                     node.element
@@ -822,7 +830,10 @@ impl NodeArena {
                 )
             };
 
-            for child in children {
+            for index in 0..child_count {
+                let Some(child) = self.child_key_at(node_key, index) else {
+                    break;
+                };
                 aggregate = aggregate.union(self.cached_subtree_dirty(child));
             }
 

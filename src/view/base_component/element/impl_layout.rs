@@ -832,8 +832,7 @@ impl Element {
                         .layout_transition_target_width
                         .is_none_or(|active| !approx_eq(active, target_width));
                     if should_start_width && !width_is_close_enough {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .layout
                             .push(LayoutTrackRequest {
                                 target: self.core.id,
@@ -849,8 +848,7 @@ impl Element {
                         .layout_transition_target_height
                         .is_none_or(|active| !approx_eq(active, target_height));
                     if should_start_height && !height_is_close_enough {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .layout
                             .push(LayoutTrackRequest {
                                 target: self.core.id,
@@ -869,8 +867,7 @@ impl Element {
                         && !approx_eq(prev_offset_x, 0.0)
                         && !approx_eq(prev_target_rel_x, target_rel_x)
                     {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .visual
                             .push(VisualTrackRequest {
                                 target: self.core.id,
@@ -887,8 +884,7 @@ impl Element {
                         && !approx_eq(prev_offset_y, 0.0)
                         && !approx_eq(prev_target_rel_y, target_rel_y)
                     {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .visual
                             .push(VisualTrackRequest {
                                 target: self.core.id,
@@ -906,8 +902,7 @@ impl Element {
                         .layout_transition_target_width
                         .is_none_or(|active| !approx_eq(active, target_width));
                     if should_start_width && !width_is_close_enough {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .layout
                             .push(LayoutTrackRequest {
                                 target: self.core.id,
@@ -925,8 +920,7 @@ impl Element {
                         .layout_transition_target_height
                         .is_none_or(|active| !approx_eq(active, target_height));
                     if should_start_height && !height_is_close_enough {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .layout
                             .push(LayoutTrackRequest {
                                 target: self.core.id,
@@ -945,8 +939,7 @@ impl Element {
                         && !approx_eq(prev_offset_x, 0.0)
                         && !approx_eq(prev_target_rel_x, target_rel_x)
                     {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .visual
                             .push(VisualTrackRequest {
                                 target: self.core.id,
@@ -965,8 +958,7 @@ impl Element {
                         && !approx_eq(prev_offset_y, 0.0)
                         && !approx_eq(prev_target_rel_y, target_rel_y)
                     {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .visual
                             .push(VisualTrackRequest {
                                 target: self.core.id,

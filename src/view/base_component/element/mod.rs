@@ -492,6 +492,38 @@ pub(crate) fn layout_place_profile_enabled() -> bool {
     LAYOUT_PLACE_PROFILE_ENABLED.with(|cell| cell.get())
 }
 
+thread_local! {
+    static TRANSITION_REQUESTS_PENDING: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// True when any element queued a transition/animation request since the
+/// last [`take_transition_requests_pending`]. The per-frame request
+/// collection walks visit the whole tree; this flag lets idle frames skip
+/// them entirely.
+pub(crate) fn transition_requests_pending() -> bool {
+    TRANSITION_REQUESTS_PENDING.with(|cell| cell.get())
+}
+
+pub(crate) fn take_transition_requests_pending() -> bool {
+    TRANSITION_REQUESTS_PENDING.with(|cell| cell.replace(false))
+}
+
+fn mark_transition_requests_pending() {
+    TRANSITION_REQUESTS_PENDING.with(|cell| cell.set(true));
+}
+
+/// Queue accessor for an element's transition/animation requests; flags
+/// the frame-level pending marker so the per-frame collection walks know
+/// there is work to pick up. Borrows only the queue field so callers can
+/// keep reading sibling fields in the same expression.
+fn queue_transition_requests(
+    requests: &mut Option<Box<ElementTransitionRequests>>,
+) -> &mut ElementTransitionRequests {
+    mark_transition_requests_pending();
+    requests.get_or_insert_with(Default::default)
+}
+
 pub(crate) fn reset_layout_place_profile() {
     LAYOUT_PLACE_PROFILE.with(|profile| {
         *profile.borrow_mut() = LayoutPlaceProfile::default();

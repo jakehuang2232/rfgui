@@ -933,7 +933,15 @@ impl Viewport {
         }
         self.sync_focus_dispatch();
         let canceled_tracks = self.cancel_disallowed_transition_tracks();
-        let reconciled_transition_state = {
+        // Reconciling runtime transition state is a whole-tree walk; when
+        // no claims are active now AND none were active last frame there
+        // is no per-node state left to clear, so the walk is a no-op.
+        let claims_empty = self.transitions.transition_claims.is_empty();
+        let reconcile_skippable = claims_empty && self.transitions.claims_were_empty;
+        self.transitions.claims_were_empty = claims_empty;
+        let reconciled_transition_state = if reconcile_skippable {
+            false
+        } else {
             let mut arena = std::mem::take(&mut self.scene.node_arena);
             let root_keys = self.scene.ui_root_keys.clone();
             let result =
@@ -963,18 +971,24 @@ impl Viewport {
             )
             .map(|(_, t)| t)
         });
-        let hover_changed = {
-            let mut arena = std::mem::take(&mut self.scene.node_arena);
-            let root_keys = self.scene.ui_root_keys.clone();
-            let result = Self::sync_hover_visual_only(
-                &mut arena,
-                &root_keys,
-                &mut self.input_state.hovered_node_id,
-                next_hover_target,
-            );
-            self.scene.node_arena = arena;
-            result
-        };
+        // Re-applying hover flags is a whole-tree walk; skip it when the
+        // hover target is unchanged and the arena was not rebuilt this
+        // frame (a rebuild drops the per-node hover flags).
+        let hover_changed =
+            if next_hover_target == self.input_state.hovered_node_id && !needs_rebuild {
+                false
+            } else {
+                let mut arena = std::mem::take(&mut self.scene.node_arena);
+                let root_keys = self.scene.ui_root_keys.clone();
+                let result = Self::sync_hover_visual_only(
+                    &mut arena,
+                    &root_keys,
+                    &mut self.input_state.hovered_node_id,
+                    next_hover_target,
+                );
+                self.scene.node_arena = arena;
+                result
+            };
         if resource_dirty
             || hover_changed
             || transition_changed_before_render

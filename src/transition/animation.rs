@@ -119,6 +119,12 @@ impl AnimationPlugin {
             .retain(|target, _| keep_targets.contains(target));
     }
 
+    /// True when any animator state exists that [`Self::prune_targets`]
+    /// could clear; lets callers skip building the keep-set on idle frames.
+    pub fn has_prunable_targets(&self) -> bool {
+        !self.animators.is_empty() || !self.completed_animators.is_empty()
+    }
+
     pub fn active_targets(&self) -> FxHashSet<u64> {
         self.animators.keys().copied().collect()
     }

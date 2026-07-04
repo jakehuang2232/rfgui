@@ -1212,8 +1212,7 @@ impl Element {
         let animator = next_animator
             .clone()
             .unwrap_or_else(|| crate::style::Animator::from_vec(Vec::new()));
-        self.transition_requests
-            .get_or_insert_with(Default::default)
+        queue_transition_requests(&mut self.transition_requests)
             .animation
             .push(crate::transition::AnimationRequest {
                 target: self.core.id,
@@ -1255,8 +1254,7 @@ impl Element {
             match transition.property {
                 TransitionProperty::All => {
                     for field in &changed_fields {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
@@ -1269,25 +1267,21 @@ impl Element {
                 }
                 TransitionProperty::Opacity => {
                     if changed_fields.contains(&StyleField::Opacity) {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::Opacity,
                                 from: previous.value_for(StyleField::Opacity),
-                                to: previous.current_value_for(
-                                    &self.computed_style,
-                                    StyleField::Opacity,
-                                ),
+                                to: previous
+                                    .current_value_for(&self.computed_style, StyleField::Opacity),
                                 transition: runtime.clone(),
                             });
                     }
                 }
                 TransitionProperty::BorderRadius => {
                     if changed_fields.contains(&StyleField::BorderRadius) {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
@@ -1303,8 +1297,7 @@ impl Element {
                 }
                 TransitionProperty::BackgroundColor => {
                     if changed_fields.contains(&StyleField::BackgroundColor) {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
@@ -1320,17 +1313,14 @@ impl Element {
                 }
                 TransitionProperty::Color => {
                     if changed_fields.contains(&StyleField::Color) {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::Color,
                                 from: previous.value_for(StyleField::Color),
-                                to: previous.current_value_for(
-                                    &self.computed_style,
-                                    StyleField::Color,
-                                ),
+                                to: previous
+                                    .current_value_for(&self.computed_style, StyleField::Color),
                                 transition: runtime.clone(),
                             });
                     }
@@ -1344,8 +1334,7 @@ impl Element {
                     ];
                     for field in BORDER_FIELDS {
                         if changed_fields.contains(&field) {
-                            self.transition_requests
-                                .get_or_insert_with(Default::default)
+                            queue_transition_requests(&mut self.transition_requests)
                                 .style
                                 .push(StyleTrackRequest {
                                     target: self.core.id,
@@ -1359,42 +1348,35 @@ impl Element {
                 }
                 TransitionProperty::BoxShadow => {
                     if changed_fields.contains(&StyleField::BoxShadow) {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::BoxShadow,
                                 from: previous.value_for(StyleField::BoxShadow),
-                                to: previous.current_value_for(
-                                    &self.computed_style,
-                                    StyleField::BoxShadow,
-                                ),
+                                to: previous
+                                    .current_value_for(&self.computed_style, StyleField::BoxShadow),
                                 transition: runtime.clone(),
                             });
                     }
                 }
                 TransitionProperty::Transform => {
                     if changed_fields.contains(&StyleField::Transform) {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .style
                             .push(StyleTrackRequest {
                                 target: self.core.id,
                                 field: StyleField::Transform,
                                 from: previous.value_for(StyleField::Transform),
-                                to: previous.current_value_for(
-                                    &self.computed_style,
-                                    StyleField::Transform,
-                                ),
+                                to: previous
+                                    .current_value_for(&self.computed_style, StyleField::Transform),
                                 transition: runtime.clone(),
                             });
                     }
                 }
                 TransitionProperty::TransformOrigin => {
                     if changed_fields.contains(&StyleField::TransformOrigin) {
-                        self.transition_requests
-                            .get_or_insert_with(Default::default)
+                        queue_transition_requests(&mut self.transition_requests)
                             .style
                             .push(StyleTrackRequest {
                                 target: self.core.id,

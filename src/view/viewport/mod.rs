@@ -324,6 +324,9 @@ impl FrameRuntime {
 struct TransitionRuntime {
     transition_channels: FxHashSet<ChannelId>,
     transition_claims: FxHashMap<TrackKey<TrackTarget>, TransitionPluginId>,
+    /// Whether `transition_claims` was empty at the previous runtime-state
+    /// reconcile; lets idle frames skip the whole-tree reconcile walk.
+    claims_were_empty: bool,
     scroll_transition_plugin: ScrollTransitionPlugin,
     layout_transition_plugin: LayoutTransitionPlugin,
     visual_transition_plugin: VisualTransitionPlugin,
@@ -361,6 +364,7 @@ impl TransitionRuntime {
             .into_iter()
             .collect(),
             transition_claims: FxHashMap::default(),
+            claims_were_empty: false,
             scroll_transition_plugin: ScrollTransitionPlugin::new(),
             layout_transition_plugin: LayoutTransitionPlugin::new(),
             visual_transition_plugin: VisualTransitionPlugin::new(),
