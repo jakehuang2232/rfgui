@@ -754,6 +754,9 @@ pub struct CompileProfile {
     pub prepare_upload_ms: f64,
     pub setup_pass_count: usize,
     pub prepare_pass_count: usize,
+    /// Per pass-name (count, total ms) of the prepare phase, sorted by
+    /// time descending. Only collected when compile detail tracing is on.
+    pub prepare_by_pass_name: Vec<(&'static str, usize, f64)>,
     /// True when `annotate_resource_versions` + `build_compiled_graph` were skipped
     /// because the topology hash matched the cached result from the previous frame.
     pub topology_cache_hit: bool,
@@ -1039,6 +1042,7 @@ impl FrameGraph {
             prepare_upload_ms: 0.0,
             setup_pass_count: self.passes.len(),
             prepare_pass_count: 0,
+            prepare_by_pass_name: Vec::new(),
             topology_cache_hit: false,
             graph: graph_profile,
         })
@@ -1246,9 +1250,7 @@ impl FrameGraph {
             &texture_stable_keys,
             &buffer_allocations,
         );
-        for &index in &self.order {
-            self.passes[index].pass.prepare(&mut ctx);
-        }
+        let prepare_by_pass_name = self.run_prepare_passes(&mut ctx);
         let prepare_upload_ms = prepare_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let profile = CompileProfile {
@@ -1259,11 +1261,44 @@ impl FrameGraph {
             prepare_upload_ms,
             setup_pass_count: self.passes.len(),
             prepare_pass_count: self.order.len(),
+            prepare_by_pass_name,
             topology_cache_hit,
             graph: graph_profile,
         };
 
         Ok((profile, topology_hash, compiled_graph))
+    }
+
+    /// Run every pass's prepare; when compile detail tracing is enabled,
+    /// aggregate wall time per pass name so hot prepare stages (e.g. text
+    /// glyph staging during scrolls) are attributable from the trace.
+    fn run_prepare_passes(
+        &mut self,
+        ctx: &mut PrepareContext<'_, '_>,
+    ) -> Vec<(&'static str, usize, f64)> {
+        if !ctx.viewport().debug_options().trace_compile_detail {
+            for &index in &self.order {
+                self.passes[index].pass.prepare(ctx);
+            }
+            return Vec::new();
+        }
+        let mut by_name: FxHashMap<&'static str, (usize, f64)> = FxHashMap::default();
+        for &index in &self.order {
+            let pass = &mut self.passes[index].pass;
+            let name = pass.name();
+            let started_at = Instant::now();
+            pass.prepare(ctx);
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let entry = by_name.entry(name).or_insert((0, 0.0));
+            entry.0 += 1;
+            entry.1 += elapsed_ms;
+        }
+        let mut rows: Vec<(&'static str, usize, f64)> = by_name
+            .into_iter()
+            .map(|(name, (count, ms))| (name, count, ms))
+            .collect();
+        rows.sort_by(|a, b| b.2.total_cmp(&a.2));
+        rows
     }
 
     pub fn compile_with_upload(
@@ -1293,9 +1328,7 @@ impl FrameGraph {
             &texture_stable_keys,
             &buffer_allocations,
         );
-        for &index in &self.order {
-            self.passes[index].pass.prepare(&mut ctx);
-        }
+        profile.prepare_by_pass_name = self.run_prepare_passes(&mut ctx);
         profile.prepare_upload_ms = prepare_started_at.elapsed().as_secs_f64() * 1000.0;
         profile.prepare_pass_count = self.order.len();
         profile.total_ms += profile.prepare_upload_ms;

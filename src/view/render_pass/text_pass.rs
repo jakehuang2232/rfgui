@@ -69,8 +69,8 @@ struct TextPreparedState {
     globals_bind_group: wgpu::BindGroup,
     screen_buffer: wgpu::Buffer,
     fragment_buffer: wgpu::Buffer,
-    mask_draw: Option<PreparedTextDraw>,
-    color_draw: Option<PreparedTextDraw>,
+    mask_draw: Option<std::rc::Rc<PreparedTextDraw>>,
+    color_draw: Option<std::rc::Rc<PreparedTextDraw>>,
     scissor_rect: Option<[u32; 4]>,
     stencil_clip_id: Option<u8>,
 }
@@ -415,8 +415,19 @@ struct TextResources {
     pipelines: FxHashMap<(TextRendererKey, TextPipelineKind), wgpu::RenderPipeline>,
     raster_cache: FxHashMap<TextRasterKey, CachedRasterImage>,
     persistent_atlases: FxHashMap<AtlasKind, PersistentAtlas>,
+    /// Cross-frame instance-buffer cache keyed by glyph content (raster
+    /// keys, colors, snapped positions) — pure moves and scrolls keep
+    /// vertex data identical (the shader adds the per-fragment origin),
+    /// so prepare reuses the buffer and only rebuilds fragment uniforms.
+    draw_cache: FxHashMap<u64, CachedTextDrawEntry>,
     frame_epoch: u64,
     scale_context: SwashScaleContext,
+}
+
+struct CachedTextDrawEntry {
+    mask_draw: Option<std::rc::Rc<PreparedTextDraw>>,
+    color_draw: Option<std::rc::Rc<PreparedTextDraw>>,
+    last_used_frame: u64,
 }
 
 thread_local! {
@@ -461,13 +472,13 @@ impl GraphicsPass for TextPreparedInputPass {
             ctx,
             prepared,
             TextPipelineKind::Mask,
-            prepared.mask_draw.as_ref(),
+            prepared.mask_draw.as_deref(),
         );
         draw_prepared_text(
             ctx,
             prepared,
             TextPipelineKind::Color,
-            prepared.color_draw.as_ref(),
+            prepared.color_draw.as_deref(),
         );
     }
 
@@ -554,28 +565,44 @@ fn prepare_text_prepared_input_pass(
         })
         .collect::<Vec<_>>();
 
-    let mut pending = Vec::new();
-    TEXT_RESOURCES.with(|slot| {
+    // Instance data is origin-independent apart from sub-pixel snapping,
+    // so a content hash keyed on glyphs + fragment origin fractions lets
+    // scroll/move frames reuse the previous vertex buffers outright.
+    let draw_cache_key =
+        text_draw_cache_key(&params.staging_input, fragments.as_slice(), scale_factor);
+    let cached_draws = TEXT_RESOURCES.with(|slot| {
         let mut resources = slot.borrow_mut();
         let frame_epoch = resources.frame_epoch;
-        let TextResources {
-            scale_context,
-            raster_cache,
-            ..
-        } = &mut *resources;
-        collect_prepared_staging_glyphs(
-            scale_context,
-            raster_cache,
-            frame_epoch,
-            &params.staging_input,
-            fragments.as_slice(),
-            scale_factor,
-            &mut pending,
-        );
+        resources.draw_cache.get_mut(&draw_cache_key).map(|entry| {
+            entry.last_used_frame = frame_epoch;
+            (entry.mask_draw.clone(), entry.color_draw.clone())
+        })
     });
 
-    if pending.is_empty() {
-        return None;
+    let mut pending = Vec::new();
+    if cached_draws.is_none() {
+        TEXT_RESOURCES.with(|slot| {
+            let mut resources = slot.borrow_mut();
+            let frame_epoch = resources.frame_epoch;
+            let TextResources {
+                scale_context,
+                raster_cache,
+                ..
+            } = &mut *resources;
+            collect_prepared_staging_glyphs(
+                scale_context,
+                raster_cache,
+                frame_epoch,
+                &params.staging_input,
+                fragments.as_slice(),
+                scale_factor,
+                &mut pending,
+            );
+        });
+
+        if pending.is_empty() {
+            return None;
+        }
     }
 
     let screen_uniform = ScreenUniform {
@@ -623,22 +650,52 @@ fn prepare_text_prepared_input_pass(
                 },
             ],
         });
-        let mask_draw = build_prepared_draw(
-            &device,
-            &queue,
-            &mut resources,
-            AtlasKind::Mask,
-            pending.iter().filter(|glyph| glyph.kind == AtlasKind::Mask),
-        );
-        let color_draw = build_prepared_draw(
-            &device,
-            &queue,
-            &mut resources,
-            AtlasKind::Color,
-            pending
-                .iter()
-                .filter(|glyph| glyph.kind == AtlasKind::Color),
-        );
+        let (mask_draw, color_draw) = match cached_draws {
+            Some(draws) => draws,
+            None => {
+                let mask_draw = build_prepared_draw(
+                    &device,
+                    &queue,
+                    &mut resources,
+                    AtlasKind::Mask,
+                    pending.iter().filter(|glyph| glyph.kind == AtlasKind::Mask),
+                )
+                .map(std::rc::Rc::new);
+                let color_draw = build_prepared_draw(
+                    &device,
+                    &queue,
+                    &mut resources,
+                    AtlasKind::Color,
+                    pending
+                        .iter()
+                        .filter(|glyph| glyph.kind == AtlasKind::Color),
+                )
+                .map(std::rc::Rc::new);
+                // Only persistent-atlas draws survive across frames: a
+                // transient atlas is destroyed with the draw and the
+                // persistent one resets at the next frame boundary.
+                let cacheable = |draw: &Option<std::rc::Rc<PreparedTextDraw>>| {
+                    draw.as_ref().is_none_or(|draw| {
+                        matches!(draw.atlas, PreparedAtlasBinding::Persistent(_))
+                    })
+                };
+                if (mask_draw.is_some() || color_draw.is_some())
+                    && cacheable(&mask_draw)
+                    && cacheable(&color_draw)
+                {
+                    let frame_epoch = resources.frame_epoch;
+                    resources.draw_cache.insert(
+                        draw_cache_key,
+                        CachedTextDrawEntry {
+                            mask_draw: mask_draw.clone(),
+                            color_draw: color_draw.clone(),
+                            last_used_frame: frame_epoch,
+                        },
+                    );
+                }
+                (mask_draw, color_draw)
+            }
+        };
         resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Mask);
         resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Color);
         (globals_bind_group, mask_draw, color_draw)
@@ -660,6 +717,38 @@ fn prepare_text_prepared_input_pass(
         scissor_rect,
         stencil_clip_id,
     })
+}
+
+/// Content hash of everything that shapes vertex-buffer bytes: glyph
+/// raster identity, paint colors/opacity, fragment indices, the scale
+/// factor, and each fragment origin's sub-pixel fraction and sign (the
+/// snap in `collect_prepared_staging_glyphs` depends only on those, so
+/// integer-pixel moves and scrolls hash identically).
+fn text_draw_cache_key(
+    input: &TextPassPreparedStagingInput,
+    fragments: &[FragmentUniform],
+    scale_factor: f32,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = rustc_hash::FxHasher::default();
+    scale_factor.to_bits().hash(&mut hasher);
+    fragments.len().hash(&mut hasher);
+    input.glyphs.len().hash(&mut hasher);
+    for glyph in input.glyphs.iter() {
+        glyph.raster.font_data_id.hash(&mut hasher);
+        glyph.raster.font_index.hash(&mut hasher);
+        glyph.raster.glyph_id.hash(&mut hasher);
+        glyph.raster.font_size.to_bits().hash(&mut hasher);
+        glyph.raster.normalized_coords_hash.hash(&mut hasher);
+        glyph.paint.local_pos[0].to_bits().hash(&mut hasher);
+        glyph.paint.local_pos[1].to_bits().hash(&mut hasher);
+        for channel in glyph.paint.color {
+            channel.to_bits().hash(&mut hasher);
+        }
+        glyph.paint.opacity.to_bits().hash(&mut hasher);
+        glyph.paint.fragment_index.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn collect_prepared_staging_glyphs(
@@ -693,13 +782,14 @@ fn collect_prepared_staging_glyphs(
             SwashRasterContent::Color => AtlasKind::Color,
             SwashRasterContent::Mask | SwashRasterContent::SubpixelMask => AtlasKind::Mask,
         };
-        let local_pos = snap_text_local_pos(
-            fragment.origin,
-            [
-                glyph.paint.local_pos[0] * scale_factor + image.placement.left as f32,
-                glyph.paint.local_pos[1] * scale_factor - image.placement.top as f32,
-            ],
-        );
+        // Pixel snapping happens in the vertex shader (trunc of origin +
+        // local_pos), keeping instance data origin-independent so the
+        // cross-frame draw cache hits on scrolls and moves.
+        let local_pos = [
+            glyph.paint.local_pos[0] * scale_factor + image.placement.left as f32,
+            glyph.paint.local_pos[1] * scale_factor - image.placement.top as f32,
+        ];
+        let _ = fragment;
         out.push(PendingGlyphInstance {
             kind,
             raster_key: text_raster_key_for_raster_input(&glyph.raster, scale_factor),
@@ -1207,10 +1297,40 @@ impl TextResources {
     fn begin_frame(&mut self) {
         self.frame_epoch = self.frame_epoch.wrapping_add(1);
         self.evict_raster_cache();
+        let mut atlas_reset = false;
         for atlas in self.persistent_atlases.values_mut() {
             if atlas.overflowed {
                 atlas.reset();
+                atlas_reset = true;
             }
+        }
+        if atlas_reset {
+            // Cached instance buffers bake atlas UVs; a reset invalidates
+            // every slot.
+            self.draw_cache.clear();
+        }
+        self.evict_draw_cache();
+    }
+
+    fn evict_draw_cache(&mut self) {
+        const MAX_DRAW_CACHE_ENTRIES: usize = 4096;
+        const MAX_UNUSED_FRAMES: u64 = 120;
+        let frame_epoch = self.frame_epoch;
+        self.draw_cache.retain(|_, entry| {
+            frame_epoch.saturating_sub(entry.last_used_frame) <= MAX_UNUSED_FRAMES
+        });
+        if self.draw_cache.len() <= MAX_DRAW_CACHE_ENTRIES {
+            return;
+        }
+        let mut entries = self
+            .draw_cache
+            .iter()
+            .map(|(key, entry)| (*key, entry.last_used_frame))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(_, last_used)| *last_used);
+        let remove_count = self.draw_cache.len() - MAX_DRAW_CACHE_ENTRIES;
+        for (key, _) in entries.into_iter().take(remove_count) {
+            self.draw_cache.remove(&key);
         }
     }
 
@@ -1384,6 +1504,7 @@ impl TextResources {
     fn destroy(&mut self) {
         self.pipelines.clear();
         self.raster_cache.clear();
+        self.draw_cache.clear();
         for (_, atlas) in self.persistent_atlases.drain() {
             atlas.texture.destroy();
         }
@@ -1644,5 +1765,20 @@ mod tests {
             staged.atlas_kind,
             TextPassPreparedStagingAtlasKind::Mask | TextPassPreparedStagingAtlasKind::Color
         ));
+    }
+}
+
+#[cfg(test)]
+mod shader_validation_tests {
+    #[test]
+    fn text_wgsl_validates() {
+        let source = include_str!("../../shader/text.wgsl");
+        let module = naga29::front::wgsl::parse_str(source).expect("parse text.wgsl");
+        naga29::valid::Validator::new(
+            naga29::valid::ValidationFlags::default(),
+            naga29::valid::Capabilities::default(),
+        )
+        .validate(&module)
+        .expect("validate text.wgsl");
     }
 }

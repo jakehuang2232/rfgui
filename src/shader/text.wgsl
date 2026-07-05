@@ -55,7 +55,11 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, glyph: GlyphInstance) -> Vs
 
     let corner = corners[vertex_index];
     let fragment = fragments[glyph.fragment_index];
-    let pixel = fragment.origin + glyph.local_pos + corner * glyph.size;
+    // Snap the glyph base to the pixel grid (toward zero, matching the
+    // CPU-side text_render_trunc semantics) so glyphs stay crisp while
+    // instance data remains independent of the fragment origin.
+    let base = trunc(fragment.origin + glyph.local_pos);
+    let pixel = base + corner * glyph.size;
     let ndc_x = (pixel.x / screen.screen_size.x) * 2.0 - 1.0;
     let ndc_y = 1.0 - (pixel.y / screen.screen_size.y) * 2.0;
 

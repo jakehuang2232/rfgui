@@ -318,9 +318,17 @@ pub(super) fn build_compile_trace_nodes(
             profile.build_compiled_graph_ms,
             build_compiled_graph_children,
         ),
-        TraceRenderNode::new(
+        TraceRenderNode::with_children(
             format!("prepare_upload (passes={})", profile.prepare_pass_count),
             profile.prepare_upload_ms,
+            profile
+                .prepare_by_pass_name
+                .iter()
+                .take(8)
+                .map(|(name, count, ms)| {
+                    TraceRenderNode::new(format!("{name} (passes={count})"), *ms)
+                })
+                .collect(),
         ),
     ];
     if profile.topology_cache_hit {
