@@ -1391,3 +1391,298 @@ fn inline_ifc_owned_nodes_do_not_keep_placement_dirty() {
         "idle relayout must not re-run any IFC root install"
     );
 }
+
+#[test]
+fn inline_ifc_pure_move_shift_matches_full_apply() {
+    use crate::view::Text as HostText;
+    use crate::view::base_component::Text as TextHost;
+
+    // A pure root move re-applies an unchanged install plan via the
+    // in-place delta-shift fast path. The resulting owned geometry must
+    // be identical to a full plan apply at the target position.
+    fn tree() -> RsxNode {
+        rsx! {
+            <HostElement style={{
+                layout: Layout::Inline,
+                width: Length::px(300.0),
+            }}>
+                <HostElement style={{
+                    padding: Padding::uniform(Length::px(3.0)),
+                }}>
+                    <HostText>"badge text"</HostText>
+                </HostElement>
+                <HostText>"trailing words that wrap across the line"</HostText>
+            </HostElement>
+        }
+    }
+
+    fn text_lines_at(viewport: &Viewport, offsets: &[(f32, f32)]) -> Vec<Vec<(String, f32, f32)>> {
+        let root_key = viewport.scene.ui_root_keys[0];
+        let children = viewport.scene.node_arena.children_of(root_key);
+        let badge_text_key = viewport.scene.node_arena.children_of(children[0])[0];
+        let _ = offsets;
+        [badge_text_key, children[1]]
+            .iter()
+            .map(|&key| {
+                viewport
+                    .scene
+                    .node_arena
+                    .get(key)
+                    .expect("text node")
+                    .element
+                    .as_any()
+                    .downcast_ref::<TextHost>()
+                    .expect("text node")
+                    .inline_fragment_positions()
+                    .into_iter()
+                    .map(|(content, position)| (content, position.x, position.y))
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn place_at(viewport: &mut Viewport, x: f32, y: f32) {
+        let constraints = crate::view::base_component::LayoutConstraints {
+            max_width: 400.0,
+            max_height: 300.0,
+            viewport_width: 400.0,
+            viewport_height: 300.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+        };
+        let placement = crate::view::base_component::LayoutPlacement {
+            parent_x: x,
+            parent_y: y,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 400.0,
+            available_height: 300.0,
+            viewport_width: 400.0,
+            viewport_height: 300.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+        };
+        let mut arena = std::mem::take(&mut viewport.scene.node_arena);
+        let root_keys = viewport.scene.ui_root_keys.clone();
+        for &root in &root_keys {
+            arena.refresh_subtree_dirty_cache(root);
+        }
+        for &root in &root_keys {
+            arena.with_element_taken(root, |el, arena| {
+                el.measure(constraints, arena);
+            });
+        }
+        for &root in &root_keys {
+            arena.refresh_subtree_dirty_cache(root);
+        }
+        for &root in &root_keys {
+            arena.with_element_taken(root, |el, arena| {
+                el.place(placement, arena);
+            });
+        }
+        viewport.scene.node_arena = arena;
+    }
+
+    // Shift path: layout at origin, then move to (7, 11).
+    let mut moved = Viewport::new();
+    moved.set_size(400, 300);
+    moved.render_rsx(&tree()).expect("render moved tree");
+    run_layout_for_test(&mut moved, 400.0, 300.0);
+    place_at(&mut moved, 7.0, 11.0);
+
+    // Full-apply reference: fresh tree placed directly at (7, 11).
+    let mut reference = Viewport::new();
+    reference.set_size(400, 300);
+    reference
+        .render_rsx(&tree())
+        .expect("render reference tree");
+    place_at(&mut reference, 7.0, 11.0);
+
+    let moved_lines = text_lines_at(&moved, &[]);
+    let reference_lines = text_lines_at(&reference, &[]);
+    assert_eq!(
+        moved_lines, reference_lines,
+        "delta-shifted owned text geometry must match a full apply at the same origin"
+    );
+}
+
+#[test]
+#[ignore = "manual drag microbenchmark: cargo test --lib rsx_window_drag_microbench -- --ignored --nocapture"]
+fn rsx_window_drag_microbench() {
+    fn bench_editor_lines() -> usize {
+        std::env::var("BENCH_LINES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(200)
+    }
+
+    use crate::style::ClipMode::Parent;
+    use crate::style::{Anchor, BorderRadius, BoxShadow};
+    use crate::view::Text as HostText;
+    use crate::view::TextArea as HostTextArea;
+
+    // Mirrors rfgui-components Window drag: every frame updates the
+    // absolute left/top style through a full rsx rebuild + reconcile.
+    fn window_tree(x: f32, y: f32) -> RsxNode {
+        let paragraphs = (0..40)
+            .map(|i| {
+                rsx! {
+                    <HostElement style={{
+                        layout: Layout::Inline,
+                        width: Length::percent(100.0),
+                    }}>
+                        <HostElement style={{
+                            padding: Padding::uniform(Length::px(3.0)),
+                        }}>
+                            <HostText>{format!("badge {i}")}</HostText>
+                        </HostElement>
+                        <HostText>
+                            {format!("window body paragraph {i} with several words")}
+                        </HostText>
+                    </HostElement>
+                }
+            })
+            .collect::<Vec<_>>();
+        let windows = (0..7)
+            .map(|w| {
+                let body = (0..40)
+                    .map(|i| {
+                        rsx! {
+                            <HostElement style={{
+                                layout: Layout::Inline,
+                                width: Length::percent(100.0),
+                            }}>
+                                <HostElement style={{
+                                    padding: Padding::uniform(Length::px(3.0)),
+                                }}>
+                                    <HostText>{format!("badge {w}-{i}")}</HostText>
+                                </HostElement>
+                                <HostText>
+                                    {format!("window {w} body paragraph {i} with several words")}
+                                </HostText>
+                            </HostElement>
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let (wx, wy) = if w == 0 {
+                    (x, y)
+                } else {
+                    (30.0 + (w as f32) * 90.0, 120.0)
+                };
+                rsx! {
+                    <HostElement
+                        key={format!("window-{w}")}
+                        style={{
+                            position: Position::absolute()
+                                .left(Length::px(wx))
+                                .top(Length::px(wy))
+                                .anchor(Anchor::Parent)
+                                .clip(Parent),
+                            layout: Layout::flow().column().no_wrap(),
+                            width: Length::px(420.0),
+                            height: Length::px(600.0),
+                            border_radius: BorderRadius::uniform(Length::px(8.0)),
+                            box_shadow: vec![BoxShadow {
+                                offset_x: 0.0,
+                                offset_y: 6.0,
+                                blur: 24.0,
+                                spread: 0.0,
+                                ..BoxShadow::new()
+                            }],
+                        }}
+                    >
+                        <HostElement style={{
+                            height: Length::px(32.0),
+                        }}>
+                            <HostText>{format!("Window {w}")}</HostText>
+                        </HostElement>
+                        <HostElement style={{
+                            layout: Layout::flow().column().no_wrap(),
+                            width: Length::percent(100.0),
+                        }}>{body}</HostElement>
+                        <HostTextArea content={
+                            (0..(if w == 0 { bench_editor_lines() } else { 30 }))
+                                .map(|line| format!("fn line_{line}() {{ let value = {line}; }}"))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        } />
+                    </HostElement>
+                }
+            })
+            .collect::<Vec<_>>();
+        let _ = paragraphs;
+        rsx! {
+            <HostElement style={{
+                width: Length::px(1200.0),
+                height: Length::px(900.0),
+            }}>{windows}</HostElement>
+        }
+    }
+
+    let mut viewport = Viewport::new();
+    viewport.set_size(1200, 900);
+    viewport
+        .render_rsx(&window_tree(50.0, 50.0))
+        .expect("initial render");
+    run_layout_for_test(&mut viewport, 1200.0, 900.0);
+
+    for round in 0..6 {
+        let x = 50.0 + ((round + 1) as f32) * 5.0;
+        let rsx_started = std::time::Instant::now();
+        viewport
+            .render_rsx(&window_tree(x, 50.0))
+            .expect("drag render");
+        let rsx_ms = rsx_started.elapsed().as_secs_f64() * 1000.0;
+        let measure_started = std::time::Instant::now();
+        {
+            let constraints = crate::view::base_component::LayoutConstraints {
+                max_width: 1200.0,
+                max_height: 900.0,
+                viewport_width: 1200.0,
+                viewport_height: 900.0,
+                percent_base_width: Some(1200.0),
+                percent_base_height: Some(900.0),
+            };
+            let mut arena = std::mem::take(&mut viewport.scene.node_arena);
+            let root_keys = viewport.scene.ui_root_keys.clone();
+            for &root in &root_keys {
+                arena.refresh_subtree_dirty_cache(root);
+            }
+            for &root in &root_keys {
+                arena.with_element_taken(root, |el, arena| {
+                    el.measure(constraints, arena);
+                });
+            }
+            viewport.scene.node_arena = arena;
+        }
+        let measure_ms = measure_started.elapsed().as_secs_f64() * 1000.0;
+        let layout_started = std::time::Instant::now();
+        let (_gate, profile) = run_layout_for_test_with_gate_profile(&mut viewport, 1200.0, 900.0);
+        let layout_ms = layout_started.elapsed().as_secs_f64() * 1000.0;
+        println!("  pre-measure={measure_ms:.3}ms");
+        println!(
+            "round {round}: rsx={rsx_ms:.3}ms layout={layout_ms:.3}ms nodes={} child_place={} skipped={}",
+            profile.node_count, profile.child_place_calls, profile.skipped_child_place_calls
+        );
+        println!(
+            "  ifc_install={:.3}ms (calls={} reuse={}) place_self={:.3} place_children={:.3} child_place_excl={:.3} update_content={:.3} hit_test={:.3}",
+            profile.inline_ifc_root_install_ms,
+            profile.inline_ifc_root_install_calls,
+            profile.inline_ifc_root_install_reuse_calls,
+            profile.place_self_ms,
+            profile.place_children_ms,
+            profile.non_axis_child_place_ms,
+            profile.update_content_size_ms,
+            profile.recompute_hit_test_ms,
+        );
+        println!(
+            "  ifc_measure cheap/sc/full={}/{}/{} measure_ran self/child/proposal={}/{}/{}",
+            profile.ifc_measure_cheap,
+            profile.ifc_measure_shortcircuit,
+            profile.ifc_measure_full,
+            profile.measure_ran_self_dirty,
+            profile.measure_ran_child_dirty,
+            profile.measure_ran_proposal_changed,
+        );
+    }
+}
