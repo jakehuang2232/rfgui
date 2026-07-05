@@ -452,13 +452,22 @@ impl TextAreaUnifiedIfcRootPackage {
 
         let paint_input = self.ifc.text_pass_paint_input_ref();
         let staging_input = self.text_pass_staging_input([0.0, 0.0], 1.0, 0, 1.0);
-        let text_height = self.text_line_height();
+        let top_offset = self.content_top_offset();
         let mut out = Vec::new();
         for segment in self
             .source_segments
             .iter()
             .filter(|segment| segment.kind == TextAreaUnifiedIfcSourceKind::TextRun)
         {
+            // Vertical band per line comes from the same geometry the run
+            // fragments paint at (line box for Baseline, aligned text box
+            // otherwise) — glyph paint y is the baseline, so deriving the
+            // band from it drew selections ~an ascent below the text.
+            let text_line_rects = if self.vertical_align == crate::style::VerticalAlign::Baseline {
+                Vec::new()
+            } else {
+                self.ifc.source_text_line_rects(segment.source)
+            };
             let start = range.start.max(segment.char_range.start);
             let end = range.end.min(segment.char_range.end);
             if start >= end {
@@ -480,7 +489,6 @@ impl TextAreaUnifiedIfcRootPackage {
             for line in &paint_input.lines {
                 let mut left: Option<f32> = None;
                 let mut right: Option<f32> = None;
-                let mut top: Option<f32> = None;
                 for (glyph, staged) in paint_input
                     .glyphs
                     .iter()
@@ -493,24 +501,38 @@ impl TextAreaUnifiedIfcRootPackage {
                     })
                 {
                     let x = staged.final_paint_pos[0];
-                    let y = staged.final_paint_pos[1];
                     left = Some(left.map_or(x, |current| current.min(x)));
                     right = Some(
                         right.map_or(x + glyph.advance, |current| current.max(x + glyph.advance)),
                     );
-                    top = Some(top.map_or(y, |current| current.min(y)));
                 }
-                let (Some(left), Some(right), Some(top)) = (left, right, top) else {
+                let (Some(left), Some(right)) = (left, right) else {
                     continue;
                 };
                 if right <= left {
                     continue;
                 }
+                let band = if self.vertical_align == crate::style::VerticalAlign::Baseline {
+                    Some((line.y - top_offset, line.height.max(1.0)))
+                } else {
+                    text_line_rects
+                        .iter()
+                        .find(|(line_index, _)| *line_index == line.line_index)
+                        .map(|(line_index, rect)| {
+                            (
+                                rect.y + self.text_vertical_align_delta(*line_index) - top_offset,
+                                rect.height.max(1.0),
+                            )
+                        })
+                };
+                let Some((band_y, band_height)) = band else {
+                    continue;
+                };
                 out.push(Rect {
                     x: left,
-                    y: top,
+                    y: band_y,
                     width: right - left,
-                    height: text_height,
+                    height: band_height,
                 });
             }
         }
