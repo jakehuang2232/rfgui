@@ -222,6 +222,30 @@ impl Text {
         self.inline_ifc_owned_lines = Some(lines);
     }
 
+    /// In-place delta shift of installed owned lines: the owning IFC
+    /// root moved without reshaping, so every absolute coordinate moves
+    /// by the same delta.
+    pub(crate) fn shift_inline_ifc_owned_geometry(&mut self, dx: f32, dy: f32) {
+        if let Some(lines) = self.inline_ifc_owned_lines.as_mut() {
+            for line in lines.iter_mut() {
+                line.rect.x += dx;
+                line.rect.y += dy;
+                line.text_rect.x += dx;
+                line.text_rect.y += dy;
+                for x in &mut line.caret_xs {
+                    *x += dx;
+                }
+            }
+            // Parity with install_inline_ifc_owned_geometry: changed
+            // geometry marks PAINT.
+            self.dirty_flags = self.dirty_flags.union(super::DirtyPassMask::PAINT);
+        }
+        self.layout_state.layout_position.x += dx;
+        self.layout_state.layout_position.y += dy;
+        self.layout_state.layout_flow_position = self.layout_state.layout_position;
+        self.layout_state.layout_inner_position = self.layout_state.layout_position;
+    }
+
     pub(crate) fn clear_inline_ifc_owned_geometry(&mut self) {
         if self.inline_ifc_owned_lines.take().is_some() {
             self.dirty_flags = self.dirty_flags.union(super::DirtyPassMask::PAINT);

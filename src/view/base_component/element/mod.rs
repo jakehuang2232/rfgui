@@ -2315,6 +2315,10 @@ struct ElementInlineIfcRootInstall {
     inner_width: f32,
     plan: Vec<InlineIfcNodeInstallOp>,
     installed_nodes: Vec<NodeKey>,
+    /// Origins the plan was last applied at: (origin_x, origin_y,
+    /// flow_origin_x, flow_origin_y). A pure move re-applies as an
+    /// in-place delta shift; identical origins skip the apply entirely.
+    applied_origins: (f32, f32, f32, f32),
 }
 
 /// One descendant's install in IFC content coordinates (origin-independent).
@@ -2424,7 +2428,7 @@ fn inline_ifc_root_geometry(
     root_key: NodeKey,
 ) -> Option<InlineIfcRootGeometry> {
     let context = context?;
-    let snapshot = context.text_layout_snapshot();
+    let snapshot = context.text_layout_snapshot_ref();
     let content_top_offset = snapshot
         .lines
         .iter()
@@ -3207,20 +3211,38 @@ impl Element {
                     pending.content_size,
                     pending.plan,
                 )
-            } else if let Some(install) = self.inline_ifc_layout_call_site.current.take() {
+            } else if let Some(mut install) = self.inline_ifc_layout_call_site.current.take() {
                 if install.children_snapshot == self.children {
                     with_layout_place_profile(|profile| {
                         profile.inline_ifc_root_install_reuse_calls += 1;
                     });
-                    self.apply_inline_ifc_install_plan(
+                    // Same plan, so re-applying it can only change the
+                    // origin shift baked into each absolute coordinate.
+                    // Identical origins mean every installed value is
+                    // already correct; a move is an in-place delta shift
+                    // (no package clones, no absolute-geometry rebuild).
+                    // Atomic boxes still go through child.place so their
+                    // own placement gate decides whether to skip.
+                    let origins = self.inline_ifc_apply_origins();
+                    let has_atomic = install
+                        .plan
+                        .iter()
+                        .any(|op| matches!(op, InlineIfcNodeInstallOp::Atomic { .. }));
+                    if origins == install.applied_origins && !has_atomic {
+                        self.inline_ifc_layout_call_site.current = Some(install);
+                        return;
+                    }
+                    self.shift_inline_ifc_install_plan(
                         arena,
                         &install.plan,
+                        origins.0 - install.applied_origins.0,
+                        origins.1 - install.applied_origins.1,
                         install.content_top_offset,
                         placement,
+                        has_atomic,
                     );
+                    install.applied_origins = origins;
                     self.inline_ifc_layout_call_site.current = Some(install);
-                    let absolute_mask = self.compute_children_absolute_mask(arena);
-                    self.update_content_size_from_children(arena, &absolute_mask);
                     return;
                 }
                 // Children changed without a measure pass: fall through to a
@@ -3267,6 +3289,7 @@ impl Element {
             inner_width,
             plan,
             installed_nodes,
+            applied_origins: self.inline_ifc_apply_origins(),
         });
 
         // Children just moved; the scroll-content extent computed during
@@ -3317,6 +3340,130 @@ impl Element {
             content_size,
             plan,
         ))
+    }
+
+    /// Origins every install apply bakes into absolute coordinates:
+    /// (origin_x, origin_y, flow_origin_x, flow_origin_y), scroll folded.
+    fn inline_ifc_apply_origins(&self) -> (f32, f32, f32, f32) {
+        (
+            self.layout_state.layout_inner_position.x - self.scroll_offset.x,
+            self.layout_state.layout_inner_position.y - self.scroll_offset.y,
+            self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x,
+            self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y,
+        )
+    }
+
+    /// Pure-move fast path for an unchanged install plan: shift owned
+    /// span/text geometry in place by the origin delta and re-place
+    /// atomic boxes at their line positions. Semantically identical to
+    /// `apply_inline_ifc_install_plan` with the same plan, minus the
+    /// per-op package clones and absolute-geometry rebuilds.
+    #[allow(clippy::too_many_arguments)]
+    fn shift_inline_ifc_install_plan(
+        &mut self,
+        arena: &mut NodeArena,
+        plan: &[InlineIfcNodeInstallOp],
+        dx: f32,
+        dy: f32,
+        top_offset: f32,
+        placement: LayoutPlacement,
+        has_atomic: bool,
+    ) {
+        let flow_origin_x = self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x;
+        let flow_origin_y = self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y;
+        let visual_offset_x =
+            self.layout_state.layout_position.x - self.layout_state.layout_flow_position.x;
+        let visual_offset_y =
+            self.layout_state.layout_position.y - self.layout_state.layout_flow_position.y;
+        if has_atomic {
+            let child_parent_hit_test_clip = self.current_child_hit_test_clip_rect();
+            self.push_hit_test_clip_scope(child_parent_hit_test_clip);
+            let overscan = Self::SHOULD_RENDER_OVERSCAN_PX.max(0.0);
+            self.push_child_clip_scope(Rect {
+                x: self.layout_state.layout_inner_position.x - overscan,
+                y: self.layout_state.layout_inner_position.y - overscan,
+                width: (self.layout_state.layout_inner_size.width + overscan * 2.0).max(0.0),
+                height: (self.layout_state.layout_inner_size.height + overscan * 2.0).max(0.0),
+            });
+        }
+        let moved = dx != 0.0 || dy != 0.0;
+        for op in plan {
+            match op {
+                InlineIfcNodeInstallOp::Span { node_key, .. } => {
+                    if !moved {
+                        continue;
+                    }
+                    arena.with_element_taken(*node_key, |child, _arena| {
+                        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+                            element.shift_inline_ifc_owned_geometry(dx, dy);
+                        }
+                    });
+                }
+                InlineIfcNodeInstallOp::Text { node_key, .. } => {
+                    if !moved {
+                        continue;
+                    }
+                    arena.with_element_taken(*node_key, |child, _arena| {
+                        if let Some(text) = child.as_any_mut().downcast_mut::<Text>() {
+                            text.shift_inline_ifc_owned_geometry(dx, dy);
+                        }
+                    });
+                }
+                InlineIfcNodeInstallOp::Atomic { node_key, rect } => {
+                    arena.with_element_taken(*node_key, |child, arena| {
+                        child.set_layout_offset(0.0, 0.0);
+                        child.place(
+                            LayoutPlacement {
+                                parent_x: flow_origin_x + rect.x,
+                                parent_y: flow_origin_y + rect.y - top_offset,
+                                visual_offset_x,
+                                visual_offset_y,
+                                available_width: rect.width.max(1.0),
+                                available_height: rect.height.max(1.0),
+                                viewport_width: placement.viewport_width,
+                                viewport_height: placement.viewport_height,
+                                percent_base_width: placement.percent_base_width,
+                                percent_base_height: placement.percent_base_height,
+                            },
+                            arena,
+                        );
+                    });
+                }
+            }
+        }
+        if has_atomic {
+            self.pop_child_clip_scope();
+            self.pop_hit_test_clip_scope();
+            // Atomic boxes may have moved relative to this root; the
+            // scroll-content extent from place_children is stale. Pure
+            // span/text translation keeps relative extents unchanged.
+            let absolute_mask = self.compute_children_absolute_mask(arena);
+            self.update_content_size_from_children(arena, &absolute_mask);
+        }
+    }
+
+    /// In-place delta shift of span geometry owned by an inline IFC
+    /// root: decoration fragment positions, paint fragments, and the
+    /// shell box adopted from the fragment union.
+    pub(crate) fn shift_inline_ifc_owned_geometry(&mut self, dx: f32, dy: f32) {
+        if let Some(package) = self
+            .inline_ifc_rollout_packages
+            .decoration_draw_rect
+            .as_mut()
+        {
+            for fragment in &mut package.fragments {
+                fragment.metadata.position[0] += dx;
+                fragment.metadata.position[1] += dy;
+            }
+        }
+        for rect in &mut self.inline_paint_fragments {
+            rect.x += dx;
+            rect.y += dy;
+        }
+        self.layout_state.layout_position.x += dx;
+        self.layout_state.layout_position.y += dy;
+        self.layout_state.layout_flow_position = self.layout_state.layout_position;
+        self.layout_state.layout_inner_position = self.layout_state.layout_position;
     }
 
     /// Apply an origin-independent install plan: shift each op by the root's
