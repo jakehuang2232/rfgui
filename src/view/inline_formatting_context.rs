@@ -1506,6 +1506,13 @@ pub(crate) struct InlineFormattingContext {
     // unified glyph passes; memoize so steady-state repaints borrow
     // instead of re-materializing per-glyph vectors.
     paint_input_cache: std::cell::OnceCell<InlineIfcTextPassPaintInput>,
+    /// Per-source per-line rect maps, built in one glyph pass. Queries
+    /// like `source_line_rects` used to rescan every glyph per source,
+    /// which made per-segment callers (TextArea child placement) O(n²).
+    source_line_rects_cache:
+        std::cell::OnceCell<HashMap<InlineIfcSourceId, Vec<InlineIfcPaintRect>>>,
+    source_text_line_rects_cache:
+        std::cell::OnceCell<HashMap<InlineIfcSourceId, Vec<(usize, InlineIfcPaintRect)>>>,
 }
 
 impl InlineFormattingContext {
@@ -1541,6 +1548,8 @@ impl InlineFormattingContext {
             snapshot_cache: std::cell::OnceCell::new(),
             caret_stops_cache: std::cell::OnceCell::new(),
             paint_input_cache: std::cell::OnceCell::new(),
+            source_line_rects_cache: std::cell::OnceCell::new(),
+            source_text_line_rects_cache: std::cell::OnceCell::new(),
         }
     }
 
@@ -1967,32 +1976,44 @@ impl InlineFormattingContext {
     /// in IFC content coordinates. Used as the hit-test/selection geometry
     /// for text owned by a unified inline IFC root.
     pub(crate) fn source_line_rects(&self, source: InlineIfcSourceId) -> Vec<InlineIfcPaintRect> {
-        let snapshot = self.text_layout_snapshot_ref();
-        let mut rects = Vec::new();
-        for line in &snapshot.lines {
-            let mut left: Option<f32> = None;
-            let mut right: Option<f32> = None;
-            for glyph in line.glyphs.iter().filter(|glyph| glyph.source == source) {
-                let start = glyph.x;
-                left = Some(left.map_or(start, |current| current.min(start)));
-                right = Some(right.map_or(start + glyph.advance, |current| {
-                    current.max(start + glyph.advance)
-                }));
+        self.source_line_rects_map()
+            .get(&source)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// One glyph pass building every source's per-line rects at once.
+    /// Shaped state is immutable, so per-segment callers (one per
+    /// TextArea run) amortize to O(1) lookups instead of rescanning
+    /// every glyph per source.
+    fn source_line_rects_map(&self) -> &HashMap<InlineIfcSourceId, Vec<InlineIfcPaintRect>> {
+        self.source_line_rects_cache.get_or_init(|| {
+            let snapshot = self.text_layout_snapshot_ref();
+            let mut map: HashMap<InlineIfcSourceId, Vec<InlineIfcPaintRect>> = HashMap::new();
+            let mut extents: HashMap<InlineIfcSourceId, (f32, f32)> = HashMap::new();
+            for line in &snapshot.lines {
+                extents.clear();
+                for glyph in line.glyphs.iter() {
+                    let start = glyph.x;
+                    let end = start + glyph.advance;
+                    let entry = extents.entry(glyph.source).or_insert((start, end));
+                    entry.0 = entry.0.min(start);
+                    entry.1 = entry.1.max(end);
+                }
+                for (source, (left, right)) in extents.drain() {
+                    if right <= left {
+                        continue;
+                    }
+                    map.entry(source).or_default().push(InlineIfcPaintRect {
+                        x: left,
+                        y: line.y,
+                        width: right - left,
+                        height: line.height,
+                    });
+                }
             }
-            let (Some(left), Some(right)) = (left, right) else {
-                continue;
-            };
-            if right <= left {
-                continue;
-            }
-            rects.push(InlineIfcPaintRect {
-                x: left,
-                y: line.y,
-                width: right - left,
-                height: line.height,
-            });
-        }
-        rects
+            map
+        })
     }
 
     /// Per-line rects of `source`'s text where `y`/`height` track the text
@@ -2004,67 +2025,89 @@ impl InlineFormattingContext {
         &self,
         source: InlineIfcSourceId,
     ) -> Vec<(usize, InlineIfcPaintRect)> {
-        // Map run index → (ascent, descent) so we can size the text box
-        // off the actual font metrics parley used for each run.
-        let mut run_metrics: HashMap<usize, (f32, f32)> = HashMap::new();
-        for line in self.layout.lines() {
-            for item in line.items() {
-                let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
-                    continue;
-                };
-                let run = glyph_run.run();
-                let metrics = run.metrics();
-                run_metrics.insert(run.index(), (metrics.ascent, metrics.descent));
-            }
-        }
+        self.source_text_line_rects_map()
+            .get(&source)
+            .cloned()
+            .unwrap_or_default()
+    }
 
-        // glyph_items carries the per-glyph source (innermost, nesting-aware)
-        // and run index, plus the baseline-relative line geometry.
-        let glyphs = self.glyph_items_ref();
-        // Precompute per-line baseline and inline offset so the glyph loop
-        // is O(glyphs), not O(glyphs × lines).
-        let line_baselines: Vec<f32> = self
-            .layout
-            .lines()
-            .map(|line| line.metrics().baseline)
-            .collect();
-        let mut by_line: std::collections::BTreeMap<usize, (f32, f32, f32, f32)> =
-            std::collections::BTreeMap::new();
-        for glyph in glyphs.iter().filter(|glyph| glyph.source == source) {
-            // Positioned glyph x is absolute (alignment offset included).
-            let left = glyph.x;
-            let right = left + glyph.advance;
-            let (ascent, descent) = run_metrics
-                .get(&glyph.run_index)
-                .copied()
-                .unwrap_or((glyph.font_size * 0.88, glyph.font_size * 0.2));
-            let entry = by_line
-                .entry(glyph.line_index)
-                .or_insert((f32::MAX, f32::MIN, 0.0, 0.0));
-            entry.0 = entry.0.min(left);
-            entry.1 = entry.1.max(right);
-            entry.2 = entry.2.max(ascent);
-            entry.3 = entry.3.max(descent);
-        }
-
-        by_line
-            .into_iter()
-            .filter_map(|(line_index, (left, right, ascent, descent))| {
-                if right <= left {
-                    return None;
+    /// One glyph pass building every source's per-line text-box rects at
+    /// once; see `source_line_rects_map` for why.
+    fn source_text_line_rects_map(
+        &self,
+    ) -> &HashMap<InlineIfcSourceId, Vec<(usize, InlineIfcPaintRect)>> {
+        self.source_text_line_rects_cache.get_or_init(|| {
+            // Map run index → (ascent, descent) so we can size the text box
+            // off the actual font metrics parley used for each run.
+            let mut run_metrics: HashMap<usize, (f32, f32)> = HashMap::new();
+            for line in self.layout.lines() {
+                for item in line.items() {
+                    let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                        continue;
+                    };
+                    let run = glyph_run.run();
+                    let metrics = run.metrics();
+                    run_metrics.insert(run.index(), (metrics.ascent, metrics.descent));
                 }
-                let baseline = line_baselines.get(line_index).copied()?;
-                Some((
-                    line_index,
-                    InlineIfcPaintRect {
-                        x: left,
-                        y: baseline - ascent,
-                        width: right - left,
-                        height: (ascent + descent).max(1.0),
-                    },
-                ))
-            })
-            .collect()
+            }
+
+            // glyph_items carries the per-glyph source (innermost,
+            // nesting-aware) and run index, plus the baseline-relative
+            // line geometry.
+            let glyphs = self.glyph_items_ref();
+            let line_baselines: Vec<f32> = self
+                .layout
+                .lines()
+                .map(|line| line.metrics().baseline)
+                .collect();
+            let mut by_source: HashMap<
+                InlineIfcSourceId,
+                std::collections::BTreeMap<usize, (f32, f32, f32, f32)>,
+            > = HashMap::new();
+            for glyph in glyphs.iter() {
+                // Positioned glyph x is absolute (alignment offset included).
+                let left = glyph.x;
+                let right = left + glyph.advance;
+                let (ascent, descent) = run_metrics
+                    .get(&glyph.run_index)
+                    .copied()
+                    .unwrap_or((glyph.font_size * 0.88, glyph.font_size * 0.2));
+                let entry = by_source
+                    .entry(glyph.source)
+                    .or_default()
+                    .entry(glyph.line_index)
+                    .or_insert((f32::MAX, f32::MIN, 0.0, 0.0));
+                entry.0 = entry.0.min(left);
+                entry.1 = entry.1.max(right);
+                entry.2 = entry.2.max(ascent);
+                entry.3 = entry.3.max(descent);
+            }
+
+            by_source
+                .into_iter()
+                .map(|(source, by_line)| {
+                    let rects = by_line
+                        .into_iter()
+                        .filter_map(|(line_index, (left, right, ascent, descent))| {
+                            if right <= left {
+                                return None;
+                            }
+                            let baseline = line_baselines.get(line_index).copied()?;
+                            Some((
+                                line_index,
+                                InlineIfcPaintRect {
+                                    x: left,
+                                    y: baseline - ascent,
+                                    width: right - left,
+                                    height: (ascent + descent).max(1.0),
+                                },
+                            ))
+                        })
+                        .collect();
+                    (source, rects)
+                })
+                .collect()
+        })
     }
 
     pub(crate) fn text_top_for_line_range(
