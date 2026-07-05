@@ -525,11 +525,43 @@ pub(crate) struct InlineIfcCacheUpdate<'a> {
 #[derive(Default)]
 pub(crate) struct InlineIfcCache {
     entries: HashMap<InlineIfcShapeCacheKey, InlineIfcCachedEntry>,
+    // Access-generation LRU bookkeeping: shaped contexts are heavy
+    // (parley layout + memoized glyph/snapshot vectors), and resize drags
+    // mint a new shape key per width — without eviction the map grows
+    // without bound for the lifetime of the owning element.
+    access_generation: u64,
+    access_by_key: HashMap<InlineIfcShapeCacheKey, u64>,
 }
+
+/// Retained shaped contexts per cache. Two would cover current+pending;
+/// a little headroom keeps width jitter (resize back-and-forth) warm.
+const INLINE_IFC_CACHE_MAX_ENTRIES: usize = 4;
 
 impl InlineIfcCache {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    fn touch(&mut self, shape_key: &InlineIfcShapeCacheKey) {
+        self.access_generation += 1;
+        self.access_by_key
+            .insert(shape_key.clone(), self.access_generation);
+    }
+
+    fn evict_to_capacity(&mut self, keep: &InlineIfcShapeCacheKey) {
+        while self.entries.len() > INLINE_IFC_CACHE_MAX_ENTRIES {
+            let Some(coldest) = self
+                .entries
+                .keys()
+                .filter(|key| *key != keep)
+                .min_by_key(|key| self.access_by_key.get(*key).copied().unwrap_or(0))
+                .cloned()
+            else {
+                return;
+            };
+            self.entries.remove(&coldest);
+            self.access_by_key.remove(&coldest);
+        }
     }
 
     pub(crate) fn lookup_input(&self, input: &InlineIfcInput) -> InlineIfcCacheLookup<'_> {
@@ -564,6 +596,8 @@ impl InlineIfcCache {
                 shape_key: shape_key.clone(),
             },
         );
+        self.touch(&shape_key);
+        self.evict_to_capacity(&shape_key);
         self.entries
             .get(&shape_key)
             .expect("inserted IFC cache entry should be available")
@@ -588,6 +622,7 @@ impl InlineIfcCache {
             .unwrap_or(InlineIfcInvalidation::Reshape);
 
         if invalidation == InlineIfcInvalidation::Reuse {
+            self.touch(&shape_key);
             let entry = self
                 .entries
                 .get(&shape_key)
@@ -608,6 +643,8 @@ impl InlineIfcCache {
                 shape_key: shape_key.clone(),
             },
         );
+        self.touch(&shape_key);
+        self.evict_to_capacity(&shape_key);
         let entry = self
             .entries
             .get(&shape_key)
@@ -3310,6 +3347,33 @@ mod tests {
             InlineIfcLayoutOptions::new(Some(400.0), true),
         );
         assert!(!ifc.text_layout_snapshot().lines.is_empty());
+    }
+
+    #[test]
+    fn cache_evicts_coldest_entries_beyond_capacity() {
+        let mut cache = InlineIfcCache::new();
+        for width in [100.0_f32, 120.0, 140.0, 160.0, 180.0, 200.0] {
+            let update = cache.update_with_options(
+                plain_text_input("evict me"),
+                InlineIfcLayoutOptions::new(Some(width), true),
+            );
+            assert!(update.rebuilt, "distinct widths must reshape");
+        }
+        assert!(
+            cache.len() <= INLINE_IFC_CACHE_MAX_ENTRIES,
+            "cache must stay bounded, len={}",
+            cache.len()
+        );
+        // The most recent shape must survive eviction.
+        let latest_key = plain_text_input("evict me")
+            .cache_key_with_layout_options(InlineIfcLayoutOptions::new(Some(200.0), true));
+        assert!(
+            !matches!(
+                cache.lookup_key(&latest_key),
+                InlineIfcCacheLookup::Miss { .. }
+            ),
+            "latest entry must be retained"
+        );
     }
 
     #[test]

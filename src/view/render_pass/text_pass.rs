@@ -85,15 +85,195 @@ impl Drop for TextPreparedState {
 struct PreparedTextDraw {
     vertex_buffer: wgpu::Buffer,
     instance_count: u32,
-    atlas_texture: wgpu::Texture,
-    atlas_view: wgpu::TextureView,
-    atlas_bind_group: wgpu::BindGroup,
+    atlas: PreparedAtlasBinding,
+}
+
+/// Which atlas a prepared draw samples from: the shared persistent atlas
+/// (owned by [`TextResources`], survives across frames) or a transient
+/// per-pass atlas built when the persistent one overflowed this frame.
+enum PreparedAtlasBinding {
+    Persistent(AtlasKind),
+    Transient {
+        texture: wgpu::Texture,
+        _view: wgpu::TextureView,
+        bind_group: wgpu::BindGroup,
+    },
 }
 
 impl Drop for PreparedTextDraw {
     fn drop(&mut self) {
         self.vertex_buffer.destroy();
-        self.atlas_texture.destroy();
+        if let PreparedAtlasBinding::Transient { texture, .. } = &self.atlas {
+            texture.destroy();
+        }
+    }
+}
+
+/// Shared cross-frame glyph atlas: glyphs are uploaded once (per raster
+/// key) into a fixed-size texture; steady-state frames sample it with no
+/// texture creation or pixel uploads at all.
+struct PersistentAtlas {
+    texture: wgpu::Texture,
+    _view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    width: u32,
+    height: u32,
+    cursor_x: u32,
+    cursor_y: u32,
+    row_height: u32,
+    slots: FxHashMap<TextRasterKey, PersistentAtlasSlot>,
+    /// Set when an insert failed; the atlas resets at the next frame
+    /// boundary (mid-frame resets would invalidate slots already baked
+    /// into earlier passes' instance buffers).
+    overflowed: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PersistentAtlasSlot {
+    uv_min: [f32; 2],
+    uv_max: [f32; 2],
+}
+
+const PERSISTENT_ATLAS_PADDING: u32 = 1;
+
+impl PersistentAtlas {
+    fn new(
+        device: &wgpu::Device,
+        atlas_layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        kind: AtlasKind,
+    ) -> Self {
+        let (width, height) = match kind {
+            AtlasKind::Mask => (2048, 2048),
+            AtlasKind::Color => (1024, 1024),
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(match kind {
+                AtlasKind::Mask => "Text Persistent Mask Atlas",
+                AtlasKind::Color => "Text Persistent Color Atlas",
+            }),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Text Persistent Atlas Bind Group"),
+            layout: atlas_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+        Self {
+            texture,
+            _view: view,
+            bind_group,
+            width,
+            height,
+            cursor_x: PERSISTENT_ATLAS_PADDING,
+            cursor_y: PERSISTENT_ATLAS_PADDING,
+            row_height: 0,
+            slots: FxHashMap::default(),
+            overflowed: false,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.cursor_x = PERSISTENT_ATLAS_PADDING;
+        self.cursor_y = PERSISTENT_ATLAS_PADDING;
+        self.row_height = 0;
+        self.slots.clear();
+        self.overflowed = false;
+    }
+
+    /// Ensure `image` is resident and return its UVs. `None` means the
+    /// atlas is full; the caller falls back to a transient atlas for this
+    /// pass and the atlas resets next frame.
+    fn ensure_slot(
+        &mut self,
+        queue: &wgpu::Queue,
+        kind: AtlasKind,
+        key: TextRasterKey,
+        image: &SwashRasterImage,
+    ) -> Option<PersistentAtlasSlot> {
+        if let Some(slot) = self.slots.get(&key) {
+            return Some(*slot);
+        }
+        let w = image.placement.width.max(1);
+        let h = image.placement.height.max(1);
+        if self.cursor_x + w + PERSISTENT_ATLAS_PADDING > self.width {
+            self.cursor_y += self.row_height + PERSISTENT_ATLAS_PADDING;
+            self.cursor_x = PERSISTENT_ATLAS_PADDING;
+            self.row_height = 0;
+        }
+        if self.cursor_y + h + PERSISTENT_ATLAS_PADDING > self.height
+            || self.cursor_x + w + PERSISTENT_ATLAS_PADDING > self.width
+        {
+            self.overflowed = true;
+            return None;
+        }
+        let dst_x = self.cursor_x;
+        let dst_y = self.cursor_y;
+        self.cursor_x += w + PERSISTENT_ATLAS_PADDING;
+        self.row_height = self.row_height.max(h);
+
+        // Convert this glyph alone through the shared copy helper and
+        // upload just its region.
+        let mut pixels = vec![0_u8; w as usize * h as usize * 4];
+        copy_glyph_to_atlas(kind, image, &mut pixels, w, 0, 0);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: dst_x,
+                    y: dst_y,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        if std::env::var_os("RFGUI_ATLAS_DEBUG").is_some() {
+            eprintln!("[ATLASDBG] upload {}x{} at ({}, {})", w, h, dst_x, dst_y);
+        }
+        let slot = PersistentAtlasSlot {
+            uv_min: [
+                dst_x as f32 / self.width as f32,
+                dst_y as f32 / self.height as f32,
+            ],
+            uv_max: [
+                (dst_x + w) as f32 / self.width as f32,
+                (dst_y + h) as f32 / self.height as f32,
+            ],
+        };
+        self.slots.insert(key, slot);
+        Some(slot)
     }
 }
 
@@ -146,6 +326,7 @@ struct TextGlyphInstance {
 
 struct PendingGlyphInstance {
     kind: AtlasKind,
+    raster_key: Option<TextRasterKey>,
     local_pos: [f32; 2],
     size: [f32; 2],
     image: std::sync::Arc<SwashRasterImage>,
@@ -233,6 +414,7 @@ struct TextResources {
     sampler: Option<wgpu::Sampler>,
     pipelines: FxHashMap<(TextRendererKey, TextPipelineKind), wgpu::RenderPipeline>,
     raster_cache: FxHashMap<TextRasterKey, CachedRasterImage>,
+    persistent_atlases: FxHashMap<AtlasKind, PersistentAtlas>,
     frame_epoch: u64,
     scale_context: SwashScaleContext,
 }
@@ -520,6 +702,7 @@ fn collect_prepared_staging_glyphs(
         );
         out.push(PendingGlyphInstance {
             kind,
+            raster_key: text_raster_key_for_raster_input(&glyph.raster, scale_factor),
             local_pos,
             size: [width, height],
             image,
@@ -707,7 +890,80 @@ fn build_prepared_draw<'a>(
     if glyphs.is_empty() {
         return None;
     }
-    let atlas = pack_atlas(atlas_kind, glyphs.as_slice())?;
+    if let Some(instances) =
+        build_persistent_atlas_instances(device, queue, resources, atlas_kind, glyphs.as_slice())
+    {
+        let vertex_buffer = super::create_transient_buffer(
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Text Glyph Instance Buffer"),
+                contents: bytemuck::cast_slice(instances.as_slice()),
+                usage: wgpu::BufferUsages::VERTEX,
+            },
+        );
+        return Some(PreparedTextDraw {
+            vertex_buffer,
+            instance_count: instances.len() as u32,
+            atlas: PreparedAtlasBinding::Persistent(atlas_kind),
+        });
+    }
+    build_transient_prepared_draw(device, queue, resources, atlas_kind, glyphs.as_slice())
+}
+
+/// Try to serve every glyph from the persistent atlas. Returns `None` when
+/// the atlas overflowed (or a glyph has no stable raster key); the caller
+/// then falls back to a transient per-pass atlas and the persistent atlas
+/// resets at the next frame boundary.
+fn build_persistent_atlas_instances(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    resources: &mut TextResources,
+    atlas_kind: AtlasKind,
+    glyphs: &[&PendingGlyphInstance],
+) -> Option<Vec<TextGlyphInstance>> {
+    resources.ensure_common(device);
+    if !resources.persistent_atlases.contains_key(&atlas_kind) {
+        let atlas_layout = resources
+            .atlas_layout
+            .as_ref()
+            .expect("atlas bind group layout initialized");
+        let sampler = resources.sampler.as_ref().expect("sampler initialized");
+        let atlas = PersistentAtlas::new(device, atlas_layout, sampler, atlas_kind);
+        resources.persistent_atlases.insert(atlas_kind, atlas);
+    }
+    let atlas = resources
+        .persistent_atlases
+        .get_mut(&atlas_kind)
+        .expect("persistent atlas initialized");
+    if atlas.overflowed {
+        return None;
+    }
+    let mut instances = Vec::with_capacity(glyphs.len());
+    for glyph in glyphs {
+        let slot = glyph
+            .raster_key
+            .and_then(|key| atlas.ensure_slot(queue, atlas_kind, key, &glyph.image))?;
+        instances.push(TextGlyphInstance {
+            local_pos: glyph.local_pos,
+            size: glyph.size,
+            uv_min: slot.uv_min,
+            uv_max: slot.uv_max,
+            color: glyph.color,
+            opacity: glyph.opacity,
+            fragment_index: glyph.fragment_index,
+        });
+    }
+    Some(instances)
+}
+
+fn build_transient_prepared_draw(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    resources: &mut TextResources,
+    atlas_kind: AtlasKind,
+    glyphs: &[&PendingGlyphInstance],
+) -> Option<PreparedTextDraw> {
+    let atlas = pack_atlas(atlas_kind, glyphs)?;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(match atlas_kind {
             AtlasKind::Mask => "Text Mask Atlas",
@@ -775,9 +1031,11 @@ fn build_prepared_draw<'a>(
     Some(PreparedTextDraw {
         vertex_buffer,
         instance_count: atlas.instances.len() as u32,
-        atlas_texture: texture,
-        atlas_view: view,
-        atlas_bind_group,
+        atlas: PreparedAtlasBinding::Transient {
+            texture,
+            _view: view,
+            bind_group: atlas_bind_group,
+        },
     })
 }
 
@@ -928,10 +1186,18 @@ fn draw_prepared_text(
         let Some(pipeline) = resources.pipelines.get(&(prepared.renderer_key, kind)) else {
             return;
         };
-        let _ = &draw.atlas_view;
+        let atlas_bind_group = match &draw.atlas {
+            PreparedAtlasBinding::Persistent(kind) => {
+                let Some(atlas) = resources.persistent_atlases.get(kind) else {
+                    return;
+                };
+                &atlas.bind_group
+            }
+            PreparedAtlasBinding::Transient { bind_group, .. } => bind_group,
+        };
         ctx.set_pipeline(pipeline);
         ctx.set_bind_group(0, &prepared.globals_bind_group, &[]);
-        ctx.set_bind_group(1, &draw.atlas_bind_group, &[]);
+        ctx.set_bind_group(1, atlas_bind_group, &[]);
         ctx.set_vertex_buffer(0, draw.vertex_buffer.slice(..));
         ctx.draw(0..6, 0..draw.instance_count);
     });
@@ -941,6 +1207,11 @@ impl TextResources {
     fn begin_frame(&mut self) {
         self.frame_epoch = self.frame_epoch.wrapping_add(1);
         self.evict_raster_cache();
+        for atlas in self.persistent_atlases.values_mut() {
+            if atlas.overflowed {
+                atlas.reset();
+            }
+        }
     }
 
     fn evict_raster_cache(&mut self) {
@@ -1113,6 +1384,9 @@ impl TextResources {
     fn destroy(&mut self) {
         self.pipelines.clear();
         self.raster_cache.clear();
+        for (_, atlas) in self.persistent_atlases.drain() {
+            atlas.texture.destroy();
+        }
         self.screen_layout = None;
         self.atlas_layout = None;
         self.sampler = None;
