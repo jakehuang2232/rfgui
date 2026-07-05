@@ -1506,32 +1506,28 @@ impl Element {
             Layout::Flex { .. } | Layout::Flow { .. }
         );
         if is_axis_layout {
-            let place_flex_started_at = layout_place_profile_enabled().then(Instant::now);
-            self.place_flex_children(
-                child_inner_width,
-                child_inner_height,
-                child_available_width,
-                child_available_height,
-                viewport_width,
-                viewport_height,
-                child_percent_base_width,
-                child_percent_base_height,
-                child_parent_hit_test_clip,
-                arena,
-            );
-            if let Some(started_at) = place_flex_started_at {
-                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-                let layout = self.computed_style.layout;
-                with_layout_place_profile(|profile| {
-                    profile.place_flex_children_ms += elapsed_ms;
-                    match layout {
-                        Layout::Inline => profile.place_layout_inline_ms += elapsed_ms,
-                        Layout::Flex { .. } => profile.place_layout_flex_ms += elapsed_ms,
-                        Layout::Flow { .. } => profile.place_layout_flow_ms += elapsed_ms,
-                        Layout::Grid => {}
-                    }
+            let layout_timing = match self.computed_style.layout {
+                Layout::Inline => LayoutPlaceTiming::PlaceLayoutInline,
+                Layout::Flex { .. } => LayoutPlaceTiming::PlaceLayoutFlex,
+                Layout::Flow { .. } => LayoutPlaceTiming::PlaceLayoutFlow,
+                Layout::Grid => LayoutPlaceTiming::PlaceFlexChildren,
+            };
+            profile_layout_place_time(LayoutPlaceTiming::PlaceFlexChildren, || {
+                profile_layout_place_time(layout_timing, || {
+                    self.place_flex_children(
+                        child_inner_width,
+                        child_inner_height,
+                        child_available_width,
+                        child_available_height,
+                        viewport_width,
+                        viewport_height,
+                        child_percent_base_width,
+                        child_percent_base_height,
+                        child_parent_hit_test_clip,
+                        arena,
+                    );
                 });
-            }
+            });
         } else {
             let origin_x = self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x;
             let origin_y = self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y;
@@ -1539,7 +1535,6 @@ impl Element {
                 self.layout_state.layout_position.x - self.layout_state.layout_flow_position.x;
             let visual_offset_y =
                 self.layout_state.layout_position.y - self.layout_state.layout_flow_position.y;
-            let non_axis_children_started_at = layout_place_profile_enabled().then(Instant::now);
             let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
             // Build the is-absolute mask once: each call is arena.get +
             // RefCell::borrow + downcast, and this loop used to do it twice
@@ -1547,115 +1542,91 @@ impl Element {
             // from update_content_size_from_children.
             let absolute_mask = self.compute_children_absolute_mask(arena);
             let in_flow_owned_by_inline_ifc = matches!(self.computed_style.layout, Layout::Inline);
-            for (idx, child_key) in child_keys.iter().copied().enumerate() {
-                if in_flow_owned_by_inline_ifc {
-                    break;
-                }
-                if absolute_mask.get(idx).copied().unwrap_or(false) {
-                    continue;
-                }
-                let placement = LayoutPlacement {
-                    parent_x: origin_x,
-                    parent_y: origin_y,
-                    visual_offset_x,
-                    visual_offset_y,
-                    available_width: child_available_width,
-                    available_height: child_available_height,
-                    viewport_width,
-                    viewport_height,
-                    percent_base_width: child_percent_base_width,
-                    percent_base_height: child_percent_base_height,
-                };
-                if let Some(reason) = self.in_flow_child_placement_skip_failure(
-                    arena,
-                    child_key,
-                    placement,
-                    child_parent_hit_test_clip,
-                ) {
-                    with_layout_place_profile(|profile| {
-                        profile.placement_skip_failures.record(reason);
-                    });
-                } else {
-                    with_layout_place_profile(|profile| {
-                        profile.skipped_child_place_calls += 1;
-                    });
-                    continue;
-                }
-                with_layout_place_profile(|profile| {
-                    profile.child_place_calls += 1;
-                });
-                arena.with_element_taken(child_key, |child, arena| {
-                    child.place(placement, arena);
-                });
-            }
-            if let Some(started_at) = non_axis_children_started_at {
-                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-                with_layout_place_profile(|profile| {
-                    profile.non_axis_child_place_ms += elapsed_ms;
-                });
-            }
-            let absolute_children_started_at = layout_place_profile_enabled().then(Instant::now);
-            for (idx, child_key) in child_keys.iter().copied().enumerate() {
-                if !absolute_mask.get(idx).copied().unwrap_or(false) {
-                    continue;
-                }
-                with_layout_place_profile(|profile| {
-                    profile.child_place_calls += 1;
-                    profile.absolute_child_place_calls += 1;
-                });
-                arena.with_element_taken(child_key, |child, arena| {
-                    child.place(
-                        LayoutPlacement {
-                            parent_x: origin_x,
-                            parent_y: origin_y,
-                            visual_offset_x,
-                            visual_offset_y,
-                            available_width: child_available_width,
-                            available_height: child_available_height,
-                            viewport_width,
-                            viewport_height,
-                            percent_base_width: child_percent_base_width,
-                            percent_base_height: child_percent_base_height,
-                        },
+            profile_layout_place_time(LayoutPlaceTiming::ChildPlace, || {
+                for (idx, child_key) in child_keys.iter().copied().enumerate() {
+                    if in_flow_owned_by_inline_ifc {
+                        break;
+                    }
+                    if absolute_mask.get(idx).copied().unwrap_or(false) {
+                        continue;
+                    }
+                    let placement = LayoutPlacement {
+                        parent_x: origin_x,
+                        parent_y: origin_y,
+                        visual_offset_x,
+                        visual_offset_y,
+                        available_width: child_available_width,
+                        available_height: child_available_height,
+                        viewport_width,
+                        viewport_height,
+                        percent_base_width: child_percent_base_width,
+                        percent_base_height: child_percent_base_height,
+                    };
+                    if let Some(reason) = self.in_flow_child_placement_skip_failure(
                         arena,
-                    );
-                });
-            }
-            if let Some(started_at) = absolute_children_started_at {
-                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-                with_layout_place_profile(|profile| {
-                    profile.absolute_child_place_ms += elapsed_ms;
-                });
-            }
+                        child_key,
+                        placement,
+                        child_parent_hit_test_clip,
+                    ) {
+                        with_layout_place_profile(|profile| {
+                            profile.placement_skip_failures.record(reason);
+                        });
+                    } else {
+                        with_layout_place_profile(|profile| {
+                            profile.skipped_child_place_calls += 1;
+                        });
+                        continue;
+                    }
+                    with_layout_place_profile(|profile| {
+                        profile.child_place_calls += 1;
+                    });
+                    arena.with_element_taken(child_key, |child, arena| {
+                        child.place(placement, arena);
+                    });
+                }
+            });
+            profile_layout_place_time(LayoutPlaceTiming::AbsoluteChildPlace, || {
+                for (idx, child_key) in child_keys.iter().copied().enumerate() {
+                    if !absolute_mask.get(idx).copied().unwrap_or(false) {
+                        continue;
+                    }
+                    with_layout_place_profile(|profile| {
+                        profile.child_place_calls += 1;
+                        profile.absolute_child_place_calls += 1;
+                    });
+                    arena.with_element_taken(child_key, |child, arena| {
+                        child.place(
+                            LayoutPlacement {
+                                parent_x: origin_x,
+                                parent_y: origin_y,
+                                visual_offset_x,
+                                visual_offset_y,
+                                available_width: child_available_width,
+                                available_height: child_available_height,
+                                viewport_width,
+                                viewport_height,
+                                percent_base_width: child_percent_base_width,
+                                percent_base_height: child_percent_base_height,
+                            },
+                            arena,
+                        );
+                    });
+                }
+            });
         }
         // Mask is scoped per-branch above (axis layout builds its own);
         // recompute once here so both branches feed the helper without
         // paying for another per-child downcast inside it.
         let absolute_mask_for_content = self.compute_children_absolute_mask(arena);
-        let update_content_size_started_at = layout_place_profile_enabled().then(Instant::now);
-        self.update_content_size_from_children(arena, &absolute_mask_for_content);
-        if let Some(started_at) = update_content_size_started_at {
-            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-            with_layout_place_profile(|profile| {
-                profile.update_content_size_ms += elapsed_ms;
-            });
-        }
-        let clamp_scroll_started_at = layout_place_profile_enabled().then(Instant::now);
-        self.clamp_scroll_offset();
-        if let Some(started_at) = clamp_scroll_started_at {
-            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-            with_layout_place_profile(|profile| {
-                profile.clamp_scroll_ms += elapsed_ms;
-            });
-        }
-        let recompute_hit_test_started_at = layout_place_profile_enabled().then(Instant::now);
-        self.recompute_absolute_descendant_for_hit_test(arena);
-        if let Some(started_at) = recompute_hit_test_started_at {
-            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-            with_layout_place_profile(|profile| {
-                profile.recompute_hit_test_ms += elapsed_ms;
-            });
-        }
+        profile_layout_place_time(LayoutPlaceTiming::UpdateContentSize, || {
+            self.update_content_size_from_children(arena, &absolute_mask_for_content);
+        });
+        profile_layout_place_time(LayoutPlaceTiming::ClampScroll, || {
+            self.clamp_scroll_offset();
+        });
+        profile_layout_place_time(LayoutPlaceTiming::RecomputeHitTest, || {
+            self.recompute_absolute_descendant_for_hit_test(arena);
+        });
         self.pop_child_clip_scope();
         self.pop_hit_test_clip_scope();
     }

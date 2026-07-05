@@ -5,13 +5,11 @@
 //! flex/inline placement) and `place_absolute_children` (absolute-position
 //! children). Caller composes both around its own profile timing scopes.
 
-use crate::time::Instant;
-
 use crate::style::{Align, CrossSize, JustifyContent, Layout};
 use crate::view::base_component::{
-    DirtyPassMask, Element, ElementTrait, LayoutPlacement, PlacementSkipFailureReason, Rect,
-    cross_item_offset, cross_start_offset, layout_place_profile_enabled, main_axis_start_and_gap,
-    with_layout_place_profile,
+    DirtyPassMask, Element, ElementTrait, LayoutPlaceTiming, LayoutPlacement,
+    PlacementSkipFailureReason, Rect, cross_item_offset, cross_start_offset,
+    main_axis_start_and_gap, profile_layout_place_time, with_layout_place_profile,
 };
 use crate::view::layout::types::FlexLayoutInfo;
 use crate::view::node_arena::{NodeArena, NodeKey};
@@ -93,156 +91,156 @@ pub(crate) fn place_axis_children(inputs: PlaceAxisChildrenInputs<'_>, arena: &m
 
     let total_cross = info.total_cross;
     let mut cross_cursor = cross_start_offset(cross_limit, total_cross, align);
-    let flex_children_started_at = layout_place_profile_enabled().then(Instant::now);
-
-    for (line_idx, line) in info.lines.iter().enumerate() {
-        let line_main = info.line_main_sum[line_idx];
-        let line_cross = info.line_cross_max[line_idx];
-        let mut line_item_count = 0_usize;
-        let mut prev_child_index: Option<usize> = None;
-        for item in line {
-            if prev_child_index != Some(item.child_index) {
-                line_item_count += 1;
-                prev_child_index = Some(item.child_index);
+    profile_layout_place_time(LayoutPlaceTiming::ChildPlace, || {
+        for (line_idx, line) in info.lines.iter().enumerate() {
+            let line_main = info.line_main_sum[line_idx];
+            let line_cross = info.line_cross_max[line_idx];
+            let mut line_item_count = 0_usize;
+            let mut prev_child_index: Option<usize> = None;
+            for item in line {
+                if prev_child_index != Some(item.child_index) {
+                    line_item_count += 1;
+                    prev_child_index = Some(item.child_index);
+                }
             }
-        }
-        let (mut main_cursor, distributed_gap) =
-            main_axis_start_and_gap(main_limit, line_main, gap, line_item_count, justify_content);
-
-        for (item_idx, item) in line.iter().enumerate() {
-            let child_idx = item.child_index;
-            let item_main = item.main;
-            let child_key = children[child_idx];
-            record_axis_placement_eligibility(layout, child_key, arena);
-            let placement = LayoutPlacement {
-                parent_x: origin_x,
-                parent_y: origin_y,
-                visual_offset_x,
-                visual_offset_y,
-                available_width: child_available_width,
-                available_height: child_available_height,
-                viewport_width,
-                viewport_height,
-                percent_base_width: child_percent_base_width,
-                percent_base_height: child_percent_base_height,
-            };
-            let replay = flex_axis_child_replay(
-                layout,
-                child_key,
-                arena,
-                item_main,
-                line_cross,
-                main_cursor,
-                cross_cursor,
-                is_row,
+            let (mut main_cursor, distributed_gap) = main_axis_start_and_gap(
+                main_limit,
+                line_main,
                 gap,
-                cross_size,
-                align,
-                placement,
-                child_parent_hit_test_clip,
+                line_item_count,
+                justify_content,
             );
-            match replay {
-                FlexAxisChildReplay::Skip(state) => {
-                    with_layout_place_profile(|profile| {
-                        profile.skipped_child_place_calls += 1;
-                    });
-                    arena.with_element_taken(child_key, |child, _arena| {
-                        if let Some(child) = child.as_any_mut().downcast_mut::<Element>() {
-                            child.restore_flex_axis_replay_state(
-                                state.target_width,
-                                state.target_height,
-                                state.offset_x,
-                                state.offset_y,
-                                state.assign_width,
-                                state.assign_height,
-                            );
-                        }
-                    });
-                }
-                FlexAxisChildReplay::Place => {
-                    arena.with_element_taken(child_key, |child, arena| {
-                        let (target_width, target_height) = child.layout_target_size();
-                        let item_target_main = if matches!(layout, Layout::Flow { .. }) {
-                            if is_row {
-                                target_width.max(0.0)
-                            } else {
-                                target_height.max(0.0)
-                            }
-                        } else {
-                            item_main
-                        };
-                        if is_row {
-                            child.set_layout_width(item_target_main);
-                        } else {
-                            child.set_layout_height(item_target_main);
-                        }
-                        let stretched_cross = if cross_size == CrossSize::Stretch
-                            && child.flex_props().allows_cross_stretch(is_row)
-                        {
-                            if is_row {
-                                child.set_layout_height(line_cross);
-                            } else {
-                                child.set_layout_width(line_cross);
-                            }
-                            Some(line_cross)
-                        } else {
-                            None
-                        };
-                        let alignment_cross = child
-                            .cross_alignment_size(is_row, stretched_cross, arena)
-                            .max(0.0);
-                        let cross_offset = cross_item_offset(line_cross, alignment_cross, align);
-                        let (offset_x, offset_y) = if is_row {
-                            (main_cursor, cross_cursor + cross_offset)
-                        } else {
-                            (cross_cursor + cross_offset, main_cursor)
-                        };
-                        child.set_layout_offset(offset_x, offset_y);
-                        // Translation fast-path: if the cheap setters above
-                        // left this child's relative layout untouched and a
-                        // pure ancestor move is the only change, shift the
-                        // whole clean subtree by the origin delta instead of
-                        // re-running place over it.
-                        if let Some((dx, dy)) = translation_replay_delta(
-                            child.as_ref(),
-                            child_key,
-                            arena,
-                            placement,
-                            child_parent_hit_test_clip,
-                        ) {
-                            child.translate_in_place(dx, dy);
-                            let mut count = 1;
-                            for descendant in arena.children_of(child_key) {
-                                translate_subtree_walk(descendant, dx, dy, arena, &mut count);
-                            }
-                            with_layout_place_profile(|profile| {
-                                profile.translated_subtree_roots += 1;
-                                profile.translated_subtree_nodes += count;
-                            });
-                        } else {
-                            with_layout_place_profile(|profile| profile.child_place_calls += 1);
-                            child.place(placement, arena);
-                        }
-                    });
-                }
-            }
-            main_cursor += item_main;
-            if line
-                .get(item_idx + 1)
-                .is_some_and(|next| next.child_index != child_idx)
-            {
-                main_cursor += distributed_gap;
-            }
-        }
 
-        cross_cursor += line_cross + gap;
-    }
-    if let Some(started_at) = flex_children_started_at {
-        let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-        with_layout_place_profile(|profile| {
-            profile.non_axis_child_place_ms += elapsed_ms;
-        });
-    }
+            for (item_idx, item) in line.iter().enumerate() {
+                let child_idx = item.child_index;
+                let item_main = item.main;
+                let child_key = children[child_idx];
+                record_axis_placement_eligibility(layout, child_key, arena);
+                let placement = LayoutPlacement {
+                    parent_x: origin_x,
+                    parent_y: origin_y,
+                    visual_offset_x,
+                    visual_offset_y,
+                    available_width: child_available_width,
+                    available_height: child_available_height,
+                    viewport_width,
+                    viewport_height,
+                    percent_base_width: child_percent_base_width,
+                    percent_base_height: child_percent_base_height,
+                };
+                let replay = flex_axis_child_replay(
+                    layout,
+                    child_key,
+                    arena,
+                    item_main,
+                    line_cross,
+                    main_cursor,
+                    cross_cursor,
+                    is_row,
+                    gap,
+                    cross_size,
+                    align,
+                    placement,
+                    child_parent_hit_test_clip,
+                );
+                match replay {
+                    FlexAxisChildReplay::Skip(state) => {
+                        with_layout_place_profile(|profile| {
+                            profile.skipped_child_place_calls += 1;
+                        });
+                        arena.with_element_taken(child_key, |child, _arena| {
+                            if let Some(child) = child.as_any_mut().downcast_mut::<Element>() {
+                                child.restore_flex_axis_replay_state(
+                                    state.target_width,
+                                    state.target_height,
+                                    state.offset_x,
+                                    state.offset_y,
+                                    state.assign_width,
+                                    state.assign_height,
+                                );
+                            }
+                        });
+                    }
+                    FlexAxisChildReplay::Place => {
+                        arena.with_element_taken(child_key, |child, arena| {
+                            let (target_width, target_height) = child.layout_target_size();
+                            let item_target_main = if matches!(layout, Layout::Flow { .. }) {
+                                if is_row {
+                                    target_width.max(0.0)
+                                } else {
+                                    target_height.max(0.0)
+                                }
+                            } else {
+                                item_main
+                            };
+                            if is_row {
+                                child.set_layout_width(item_target_main);
+                            } else {
+                                child.set_layout_height(item_target_main);
+                            }
+                            let stretched_cross = if cross_size == CrossSize::Stretch
+                                && child.flex_props().allows_cross_stretch(is_row)
+                            {
+                                if is_row {
+                                    child.set_layout_height(line_cross);
+                                } else {
+                                    child.set_layout_width(line_cross);
+                                }
+                                Some(line_cross)
+                            } else {
+                                None
+                            };
+                            let alignment_cross = child
+                                .cross_alignment_size(is_row, stretched_cross, arena)
+                                .max(0.0);
+                            let cross_offset =
+                                cross_item_offset(line_cross, alignment_cross, align);
+                            let (offset_x, offset_y) = if is_row {
+                                (main_cursor, cross_cursor + cross_offset)
+                            } else {
+                                (cross_cursor + cross_offset, main_cursor)
+                            };
+                            child.set_layout_offset(offset_x, offset_y);
+                            // Translation fast-path: if the cheap setters above
+                            // left this child's relative layout untouched and a
+                            // pure ancestor move is the only change, shift the
+                            // whole clean subtree by the origin delta instead of
+                            // re-running place over it.
+                            if let Some((dx, dy)) = translation_replay_delta(
+                                child.as_ref(),
+                                child_key,
+                                arena,
+                                placement,
+                                child_parent_hit_test_clip,
+                            ) {
+                                child.translate_in_place(dx, dy);
+                                let mut count = 1;
+                                for descendant in arena.children_of(child_key) {
+                                    translate_subtree_walk(descendant, dx, dy, arena, &mut count);
+                                }
+                                with_layout_place_profile(|profile| {
+                                    profile.translated_subtree_roots += 1;
+                                    profile.translated_subtree_nodes += count;
+                                });
+                            } else {
+                                with_layout_place_profile(|profile| profile.child_place_calls += 1);
+                                child.place(placement, arena);
+                            }
+                        });
+                    }
+                }
+                main_cursor += item_main;
+                if line
+                    .get(item_idx + 1)
+                    .is_some_and(|next| next.child_index != child_idx)
+                {
+                    main_cursor += distributed_gap;
+                }
+            }
+
+            cross_cursor += line_cross + gap;
+        }
+    });
 }
 
 enum FlexAxisChildReplay {
@@ -511,37 +509,32 @@ pub(crate) fn place_absolute_children(
         child_percent_base_height,
     } = inputs;
 
-    let absolute_children_started_at = layout_place_profile_enabled().then(Instant::now);
-    for (idx, child_key) in children.iter().copied().enumerate() {
-        if !absolute_mask.get(idx).copied().unwrap_or(false) {
-            continue;
+    profile_layout_place_time(LayoutPlaceTiming::AbsoluteChildPlace, || {
+        for (idx, child_key) in children.iter().copied().enumerate() {
+            if !absolute_mask.get(idx).copied().unwrap_or(false) {
+                continue;
+            }
+            with_layout_place_profile(|profile| {
+                profile.child_place_calls += 1;
+                profile.absolute_child_place_calls += 1;
+            });
+            arena.with_element_taken(child_key, |child, arena| {
+                child.place(
+                    LayoutPlacement {
+                        parent_x: origin_x,
+                        parent_y: origin_y,
+                        visual_offset_x,
+                        visual_offset_y,
+                        available_width: child_available_width,
+                        available_height: child_available_height,
+                        viewport_width,
+                        viewport_height,
+                        percent_base_width: child_percent_base_width,
+                        percent_base_height: child_percent_base_height,
+                    },
+                    arena,
+                );
+            });
         }
-        with_layout_place_profile(|profile| {
-            profile.child_place_calls += 1;
-            profile.absolute_child_place_calls += 1;
-        });
-        arena.with_element_taken(child_key, |child, arena| {
-            child.place(
-                LayoutPlacement {
-                    parent_x: origin_x,
-                    parent_y: origin_y,
-                    visual_offset_x,
-                    visual_offset_y,
-                    available_width: child_available_width,
-                    available_height: child_available_height,
-                    viewport_width,
-                    viewport_height,
-                    percent_base_width: child_percent_base_width,
-                    percent_base_height: child_percent_base_height,
-                },
-                arena,
-            );
-        });
-    }
-    if let Some(started_at) = absolute_children_started_at {
-        let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-        with_layout_place_profile(|profile| {
-            profile.absolute_child_place_ms += elapsed_ms;
-        });
-    }
+    });
 }

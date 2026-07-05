@@ -20,3 +20,11 @@
 - Tag-specific 行為（fast paths、type lookup、nested struct literal）走 call site 解析的 trait / assoc type
 - Component 只透過 user 的 `#tag` token 參照，macro 內不出現型別名
 - 意圖：rsx-macro 是 foundation proc-macro，coupling 到 view layer 會破 layering（與規則 1 同精神）
+
+## 3. 時間 API 必須走 crate 封裝
+
+不可直接使用 `std::time::Instant::now()` 或 `std::time::SystemTime`。
+
+- 需要計時時使用 `crate::time::Instant::now()`
+- 原因：`std::time::Instant` / `SystemTime` 在 `wasm32-unknown-unknown` 不支援；`crate::time::Instant` 會在 wasm target 切到 `web_time::Instant`
+- 新增或修改 code 前先確認不會觸發 `build.rs` 的 wasm time guard

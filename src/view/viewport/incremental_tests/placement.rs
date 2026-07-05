@@ -1199,7 +1199,7 @@ fn nested_inline_place_microbench() {
                 el.measure(constraints, arena);
             });
         }
-        let place_started = std::time::Instant::now();
+        let place_started = crate::time::Instant::now();
         for &root in &root_keys {
             arena.refresh_subtree_dirty_cache(root);
         }
@@ -1296,7 +1296,7 @@ fn inline_ifc_place_microbench() {
         };
         crate::view::base_component::reset_layout_place_profile();
         crate::view::base_component::set_layout_place_profile_enabled(true);
-        let started = std::time::Instant::now();
+        let started = crate::time::Instant::now();
         let mut arena = std::mem::take(&mut viewport.scene.node_arena);
         let root_keys = viewport.scene.ui_root_keys.clone();
         for &root in &root_keys {
@@ -1308,7 +1308,7 @@ fn inline_ifc_place_microbench() {
             });
         }
         let measure_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let place_started = std::time::Instant::now();
+        let place_started = crate::time::Instant::now();
         for &root in &root_keys {
             arena.refresh_subtree_dirty_cache(root);
         }
@@ -1628,12 +1628,12 @@ fn rsx_window_drag_microbench() {
 
     for round in 0..6 {
         let x = 50.0 + ((round + 1) as f32) * 5.0;
-        let rsx_started = std::time::Instant::now();
+        let rsx_started = crate::time::Instant::now();
         viewport
             .render_rsx(&window_tree(x, 50.0))
             .expect("drag render");
         let rsx_ms = rsx_started.elapsed().as_secs_f64() * 1000.0;
-        let measure_started = std::time::Instant::now();
+        let measure_started = crate::time::Instant::now();
         {
             let constraints = crate::view::base_component::LayoutConstraints {
                 max_width: 1200.0,
@@ -1656,7 +1656,7 @@ fn rsx_window_drag_microbench() {
             viewport.scene.node_arena = arena;
         }
         let measure_ms = measure_started.elapsed().as_secs_f64() * 1000.0;
-        let layout_started = std::time::Instant::now();
+        let layout_started = crate::time::Instant::now();
         let (_gate, profile) = run_layout_for_test_with_gate_profile(&mut viewport, 1200.0, 900.0);
         let layout_ms = layout_started.elapsed().as_secs_f64() * 1000.0;
         println!("  pre-measure={measure_ms:.3}ms");

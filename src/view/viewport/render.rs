@@ -1,5 +1,71 @@
 use super::*;
 
+fn build_layout_pass_trace_children(
+    traversal_profile: &super::frame::LayoutTraversalProfile,
+    measure_ms: f64,
+    measure_children: Vec<TraceRenderNode>,
+    place_ms: f64,
+    place_profile: &crate::view::base_component::LayoutPlaceProfile,
+    collect_box_models_ms: f64,
+) -> Vec<TraceRenderNode> {
+    vec![
+        TraceRenderNode::new(
+            format!("sync_subtree (roots={})", traversal_profile.root_count),
+            traversal_profile.sync_subtree_ms,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "dirty_refresh_before_measure (roots={})",
+                traversal_profile.root_count
+            ),
+            traversal_profile.dirty_refresh_before_measure_ms,
+        ),
+        TraceRenderNode::with_children("measure", measure_ms, measure_children),
+        TraceRenderNode::new(
+            format!(
+                "measure_clean_child_candidates (clean={}, dirty={})",
+                traversal_profile.measure_candidate_clean_children,
+                traversal_profile.measure_dirty_children
+            ),
+            0.0,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "dirty_refresh_before_place (roots={})",
+                traversal_profile.root_count
+            ),
+            traversal_profile.dirty_refresh_before_place_ms,
+        ),
+        TraceRenderNode::with_children(
+            "place",
+            place_ms,
+            build_layout_place_trace_nodes(place_profile),
+        ),
+        TraceRenderNode::new(
+            format!(
+                "placement_clean_child_candidates (clean={}, dirty={})",
+                traversal_profile.placement_candidate_clean_children,
+                traversal_profile.placement_dirty_children
+            ),
+            0.0,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "skipped_child_place_calls (count={})",
+                traversal_profile.skipped_child_place_calls
+            ),
+            0.0,
+        ),
+        TraceRenderNode::new(
+            format!(
+                "collect_box_models (roots={})",
+                traversal_profile.root_count
+            ),
+            collect_box_models_ms,
+        ),
+    ]
+}
+
 impl Viewport {
     /// Run a single layout pass: measure → place → collect_box_models.
     /// Returns profiling data for the pass.
@@ -199,10 +265,22 @@ impl Viewport {
         let layout = if opts.trace_layout_detail {
             let layout_measure_children =
                 build_text_measure_trace_nodes(&t.layout_text_measure_profile);
-            let layout_traversal_children =
-                super::debug::build_layout_traversal_trace_nodes(&t.layout_traversal_profile);
-            let relayout_traversal_children =
-                super::debug::build_layout_traversal_trace_nodes(&t.relayout_traversal_profile);
+            let layout_traversal_children = build_layout_pass_trace_children(
+                &t.layout_traversal_profile,
+                t.layout_measure_ms,
+                layout_measure_children,
+                t.layout_place_ms,
+                &t.layout_place_profile,
+                t.layout_collect_box_models_ms,
+            );
+            let relayout_traversal_children = build_layout_pass_trace_children(
+                &t.relayout_traversal_profile,
+                t.relayout_measure_ms,
+                Vec::new(),
+                t.relayout_place_ms,
+                &t.relayout_place_profile,
+                t.relayout_collect_box_models_ms,
+            );
             TraceRenderNode::with_children(
                 "layout",
                 layout_with_transition_ms,
@@ -212,40 +290,17 @@ impl Viewport {
                         t.layout_measure_ms + t.layout_place_ms + t.layout_collect_box_models_ms,
                         layout_traversal_children,
                     ),
-                    TraceRenderNode::with_children(
-                        "measure",
-                        t.layout_measure_ms,
-                        layout_measure_children,
-                    ),
-                    TraceRenderNode::with_children(
-                        "place",
-                        t.layout_place_ms,
-                        build_layout_place_trace_nodes(&t.layout_place_profile),
-                    ),
-                    TraceRenderNode::new("collect_box_models", t.layout_collect_box_models_ms),
                     TraceRenderNode::new("post_layout_transition", t.post_layout_transition_ms),
                     TraceRenderNode::with_children(
                         "relayout_after_transition",
                         t.relayout_ms,
-                        vec![
-                            TraceRenderNode::with_children(
-                                "layout_traversal",
-                                t.relayout_measure_ms
-                                    + t.relayout_place_ms
-                                    + t.relayout_collect_box_models_ms,
-                                relayout_traversal_children,
-                            ),
-                            TraceRenderNode::new("measure", t.relayout_measure_ms),
-                            TraceRenderNode::with_children(
-                                "place",
-                                t.relayout_place_ms,
-                                build_layout_place_trace_nodes(&t.relayout_place_profile),
-                            ),
-                            TraceRenderNode::new(
-                                "collect_box_models",
-                                t.relayout_collect_box_models_ms,
-                            ),
-                        ],
+                        vec![TraceRenderNode::with_children(
+                            "layout_traversal",
+                            t.relayout_measure_ms
+                                + t.relayout_place_ms
+                                + t.relayout_collect_box_models_ms,
+                            relayout_traversal_children,
+                        )],
                     ),
                 ],
             )
