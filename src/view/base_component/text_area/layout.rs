@@ -18,6 +18,25 @@ impl Layoutable for TextArea {
         constraints: LayoutConstraints,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
+        // Clean fast path: nothing feeding the unified IFC changed, the
+        // subtree carries no LAYOUT dirt, and the constraints match the
+        // previous full measure — every derived size is already correct,
+        // so skip the O(children) child loops (arena take + downcast per
+        // run, per line) that otherwise dominate ancestor-move frames on
+        // editor-sized content.
+        if !self.children_dirty
+            && self.last_measure_constraints == Some(constraints)
+            && self.unified_ifc_package_cache_is_current()
+            && self.self_node_key.is_some_and(|key| {
+                !arena.subtree_dirty_intersects(
+                    key,
+                    crate::view::base_component::DirtyPassMask::LAYOUT,
+                )
+            })
+        {
+            return;
+        }
+
         // Sync run subtree to latest `content` before measuring (edits
         // flag `children_dirty`; see projection.rs).
         let had_children_dirty = self.children_dirty;
@@ -81,6 +100,7 @@ impl Layoutable for TextArea {
         self.layout_state.layout_inner_size = self.layout_state.layout_size;
         self.clamp_scroll_to_content();
         self.flex_info = Some(flex_info);
+        self.last_measure_constraints = Some(constraints);
         self.dirty_flags = self
             .dirty_flags
             .without(DirtyFlags::LAYOUT)

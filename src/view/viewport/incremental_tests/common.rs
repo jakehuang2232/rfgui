@@ -765,6 +765,11 @@ pub(super) fn run_layout_for_test_with_gate_profile(
             el.measure(constraints, arena);
         });
     }
+    // Mirror run_layout_pass: arena-side LAYOUT dirt is cleared after the
+    // measure pass (render.rs), or gates keep seeing stale subtree dirt.
+    for &root in &root_keys {
+        arena.clear_arena_dirty_subtree(root, crate::view::base_component::DirtyFlags::LAYOUT);
+    }
     for &root in &root_keys {
         arena.refresh_subtree_dirty_cache(root);
     }
@@ -772,6 +777,9 @@ pub(super) fn run_layout_for_test_with_gate_profile(
         arena.with_element_taken(root, |el, arena| {
             el.place(placement, arena);
         });
+    }
+    for &root in &root_keys {
+        arena.clear_arena_dirty_subtree(root, crate::view::base_component::DirtyFlags::PLACE);
     }
     viewport.scene.node_arena = arena;
     crate::view::base_component::set_layout_place_profile_enabled(false);

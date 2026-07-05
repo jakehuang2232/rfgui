@@ -88,6 +88,7 @@ impl TextArea {
             return;
         }
         self.children_dirty = false;
+        self.bump_unified_ifc_source_revision();
 
         let projections = self.collect_normalized_projections();
 
@@ -143,6 +144,9 @@ impl TextArea {
                 self.color
             };
             let mut updated = false;
+            // Run text feeds the unified IFC source; invalidate the
+            // package cache's revision fast path.
+            self.bump_unified_ifc_source_revision();
             arena.mutate_element_with_invalidation(run_key, |child, cx| {
                 if let Some(run) = child.as_any_mut().downcast_mut::<TextAreaTextRun>() {
                     run.is_placeholder = is_placeholder;
@@ -470,6 +474,9 @@ impl TextArea {
             self.color
         };
         let text_owned = text.to_string();
+        // Run text feeds the unified IFC source; invalidate the package
+        // cache's revision fast path.
+        self.bump_unified_ifc_source_revision();
         arena.mutate_element_with_invalidation(key, |child, cx| {
             let Some(run) = child.as_any_mut().downcast_mut::<TextAreaTextRun>() else {
                 return;
@@ -2194,7 +2201,7 @@ mod tests {
             .first()
             .expect("USER_ID atomic placement")
             .clone();
-        let snapshot = package.ifc.text_layout_snapshot();
+        let snapshot = package.ifc.text_layout_snapshot_ref();
         let following_glyph = snapshot
             .lines
             .iter()

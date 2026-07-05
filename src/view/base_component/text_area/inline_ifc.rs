@@ -80,6 +80,14 @@ pub(crate) struct TextAreaUnifiedIfcRootPackage {
     pub(crate) width_constraint: Option<f32>,
     pub(crate) allow_wrap: bool,
     pub(crate) vertical_align: crate::style::VerticalAlign,
+    /// child_key → index into `source_segments`; per-child queries run
+    /// once per segment (per editor line), so a linear find would make
+    /// the placement pass O(n²).
+    segment_index_by_child: std::collections::HashMap<NodeKey, usize>,
+    /// Memoized caret lines: building them walks every segment's caret
+    /// stops (O(lines)), and per-segment callers (child_layout_rects for
+    /// every line break) made that O(lines²) per measure/place.
+    visual_caret_lines_cache: std::cell::OnceCell<Vec<TextAreaUnifiedIfcCaretLine>>,
 }
 
 #[derive(Default)]
@@ -92,6 +100,12 @@ pub(crate) struct TextAreaUnifiedIfcRootCache {
 struct TextAreaUnifiedIfcRootCacheEntry {
     key: TextAreaUnifiedIfcRootCacheKey,
     package: TextAreaUnifiedIfcRootPackage,
+    /// Cheap validity state: revision + the input scalars a fast check
+    /// can compare without rebuilding the full source (which clones
+    /// every run's text and hashes the whole backing string).
+    source_revision: u64,
+    children_snapshot: Vec<NodeKey>,
+    style_probe: InlineIfcStyle,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -120,6 +134,12 @@ impl TextAreaUnifiedIfcRootSource {
     fn into_package(self) -> TextAreaUnifiedIfcRootPackage {
         let ifc =
             InlineFormattingContext::build_with_options(self.input.clone(), self.layout_options);
+        let segment_index_by_child = self
+            .source_segments
+            .iter()
+            .enumerate()
+            .map(|(index, segment)| (segment.child_key, index))
+            .collect();
         TextAreaUnifiedIfcRootPackage {
             input: self.input,
             ifc,
@@ -128,6 +148,8 @@ impl TextAreaUnifiedIfcRootSource {
             width_constraint: self.width_constraint,
             allow_wrap: self.allow_wrap,
             vertical_align: self.vertical_align,
+            segment_index_by_child,
+            visual_caret_lines_cache: std::cell::OnceCell::new(),
         }
     }
 }
@@ -155,9 +177,9 @@ impl TextAreaUnifiedIfcRootPackage {
         &self,
         child_key: NodeKey,
     ) -> Option<&TextAreaUnifiedIfcSourceSegment> {
-        self.source_segments
-            .iter()
-            .find(|segment| segment.child_key == child_key)
+        self.segment_index_by_child
+            .get(&child_key)
+            .and_then(|&index| self.source_segments.get(index))
     }
 
     pub(crate) fn atomic_package_for_child(
@@ -200,10 +222,10 @@ impl TextAreaUnifiedIfcRootPackage {
     }
 
     pub(crate) fn content_rect(&self) -> Option<InlineIfcPaintRect> {
-        let snapshot = self.ifc.text_layout_snapshot();
+        let snapshot = self.ifc.text_layout_snapshot_ref();
         let top_offset = self.content_top_offset();
         let mut rect: Option<InlineIfcPaintRect> = None;
-        for line in snapshot.lines {
+        for line in &snapshot.lines {
             let line_rect = InlineIfcPaintRect {
                 x: line.x,
                 y: line.y - top_offset,
@@ -226,9 +248,9 @@ impl TextAreaUnifiedIfcRootPackage {
     pub(crate) fn visual_line_rects(&self) -> Vec<Rect> {
         let top_offset = self.content_top_offset();
         self.ifc
-            .text_layout_snapshot()
+            .text_layout_snapshot_ref()
             .lines
-            .into_iter()
+            .iter()
             .map(|line| Rect {
                 x: line.x,
                 y: line.y - top_offset,
@@ -310,7 +332,7 @@ impl TextAreaUnifiedIfcRootPackage {
                 .unwrap(),
             );
         }
-        for line in self.visual_caret_lines() {
+        for line in self.visual_caret_lines_ref() {
             rect = Some(
                 merge_ui_rects(
                     [
@@ -535,9 +557,9 @@ impl TextAreaUnifiedIfcRootPackage {
         if let Some(geometry) = self.preedit_caret_geometry_for_char(char_index) {
             return Some(geometry);
         }
-        let lines = self.visual_caret_lines();
+        let lines = self.visual_caret_lines_ref();
         let mut found: Option<&TextAreaUnifiedIfcCaretStop> = None;
-        for line in &lines {
+        for line in lines {
             if let Some(stop) = line.stops.iter().find(|stop| stop.char_index == char_index) {
                 match affinity {
                     super::caret_map::CaretAffinity::Upstream => {
@@ -560,23 +582,29 @@ impl TextAreaUnifiedIfcRootPackage {
     }
 
     pub(crate) fn visual_caret_lines(&self) -> Vec<TextAreaUnifiedIfcCaretLine> {
-        let mut lines = Vec::new();
-        for segment in self.source_segments.iter().filter(|segment| {
-            matches!(
-                segment.kind,
-                TextAreaUnifiedIfcSourceKind::TextRun | TextAreaUnifiedIfcSourceKind::LineBreak
-            )
-        }) {
-            self.push_text_segment_committed_caret_stops(segment, &mut lines);
-        }
-        for segment in self
-            .source_segments
-            .iter()
-            .filter(|segment| segment.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox)
-        {
-            self.push_projection_atomic_caret_stops(segment, &mut lines);
-        }
-        normalize_root_caret_lines(&mut lines)
+        self.visual_caret_lines_ref().to_vec()
+    }
+
+    pub(crate) fn visual_caret_lines_ref(&self) -> &[TextAreaUnifiedIfcCaretLine] {
+        self.visual_caret_lines_cache.get_or_init(|| {
+            let mut lines = Vec::new();
+            for segment in self.source_segments.iter().filter(|segment| {
+                matches!(
+                    segment.kind,
+                    TextAreaUnifiedIfcSourceKind::TextRun | TextAreaUnifiedIfcSourceKind::LineBreak
+                )
+            }) {
+                self.push_text_segment_committed_caret_stops(segment, &mut lines);
+            }
+            for segment in self
+                .source_segments
+                .iter()
+                .filter(|segment| segment.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox)
+            {
+                self.push_projection_atomic_caret_stops(segment, &mut lines);
+            }
+            normalize_root_caret_lines(&mut lines)
+        })
     }
 
     fn push_text_segment_committed_caret_stops(
@@ -619,8 +647,8 @@ impl TextAreaUnifiedIfcRootPackage {
     }
 
     fn caret_line_rects_for_segment(&self, segment: &TextAreaUnifiedIfcSourceSegment) -> Vec<Rect> {
-        self.visual_caret_lines()
-            .into_iter()
+        self.visual_caret_lines_ref()
+            .iter()
             .filter_map(|line| {
                 let stops = line
                     .stops
@@ -660,7 +688,7 @@ impl TextAreaUnifiedIfcRootPackage {
         byte_index: usize,
         affinity: InlineIfcCaretAffinity,
     ) -> Option<usize> {
-        let snapshot = self.ifc.text_layout_snapshot();
+        let snapshot = self.ifc.text_layout_snapshot_ref();
         match affinity {
             InlineIfcCaretAffinity::Downstream => snapshot
                 .lines
@@ -703,7 +731,7 @@ impl TextAreaUnifiedIfcRootPackage {
     }
 
     fn caret_line_top_height(&self, line_index: usize) -> Option<(f32, f32)> {
-        let snapshot = self.ifc.text_layout_snapshot();
+        let snapshot = self.ifc.text_layout_snapshot_ref();
         let line = snapshot.lines.get(line_index)?;
         Some((
             line.y + self.text_vertical_align_delta(line_index) - self.content_top_offset(),
@@ -898,7 +926,7 @@ impl TextAreaUnifiedIfcRootPackage {
     /// shifts by this offset to pin the top-most line at `y == 0`.
     fn content_top_offset(&self) -> f32 {
         self.ifc
-            .text_layout_snapshot()
+            .text_layout_snapshot_ref()
             .lines
             .iter()
             .map(|line| line.y)
@@ -910,7 +938,7 @@ impl TextAreaUnifiedIfcRootPackage {
         source: InlineIfcSourceId,
     ) -> InlineIfcAtomicBoxPlacementPackage {
         let mut package = self.ifc.atomic_box_placement_package(source);
-        let snapshot = self.ifc.text_layout_snapshot();
+        let snapshot = self.ifc.text_layout_snapshot_ref();
         let top_offset = self.content_top_offset();
         for placement in &mut package.placements {
             let Some(line) = snapshot.lines.get(placement.line_index) else {
@@ -930,7 +958,7 @@ impl TextAreaUnifiedIfcRootPackage {
     }
 
     fn text_vertical_align_delta(&self, line_index: usize) -> f32 {
-        let snapshot = self.ifc.text_layout_snapshot();
+        let snapshot = self.ifc.text_layout_snapshot_ref();
         let Some(line) = snapshot.lines.get(line_index) else {
             return 0.0;
         };
@@ -969,11 +997,11 @@ impl TextAreaUnifiedIfcRootPackage {
     }
 
     fn line_rects_for_backing_range(&self, range: Range<usize>) -> Vec<Rect> {
-        let snapshot = self.ifc.text_layout_snapshot();
+        let snapshot = self.ifc.text_layout_snapshot_ref();
         let top_offset = self.content_top_offset();
         snapshot
             .lines
-            .into_iter()
+            .iter()
             .filter(|line| {
                 let overlaps = line.range.start < range.end && range.start < line.range.end;
                 let boundary = range.start == range.end
@@ -1036,26 +1064,102 @@ impl TextArea {
             .map(TextAreaUnifiedIfcRootSource::into_package)
     }
 
+    pub(crate) fn bump_unified_ifc_source_revision(&self) {
+        self.unified_ifc_source_revision
+            .set(self.unified_ifc_source_revision.get().wrapping_add(1));
+    }
+
+    /// O(1)-ish check that the cached package still describes the current
+    /// inputs: content/structure changes bump the source revision, and
+    /// everything else that feeds `build_unified_inline_ifc_root_source`
+    /// is compared directly. Rebuilding the source per call cloned every
+    /// run's text and hashed the whole backing string — per frame, per
+    /// query — which dominated drag frames on editor-sized content.
+    fn unified_ifc_cache_entry_is_current(&self, entry: &TextAreaUnifiedIfcRootCacheEntry) -> bool {
+        entry.source_revision == self.unified_ifc_source_revision.get()
+            && entry.children_snapshot == self.children
+            && entry.key.vertical_align == self.vertical_align
+            && entry.key.allow_wrap == self.auto_wrap
+            && entry.key.ime_preedit == self.ime_preedit
+            && entry.key.ime_preedit_cursor == self.ime_preedit_cursor
+            && entry.package.width_constraint == self.current_unified_ifc_width_constraint()
+            && entry.style_probe == self.current_unified_ifc_style()
+    }
+
+    fn current_unified_ifc_style(&self) -> InlineIfcStyle {
+        InlineIfcStyle {
+            font_size: self.font_size,
+            line_height: self.line_height,
+            font_weight: self.font_weight,
+            brush: self.color.to_rgba_u8(),
+            font_families: self.font_families.clone(),
+        }
+    }
+
+    fn current_unified_ifc_width_constraint(&self) -> Option<f32> {
+        if self.auto_wrap {
+            let width = if self.viewport_size.width > 0.0 {
+                self.viewport_size.width
+            } else {
+                self.layout_state.layout_size.width
+            }
+            .max(1.0);
+            Some(width)
+        } else {
+            None
+        }
+    }
+
+    /// True when the cached unified package is valid for the current
+    /// inputs without rebuilding the source (see
+    /// `unified_ifc_cache_entry_is_current`).
+    pub(crate) fn unified_ifc_package_cache_is_current(&self) -> bool {
+        self.unified_inline_ifc_root_cache
+            .borrow()
+            .entry
+            .as_ref()
+            .is_some_and(|entry| self.unified_ifc_cache_entry_is_current(entry))
+    }
+
     fn cached_unified_inline_ifc_root_package(
         &self,
         arena: &NodeArena,
     ) -> Option<Ref<'_, TextAreaUnifiedIfcRootPackage>> {
-        let source = self.build_unified_inline_ifc_root_source(arena)?;
-        let needs_update = self
+        let is_current = self
             .unified_inline_ifc_root_cache
             .borrow()
             .entry
             .as_ref()
-            .is_none_or(|entry| entry.key != source.key);
-        if needs_update {
+            .is_some_and(|entry| self.unified_ifc_cache_entry_is_current(entry));
+        if !is_current {
+            let source = self.build_unified_inline_ifc_root_source(arena)?;
+            let needs_update = self
+                .unified_inline_ifc_root_cache
+                .borrow()
+                .entry
+                .as_ref()
+                .is_none_or(|entry| entry.key != source.key);
             let mut cache = self.unified_inline_ifc_root_cache.borrow_mut();
-            cache.entry = Some(TextAreaUnifiedIfcRootCacheEntry {
-                key: source.key.clone(),
-                package: source.into_package(),
-            });
-            #[cfg(test)]
-            {
-                cache.build_count += 1;
+            if needs_update {
+                let style_probe = source.input.default_style.clone();
+                cache.entry = Some(TextAreaUnifiedIfcRootCacheEntry {
+                    key: source.key.clone(),
+                    source_revision: self.unified_ifc_source_revision.get(),
+                    children_snapshot: self.children.clone(),
+                    style_probe,
+                    package: source.into_package(),
+                });
+                #[cfg(test)]
+                {
+                    cache.build_count += 1;
+                }
+            } else if let Some(entry) = cache.entry.as_mut() {
+                // Same shaped inputs reached through a changed scalar
+                // (e.g. width restored): refresh the validity state so
+                // the fast check passes again.
+                entry.source_revision = self.unified_ifc_source_revision.get();
+                entry.children_snapshot = self.children.clone();
+                entry.style_probe = source.input.default_style.clone();
             }
         }
 
@@ -1216,6 +1320,7 @@ impl TextArea {
         arena: &mut NodeArena,
     ) {
         let child_keys = self.children.clone();
+        let mut any_resized = false;
         for child_key in child_keys {
             arena.with_element_taken(child_key, |child, arena| {
                 if child
@@ -1225,6 +1330,7 @@ impl TextArea {
                 {
                     return;
                 }
+                let before = child.box_model_snapshot();
                 child.measure(
                     LayoutConstraints {
                         max_width: constraints.max_width.max(0.0),
@@ -1236,7 +1342,16 @@ impl TextArea {
                     },
                     arena,
                 );
+                let after = child.box_model_snapshot();
+                if before.width != after.width || before.height != after.height {
+                    any_resized = true;
+                }
             });
+        }
+        if any_resized {
+            // An atomic box's measurement feeds the unified IFC source;
+            // invalidate the revision fast path so the package rebuilds.
+            self.bump_unified_ifc_source_revision();
         }
     }
 
@@ -1253,6 +1368,17 @@ impl TextArea {
                     && child.as_any().downcast_ref::<TextAreaLineBreak>().is_none()
                 {
                     return;
+                }
+                // The unified pass is these children's measure: clear
+                // their local LAYOUT dirt like Element::measure would,
+                // or the TextArea's subtree aggregate stays LAYOUT-dirty
+                // forever and the clean measure fast path never engages.
+                if let Some(run) = child.as_any_mut().downcast_mut::<TextAreaTextRun>() {
+                    run.dirty_flags = run.dirty_flags.without(DirtyFlags::LAYOUT);
+                } else if let Some(line_break) =
+                    child.as_any_mut().downcast_mut::<TextAreaLineBreak>()
+                {
+                    line_break.dirty_flags = line_break.dirty_flags.without(DirtyFlags::LAYOUT);
                 }
                 if let Some(run) = child.as_any_mut().downcast_mut::<TextAreaTextRun>() {
                     run.measure_generated_text_child(
@@ -1282,6 +1408,112 @@ impl TextArea {
 
         let origin_x = self.layout_state.layout_position.x - self.scroll_x;
         let origin_y = self.layout_state.layout_position.y - self.scroll_y;
+
+        // Same shaped package applied at the same origin: every child's
+        // installed geometry is already correct. A pure move only shifts
+        // absolute coordinates, so delta-shift text runs and line breaks
+        // in place instead of recomputing per-child fragment rects.
+        // Projection atomic boxes still go through child.place so their
+        // own placement gate decides.
+        let revision = self.unified_ifc_source_revision.get();
+        if let Some((last_x, last_y, last_revision)) = self.last_unified_apply.get() {
+            if last_revision == revision {
+                let dx = origin_x - last_x;
+                let dy = origin_y - last_y;
+                let has_atomic = package.source_segments.iter().any(|segment| {
+                    segment.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox
+                });
+                if dx == 0.0 && dy == 0.0 && !has_atomic {
+                    return true;
+                }
+                let atomic_rects: Vec<(NodeKey, Rect)> = if has_atomic {
+                    package
+                        .source_segments
+                        .iter()
+                        .filter(|segment| {
+                            segment.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox
+                        })
+                        .filter_map(|segment| {
+                            package
+                                .child_fragment_rects(segment.child_key)
+                                .first()
+                                .map(|rect| (segment.child_key, *rect))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let shift_keys: Vec<(NodeKey, TextAreaUnifiedIfcSourceKind)> = package
+                    .source_segments
+                    .iter()
+                    .filter(|segment| {
+                        segment.kind != TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox
+                    })
+                    .map(|segment| (segment.child_key, segment.kind))
+                    .collect();
+                drop(package);
+                if dx != 0.0 || dy != 0.0 {
+                    for (child_key, kind) in shift_keys {
+                        arena.with_element_taken(child_key, |child, _arena| match kind {
+                            TextAreaUnifiedIfcSourceKind::TextRun => {
+                                if let Some(run) =
+                                    child.as_any_mut().downcast_mut::<TextAreaTextRun>()
+                                {
+                                    shift_layout_state_and_fragments(
+                                        &mut run.layout_state,
+                                        &mut run.inline_paint_fragments,
+                                        dx,
+                                        dy,
+                                    );
+                                }
+                            }
+                            TextAreaUnifiedIfcSourceKind::LineBreak => {
+                                if let Some(line_break) =
+                                    child.as_any_mut().downcast_mut::<TextAreaLineBreak>()
+                                {
+                                    let mut fragments = Vec::new();
+                                    shift_layout_state_and_fragments(
+                                        &mut line_break.layout_state,
+                                        &mut fragments,
+                                        dx,
+                                        dy,
+                                    );
+                                    for fragment in line_break.caret_fragments.iter_mut().flatten()
+                                    {
+                                        fragment.x += dx;
+                                        fragment.y += dy;
+                                    }
+                                }
+                            }
+                            TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox => {}
+                        });
+                    }
+                }
+                for (child_key, rect) in atomic_rects {
+                    arena.with_element_taken(child_key, |child, arena| {
+                        child.set_layout_offset(rect.x, rect.y);
+                        child.place(
+                            LayoutPlacement {
+                                parent_x: origin_x,
+                                parent_y: origin_y,
+                                visual_offset_x: 0.0,
+                                visual_offset_y: 0.0,
+                                available_width: rect.width.max(1.0),
+                                available_height: rect.height.max(1.0),
+                                viewport_width: placement.viewport_width,
+                                viewport_height: placement.viewport_height,
+                                percent_base_width: placement.percent_base_width,
+                                percent_base_height: placement.percent_base_height,
+                            },
+                            arena,
+                        );
+                    });
+                }
+                self.last_unified_apply
+                    .set(Some((origin_x, origin_y, revision)));
+                return true;
+            }
+        }
         let mut applied = false;
         for segment in &package.source_segments {
             let rects = package.child_fragment_rects(segment.child_key);
@@ -1351,6 +1583,10 @@ impl TextArea {
             });
             applied = true;
         }
+        if applied {
+            self.last_unified_apply
+                .set(Some((origin_x, origin_y, revision)));
+        }
         applied
     }
 
@@ -1365,6 +1601,26 @@ impl TextArea {
     pub(crate) fn unified_inline_ifc_root_cache_build_count(&self) -> usize {
         self.unified_inline_ifc_root_cache.borrow().build_count
     }
+}
+
+/// In-place delta shift for a run/line-break whose owning TextArea moved
+/// without reshaping: mirrors what `apply_root_rects_to_layout_state`
+/// would produce at the new origin.
+fn shift_layout_state_and_fragments(
+    layout_state: &mut LayoutState,
+    paint_fragments: &mut [Rect],
+    dx: f32,
+    dy: f32,
+) {
+    for fragment in paint_fragments.iter_mut() {
+        fragment.x += dx;
+        fragment.y += dy;
+    }
+    layout_state.layout_position.x += dx;
+    layout_state.layout_position.y += dy;
+    layout_state.layout_inner_position = layout_state.layout_position;
+    layout_state.layout_flow_position = layout_state.layout_position;
+    layout_state.layout_flow_inner_position = layout_state.layout_position;
 }
 
 fn apply_root_rects_to_layout_state(
@@ -1636,6 +1892,17 @@ mod tests {
                     .set_text("hello!".to_string(), 0..6);
             })
             .expect("TextAreaTextRun");
+        // Every production run-text mutation flows through a TextArea
+        // choke point (edits via mark_content_dirty, projection in-place
+        // updates) that bumps the source revision; mirror that here.
+        arena
+            .with_element_taken_ref(root, |el, _| {
+                el.as_any()
+                    .downcast_ref::<TextArea>()
+                    .expect("TextArea root")
+                    .bump_unified_ifc_source_revision();
+            })
+            .expect("TextArea root");
         assert_eq!(touch_unified_package(&arena, root), 2);
 
         arena

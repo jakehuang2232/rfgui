@@ -263,6 +263,7 @@ impl TextArea {
     /// happens automatically inside `TextAreaTextRun::set_text`.
     pub(super) fn mark_content_dirty(&mut self) {
         self.children_dirty = true;
+        self.bump_unified_ifc_source_revision();
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
     }
 

@@ -40,7 +40,7 @@ use crate::ui::{
     Binding, BlurHandlerProp, Rect, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp,
     TextChangeHandlerProp,
 };
-use crate::view::base_component::{BoxModelSnapshot, DirtyFlags, ElementTrait};
+use crate::view::base_component::{BoxModelSnapshot, DirtyFlags, ElementTrait, LayoutConstraints};
 use crate::view::layout::{FlexLayoutInfo, LayoutState};
 use crate::view::node_arena::NodeKey;
 
@@ -106,6 +106,18 @@ pub struct TextArea {
     pub(crate) child_slots: Vec<crate::view::base_component::text_area::projection::ChildSlot>,
     pub(crate) self_node_key: Option<NodeKey>,
     pub(crate) children_dirty: bool,
+    /// Bumped whenever unified-IFC source inputs change (content edits,
+    /// projection rebuilds, atomic child resizes). Lets the package cache
+    /// validate with an O(1) revision check instead of rebuilding the
+    /// whole source (per-run text clones + full content hash) per call.
+    pub(crate) unified_ifc_source_revision: std::cell::Cell<u64>,
+    /// Constraints of the last full measure; a clean subtree re-measured
+    /// with identical constraints skips the O(children) child loops.
+    pub(crate) last_measure_constraints: Option<LayoutConstraints>,
+    /// (origin_x, origin_y, source revision) of the last child placement
+    /// apply; identical values skip the O(children) apply loop and a pure
+    /// move applies as an in-place delta shift.
+    pub(crate) last_unified_apply: std::cell::Cell<Option<(f32, f32, u64)>>,
     pub(crate) unified_inline_ifc_root_cache:
         std::cell::RefCell<inline_ifc::TextAreaUnifiedIfcRootCache>,
 
@@ -170,6 +182,9 @@ impl Default for TextArea {
             child_slots: Vec::new(),
             self_node_key: None,
             children_dirty: true,
+            unified_ifc_source_revision: std::cell::Cell::new(0),
+            last_measure_constraints: None,
+            last_unified_apply: std::cell::Cell::new(None),
             unified_inline_ifc_root_cache: std::cell::RefCell::default(),
 
             flow_offset: crate::view::base_component::Position { x: 0.0, y: 0.0 },
