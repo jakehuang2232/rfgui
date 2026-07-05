@@ -386,16 +386,94 @@ pub(super) fn build_text_measure_trace_nodes(
 pub(super) fn build_layout_place_trace_nodes(
     profile: &crate::view::base_component::LayoutPlaceProfile,
 ) -> Vec<TraceRenderNode> {
+    let place_layout_total_ms = profile.place_layout_inline_ms
+        + profile.place_layout_flex_ms
+        + profile.place_layout_flow_ms;
+    let place_flex_children_total_ms = profile.place_flex_children_ms + place_layout_total_ms;
+    let place_children_total_ms = profile.place_children_ms
+        + place_flex_children_total_ms
+        + profile.non_axis_child_place_ms
+        + profile.absolute_child_place_ms
+        + profile.inline_ifc_root_install_ms
+        + profile.update_content_size_ms
+        + profile.clamp_scroll_ms
+        + profile.recompute_hit_test_ms;
+    let place_flex_children = TraceRenderNode::with_children(
+        "place_flex_children",
+        place_flex_children_total_ms,
+        vec![
+            TraceRenderNode::new("place_layout_inline", profile.place_layout_inline_ms),
+            TraceRenderNode::new("place_layout_flex", profile.place_layout_flex_ms),
+            TraceRenderNode::new("place_layout_flow", profile.place_layout_flow_ms),
+        ],
+    );
+    let place_children = TraceRenderNode::with_children(
+        "place_children",
+        place_children_total_ms,
+        vec![
+            place_flex_children,
+            TraceRenderNode::new(
+                format!("child_place (calls={})", profile.child_place_calls),
+                profile.non_axis_child_place_ms,
+            ),
+            TraceRenderNode::new(
+                format!(
+                    "skipped_child_place (calls={})",
+                    profile.skipped_child_place_calls
+                ),
+                0.0,
+            ),
+            TraceRenderNode::new(
+                format!(
+                    "translated_subtree (roots={}, nodes={})",
+                    profile.translated_subtree_roots, profile.translated_subtree_nodes
+                ),
+                0.0,
+            ),
+            TraceRenderNode::new(
+                format!(
+                    "placement_skip_failures (total={}, dirty_subtree={}, non_base_element={}, non_leaf={}, anchor_name={}, anchor_ref={}, absolute_descendant={}, runtime_state={}, placement_mismatch={}, placement_dirty_self={}, hit_test_clip_mismatch={}, anchor_parent_clip_mismatch={})",
+                    profile.placement_skip_failures.total(),
+                    profile.placement_skip_failures.dirty_subtree,
+                    profile.placement_skip_failures.non_base_element,
+                    profile.placement_skip_failures.non_leaf,
+                    profile.placement_skip_failures.anchor_name,
+                    profile.placement_skip_failures.anchor_ref,
+                    profile.placement_skip_failures.absolute_descendant,
+                    profile.placement_skip_failures.runtime_state,
+                    profile.placement_skip_failures.placement_mismatch,
+                    profile.placement_skip_failures.placement_dirty_self,
+                    profile.placement_skip_failures.hit_test_clip_mismatch,
+                    profile.placement_skip_failures.anchor_parent_clip_mismatch
+                ),
+                0.0,
+            ),
+            TraceRenderNode::new(
+                format!(
+                    "absolute_child_place (calls={})",
+                    profile.absolute_child_place_calls
+                ),
+                profile.absolute_child_place_ms,
+            ),
+            TraceRenderNode::new(
+                format!(
+                    "inline_ifc_root_install (calls={}, reuse={})",
+                    profile.inline_ifc_root_install_calls,
+                    profile.inline_ifc_root_install_reuse_calls
+                ),
+                profile.inline_ifc_root_install_ms,
+            ),
+            TraceRenderNode::new("update_content_size", profile.update_content_size_ms),
+            TraceRenderNode::new("clamp_scroll", profile.clamp_scroll_ms),
+            TraceRenderNode::new("recompute_hit_test", profile.recompute_hit_test_ms),
+        ],
+    );
     vec![
         TraceRenderNode::new(
             format!("place_self (nodes={})", profile.node_count),
             profile.place_self_ms,
         ),
-        TraceRenderNode::new("place_children", profile.place_children_ms),
-        TraceRenderNode::new("place_flex_children", profile.place_flex_children_ms),
-        TraceRenderNode::new("place_layout_inline", profile.place_layout_inline_ms),
-        TraceRenderNode::new("place_layout_flex", profile.place_layout_flex_ms),
-        TraceRenderNode::new("place_layout_flow", profile.place_layout_flow_ms),
+        place_children,
         TraceRenderNode::new(
             format!(
                 "ifc_measure (cheap={}, shortcircuit={}, full={})",
@@ -485,52 +563,6 @@ pub(super) fn build_layout_place_trace_nodes(
             ),
             0.0,
         ),
-        TraceRenderNode::new(
-            format!("child_place (calls={})", profile.child_place_calls),
-            profile.non_axis_child_place_ms,
-        ),
-        TraceRenderNode::new(
-            format!(
-                "skipped_child_place (calls={})",
-                profile.skipped_child_place_calls
-            ),
-            0.0,
-        ),
-        TraceRenderNode::new(
-            format!(
-                "translated_subtree (roots={}, nodes={})",
-                profile.translated_subtree_roots, profile.translated_subtree_nodes
-            ),
-            0.0,
-        ),
-        TraceRenderNode::new(
-            format!(
-                "placement_skip_failures (total={}, dirty_subtree={}, non_base_element={}, non_leaf={}, anchor_name={}, anchor_ref={}, absolute_descendant={}, runtime_state={}, placement_mismatch={}, placement_dirty_self={}, hit_test_clip_mismatch={}, anchor_parent_clip_mismatch={})",
-                profile.placement_skip_failures.total(),
-                profile.placement_skip_failures.dirty_subtree,
-                profile.placement_skip_failures.non_base_element,
-                profile.placement_skip_failures.non_leaf,
-                profile.placement_skip_failures.anchor_name,
-                profile.placement_skip_failures.anchor_ref,
-                profile.placement_skip_failures.absolute_descendant,
-                profile.placement_skip_failures.runtime_state,
-                profile.placement_skip_failures.placement_mismatch,
-                profile.placement_skip_failures.placement_dirty_self,
-                profile.placement_skip_failures.hit_test_clip_mismatch,
-                profile.placement_skip_failures.anchor_parent_clip_mismatch
-            ),
-            0.0,
-        ),
-        TraceRenderNode::new(
-            format!(
-                "absolute_child_place (calls={})",
-                profile.absolute_child_place_calls
-            ),
-            profile.absolute_child_place_ms,
-        ),
-        TraceRenderNode::new("update_content_size", profile.update_content_size_ms),
-        TraceRenderNode::new("clamp_scroll", profile.clamp_scroll_ms),
-        TraceRenderNode::new("recompute_hit_test", profile.recompute_hit_test_ms),
     ]
 }
 
@@ -1332,5 +1364,38 @@ mod tests {
         assert!(trace.contains("measure_clean_child_candidates (clean=2, dirty=1)"));
         assert!(trace.contains("placement_clean_child_candidates (clean=3, dirty=0)"));
         assert!(trace.contains("skipped_child_place_calls (count=2)"));
+    }
+
+    #[test]
+    fn layout_place_trace_nests_overlapping_place_timings() {
+        let profile = crate::view::base_component::LayoutPlaceProfile {
+            node_count: 4,
+            place_self_ms: 1.0,
+            place_children_ms: 10.0,
+            place_flex_children_ms: 8.0,
+            place_layout_flex_ms: 3.0,
+            place_layout_flow_ms: 5.0,
+            non_axis_child_place_ms: 7.0,
+            absolute_child_place_ms: 2.0,
+            child_place_calls: 6,
+            absolute_child_place_calls: 2,
+            update_content_size_ms: 1.0,
+            clamp_scroll_ms: 0.5,
+            recompute_hit_test_ms: 0.25,
+            ..Default::default()
+        };
+        let root =
+            TraceRenderNode::with_children("place", 40.0, build_layout_place_trace_nodes(&profile));
+        let trace = format_trace_render_tree(&root);
+
+        assert!(trace.contains("├─ place_children"));
+        assert!(trace.contains("│  ├─ place_flex_children"));
+        assert!(trace.contains("│  │  ├─ place_layout_inline"));
+        assert!(trace.contains("│  │  ├─ place_layout_flex"));
+        assert!(trace.contains("│  │  └─ place_layout_flow"));
+        assert!(trace.contains("│  ├─ child_place (calls=6)"));
+        assert!(trace.contains("│  ├─ absolute_child_place (calls=2)"));
+        assert!(trace.contains("child_place (calls=6) \u{1b}[32m7.000ms\u{1b}[0m"));
+        assert!(trace.contains("absolute_child_place (calls=2) \u{1b}[32m2.000ms\u{1b}[0m"));
     }
 }

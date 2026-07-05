@@ -323,6 +323,9 @@ pub(crate) struct LayoutPlaceProfile {
     /// instead of a full re-place, and the total nodes shifted across them.
     pub translated_subtree_roots: usize,
     pub translated_subtree_nodes: usize,
+    pub inline_ifc_root_install_ms: f64,
+    pub inline_ifc_root_install_calls: usize,
+    pub inline_ifc_root_install_reuse_calls: usize,
     pub update_content_size_ms: f64,
     pub clamp_scroll_ms: f64,
     pub recompute_hit_test_ms: f64,
@@ -472,6 +475,8 @@ pub(crate) struct LayoutGateCandidateProfile {
 thread_local! {
     static LAYOUT_PLACE_PROFILE: RefCell<LayoutPlaceProfile> =
         RefCell::new(LayoutPlaceProfile::default());
+    static LAYOUT_PLACE_TIMING_STACK: RefCell<Vec<LayoutPlaceTimingScope>> =
+        RefCell::new(Vec::new());
     static LAYOUT_GATE_CANDIDATE_PROFILE: RefCell<LayoutGateCandidateProfile> =
         RefCell::new(LayoutGateCandidateProfile::default());
 }
@@ -528,6 +533,9 @@ pub(crate) fn reset_layout_place_profile() {
     LAYOUT_PLACE_PROFILE.with(|profile| {
         *profile.borrow_mut() = LayoutPlaceProfile::default();
     });
+    LAYOUT_PLACE_TIMING_STACK.with(|stack| {
+        stack.borrow_mut().clear();
+    });
 }
 
 pub(crate) fn take_layout_place_profile() -> LayoutPlaceProfile {
@@ -542,6 +550,90 @@ pub(crate) fn with_layout_place_profile(f: impl FnOnce(&mut LayoutPlaceProfile))
         return;
     }
     LAYOUT_PLACE_PROFILE.with(|profile| f(&mut profile.borrow_mut()))
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum LayoutPlaceTiming {
+    PlaceSelf,
+    PlaceChildren,
+    PlaceFlexChildren,
+    PlaceLayoutInline,
+    PlaceLayoutFlex,
+    PlaceLayoutFlow,
+    ChildPlace,
+    AbsoluteChildPlace,
+    InlineIfcRootInstall,
+    UpdateContentSize,
+    ClampScroll,
+    RecomputeHitTest,
+}
+
+struct LayoutPlaceTimingScope {
+    metric: LayoutPlaceTiming,
+    started_at: Instant,
+    child_elapsed_ms: f64,
+}
+
+struct LayoutPlaceTimingGuard {
+    active: bool,
+}
+
+impl LayoutPlaceTimingGuard {
+    fn new(metric: LayoutPlaceTiming) -> Self {
+        if !layout_place_profile_enabled() {
+            return Self { active: false };
+        }
+        LAYOUT_PLACE_TIMING_STACK.with(|stack| {
+            stack.borrow_mut().push(LayoutPlaceTimingScope {
+                metric,
+                started_at: Instant::now(),
+                child_elapsed_ms: 0.0,
+            });
+        });
+        Self { active: true }
+    }
+}
+
+impl Drop for LayoutPlaceTimingGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let (metric, exclusive_ms) = LAYOUT_PLACE_TIMING_STACK.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            let scope = stack
+                .pop()
+                .expect("layout place timing scope stack underflow");
+            let elapsed_ms = scope.started_at.elapsed().as_secs_f64() * 1000.0;
+            if let Some(parent) = stack.last_mut() {
+                parent.child_elapsed_ms += elapsed_ms;
+            }
+            (scope.metric, (elapsed_ms - scope.child_elapsed_ms).max(0.0))
+        });
+        with_layout_place_profile(|profile| match metric {
+            LayoutPlaceTiming::PlaceSelf => profile.place_self_ms += exclusive_ms,
+            LayoutPlaceTiming::PlaceChildren => profile.place_children_ms += exclusive_ms,
+            LayoutPlaceTiming::PlaceFlexChildren => profile.place_flex_children_ms += exclusive_ms,
+            LayoutPlaceTiming::PlaceLayoutInline => profile.place_layout_inline_ms += exclusive_ms,
+            LayoutPlaceTiming::PlaceLayoutFlex => profile.place_layout_flex_ms += exclusive_ms,
+            LayoutPlaceTiming::PlaceLayoutFlow => profile.place_layout_flow_ms += exclusive_ms,
+            LayoutPlaceTiming::ChildPlace => profile.non_axis_child_place_ms += exclusive_ms,
+            LayoutPlaceTiming::AbsoluteChildPlace => {
+                profile.absolute_child_place_ms += exclusive_ms
+            }
+            LayoutPlaceTiming::InlineIfcRootInstall => {
+                profile.inline_ifc_root_install_ms += exclusive_ms
+            }
+            LayoutPlaceTiming::UpdateContentSize => profile.update_content_size_ms += exclusive_ms,
+            LayoutPlaceTiming::ClampScroll => profile.clamp_scroll_ms += exclusive_ms,
+            LayoutPlaceTiming::RecomputeHitTest => profile.recompute_hit_test_ms += exclusive_ms,
+        });
+    }
+}
+
+pub(crate) fn profile_layout_place_time<R>(metric: LayoutPlaceTiming, f: impl FnOnce() -> R) -> R {
+    let _guard = LayoutPlaceTimingGuard::new(metric);
+    f()
 }
 
 pub(crate) fn reset_layout_gate_candidate_profile() {
@@ -3095,6 +3187,9 @@ impl Element {
             self.clear_inline_ifc_root_installs(arena);
             return;
         }
+        with_layout_place_profile(|profile| {
+            profile.inline_ifc_root_install_calls += 1;
+        });
 
         // 1. Measure stashed a fresh plan this frame (content/size changed):
         //    consume it.
@@ -3114,6 +3209,9 @@ impl Element {
                 )
             } else if let Some(install) = self.inline_ifc_layout_call_site.current.take() {
                 if install.children_snapshot == self.children {
+                    with_layout_place_profile(|profile| {
+                        profile.inline_ifc_root_install_reuse_calls += 1;
+                    });
                     self.apply_inline_ifc_install_plan(
                         arena,
                         &install.plan,
@@ -3366,6 +3464,11 @@ impl Element {
         };
         self.layout_state.layout_inner_size = self.layout_state.layout_size;
         self.layout_state.should_render = bounds.width > 0.0 && bounds.height > 0.0;
+        // The install is this owned node's placement pass: clear the same
+        // bits `Element::place` clears, or the stale local PLACEMENT dirt
+        // keeps every ancestor's subtree aggregate dirty forever and the
+        // whole tree re-places (and re-installs) on every frame.
+        self.dirty_flags = self.dirty_flags.without(DirtyPassMask::PLACEMENT);
     }
 
     /// Tear down a previous install when this element stops being an

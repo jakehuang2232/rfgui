@@ -268,20 +268,15 @@ impl Layoutable for Element {
             percent_base_height: context.percent_base_height,
         };
         self.resolve_lengths_from_parent_inner(proposal);
-        let place_self_started_at = layout_place_profile_enabled().then(Instant::now);
-        self.place_self(
-            proposal,
-            placement.parent_x,
-            placement.parent_y,
-            placement.visual_offset_x,
-            placement.visual_offset_y,
-        );
-        if let Some(started_at) = place_self_started_at {
-            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-            with_layout_place_profile(|profile| {
-                profile.place_self_ms += elapsed_ms;
-            });
-        }
+        profile_layout_place_time(LayoutPlaceTiming::PlaceSelf, || {
+            self.place_self(
+                proposal,
+                placement.parent_x,
+                placement.parent_y,
+                placement.visual_offset_x,
+                placement.visual_offset_y,
+            );
+        });
         self.register_anchor_snapshot();
         self.push_ancestor_anchor_scope();
         self.resolve_corner_radii_from_self_box(proposal);
@@ -341,25 +336,22 @@ impl Layoutable for Element {
                 child_layout_inner_size.width,
                 child_layout_inner_size.height,
             );
-        let place_children_started_at = layout_place_profile_enabled().then(Instant::now);
-        self.place_children(
-            proposal.viewport_width,
-            proposal.viewport_height,
-            child_percent_base_width,
-            child_percent_base_height,
-            child_available_width,
-            child_available_height,
-            child_layout_inner_size.width,
-            child_layout_inner_size.height,
-            arena,
-        );
-        if let Some(started_at) = place_children_started_at {
-            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-            with_layout_place_profile(|profile| {
-                profile.place_children_ms += elapsed_ms;
-            });
-        }
-        self.run_inline_ifc_root_after_place(arena, placement, child_layout_inner_size.width);
+        profile_layout_place_time(LayoutPlaceTiming::PlaceChildren, || {
+            self.place_children(
+                proposal.viewport_width,
+                proposal.viewport_height,
+                child_percent_base_width,
+                child_percent_base_height,
+                child_available_width,
+                child_available_height,
+                child_layout_inner_size.width,
+                child_layout_inner_size.height,
+                arena,
+            );
+        });
+        profile_layout_place_time(LayoutPlaceTiming::InlineIfcRootInstall, || {
+            self.run_inline_ifc_root_after_place(arena, placement, child_layout_inner_size.width);
+        });
         self.pop_ancestor_anchor_scope();
         self.end_place_scope();
         self.last_layout_placement = Some(placement);

@@ -713,7 +713,7 @@ fn placement_skip_clean_child_is_visible_in_layout_trace() {
     let trace = super::super::debug::format_trace_render_tree(&trace_root);
     let place_trace_root = super::super::debug::TraceRenderNode::with_children(
         "place",
-        0.0,
+        10.0,
         super::super::debug::build_layout_place_trace_nodes(&place_profile),
     );
     let place_trace = super::super::debug::format_trace_render_tree(&place_trace_root);
@@ -1130,4 +1130,264 @@ fn placement_skip_ignores_paint_only_dirty_and_reuses_box_model_cache() {
     viewport.refresh_frame_box_models();
     assert_eq!(viewport.box_model_refresh_stats().collected_roots, 0);
     assert_eq!(viewport.box_model_refresh_stats().reused_roots, 1);
+}
+
+fn nested_default_layout_tree(depth: usize, fanout: usize, idx: usize) -> RsxNode {
+    use crate::view::Text as HostText;
+    if depth == 0 {
+        return rsx! {
+            <HostElement style={{
+                padding: Padding::uniform(Length::px(2.0)),
+            }}>
+                <HostText>{format!("leaf label {idx} with some words")}</HostText>
+            </HostElement>
+        };
+    }
+    let children = (0..fanout)
+        .map(|i| nested_default_layout_tree(depth - 1, fanout, idx * fanout + i))
+        .collect::<Vec<_>>();
+    rsx! {
+        <HostElement style={{
+            padding: Padding::uniform(Length::px(4.0)),
+        }}>{children}</HostElement>
+    }
+}
+
+#[test]
+#[ignore = "manual place microbenchmark: cargo test --lib nested_inline_place_microbench -- --ignored --nocapture"]
+fn nested_inline_place_microbench() {
+    // Default layout is Inline post-S1: every container is an IFC root
+    // whose element children are atomic inline boxes. This mirrors a real
+    // app tree far better than a flat list of paragraphs.
+    let tree = nested_default_layout_tree(4, 5, 0);
+
+    let mut viewport = Viewport::new();
+    viewport.set_size(1200, 3000);
+    viewport.render_rsx(&tree).expect("render bench tree");
+    run_layout_for_test(&mut viewport, 1200.0, 3000.0);
+
+    let constraints = crate::view::base_component::LayoutConstraints {
+        max_width: 1200.0,
+        max_height: 3000.0,
+        viewport_width: 1200.0,
+        viewport_height: 3000.0,
+        percent_base_width: Some(1200.0),
+        percent_base_height: Some(3000.0),
+    };
+    for round in 0..6 {
+        let placement = crate::view::base_component::LayoutPlacement {
+            parent_x: (round + 1) as f32,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 1200.0,
+            available_height: 3000.0,
+            viewport_width: 1200.0,
+            viewport_height: 3000.0,
+            percent_base_width: Some(1200.0),
+            percent_base_height: Some(3000.0),
+        };
+        crate::view::base_component::reset_layout_place_profile();
+        crate::view::base_component::set_layout_place_profile_enabled(true);
+        let mut arena = std::mem::take(&mut viewport.scene.node_arena);
+        let root_keys = viewport.scene.ui_root_keys.clone();
+        for &root in &root_keys {
+            arena.refresh_subtree_dirty_cache(root);
+        }
+        for &root in &root_keys {
+            arena.with_element_taken(root, |el, arena| {
+                el.measure(constraints, arena);
+            });
+        }
+        let place_started = std::time::Instant::now();
+        for &root in &root_keys {
+            arena.refresh_subtree_dirty_cache(root);
+        }
+        for &root in &root_keys {
+            arena.with_element_taken(root, |el, arena| {
+                el.place(placement, arena);
+            });
+        }
+        let place_ms = place_started.elapsed().as_secs_f64() * 1000.0;
+        viewport.scene.node_arena = arena;
+        crate::view::base_component::set_layout_place_profile_enabled(false);
+        let profile = crate::view::base_component::take_layout_place_profile();
+        println!(
+            "round {round}: place={place_ms:.3}ms nodes={} child_place_calls={} skipped={}",
+            profile.node_count, profile.child_place_calls, profile.skipped_child_place_calls
+        );
+        println!(
+            "  place_self={:.3} place_children={:.3} child_place_excl={:.3} ifc_install={:.3} (calls={} reuse={}) update_content={:.3} clamp={:.3} hit_test={:.3} ifc_measure cheap/sc/full={}/{}/{}",
+            profile.place_self_ms,
+            profile.place_children_ms,
+            profile.non_axis_child_place_ms,
+            profile.inline_ifc_root_install_ms,
+            profile.inline_ifc_root_install_calls,
+            profile.inline_ifc_root_install_reuse_calls,
+            profile.update_content_size_ms,
+            profile.clamp_scroll_ms,
+            profile.recompute_hit_test_ms,
+            profile.ifc_measure_cheap,
+            profile.ifc_measure_shortcircuit,
+            profile.ifc_measure_full,
+        );
+    }
+}
+
+#[test]
+#[ignore = "manual place microbenchmark: cargo test --lib inline_ifc_place_microbench -- --ignored --nocapture"]
+fn inline_ifc_place_microbench() {
+    use crate::view::Text as HostText;
+
+    let paragraphs = (0..200)
+        .map(|i| {
+            rsx! {
+                <HostElement style={{
+                    layout: Layout::Inline,
+                    width: Length::percent(100.0),
+                }}>
+                    <HostElement style={{
+                        padding: Padding::uniform(Length::px(3.0)),
+                    }}>
+                        <HostText>{format!("badge {i}")}</HostText>
+                    </HostElement>
+                    <HostText>
+                        {format!("paragraph body text number {i} with several words to shape and wrap")}
+                    </HostText>
+                </HostElement>
+            }
+        })
+        .collect::<Vec<_>>();
+    let tree = rsx! {
+        <HostElement style={{
+            layout: Layout::flow().column().no_wrap(),
+            width: Length::px(800.0),
+        }}>{paragraphs}</HostElement>
+    };
+
+    let mut viewport = Viewport::new();
+    viewport.set_size(800, 4000);
+    viewport.render_rsx(&tree).expect("render bench tree");
+    run_layout_for_test(&mut viewport, 800.0, 4000.0);
+
+    let constraints = crate::view::base_component::LayoutConstraints {
+        max_width: 800.0,
+        max_height: 4000.0,
+        viewport_width: 800.0,
+        viewport_height: 4000.0,
+        percent_base_width: Some(800.0),
+        percent_base_height: Some(4000.0),
+    };
+
+    // Rounds 0-2 shift the origin (drag); rounds 3-5 repeat the same
+    // placement (idle) — those should skip the whole tree.
+    for round in 0..6 {
+        let placement = crate::view::base_component::LayoutPlacement {
+            parent_x: (round + 1).min(4) as f32,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 4000.0,
+            viewport_width: 800.0,
+            viewport_height: 4000.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(4000.0),
+        };
+        crate::view::base_component::reset_layout_place_profile();
+        crate::view::base_component::set_layout_place_profile_enabled(true);
+        let started = std::time::Instant::now();
+        let mut arena = std::mem::take(&mut viewport.scene.node_arena);
+        let root_keys = viewport.scene.ui_root_keys.clone();
+        for &root in &root_keys {
+            arena.refresh_subtree_dirty_cache(root);
+        }
+        for &root in &root_keys {
+            arena.with_element_taken(root, |el, arena| {
+                el.measure(constraints, arena);
+            });
+        }
+        let measure_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let place_started = std::time::Instant::now();
+        for &root in &root_keys {
+            arena.refresh_subtree_dirty_cache(root);
+        }
+        for &root in &root_keys {
+            arena.with_element_taken(root, |el, arena| {
+                el.place(placement, arena);
+            });
+        }
+        let place_ms = place_started.elapsed().as_secs_f64() * 1000.0;
+        viewport.scene.node_arena = arena;
+        crate::view::base_component::set_layout_place_profile_enabled(false);
+        let profile = crate::view::base_component::take_layout_place_profile();
+        println!(
+            "round {round}: measure={measure_ms:.3}ms place={place_ms:.3}ms nodes={} child_place_calls={} skipped={}",
+            profile.node_count, profile.child_place_calls, profile.skipped_child_place_calls
+        );
+        println!(
+            "  place_self={:.3} place_children={:.3} child_place_excl={:.3} ifc_install={:.3} (calls={} reuse={}) update_content={:.3} clamp={:.3} hit_test={:.3} inline_axis={:.3}",
+            profile.place_self_ms,
+            profile.place_children_ms,
+            profile.non_axis_child_place_ms,
+            profile.inline_ifc_root_install_ms,
+            profile.inline_ifc_root_install_calls,
+            profile.inline_ifc_root_install_reuse_calls,
+            profile.update_content_size_ms,
+            profile.clamp_scroll_ms,
+            profile.recompute_hit_test_ms,
+            profile.place_layout_inline_ms,
+        );
+    }
+}
+
+#[test]
+fn inline_ifc_owned_nodes_do_not_keep_placement_dirty() {
+    use crate::view::Text as HostText;
+
+    // Regression: IFC-owned spans/texts never run their own place(), so
+    // the install must clear their local PLACEMENT dirt. If it does not,
+    // the subtree aggregate stays dirty and the whole tree re-places (and
+    // re-installs every IFC plan) on every frame, even fully idle ones.
+    let paragraphs = (0..3)
+        .map(|i| {
+            rsx! {
+                <HostElement style={{
+                    layout: Layout::Inline,
+                    width: Length::percent(100.0),
+                }}>
+                    <HostElement style={{
+                        padding: Padding::uniform(Length::px(3.0)),
+                    }}>
+                        <HostText>{format!("badge {i}")}</HostText>
+                    </HostElement>
+                    <HostText>{format!("paragraph body {i} with words")}</HostText>
+                </HostElement>
+            }
+        })
+        .collect::<Vec<_>>();
+    let tree = rsx! {
+        <HostElement style={{
+            layout: Layout::flow().column().no_wrap(),
+            width: Length::px(400.0),
+        }}>{paragraphs}</HostElement>
+    };
+
+    let mut viewport = Viewport::new();
+    viewport.set_size(400, 600);
+    viewport.render_rsx(&tree).expect("render tree");
+    run_layout_for_test(&mut viewport, 400.0, 600.0);
+
+    // Second layout with identical constraints and placement: the whole
+    // tree must skip — no node re-placed, no IFC install re-applied.
+    let (_gate_profile, place_profile) =
+        run_layout_for_test_with_gate_profile(&mut viewport, 400.0, 600.0);
+    assert_eq!(
+        place_profile.node_count, 0,
+        "idle relayout must not re-place any node"
+    );
+    assert_eq!(
+        place_profile.inline_ifc_root_install_calls, 0,
+        "idle relayout must not re-run any IFC root install"
+    );
 }

@@ -205,6 +205,10 @@ impl Text {
         };
         self.layout_state.layout_inner_size = self.layout_state.layout_size;
         self.layout_state.should_render = bounds.width > 0.0 && bounds.height > 0.0;
+        // Mirrors Element::place_as_inline_ifc_owned_box: the install is
+        // this node's placement pass, so clear local PLACEMENT dirt here
+        // or the subtree aggregate stays dirty every frame.
+        self.dirty_flags = self.dirty_flags.without(super::DirtyPassMask::PLACEMENT);
     }
 
     /// Install per-line geometry from the inline IFC root that owns this
