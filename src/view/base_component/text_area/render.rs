@@ -52,7 +52,7 @@ impl TextArea {
     /// the cursor (boundary cases prefer the *following* Run per the caret
     /// boundary rules). Falls back to TextArea's own layout origin when
     /// no Run exists (empty content, no placeholder).
-    pub(super) fn caret_screen_position(&self, arena: &NodeArena) -> Option<(f32, f32, f32)> {
+    pub(crate) fn caret_screen_position(&self, arena: &NodeArena) -> Option<(f32, f32, f32)> {
         if self.children.is_empty() {
             // No child Run yet — caret pinned to TextArea's own origin.
             return Some((
@@ -74,7 +74,14 @@ impl TextArea {
                 ));
             }
             drop(package);
-            if !(cursor_host_is_projection && !self.ime_preedit.is_empty()) {
+            // A cursor strictly inside a projection renders from the
+            // chip's real inner glyphs (below); the navigation map only
+            // has proportional rect-fraction stops there, which drift
+            // off the rendered chip text.
+            let cursor_inside_projection = self.cursor_strictly_inside_projection(arena);
+            if !(cursor_host_is_projection && !self.ime_preedit.is_empty())
+                && !cursor_inside_projection
+            {
                 let map = super::caret_map::CaretNavigationMap::build(self, arena);
                 if let Some(stop) = map.caret_stop_for_char(self.cursor_char, self.cursor_affinity)
                 {
@@ -83,7 +90,7 @@ impl TextArea {
             }
         }
 
-        if !cursor_host_is_projection {
+        if !cursor_host_is_projection && !self.cursor_strictly_inside_projection(arena) {
             let map = super::caret_map::CaretNavigationMap::build(self, arena);
             if let Some(stop) = map.caret_stop_for_char(self.cursor_char, self.cursor_affinity) {
                 return Some((stop.x, stop.y_top, stop.height));
@@ -196,9 +203,8 @@ impl TextArea {
             (local_char as f32 / span as f32).clamp(0.0, 1.0)
         };
         let x = snap.x + snap.width * ratio;
-        let caret_h = line_h.max(1.0);
-        let y = snap.y + (snap.height - caret_h).max(0.0) * 0.5;
-        Some((x, y, caret_h))
+        let caret_h = snap.height.max(line_h).max(1.0);
+        Some((x, snap.y, caret_h))
     }
 
     /// Post-process the descendant's reported caret position to honour
@@ -300,6 +306,26 @@ impl TextArea {
             return base;
         }
         base + preedit_cursor_char_offset(self.ime_preedit.as_str(), self.ime_preedit_cursor)
+    }
+
+    /// True when the cursor sits strictly inside a projection's char
+    /// range (boundaries belong to the chip head/tail caret stops).
+    fn cursor_strictly_inside_projection(&self, arena: &NodeArena) -> bool {
+        self.child_char_ranges
+            .iter()
+            .enumerate()
+            .find_map(|(idx, range)| {
+                (self.cursor_char > range.start && self.cursor_char < range.end).then_some(idx)
+            })
+            .and_then(|idx| self.children.get(idx).copied())
+            .map(|key| {
+                !arena
+                    .with_element_taken_ref(key, |el, _| {
+                        el.as_any().is::<TextAreaTextRun>() || el.as_any().is::<TextAreaLineBreak>()
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
     }
 
     fn cursor_host_is_projection(&self, arena: &NodeArena) -> bool {
@@ -1464,8 +1490,13 @@ mod tests {
     }
 
     #[test]
-    fn projection_caret_uses_root_atomic_geometry_when_text_descendant_exists() {
+    fn projection_caret_prefers_inner_text_glyphs_when_descendant_exists() {
+        // Interior caret positions align with the chip's rendered text
+        // (real glyph coordinates), not the root box's char-fraction —
+        // the fraction drifts off the visible characters (e.g. a caret
+        // floating over the wrong letter inside {{USER_ID}}).
         let (arena, root) = projection_fixture(4, true);
+        let snap = projection_snapshot(&arena, root);
         let (x, y, height) = caret_position(&arena, root);
         let expected = arena
             .with_element_taken_ref(root, |el, arena| {
@@ -1473,12 +1504,11 @@ mod tests {
                     .as_any()
                     .downcast_ref::<TextArea>()
                     .expect("TextArea root");
-                let map = super::super::caret_map::CaretNavigationMap::build(text_area, arena);
-                map.caret_stop_for_char(4, text_area.cursor_affinity)
-                    .map(|stop| (stop.x, stop.y_top, stop.height))
+                let key = text_area.children[1];
+                glyph_caret_in_projection(arena, key, 2, text_area.cursor_affinity)
             })
             .flatten()
-            .expect("root projection caret stop");
+            .expect("inner glyph caret");
 
         assert!(
             (x - expected.0).abs() < 0.5,
@@ -1489,6 +1519,12 @@ mod tests {
             (y - expected.1).abs() < 0.5,
             "y={y}, expected={}",
             expected.1
+        );
+        assert!(
+            x > snap.x && x < snap.x + snap.width,
+            "caret must sit inside the chip: x={x}, chip=({}, {})",
+            snap.x,
+            snap.x + snap.width
         );
         assert!(
             (height - expected.2).abs() < 0.01,
@@ -1681,6 +1717,30 @@ mod tests {
             })
             .expect("TextArea root");
 
+        // Interior carets render from the badge's inner text glyphs;
+        // the badge bounds still contain them and affinity must not
+        // produce a caret outside the badge.
+        let badge_snap = arena
+            .with_element_taken_ref(root, |el, arena| {
+                let ta = el.as_any().downcast_ref::<TextArea>().unwrap();
+                let key = ta
+                    .children
+                    .iter()
+                    .copied()
+                    .filter(|&key| {
+                        arena
+                            .with_element_taken_ref(key, |child, _| {
+                                !child.as_any().is::<TextAreaTextRun>()
+                                    && !child.as_any().is::<TextAreaLineBreak>()
+                            })
+                            .unwrap_or(false)
+                    })
+                    .nth(1)
+                    .expect("user badge child");
+                arena.with_element_taken_ref(key, |child, _| child.box_model_snapshot())
+            })
+            .flatten()
+            .expect("badge snapshot");
         for affinity in [CaretAffinity::Upstream, CaretAffinity::Downstream] {
             let cursor = (usr_start + usr_end) / 2;
             arena.with_element_taken(root, |el, _| {
@@ -1692,20 +1752,16 @@ mod tests {
                 ta.cursor_affinity = affinity;
             });
             let (cx, cy, height) = caret_position(&arena, root);
-            let expected = arena
-                .with_element_taken_ref(root, |el, arena| {
-                    let ta = el.as_any().downcast_ref::<TextArea>().unwrap();
-                    let map = super::super::caret_map::CaretNavigationMap::build(ta, arena);
-                    map.caret_stop_for_char(cursor, affinity)
-                        .map(|stop| (stop.x, stop.y_top, stop.height))
-                })
-                .flatten()
-                .expect("root stop for cursor");
             assert!(
-                (cx - expected.0).abs() < 0.5
-                    && (cy - expected.1).abs() < 0.5
-                    && (height - expected.2).abs() < 0.5,
-                "caret should consume root projection geometry for {affinity:?}: caret=({cx},{cy},{height}) root={expected:?}",
+                cx >= badge_snap.x - 0.5
+                    && cx <= badge_snap.x + badge_snap.width + 0.5
+                    && cy >= badge_snap.y - 0.5
+                    && cy + height <= badge_snap.y + badge_snap.height + 0.5,
+                "interior caret must stay inside the wrapped badge for {affinity:?}: caret=({cx},{cy},{height}) badge=({},{},{},{})",
+                badge_snap.x,
+                badge_snap.y,
+                badge_snap.width,
+                badge_snap.height,
             );
         }
     }
@@ -2405,5 +2461,57 @@ mod tests {
             },
         );
         (arena, root)
+    }
+
+    #[test]
+    fn projection_selection_underlay_renders_for_ifc_owned_inner_text() {
+        use crate::view::base_component::UiBuildContext;
+        use crate::view::frame_graph::FrameGraph;
+
+        // Select-all must paint selection rects inside the chip: the inner
+        // Text is IFC-owned (glyphs come from the chip root's unified
+        // pass), but the selection underlay still belongs to the Text.
+        let build_pass_names = |selected: bool| -> Vec<&'static str> {
+            let (mut arena, root) = projection_fixture(0, true);
+            arena.with_element_taken(root, |el, _| {
+                let ta = el
+                    .as_any_mut()
+                    .downcast_mut::<TextArea>()
+                    .expect("TextArea root");
+                if selected {
+                    // Select exactly the projection range (2..5): the
+                    // committed-text selection layer contributes nothing
+                    // here, so any added rect is the chip's underlay.
+                    ta.selection_anchor_char = Some(2);
+                    ta.selection_focus_char = Some(5);
+                }
+            });
+            let mut graph = FrameGraph::new();
+            let mut ctx = UiBuildContext::new(400, 200, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+            let target = ctx.allocate_target(&mut graph);
+            ctx.set_current_target(target);
+            let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+            arena
+                .with_element_taken(root, |el, a| el.build(&mut graph, a, ctx_for_build))
+                .expect("build result");
+            graph
+                .pass_descriptors()
+                .into_iter()
+                .map(|descriptor| descriptor.name)
+                .collect()
+        };
+
+        let unselected_rects = build_pass_names(false)
+            .iter()
+            .filter(|name| name.contains("DrawRectPass"))
+            .count();
+        let selected_rects = build_pass_names(true)
+            .iter()
+            .filter(|name| name.contains("DrawRectPass"))
+            .count();
+        assert!(
+            selected_rects > unselected_rects,
+            "selecting across a projection must add selection underlay rects inside the chip: unselected={unselected_rects} selected={selected_rects}"
+        );
     }
 }

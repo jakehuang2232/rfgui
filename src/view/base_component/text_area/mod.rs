@@ -10,6 +10,19 @@
 #![allow(dead_code)] // P1: stubs; fields wired in later phases.
 
 mod caret_map;
+
+/// Test probe: the caret stop the navigation map resolves for `char_index`
+/// with the TextArea's current affinity.
+#[cfg(test)]
+pub(crate) fn caret_map_probe(
+    text_area: &TextArea,
+    arena: &crate::view::node_arena::NodeArena,
+    char_index: usize,
+) -> Option<(usize, f32, f32)> {
+    let map = caret_map::CaretNavigationMap::build(text_area, arena);
+    map.caret_stop_for_char(char_index, text_area.cursor_affinity)
+        .map(|stop| (stop.char_index, stop.x, stop.y_top))
+}
 mod edit;
 mod events;
 mod hit_test;

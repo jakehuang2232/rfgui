@@ -638,12 +638,38 @@ impl TextAreaUnifiedIfcRootPackage {
             .char_range
             .end
             .saturating_sub(segment.char_range.start);
+        // Atomic boxes are zero-width slots in the backing text, so a
+        // committed run's boundary byte resolves THROUGH the slot to the
+        // text on the atomic's far side. The atomic pushes its own head
+        // and tail stops from its placement rect; leaking the run's
+        // cross-slot geometry onto the shared char index would override
+        // them (e.g. the chip-head stop inheriting the chip-tail x).
+        let atomic_starts_at_end = self.source_segments.iter().any(|other| {
+            other.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox
+                && other.char_range.start == segment.char_range.end
+        });
+        let atomic_ends_at_start = self.source_segments.iter().any(|other| {
+            other.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox
+                && other.char_range.end == segment.char_range.start
+        });
         for local_char in 0..=span {
             let byte_index = self.committed_local_char_to_backing_byte(segment, local_char);
             for affinity in [
                 InlineIfcCaretAffinity::Downstream,
                 InlineIfcCaretAffinity::Upstream,
             ] {
+                if local_char == span
+                    && atomic_starts_at_end
+                    && affinity == InlineIfcCaretAffinity::Downstream
+                {
+                    continue;
+                }
+                if local_char == 0
+                    && atomic_ends_at_start
+                    && affinity == InlineIfcCaretAffinity::Upstream
+                {
+                    continue;
+                }
                 let Some(geometry) = self.ifc.caret_geometry_for_byte(byte_index, affinity) else {
                     continue;
                 };
@@ -1097,7 +1123,11 @@ impl TextArea {
     /// is compared directly. Rebuilding the source per call cloned every
     /// run's text and hashed the whole backing string — per frame, per
     /// query — which dominated drag frames on editor-sized content.
-    fn unified_ifc_cache_entry_is_current(&self, entry: &TextAreaUnifiedIfcRootCacheEntry) -> bool {
+    fn unified_ifc_cache_entry_is_current(
+        &self,
+        entry: &TextAreaUnifiedIfcRootCacheEntry,
+        arena: &NodeArena,
+    ) -> bool {
         entry.source_revision == self.unified_ifc_source_revision.get()
             && entry.children_snapshot == self.children
             && entry.key.vertical_align == self.vertical_align
@@ -1106,6 +1136,28 @@ impl TextArea {
             && entry.key.ime_preedit_cursor == self.ime_preedit_cursor
             && entry.package.width_constraint == self.current_unified_ifc_width_constraint()
             && entry.style_probe == self.current_unified_ifc_style()
+            // Projection segments receive char_range updates straight from
+            // fiber prop application (segment.rs), bypassing every TextArea
+            // choke point that bumps the source revision — compare the live
+            // ranges against the ones the package was built from, or a
+            // caret next to a chip keeps resolving against stale ranges.
+            && entry
+                .package
+                .source_segments
+                .iter()
+                .filter(|segment| {
+                    segment.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox
+                })
+                .all(|segment| {
+                    arena.get(segment.child_key).is_some_and(|node| {
+                        node.element
+                            .as_any()
+                            .downcast_ref::<TextAreaProjectionSegment>()
+                            .is_some_and(|projection| {
+                                projection.char_range() == segment.char_range
+                            })
+                    })
+                })
     }
 
     fn current_unified_ifc_style(&self) -> InlineIfcStyle {
@@ -1135,12 +1187,12 @@ impl TextArea {
     /// True when the cached unified package is valid for the current
     /// inputs without rebuilding the source (see
     /// `unified_ifc_cache_entry_is_current`).
-    pub(crate) fn unified_ifc_package_cache_is_current(&self) -> bool {
+    pub(crate) fn unified_ifc_package_cache_is_current(&self, arena: &NodeArena) -> bool {
         self.unified_inline_ifc_root_cache
             .borrow()
             .entry
             .as_ref()
-            .is_some_and(|entry| self.unified_ifc_cache_entry_is_current(entry))
+            .is_some_and(|entry| self.unified_ifc_cache_entry_is_current(entry, arena))
     }
 
     fn cached_unified_inline_ifc_root_package(
@@ -1152,7 +1204,7 @@ impl TextArea {
             .borrow()
             .entry
             .as_ref()
-            .is_some_and(|entry| self.unified_ifc_cache_entry_is_current(entry));
+            .is_some_and(|entry| self.unified_ifc_cache_entry_is_current(entry, arena));
         if !is_current {
             let source = self.build_unified_inline_ifc_root_source(arena)?;
             let needs_update = self
@@ -1788,6 +1840,7 @@ fn normalize_root_caret_lines(
             }
             deduped.push(stop);
         }
+        deduped.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
         for stop in &mut deduped {
             stop.y_top = line.y_top;
             stop.height = (line.y_bottom - line.y_top).max(1.0);

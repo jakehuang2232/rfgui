@@ -120,7 +120,7 @@ impl TextArea {
         true
     }
 
-    fn handle_horizontal_arrow(&mut self, arena: &NodeArena, right: bool) -> bool {
+    pub(super) fn handle_horizontal_arrow(&mut self, arena: &NodeArena, right: bool) -> bool {
         if right && self.flip_horizontal_affinity_if_needed(arena, true) {
             return true;
         }

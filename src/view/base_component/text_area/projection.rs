@@ -395,7 +395,11 @@ impl TextArea {
                                 });
                             match result {
                                 Ok(()) => {
-                                    self.update_projection_segment_style(arena, existing_key);
+                                    self.update_projection_segment_style(
+                                        arena,
+                                        existing_key,
+                                        range.clone(),
+                                    );
                                     Some(existing_key)
                                 }
                                 Err(_) => {
@@ -514,7 +518,12 @@ impl TextArea {
         });
     }
 
-    fn update_projection_segment_style(&self, arena: &mut NodeArena, key: NodeKey) {
+    fn update_projection_segment_style(
+        &self,
+        arena: &mut NodeArena,
+        key: NodeKey,
+        range: Range<usize>,
+    ) {
         arena.mutate_element_with_invalidation(key, |child, cx| {
             let Some(segment) = child
                 .as_any_mut()
@@ -522,6 +531,10 @@ impl TextArea {
             else {
                 return;
             };
+            // A reused wrapper keeps its node across rebuilds, but edits
+            // before the projection shift its range — without this the
+            // unified IFC source (and caret stops) keep the stale range.
+            segment.set_char_range(range);
             segment.set_vertical_align(self.vertical_align);
             segment.set_owner_inline_baseline(self.font_size, self.line_height);
             segment.set_auto_wrap(self.auto_wrap);
