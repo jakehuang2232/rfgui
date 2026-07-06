@@ -17,6 +17,7 @@ use swash::scale::{
     Render as SwashRender, ScaleContext as SwashScaleContext, Source, StrikeWith as SwashStrikeWith,
 };
 use swash::zeno::{Format as SwashFormat, Vector as SwashVector};
+use wgpu::util::DeviceExt;
 
 pub(crate) struct TextPreparedInputPass {
     params: TextPassPreparedParams,
@@ -983,14 +984,12 @@ fn build_prepared_draw<'a>(
     if let Some(instances) =
         build_persistent_atlas_instances(device, queue, resources, atlas_kind, glyphs.as_slice())
     {
-        let vertex_buffer = super::create_transient_buffer(
-            device,
-            &wgpu::util::BufferInitDescriptor {
+        let vertex_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Text Glyph Instance Buffer"),
                 contents: bytemuck::cast_slice(instances.as_slice()),
                 usage: wgpu::BufferUsages::VERTEX,
-            },
-        );
+            });
         return Some(PreparedTextDraw {
             vertex_buffer,
             instance_count: instances.len() as u32,
