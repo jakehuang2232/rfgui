@@ -29,8 +29,12 @@ impl Renderable for Text {
             return ctx.into_state();
         }
         // Glyphs owned by an inline IFC root render in the root's unified
-        // prepared-input pass; the Text node contributes nothing itself.
+        // prepared-input pass; the Text node contributes no glyphs itself.
+        // The selection underlay still belongs to this Text, though — the
+        // unified pass paints only glyphs, so skipping it here left
+        // projection-hosted selections invisible.
         if self.is_inline_ifc_owned() {
+            self.emit_selection_underlay(graph, &mut ctx);
             return ctx.into_state();
         }
 
@@ -46,36 +50,7 @@ impl Renderable for Text {
         let Some(input_target) = ctx.current_target() else {
             return ctx.into_state();
         };
-        if let Some(selection) = current_text_area_selection_render_context() {
-            for rect in self.local_selection_screen_rects(selection.start, selection.end) {
-                let [rect_x, rect_y] = ctx.paint_point(rect.x, rect.y);
-                let mut selection_pass = DrawRectPass::new(
-                    RectPassParams {
-                        position: [rect_x, rect_y],
-                        size: [rect.width.max(1.0), rect.height.max(1.0)],
-                        fill_color: selection.fill,
-                        opacity: 1.0,
-                        ..Default::default()
-                    },
-                    DrawRectInput {
-                        pass_context: ctx.graphics_pass_context(),
-                        ..Default::default()
-                    },
-                    DrawRectOutput {
-                        render_target: input_target,
-                        ..Default::default()
-                    },
-                );
-                selection_pass.set_input(
-                    input_target
-                        .handle()
-                        .map(RenderTargetIn::with_handle)
-                        .unwrap_or_default(),
-                );
-                graph.add_graphics_pass(selection_pass);
-            }
-            ctx.set_current_target(input_target);
-        }
+        self.emit_selection_underlay(graph, &mut ctx);
         let [x, y] = ctx.paint_point(
             self.layout_state.layout_position.x,
             self.layout_state.layout_position.y,
@@ -118,6 +93,51 @@ impl Renderable for Text {
 }
 
 impl Text {
+    /// Emit the TextArea-selection underlay rects for this Text when a
+    /// selection render context is active. Works for both self-rendered
+    /// and inline-IFC-owned texts (owned geometry answers the local
+    /// selection query per fragment).
+    fn emit_selection_underlay(
+        &self,
+        graph: &mut crate::view::frame_graph::FrameGraph,
+        ctx: &mut UiBuildContext,
+    ) {
+        let Some(selection) = current_text_area_selection_render_context() else {
+            return;
+        };
+        let Some(input_target) = ctx.current_target() else {
+            return;
+        };
+        for rect in self.local_selection_screen_rects(selection.start, selection.end) {
+            let [rect_x, rect_y] = ctx.paint_point(rect.x, rect.y);
+            let mut selection_pass = DrawRectPass::new(
+                RectPassParams {
+                    position: [rect_x, rect_y],
+                    size: [rect.width.max(1.0), rect.height.max(1.0)],
+                    fill_color: selection.fill,
+                    opacity: 1.0,
+                    ..Default::default()
+                },
+                DrawRectInput {
+                    pass_context: ctx.graphics_pass_context(),
+                    ..Default::default()
+                },
+                DrawRectOutput {
+                    render_target: input_target,
+                    ..Default::default()
+                },
+            );
+            selection_pass.set_input(
+                input_target
+                    .handle()
+                    .map(RenderTargetIn::with_handle)
+                    .unwrap_or_default(),
+            );
+            graph.add_graphics_pass(selection_pass);
+        }
+        ctx.set_current_target(input_target);
+    }
+
     /// Staging input for the prepared glyph pass, built from the shaped
     /// context measure installed. Live color is injected here so color
     /// changes repaint without reshaping.
