@@ -574,6 +574,7 @@ pub(super) fn build_layout_place_trace_nodes(
     ]
 }
 
+#[cfg(test)]
 pub(super) fn build_layout_traversal_trace_nodes(
     profile: &super::frame::LayoutTraversalProfile,
 ) -> Vec<TraceRenderNode> {

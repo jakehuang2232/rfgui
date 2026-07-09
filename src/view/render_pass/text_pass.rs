@@ -870,6 +870,7 @@ pub(crate) fn build_text_pass_prepared_staging_probe(
     }
 }
 
+#[cfg(test)]
 fn snap_text_local_pos(fragment_origin: [f32; 2], local_pos: [f32; 2]) -> [f32; 2] {
     [
         text_render_trunc(fragment_origin[0] + local_pos[0]) - fragment_origin[0],
@@ -877,6 +878,7 @@ fn snap_text_local_pos(fragment_origin: [f32; 2], local_pos: [f32; 2]) -> [f32; 
     ]
 }
 
+#[cfg(test)]
 fn text_render_trunc(value: f32) -> f32 {
     if value.is_sign_negative() {
         value.ceil()

@@ -36,8 +36,10 @@ use crate::view::inline_formatting_context::{
     InlineIfcElementRootCandidateCache, InlineIfcElementRootSource,
     InlineIfcElementRootSourceBuilder, InlineIfcItem, InlineIfcMeasuredAtomicBox,
     InlineIfcPaintRect, InlineIfcSize, InlineIfcSourceId, InlineIfcSourceKind, InlineIfcStyle,
-    InlineIfcTextLayoutSnapshot, InlineIfcTextPassPaintInput,
+    InlineIfcTextLayoutSnapshot,
 };
+#[cfg(test)]
+use crate::view::inline_formatting_context::InlineIfcTextPassPaintInput;
 use crate::view::inline_text_pass_adapter::inline_ifc_paint_input_to_text_pass_staging_input;
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::promotion::{PromotedLayerUpdateKind, PromotionNodeInfo};
@@ -200,7 +202,12 @@ struct EdgeColors {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Rect {
+/// Resolved clip bounds exposed by [`ElementTrait`] for translation checks.
+///
+/// Although the value is engine-internal in practice, it is part of the
+/// public trait contract so downstream element implementations can opt into
+/// the translation fast path.
+pub struct Rect {
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -3722,6 +3729,7 @@ impl Element {
 
     /// Render input for the unified glyph pass of this inline IFC root:
     /// the shaped paint payload plus the content-top normalization offset.
+    #[cfg(test)]
     pub(crate) fn inline_ifc_root_render_input(
         &self,
     ) -> Option<(InlineIfcTextPassPaintInput, f32)> {
