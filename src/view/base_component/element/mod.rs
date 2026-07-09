@@ -2949,11 +2949,16 @@ impl ElementInlineIfcMetadataCollectorState<'_> {
                 if span_children.is_empty() {
                     None
                 } else {
+                    let edge_insets = [
+                        decoration_source.slice_insets.left,
+                        decoration_source.slice_insets.right,
+                    ];
                     self.decoration_sources.push(decoration_source);
                     Some(InlineIfcItem::Span {
                         source,
                         style: Some(style),
                         children: span_children,
+                        edge_insets,
                     })
                 }
             }

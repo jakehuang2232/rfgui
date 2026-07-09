@@ -305,7 +305,7 @@ impl TextArea {
 mod tests {
     use super::*;
     use crate::view::base_component::{
-        DirtyFlags, ElementTrait, LayoutConstraints, LayoutPlacement, TextArea as HostTextArea,
+        ElementTrait, LayoutConstraints, LayoutPlacement, TextArea as HostTextArea,
     };
 
     fn wrapped_text_area(content: &str, max_width: f32) -> (NodeArena, NodeKey) {
@@ -405,43 +405,29 @@ mod tests {
         );
     }
 
-    fn first_boundary_with_neighbor(
+    fn first_consumed_wrap_whitespace(
         text_area: &mut HostTextArea,
         arena: &NodeArena,
-        right: bool,
     ) -> (usize, f32, f32) {
-        let len = text_area.content_char_len();
-        for boundary in 1..len {
-            let Some(up_y) = text_area.caret_y_for(arena, boundary, CaretAffinity::Upstream) else {
+        let map = CaretNavigationMap::build(text_area, arena);
+        for pair in map.lines.windows(2) {
+            let Some(upper_tail) = pair[0].stops.last() else {
                 continue;
             };
-            let Some(down_y) = text_area.caret_y_for(arena, boundary, CaretAffinity::Downstream)
-            else {
+            let Some(lower_head) = pair[1].stops.first() else {
                 continue;
             };
-            if (up_y - down_y).abs() <= 0.5 {
-                continue;
-            }
-
-            let neighbor = if right {
-                boundary.checked_sub(1)
-            } else {
-                (boundary + 1 < len).then_some(boundary + 1)
-            };
-            let Some(neighbor) = neighbor else {
-                continue;
-            };
-            let reference = if right { up_y } else { down_y };
-            let Some(neighbor_y) =
-                text_area.caret_y_for(arena, neighbor, CaretAffinity::Downstream)
-            else {
-                continue;
-            };
-            if (neighbor_y - reference).abs() <= 0.5 {
-                return (boundary, up_y, down_y);
+            let consumed: String = text_area
+                .content
+                .chars()
+                .skip(upper_tail.char_index)
+                .take(lower_head.char_index.saturating_sub(upper_tail.char_index))
+                .collect();
+            if !consumed.is_empty() && consumed.chars().all(char::is_whitespace) {
+                return (upper_tail.char_index, pair[0].y_top, pair[1].y_top);
             }
         }
-        panic!("expected a soft-wrap boundary with a same-line neighbor");
+        panic!("expected automatic wrap that consumes trailing whitespace");
     }
 
     #[test]
@@ -476,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn arrow_right_enters_wrap_boundary_before_crossing_line() {
+    fn arrow_right_skips_trailing_wrap_whitespace() {
         let (mut arena, root) =
             wrapped_text_area("the quick brown fox jumps over the lazy dog", 80.0);
         arena.with_element_taken(root, |el, arena| {
@@ -484,30 +470,19 @@ mod tests {
                 .as_any_mut()
                 .downcast_mut::<HostTextArea>()
                 .expect("TextArea root");
-            let (boundary, up_y, down_y) = first_boundary_with_neighbor(text_area, arena, true);
+            let (upper_tail, up_y, down_y) = first_consumed_wrap_whitespace(text_area, arena);
 
-            text_area.cursor_char = boundary - 1;
+            text_area.cursor_char = upper_tail;
             text_area.cursor_affinity = CaretAffinity::Downstream;
             assert!(text_area.handle_horizontal_arrow(arena, true));
-            assert_eq!(text_area.cursor_char, boundary);
-            assert_eq!(text_area.cursor_affinity, CaretAffinity::Upstream);
-            let (_, first_y, _) = text_area.caret_screen_position(arena).expect("caret");
-            assert!((first_y - up_y).abs() <= 0.5);
-            let before_flip_signature = text_area.promotion_self_signature();
-
-            assert!(text_area.handle_horizontal_arrow(arena, true));
-            assert_eq!(text_area.cursor_char, boundary);
-            assert_eq!(text_area.cursor_affinity, CaretAffinity::Downstream);
-            assert!(text_area.dirty_flags.intersects(DirtyFlags::PAINT));
-            assert_ne!(text_area.promotion_self_signature(), before_flip_signature);
-            let (_, second_y, _) = text_area.caret_screen_position(arena).expect("caret");
-            assert!((second_y - down_y).abs() <= 0.5);
-            assert!(second_y > first_y);
+            let (_, caret_y, _) = text_area.caret_screen_position(arena).expect("caret");
+            assert!((caret_y - down_y).abs() <= 0.5);
+            assert!(caret_y > up_y);
         });
     }
 
     #[test]
-    fn arrow_left_enters_wrap_boundary_before_crossing_line() {
+    fn arrow_left_skips_trailing_wrap_whitespace() {
         let (mut arena, root) =
             wrapped_text_area("the quick brown fox jumps over the lazy dog", 80.0);
         arena.with_element_taken(root, |el, arena| {
@@ -515,30 +490,25 @@ mod tests {
                 .as_any_mut()
                 .downcast_mut::<HostTextArea>()
                 .expect("TextArea root");
-            let (boundary, up_y, _down_y) = first_boundary_with_neighbor(text_area, arena, false);
+            let (upper_tail, up_y, down_y) = first_consumed_wrap_whitespace(text_area, arena);
+            let lower_head = text_area
+                .content
+                .chars()
+                .enumerate()
+                .skip(upper_tail)
+                .find_map(|(index, ch)| (!ch.is_whitespace()).then_some(index))
+                .expect("wrapped lower line should begin with visible text");
 
-            text_area.cursor_char = boundary + 1;
+            text_area.cursor_char = lower_head;
             text_area.cursor_affinity = CaretAffinity::Downstream;
-            let before_y = text_area.caret_screen_position(arena).expect("caret").1;
+            assert!(
+                (text_area.caret_screen_position(arena).expect("caret").1 - down_y).abs() <= 0.5
+            );
 
             assert!(text_area.handle_horizontal_arrow(arena, false));
-            assert!(
-                text_area.cursor_char == boundary || text_area.cursor_char == boundary + 1,
-                "ArrowLeft should enter the upper visual slot at or adjacent to the wrap boundary"
-            );
-            let (_, first_y, _) = text_area.caret_screen_position(arena).expect("caret");
-            assert!(
-                first_y <= before_y + 0.5,
-                "ArrowLeft should not move visually below the starting lower-line slot",
-            );
-            let before_flip_signature = text_area.promotion_self_signature();
-
-            assert!(text_area.handle_horizontal_arrow(arena, false));
-            assert!(text_area.cursor_char <= boundary);
-            assert!(text_area.dirty_flags.intersects(DirtyFlags::PAINT));
-            assert_ne!(text_area.promotion_self_signature(), before_flip_signature);
-            let (_, second_y, _) = text_area.caret_screen_position(arena).expect("caret");
-            assert!((second_y - up_y).abs() <= 0.5 || second_y <= first_y + 0.5);
+            assert_eq!(text_area.cursor_char, upper_tail);
+            let (_, caret_y, _) = text_area.caret_screen_position(arena).expect("caret");
+            assert!((caret_y - up_y).abs() <= 0.5);
         });
     }
 
@@ -688,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn arrow_right_advances_from_shared_wrap_boundary_to_visible_next_stop() {
+    fn caret_map_omits_consumed_wrap_whitespace() {
         let (mut arena, root) =
             wrapped_text_area("the quick brown fox jumps over the lazy dog", 80.0);
         arena.with_element_taken(root, |el, arena| {
@@ -697,34 +667,27 @@ mod tests {
                 .downcast_mut::<HostTextArea>()
                 .expect("TextArea root");
             let map = CaretNavigationMap::build(text_area, arena);
-            let boundary = map
-                .lines
-                .windows(2)
-                .find_map(|pair| {
-                    pair[0].stops.iter().find_map(|upper| {
-                        pair[1]
-                            .stops
-                            .iter()
-                            .any(|lower| lower.char_index == upper.char_index)
-                            .then_some(upper.char_index)
-                    })
-                })
-                .expect("fixture should contain an adapter-synthesized shared wrap boundary");
-
-            text_area.cursor_char = boundary;
-            text_area.cursor_affinity = CaretAffinity::Downstream;
-            let (start_x, start_y, _) = text_area.caret_screen_position(arena).expect("caret");
-
-            assert!(text_area.handle_horizontal_arrow(arena, true));
-            assert!(
-                text_area.cursor_char > boundary,
-                "ArrowRight should advance past the shared boundary",
-            );
-            let (target_x, target_y, _) = text_area.caret_screen_position(arena).expect("caret");
-            assert!(
-                (target_x - start_x).abs() > 0.5 || (target_y - start_y).abs() > 0.5,
-                "caret should visibly move after skipping the unpainted wrap-space slot",
-            );
+            for pair in map.lines.windows(2) {
+                let (Some(upper_tail), Some(lower_head)) =
+                    (pair[0].stops.last(), pair[1].stops.first())
+                else {
+                    continue;
+                };
+                let consumed: String = text_area
+                    .content
+                    .chars()
+                    .skip(upper_tail.char_index)
+                    .take(lower_head.char_index.saturating_sub(upper_tail.char_index))
+                    .collect();
+                if !consumed.is_empty() && consumed.chars().all(char::is_whitespace) {
+                    assert!(
+                        upper_tail.char_index < lower_head.char_index,
+                        "the consumed whitespace must not share a caret slot"
+                    );
+                    return;
+                }
+            }
+            panic!("fixture should contain a wrap consuming whitespace");
         });
     }
 

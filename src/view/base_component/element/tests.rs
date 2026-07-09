@@ -6801,6 +6801,7 @@ mod tests {
                         text: first_content.to_string(),
                         style: None,
                     }],
+                    edge_insets: [0.0; 2],
                 },
                 InlineIfcItem::Span {
                     source: SECOND_SOURCE,
@@ -6815,6 +6816,7 @@ mod tests {
                         text: second_content.to_string(),
                         style: None,
                     }],
+                    edge_insets: [0.0; 2],
                 },
             ])
             .with_max_width(parent_width - inset * 2.0),
@@ -6916,6 +6918,7 @@ mod tests {
                         text: "restriction including limitation".to_string(),
                         style: None,
                     }],
+                    edge_insets: [0.0; 2],
                 },
                 InlineIfcItem::TextSpan {
                     source: OUTER_SOURCE,
@@ -6946,6 +6949,7 @@ mod tests {
                         ..InlineIfcStyle::default()
                     }),
                     children,
+                    edge_insets: [0.0; 2],
                 }])
                 .with_max_width(spec.max_width),
             );

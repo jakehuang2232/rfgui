@@ -618,6 +618,7 @@ impl TextAreaUnifiedIfcRootPackage {
             }) {
                 self.push_text_segment_committed_caret_stops(segment, &mut lines);
             }
+            self.push_missing_empty_paragraph_caret_stops(&mut lines);
             for segment in self
                 .source_segments
                 .iter()
@@ -627,6 +628,47 @@ impl TextAreaUnifiedIfcRootPackage {
             }
             normalize_root_caret_lines(&mut lines)
         })
+    }
+
+    /// Parley preserves the vertical gap between consecutive hard line
+    /// breaks, but does not emit a shaped line for that empty paragraph.
+    /// Add a caret stop in the gap so it remains clickable and reachable by
+    /// keyboard navigation.
+    fn push_missing_empty_paragraph_caret_stops(
+        &self,
+        lines: &mut Vec<IndexedTextAreaUnifiedIfcCaretLine>,
+    ) {
+        let snapshot = self.ifc.text_layout_snapshot_ref();
+        for line in snapshot.lines.iter().filter(|line| line.glyphs.is_empty()) {
+            let Some(line_break) = self.source_segments.iter().find(|segment| {
+                segment.kind == TextAreaUnifiedIfcSourceKind::LineBreak
+                    && line.range.start <= segment.backing_byte_range.start
+                    && segment.backing_byte_range.end <= line.range.end
+            }) else {
+                continue;
+            };
+            let y_top = line.y + self.text_vertical_align_delta(line.line_index)
+                - self.content_top_offset();
+            if lines
+                .iter()
+                .any(|indexed| (indexed.line.y_top - y_top).abs() <= 0.5)
+            {
+                continue;
+            }
+            push_root_caret_stop(
+                lines,
+                line.line_index,
+                TextAreaUnifiedIfcCaretStop {
+                    char_index: line_break.char_range.start,
+                    affinity: super::caret_map::CaretAffinity::Downstream,
+                    x: line.x,
+                    y_top,
+                    height: line.height.max(1.0),
+                    is_line_head: true,
+                    is_line_tail: true,
+                },
+            );
+        }
     }
 
     fn push_text_segment_committed_caret_stops(
@@ -652,12 +694,25 @@ impl TextAreaUnifiedIfcRootPackage {
             other.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox
                 && other.char_range.end == segment.char_range.start
         });
+        let consumed_wrap_whitespace = self.ifc.soft_wrap_trailing_whitespace_ranges();
         for local_char in 0..=span {
             let byte_index = self.committed_local_char_to_backing_byte(segment, local_char);
             for affinity in [
                 InlineIfcCaretAffinity::Downstream,
                 InlineIfcCaretAffinity::Upstream,
             ] {
+                // A soft-wrap's trailing whitespace is intentionally
+                // invisible: the only valid positions are immediately
+                // before it (upper-line tail) and after it (lower-line
+                // head). Do not expose any intermediate caret slots.
+                if consumed_wrap_whitespace.iter().any(|range| {
+                    (byte_index > range.start && byte_index < range.end)
+                        || (byte_index == range.start
+                            && affinity == InlineIfcCaretAffinity::Downstream)
+                        || (byte_index == range.end && affinity == InlineIfcCaretAffinity::Upstream)
+                }) {
+                    continue;
+                }
                 if local_char == span
                     && atomic_starts_at_end
                     && affinity == InlineIfcCaretAffinity::Downstream
@@ -931,6 +986,7 @@ impl TextAreaUnifiedIfcRootPackage {
         let paint_input = self.ifc.text_pass_paint_input_ref();
         let staging_input = self.text_pass_staging_input([0.0, 0.0], 1.0, 0, 1.0);
         let text_height = self.text_line_height();
+        let text_baseline = self.inline_baseline_for_line_height(text_height);
         let top_offset = self.content_top_offset();
         let mut out = Vec::new();
         for line in &paint_input.lines {
@@ -960,7 +1016,12 @@ impl TextAreaUnifiedIfcRootPackage {
             let line_top = line.y + self.text_vertical_align_delta(line.line_index) - top_offset;
             out.push(Rect {
                 x: left,
-                y: line_top + text_height.max(1.0) - 1.0,
+                // `line.baseline` incorporates any tall inline content
+                // (for example, a projection). The preedit glyphs paint
+                // from that same baseline, whereas `line_top +
+                // text_height` incorrectly leaves the underline behind
+                // when the visual line is expanded.
+                y: line_top + line.baseline + (text_height - text_baseline) - 1.0,
                 width: (right - left).max(1.0),
                 height: 1.0,
             });

@@ -120,6 +120,10 @@ pub(crate) enum InlineIfcItem {
         source: InlineIfcSourceId,
         style: Option<InlineIfcStyle>,
         children: Vec<InlineIfcItem>,
+        /// Horizontal border+padding of the span's box (left, right).
+        /// Reserved in the line as zero-height spacer inline boxes so
+        /// following content does not overlap the decoration box.
+        edge_insets: [f32; 2],
     },
     AtomicInlineBox {
         source: InlineIfcSourceId,
@@ -310,6 +314,7 @@ pub(crate) enum InlineIfcContentKeyItem {
         source: InlineIfcSourceId,
         shape_style: InlineIfcStyleKey,
         children: Vec<InlineIfcContentKeyItem>,
+        edge_insets_bits: [u32; 2],
     },
     AtomicInlineBox {
         source: InlineIfcSourceId,
@@ -703,6 +708,16 @@ pub(crate) struct InlineIfcBoxMapping {
     pub(crate) source: InlineIfcSourceId,
     pub(crate) insertion_byte: usize,
     pub(crate) measurement: InlineIfcMeasuredAtomicBox,
+    pub(crate) role: InlineIfcInlineBoxRole,
+}
+
+/// What an inline box in the parley layout stands for: a real atomic
+/// child, or a zero-height spacer reserving a span's horizontal
+/// border+padding in the line.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum InlineIfcInlineBoxRole {
+    Atomic,
+    SpanEdgeSpacer,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1410,6 +1425,7 @@ pub(crate) struct InlineIfcInlineBoxPlacement {
     pub(crate) y: f32,
     pub(crate) width: f32,
     pub(crate) height: f32,
+    pub(crate) role: InlineIfcInlineBoxRole,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1664,7 +1680,21 @@ impl InlineFormattingContext {
 
     fn compute_glyph_items(&self) -> Vec<InlineIfcGlyphItem> {
         let mut output = Vec::new();
+        let line_ranges = self
+            .layout
+            .lines()
+            .map(|line| line.text_range())
+            .collect::<Vec<_>>();
         for (line_index, line) in self.layout.lines().enumerate() {
+            let trailing_wrap_whitespace_start = line_ranges
+                .get(line_index)
+                .cloned()
+                .filter(|range| {
+                    line_ranges
+                        .get(line_index + 1)
+                        .is_some_and(|next| next.start == range.end)
+                })
+                .and_then(|range| self.trailing_whitespace_start(range));
             let mut consumed_glyphs_by_run = HashMap::<usize, usize>::new();
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
@@ -1693,6 +1723,11 @@ impl InlineFormattingContext {
                     .take(glyph_count);
 
                 for (glyph, cluster_range) in glyph_run.positioned_glyphs().zip(cluster_ranges) {
+                    if trailing_wrap_whitespace_start
+                        .is_some_and(|start| cluster_range.start >= start)
+                    {
+                        continue;
+                    }
                     let Some(source) = self.source_for_byte(cluster_range.start) else {
                         continue;
                     };
@@ -1770,7 +1805,11 @@ impl InlineFormattingContext {
 
     fn compute_text_layout_snapshot(&self) -> InlineIfcTextLayoutSnapshot {
         let paint_glyphs = self.text_paint_glyphs();
-        let inline_boxes = self.inline_box_placements();
+        let inline_boxes = self
+            .inline_box_placements()
+            .into_iter()
+            .filter(|placement| placement.role == InlineIfcInlineBoxRole::Atomic)
+            .collect::<Vec<_>>();
         let decorations = self.decoration_paint_fragments();
         let mut lines = Vec::new();
 
@@ -1929,6 +1968,7 @@ impl InlineFormattingContext {
                             y: inline_box.y,
                             width: inline_box.width,
                             height: inline_box.height,
+                            role: mapping.role,
                         });
                     }
                 }
@@ -2191,7 +2231,11 @@ impl InlineFormattingContext {
     }
 
     pub(crate) fn hit_test_point(&self, x: f32, y: f32) -> Option<InlineIfcHitTestResult> {
-        for placement in self.inline_box_placements() {
+        for placement in self
+            .inline_box_placements()
+            .into_iter()
+            .filter(|placement| placement.role == InlineIfcInlineBoxRole::Atomic)
+        {
             if point_in_rect(
                 x,
                 y,
@@ -2264,7 +2308,11 @@ impl InlineFormattingContext {
     fn compute_visual_caret_stops(&self) -> Vec<InlineIfcCaretStop> {
         let mut stops = Vec::<InlineIfcCaretStop>::new();
         let glyphs = self.glyph_items_ref();
-        let inline_box_placements = self.inline_box_placements();
+        let inline_box_placements = self
+            .inline_box_placements()
+            .into_iter()
+            .filter(|placement| placement.role == InlineIfcInlineBoxRole::Atomic)
+            .collect::<Vec<_>>();
         let line_text_ranges = self
             .layout
             .lines()
@@ -2286,6 +2334,13 @@ impl InlineFormattingContext {
             let is_soft_wrap = line_text_ranges
                 .get(line_index + 1)
                 .is_some_and(|next_range| next_range.start == line_range.end);
+            // Parley consumes whitespace at a word-wrap boundary: it has
+            // no glyph and must not create a second, invisible caret stop.
+            // Keep the upper-line tail before that whitespace; the lower
+            // line starts after it at `line_range.end`.
+            let trailing_wrap_whitespace_start = is_soft_wrap
+                .then(|| self.trailing_whitespace_start(line_range.clone()))
+                .flatten();
             self.push_visual_caret_stop(
                 &mut stops,
                 line_index,
@@ -2320,11 +2375,11 @@ impl InlineFormattingContext {
             self.push_visual_caret_stop(
                 &mut stops,
                 line_index,
-                line_range.end,
+                trailing_wrap_whitespace_start.unwrap_or(line_range.end),
                 InlineIfcCaretAffinity::Upstream,
                 false,
                 true,
-                is_soft_wrap,
+                trailing_wrap_whitespace_start.is_none() && is_soft_wrap,
             );
             if is_soft_wrap {
                 self.push_visual_caret_stop(
@@ -2371,6 +2426,38 @@ impl InlineFormattingContext {
             }
         }
         stops
+    }
+
+    /// Returns the byte position before whitespace that Parley consumed at
+    /// the end of a soft-wrapped visual line. The source text retains those
+    /// characters for editing; they simply have no visual/caret position.
+    fn trailing_whitespace_start(&self, range: Range<usize>) -> Option<usize> {
+        let text = self.backing_text.get(range.clone())?;
+        let visible_len = text.trim_end_matches(char::is_whitespace).len();
+        (visible_len < text.len()).then_some(range.start + visible_len)
+    }
+
+    /// Byte ranges of whitespace consumed at automatic word-wrap points.
+    /// The text remains in the backing string, but has neither paint glyphs
+    /// nor an intermediate caret position.
+    pub(crate) fn soft_wrap_trailing_whitespace_ranges(&self) -> Vec<Range<usize>> {
+        let line_ranges = self
+            .layout
+            .lines()
+            .map(|line| line.text_range())
+            .collect::<Vec<_>>();
+        line_ranges
+            .iter()
+            .enumerate()
+            .filter_map(|(line_index, range)| {
+                line_ranges
+                    .get(line_index + 1)
+                    .is_some_and(|next| next.start == range.end)
+                    .then(|| self.trailing_whitespace_start(range.clone()))
+                    .flatten()
+                    .map(|start| start..range.end)
+            })
+            .collect()
     }
 
     pub(crate) fn selection_rects_for_global_range(
@@ -2782,12 +2869,14 @@ fn content_key_item_for(
             source,
             style,
             children,
+            edge_insets,
         } => {
             let resolved_style = style.as_ref().unwrap_or(inherited_style);
             InlineIfcContentKeyItem::Span {
                 source: *source,
                 shape_style: InlineIfcStyleKey::from_style(resolved_style),
                 children: content_key_items_for(children, resolved_style),
+                edge_insets_bits: [edge_insets[0].to_bits(), edge_insets[1].to_bits()],
             }
         }
         InlineIfcItem::AtomicInlineBox {
@@ -2826,6 +2915,7 @@ fn paint_key_item_for(
             source,
             style,
             children,
+            ..
         } => {
             let resolved_style = style.as_ref().unwrap_or(inherited_style);
             InlineIfcPaintKeyItem::Span {
@@ -2964,8 +3054,12 @@ impl InlineIfcBuilder {
                 source,
                 style,
                 children,
+                edge_insets,
             } => {
                 let resolved_style = style.clone().unwrap_or_else(|| inherited_style.clone());
+                if edge_insets[0] > 0.0 {
+                    self.push_edge_spacer(*source, edge_insets[0]);
+                }
                 let start = self.backing_text.len();
                 self.push_items(children, &resolved_style, depth + 1);
                 let end = self.backing_text.len();
@@ -2977,6 +3071,9 @@ impl InlineIfcBuilder {
                         depth,
                         style: Some(resolved_style),
                     });
+                }
+                if edge_insets[1] > 0.0 {
+                    self.push_edge_spacer(*source, edge_insets[1]);
                 }
             }
             InlineIfcItem::AtomicInlineBox {
@@ -2990,9 +3087,28 @@ impl InlineIfcBuilder {
                     source: *source,
                     insertion_byte: self.backing_text.len(),
                     measurement: measurement.clone(),
+                    role: InlineIfcInlineBoxRole::Atomic,
                 });
             }
         }
+    }
+
+    /// Reserve a span's horizontal border+padding as a zero-height inline
+    /// box: it participates in line advance and wrapping but leaves the
+    /// line height untouched (matching CSS inline-box semantics).
+    fn push_edge_spacer(&mut self, source: InlineIfcSourceId, width: f32) {
+        let id = self.next_inline_box_id;
+        self.next_inline_box_id += 1;
+        self.inline_boxes.push(InlineIfcBoxMapping {
+            id,
+            source,
+            insertion_byte: self.backing_text.len(),
+            measurement: InlineIfcMeasuredAtomicBox::new(
+                InlineIfcSize::new(width.max(0.0), 0.0),
+                InlineIfcAtomicMeasureConstraints::new(None),
+            ),
+            role: InlineIfcInlineBoxRole::SpanEdgeSpacer,
+        });
     }
 }
 
@@ -3108,6 +3224,87 @@ fn parley_font_family(font_families: &[String]) -> FontFamily<'_> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn span_edge_insets_reserve_line_advance() {
+        // A span's horizontal border+padding must occupy line space:
+        // without the reserved advance, neighbours overlap the span's
+        // decoration box (padding painted over adjacent glyphs).
+        let inset = 8.0_f32;
+        let build = |edge_insets: [f32; 2]| {
+            let input = InlineIfcInput::new(vec![
+                InlineIfcItem::TextSpan {
+                    source: InlineIfcSourceId(11),
+                    text: "aa".to_string(),
+                    style: None,
+                },
+                InlineIfcItem::Span {
+                    source: InlineIfcSourceId(12),
+                    style: None,
+                    children: vec![InlineIfcItem::TextSpan {
+                        source: InlineIfcSourceId(13),
+                        text: "bb".to_string(),
+                        style: None,
+                    }],
+                    edge_insets,
+                },
+                InlineIfcItem::TextSpan {
+                    source: InlineIfcSourceId(14),
+                    text: "cc".to_string(),
+                    style: None,
+                },
+            ]);
+            InlineFormattingContext::build(input)
+        };
+
+        let plain = build([0.0; 2]);
+        let padded = build([inset, inset]);
+
+        let span_extent = |ifc: &InlineFormattingContext, source: u64| -> (f32, f32) {
+            let rects = ifc.source_line_rects(InlineIfcSourceId(source));
+            let rect = rects.first().expect("source rect");
+            (rect.x, rect.x + rect.width)
+        };
+
+        let (_, plain_bb_end) = span_extent(&plain, 13);
+        let (plain_cc_start, _) = span_extent(&plain, 14);
+        let (padded_bb_start, padded_bb_end) = span_extent(&padded, 13);
+        let (padded_cc_start, _) = span_extent(&padded, 14);
+
+        // Left inset shifts the span's own glyphs right.
+        let (plain_bb_start, _) = span_extent(&plain, 13);
+        assert!(
+            (padded_bb_start - plain_bb_start - inset).abs() < 0.6,
+            "left inset must shift the span glyphs: plain={plain_bb_start} padded={padded_bb_start}"
+        );
+        // Right inset reserves space before the following text.
+        let plain_gap = plain_cc_start - plain_bb_end;
+        let padded_gap = padded_cc_start - padded_bb_end;
+        assert!(
+            (padded_gap - plain_gap - inset).abs() < 0.6,
+            "right inset must reserve advance before the next span: plain_gap={plain_gap} padded_gap={padded_gap}"
+        );
+        // Spacers stay invisible to atomic consumers.
+        assert!(
+            padded
+                .inline_box_placements()
+                .iter()
+                .all(|placement| placement.role == InlineIfcInlineBoxRole::SpanEdgeSpacer),
+            "fixture has no real atomics; only spacers may appear"
+        );
+        assert!(
+            padded
+                .hit_test_point(padded_bb_start - inset / 2.0, 4.0)
+                .is_none()
+                || !matches!(
+                    padded
+                        .hit_test_point(padded_bb_start - inset / 2.0, 4.0)
+                        .map(|hit| hit.target),
+                    Some(InlineIfcHitTarget::InlineBox { .. })
+                ),
+            "spacer must not be a hit target"
+        );
+    }
+
     const ROOT: InlineIfcSourceId = InlineIfcSourceId(1);
     const OUTER: InlineIfcSourceId = InlineIfcSourceId(2);
     const INNER: InlineIfcSourceId = InlineIfcSourceId(3);
@@ -3180,6 +3377,7 @@ mod tests {
                                 text: "strong".to_string(),
                                 style: None,
                             }],
+                            edge_insets: [0.0; 2],
                         },
                         InlineIfcItem::TextSpan {
                             source: OUTER,
@@ -3196,8 +3394,10 @@ mod tests {
                             style: None,
                         },
                     ],
+                    edge_insets: [0.0; 2],
                 },
             ],
+            edge_insets: [0.0; 2],
         }])
         .with_max_width(max_width);
         InlineFormattingContext::build(input)
@@ -3218,6 +3418,7 @@ mod tests {
                     measurement: measured_box(24.0, 12.0),
                 },
             ],
+            edge_insets: [0.0; 2],
         }])
         .with_max_width(180.0)
     }
@@ -4440,6 +4641,7 @@ mod tests {
                         text: "first inline sibling wraps ".to_string(),
                         style: None,
                     }],
+                    edge_insets: [0.0; 2],
                 },
                 InlineIfcItem::Span {
                     source: sibling,
@@ -4449,6 +4651,7 @@ mod tests {
                         text: "second inline sibling wraps too".to_string(),
                         style: None,
                     }],
+                    edge_insets: [0.0; 2],
                 },
             ])
             .with_max_width(96.0),
@@ -4676,8 +4879,10 @@ mod tests {
                         text: "bold".to_string(),
                         style: None,
                     }],
+                    edge_insets: [0.0; 2],
                 },
             ],
+            edge_insets: [0.0; 2],
         }])
         .with_max_width(400.0);
         let ifc = InlineFormattingContext::build(input);
@@ -5265,31 +5470,38 @@ mod tests {
     }
 
     #[test]
-    fn soft_wrap_boundary_exposes_distinct_upstream_and_downstream_caret_slots() {
+    fn soft_wrap_trailing_whitespace_has_no_caret_stop() {
         let ifc = fixture(72.0);
         let stops = ifc.visual_caret_stops();
-        let soft_tail = stops
+        let (soft_tail, soft_head) = stops
             .iter()
-            .find(|stop| {
-                stop.is_soft_wrap_boundary
-                    && stop.is_line_tail
-                    && stop.affinity == InlineIfcCaretAffinity::Upstream
+            .filter(|stop| stop.is_line_tail && stop.affinity == InlineIfcCaretAffinity::Upstream)
+            .find_map(|tail| {
+                stops
+                    .iter()
+                    .find(|head| {
+                        head.is_line_head
+                            && head.affinity == InlineIfcCaretAffinity::Downstream
+                            && head.line_index == tail.line_index + 1
+                            && head.byte_index > tail.byte_index
+                            && ifc.backing_text()[tail.byte_index..head.byte_index]
+                                .chars()
+                                .all(char::is_whitespace)
+                    })
+                    .map(|head| (tail, head))
             })
-            .expect("wrapped layout should expose an upstream soft-wrap tail stop");
-        let soft_head = stops
-            .iter()
-            .find(|stop| {
-                stop.is_soft_wrap_boundary
-                    && stop.is_line_head
-                    && stop.affinity == InlineIfcCaretAffinity::Downstream
-                    && stop.byte_index == soft_tail.byte_index
-            })
-            .expect("same byte should expose a downstream soft-wrap head stop");
+            .expect("fixture should wrap after whitespace");
 
-        assert_eq!(soft_tail.byte_index, soft_head.byte_index);
-        assert_ne!(
-            soft_tail.line_index, soft_head.line_index,
-            "same insertion byte at a soft wrap should keep both visual slots: {stops:?}"
+        assert!(
+            soft_tail.byte_index < soft_head.byte_index,
+            "the upper tail must sit before consumed whitespace: tail={soft_tail:?} head={soft_head:?}"
+        );
+        assert!(
+            ifc.text_paint_glyphs().iter().all(|glyph| {
+                glyph.cluster_range.end <= soft_tail.byte_index
+                    || glyph.cluster_range.start >= soft_head.byte_index
+            }),
+            "soft-wrap trailing whitespace must not produce paint glyphs"
         );
         assert!(soft_tail.style.is_some());
         assert!(soft_head.style.is_some());

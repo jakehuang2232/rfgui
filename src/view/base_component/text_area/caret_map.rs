@@ -569,7 +569,7 @@ mod tests {
     #[test]
     fn build_translates_unified_root_caret_stops_for_wrapped_navigation() {
         let (text_area_ptr, arena) =
-            build_wrapped_textarea("the quick brown fox jumps over the lazy dog", 80.0);
+            build_wrapped_textarea("甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥", 80.0);
         let text_area: &TextArea = unsafe { &*text_area_ptr };
         let map = CaretNavigationMap::build(text_area, &arena);
         let origin_x = text_area.layout_state.layout_position.x - text_area.scroll_x;
@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn wrap_gap_byte_caret_splits_by_affinity() {
         let (text_area_ptr, arena) =
-            build_wrapped_textarea("the quick brown fox jumps over the lazy dog", 80.0);
+            build_wrapped_textarea("甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥", 80.0);
         let text_area: &crate::view::base_component::TextArea = unsafe { &*text_area_ptr };
         let map = CaretNavigationMap::build(text_area, &arena);
         assert!(map.lines.len() >= 2);
@@ -728,7 +728,7 @@ mod tests {
     #[test]
     fn wrap_lower_head_caret_honours_affinity() {
         let (text_area_ptr, arena) =
-            build_wrapped_textarea("the quick brown fox jumps over the lazy dog", 80.0);
+            build_wrapped_textarea("甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥", 80.0);
         let text_area: &crate::view::base_component::TextArea = unsafe { &*text_area_ptr };
         let map = CaretNavigationMap::build(text_area, &arena);
         let lower_head = map.lines[1].stops.first().unwrap().char_index;
@@ -835,8 +835,9 @@ mod tests {
         // Three visual lines: "a", "", "b".
         assert!(
             map.lines.len() >= 3,
-            "expected >=3 visual lines for a\\n\\nb, got {}",
-            map.lines.len()
+            "expected >=3 visual lines for a\\n\\nb, got {}: {:#?}",
+            map.lines.len(),
+            map.lines
         );
         // Down from char 0 ('a') should land on the empty middle line —
         // char 2 (after the first \n).
@@ -851,13 +852,30 @@ mod tests {
                 VerticalDirection::Down,
             )
             .expect("Down from char 0");
-        // char 2 = start of empty paragraph (after first \n).
-        // char 3 = start of "b" paragraph (after second \n).
-        // We accept either, but Down should not skip both.
+        // char 2 = start of the empty paragraph (after the first `\n`).
+        // It must be a distinct caret target rather than skipping straight
+        // to char 3 (the following paragraph).
+        assert_eq!(target, 2, "Down from line 1 must land on the empty line");
+    }
+
+    #[test]
+    fn newline_only_content_exposes_a_pointer_caret_stop_on_each_empty_line() {
+        let (map, _) = build_map_for("\n", 300.0);
         assert!(
-            target == 2 || target == 3,
-            "expected Down from line 1 to land on empty line (2) or 'b' line (3), got {target}",
+            map.lines.len() >= 2,
+            "a lone newline must create two empty visual lines: {:#?}",
+            map.lines
         );
+        for (line_index, line) in map.lines.iter().take(2).enumerate() {
+            let target = map
+                .pointer_target(0.0, (line.y_top + line.y_bottom) * 0.5)
+                .expect("empty visual line should accept a caret pointer target");
+            assert_eq!(
+                map.line_index_for_char(target.char_index, target.affinity),
+                Some(line_index),
+                "pointer target must remain on empty line {line_index}: {target:?}"
+            );
+        }
     }
 
     // ---------------------------------------------------------------
@@ -1132,7 +1150,7 @@ mod tests {
     ///   * `Downstream` → lower visual line.
     #[test]
     fn caret_at_boundary_cursor_splits_by_affinity() {
-        let content = "the quick brown fox jumps over the lazy dog";
+        let content = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥";
         let max_width = 80.0;
         let upper_tail = {
             let (map, _) = build_map_for(content, max_width);
@@ -1279,6 +1297,8 @@ mod tests {
             assert!(pos.is_some(), "{label}: caret should resolve");
         }
         check("", 0, "fully empty");
+        check("\n", 0, "newline-only first empty line");
+        check("\n", 1, "newline-only trailing empty line");
         check("a\n", 2, "trailing-newline empty line");
         check("a\n\nb", 2, "middle empty paragraph");
     }
@@ -1337,7 +1357,7 @@ mod tests {
 
     #[test]
     fn pointer_target_preserves_upper_affinity_at_soft_wrap_tail() {
-        let content = "the quick brown fox jumps over the lazy dog";
+        let content = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥";
         let (map, _) = build_map_for(content, 80.0);
         assert!(map.lines.len() >= 2, "soft-wrap expected");
         let line0 = &map.lines[0];
