@@ -22,7 +22,7 @@ impl WindowsTextSegmenter {
     pub fn new() -> Self {
         // Empty language → "undetermined" → WinRT picks a sensible
         // locale-neutral segmenter (still applies CJK dict for CJK text).
-        let inner = WordsSegmenter::Create(&HSTRING::from("")).ok();
+        let inner = WordsSegmenter::CreateWithLanguage(&HSTRING::from("")).ok();
         Self { inner }
     }
 }
