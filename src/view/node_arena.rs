@@ -15,9 +15,10 @@
 //! - Future features (a11y tree, devtools inspector, arbitrary
 //!   cross-subtree queries) fall out naturally.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::SlotMap;
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::{Cell, Ref, RefCell, RefMut};
+use std::ops::Deref;
 
 use crate::view::base_component::{DirtyFlags, ElementTrait, PlacementSkipFailureReason};
 
@@ -98,9 +99,9 @@ slotmap::new_key_type! {
 /// type. Keeping wiring here means `ElementTrait` stays behaviour-only
 /// and custom components don't grow boilerplate fields.
 pub struct Node {
-    pub element: Box<dyn ElementTrait>,
-    pub parent: Option<NodeKey>,
-    pub children: Vec<NodeKey>,
+    element: RefCell<Box<dyn ElementTrait>>,
+    pub(crate) parent: Option<NodeKey>,
+    pub(crate) children: Vec<NodeKey>,
     /// Arena-owned local dirty bits for the node itself.
     ///
     /// This is scaffold for migrating invalidation ownership out of
@@ -108,7 +109,7 @@ pub struct Node {
     /// `element.local_dirty_flags()` through
     /// [`NodeArena::refresh_subtree_dirty_cache`]; this field is only
     /// updated by the new arena invalidation APIs for now.
-    pub arena_local_dirty: DirtyFlags,
+    pub(crate) arena_local_dirty: Cell<DirtyFlags>,
     /// Aggregate of `element.local_dirty_flags()` unioned with every
     /// descendant's flags, refreshed once per layout pass by
     /// [`NodeArena::refresh_subtree_dirty_cache`]. Lets the layout hot loops
@@ -117,7 +118,7 @@ pub struct Node {
     ///
     /// Default is `DirtyFlags::ALL` so newly inserted nodes are always seen
     /// as dirty until the next pre-pass runs.
-    pub cached_subtree_dirty: crate::view::base_component::DirtyFlags,
+    pub(crate) cached_subtree_dirty: Cell<crate::view::base_component::DirtyFlags>,
     /// Aggregate placement-replay eligibility metadata for this subtree.
     ///
     /// This is Phase 5b scaffold. It is refreshed with the existing
@@ -125,30 +126,85 @@ pub struct Node {
     /// candidate subtrees, but it is not a standalone skip truth: callers
     /// must still check dirty bits, placement keys, clip/anchor context, and
     /// runtime state guards where relevant.
-    pub(crate) cached_placement_eligibility: PlacementEligibilityMetadata,
+    pub(crate) cached_placement_eligibility: Cell<PlacementEligibilityMetadata>,
 }
 
 impl Node {
     pub fn new(element: Box<dyn ElementTrait>) -> Self {
         Self {
-            element,
+            element: RefCell::new(element),
             parent: None,
             children: Vec::new(),
-            arena_local_dirty: DirtyFlags::NONE,
-            cached_subtree_dirty: crate::view::base_component::DirtyFlags::ALL,
-            cached_placement_eligibility: PlacementEligibilityMetadata::unknown(),
+            arena_local_dirty: Cell::new(DirtyFlags::NONE),
+            cached_subtree_dirty: Cell::new(crate::view::base_component::DirtyFlags::ALL),
+            cached_placement_eligibility: Cell::new(PlacementEligibilityMetadata::unknown()),
         }
     }
 
     pub fn with_parent(element: Box<dyn ElementTrait>, parent: Option<NodeKey>) -> Self {
         Self {
-            element,
+            element: RefCell::new(element),
             parent,
             children: Vec::new(),
-            arena_local_dirty: DirtyFlags::NONE,
-            cached_subtree_dirty: crate::view::base_component::DirtyFlags::ALL,
-            cached_placement_eligibility: PlacementEligibilityMetadata::unknown(),
+            arena_local_dirty: Cell::new(DirtyFlags::NONE),
+            cached_subtree_dirty: Cell::new(crate::view::base_component::DirtyFlags::ALL),
+            cached_placement_eligibility: Cell::new(PlacementEligibilityMetadata::unknown()),
         }
+    }
+
+    pub fn parent(&self) -> Option<NodeKey> {
+        self.parent
+    }
+
+    pub fn children(&self) -> &[NodeKey] {
+        &self.children
+    }
+
+    fn borrow(&self) -> NodeGuard<'_> {
+        NodeGuard {
+            node: self,
+            element: self.element.borrow(),
+        }
+    }
+
+    fn borrow_mut(&self) -> NodeMutGuard<'_> {
+        NodeMutGuard {
+            node: self,
+            element: self.element.borrow_mut(),
+        }
+    }
+
+    fn try_borrow_mut(&self) -> Option<NodeMutGuard<'_>> {
+        Some(NodeMutGuard {
+            node: self,
+            element: self.element.try_borrow_mut().ok()?,
+        })
+    }
+}
+
+pub struct NodeGuard<'a> {
+    node: &'a Node,
+    pub element: Ref<'a, Box<dyn ElementTrait>>,
+}
+
+impl Deref for NodeGuard<'_> {
+    type Target = Node;
+
+    fn deref(&self) -> &Self::Target {
+        self.node
+    }
+}
+
+pub struct NodeMutGuard<'a> {
+    node: &'a Node,
+    pub element: RefMut<'a, Box<dyn ElementTrait>>,
+}
+
+impl Deref for NodeMutGuard<'_> {
+    type Target = Node;
+
+    fn deref(&self) -> &Self::Target {
+        self.node
     }
 }
 
@@ -284,7 +340,7 @@ impl std::fmt::Debug for Node {
 /// Owns all retained tree nodes.
 #[derive(Default)]
 pub struct NodeArena {
-    slots: SlotMap<NodeKey, RefCell<Node>>,
+    slots: SlotMap<NodeKey, Node>,
     /// Top-level nodes (one per RSX root). Kept here rather than on
     /// individual elements so the arena itself is enough to traverse.
     roots: Vec<NodeKey>,
@@ -302,6 +358,13 @@ pub struct NodeArena {
     /// - Callers that rebuild an element's identity in place should
     ///   refresh via [`Self::refresh_stable_id_index`].
     stable_id_index: FxHashMap<u64, NodeKey>,
+    /// Deterministic insertion-order list of hosts that explicitly opted into
+    /// the pre-layout `sync_arena` hook.
+    arena_sync_nodes: Vec<NodeKey>,
+    /// Nesting depth for slots temporarily holding `Placeholder` during an
+    /// element callback. Stable-id lookup may trust the wrapper index only for
+    /// these explicitly tracked transient placeholders.
+    taken_depths: RefCell<FxHashMap<NodeKey, u32>>,
 }
 
 /// Mutation-scoped handle for recording arena-owned invalidation.
@@ -390,11 +453,15 @@ impl NodeArena {
 
     /// Insert a pre-built `Node`. Prefer [`Self::insert_with_key`] when the
     /// node's own storage needs to reference its key.
-    pub fn insert(&mut self, node: Node) -> NodeKey {
-        let sid = node.element.stable_id();
-        let key = self.slots.insert(RefCell::new(node));
+    pub fn insert(&mut self, mut node: Node) -> NodeKey {
+        let sid = node.element.get_mut().stable_id();
+        let requires_arena_sync = node.element.get_mut().requires_arena_sync();
+        let key = self.slots.insert(node);
         if sid != 0 {
             self.stable_id_index.insert(sid, key);
+        }
+        if requires_arena_sync {
+            self.arena_sync_nodes.push(key);
         }
         key
     }
@@ -406,11 +473,15 @@ impl NodeArena {
     where
         F: FnOnce(NodeKey) -> Node,
     {
-        let key = self.slots.insert_with_key(|k| RefCell::new(f(k)));
-        if let Some(cell) = self.slots.get(key) {
-            let sid = cell.borrow().element.stable_id();
+        let key = self.slots.insert_with_key(f);
+        if let Some(node) = self.slots.get(key) {
+            let element = node.element.borrow();
+            let sid = element.stable_id();
             if sid != 0 {
                 self.stable_id_index.insert(sid, key);
+            }
+            if element.requires_arena_sync() {
+                self.arena_sync_nodes.push(key);
             }
         }
         key
@@ -420,35 +491,54 @@ impl NodeArena {
     /// children — callers must walk the subtree (use
     /// [`Self::remove_subtree`] for recursive removal).
     pub fn remove(&mut self, key: NodeKey) -> Option<Node> {
-        let node = self.slots.remove(key).map(RefCell::into_inner)?;
-        let sid = node.element.stable_id();
-        if sid != 0 {
-            // Only clear if the index still points at `key` — a prior
-            // `refresh_stable_id_index` or id collision may have remapped it.
-            if self.stable_id_index.get(&sid).copied() == Some(key) {
-                self.stable_id_index.remove(&sid);
-            }
-        }
+        let node = self.slots.remove(key)?;
+        self.arena_sync_nodes.retain(|&candidate| candidate != key);
+        self.stable_id_index
+            .retain(|_, indexed_key| *indexed_key != key);
         Some(node)
     }
 
     /// Recursively remove `key` and all descendants. Returns the number of
     /// nodes actually removed.
     pub fn remove_subtree(&mut self, key: NodeKey) -> usize {
+        // `Node.children` is the active layout/render edge list, not the
+        // complete ownership graph: inactive Image/Svg side slots deliberately
+        // stay outside it. Build the ownership adjacency from `Node.parent`
+        // once so removing a host also removes every detached side-slot tree.
+        let mut owned_children: FxHashMap<NodeKey, Vec<NodeKey>> = FxHashMap::default();
+        for (node_key, node) in self.slots.iter() {
+            if let Some(parent) = node.parent {
+                owned_children.entry(parent).or_default().push(node_key);
+            }
+        }
+
         // Collect keys depth-first before removing so we do not walk while
-        // mutating.
+        // mutating the SlotMap.
         let mut to_remove = Vec::new();
-        self.collect_subtree_keys(key, &mut to_remove);
+        Self::collect_owned_subtree_keys(key, &owned_children, &mut to_remove);
+        let removed_keys: FxHashSet<NodeKey> = to_remove.iter().copied().collect();
+
+        // Keep the surviving topology coherent even when callers invoke this
+        // low-level API directly rather than detaching through renderer_adapter.
+        self.roots.retain(|root| !removed_keys.contains(root));
+        if let Some(parent) = self.parent_of(key)
+            && !removed_keys.contains(&parent)
+        {
+            let mut siblings = self.children_of(parent);
+            siblings.retain(|child| !removed_keys.contains(child));
+            self.set_children(parent, siblings);
+        }
+
+        self.stable_id_index
+            .retain(|_, indexed_key| !removed_keys.contains(indexed_key));
         let mut removed = 0;
         for k in to_remove {
-            if let Some(cell) = self.slots.remove(k) {
-                let sid = cell.borrow().element.stable_id();
-                if sid != 0 && self.stable_id_index.get(&sid).copied() == Some(k) {
-                    self.stable_id_index.remove(&sid);
-                }
+            if self.slots.remove(k).is_some() {
                 removed += 1;
             }
         }
+        self.arena_sync_nodes
+            .retain(|candidate| self.slots.contains_key(*candidate));
         removed
     }
 
@@ -470,7 +560,12 @@ impl NodeArena {
         // index entries should be impossible (insert/remove maintain the
         // invariant), but a missed refresh after a rare in-place id
         // change is cheaper to detect here than to debug later.
-        self.slots.get(key).map(|_| key)
+        let node = self.slots.get(key)?;
+        let actual_id = node.element.borrow().stable_id();
+        if actual_id == id {
+            return Some(key);
+        }
+        (actual_id == 0 && self.taken_depths.borrow().contains_key(&key)).then_some(key)
     }
 
     /// Borrow the full stable-id → NodeKey index. Used by the Phase A
@@ -490,8 +585,8 @@ impl NodeArena {
     /// single index entry pointing at whichever slot is visited last.
     pub fn refresh_stable_id_index(&mut self) {
         self.stable_id_index.clear();
-        for (key, cell) in self.slots.iter() {
-            let sid = cell.borrow().element.stable_id();
+        for (key, node) in self.slots.iter() {
+            let sid = node.element.borrow().stable_id();
             if sid != 0 {
                 self.stable_id_index.insert(sid, key);
             }
@@ -511,13 +606,15 @@ impl NodeArena {
     ) -> Vec<crate::view::base_component::DeferredRenderNode> {
         let mut out = Vec::new();
         for &root_key in &self.roots {
-            let children: Vec<NodeKey> = self
+            let child_count = self
                 .slots
                 .get(root_key)
-                .map(|cell| cell.borrow().children.clone())
-                .unwrap_or_default();
-            for child_key in children {
-                self.collect_viewport_clip_nodes_subtree(child_key, &mut out);
+                .map(|node| node.children.len())
+                .unwrap_or(0);
+            for index in 0..child_count {
+                if let Some(child_key) = self.child_key_at(root_key, index) {
+                    self.collect_viewport_clip_nodes_subtree(child_key, &mut out);
+                }
             }
         }
         out
@@ -528,13 +625,13 @@ impl NodeArena {
         key: NodeKey,
         out: &mut Vec<crate::view::base_component::DeferredRenderNode>,
     ) {
-        let Some(cell) = self.slots.get(key) else {
+        let Some(node) = self.slots.get(key) else {
             return;
         };
-        let node = cell.borrow();
-        let children: Vec<NodeKey> = node.children.clone();
+        let child_count = node.children.len();
         if let Some(element) = node
             .element
+            .borrow()
             .as_any()
             .downcast_ref::<crate::view::base_component::Element>()
         {
@@ -548,9 +645,10 @@ impl NodeArena {
                 }
             }
         }
-        drop(node);
-        for child_key in children {
-            self.collect_viewport_clip_nodes_subtree(child_key, out);
+        for index in 0..child_count {
+            if let Some(child_key) = self.child_key_at(key, index) {
+                self.collect_viewport_clip_nodes_subtree(child_key, out);
+            }
         }
     }
 
@@ -582,32 +680,48 @@ impl NodeArena {
         }
     }
 
-    fn collect_subtree_keys(&self, key: NodeKey, out: &mut Vec<NodeKey>) {
-        let Some(cell) = self.slots.get(key) else {
-            return;
-        };
-        let children: Vec<NodeKey> = cell.borrow().children.clone();
-        for child in children {
-            self.collect_subtree_keys(child, out);
+    fn collect_owned_subtree_keys(
+        key: NodeKey,
+        owned_children: &FxHashMap<NodeKey, Vec<NodeKey>>,
+        out: &mut Vec<NodeKey>,
+    ) {
+        if let Some(children) = owned_children.get(&key) {
+            for &child in children {
+                Self::collect_owned_subtree_keys(child, owned_children, out);
+            }
         }
         out.push(key);
     }
 
-    pub fn get(&self, key: NodeKey) -> Option<Ref<'_, Node>> {
-        self.slots.get(key).map(|cell| cell.borrow())
+    fn collect_active_subtree_keys(&self, key: NodeKey, out: &mut Vec<NodeKey>) {
+        let child_count = self
+            .slots
+            .get(key)
+            .map(|node| node.children.len())
+            .unwrap_or(0);
+        for index in 0..child_count {
+            if let Some(child) = self.child_key_at(key, index) {
+                self.collect_active_subtree_keys(child, out);
+            }
+        }
+        if self.slots.contains_key(key) {
+            out.push(key);
+        }
     }
 
-    pub fn get_mut(&self, key: NodeKey) -> Option<RefMut<'_, Node>> {
-        self.slots.get(key).map(|cell| cell.borrow_mut())
+    pub fn get(&self, key: NodeKey) -> Option<NodeGuard<'_>> {
+        self.slots.get(key).map(Node::borrow)
+    }
+
+    pub fn get_mut(&self, key: NodeKey) -> Option<NodeMutGuard<'_>> {
+        self.slots.get(key).map(Node::borrow_mut)
     }
 
     /// Fallible mutable borrow — returns `None` when the slot is already
     /// borrowed. Use inside dispatch when a handler may recursively query
     /// its own element so the call returns gracefully instead of panicking.
-    pub fn try_get_mut(&self, key: NodeKey) -> Option<RefMut<'_, Node>> {
-        self.slots
-            .get(key)
-            .and_then(|cell| cell.try_borrow_mut().ok())
+    pub fn try_get_mut(&self, key: NodeKey) -> Option<NodeMutGuard<'_>> {
+        self.slots.get(key).and_then(Node::try_borrow_mut)
     }
 
     pub fn contains_key(&self, key: NodeKey) -> bool {
@@ -619,7 +733,7 @@ impl NodeArena {
     pub fn children_of(&self, key: NodeKey) -> Vec<NodeKey> {
         self.slots
             .get(key)
-            .map(|cell| cell.borrow().children.clone())
+            .map(|node| node.children.clone())
             .unwrap_or_default()
     }
 
@@ -628,11 +742,11 @@ impl NodeArena {
     pub fn child_key_at(&self, key: NodeKey, index: usize) -> Option<NodeKey> {
         self.slots
             .get(key)
-            .and_then(|cell| cell.borrow().children.get(index).copied())
+            .and_then(|node| node.children.get(index).copied())
     }
 
     pub fn parent_of(&self, key: NodeKey) -> Option<NodeKey> {
-        self.slots.get(key).and_then(|cell| cell.borrow().parent)
+        self.slots.get(key).and_then(|node| node.parent)
     }
 
     /// Walk the parent chain from `key` until reaching a node with no
@@ -646,34 +760,34 @@ impl NodeArena {
         current
     }
 
-    pub fn set_parent(&self, key: NodeKey, parent: Option<NodeKey>) {
-        if let Some(cell) = self.slots.get(key) {
-            cell.borrow_mut().parent = parent;
+    pub fn set_parent(&mut self, key: NodeKey, parent: Option<NodeKey>) {
+        if let Some(node) = self.slots.get_mut(key) {
+            node.parent = parent;
         }
     }
 
-    pub fn set_children(&self, key: NodeKey, children: Vec<NodeKey>) {
-        if let Some(cell) = self.slots.get(key) {
-            cell.borrow_mut().children = children;
+    pub fn set_children(&mut self, key: NodeKey, children: Vec<NodeKey>) {
+        if let Some(node) = self.slots.get_mut(key) {
+            node.children = children.clone();
+            node.element.get_mut().sync_children_mirror(&children);
         }
     }
 
-    pub fn push_child(&self, parent: NodeKey, child: NodeKey) {
-        if let Some(cell) = self.slots.get(parent) {
-            cell.borrow_mut().children.push(child);
+    pub fn push_child(&mut self, parent: NodeKey, child: NodeKey) {
+        if let Some(node) = self.slots.get_mut(parent) {
+            node.children.push(child);
+            node.element.get_mut().sync_children_mirror(&node.children);
         }
     }
 
-    /// Pre-order walk rooted at `key` that calls `sync_arena` on every
-    /// element. Traversal is external (not recursive inside each element's
-    /// impl) so each element's `sync_arena` only handles its own state.
-    /// Children are re-read from the arena after each call so elements that
-    /// mutate the arena during sync (e.g. TextArea projection rebuild) still
-    /// get their freshly committed subtree walked.
-    pub fn sync_subtree(&mut self, key: NodeKey) {
-        self.with_element_taken(key, |el, arena| el.sync_arena(arena));
-        for child in self.children_of(key) {
-            self.sync_subtree(child);
+    /// Run the pre-layout sync hook only for hosts that opted in through
+    /// `Layoutable::requires_arena_sync`.
+    pub fn sync_registered_elements(&mut self) {
+        // A sync hook may structurally mutate the arena, so iterate a stable
+        // snapshot rather than borrowing the registration list across calls.
+        let registered = self.arena_sync_nodes.clone();
+        for key in registered {
+            self.with_element_taken(key, |element, arena| element.sync_arena(arena));
         }
     }
 
@@ -691,40 +805,32 @@ impl NodeArena {
         key: NodeKey,
     ) -> crate::view::base_component::DirtyFlags {
         use crate::view::base_component::DirtyFlags;
-        let Some(cell) = self.slots.get(key) else {
+        let Some(node) = self.slots.get(key) else {
             return DirtyFlags::NONE;
         };
-        // Clone child list without holding a borrow into the cell, so we
-        // can recurse and then re-borrow to write the caches.
-        let (children, mut aggregate, mut placement_eligibility) = {
-            let node = cell.borrow();
+        // Read only the count before recursion. Child keys are fetched one at
+        // a time so this twice-per-layout-pass walk does not allocate a cloned
+        // Vec for every container.
+        let (child_count, mut aggregate, mut placement_eligibility) = {
+            let element = node.element.borrow();
             (
-                node.children.clone(),
-                node.element
+                node.children.len(),
+                element
                     .local_dirty_flags()
-                    .union(node.arena_local_dirty),
-                Self::local_placement_eligibility_metadata(&node),
+                    .union(node.arena_local_dirty.get()),
+                element.placement_eligibility_metadata(),
             )
         };
-        for child in children {
-            aggregate = aggregate.union(self.refresh_subtree_dirty_cache(child));
-            placement_eligibility =
-                placement_eligibility.union(self.cached_placement_eligibility_metadata(child));
+        for index in 0..child_count {
+            if let Some(child) = self.child_key_at(key, index) {
+                aggregate = aggregate.union(self.refresh_subtree_dirty_cache(child));
+                placement_eligibility =
+                    placement_eligibility.union(self.cached_placement_eligibility_metadata(child));
+            }
         }
-        {
-            let mut node = cell.borrow_mut();
-            node.cached_subtree_dirty = aggregate;
-            node.cached_placement_eligibility = placement_eligibility;
-        }
+        node.cached_subtree_dirty.set(aggregate);
+        node.cached_placement_eligibility.set(placement_eligibility);
         aggregate
-    }
-
-    fn local_placement_eligibility_metadata(node: &Node) -> PlacementEligibilityMetadata {
-        // Each node declares the blockers it personally contributes; leaves
-        // (Text/Image/Svg) and pass-through wrappers default to transparent
-        // so a clean stationary subtree containing them stays skippable.
-        // Descendant blockers are unioned separately by the subtree walk.
-        node.element.placement_eligibility_metadata()
     }
 
     /// Fast read of Phase 5b cached placement eligibility metadata.
@@ -738,7 +844,7 @@ impl NodeArena {
     ) -> PlacementEligibilityMetadata {
         self.slots
             .get(key)
-            .map(|cell| cell.borrow().cached_placement_eligibility)
+            .map(|node| node.cached_placement_eligibility.get())
             .unwrap_or_else(PlacementEligibilityMetadata::unknown)
     }
 
@@ -754,13 +860,11 @@ impl NodeArena {
             return;
         }
 
-        let Some(cell) = self.slots.get(key) else {
+        let Some(node) = self.slots.get(key) else {
             return;
         };
-        {
-            let mut node = cell.borrow_mut();
-            node.arena_local_dirty = node.arena_local_dirty.union(flags);
-        }
+        node.arena_local_dirty
+            .set(node.arena_local_dirty.get().union(flags));
         self.bubble_cached_subtree_dirty(key, flags);
     }
 
@@ -782,11 +886,11 @@ impl NodeArena {
 
         let mut current = Some(key);
         while let Some(node_key) = current {
-            let Some(cell) = self.slots.get(node_key) else {
+            let Some(node) = self.slots.get(node_key) else {
                 return;
             };
-            let mut node = cell.borrow_mut();
-            node.cached_subtree_dirty = node.cached_subtree_dirty.union(flags);
+            node.cached_subtree_dirty
+                .set(node.cached_subtree_dirty.get().union(flags));
             current = node.parent;
         }
     }
@@ -814,19 +918,19 @@ impl NodeArena {
         let mut current = Some(key);
         let mut last = DirtyFlags::NONE;
         while let Some(node_key) = current {
-            let Some(cell) = self.slots.get(node_key) else {
+            let Some(node) = self.slots.get(node_key) else {
                 return last;
             };
 
             let (child_count, parent, previous, mut aggregate) = {
-                let node = cell.borrow();
+                let element = node.element.borrow();
                 (
                     node.children.len(),
                     node.parent,
-                    node.cached_subtree_dirty,
-                    node.element
+                    node.cached_subtree_dirty.get(),
+                    element
                         .local_dirty_flags()
-                        .union(node.arena_local_dirty),
+                        .union(node.arena_local_dirty.get()),
                 )
             };
 
@@ -837,7 +941,7 @@ impl NodeArena {
                 aggregate = aggregate.union(self.cached_subtree_dirty(child));
             }
 
-            cell.borrow_mut().cached_subtree_dirty = aggregate;
+            node.cached_subtree_dirty.set(aggregate);
             last = aggregate;
             // Ancestor aggregates take this node's cache as their input;
             // when it did not change they are already consistent — stop
@@ -863,13 +967,11 @@ impl NodeArena {
             return;
         }
 
-        let Some(cell) = self.slots.get(key) else {
+        let Some(node) = self.slots.get(key) else {
             return;
         };
-        {
-            let mut node = cell.borrow_mut();
-            node.arena_local_dirty = node.arena_local_dirty.without(flags);
-        }
+        node.arena_local_dirty
+            .set(node.arena_local_dirty.get().without(flags));
         self.repair_cached_subtree_dirty_ancestors(key);
     }
 
@@ -885,37 +987,39 @@ impl NodeArena {
         }
 
         let mut subtree = Vec::new();
-        self.collect_subtree_keys(key, &mut subtree);
+        self.collect_active_subtree_keys(key, &mut subtree);
         if subtree.is_empty() {
             return;
         }
 
         for node_key in &subtree {
-            if let Some(cell) = self.slots.get(*node_key) {
-                let mut node = cell.borrow_mut();
-                node.arena_local_dirty = node.arena_local_dirty.without(flags);
+            if let Some(node) = self.slots.get(*node_key) {
+                node.arena_local_dirty
+                    .set(node.arena_local_dirty.get().without(flags));
             }
         }
 
         for node_key in &subtree {
-            let Some(cell) = self.slots.get(*node_key) else {
+            let Some(node) = self.slots.get(*node_key) else {
                 continue;
             };
-            let (children, mut aggregate) = {
-                let node = cell.borrow();
+            let (child_count, mut aggregate) = {
+                let element = node.element.borrow();
                 (
-                    node.children.clone(),
-                    node.element
+                    node.children.len(),
+                    element
                         .local_dirty_flags()
-                        .union(node.arena_local_dirty),
+                        .union(node.arena_local_dirty.get()),
                 )
             };
 
-            for child in children {
-                aggregate = aggregate.union(self.cached_subtree_dirty(child));
+            for index in 0..child_count {
+                if let Some(child) = self.child_key_at(*node_key, index) {
+                    aggregate = aggregate.union(self.cached_subtree_dirty(child));
+                }
             }
 
-            cell.borrow_mut().cached_subtree_dirty = aggregate;
+            node.cached_subtree_dirty.set(aggregate);
         }
 
         // The post-order loop above already wrote fresh aggregates for the
@@ -933,7 +1037,7 @@ impl NodeArena {
     pub fn cached_subtree_dirty(&self, key: NodeKey) -> crate::view::base_component::DirtyFlags {
         self.slots
             .get(key)
-            .map(|cell| cell.borrow().cached_subtree_dirty)
+            .map(|node| node.cached_subtree_dirty.get())
             .unwrap_or(crate::view::base_component::DirtyFlags::NONE)
     }
 
@@ -947,7 +1051,7 @@ impl NodeArena {
     pub fn subtree_dirty_intersects(&self, key: NodeKey, flags: DirtyFlags) -> bool {
         self.slots
             .get(key)
-            .map(|cell| cell.borrow().cached_subtree_dirty.intersects(flags))
+            .map(|node| node.cached_subtree_dirty.get().intersects(flags))
             .unwrap_or(false)
     }
 
@@ -961,7 +1065,7 @@ impl NodeArena {
     pub fn subtree_dirty_contains(&self, key: NodeKey, flags: DirtyFlags) -> bool {
         self.slots
             .get(key)
-            .map(|cell| cell.borrow().cached_subtree_dirty.contains(flags))
+            .map(|node| node.cached_subtree_dirty.get().contains(flags))
             .unwrap_or(false)
     }
 
@@ -969,21 +1073,38 @@ impl NodeArena {
     pub fn arena_local_dirty(&self, key: NodeKey) -> DirtyFlags {
         self.slots
             .get(key)
-            .map(|cell| cell.borrow().arena_local_dirty)
+            .map(|node| node.arena_local_dirty.get())
             .unwrap_or(DirtyFlags::NONE)
     }
 
     /// Iterator over every live (key, Node) pair. Each yielded item holds a
     /// `Ref` — release it before mutating the same slot.
-    pub fn iter(&self) -> impl Iterator<Item = (NodeKey, Ref<'_, Node>)> {
-        self.slots.iter().map(|(k, cell)| (k, cell.borrow()))
+    pub fn iter(&self) -> impl Iterator<Item = (NodeKey, NodeGuard<'_>)> {
+        self.slots.iter().map(|(key, node)| (key, node.borrow()))
+    }
+
+    fn begin_element_take(&self, key: NodeKey) {
+        let mut depths = self.taken_depths.borrow_mut();
+        *depths.entry(key).or_insert(0) += 1;
+    }
+
+    fn finish_element_take(&self, key: NodeKey) {
+        let mut depths = self.taken_depths.borrow_mut();
+        let Some(depth) = depths.get_mut(&key) else {
+            return;
+        };
+        if *depth <= 1 {
+            depths.remove(&key);
+        } else {
+            *depth -= 1;
+        }
     }
 
     /// Take the element out of slot `key`, run `f` with exclusive access
     /// to the element plus an unaliased `&mut NodeArena` (the slot
     /// temporarily holds a [`Placeholder`]), then put the real element
-    /// back. Panics inside `f` leave the placeholder in place rather than
-    /// poisoning the slot, so arena invariants survive even on unwind.
+    /// back. If `f` panics, the element is restored before the panic resumes,
+    /// so a host-level unwind boundary cannot observe a placeholder slot.
     ///
     /// Returns `None` if `key` is missing. During `f`, looking up `key`
     /// again in the arena yields the placeholder — callers are expected
@@ -993,20 +1114,17 @@ impl NodeArena {
         key: NodeKey,
         f: impl FnOnce(&mut Box<dyn ElementTrait>, &mut NodeArena) -> R,
     ) -> Option<R> {
-        // Phase 1: swap the real element out for a placeholder.
-        // We need &mut access to the slot's RefCell contents. `get_mut`
-        // on SlotMap gives &mut RefCell<Node>; `.get_mut()` on RefCell
-        // gives &mut Node without runtime borrow tracking.
+        // Phase 1: swap the real element out for a placeholder. Mutable arena
+        // access reaches the element RefCell through `get_mut()` without a
+        // runtime borrow check.
         let taken: Box<dyn ElementTrait> = {
-            let cell = self.slots.get_mut(key)?;
-            let node: &mut Node = cell.get_mut();
-            std::mem::replace(&mut node.element, Box::new(Placeholder))
+            let node = self.slots.get_mut(key)?;
+            std::mem::replace(node.element.get_mut(), Box::new(Placeholder))
         };
+        self.begin_element_take(key);
 
-        // RAII guard: if `f` panics, keep the placeholder permanently in
-        // the slot (we can't recover the real element anyway — it's
-        // being unwound with the panic). That preserves the invariant
-        // that every live slot has *some* element in it.
+        // RAII guard owns the real element throughout the callback and restores
+        // it on both normal return and unwinding.
         struct Guard<'a> {
             arena: &'a mut NodeArena,
             key: NodeKey,
@@ -1016,12 +1134,11 @@ impl NodeArena {
             fn drop(&mut self) {
                 if let Some(element) = self.taken.take() {
                     // Normal path: put the real element back.
-                    if let Some(cell) = self.arena.slots.get_mut(self.key) {
-                        cell.get_mut().element = element;
+                    if let Some(node) = self.arena.slots.get_mut(self.key) {
+                        *node.element.get_mut() = element;
                     }
                 }
-                // Panic path: `taken` is None because we moved it into
-                // `f`; the placeholder stays in place.
+                self.arena.finish_element_take(self.key);
             }
         }
 
@@ -1031,15 +1148,14 @@ impl NodeArena {
             taken: Some(taken),
         };
 
-        // Move the element out of the guard while we run `f`, so that on
-        // panic `guard.taken` is already `None` and the guard leaves the
-        // placeholder in place.
-        let mut element = guard.taken.take().expect("guard initialised with element");
-        let result = f(&mut element, guard.arena);
-        // Re-stash for the guard's Drop to put back.
-        guard.taken = Some(element);
+        let result = f(
+            guard
+                .taken
+                .as_mut()
+                .expect("guard initialised with element"),
+            guard.arena,
+        );
         drop(guard);
-
         Some(result)
     }
 
@@ -1098,11 +1214,12 @@ impl NodeArena {
         key: NodeKey,
         f: impl FnOnce(&mut Box<dyn ElementTrait>, &NodeArena) -> R,
     ) -> Option<R> {
-        let slot_ref = self.slots.get(key)?;
+        let node = self.slots.get(key)?;
         let taken: Box<dyn ElementTrait> = {
-            let mut node = slot_ref.borrow_mut();
-            std::mem::replace(&mut node.element, Box::new(Placeholder))
+            let mut element = node.element.borrow_mut();
+            std::mem::replace(&mut *element, Box::new(Placeholder))
         };
+        self.begin_element_take(key);
 
         struct Guard<'a> {
             arena: &'a NodeArena,
@@ -1112,10 +1229,11 @@ impl NodeArena {
         impl Drop for Guard<'_> {
             fn drop(&mut self) {
                 if let Some(element) = self.taken.take() {
-                    if let Some(cell) = self.arena.slots.get(self.key) {
-                        cell.borrow_mut().element = element;
+                    if let Some(node) = self.arena.slots.get(self.key) {
+                        *node.element.borrow_mut() = element;
                     }
                 }
+                self.arena.finish_element_take(self.key);
             }
         }
 
@@ -1125,11 +1243,14 @@ impl NodeArena {
             taken: Some(taken),
         };
 
-        let mut element = guard.taken.take().expect("guard initialised with element");
-        let result = f(&mut element, guard.arena);
-        guard.taken = Some(element);
+        let result = f(
+            guard
+                .taken
+                .as_mut()
+                .expect("guard initialised with element"),
+            guard.arena,
+        );
         drop(guard);
-
         Some(result)
     }
 }
@@ -1242,6 +1363,12 @@ mod tests {
     }
 
     impl Layoutable for RecordingElement {
+        fn sync_arena(&mut self, _arena: &mut NodeArena) {
+            RECORDED_BUILDS.with(|builds| builds.borrow_mut().push(self.label));
+        }
+        fn requires_arena_sync(&self) -> bool {
+            true
+        }
         fn measure(&mut self, _constraints: LayoutConstraints, _arena: &mut NodeArena) {}
         fn place(&mut self, _placement: LayoutPlacement, _arena: &mut NodeArena) {}
         fn measured_size(&self) -> (f32, f32) {
@@ -1311,7 +1438,7 @@ mod tests {
         element
     }
 
-    fn link_child(arena: &NodeArena, parent: NodeKey, child: NodeKey) {
+    fn link_child(arena: &mut NodeArena, parent: NodeKey, child: NodeKey) {
         arena.set_parent(child, Some(parent));
         arena.push_child(parent, child);
     }
@@ -1347,6 +1474,120 @@ mod tests {
     }
 
     #[test]
+    fn remove_subtree_follows_parent_owned_side_slots() {
+        let mut arena = NodeArena::new();
+        let owner = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
+        let side_root = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
+        let side_child = insert_test_node(&mut arena, 3, DirtyFlags::NONE);
+
+        // Side roots are owned by the host but intentionally absent from its
+        // active Node.children list until the host selects that slot.
+        arena.set_parent(side_root, Some(owner));
+        arena.set_parent(side_child, Some(side_root));
+        arena.push_child(side_root, side_child);
+
+        assert_eq!(arena.remove_subtree(owner), 3);
+        assert!(arena.is_empty());
+        assert_eq!(arena.find_by_stable_id(2), None);
+        assert_eq!(arena.find_by_stable_id(3), None);
+    }
+
+    #[test]
+    fn remove_subtree_detaches_surviving_parent_and_root_registry() {
+        let mut arena = NodeArena::new();
+        let root = arena.insert(Node::new(Box::new(clean_element())));
+        let child = arena.insert(Node::new(Box::new(clean_element())));
+        arena.push_root(root);
+        arena.set_parent(child, Some(root));
+        arena.set_children(root, vec![child]);
+
+        assert_eq!(arena.remove_subtree(child), 1);
+        assert_eq!(arena.children_of(root), Vec::<NodeKey>::new());
+        assert!(
+            arena
+                .get(root)
+                .expect("root survives")
+                .element
+                .children()
+                .is_empty()
+        );
+
+        assert_eq!(arena.remove_subtree(root), 1);
+        assert!(arena.roots().is_empty());
+    }
+
+    #[test]
+    fn removing_currently_taken_element_cleans_stable_index() {
+        let mut arena = NodeArena::new();
+        let key = insert_test_node(&mut arena, 77, DirtyFlags::NONE);
+
+        arena.with_element_taken(key, |_element, arena| {
+            assert_eq!(arena.remove_subtree(key), 1);
+        });
+
+        assert_eq!(arena.find_by_stable_id(77), None);
+        assert!(!arena.contains_key(key));
+    }
+
+    #[test]
+    fn stable_id_lookup_rejects_in_place_identity_drift() {
+        let mut arena = NodeArena::new();
+        let key = insert_test_node(&mut arena, 7, DirtyFlags::NONE);
+        *arena.get_mut(key).expect("node exists").element = Box::new(Placeholder);
+
+        assert_eq!(arena.find_by_stable_id(7), None);
+    }
+
+    #[test]
+    fn with_element_taken_restores_element_before_resuming_panic() {
+        let mut arena = NodeArena::new();
+        let key = insert_test_node(&mut arena, 9, DirtyFlags::NONE);
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            arena.with_element_taken(key, |_element, _arena| {
+                panic!("intentional test panic");
+            });
+        }));
+
+        assert!(panic.is_err());
+        assert_eq!(arena.find_by_stable_id(9), Some(key));
+        assert!(
+            arena
+                .get(key)
+                .expect("node survives panic")
+                .element
+                .as_any()
+                .is::<TestElement>()
+        );
+    }
+
+    #[test]
+    fn structural_children_mutation_keeps_compatibility_mirror_in_sync() {
+        let mut arena = NodeArena::new();
+        let parent = arena.insert(Node::new(Box::new(clean_element())));
+        let child = arena.insert(Node::new(Box::new(clean_element())));
+
+        arena.set_parent(child, Some(parent));
+        arena.set_children(parent, vec![child]);
+
+        let node = arena.get(parent).expect("parent exists");
+        assert_eq!(node.children(), &[child]);
+        assert_eq!(node.element.children(), &[child]);
+    }
+
+    #[test]
+    fn sync_arena_visits_only_registered_hosts() {
+        RECORDED_BUILDS.with(|builds| builds.borrow_mut().clear());
+        let mut arena = NodeArena::new();
+        arena.insert(Node::new(Box::new(TestElement::new(1, DirtyFlags::NONE))));
+        arena.insert(Node::new(Box::new(RecordingElement::new(2, "sync"))));
+
+        arena.sync_registered_elements();
+
+        RECORDED_BUILDS.with(|builds| assert_eq!(&*builds.borrow(), &["sync"]));
+    }
+
+    #[test]
     fn deferred_build_uses_node_key_when_stable_ids_collide() {
         RECORDED_BUILDS.with(|builds| builds.borrow_mut().clear());
 
@@ -1354,8 +1595,8 @@ mod tests {
         let root = arena.insert(Node::new(Box::new(RecordingElement::new(1, "root"))));
         let first = arena.insert(Node::new(Box::new(RecordingElement::new(42, "first"))));
         let second = arena.insert(Node::new(Box::new(RecordingElement::new(42, "second"))));
-        link_child(&arena, root, first);
-        link_child(&arena, root, second);
+        link_child(&mut arena, root, first);
+        link_child(&mut arena, root, second);
 
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -1391,7 +1632,7 @@ mod tests {
         let mut arena = NodeArena::new();
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::PAINT);
-        link_child(&arena, root, child);
+        link_child(&mut arena, root, child);
 
         arena.refresh_subtree_dirty_cache(root);
 
@@ -1407,7 +1648,7 @@ mod tests {
         let mut arena = NodeArena::new();
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
-        link_child(&arena, root, child);
+        link_child(&mut arena, root, child);
 
         arena.refresh_subtree_dirty_cache(root);
         arena.mark_dirty(child, DirtyFlags::PAINT);
@@ -1423,7 +1664,7 @@ mod tests {
         let mut arena = NodeArena::new();
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
-        link_child(&arena, root, child);
+        link_child(&mut arena, root, child);
 
         arena.refresh_subtree_dirty_cache(root);
         arena.mark_dirty(child, DirtyFlags::PAINT);
@@ -1441,8 +1682,8 @@ mod tests {
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
         let grandchild = insert_test_node(&mut arena, 3, DirtyFlags::NONE);
-        link_child(&arena, root, child);
-        link_child(&arena, child, grandchild);
+        link_child(&mut arena, root, child);
+        link_child(&mut arena, child, grandchild);
 
         arena.refresh_subtree_dirty_cache(root);
         arena.mark_dirty(child, DirtyFlags::PAINT);
@@ -1463,8 +1704,8 @@ mod tests {
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let dirty_sibling = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
         let clean_sibling = insert_test_node(&mut arena, 3, DirtyFlags::NONE);
-        link_child(&arena, root, dirty_sibling);
-        link_child(&arena, root, clean_sibling);
+        link_child(&mut arena, root, dirty_sibling);
+        link_child(&mut arena, root, clean_sibling);
 
         arena.refresh_subtree_dirty_cache(root);
         arena.mark_dirty(dirty_sibling, DirtyFlags::PAINT);
@@ -1482,8 +1723,8 @@ mod tests {
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
         let grandchild = insert_test_node(&mut arena, 3, DirtyFlags::NONE);
-        link_child(&arena, root, child);
-        link_child(&arena, child, grandchild);
+        link_child(&mut arena, root, child);
+        link_child(&mut arena, child, grandchild);
 
         arena.refresh_subtree_dirty_cache(root);
         assert!(
@@ -1517,8 +1758,8 @@ mod tests {
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
         let grandchild = insert_test_node(&mut arena, 3, DirtyFlags::NONE);
-        link_child(&arena, root, child);
-        link_child(&arena, child, grandchild);
+        link_child(&mut arena, root, child);
+        link_child(&mut arena, child, grandchild);
 
         arena.refresh_subtree_dirty_cache(root);
         assert_eq!(arena.arena_local_dirty(grandchild), DirtyFlags::NONE);
@@ -1560,8 +1801,8 @@ mod tests {
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
         let grandchild = insert_test_node(&mut arena, 3, DirtyFlags::NONE);
-        link_child(&arena, root, child);
-        link_child(&arena, child, grandchild);
+        link_child(&mut arena, root, child);
+        link_child(&mut arena, child, grandchild);
 
         arena.refresh_subtree_dirty_cache(root);
         arena.mark_dirty(grandchild, DirtyFlags::PAINT);
@@ -1584,7 +1825,7 @@ mod tests {
         let mut arena = NodeArena::new();
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::PAINT);
-        link_child(&arena, root, child);
+        link_child(&mut arena, root, child);
 
         arena.refresh_subtree_dirty_cache(root);
         arena.mark_dirty(child, DirtyFlags::PAINT);
@@ -1619,8 +1860,8 @@ mod tests {
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let left = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
         let right = insert_test_node(&mut arena, 3, DirtyFlags::NONE);
-        link_child(&arena, root, left);
-        link_child(&arena, root, right);
+        link_child(&mut arena, root, left);
+        link_child(&mut arena, root, right);
 
         arena.refresh_subtree_dirty_cache(root);
         arena.mark_dirty(left, DirtyFlags::PAINT);
@@ -1649,8 +1890,8 @@ mod tests {
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
         let grandchild = insert_test_node(&mut arena, 3, DirtyFlags::NONE);
-        link_child(&arena, root, child);
-        link_child(&arena, child, grandchild);
+        link_child(&mut arena, root, child);
+        link_child(&mut arena, child, grandchild);
 
         arena.refresh_subtree_dirty_cache(root);
         arena.mark_dirty(child, DirtyFlags::PAINT);
@@ -1687,8 +1928,8 @@ mod tests {
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
         let grandchild = insert_test_node(&mut arena, 3, DirtyFlags::NONE);
-        link_child(&arena, root, child);
-        link_child(&arena, child, grandchild);
+        link_child(&mut arena, root, child);
+        link_child(&mut arena, child, grandchild);
 
         arena.refresh_subtree_dirty_cache(root);
         arena.mark_dirty(root, DirtyFlags::PAINT);
@@ -1715,8 +1956,8 @@ mod tests {
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
         let grandchild = insert_test_node(&mut arena, 3, DirtyFlags::NONE);
-        link_child(&arena, root, child);
-        link_child(&arena, child, grandchild);
+        link_child(&mut arena, root, child);
+        link_child(&mut arena, child, grandchild);
 
         arena.refresh_subtree_dirty_cache(root);
         arena.mark_dirty(root, DirtyFlags::PAINT);
@@ -1739,8 +1980,8 @@ mod tests {
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
         let grandchild = insert_test_node(&mut arena, 3, DirtyFlags::PAINT);
-        link_child(&arena, root, child);
-        link_child(&arena, child, grandchild);
+        link_child(&mut arena, root, child);
+        link_child(&mut arena, child, grandchild);
 
         arena.refresh_subtree_dirty_cache(root);
         arena.mark_dirty(child, DirtyFlags::PAINT);
@@ -1782,9 +2023,9 @@ mod tests {
         let left = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
         let left_child = insert_test_node(&mut arena, 3, DirtyFlags::NONE);
         let right = insert_test_node(&mut arena, 4, DirtyFlags::NONE);
-        link_child(&arena, root, left);
-        link_child(&arena, left, left_child);
-        link_child(&arena, root, right);
+        link_child(&mut arena, root, left);
+        link_child(&mut arena, left, left_child);
+        link_child(&mut arena, root, right);
 
         arena.refresh_subtree_dirty_cache(root);
         arena.mark_dirty(left, DirtyFlags::PAINT);
@@ -1815,7 +2056,7 @@ mod tests {
         let mut arena = NodeArena::new();
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
-        link_child(&arena, root, child);
+        link_child(&mut arena, root, child);
 
         arena.refresh_subtree_dirty_cache(root);
         assert!(
@@ -1843,7 +2084,7 @@ mod tests {
         let mut arena = NodeArena::new();
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
-        link_child(&arena, root, child);
+        link_child(&mut arena, root, child);
 
         arena.refresh_subtree_dirty_cache(root);
         assert_cached_paint_clean(&arena, child);
@@ -1866,7 +2107,7 @@ mod tests {
         let mut arena = NodeArena::new();
         let root = arena.insert(Node::new(Box::new(clean_element())));
         let child = arena.insert(Node::new(Box::new(clean_element())));
-        link_child(&arena, root, child);
+        link_child(&mut arena, root, child);
 
         arena.refresh_subtree_dirty_cache(root);
         assert!(
@@ -1921,7 +2162,7 @@ mod tests {
         let root = arena.insert(Node::new(Box::new(clean_element())));
         let child = arena.insert(Node::new(Box::new(clean_element())));
         let color = Color::rgba(12, 34, 56, 200);
-        link_child(&arena, root, child);
+        link_child(&mut arena, root, child);
 
         arena.refresh_subtree_dirty_cache(root);
         assert!(
@@ -1958,7 +2199,7 @@ mod tests {
         let root = arena.insert(Node::new(Box::new(clean_element())));
         let child = arena.insert(Node::new(Box::new(clean_element())));
         let color = Color::rgb(90, 80, 70);
-        link_child(&arena, root, child);
+        link_child(&mut arena, root, child);
 
         arena.refresh_subtree_dirty_cache(root);
         assert!(
@@ -1997,7 +2238,7 @@ mod tests {
                 let root = arena.insert(Node::new(Box::new(clean_element())));
                 let child = arena.insert(Node::new(Box::new(clean_element())));
                 let color = $color;
-                link_child(&arena, root, child);
+                link_child(&mut arena, root, child);
 
                 arena.refresh_subtree_dirty_cache(root);
                 assert!(
@@ -2060,7 +2301,7 @@ mod tests {
         let mut arena = NodeArena::new();
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
-        link_child(&arena, root, child);
+        link_child(&mut arena, root, child);
 
         arena.refresh_subtree_dirty_cache(root);
         assert_eq!(arena.arena_local_dirty(child), DirtyFlags::NONE);
@@ -2098,7 +2339,7 @@ mod tests {
         let mut arena = NodeArena::new();
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
-        link_child(&arena, root, child);
+        link_child(&mut arena, root, child);
 
         arena.refresh_subtree_dirty_cache(root);
         assert_cached_paint_clean(&arena, child);
@@ -2140,7 +2381,7 @@ mod tests {
         let mut arena = NodeArena::new();
         let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
         let child = insert_test_node(&mut arena, 2, DirtyFlags::PAINT);
-        link_child(&arena, root, child);
+        link_child(&mut arena, root, child);
 
         arena.refresh_subtree_dirty_cache(root);
         assert!(
@@ -2224,7 +2465,7 @@ impl<'a> ViewportRef<'a> {
 /// Phase C once element behaviour exposes the required queries.
 pub struct NodeRef<'a> {
     key: NodeKey,
-    guard: Ref<'a, Node>,
+    guard: NodeGuard<'a>,
     viewport: ViewportRef<'a>,
 }
 

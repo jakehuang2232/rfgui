@@ -406,8 +406,8 @@ fn arena_move_child(arena: &mut NodeArena, parent: NodeKey, from: usize, to: usi
     arena.mutate_element_with_invalidation(parent, |element, cx| {
         if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
             let _previous = el.replace_children(cx.arena(), children);
-        } else if let Some(mirror) = element.children_mut() {
-            *mirror = children;
+        } else {
+            element.sync_children_mirror(&children);
         }
         cx.invalidate(crate::view::base_component::DirtyFlags::ALL);
     });

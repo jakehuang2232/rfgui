@@ -20,7 +20,6 @@ use crate::view::node_arena::{NodeArena, NodeKey};
 /// dispatches to `measure`.
 pub(crate) struct MeasureChildrenInputs<'a> {
     pub children: &'a [NodeKey],
-    pub absolute_mask: &'a [bool],
     pub child_available_width: f32,
     pub child_available_height: f32,
     pub child_percent_base_width: Option<f32>,
@@ -33,7 +32,6 @@ pub(crate) struct MeasureChildrenInputs<'a> {
 pub(crate) fn measure_axis_children(inputs: MeasureChildrenInputs<'_>, arena: &mut NodeArena) {
     let MeasureChildrenInputs {
         children,
-        absolute_mask,
         child_available_width,
         child_available_height,
         child_percent_base_width,
@@ -42,24 +40,7 @@ pub(crate) fn measure_axis_children(inputs: MeasureChildrenInputs<'_>, arena: &m
         viewport_height,
     } = inputs;
 
-    for (child_index, child_key) in children.iter().copied().enumerate() {
-        if absolute_mask.get(child_index).copied().unwrap_or(false) {
-            arena.with_element_taken(child_key, |child, arena| {
-                child.measure(
-                    LayoutConstraints {
-                        max_width: child_available_width,
-                        max_height: child_available_height,
-                        viewport_width,
-                        viewport_height,
-                        percent_base_width: child_percent_base_width,
-                        percent_base_height: child_percent_base_height,
-                    },
-                    arena,
-                );
-            });
-            continue;
-        }
-
+    for child_key in children.iter().copied() {
         arena.with_element_taken(child_key, |child, arena| {
             child.measure(
                 LayoutConstraints {
@@ -113,7 +94,6 @@ pub(crate) fn measure_axis(
     measure_axis_children(
         MeasureChildrenInputs {
             children: inputs.children,
-            absolute_mask: inputs.absolute_mask,
             child_available_width: inputs.child_available_width,
             child_available_height: inputs.child_available_height,
             child_percent_base_width: inputs.child_percent_base_width,

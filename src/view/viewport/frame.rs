@@ -135,7 +135,7 @@ pub(super) struct FrameTimings {
 #[derive(Clone, Copy, Default)]
 pub(super) struct LayoutTraversalProfile {
     pub root_count: usize,
-    pub sync_subtree_ms: f64,
+    pub sync_registered_elements_ms: f64,
     pub dirty_refresh_before_measure_ms: f64,
     pub measure_roots_ms: f64,
     pub measure_candidate_clean_children: usize,

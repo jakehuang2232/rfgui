@@ -7,13 +7,12 @@
 //! `get_scroll_offset_by_id`).
 
 use std::any::TypeId;
-use std::cell::Ref;
 use std::fmt;
 use std::marker::PhantomData;
 use std::ops::Deref;
 
 use crate::view::base_component::ElementTrait;
-use crate::view::node_arena::Node;
+use crate::view::node_arena::NodeGuard;
 
 /// Opaque id assigned by the viewport to each element in the retained tree.
 ///
@@ -356,7 +355,7 @@ impl PartialEq for EventTarget<'_> {
 /// `Deref`s to either `T` ([`EventTarget::downcast::<T>`]) or
 /// `dyn ElementTrait` ([`EventTarget::element`]).
 pub struct ElementRef<'a, T: ?Sized> {
-    guard: Ref<'a, Node>,
+    guard: NodeGuard<'a>,
     _phantom: PhantomData<fn() -> *const T>,
 }
 
@@ -376,7 +375,7 @@ impl<'a, T: ElementTrait> Deref for ElementRef<'a, T> {
 impl<'a> Deref for ElementRef<'a, dyn ElementTrait> {
     type Target = dyn ElementTrait;
     fn deref(&self) -> &dyn ElementTrait {
-        &*self.guard.element
+        self.guard.element.as_ref()
     }
 }
 

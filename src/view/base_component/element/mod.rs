@@ -1540,6 +1540,12 @@ pub trait Layoutable {
     /// noop. Override when the element owns arena state that external setters
     /// cannot commit directly.
     fn sync_arena(&mut self, _arena: &mut crate::view::node_arena::NodeArena) {}
+    /// Opt in when [`Self::sync_arena`] performs real work. Registered hosts
+    /// are visited once before layout; the default keeps ordinary elements
+    /// out of what used to be an unconditional whole-tree sync traversal.
+    fn requires_arena_sync(&self) -> bool {
+        false
+    }
     fn measure(
         &mut self,
         constraints: LayoutConstraints,
@@ -2027,11 +2033,10 @@ pub trait ElementTrait:
         &[]
     }
 
-    /// Mutable child-key list. Default returns `None` — leaf elements
-    /// don't have child lists. Containers override with `Some(&mut vec)`.
-    fn children_mut(&mut self) -> Option<&mut Vec<crate::view::node_arena::NodeKey>> {
-        None
-    }
+    /// Update the compatibility child mirror after the arena commits the
+    /// authoritative structural list. Hosts must not expose independent
+    /// mutation of this mirror.
+    fn sync_children_mirror(&mut self, _children: &[crate::view::node_arena::NodeKey]) {}
 
     /// Legacy u64 parent id. Retained for renderer_adapter compatibility
     /// during Approach-C migration.
@@ -3212,11 +3217,6 @@ impl Element {
     /// during Approach-C migration; final state lives on `Node.parent`.
     pub fn set_parent_id(&mut self, parent_id: Option<u64>) {
         self.core.parent_id = parent_id;
-    }
-
-    /// Replace the child list wholesale.
-    pub fn set_children(&mut self, children: Vec<crate::view::node_arena::NodeKey>) {
-        self.children = children;
     }
 
     /// Placement-skip buster for inline IFC roots: a root whose layout
@@ -4467,8 +4467,9 @@ impl ElementTrait for Element {
         &self.children
     }
 
-    fn children_mut(&mut self) -> Option<&mut Vec<crate::view::node_arena::NodeKey>> {
-        Some(&mut self.children)
+    fn sync_children_mirror(&mut self, children: &[crate::view::node_arena::NodeKey]) {
+        self.children.clear();
+        self.children.extend_from_slice(children);
     }
 
     fn parent_id(&self) -> Option<u64> {

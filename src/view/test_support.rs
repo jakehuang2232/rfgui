@@ -130,8 +130,8 @@ pub(crate) fn get_element<'a, T: 'static>(
     key: NodeKey,
 ) -> std::cell::Ref<'a, T> {
     let node = arena.get(key).expect("get_element: key not found in arena");
-    std::cell::Ref::map(node, |n| {
-        n.element
+    std::cell::Ref::map(node.element, |element| {
+        element
             .as_any()
             .downcast_ref::<T>()
             .expect("get_element: wrong element type")
@@ -146,8 +146,8 @@ pub(crate) fn get_element_mut<'a, T: 'static>(
     let node = arena
         .get_mut(key)
         .expect("get_element_mut: key not found in arena");
-    std::cell::RefMut::map(node, |n| {
-        n.element
+    std::cell::RefMut::map(node.element, |element| {
+        element
             .as_any_mut()
             .downcast_mut::<T>()
             .expect("get_element_mut: wrong element type")

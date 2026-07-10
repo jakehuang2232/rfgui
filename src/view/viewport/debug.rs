@@ -580,8 +580,8 @@ pub(super) fn build_layout_traversal_trace_nodes(
 ) -> Vec<TraceRenderNode> {
     vec![
         TraceRenderNode::new(
-            format!("sync_subtree (roots={})", profile.root_count),
-            profile.sync_subtree_ms,
+            "sync_registered_elements",
+            profile.sync_registered_elements_ms,
         ),
         TraceRenderNode::new(
             format!(

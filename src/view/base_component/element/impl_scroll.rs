@@ -879,26 +879,6 @@ impl Element {
         (self.layout_state.layout_flow_position.x, self.layout_state.layout_flow_position.y)
     }
 
-    /// Append a pre-inserted arena node as child. Caller must already have
-    /// inserted the child into the arena and set its `Node.parent` to this
-    /// element's own key.
-    ///
-    /// Approach-C migration: old API took `Box<dyn ElementTrait>` and
-    /// pushed into a `Vec<Box<_>>` owned by this element. That ownership
-    /// now lives in [`crate::view::node_arena::NodeArena`]; callers hand
-    /// keys instead.
-    pub fn add_child(&mut self, arena: &crate::view::node_arena::NodeArena, child: crate::view::node_arena::NodeKey) {
-        if let Some(child_node) = arena.get(child) {
-            if let Some(element) = child_node.element.as_any().downcast_ref::<Element>() {
-                self.has_absolute_descendant_for_hit_test |= element
-                    .is_absolute_positioned_for_hit_test()
-                    || element.has_absolute_descendant_for_hit_test;
-            }
-        }
-        self.children.push(child);
-        self.mark_layout_dirty();
-    }
-
     /// Replace the child-key list wholesale. Returns the previous keys so
     /// the caller can remove the corresponding nodes from the arena.
     pub(crate) fn replace_children(

@@ -589,8 +589,8 @@ impl DebugCaptureBuilder {
             .include_layout
             .then(|| layout_state_from_snapshot(snapshot, scroll_offset));
         let local_dirty = DebugDirtyFlags::from_flags(element.local_dirty_flags());
-        let arena_local_dirty = DebugDirtyFlags::from_flags(node_ref.arena_local_dirty);
-        let cached_subtree_dirty = DebugDirtyFlags::from_flags(node_ref.cached_subtree_dirty);
+        let arena_local_dirty = DebugDirtyFlags::from_flags(node_ref.arena_local_dirty.get());
+        let cached_subtree_dirty = DebugDirtyFlags::from_flags(node_ref.cached_subtree_dirty.get());
         let interaction = self
             .options
             .include_interaction

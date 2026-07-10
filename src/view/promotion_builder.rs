@@ -1032,8 +1032,9 @@ mod aware_filter_tests {
         fn children(&self) -> &[NodeKey] {
             &self.children
         }
-        fn children_mut(&mut self) -> Option<&mut Vec<NodeKey>> {
-            Some(&mut self.children)
+        fn sync_children_mirror(&mut self, children: &[NodeKey]) {
+            self.children.clear();
+            self.children.extend_from_slice(children);
         }
         // supports_promoted_descendants: default false — the point of the test.
     }
@@ -1052,14 +1053,8 @@ mod aware_filter_tests {
     }
 
     fn append_child(arena: &mut NodeArena, parent: NodeKey, child: NodeKey) {
-        // Mirror the trait's children list so collect_promotion_candidates
-        // walks via `node.children()`.
-        if let Some(mut parent_node) = arena.get_mut(parent) {
-            parent_node.children.push(child);
-            if let Some(children_mut) = parent_node.element.children_mut() {
-                children_mut.push(child);
-            }
-        }
+        arena.set_parent(child, Some(parent));
+        arena.push_child(parent, child);
     }
 
     /// Control: a fully `Element`-only subtree promotes everything as
@@ -1213,8 +1208,9 @@ mod aware_filter_tests {
         fn children(&self) -> &[NodeKey] {
             &self.children
         }
-        fn children_mut(&mut self) -> Option<&mut Vec<NodeKey>> {
-            Some(&mut self.children)
+        fn sync_children_mirror(&mut self, children: &[NodeKey]) {
+            self.children.clear();
+            self.children.extend_from_slice(children);
         }
         fn supports_promoted_descendants(&self) -> bool {
             true

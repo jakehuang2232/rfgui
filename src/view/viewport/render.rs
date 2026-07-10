@@ -10,8 +10,8 @@ fn build_layout_pass_trace_children(
 ) -> Vec<TraceRenderNode> {
     vec![
         TraceRenderNode::new(
-            format!("sync_subtree (roots={})", traversal_profile.root_count),
-            traversal_profile.sync_subtree_ms,
+            "sync_registered_elements".to_string(),
+            traversal_profile.sync_registered_elements_ms,
         ),
         TraceRenderNode::new(
             format!(
@@ -92,15 +92,12 @@ impl Viewport {
             percent_base_width: Some(self.logical_width),
             percent_base_height: Some(self.logical_height),
         };
-        // Flush deferred arena mutations (e.g. TextArea projection subtree
-        // commits queued by imperative setters between frames). Must run
-        // before measure so layout sees the current projection state.
-        let sync_subtree_started_at = Instant::now();
-        for &root_key in &root_keys {
-            arena.sync_subtree(root_key);
-        }
-        traversal_profile.sync_subtree_ms =
-            sync_subtree_started_at.elapsed().as_secs_f64() * 1000.0;
+        // Flush deferred arena mutations for explicitly registered hosts.
+        // Must run before measure so layout sees their current arena state.
+        let sync_registered_elements_started_at = Instant::now();
+        arena.sync_registered_elements();
+        traversal_profile.sync_registered_elements_ms =
+            sync_registered_elements_started_at.elapsed().as_secs_f64() * 1000.0;
         // Refresh the per-node subtree-dirty cache once at the top of the
         // measure pass so every Element::measure / place can read
         // subtree_dirty_flags via an O(1) cache lookup instead of walking

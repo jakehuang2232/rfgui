@@ -381,8 +381,9 @@ impl ElementTrait for TextAreaProjectionSegment {
         &self.children
     }
 
-    fn children_mut(&mut self) -> Option<&mut Vec<NodeKey>> {
-        Some(&mut self.children)
+    fn sync_children_mirror(&mut self, children: &[NodeKey]) {
+        self.children.clear();
+        self.children.extend_from_slice(children);
     }
 
     fn parent_id(&self) -> Option<u64> {

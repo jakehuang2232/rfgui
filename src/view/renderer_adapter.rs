@@ -779,8 +779,8 @@ pub fn commit_descriptor_tree(
     arena.with_element_taken(key, |element, arena_ref| {
         if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
             let _previous = el.replace_children(arena_ref, child_keys);
-        } else if let Some(mirror) = element.children_mut() {
-            *mirror = child_keys;
+        } else {
+            element.sync_children_mirror(&child_keys);
         }
     });
     // Phase 4: side-channel subtrees commit under the same parent

@@ -153,6 +153,9 @@ impl Image {
             ActiveSlot::Error => std::mem::take(&mut self.error_slot),
         };
         let previous_children = self.element.replace_children(arena, next_children);
+        if let Some(self_key) = arena.find_by_stable_id(self.element.stable_id()) {
+            arena.set_children(self_key, self.element.children().to_vec());
+        }
         match self.active_slot {
             ActiveSlot::None => {}
             ActiveSlot::Loading => self.loading_slot = previous_children,
@@ -343,7 +346,7 @@ impl ElementTrait for Image {
     fn apply_prop(
         &mut self,
         arena: &mut NodeArena,
-        _self_key: NodeKey,
+        self_key: NodeKey,
         _ctx: &crate::view::fiber_work::ApplyContext<'_>,
         name: &'static str,
         value: crate::ui::PropValue,
@@ -381,7 +384,7 @@ impl ElementTrait for Image {
                 };
                 let mut new_keys: Vec<NodeKey> = Vec::with_capacity(descriptors.len());
                 for desc in descriptors {
-                    let new_key = commit_descriptor_tree(arena, None, desc);
+                    let new_key = commit_descriptor_tree(arena, Some(self_key), desc);
                     new_keys.push(new_key);
                 }
                 match name {

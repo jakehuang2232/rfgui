@@ -483,7 +483,7 @@ mod tests {
                     .as_any()
                     .is::<rfgui::view::base_component::Text>(),
                 node.element.box_model_snapshot(),
-                node.children.clone(),
+                node.children().to_vec(),
             )
         };
         if is_text {
@@ -514,7 +514,7 @@ mod tests {
             (
                 kind,
                 node.element.box_model_snapshot(),
-                node.children.clone(),
+                node.children().to_vec(),
             )
         };
         out.push((depth, kind, snap.x, snap.y, snap.width, snap.height));
@@ -531,7 +531,7 @@ mod tests {
                     .as_any()
                     .downcast_ref::<rfgui::view::base_component::Text>()
                     .is_some_and(|text| text.content() == content),
-                node.children.clone(),
+                node.children().to_vec(),
             )
         };
         if matches {
