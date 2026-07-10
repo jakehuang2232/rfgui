@@ -41,24 +41,13 @@ struct MultipleNodes {
 
 impl Parse for MultipleNodes {
     fn parse(input: ParseStream) -> Result<Self> {
-        let mut nodes = Vec::new();
+        let mut parsed = Vec::new();
         while !input.is_empty() {
-            if input.peek(Token![<]) && !input.peek2(Token![/]) {
-                nodes.push(Child::Element(input.parse()?));
-            } else if input.peek(LitStr) {
-                nodes.push(Child::TextLiteral(input.parse()?));
-            } else if input.peek(syn::token::Brace) {
-                let content;
-                braced!(content in input);
-                nodes.push(Child::Expr(content.parse()?));
-            } else {
-                let raw = parse_raw_text(input)?;
-                if !raw.is_empty() {
-                    nodes.push(Child::TextRaw(raw));
-                }
-            }
+            parsed.push(parse_child(input)?);
         }
-        Ok(MultipleNodes { nodes })
+        Ok(MultipleNodes {
+            nodes: into_html_like_children(parsed),
+        })
     }
 }
 
@@ -103,6 +92,8 @@ struct ElementNode {
     props: Vec<Prop>,
     children: Vec<Child>,
     diagnostics: Vec<proc_macro2::TokenStream>,
+    source_start: Span,
+    source_end: Span,
 }
 
 #[derive(Clone)]
@@ -141,9 +132,16 @@ enum Child {
     Expr(Expr),
 }
 
+struct ParsedChild {
+    child: Child,
+    source_start: Span,
+    source_end: Span,
+}
+
 impl Parse for ElementNode {
     fn parse(input: ParseStream) -> Result<Self> {
-        input.parse::<Token![<]>()?;
+        let open: Token![<] = input.parse()?;
+        let source_start = open.span();
         let tag: Path = input.parse()?;
 
         let mut props = Vec::new();
@@ -225,18 +223,20 @@ impl Parse for ElementNode {
 
         if input.peek(Token![/]) {
             input.parse::<Token![/]>()?;
-            input.parse::<Token![>]>()?;
+            let close: Token![>] = input.parse()?;
             return Ok(Self {
                 tag: tag.clone(),
                 close_tag: tag.clone(),
                 props,
                 children: Vec::new(),
                 diagnostics,
+                source_start,
+                source_end: close.span(),
             });
         }
 
         if input.peek(Token![>]) {
-            input.parse::<Token![>]>()?;
+            let _: Token![>] = input.parse()?;
         } else {
             diagnostics.push(
                 syn::Error::new(tag.span(), "expected `>` to finish the start tag")
@@ -249,27 +249,21 @@ impl Parse for ElementNode {
                     props,
                     children: Vec::new(),
                     diagnostics,
+                    source_start,
+                    source_end: tag.span(),
                 });
             }
         }
 
-        let mut children = Vec::new();
+        let mut parsed_children = Vec::new();
         while !input.is_empty() && !(input.peek(Token![<]) && input.peek2(Token![/])) {
-            if input.peek(Token![<]) {
-                children.push(Child::Element(input.parse()?));
-            } else if input.peek(LitStr) {
-                children.push(Child::TextLiteral(input.parse()?));
-            } else if input.peek(syn::token::Brace) {
-                let content;
-                braced!(content in input);
-                children.push(Child::Expr(content.parse()?));
-            } else {
-                let raw = parse_raw_text(input)?;
-                if !raw.is_empty() {
-                    children.push(Child::TextRaw(raw));
-                }
-            }
+            parsed_children.push(parse_child(input)?);
         }
+        let unfinished_source_end = parsed_children
+            .last()
+            .map(|child| child.source_end)
+            .unwrap_or_else(|| tag.span());
+        let children = into_html_like_children(parsed_children);
 
         if input.is_empty() {
             diagnostics.push(
@@ -285,6 +279,8 @@ impl Parse for ElementNode {
                 props,
                 children,
                 diagnostics,
+                source_start,
+                source_end: unfinished_source_end,
             });
         }
 
@@ -297,14 +293,16 @@ impl Parse for ElementNode {
                 "closing tag does not match",
             ));
         }
-        if input.peek(Token![>]) {
-            input.parse::<Token![>]>()?;
+        let source_end = if input.peek(Token![>]) {
+            let close: Token![>] = input.parse()?;
+            close.span()
         } else {
             diagnostics.push(
                 syn::Error::new(close_tag.span(), "expected `>` after closing tag")
                     .to_compile_error(),
             );
-        }
+            close_tag.span()
+        };
 
         Ok(Self {
             tag,
@@ -312,6 +310,8 @@ impl Parse for ElementNode {
             props,
             children,
             diagnostics,
+            source_start,
+            source_end,
         })
     }
 }
@@ -500,27 +500,145 @@ fn unwrap_single_brace_group(
     Some(group.stream())
 }
 
-fn parse_raw_text(input: ParseStream) -> Result<String> {
-    let mut tokens = Vec::new();
-
-    while !input.is_empty() && !input.peek(Token![<]) && !input.peek(syn::token::Brace) {
-        let token: proc_macro2::TokenTree = input.parse()?;
-        tokens.push(token.to_string());
+fn parse_child(input: ParseStream) -> Result<ParsedChild> {
+    if input.peek(Token![<]) && !input.peek2(Token![/]) {
+        let element: ElementNode = input.parse()?;
+        return Ok(ParsedChild {
+            source_start: element.source_start,
+            source_end: element.source_end,
+            child: Child::Element(element),
+        });
     }
-
-    let joined = tokens.join(" ");
-    Ok(normalize_text(&joined))
+    if input.peek(LitStr) {
+        let literal: LitStr = input.parse()?;
+        let span = literal.span();
+        return Ok(ParsedChild {
+            child: Child::TextLiteral(literal),
+            source_start: span,
+            source_end: span,
+        });
+    }
+    if input.peek(syn::token::Brace) {
+        let content;
+        let brace = braced!(content in input);
+        return Ok(ParsedChild {
+            child: Child::Expr(content.parse()?),
+            source_start: brace.span.open(),
+            source_end: brace.span.close(),
+        });
+    }
+    parse_raw_text(input)
 }
 
-fn normalize_text(input: &str) -> String {
-    let mut out = input.split_whitespace().collect::<Vec<_>>().join(" ");
-
-    for punct in ["!", "?", ",", ".", ";", ":"] {
-        let from = format!(" {}", punct);
-        out = out.replace(&from, punct);
+fn parse_raw_text(input: ParseStream) -> Result<ParsedChild> {
+    let mut tokens = Vec::<TokenTree>::new();
+    while !input.is_empty() && !input.peek(Token![<]) && !input.peek(syn::token::Brace) {
+        tokens.push(input.parse()?);
     }
 
-    out.trim().to_string()
+    let Some(first) = tokens.first() else {
+        return Err(syn::Error::new(input.span(), "expected RSX child"));
+    };
+    let source_start = first.span();
+    let source_end = tokens.last().expect("first token exists").span();
+    let mut reconstructed = String::new();
+    let mut previous: Option<&TokenTree> = None;
+    for token in &tokens {
+        if let Some(previous) = previous {
+            let separated = spans_have_source_gap(previous.span(), token.span())
+                .unwrap_or_else(|| fallback_needs_space(previous, token));
+            if separated
+                && !reconstructed
+                    .chars()
+                    .last()
+                    .is_some_and(char::is_whitespace)
+            {
+                reconstructed.push(' ');
+            }
+        }
+        if let Some(source_text) = token.span().source_text() {
+            reconstructed.push_str(&source_text);
+        } else {
+            reconstructed.push_str(&token_fallback_text(token));
+        }
+        previous = Some(token);
+    }
+
+    Ok(ParsedChild {
+        child: Child::TextRaw(collapse_html_whitespace(&reconstructed)),
+        source_start,
+        source_end,
+    })
+}
+
+fn token_fallback_text(token: &TokenTree) -> String {
+    token.to_string()
+}
+
+fn fallback_needs_space(previous: &TokenTree, current: &TokenTree) -> bool {
+    matches!(previous, TokenTree::Ident(_) | TokenTree::Literal(_))
+        && matches!(current, TokenTree::Ident(_) | TokenTree::Literal(_))
+}
+
+fn spans_have_source_gap(previous: Span, current: Span) -> Option<bool> {
+    let end = previous.end();
+    let start = current.start();
+    if end.line == 0 || start.line == 0 || start.line < end.line {
+        return None;
+    }
+    if start.line > end.line {
+        return Some(true);
+    }
+    (start.column >= end.column).then_some(start.column > end.column)
+}
+
+fn spans_have_same_line_source_gap(previous: Span, current: Span) -> Option<bool> {
+    let end = previous.end();
+    let start = current.start();
+    if end.line == 0 || start.line == 0 || start.line < end.line {
+        return None;
+    }
+    if start.line > end.line {
+        return Some(false);
+    }
+    (start.column >= end.column).then_some(start.column > end.column)
+}
+
+fn collapse_html_whitespace(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn into_html_like_children(parsed: Vec<ParsedChild>) -> Vec<Child> {
+    let mut children = Vec::<Child>::with_capacity(parsed.len());
+    let mut previous_end = None;
+    for parsed_child in parsed {
+        let mut child = parsed_child.child;
+        if previous_end
+            .and_then(|end| spans_have_same_line_source_gap(end, parsed_child.source_start))
+            .unwrap_or(false)
+        {
+            insert_collapsed_boundary_space(&mut children, &mut child);
+        }
+        children.push(child);
+        previous_end = Some(parsed_child.source_end);
+    }
+    children
+}
+
+fn insert_collapsed_boundary_space(children: &mut Vec<Child>, next: &mut Child) {
+    if let Some(Child::TextRaw(text)) = children.last_mut() {
+        if !text.chars().last().is_some_and(char::is_whitespace) {
+            text.push(' ');
+        }
+        return;
+    }
+    if let Child::TextRaw(text) = next {
+        if !text.chars().next().is_some_and(char::is_whitespace) {
+            text.insert(0, ' ');
+        }
+        return;
+    }
+    children.push(Child::TextRaw(" ".to_string()));
 }
 
 fn component_key_tokens(element: &ElementNode) -> proc_macro2::TokenStream {
@@ -1408,7 +1526,7 @@ fn expand_object_entry_assignment(
 
 #[cfg(test)]
 mod tests {
-    use super::{MultipleNodes, ObjectValueExpr, PropValueExpr, expand_node};
+    use super::{Child, MultipleNodes, ObjectValueExpr, PropValueExpr, expand_node};
     use quote::ToTokens;
 
     #[test]
@@ -1612,5 +1730,75 @@ mod tests {
 
         let expanded = expand_node(&parsed.nodes[0]).to_string();
         assert!(expanded.contains("__rsx_create_element"));
+    }
+
+    #[test]
+    fn raw_text_preserves_punctuation_adjacency_and_explicit_spaces() {
+        let parsed =
+            syn::parse_str::<MultipleNodes>(r#"<Text>vertical-align: A - B /users/path</Text>"#)
+                .expect("raw text should parse");
+        let Child::Element(text) = &parsed.nodes[0] else {
+            panic!("expected Text element");
+        };
+        let [Child::TextRaw(content)] = text.children.as_slice() else {
+            panic!("expected one raw text child");
+        };
+        assert_eq!(content, "vertical-align: A - B /users/path");
+    }
+
+    #[test]
+    fn raw_text_collapses_html_like_whitespace() {
+        let parsed =
+            syn::parse_str::<MultipleNodes>("<Text>Hello     world\n        from RSX</Text>")
+                .expect("raw text should parse");
+        let Child::Element(text) = &parsed.nodes[0] else {
+            panic!("expected Text element");
+        };
+        let [Child::TextRaw(content)] = text.children.as_slice() else {
+            panic!("expected one raw text child");
+        };
+        assert_eq!(content, "Hello world from RSX");
+    }
+
+    #[test]
+    fn raw_text_preserves_collapsed_space_at_element_boundaries() {
+        let parsed =
+            syn::parse_str::<MultipleNodes>(r#"<Element>Hello <Strong>world</Strong>!</Element>"#)
+                .expect("mixed children should parse");
+        let Child::Element(root) = &parsed.nodes[0] else {
+            panic!("expected root element");
+        };
+        assert_eq!(root.children.len(), 3);
+        assert!(matches!(&root.children[0], Child::TextRaw(text) if text == "Hello "));
+        assert!(matches!(&root.children[1], Child::Element(_)));
+        assert!(matches!(&root.children[2], Child::TextRaw(text) if text == "!"));
+    }
+
+    #[test]
+    fn whitespace_between_elements_becomes_one_text_node() {
+        let parsed = syn::parse_str::<MultipleNodes>(r#"<Element><A />   <B /></Element>"#)
+            .expect("element siblings should parse");
+        let Child::Element(root) = &parsed.nodes[0] else {
+            panic!("expected root element");
+        };
+        assert_eq!(root.children.len(), 3);
+        assert!(matches!(&root.children[0], Child::Element(_)));
+        assert!(matches!(&root.children[1], Child::TextRaw(text) if text == " "));
+        assert!(matches!(&root.children[2], Child::Element(_)));
+    }
+
+    #[test]
+    fn formatting_newlines_between_elements_do_not_create_text_nodes() {
+        let parsed = syn::parse_str::<MultipleNodes>("<Element>\n    <A />\n    <B />\n</Element>")
+            .expect("formatted element siblings should parse");
+        let Child::Element(root) = &parsed.nodes[0] else {
+            panic!("expected root element");
+        };
+        assert_eq!(root.children.len(), 2);
+        assert!(
+            root.children
+                .iter()
+                .all(|child| matches!(child, Child::Element(_)))
+        );
     }
 }

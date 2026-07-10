@@ -13,6 +13,7 @@ use parley::{
     LineHeight, OverflowWrap, PositionedLayoutItem, StyleProperty, TextWrapMode,
 };
 
+use crate::style::srgb_to_linear;
 use crate::view::font_system::with_shared_parley_context;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -3183,10 +3184,16 @@ fn text_pass_batches_from_glyphs(
 }
 
 fn brush_to_text_color(brush: [u8; 4]) -> [f32; 4] {
+    // IFC brushes are packed sRGBA, while every render pipeline consumes
+    // linear RGB. Platform-specific surface handling belongs to Viewport's
+    // `surface_target_format`: an sRGB view performs linear→sRGB on store
+    // (including WebGPU's sRGB view over non-sRGB canvas storage). Feeding
+    // packed sRGB values directly here double-encodes text only, so its color
+    // no longer matches rect/background passes.
     [
-        brush[0] as f32 / 255.0,
-        brush[1] as f32 / 255.0,
-        brush[2] as f32 / 255.0,
+        srgb_to_linear(brush[0]),
+        srgb_to_linear(brush[1]),
+        srgb_to_linear(brush[2]),
         brush[3] as f32 / 255.0,
     ]
 }
@@ -3465,6 +3472,26 @@ fn parley_font_family(font_families: &[String]) -> FontFamily<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_brush_decodes_srgb_rgb_and_keeps_linear_alpha() {
+        let brush = [40, 44, 52, 128];
+        let color = brush_to_text_color(brush);
+        assert_eq!(
+            color,
+            [
+                crate::style::srgb_to_linear(40),
+                crate::style::srgb_to_linear(44),
+                crate::style::srgb_to_linear(52),
+                128.0 / 255.0,
+            ]
+        );
+        assert_ne!(
+            color[0],
+            40.0 / 255.0,
+            "packed sRGB must not be sent to the linear render pipeline"
+        );
+    }
 
     #[test]
     fn span_edge_insets_reserve_line_advance() {

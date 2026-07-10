@@ -47,6 +47,50 @@ fn empty_text_style() -> TextStylePropSchema {
 }
 
 #[test]
+fn rsx_raw_text_uses_html_like_punctuation_and_child_boundary_spacing() {
+    let tree = rsx! {
+        <HostElement>
+            vertical-align: A - B <HostText>middle</HostText> tail
+        </HostElement>
+    };
+    let RsxNode::Element(root) = tree else {
+        panic!("expected host element");
+    };
+    assert_eq!(root.children.len(), 3);
+    assert!(matches!(
+        &root.children[0],
+        RsxNode::Text(text) if text.content == "vertical-align: A - B "
+    ));
+    assert!(matches!(&root.children[1], RsxNode::Element(_)));
+    assert!(matches!(
+        &root.children[2],
+        RsxNode::Text(text) if text.content == " tail"
+    ));
+}
+
+#[test]
+fn rsx_raw_text_preserves_space_around_expression_boundaries() {
+    let who = "world";
+    let tree = rsx! { <HostElement>Hello {who}!</HostElement> };
+    let RsxNode::Element(root) = tree else {
+        panic!("expected host element");
+    };
+    assert_eq!(root.children.len(), 3);
+    assert!(matches!(
+        &root.children[0],
+        RsxNode::Text(text) if text.content == "Hello "
+    ));
+    assert!(matches!(
+        &root.children[1],
+        RsxNode::Text(text) if text.content == "world"
+    ));
+    assert!(matches!(
+        &root.children[2],
+        RsxNode::Text(text) if text.content == "!"
+    ));
+}
+
+#[test]
 fn identity_token_uses_type_and_local_key_stably() {
     let identity_a = RsxNodeIdentity::new(
         "Button",

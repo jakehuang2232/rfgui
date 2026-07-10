@@ -10,6 +10,6 @@ repository = "https://github.com/jakehuang2232/rfgui"
 proc-macro = true
 
 [dependencies]
-proc-macro2 = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
