@@ -50,7 +50,7 @@ impl Layoutable for TextArea {
         let inner_width = constraints.max_width.max(0.0);
         self.viewport_size.width = inner_width;
         self.measure_unified_inline_ifc_atomic_children(constraints, arena);
-        self.measure_generated_text_children_for_fallbacks(constraints, arena);
+        self.clear_generated_text_children_layout_dirty(arena);
 
         let (mut content_size, flex_info) =
             if let Some(package) = self.unified_inline_ifc_render_package(arena) {

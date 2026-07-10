@@ -1,5 +1,6 @@
 use std::cell::Ref;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::ui::Rect;
 use crate::view::base_component::{
@@ -88,6 +89,8 @@ pub(crate) struct TextAreaUnifiedIfcRootPackage {
     /// stops (O(lines)), and per-segment callers (child_layout_rects for
     /// every line break) made that O(lines²) per measure/place.
     visual_caret_lines_cache: std::cell::OnceCell<Vec<TextAreaUnifiedIfcCaretLine>>,
+    pub(super) caret_navigation_map_cache:
+        std::cell::RefCell<Option<super::caret_map::CaretNavigationMapCache>>,
 }
 
 #[derive(Default)]
@@ -111,9 +114,6 @@ struct TextAreaUnifiedIfcRootCacheEntry {
 #[derive(Clone, Debug, PartialEq)]
 struct TextAreaUnifiedIfcRootCacheKey {
     ifc: InlineIfcCacheKey,
-    source_segments: Vec<TextAreaUnifiedIfcSourceSegment>,
-    atomic_sources: Vec<InlineIfcSourceId>,
-    ime_preedit: String,
     ime_preedit_cursor: Option<(usize, usize)>,
     vertical_align: crate::style::VerticalAlign,
     allow_wrap: bool,
@@ -159,6 +159,7 @@ impl TextAreaUnifiedIfcRootSource {
             vertical_align,
             segment_index_by_child,
             visual_caret_lines_cache: std::cell::OnceCell::new(),
+            caret_navigation_map_cache: std::cell::RefCell::default(),
         }
     }
 }
@@ -461,7 +462,6 @@ impl TextAreaUnifiedIfcRootPackage {
         }
 
         let paint_input = self.ifc.text_pass_paint_input_ref();
-        let staging_input = self.text_pass_staging_input([0.0, 0.0], 1.0, 0, 1.0);
         let top_offset = self.content_top_offset();
         let mut out = Vec::new();
         for segment in self
@@ -499,18 +499,13 @@ impl TextAreaUnifiedIfcRootPackage {
             for line in &paint_input.lines {
                 let mut left: Option<f32> = None;
                 let mut right: Option<f32> = None;
-                for (glyph, staged) in paint_input
-                    .glyphs
-                    .iter()
-                    .zip(staging_input.glyphs.iter())
-                    .filter(|(glyph, _)| {
-                        glyph.line_index == line.line_index
-                            && glyph.source == segment.source
-                            && glyph.cluster_range.start < backing_end
-                            && glyph.cluster_range.end > backing_start
-                    })
-                {
-                    let x = staged.final_paint_pos[0];
+                for glyph in paint_input.glyphs.iter().filter(|glyph| {
+                    glyph.line_index == line.line_index
+                        && glyph.source == segment.source
+                        && glyph.cluster_range.start < backing_end
+                        && glyph.cluster_range.end > backing_start
+                }) {
+                    let x = glyph.x;
                     left = Some(left.map_or(x, |current| current.min(x)));
                     right = Some(
                         right.map_or(x + glyph.advance, |current| current.max(x + glyph.advance)),
@@ -1000,7 +995,6 @@ impl TextAreaUnifiedIfcRootPackage {
         }
 
         let paint_input = self.ifc.text_pass_paint_input_ref();
-        let staging_input = self.text_pass_staging_input([0.0, 0.0], 1.0, 0, 1.0);
         let text_height = self.text_line_height();
         let text_baseline = self.inline_baseline_for_line_height(text_height);
         let top_offset = self.content_top_offset();
@@ -1008,17 +1002,12 @@ impl TextAreaUnifiedIfcRootPackage {
         for line in &paint_input.lines {
             let mut left: Option<f32> = None;
             let mut right: Option<f32> = None;
-            for (glyph, staged) in paint_input
-                .glyphs
-                .iter()
-                .zip(staging_input.glyphs.iter())
-                .filter(|(glyph, _)| {
-                    glyph.line_index == line.line_index
-                        && glyph.cluster_range.start < range.end
-                        && glyph.cluster_range.end > range.start
-                })
-            {
-                let x = staged.final_paint_pos[0];
+            for glyph in paint_input.glyphs.iter().filter(|glyph| {
+                glyph.line_index == line.line_index
+                    && glyph.cluster_range.start < range.end
+                    && glyph.cluster_range.end > range.start
+            }) {
+                let x = glyph.x;
                 left = Some(left.map_or(x, |current| current.min(x)));
                 right =
                     Some(right.map_or(x + glyph.advance, |current| current.max(x + glyph.advance)));
@@ -1209,7 +1198,6 @@ impl TextArea {
             && entry.children_snapshot == self.children
             && entry.key.vertical_align == self.vertical_align
             && entry.key.allow_wrap == self.auto_wrap
-            && entry.key.ime_preedit == self.ime_preedit
             && entry.key.ime_preedit_cursor == self.ime_preedit_cursor
             && entry.package.width_constraint == self.current_unified_ifc_width_constraint()
             && self.unified_ifc_style_matches(&entry.style_probe)
@@ -1242,7 +1230,7 @@ impl TextArea {
             && style.line_height == self.line_height
             && style.font_weight == self.font_weight
             && style.brush == self.color.to_rgba_u8()
-            && style.font_families.as_slice() == self.font_families.as_slice()
+            && style.font_families.as_ref() == self.font_families.as_slice()
     }
 
     fn current_unified_ifc_width_constraint(&self) -> Option<f32> {
@@ -1331,7 +1319,7 @@ impl TextArea {
             line_height: self.line_height,
             font_weight: self.font_weight,
             brush: self.color.to_rgba_u8(),
-            font_families: self.font_families.clone(),
+            font_families: Arc::from(self.font_families.as_slice()),
             vertical_align: self.vertical_align,
         };
         let width_constraint = if self.auto_wrap {
@@ -1375,7 +1363,7 @@ impl TextArea {
                         });
                         return Some(InlineIfcItem::TextSpan {
                             source,
-                            text: effective_text,
+                            text: effective_text.into_owned(),
                             style: Some(style.clone()),
                         });
                     }
@@ -1445,9 +1433,6 @@ impl TextArea {
         let layout_options = InlineIfcLayoutOptions::new(width_constraint, self.auto_wrap);
         let key = TextAreaUnifiedIfcRootCacheKey {
             ifc: input.cache_key_with_layout_options(layout_options),
-            source_segments: source_segments.clone(),
-            atomic_sources: atomic_sources.clone(),
-            ime_preedit: self.ime_preedit.clone(),
             ime_preedit_cursor: self.ime_preedit_cursor,
             vertical_align: self.vertical_align,
             allow_wrap: self.auto_wrap,
@@ -1505,12 +1490,7 @@ impl TextArea {
         }
     }
 
-    pub(crate) fn measure_generated_text_children_for_fallbacks(
-        &self,
-        constraints: LayoutConstraints,
-        arena: &mut NodeArena,
-    ) {
-        let width = constraints.max_width.max(0.0);
+    pub(crate) fn clear_generated_text_children_layout_dirty(&self, arena: &mut NodeArena) {
         let child_keys = self.children.clone();
         for child_key in child_keys {
             arena.with_element_taken(child_key, |child, _arena| {
@@ -1529,19 +1509,6 @@ impl TextArea {
                     child.as_any_mut().downcast_mut::<TextAreaLineBreak>()
                 {
                     line_break.dirty_flags = line_break.dirty_flags.without(DirtyFlags::LAYOUT);
-                }
-                if let Some(run) = child.as_any_mut().downcast_mut::<TextAreaTextRun>() {
-                    run.measure_generated_text_child(
-                        width,
-                        constraints.viewport_width,
-                        constraints.viewport_height,
-                        constraints.percent_base_width,
-                        constraints.percent_base_height,
-                    );
-                } else if let Some(line_break) =
-                    child.as_any_mut().downcast_mut::<TextAreaLineBreak>()
-                {
-                    line_break.measure_generated_text_child();
                 }
             });
         }

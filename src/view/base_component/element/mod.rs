@@ -3081,7 +3081,7 @@ fn inline_ifc_style_from_text_metadata(
         line_height: metadata.line_height,
         font_weight: metadata.font_weight,
         brush: metadata.brush,
-        font_families: metadata.font_families,
+        font_families: metadata.font_families.into(),
         vertical_align: metadata.vertical_align,
     }
 }
@@ -3905,7 +3905,7 @@ impl Element {
             line_height: self.computed_style.line_height,
             font_weight: self.computed_style.font_weight,
             brush: self.computed_style.color.to_rgba_u8(),
-            font_families: self.computed_style.font_families.clone(),
+            font_families: self.computed_style.font_families.clone().into(),
             vertical_align: self.computed_style.vertical_align,
         }
     }

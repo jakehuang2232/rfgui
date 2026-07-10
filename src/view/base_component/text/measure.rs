@@ -45,7 +45,7 @@ fn shape_text_context(
             line_height,
             font_weight,
             brush: [0, 0, 0, 255],
-            font_families: font_families.to_vec(),
+            font_families: Arc::from(font_families),
             vertical_align: crate::style::VerticalAlign::Baseline,
         }),
     }]);

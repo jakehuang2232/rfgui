@@ -21,6 +21,11 @@ use crate::view::node_arena::{NodeArena, NodeKey};
 use super::TextArea;
 use super::run::{TextAreaLineBreak, TextAreaTextRun};
 
+pub(super) struct CaretNavigationMapCache {
+    origin_bits: [u32; 2],
+    map: std::rc::Rc<CaretNavigationMap>,
+}
+
 /// One caret stop in screen coordinates. `char_index` is in the root
 /// content's char space (i.e. directly comparable with
 /// `TextArea::cursor_char`).
@@ -80,10 +85,16 @@ impl CaretNavigationMap {
     /// Falls back to child stops only when no root package exists yet.
     /// Visual lines that share a vertical band are normalized so a
     /// sentence split across runs/projections still navigates as one row.
-    pub(super) fn build(text_area: &TextArea, arena: &NodeArena) -> Self {
+    pub(super) fn build(text_area: &TextArea, arena: &NodeArena) -> std::rc::Rc<Self> {
         if let Some(package) = text_area.unified_inline_ifc_render_package(arena) {
             let origin_x = text_area.layout_state.layout_position.x - text_area.scroll_x;
             let origin_y = text_area.layout_state.layout_position.y - text_area.scroll_y;
+            let origin_bits = [origin_x.to_bits(), origin_y.to_bits()];
+            if let Some(cached) = package.caret_navigation_map_cache.borrow().as_ref()
+                && cached.origin_bits == origin_bits
+            {
+                return cached.map.clone();
+            }
             let mut lines = package
                 .visual_caret_lines_ref()
                 .iter()
@@ -104,7 +115,12 @@ impl CaretNavigationMap {
                 })
                 .collect::<Vec<_>>();
             normalize_caret_navigation_lines(&mut lines);
-            return Self { lines };
+            let map = std::rc::Rc::new(Self { lines });
+            *package.caret_navigation_map_cache.borrow_mut() = Some(CaretNavigationMapCache {
+                origin_bits,
+                map: map.clone(),
+            });
+            return map;
         }
 
         let mut raw_lines: Vec<CaretVisualLine> = Vec::new();
@@ -203,7 +219,7 @@ impl CaretNavigationMap {
                 stop.height = (line.y_bottom - line.y_top).max(1.0);
             }
         }
-        Self { lines }
+        std::rc::Rc::new(Self { lines })
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -454,7 +470,7 @@ mod tests {
         (ptr, arena)
     }
 
-    fn build_map_for(content: &str, max_width: f32) -> (CaretNavigationMap, usize) {
+    fn build_map_for(content: &str, max_width: f32) -> (std::rc::Rc<CaretNavigationMap>, usize) {
         let tree = host_text_area_node().with_prop("content", content);
         let mut arena = crate::view::test_support::new_test_arena();
         let roots = commit_rsx_tree(&mut arena, &tree);
@@ -477,6 +493,16 @@ mod tests {
         let _ = &arena;
         let len = content.chars().count();
         (map, len)
+    }
+
+    #[test]
+    fn repeated_build_reuses_unified_package_navigation_map() {
+        let (text_area_ptr, arena) = build_wrapped_textarea("cache me", 800.0);
+        // SAFETY: the arena remains alive and is only borrowed immutably.
+        let text_area = unsafe { &*text_area_ptr };
+        let first = CaretNavigationMap::build(text_area, &arena);
+        let second = CaretNavigationMap::build(text_area, &arena);
+        assert!(std::rc::Rc::ptr_eq(&first, &second));
     }
 
     #[test]
@@ -910,7 +936,7 @@ mod tests {
     }
 
     impl ProjectionFixture {
-        fn map(&self) -> CaretNavigationMap {
+        fn map(&self) -> std::rc::Rc<CaretNavigationMap> {
             let ptr: *const TextArea = self
                 .arena
                 .with_element_taken_ref(self.root, |el, _| {

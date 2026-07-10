@@ -254,6 +254,7 @@ impl TextArea {
         self.children_dirty = true;
         self.ime_preedit = normalized;
         self.ime_preedit_cursor = cursor;
+        self.bump_unified_ifc_source_revision();
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
         self.reset_caret_blink();
         self.mark_caret_scroll_pending();
@@ -282,6 +283,7 @@ impl TextArea {
         self.children_dirty = true;
         self.ime_preedit.clear();
         self.ime_preedit_cursor = None;
+        self.bump_unified_ifc_source_revision();
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
         true
     }

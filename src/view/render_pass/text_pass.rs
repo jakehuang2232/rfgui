@@ -1314,12 +1314,18 @@ impl TextResources {
 
     fn evict_draw_cache(&mut self) {
         const MAX_DRAW_CACHE_ENTRIES: usize = 4096;
+        const MAX_DRAW_CACHE_BYTES: usize = 64 * 1024 * 1024;
         const MAX_UNUSED_FRAMES: u64 = 120;
         let frame_epoch = self.frame_epoch;
         self.draw_cache.retain(|_, entry| {
             frame_epoch.saturating_sub(entry.last_used_frame) <= MAX_UNUSED_FRAMES
         });
-        if self.draw_cache.len() <= MAX_DRAW_CACHE_ENTRIES {
+        let mut cached_bytes = self
+            .draw_cache
+            .values()
+            .map(CachedTextDrawEntry::estimated_bytes)
+            .sum::<usize>();
+        if self.draw_cache.len() <= MAX_DRAW_CACHE_ENTRIES && cached_bytes <= MAX_DRAW_CACHE_BYTES {
             return;
         }
         let mut entries = self
@@ -1328,20 +1334,34 @@ impl TextResources {
             .map(|(key, entry)| (*key, entry.last_used_frame))
             .collect::<Vec<_>>();
         entries.sort_by_key(|(_, last_used)| *last_used);
-        let remove_count = self.draw_cache.len() - MAX_DRAW_CACHE_ENTRIES;
-        for (key, _) in entries.into_iter().take(remove_count) {
-            self.draw_cache.remove(&key);
+        for (key, _) in entries {
+            if self.draw_cache.len() <= MAX_DRAW_CACHE_ENTRIES
+                && cached_bytes <= MAX_DRAW_CACHE_BYTES
+            {
+                break;
+            }
+            if let Some(entry) = self.draw_cache.remove(&key) {
+                cached_bytes = cached_bytes.saturating_sub(entry.estimated_bytes());
+            }
         }
     }
 
     fn evict_raster_cache(&mut self) {
         const MAX_RASTER_CACHE_ENTRIES: usize = 4096;
+        const MAX_RASTER_CACHE_BYTES: usize = 64 * 1024 * 1024;
         const MAX_UNUSED_FRAMES: u64 = 180;
         let frame_epoch = self.frame_epoch;
         self.raster_cache.retain(|_, entry| {
             frame_epoch.saturating_sub(entry.last_used_frame) <= MAX_UNUSED_FRAMES
         });
-        if self.raster_cache.len() <= MAX_RASTER_CACHE_ENTRIES {
+        let mut cached_bytes = self
+            .raster_cache
+            .values()
+            .map(|entry| entry.image.data.len())
+            .sum::<usize>();
+        if self.raster_cache.len() <= MAX_RASTER_CACHE_ENTRIES
+            && cached_bytes <= MAX_RASTER_CACHE_BYTES
+        {
             return;
         }
         let mut entries = self
@@ -1350,9 +1370,15 @@ impl TextResources {
             .map(|(key, entry)| (*key, entry.last_used_frame))
             .collect::<Vec<_>>();
         entries.sort_by_key(|(_, last_used)| *last_used);
-        let remove_count = self.raster_cache.len() - MAX_RASTER_CACHE_ENTRIES;
-        for (key, _) in entries.into_iter().take(remove_count) {
-            self.raster_cache.remove(&key);
+        for (key, _) in entries {
+            if self.raster_cache.len() <= MAX_RASTER_CACHE_ENTRIES
+                && cached_bytes <= MAX_RASTER_CACHE_BYTES
+            {
+                break;
+            }
+            if let Some(entry) = self.raster_cache.remove(&key) {
+                cached_bytes = cached_bytes.saturating_sub(entry.image.data.len());
+            }
         }
     }
 
@@ -1515,6 +1541,16 @@ impl TextResources {
     }
 }
 
+impl CachedTextDrawEntry {
+    fn estimated_bytes(&self) -> usize {
+        [self.mask_draw.as_ref(), self.color_draw.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|draw| draw.instance_count as usize * std::mem::size_of::<TextGlyphInstance>())
+            .sum()
+    }
+}
+
 fn text_glyph_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     const ATTRS: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
         0 => Float32x2,
@@ -1640,7 +1676,7 @@ mod tests {
                     line_height: 1.2,
                     font_weight: 500,
                     brush: [0, 0, 0, 255],
-                    font_families: vec!["sans-serif".to_string()],
+                    font_families: vec!["sans-serif".to_string()].into(),
                     vertical_align: crate::style::VerticalAlign::Baseline,
                 }),
             }]),

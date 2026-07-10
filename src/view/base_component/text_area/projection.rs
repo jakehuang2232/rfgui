@@ -188,10 +188,9 @@ impl TextArea {
 
         // Both content + placeholder empty and no active preedit: clear everything.
         if display_text.is_empty() && !preedit_active {
-            for &k in &self.children.clone() {
+            for k in std::mem::take(&mut self.children) {
                 arena.remove_subtree(k);
             }
-            self.children.clear();
             self.child_char_ranges.clear();
             self.child_slots.clear();
             if let Some(self_key) = self.self_node_key {
@@ -933,19 +932,19 @@ impl TextArea {
         for (i, &child_key) in self.children.iter().enumerate() {
             let is_target = preedit_active && target_idx_local.map(|(t, _)| t) == Some(i);
             let local = target_idx_local.filter(|(t, _)| *t == i).map(|(_, l)| l);
-            let pe_text = preedit_text.clone();
+            let target_preedit = is_target.then(|| InlinePreedit {
+                insert_at_local: local.unwrap_or(0),
+                preedit_text: preedit_text.clone(),
+                preedit_cursor,
+            });
             arena.mutate_element_ref_with_invalidation(child_key, |child, cx| {
                 let Some(run) = child.as_any_mut().downcast_mut::<TextAreaTextRun>() else {
                     return;
                 };
-                if is_target {
+                if let Some(mut preedit) = target_preedit {
                     let len = run.char_range.end.saturating_sub(run.char_range.start);
-                    let insert_at_local = local.unwrap_or(0).min(len);
-                    run.set_inline_preedit(Some(InlinePreedit {
-                        insert_at_local,
-                        preedit_text: pe_text,
-                        preedit_cursor,
-                    }));
+                    preedit.insert_at_local = preedit.insert_at_local.min(len);
+                    run.set_inline_preedit(Some(preedit));
                 } else {
                     run.set_inline_preedit(None);
                 }

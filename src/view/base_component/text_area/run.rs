@@ -10,7 +10,7 @@
 
 #![allow(dead_code)]
 
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 
 use crate::style::Cursor;
 use crate::ui::Rect;
@@ -167,16 +167,16 @@ impl TextAreaTextRun {
     }
 
     /// Effective text including any spliced IME preedit segment.
-    pub(crate) fn effective_text(&self) -> String {
+    pub(crate) fn effective_text(&self) -> Cow<'_, str> {
         match &self.inline_preedit {
-            None => self.text.clone(),
+            None => Cow::Borrowed(&self.text),
             Some(preedit) => {
                 let local_byte = byte_index_at_char(&self.text, preedit.insert_at_local);
                 let mut out = String::with_capacity(self.text.len() + preedit.preedit_text.len());
                 out.push_str(&self.text[..local_byte]);
                 out.push_str(&preedit.preedit_text);
                 out.push_str(&self.text[local_byte..]);
-                out
+                Cow::Owned(out)
             }
         }
     }
@@ -448,7 +448,7 @@ impl TextAreaTextRun {
             (0.0_f32, self.font_size.max(1.0) * self.line_height.max(0.8))
         } else {
             let measured = measure_text_layout(
-                &self.effective_text(),
+                self.effective_text().as_ref(),
                 measure_width,
                 self.auto_wrap,
                 self.font_size,

@@ -274,7 +274,7 @@ pub(crate) struct InlineIfcStyle {
     pub(crate) line_height: f32,
     pub(crate) font_weight: u16,
     pub(crate) brush: [u8; 4],
-    pub(crate) font_families: Vec<String>,
+    pub(crate) font_families: Arc<[String]>,
     pub(crate) vertical_align: crate::style::VerticalAlign,
 }
 
@@ -283,7 +283,7 @@ pub(crate) struct InlineIfcStyleKey {
     pub(crate) font_size_bits: u32,
     pub(crate) line_height_bits: u32,
     pub(crate) font_weight: u16,
-    pub(crate) font_families: Vec<String>,
+    pub(crate) font_families: Arc<[String]>,
     pub(crate) vertical_align: crate::style::VerticalAlign,
 }
 
@@ -523,7 +523,7 @@ impl<'a> InlineIfcCacheLookup<'a> {
 
 pub(crate) struct InlineIfcCachedEntry {
     context: InlineFormattingContext,
-    shape_key: InlineIfcShapeCacheKey,
+    access_generation: u64,
 }
 
 impl InlineIfcCachedEntry {
@@ -533,10 +533,6 @@ impl InlineIfcCachedEntry {
 
     pub(crate) fn cache_key(&self) -> &InlineIfcCacheKey {
         self.context.cache_key()
-    }
-
-    pub(crate) fn shape_key(&self) -> &InlineIfcShapeCacheKey {
-        &self.shape_key
     }
 }
 
@@ -554,7 +550,6 @@ pub(crate) struct InlineIfcCache {
     // mint a new shape key per width — without eviction the map grows
     // without bound for the lifetime of the owning element.
     access_generation: u64,
-    access_by_key: HashMap<InlineIfcShapeCacheKey, u64>,
 }
 
 /// Retained shaped contexts per cache. Two would cover current+pending;
@@ -568,23 +563,23 @@ impl InlineIfcCache {
 
     fn touch(&mut self, shape_key: &InlineIfcShapeCacheKey) {
         self.access_generation += 1;
-        self.access_by_key
-            .insert(shape_key.clone(), self.access_generation);
+        if let Some(entry) = self.entries.get_mut(shape_key) {
+            entry.access_generation = self.access_generation;
+        }
     }
 
     fn evict_to_capacity(&mut self, keep: &InlineIfcShapeCacheKey) {
         while self.entries.len() > INLINE_IFC_CACHE_MAX_ENTRIES {
             let Some(coldest) = self
                 .entries
-                .keys()
-                .filter(|key| *key != keep)
-                .min_by_key(|key| self.access_by_key.get(*key).copied().unwrap_or(0))
-                .cloned()
+                .iter()
+                .filter(|(key, _)| *key != keep)
+                .min_by_key(|(_, entry)| entry.access_generation)
+                .map(|(key, _)| key.clone())
             else {
                 return;
             };
             self.entries.remove(&coldest);
-            self.access_by_key.remove(&coldest);
         }
     }
 
@@ -617,7 +612,7 @@ impl InlineIfcCache {
             shape_key.clone(),
             InlineIfcCachedEntry {
                 context,
-                shape_key: shape_key.clone(),
+                access_generation: 0,
             },
         );
         self.touch(&shape_key);
@@ -664,7 +659,7 @@ impl InlineIfcCache {
             shape_key.clone(),
             InlineIfcCachedEntry {
                 context,
-                shape_key: shape_key.clone(),
+                access_generation: 0,
             },
         );
         self.touch(&shape_key);
@@ -695,7 +690,7 @@ impl Default for InlineIfcStyle {
             line_height: 1.2,
             font_weight: 400,
             brush: [0, 0, 0, 255],
-            font_families: Vec::new(),
+            font_families: Arc::default(),
             vertical_align: crate::style::VerticalAlign::Baseline,
         }
     }
@@ -1322,7 +1317,6 @@ pub(crate) struct InlineIfcTextGlyph {
     pub(crate) font_data_id: u64,
     pub(crate) font_index: u32,
     pub(crate) normalized_coords_hash: u64,
-    pub(crate) style: InlineIfcStyle,
     pub(crate) batch_key: InlineIfcTextPaintBatchKey,
 }
 
@@ -1383,7 +1377,6 @@ impl InlineIfcTextLayoutSnapshot {
                     font_data_id: glyph.font_data_id,
                     font_index: glyph.font_index,
                     normalized_coords_hash: glyph.normalized_coords_hash,
-                    style: glyph.style.clone(),
                     batch_key: glyph.batch_key,
                     color: brush_to_text_color(glyph.batch_key.brush),
                 });
@@ -1435,7 +1428,6 @@ pub(crate) struct InlineIfcTextPassGlyphInput {
     pub(crate) font_data_id: u64,
     pub(crate) font_index: u32,
     pub(crate) normalized_coords_hash: u64,
-    pub(crate) style: InlineIfcStyle,
     pub(crate) batch_key: InlineIfcTextPaintBatchKey,
     pub(crate) color: [f32; 4],
 }
@@ -1919,7 +1911,7 @@ impl InlineFormattingContext {
     }
 
     fn compute_text_layout_snapshot(&self) -> InlineIfcTextLayoutSnapshot {
-        let paint_glyphs = self.text_paint_glyphs();
+        let glyph_items = self.glyph_items_ref();
         let inline_boxes = self
             .inline_box_placements()
             .into_iter()
@@ -1931,7 +1923,7 @@ impl InlineFormattingContext {
         for (line_index, line) in self.layout.lines().enumerate() {
             let metrics = line.metrics();
             let range = line.text_range();
-            let glyphs = paint_glyphs
+            let glyphs = glyph_items
                 .iter()
                 .filter(|glyph| glyph.line_index == line_index)
                 .map(|glyph| InlineIfcTextGlyph {
@@ -1946,8 +1938,7 @@ impl InlineFormattingContext {
                     font_data_id: glyph.font_data_id,
                     font_index: glyph.font_index,
                     normalized_coords_hash: glyph.normalized_coords_hash,
-                    style: glyph.style.clone(),
-                    batch_key: glyph.batch_key,
+                    batch_key: InlineIfcTextPaintBatchKey::from_glyph(glyph),
                 })
                 .collect();
 
@@ -3154,7 +3145,7 @@ fn text_pass_batches_from_glyphs(
             font_index: glyph.font_index,
             normalized_coords_hash: glyph.normalized_coords_hash,
             font_size: glyph.font_size,
-            font_weight: glyph.style.font_weight,
+            font_weight: glyph.batch_key.font_weight,
             glyph_indices: vec![glyph_index],
         });
     }
@@ -4036,8 +4027,9 @@ mod tests {
         let InlineIfcCacheLookup::RepaintOnly(entry) = cache.lookup_input(&next) else {
             panic!("brush-only change should keep shape cache reusable");
         };
-        assert_eq!(entry.shape_key().content, next_key.content);
-        assert_eq!(entry.shape_key().layout, next_key.layout);
+        let entry_shape_key = InlineIfcShapeCacheKey::from_cache_key(entry.cache_key());
+        assert_eq!(entry_shape_key.content, next_key.content);
+        assert_eq!(entry_shape_key.layout, next_key.layout);
         assert_eq!(entry.cache_key(), &previous_key);
     }
 
@@ -4149,8 +4141,9 @@ mod tests {
             let update = cache.update(next.clone());
             assert_eq!(update.invalidation, InlineIfcInvalidation::RepaintOnly);
             assert!(update.rebuilt);
-            assert_eq!(update.entry.shape_key().content, next_key.content);
-            assert_eq!(update.entry.shape_key().layout, next_key.layout);
+            let entry_shape_key = InlineIfcShapeCacheKey::from_cache_key(update.entry.cache_key());
+            assert_eq!(entry_shape_key.content, next_key.content);
+            assert_eq!(entry_shape_key.layout, next_key.layout);
             assert_eq!(update.entry.cache_key(), &next_key);
         }
         assert_eq!(cache.len(), 1);
@@ -5285,9 +5278,8 @@ mod tests {
             line.glyphs.iter().any(|glyph| {
                 glyph.source == INNER
                     && glyph.cluster_range.contains(&bold_start)
-                    && glyph.style.brush == [9, 9, 9, 255]
-                    && glyph.style.font_weight == 700
                     && glyph.batch_key.brush == [9, 9, 9, 255]
+                    && glyph.batch_key.font_weight == 700
                     && glyph.font_data_id == glyph.batch_key.font_data_id
                     && glyph.font_index == glyph.batch_key.font_index
                     && glyph.normalized_coords_hash == glyph.batch_key.normalized_coords_hash
@@ -5396,8 +5388,7 @@ mod tests {
                 .lines
                 .iter()
                 .flat_map(|line| line.glyphs.iter())
-                .all(|glyph| glyph.style.brush == [240, 20, 20, 255]
-                    && glyph.batch_key.brush == [240, 20, 20, 255])
+                .all(|glyph| glyph.batch_key.brush == [240, 20, 20, 255])
         );
         let next_handles = next_snapshot
             .lines
@@ -5457,7 +5448,6 @@ mod tests {
         assert_eq!(adapted_line.baseline, line.baseline);
         assert_eq!(adapted_line.range, line.range);
         assert_eq!(adapted.source, glyph.source);
-        assert_eq!(adapted.style, glyph.style);
         assert_eq!(adapted.batch_key, glyph.batch_key);
         assert_font_render_handle(&adapted.font_data, adapted.font_data_id, adapted.font_index);
         assert_font_render_handle(&glyph.font_data, glyph.font_data_id, glyph.font_index);
