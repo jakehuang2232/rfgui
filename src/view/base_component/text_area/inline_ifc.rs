@@ -1332,6 +1332,7 @@ impl TextArea {
             font_weight: self.font_weight,
             brush: self.color.to_rgba_u8(),
             font_families: self.font_families.clone(),
+            vertical_align: self.vertical_align,
         };
         let width_constraint = if self.auto_wrap {
             let width = if self.viewport_size.width > 0.0 {

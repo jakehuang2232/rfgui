@@ -160,12 +160,6 @@ impl Element {
             }
         }
 
-        // The unified inline IFC glyph pass paints AFTER the in-flow
-        // children: owned spans draw their decoration rects during the
-        // child walk above, and glyphs must layer on top of those
-        // backgrounds (web z-order: span background under span text).
-        self.build_inline_ifc_root_glyph_pass(graph, &mut ctx);
-
         // End the parent's child clip scope (stencil + scissor + clip_id)
         // before rendering overflow children. Overflow children — Viewport-
         // and AnchorParent-clipped descendants — must paint outside the
@@ -436,62 +430,6 @@ impl Element {
         ctx.into_state()
     }
 
-    /// Unified glyph pass for an inline IFC root: every descendant text
-    /// glyph shaped by the root's context renders in one prepared-input
-    /// pass at the root's content origin.
-    fn build_inline_ifc_root_glyph_pass(
-        &mut self,
-        graph: &mut FrameGraph,
-        ctx: &mut UiBuildContext,
-    ) {
-        let Some(target) = ctx.current_target() else {
-            return;
-        };
-        let opacity = if ctx.is_node_promoted(self.stable_id()) {
-            1.0
-        } else {
-            self.opacity.clamp(0.0, 1.0)
-        };
-        if opacity <= 0.0 {
-            return;
-        }
-        let [origin_x, origin_y] = ctx.paint_point(
-            self.layout_state.layout_inner_position.x - self.scroll_offset.x,
-            self.layout_state.layout_inner_position.y - self.scroll_offset.y,
-        );
-        let Some(staging_input) = self.inline_ifc_root_staging_input([origin_x, origin_y], opacity)
-        else {
-            return;
-        };
-        if staging_input.glyphs.is_empty() {
-            return;
-        }
-        let size = [
-            self.layout_state.layout_inner_size.width.max(1.0),
-            self.layout_state.layout_inner_size.height.max(1.0),
-        ];
-        let pass = TextPreparedInputPass::new(
-            TextPassPreparedParams {
-                staging_input,
-                fragments: vec![TextPassPreparedFragment {
-                    origin: [origin_x, origin_y],
-                    size,
-                }],
-                scissor_rect: None,
-                stencil_clip_id: None,
-            },
-            TextInput {
-                pass_context: ctx.graphics_pass_context(),
-            },
-            TextOutput {
-                render_target: target,
-                ..Default::default()
-            },
-        );
-        graph.add_graphics_pass(pass);
-        ctx.set_current_target(target);
-    }
-
     fn install_inline_ifc_rollout_packages_from_candidate(
         &mut self,
         packages: Option<&InlineIfcDistributedElementPackages>,
@@ -518,12 +456,29 @@ impl Element {
     ) -> ElementInlineIfcDrawRectPassMetadata {
         let metadata = fragment.metadata;
         let max_bw = metadata.size[0].min(metadata.size[1]) * 0.5;
-        let left = metadata.border_widths[0].clamp(0.0, max_bw);
-        let right = metadata.border_widths[1].clamp(0.0, max_bw);
+        let left = if fragment.is_first_for_source {
+            metadata.border_widths[0].clamp(0.0, max_bw)
+        } else {
+            0.0
+        };
+        let right = if fragment.is_last_for_source {
+            metadata.border_widths[1].clamp(0.0, max_bw)
+        } else {
+            0.0
+        };
         let top = metadata.border_widths[2].clamp(0.0, max_bw);
         let bottom = metadata.border_widths[3].clamp(0.0, max_bw);
+        let mut fragment_radii = self.border_radii;
+        if !fragment.is_first_for_source {
+            fragment_radii.top_left = 0.0;
+            fragment_radii.bottom_left = 0.0;
+        }
+        if !fragment.is_last_for_source {
+            fragment_radii.top_right = 0.0;
+            fragment_radii.bottom_right = 0.0;
+        }
         let outer_radii =
-            normalize_corner_radii(self.border_radii, metadata.size[0], metadata.size[1]);
+            normalize_corner_radii(fragment_radii, metadata.size[0], metadata.size[1]);
         let fill = {
             let mut params = RectPassParams {
                 position: [
@@ -550,14 +505,14 @@ impl Element {
                 size: metadata.size,
                 fill_color: [0.0, 0.0, 0.0, 0.0],
                 opacity: metadata.opacity,
-                border_color: metadata.border_color,
+                border_color: metadata.border_colors[0],
                 ..Default::default()
             };
             params.set_border_side_colors(
-                metadata.border_color,
-                metadata.border_color,
-                metadata.border_color,
-                metadata.border_color,
+                metadata.border_colors[0],
+                metadata.border_colors[1],
+                metadata.border_colors[2],
+                metadata.border_colors[3],
             );
             params.set_border_widths(left, right, top, bottom);
             params.set_border_radii(outer_radii.to_array());

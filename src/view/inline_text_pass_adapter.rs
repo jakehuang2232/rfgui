@@ -388,6 +388,7 @@ mod tests {
                 font_weight: 600,
                 line_height: 22.0,
                 font_families: vec!["sans-serif".to_string()],
+                vertical_align: crate::style::VerticalAlign::Baseline,
             }),
         }]);
         InlineFormattingContext::build(input)
@@ -412,6 +413,7 @@ mod tests {
             font_weight: 500,
             line_height: 26.0,
             font_families: vec!["sans-serif".to_string()],
+            vertical_align: crate::style::VerticalAlign::Baseline,
         }
     }
 
@@ -570,6 +572,7 @@ mod tests {
                     font_weight: 500,
                     line_height: 24.0,
                     font_families: vec!["sans-serif".to_string()],
+                    vertical_align: crate::style::VerticalAlign::Baseline,
                 }),
             },
             InlineIfcItem::AtomicInlineBox {

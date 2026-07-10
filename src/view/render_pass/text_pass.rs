@@ -986,12 +986,11 @@ fn build_prepared_draw<'a>(
     if let Some(instances) =
         build_persistent_atlas_instances(device, queue, resources, atlas_kind, glyphs.as_slice())
     {
-        let vertex_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Text Glyph Instance Buffer"),
-                contents: bytemuck::cast_slice(instances.as_slice()),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Text Glyph Instance Buffer"),
+            contents: bytemuck::cast_slice(instances.as_slice()),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
         return Some(PreparedTextDraw {
             vertex_buffer,
             instance_count: instances.len() as u32,
@@ -1642,6 +1641,7 @@ mod tests {
                     font_weight: 500,
                     brush: [0, 0, 0, 255],
                     font_families: vec!["sans-serif".to_string()],
+                    vertical_align: crate::style::VerticalAlign::Baseline,
                 }),
             }]),
             InlineIfcLayoutOptions::new(Some(200.0), true),

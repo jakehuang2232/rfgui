@@ -36,10 +36,9 @@ use crate::view::inline_formatting_context::{
     InlineIfcElementRootCandidateCache, InlineIfcElementRootSource,
     InlineIfcElementRootSourceBuilder, InlineIfcItem, InlineIfcMeasuredAtomicBox,
     InlineIfcPaintRect, InlineIfcSize, InlineIfcSourceId, InlineIfcSourceKind, InlineIfcStyle,
-    InlineIfcTextLayoutSnapshot,
+    InlineIfcTextLayoutSnapshot, InlineIfcTextPassPaintInput,
 };
 #[cfg(test)]
-use crate::view::inline_formatting_context::InlineIfcTextPassPaintInput;
 use crate::view::inline_text_pass_adapter::inline_ifc_paint_input_to_text_pass_staging_input;
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::promotion::{PromotedLayerUpdateKind, PromotionNodeInfo};
@@ -47,9 +46,6 @@ use crate::view::render_pass::draw_rect_pass::DrawRectInput;
 use crate::view::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::render_target::GraphicsPassContext;
-use crate::view::render_pass::text_pass::{
-    TextInput, TextOutput, TextPassPreparedFragment, TextPassPreparedParams, TextPreparedInputPass,
-};
 use crate::view::render_pass::{
     DrawRectPass, GraphicsPass, OpaqueRectPass, RectRenderMode, ShadowMesh, ShadowModuleSpec,
     ShadowParams, build_shadow_module,
@@ -2262,14 +2258,23 @@ struct ElementTransitionRequests {
 pub(crate) struct ElementInlineIfcMetadataCollectorInput {
     pub(crate) root_key: NodeKey,
     pub(crate) max_width: f32,
+    pub(crate) viewport_width: f32,
+    pub(crate) viewport_height: f32,
 }
 
 #[allow(dead_code)]
 impl ElementInlineIfcMetadataCollectorInput {
-    pub(crate) fn new(root_key: NodeKey, max_width: f32) -> Self {
+    pub(crate) fn new(
+        root_key: NodeKey,
+        max_width: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Self {
         Self {
             root_key,
             max_width: max_width.max(1.0),
+            viewport_width,
+            viewport_height,
         }
     }
 }
@@ -2320,6 +2325,9 @@ struct ElementInlineIfcRootInstall {
     content_size: (f32, f32),
     /// Inner width this shaping was built at; a width change reshapes.
     inner_width: f32,
+    /// Viewport used to resolve viewport-relative inline gap values.
+    viewport_width: f32,
+    viewport_height: f32,
     plan: Vec<InlineIfcNodeInstallOp>,
     installed_nodes: Vec<NodeKey>,
     /// Origins the plan was last applied at: (origin_x, origin_y,
@@ -2334,16 +2342,18 @@ struct ElementInlineIfcRootInstall {
 enum InlineIfcNodeInstallOp {
     Span {
         node_key: NodeKey,
-        /// Decoration package with `text_top` already folded in; positions
-        /// are content-coord and get the origin added at apply time.
+        /// Decoration package in content coordinates; apply only adds the
+        /// current root origin.
         package: Option<InlineIfcDistributedElementPackages>,
-        /// Content-coord paint fragments (text-top folded).
+        /// Content-coordinate paint fragments.
         paint_fragments: Vec<InlineIfcPaintRect>,
     },
     Text {
         node_key: NodeKey,
         /// Content-coord owned lines (shifted to absolute at apply time).
         lines: Vec<TextIfcOwnedLine>,
+        /// Source-filtered glyph payload rebased to this Text shell.
+        paint_input: InlineIfcTextPassPaintInput,
     },
     Atomic {
         node_key: NodeKey,
@@ -2418,12 +2428,12 @@ struct InlineIfcRootNodeGeometry {
 
 enum InlineIfcRootNodeGeometryKind {
     /// Fragmentable inline element: one rect per visual line it spans.
-    Span {
-        fragments: Vec<InlineIfcPaintRect>,
-        text_top_offsets: Vec<(usize, f32)>,
-    },
+    Span { fragments: Vec<InlineIfcPaintRect> },
     /// Text node owned by the root: per-line rects plus caret stops.
-    Text { lines: Vec<TextIfcOwnedLine> },
+    Text {
+        lines: Vec<TextIfcOwnedLine>,
+        paint_input: InlineIfcTextPassPaintInput,
+    },
     /// Atomic inline box: its vertical-align-adjusted line placement.
     Atomic { rect: InlineIfcPaintRect },
 }
@@ -2476,6 +2486,7 @@ fn inline_ifc_root_geometry(
         };
         if node.element.as_any().is::<Text>() {
             let lines = text_ifc_owned_lines_for_source(context, &snapshot, source);
+            let paint_input = context.text_pass_paint_input_for_source(source);
             for line in &lines {
                 merge(
                     InlineIfcPaintRect {
@@ -2489,7 +2500,7 @@ fn inline_ifc_root_geometry(
             }
             nodes.push(InlineIfcRootNodeGeometry {
                 node_key,
-                kind: InlineIfcRootNodeGeometryKind::Text { lines },
+                kind: InlineIfcRootNodeGeometryKind::Text { lines, paint_input },
             });
             continue;
         }
@@ -2510,23 +2521,12 @@ fn inline_ifc_root_geometry(
                 .iter()
                 .map(|fragment| fragment.rect)
                 .collect::<Vec<_>>();
-            let text_top_offsets = raw_fragments
-                .iter()
-                .filter_map(|fragment| {
-                    context
-                        .text_top_for_line_range(fragment.line_index, &fragment.range)
-                        .map(|text_top| (fragment.line_index, text_top - fragment.rect.y))
-                })
-                .collect::<Vec<_>>();
             for rect in &fragments {
                 merge(*rect, &mut content);
             }
             nodes.push(InlineIfcRootNodeGeometry {
                 node_key,
-                kind: InlineIfcRootNodeGeometryKind::Span {
-                    fragments,
-                    text_top_offsets,
-                },
+                kind: InlineIfcRootNodeGeometryKind::Span { fragments },
             });
             continue;
         }
@@ -2576,9 +2576,8 @@ fn inline_ifc_root_geometry(
     })
 }
 
-/// Convert geometry into an origin-independent install plan: fold each
-/// span's `text_top` offset into its content-coord decoration package and
-/// paint fragments so applying the plan is a pure origin shift.
+/// Convert geometry into an origin-independent install plan so applying it
+/// is a pure origin shift.
 fn build_inline_ifc_install_plan(
     geometry: InlineIfcRootGeometry,
     collected: &ElementInlineIfcMetadataCollectorOutput,
@@ -2588,23 +2587,13 @@ fn build_inline_ifc_install_plan(
     for node_geometry in geometry.nodes {
         let node_key = node_geometry.node_key;
         match node_geometry.kind {
-            InlineIfcRootNodeGeometryKind::Span {
-                fragments,
-                text_top_offsets,
-            } => {
-                let text_top_for = |line_index: usize| {
-                    text_top_offsets
-                        .iter()
-                        .find(|(index, _)| *index == line_index)
-                        .map(|(_, offset)| *offset)
-                        .unwrap_or(0.0)
-                };
-                let mut package = collected
+            InlineIfcRootNodeGeometryKind::Span { fragments } => {
+                let package = collected
                     .source_for_node(node_key)
                     .and_then(|source| candidate.package(source).cloned());
-                // Paint fragments (hit-test geometry) come from each
-                // decoration fragment's `rect`, with text-top folded in;
-                // fall back to the span's per-line glyph extents.
+                // Paint fragments already use the aligned inline content
+                // box. Vertical border/padding expands from that box; do
+                // not mix its y with the outer line-box height.
                 let paint_fragments = package
                     .as_ref()
                     .and_then(|package| package.decoration_draw_rect.as_ref())
@@ -2612,32 +2601,35 @@ fn build_inline_ifc_install_plan(
                         package
                             .fragments
                             .iter()
-                            .map(|fragment| {
-                                let mut rect = fragment.rect;
-                                rect.y += text_top_for(fragment.line_index);
-                                rect
-                            })
+                            .map(|fragment| fragment.rect)
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or(fragments);
-                // Fold text-top into the content-coord package positions so
-                // apply is a pure origin shift.
-                if let Some(package) = package
-                    .as_mut()
-                    .and_then(|package| package.decoration_draw_rect.as_mut())
-                {
-                    for fragment in &mut package.fragments {
-                        fragment.metadata.position[1] += text_top_for(fragment.line_index);
-                    }
-                }
                 plan.push(InlineIfcNodeInstallOp::Span {
                     node_key,
                     package,
                     paint_fragments,
                 });
             }
-            InlineIfcRootNodeGeometryKind::Text { lines } => {
-                plan.push(InlineIfcNodeInstallOp::Text { node_key, lines });
+            InlineIfcRootNodeGeometryKind::Text {
+                lines,
+                mut paint_input,
+            } => {
+                let local_bounds =
+                    bounding_rect(&lines.iter().map(|line| line.rect).collect::<Vec<_>>());
+                for line in &mut paint_input.lines {
+                    line.x -= local_bounds.x;
+                    line.y -= local_bounds.y;
+                }
+                for glyph in &mut paint_input.glyphs {
+                    glyph.x -= local_bounds.x;
+                    glyph.baseline_y -= local_bounds.y;
+                }
+                plan.push(InlineIfcNodeInstallOp::Text {
+                    node_key,
+                    lines,
+                    paint_input,
+                });
             }
             InlineIfcRootNodeGeometryKind::Atomic { rect } => {
                 plan.push(InlineIfcNodeInstallOp::Atomic { node_key, rect });
@@ -2771,28 +2763,30 @@ impl ElementInlineIfcMetadataCollector {
             arena,
             root_source,
             max_width: input.max_width.max(1.0),
+            viewport_width: input.viewport_width,
+            viewport_height: input.viewport_height,
             sources_by_node: FxHashMap::default(),
             decoration_sources: Vec::new(),
             atomic_sources: Vec::new(),
         };
         state.sources_by_node.insert(input.root_key, root_source);
 
-        let allow_wrap = arena
+        let (allow_wrap, gap) = arena
             .get(input.root_key)
             .and_then(|node| {
-                node.element
-                    .as_any()
-                    .downcast_ref::<Element>()
-                    .map(|root| root.computed_style.text_wrap != TextWrap::NoWrap)
+                node.element.as_any().downcast_ref::<Element>().map(|root| {
+                    (
+                        root.computed_style.text_wrap != TextWrap::NoWrap,
+                        state.resolved_gap(root),
+                    )
+                })
             })
-            .unwrap_or(true);
+            .unwrap_or((true, 0.0));
         let mut builder = InlineIfcElementRootSourceBuilder::new()
             .with_max_width(state.max_width)
             .with_allow_wrap(allow_wrap);
-        for child_key in root_children {
-            if let Some(item) = state.collect_item(child_key, root_source) {
-                builder.push_item(item);
-            }
+        for item in state.collect_children(root_children, root_source, gap) {
+            builder.push_item(item);
         }
         for source in state.decoration_sources {
             builder.add_decoration_source(source);
@@ -2820,6 +2814,8 @@ impl ElementInlineIfcMetadataCollector {
             arena,
             root_source,
             max_width: input.max_width.max(1.0),
+            viewport_width: input.viewport_width,
+            viewport_height: input.viewport_height,
             sources_by_node: FxHashMap::default(),
             decoration_sources: Vec::new(),
             atomic_sources: Vec::new(),
@@ -2827,13 +2823,12 @@ impl ElementInlineIfcMetadataCollector {
         state.sources_by_node.insert(input.root_key, root_source);
 
         let allow_wrap = root.computed_style.text_wrap != TextWrap::NoWrap;
+        let gap = state.resolved_gap(root);
         let mut builder = InlineIfcElementRootSourceBuilder::new()
             .with_max_width(state.max_width)
             .with_allow_wrap(allow_wrap);
-        for child_key in root.children.iter().copied() {
-            if let Some(item) = state.collect_item(child_key, root_source) {
-                builder.push_item(item);
-            }
+        for item in state.collect_children(root.children.iter().copied(), root_source, gap) {
+            builder.push_item(item);
         }
         for source in state.decoration_sources {
             builder.add_decoration_source(source);
@@ -2853,6 +2848,8 @@ struct ElementInlineIfcMetadataCollectorState<'a> {
     arena: &'a NodeArena,
     root_source: InlineIfcSourceId,
     max_width: f32,
+    viewport_width: f32,
+    viewport_height: f32,
     sources_by_node: FxHashMap<NodeKey, InlineIfcSourceId>,
     decoration_sources: Vec<InlineIfcElementDecorationPackageSource>,
     atomic_sources: Vec<InlineIfcSourceId>,
@@ -2875,6 +2872,7 @@ impl ElementInlineIfcMetadataCollectorState<'_> {
                 style: InlineIfcStyle,
                 decoration_source: InlineIfcElementDecorationPackageSource,
                 children: Vec<NodeKey>,
+                gap: f32,
             },
             Atomic {
                 source: InlineIfcSourceId,
@@ -2895,7 +2893,6 @@ impl ElementInlineIfcMetadataCollectorState<'_> {
                 return None;
             }
             let source = element_inline_ifc_source_id(key, element);
-            let snapshot = element.box_model_snapshot();
             self.sources_by_node.insert(key, source);
 
             if let Some(text) = element.as_any().downcast_ref::<Text>() {
@@ -2916,17 +2913,18 @@ impl ElementInlineIfcMetadataCollectorState<'_> {
                         style: style.clone(),
                         decoration_source: element.inline_ifc_decoration_package_source(source),
                         children: node.children.clone(),
+                        gap: self.resolved_gap(element),
                     }
                 } else {
                     CollectedNode::Atomic {
                         source,
-                        measurement: self.atomic_measurement(snapshot),
+                        measurement: self.atomic_measurement(element.measured_size()),
                     }
                 }
             } else {
                 CollectedNode::Atomic {
                     source,
-                    measurement: self.atomic_measurement(snapshot),
+                    measurement: self.atomic_measurement(element.measured_size()),
                 }
             }
         };
@@ -2946,13 +2944,9 @@ impl ElementInlineIfcMetadataCollectorState<'_> {
                 style,
                 decoration_source,
                 children,
+                gap,
             } => {
-                let mut span_children = Vec::new();
-                for child_key in children {
-                    if let Some(item) = self.collect_item(child_key, source) {
-                        span_children.push(item);
-                    }
-                }
+                let span_children = self.collect_children(children, source, gap);
                 if span_children.is_empty() {
                     None
                 } else {
@@ -2982,9 +2976,40 @@ impl ElementInlineIfcMetadataCollectorState<'_> {
         }
     }
 
-    fn atomic_measurement(&self, snapshot: BoxModelSnapshot) -> InlineIfcMeasuredAtomicBox {
+    fn collect_children(
+        &mut self,
+        children: impl IntoIterator<Item = NodeKey>,
+        parent_source: InlineIfcSourceId,
+        gap: f32,
+    ) -> Vec<InlineIfcItem> {
+        let mut items = Vec::new();
+        for child_key in children {
+            let Some(item) = self.collect_item(child_key, parent_source) else {
+                continue;
+            };
+            if !items.is_empty() && gap > 0.0 {
+                items.push(InlineIfcItem::GapSpacer {
+                    source: parent_source,
+                    width: gap,
+                });
+            }
+            items.push(item);
+        }
+        items
+    }
+
+    fn resolved_gap(&self, element: &Element) -> f32 {
+        resolve_px(
+            element.computed_style.gap,
+            self.max_width,
+            self.viewport_width,
+            self.viewport_height,
+        )
+    }
+
+    fn atomic_measurement(&self, measured_size: (f32, f32)) -> InlineIfcMeasuredAtomicBox {
         InlineIfcMeasuredAtomicBox::new(
-            InlineIfcSize::new(snapshot.width, snapshot.height),
+            InlineIfcSize::new(measured_size.0, measured_size.1),
             InlineIfcAtomicMeasureConstraints::new(Some(self.max_width)),
         )
     }
@@ -3020,6 +3045,7 @@ fn inline_ifc_style_from_text_metadata(
         font_weight: metadata.font_weight,
         brush: metadata.brush,
         font_families: metadata.font_families,
+        vertical_align: metadata.vertical_align,
     }
 }
 
@@ -3224,7 +3250,9 @@ impl Element {
                     pending.plan,
                 )
             } else if let Some(mut install) = self.inline_ifc_layout_call_site.current.take() {
-                if install.children_snapshot == self.children {
+                let viewport_unchanged = install.viewport_width == placement.viewport_width
+                    && install.viewport_height == placement.viewport_height;
+                if install.children_snapshot == self.children && viewport_unchanged {
                     with_layout_place_profile(|profile| {
                         profile.inline_ifc_root_install_reuse_calls += 1;
                     });
@@ -3262,7 +3290,12 @@ impl Element {
                 for node_key in install.installed_nodes {
                     clear_inline_ifc_node_install(arena, node_key);
                 }
-                match self.compute_inline_ifc_plan(arena, inner_width) {
+                match self.compute_inline_ifc_plan(
+                    arena,
+                    inner_width,
+                    placement.viewport_width,
+                    placement.viewport_height,
+                ) {
                     Some(built) => built,
                     None => {
                         self.dirty_flags = self.dirty_flags.union(DirtyPassMask::PAINT);
@@ -3270,7 +3303,12 @@ impl Element {
                     }
                 }
             } else {
-                match self.compute_inline_ifc_plan(arena, inner_width) {
+                match self.compute_inline_ifc_plan(
+                    arena,
+                    inner_width,
+                    placement.viewport_width,
+                    placement.viewport_height,
+                ) {
                     Some(built) => built,
                     None => return,
                 }
@@ -3299,6 +3337,8 @@ impl Element {
             content_top_offset: top_offset,
             content_size,
             inner_width,
+            viewport_width: placement.viewport_width,
+            viewport_height: placement.viewport_height,
             plan,
             installed_nodes,
             applied_origins: self.inline_ifc_apply_origins(),
@@ -3317,6 +3357,8 @@ impl Element {
         &mut self,
         arena: &NodeArena,
         inner_width: f32,
+        viewport_width: f32,
+        viewport_height: f32,
     ) -> Option<(
         InlineIfcCacheKey,
         Vec<NodeKey>,
@@ -3327,7 +3369,12 @@ impl Element {
         let root_key = arena.find_by_stable_id(self.stable_id())?;
         let collected = ElementInlineIfcMetadataCollector::collect_for_taken_root(
             arena,
-            ElementInlineIfcMetadataCollectorInput::new(root_key, inner_width),
+            ElementInlineIfcMetadataCollectorInput::new(
+                root_key,
+                inner_width,
+                viewport_width,
+                viewport_height,
+            ),
             self,
         )?;
         let candidate = self
@@ -3560,7 +3607,11 @@ impl Element {
                         }
                     });
                 }
-                InlineIfcNodeInstallOp::Text { node_key, lines } => {
+                InlineIfcNodeInstallOp::Text {
+                    node_key,
+                    lines,
+                    paint_input,
+                } => {
                     let absolute = lines
                         .iter()
                         .cloned()
@@ -3572,7 +3623,7 @@ impl Element {
                                 &absolute.iter().map(|line| line.rect).collect::<Vec<_>>(),
                             );
                             text.place_as_inline_ifc_owned_box(bounds);
-                            text.install_inline_ifc_owned_geometry(absolute);
+                            text.install_inline_ifc_owned_geometry(absolute, paint_input.clone());
                         }
                     });
                 }
@@ -3649,6 +3700,8 @@ impl Element {
         &mut self,
         arena: &NodeArena,
         inner_width: f32,
+        viewport_width: f32,
+        viewport_height: f32,
     ) -> Option<(f32, f32)> {
         if self.computed_style.layout != Layout::Inline || self.inline_ifc_owned_by_root {
             self.inline_ifc_layout_call_site.pending = None;
@@ -3661,11 +3714,17 @@ impl Element {
         // (where the subtree is layout-clean) effectively free.
         if let Some(install) = self.inline_ifc_layout_call_site.current.as_ref() {
             let width_unchanged = (install.inner_width - inner_width).abs() <= f32::EPSILON;
+            let viewport_unchanged = install.viewport_width == viewport_width
+                && install.viewport_height == viewport_height;
             let layout_clean = !self.dirty_flags.intersects(DirtyPassMask::LAYOUT)
                 && !self.children.iter().any(|&child_key| {
                     arena.subtree_dirty_intersects(child_key, DirtyPassMask::LAYOUT)
                 });
-            if install.children_snapshot == self.children && width_unchanged && layout_clean {
+            if install.children_snapshot == self.children
+                && width_unchanged
+                && viewport_unchanged
+                && layout_clean
+            {
                 self.inline_ifc_layout_call_site.pending = None;
                 LAYOUT_PLACE_PROFILE.with(|p| p.borrow_mut().ifc_measure_cheap += 1);
                 return Some(install.content_size);
@@ -3677,7 +3736,12 @@ impl Element {
         };
         let Some(collected) = ElementInlineIfcMetadataCollector::collect_for_taken_root(
             arena,
-            ElementInlineIfcMetadataCollectorInput::new(root_key, inner_width),
+            ElementInlineIfcMetadataCollectorInput::new(
+                root_key,
+                inner_width,
+                viewport_width,
+                viewport_height,
+            ),
             self,
         ) else {
             self.inline_ifc_layout_call_site.pending = None;
@@ -3727,8 +3791,8 @@ impl Element {
         Some(content_size)
     }
 
-    /// Render input for the unified glyph pass of this inline IFC root:
-    /// the shaped paint payload plus the content-top normalization offset.
+    /// Test diagnostic for the full root-shaped payload before it is split
+    /// into source-filtered Text passes.
     #[cfg(test)]
     pub(crate) fn inline_ifc_root_render_input(
         &self,
@@ -3741,10 +3805,11 @@ impl Element {
         Some((context.text_pass_paint_input(), install.content_top_offset))
     }
 
-    /// Staging input for the unified glyph pass, with the content-top
-    /// normalization applied. The prepared pass positions glyphs from
+    /// Test diagnostic staging input for the full root payload, with
+    /// content-top normalization applied. Prepared passes position glyphs from
     /// `paint.local_pos` plus the fragment origin; `final_paint_pos` only
     /// feeds probes, so both must carry the offset to stay in sync.
+    #[cfg(test)]
     pub(crate) fn inline_ifc_root_staging_input(
         &self,
         origin: [f32; 2],
@@ -3783,6 +3848,7 @@ impl Element {
             font_weight: self.computed_style.font_weight,
             brush: self.computed_style.color.to_rgba_u8(),
             font_families: self.computed_style.font_families.clone(),
+            vertical_align: self.computed_style.vertical_align,
         }
     }
 
@@ -3796,7 +3862,7 @@ impl Element {
             self.border_widths.top + self.padding.top,
             self.border_widths.bottom + self.padding.bottom,
         );
-        let style = InlineIfcElementDecorationDrawRectStyle::new(
+        let style = InlineIfcElementDecorationDrawRectStyle::new_with_side_colors(
             crate::view::inline_formatting_context::InlineIfcPaintStyleKey {
                 brush: self.computed_style.background_color.to_rgba_u8(),
             },
@@ -3808,7 +3874,12 @@ impl Element {
                 self.border_widths.top,
                 self.border_widths.bottom,
             ],
-            self.border_colors.left.as_ref().to_rgba_f32(),
+            [
+                self.border_colors.left.as_ref().to_rgba_f32(),
+                self.border_colors.right.as_ref().to_rgba_f32(),
+                self.border_colors.top.as_ref().to_rgba_f32(),
+                self.border_colors.bottom.as_ref().to_rgba_f32(),
+            ],
         );
         InlineIfcElementDecorationPackageSource::new(source, insets, style)
     }

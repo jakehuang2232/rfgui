@@ -129,6 +129,13 @@ pub(crate) enum InlineIfcItem {
         source: InlineIfcSourceId,
         measurement: InlineIfcMeasuredAtomicBox,
     },
+    /// Horizontal spacing between adjacent children of a `Layout::Inline`
+    /// container. It participates in line advance/wrapping without
+    /// contributing to the line box height or producing paint geometry.
+    GapSpacer {
+        source: InlineIfcSourceId,
+        width: f32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -266,6 +273,7 @@ pub(crate) struct InlineIfcStyle {
     pub(crate) font_weight: u16,
     pub(crate) brush: [u8; 4],
     pub(crate) font_families: Vec<String>,
+    pub(crate) vertical_align: crate::style::VerticalAlign,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -274,6 +282,7 @@ pub(crate) struct InlineIfcStyleKey {
     pub(crate) line_height_bits: u32,
     pub(crate) font_weight: u16,
     pub(crate) font_families: Vec<String>,
+    pub(crate) vertical_align: crate::style::VerticalAlign,
 }
 
 impl InlineIfcStyleKey {
@@ -283,6 +292,7 @@ impl InlineIfcStyleKey {
             line_height_bits: style.line_height.max(0.1).to_bits(),
             font_weight: style.font_weight,
             font_families: style.font_families.clone(),
+            vertical_align: style.vertical_align,
         }
     }
 }
@@ -320,6 +330,10 @@ pub(crate) enum InlineIfcContentKeyItem {
         source: InlineIfcSourceId,
         shape_key: InlineIfcAtomicBoxShapeKey,
     },
+    GapSpacer {
+        source: InlineIfcSourceId,
+        width_bits: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -356,6 +370,9 @@ pub(crate) enum InlineIfcPaintKeyItem {
         children: Vec<InlineIfcPaintKeyItem>,
     },
     AtomicInlineBox {
+        source: InlineIfcSourceId,
+    },
+    GapSpacer {
         source: InlineIfcSourceId,
     },
 }
@@ -677,6 +694,7 @@ impl Default for InlineIfcStyle {
             font_weight: 400,
             brush: [0, 0, 0, 255],
             font_families: Vec::new(),
+            vertical_align: crate::style::VerticalAlign::Baseline,
         }
     }
 }
@@ -712,12 +730,12 @@ pub(crate) struct InlineIfcBoxMapping {
 }
 
 /// What an inline box in the parley layout stands for: a real atomic
-/// child, or a zero-height spacer reserving a span's horizontal
-/// border+padding in the line.
+/// child, or a zero-height spacer reserving horizontal advance in the line.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum InlineIfcInlineBoxRole {
     Atomic,
     SpanEdgeSpacer,
+    GapSpacer,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -911,7 +929,7 @@ pub(crate) struct InlineIfcDrawRectMetadata {
     pub(crate) fill_color: [f32; 4],
     pub(crate) opacity: f32,
     pub(crate) border_widths: [f32; 4],
-    pub(crate) border_color: [f32; 4],
+    pub(crate) border_colors: [[f32; 4]; 4],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -920,7 +938,7 @@ pub(crate) struct InlineIfcElementDecorationDrawRectStyle {
     pub(crate) fill_color: [f32; 4],
     pub(crate) opacity: f32,
     pub(crate) border_widths: [f32; 4],
-    pub(crate) border_color: [f32; 4],
+    pub(crate) border_colors: [[f32; 4]; 4],
 }
 
 impl InlineIfcElementDecorationDrawRectStyle {
@@ -931,12 +949,28 @@ impl InlineIfcElementDecorationDrawRectStyle {
         border_widths: [f32; 4],
         border_color: [f32; 4],
     ) -> Self {
+        Self::new_with_side_colors(
+            style_key,
+            fill_color,
+            opacity,
+            border_widths,
+            [border_color; 4],
+        )
+    }
+
+    pub(crate) fn new_with_side_colors(
+        style_key: InlineIfcPaintStyleKey,
+        fill_color: [f32; 4],
+        opacity: f32,
+        border_widths: [f32; 4],
+        border_colors: [[f32; 4]; 4],
+    ) -> Self {
         Self {
             style_key,
             fill_color,
             opacity: opacity.clamp(0.0, 1.0),
             border_widths: border_widths.map(|width| width.max(0.0)),
-            border_color,
+            border_colors,
         }
     }
 
@@ -1507,6 +1541,10 @@ pub(crate) struct InlineFormattingContext {
     source_ranges: Vec<InlineIfcSourceRange>,
     style_ranges: Vec<InlineIfcStyleRange>,
     inline_boxes: Vec<InlineIfcBoxMapping>,
+    /// Inline boxes nested inside each fragmentable span. This preserves
+    /// decoration geometry for spans whose content is atomic-only and has
+    /// no backing-text byte range.
+    span_inline_box_ids: HashMap<InlineIfcSourceId, Vec<u64>>,
     cache_key: InlineIfcCacheKey,
     // Memoized derivations: walking the parley layout (cluster/source
     // resolution, font lookups) is the dominant per-frame cost for inline
@@ -1518,10 +1556,11 @@ pub(crate) struct InlineFormattingContext {
     // geometry builder asks for them once per text source. Memoize so the
     // whole-layout stop set is built once and filtered per source.
     caret_stops_cache: std::cell::OnceCell<Vec<InlineIfcCaretStop>>,
-    // The text-pass paint payload is consumed every paint frame by the
-    // unified glyph passes; memoize so steady-state repaints borrow
-    // instead of re-materializing per-glyph vectors.
+    // The text-pass paint payload is shared by source-filtered Text passes;
+    // memoize so steady-state repaints do not rebuild every glyph vector.
     paint_input_cache: std::cell::OnceCell<InlineIfcTextPassPaintInput>,
+    source_paint_inputs_cache:
+        std::cell::OnceCell<HashMap<InlineIfcSourceId, InlineIfcTextPassPaintInput>>,
     /// Per-source per-line rect maps, built in one glyph pass. Queries
     /// like `source_line_rects` used to rescan every glyph per source,
     /// which made per-segment callers (TextArea child placement) O(n²).
@@ -1559,11 +1598,13 @@ impl InlineFormattingContext {
             source_ranges: builder.source_ranges,
             style_ranges: builder.style_ranges,
             inline_boxes: builder.inline_boxes,
+            span_inline_box_ids: builder.span_inline_box_ids,
             cache_key,
             glyph_items_cache: std::cell::OnceCell::new(),
             snapshot_cache: std::cell::OnceCell::new(),
             caret_stops_cache: std::cell::OnceCell::new(),
             paint_input_cache: std::cell::OnceCell::new(),
+            source_paint_inputs_cache: std::cell::OnceCell::new(),
             source_line_rects_cache: std::cell::OnceCell::new(),
             source_text_line_rects_cache: std::cell::OnceCell::new(),
         }
@@ -1629,6 +1670,19 @@ impl InlineFormattingContext {
 
     pub(crate) fn decoration_fragments(&self) -> Vec<InlineIfcDecorationFragment> {
         let mut fragments = Vec::new();
+        let glyphs = self.glyph_items_ref();
+        let inline_boxes = self.inline_box_placements();
+        let mut run_metrics = HashMap::<usize, (f32, f32)>::new();
+        for line in self.layout.lines() {
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                    continue;
+                };
+                let run = glyph_run.run();
+                let metrics = run.metrics();
+                run_metrics.insert(run.index(), (metrics.ascent, metrics.descent));
+            }
+        }
         for (line_index, line) in self.layout.lines().enumerate() {
             let line_range = line.text_range();
             let metrics = line.metrics();
@@ -1639,28 +1693,82 @@ impl InlineFormattingContext {
             {
                 let start = source.range.start.max(line_range.start);
                 let end = source.range.end.min(line_range.end);
-                if start >= end {
-                    continue;
+                let mut horizontal_extent: Option<(f32, f32)> = None;
+                let mut vertical_extent: Option<(f32, f32)> = None;
+                let mut include = |left: f32, right: f32| {
+                    horizontal_extent = Some(match horizontal_extent {
+                        Some((current_left, current_right)) => {
+                            (current_left.min(left), current_right.max(right))
+                        }
+                        None => (left, right),
+                    });
+                };
+                let mut include_vertical = |top: f32, bottom: f32| {
+                    vertical_extent = Some(match vertical_extent {
+                        Some((current_top, current_bottom)) => {
+                            (current_top.min(top), current_bottom.max(bottom))
+                        }
+                        None => (top, bottom),
+                    });
+                };
+
+                if start < end {
+                    for glyph in glyphs.iter().filter(|glyph| {
+                        glyph.line_index == line_index
+                            && glyph.cluster_range.start < source.range.end
+                            && glyph.cluster_range.end > source.range.start
+                    }) {
+                        include(glyph.x, glyph.x + glyph.advance.max(0.0));
+                        let (ascent, descent) = run_metrics
+                            .get(&glyph.run_index)
+                            .copied()
+                            .unwrap_or((glyph.font_size * 0.88, glyph.font_size * 0.2));
+                        let item_top = metrics.baseline - ascent;
+                        let item_height = (ascent + descent).max(0.0);
+                        let vertical_offset = inline_vertical_align_offset(
+                            glyph.style.vertical_align,
+                            metrics.block_min_coord,
+                            metrics.line_height,
+                            item_top,
+                            item_height,
+                        );
+                        include_vertical(
+                            item_top + vertical_offset,
+                            item_top + vertical_offset + item_height,
+                        );
+                    }
                 }
 
-                let start_cursor =
-                    ParleyCursor::from_byte_index(&self.layout, start, Affinity::Downstream)
-                        .geometry(&self.layout, 0.0);
-                let end_cursor =
-                    ParleyCursor::from_byte_index(&self.layout, end, Affinity::Upstream)
-                        .geometry(&self.layout, 0.0);
+                if let Some(ids) = self.span_inline_box_ids.get(&source.source) {
+                    for inline_box in inline_boxes.iter().filter(|inline_box| {
+                        inline_box.line_index == line_index && ids.contains(&inline_box.id)
+                    }) {
+                        include(inline_box.x, inline_box.x + inline_box.width.max(0.0));
+                        include_vertical(inline_box.y, inline_box.y + inline_box.height.max(0.0));
+                    }
+                }
+
+                let Some((x0, x1)) = horizontal_extent else {
+                    continue;
+                };
+                let (y0, y1) = vertical_extent.unwrap_or((
+                    metrics.block_min_coord,
+                    metrics.block_min_coord + metrics.line_height,
+                ));
                 fragments.push(InlineIfcDecorationFragment {
                     line_index,
                     source: source.source,
-                    range: start..end,
-                    style: source
-                        .style
-                        .clone()
-                        .or_else(|| self.style_at_byte(start).cloned()),
-                    x0: (start_cursor.x0 as f32).min(end_cursor.x0 as f32),
-                    x1: (start_cursor.x0 as f32).max(end_cursor.x0 as f32),
-                    y0: metrics.block_min_coord,
-                    y1: metrics.block_min_coord + metrics.line_height,
+                    range: start..end.max(start),
+                    style: source.style.clone().or_else(|| {
+                        (start < end)
+                            .then(|| self.style_at_byte(start))
+                            .flatten()
+                            .cloned()
+                    }),
+                    x0,
+                    x1,
+                    y0,
+                    y1,
                 });
             }
         }
@@ -1698,6 +1806,10 @@ impl InlineFormattingContext {
                 };
 
                 let run = glyph_run.run();
+                let run_metrics = run.metrics();
+                let line_metrics = line.metrics();
+                let item_top = line_metrics.baseline - run_metrics.ascent;
+                let item_height = (run_metrics.ascent + run_metrics.descent).max(0.0);
                 let font = run.font().clone();
                 let normalized_coords = run.normalized_coords();
                 let normalized_coords_hash = if normalized_coords.is_empty() {
@@ -1730,6 +1842,13 @@ impl InlineFormattingContext {
                     let Some(style) = self.style_at_byte(cluster_range.start) else {
                         continue;
                     };
+                    let vertical_offset = inline_vertical_align_offset(
+                        style.vertical_align,
+                        line_metrics.block_min_coord,
+                        line_metrics.line_height,
+                        item_top,
+                        item_height,
+                    );
                     output.push(InlineIfcGlyphItem {
                         line_index,
                         run_index,
@@ -1737,7 +1856,7 @@ impl InlineFormattingContext {
                         cluster_range,
                         glyph_id: glyph.id,
                         x: glyph.x,
-                        y: glyph.y,
+                        y: glyph.y + vertical_offset,
                         advance: glyph.advance,
                         font_size: run.font_size(),
                         font_data: Some(font.clone()),
@@ -1853,6 +1972,55 @@ impl InlineFormattingContext {
 
     pub(crate) fn text_pass_paint_input(&self) -> InlineIfcTextPassPaintInput {
         self.text_pass_paint_input_ref().clone()
+    }
+
+    pub(crate) fn text_pass_paint_input_for_source(
+        &self,
+        source: InlineIfcSourceId,
+    ) -> InlineIfcTextPassPaintInput {
+        self.source_paint_inputs_cache
+            .get_or_init(|| {
+                let input = self.text_pass_paint_input_ref();
+                let mut glyphs_by_source =
+                    HashMap::<InlineIfcSourceId, Vec<InlineIfcTextPassGlyphInput>>::new();
+                for glyph in &input.glyphs {
+                    glyphs_by_source
+                        .entry(glyph.source)
+                        .or_default()
+                        .push(glyph.clone());
+                }
+                glyphs_by_source
+                    .into_iter()
+                    .map(|(source, glyphs)| {
+                        let line_indices = glyphs
+                            .iter()
+                            .map(|glyph| glyph.line_index)
+                            .collect::<std::collections::HashSet<_>>();
+                        (
+                            source,
+                            InlineIfcTextPassPaintInput {
+                                lines: input
+                                    .lines
+                                    .iter()
+                                    .filter(|line| line_indices.contains(&line.line_index))
+                                    .cloned()
+                                    .collect(),
+                                batches: text_pass_batches_from_glyphs(&glyphs),
+                                glyphs,
+                                decorations: Vec::new(),
+                            },
+                        )
+                    })
+                    .collect()
+            })
+            .get(&source)
+            .cloned()
+            .unwrap_or_else(|| InlineIfcTextPassPaintInput {
+                lines: Vec::new(),
+                glyphs: Vec::new(),
+                batches: Vec::new(),
+                decorations: Vec::new(),
+            })
     }
 
     /// Memoized paint payload. Built once per shaped context; every paint
@@ -2091,10 +2259,17 @@ impl InlineFormattingContext {
             // nesting-aware) and run index, plus the baseline-relative
             // line geometry.
             let glyphs = self.glyph_items_ref();
-            let line_baselines: Vec<f32> = self
+            let line_metrics: Vec<(f32, f32, f32)> = self
                 .layout
                 .lines()
-                .map(|line| line.metrics().baseline)
+                .map(|line| {
+                    let metrics = line.metrics();
+                    (
+                        metrics.block_min_coord,
+                        metrics.line_height,
+                        metrics.baseline,
+                    )
+                })
                 .collect();
             let mut by_source: HashMap<
                 InlineIfcSourceId,
@@ -2112,11 +2287,24 @@ impl InlineFormattingContext {
                     .entry(glyph.source)
                     .or_default()
                     .entry(glyph.line_index)
-                    .or_insert((f32::MAX, f32::MIN, 0.0, 0.0));
+                    .or_insert((f32::MAX, f32::MIN, f32::MAX, f32::MIN));
                 entry.0 = entry.0.min(left);
                 entry.1 = entry.1.max(right);
-                entry.2 = entry.2.max(ascent);
-                entry.3 = entry.3.max(descent);
+                let (line_top, line_height, baseline) = line_metrics
+                    .get(glyph.line_index)
+                    .copied()
+                    .unwrap_or((0.0, ascent + descent, ascent));
+                let item_top = baseline - ascent;
+                let item_height = (ascent + descent).max(0.0);
+                let vertical_offset = inline_vertical_align_offset(
+                    glyph.style.vertical_align,
+                    line_top,
+                    line_height,
+                    item_top,
+                    item_height,
+                );
+                entry.2 = entry.2.min(item_top + vertical_offset);
+                entry.3 = entry.3.max(item_top + vertical_offset + item_height);
             }
 
             by_source
@@ -2124,18 +2312,17 @@ impl InlineFormattingContext {
                 .map(|(source, by_line)| {
                     let rects = by_line
                         .into_iter()
-                        .filter_map(|(line_index, (left, right, ascent, descent))| {
-                            if right <= left {
+                        .filter_map(|(line_index, (left, right, top, bottom))| {
+                            if right <= left || bottom <= top {
                                 return None;
                             }
-                            let baseline = line_baselines.get(line_index).copied()?;
                             Some((
                                 line_index,
                                 InlineIfcPaintRect {
                                     x: left,
-                                    y: baseline - ascent,
+                                    y: top,
                                     width: right - left,
-                                    height: (ascent + descent).max(1.0),
+                                    height: (bottom - top).max(1.0),
                                 },
                             ))
                         })
@@ -2144,44 +2331,6 @@ impl InlineFormattingContext {
                 })
                 .collect()
         })
-    }
-
-    pub(crate) fn text_top_for_line_range(
-        &self,
-        line_index: usize,
-        range: &Range<usize>,
-    ) -> Option<f32> {
-        let mut run_metrics: HashMap<usize, (f32, f32)> = HashMap::new();
-        for line in self.layout.lines() {
-            for item in line.items() {
-                let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
-                    continue;
-                };
-                let run = glyph_run.run();
-                let metrics = run.metrics();
-                run_metrics.insert(run.index(), (metrics.ascent, metrics.descent));
-            }
-        }
-
-        let baseline = self
-            .layout
-            .lines()
-            .nth(line_index)
-            .map(|line| line.metrics().baseline)?;
-        let ascent = self
-            .glyph_items_ref()
-            .iter()
-            .filter(|glyph| {
-                glyph.line_index == line_index
-                    && glyph.cluster_range.start < range.end
-                    && glyph.cluster_range.end > range.start
-            })
-            .filter_map(|glyph| run_metrics.get(&glyph.run_index).map(|(ascent, _)| *ascent))
-            .fold(None, |current: Option<f32>, ascent| {
-                Some(current.map_or(ascent, |current| current.max(ascent)))
-            })?;
-
-        Some(baseline - ascent)
     }
 
     pub(crate) fn element_package_distributor(
@@ -2279,15 +2428,22 @@ impl InlineFormattingContext {
         let rect = cursor.geometry(&self.layout, 0.0);
         let line_index = self.line_index_for_cursor_y(rect.y0 as f32)?;
         let source = self.source_for_caret_byte(byte_index)?;
+        let style = self.style_for_caret_byte(byte_index).cloned();
+        let (y, height) = self
+            .source_text_line_rects(source)
+            .into_iter()
+            .find(|(index, _)| *index == line_index)
+            .map(|(_, rect)| (rect.y, rect.height))
+            .unwrap_or((rect.y0 as f32, (rect.y1 - rect.y0).max(1.0) as f32));
         Some(InlineIfcCaretGeometry {
             source,
             byte_index,
             affinity,
             line_index,
             x: rect.x0 as f32,
-            y: rect.y0 as f32,
-            height: (rect.y1 - rect.y0).max(1.0) as f32,
-            style: self.style_for_caret_byte(byte_index).cloned(),
+            y,
+            height,
+            style,
         })
     }
 
@@ -2535,15 +2691,25 @@ impl InlineFormattingContext {
                         .geometry(&self.layout, 0.0);
                 let left = (start_cursor.x0 as f32).min(end_cursor.x0 as f32);
                 let right = (start_cursor.x0 as f32).max(end_cursor.x0 as f32);
+                let text_rect = self
+                    .source_text_line_rects(source_range.source)
+                    .into_iter()
+                    .find(|(index, _)| *index == line_index)
+                    .map(|(_, rect)| rect);
                 rects.push(InlineIfcSelectionRect {
                     line_index,
                     source: source_range.source,
                     range: start..end,
                     rect: InlineIfcPaintRect {
                         x: left,
-                        y: metrics.block_min_coord,
+                        y: text_rect
+                            .map(|rect| rect.y)
+                            .unwrap_or(metrics.block_min_coord),
                         width: (right - left).max(1.0),
-                        height: metrics.line_height.max(1.0),
+                        height: text_rect
+                            .map(|rect| rect.height)
+                            .unwrap_or(metrics.line_height)
+                            .max(1.0),
                     },
                     style: self.style_at_byte(start).cloned(),
                 });
@@ -2808,7 +2974,7 @@ where
                 source: fragment.source,
                 range: fragment.range,
                 rect: InlineIfcPaintRect {
-                    x: fragment.rect.x,
+                    x: fragment.rect.x - left,
                     y: fragment.rect.y - insets.top,
                     width: fragment.rect.width + left + right,
                     height: fragment.rect.height + insets.top + insets.bottom,
@@ -2848,7 +3014,7 @@ where
                     fill_color: style.fill_color,
                     opacity: style.opacity,
                     border_widths: style.border_widths,
-                    border_color: style.border_color,
+                    border_colors: style.border_colors,
                 },
             }
         })
@@ -2910,6 +3076,10 @@ fn content_key_item_for(
             source: *source,
             shape_key: InlineIfcAtomicBoxShapeKey::from_measurement(measurement),
         },
+        InlineIfcItem::GapSpacer { source, width } => InlineIfcContentKeyItem::GapSpacer {
+            source: *source,
+            width_bits: width.max(0.0).to_bits(),
+        },
     }
 }
 
@@ -2950,6 +3120,9 @@ fn paint_key_item_for(
         }
         InlineIfcItem::AtomicInlineBox { source, .. } => {
             InlineIfcPaintKeyItem::AtomicInlineBox { source: *source }
+        }
+        InlineIfcItem::GapSpacer { source, .. } => {
+            InlineIfcPaintKeyItem::GapSpacer { source: *source }
         }
     }
 }
@@ -3018,11 +3191,29 @@ fn brush_to_text_color(brush: [u8; 4]) -> [f32; 4] {
     ]
 }
 
+fn inline_vertical_align_offset(
+    vertical_align: crate::style::VerticalAlign,
+    line_top: f32,
+    line_height: f32,
+    item_top: f32,
+    item_height: f32,
+) -> f32 {
+    match vertical_align {
+        crate::style::VerticalAlign::Baseline => 0.0,
+        crate::style::VerticalAlign::Top => line_top - item_top,
+        crate::style::VerticalAlign::Bottom => line_top + line_height - (item_top + item_height),
+        crate::style::VerticalAlign::Middle => {
+            line_top + line_height * 0.5 - (item_top + item_height * 0.5)
+        }
+    }
+}
+
 struct InlineIfcBuilder {
     backing_text: String,
     source_ranges: Vec<InlineIfcSourceRange>,
     style_ranges: Vec<InlineIfcStyleRange>,
     inline_boxes: Vec<InlineIfcBoxMapping>,
+    span_inline_box_ids: HashMap<InlineIfcSourceId, Vec<u64>>,
     next_inline_box_id: u64,
 }
 
@@ -3033,6 +3224,7 @@ impl InlineIfcBuilder {
             source_ranges: Vec::new(),
             style_ranges: Vec::new(),
             inline_boxes: Vec::new(),
+            span_inline_box_ids: HashMap::new(),
             next_inline_box_id: 0,
         }
     }
@@ -3085,9 +3277,14 @@ impl InlineIfcBuilder {
                     self.push_edge_spacer(*source, edge_insets[0]);
                 }
                 let start = self.backing_text.len();
+                let first_descendant_box = self.inline_boxes.len();
                 self.push_items(children, &resolved_style, depth + 1);
                 let end = self.backing_text.len();
-                if start < end {
+                let descendant_box_ids = self.inline_boxes[first_descendant_box..]
+                    .iter()
+                    .map(|inline_box| inline_box.id)
+                    .collect::<Vec<_>>();
+                if start < end || !descendant_box_ids.is_empty() {
                     self.source_ranges.push(InlineIfcSourceRange {
                         source: *source,
                         kind: InlineIfcSourceKind::Span,
@@ -3095,6 +3292,9 @@ impl InlineIfcBuilder {
                         depth,
                         style: Some(resolved_style),
                     });
+                }
+                if !descendant_box_ids.is_empty() {
+                    self.span_inline_box_ids.insert(*source, descendant_box_ids);
                 }
                 if edge_insets[1] > 0.0 {
                     self.push_edge_spacer(*source, edge_insets[1]);
@@ -3114,6 +3314,9 @@ impl InlineIfcBuilder {
                     role: InlineIfcInlineBoxRole::Atomic,
                 });
             }
+            InlineIfcItem::GapSpacer { source, width } => {
+                self.push_gap_spacer(*source, *width);
+            }
         }
     }
 
@@ -3132,6 +3335,21 @@ impl InlineIfcBuilder {
                 InlineIfcAtomicMeasureConstraints::new(None),
             ),
             role: InlineIfcInlineBoxRole::SpanEdgeSpacer,
+        });
+    }
+
+    fn push_gap_spacer(&mut self, source: InlineIfcSourceId, width: f32) {
+        let id = self.next_inline_box_id;
+        self.next_inline_box_id += 1;
+        self.inline_boxes.push(InlineIfcBoxMapping {
+            id,
+            source,
+            insertion_byte: self.backing_text.len(),
+            measurement: InlineIfcMeasuredAtomicBox::new(
+                InlineIfcSize::new(width.max(0.0), 0.0),
+                InlineIfcAtomicMeasureConstraints::new(None),
+            ),
+            role: InlineIfcInlineBoxRole::GapSpacer,
         });
     }
 }
@@ -4511,7 +4729,7 @@ mod tests {
         let first_raw = raw_fragments.first().expect("first raw fragment");
         assert!(first.is_first_for_source);
         assert!(!first.is_last_for_source);
-        assert!((first.rect.x - first_raw.rect.x).abs() < 0.01);
+        assert!((first.rect.x - (first_raw.rect.x - 8.0)).abs() < 0.01);
         assert!((first.rect.y - (first_raw.rect.y - 4.0)).abs() < 0.01);
         assert!((first.rect.width - (first_raw.rect.width + 8.0)).abs() < 0.01);
         assert!((first.rect.height - (first_raw.rect.height + 6.0)).abs() < 0.01);
@@ -4523,6 +4741,144 @@ mod tests {
         assert!((last.rect.x - last_raw.rect.x).abs() < 0.01);
         assert!((last.rect.right() - (last_raw.rect.right() + 6.0)).abs() < 0.01);
         assert!((last.rect.bottom() - (last_raw.rect.bottom() + 2.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn span_decoration_horizontal_insets_do_not_overlap_following_text() {
+        const SPAN: InlineIfcSourceId = InlineIfcSourceId(201);
+        const INNER_TEXT: InlineIfcSourceId = InlineIfcSourceId(202);
+        const SUFFIX: InlineIfcSourceId = InlineIfcSourceId(203);
+        let inset = 8.0;
+        let ifc = InlineFormattingContext::build(
+            InlineIfcInput::new(vec![
+                InlineIfcItem::Span {
+                    source: SPAN,
+                    style: None,
+                    children: vec![InlineIfcItem::TextSpan {
+                        source: INNER_TEXT,
+                        text: "badge".to_string(),
+                        style: None,
+                    }],
+                    edge_insets: [inset, inset],
+                },
+                InlineIfcItem::TextSpan {
+                    source: SUFFIX,
+                    text: "then".to_string(),
+                    style: None,
+                },
+            ])
+            .with_max_width(240.0),
+        );
+
+        let package = ifc.element_decoration_paint_fragments(
+            SPAN,
+            InlineIfcDecorationBoxInsets::new(inset, inset, 0.0, 0.0),
+        );
+        let suffix = ifc
+            .source_line_rects(SUFFIX)
+            .into_iter()
+            .next()
+            .expect("suffix rect");
+        let fragment = package.first().expect("span decoration fragment");
+        assert!(fragment.is_first_for_source && fragment.is_last_for_source);
+        assert!(
+            fragment.rect.right() <= suffix.x + 0.6,
+            "span right padding must end before following text: fragment={fragment:?} suffix={suffix:?}"
+        );
+    }
+
+    #[test]
+    fn atomic_only_span_still_produces_decoration_geometry() {
+        const SPAN: InlineIfcSourceId = InlineIfcSourceId(211);
+        const ATOMIC: InlineIfcSourceId = InlineIfcSourceId(212);
+        let ifc = InlineFormattingContext::build(
+            InlineIfcInput::new(vec![InlineIfcItem::Span {
+                source: SPAN,
+                style: None,
+                children: vec![InlineIfcItem::AtomicInlineBox {
+                    source: ATOMIC,
+                    measurement: InlineIfcMeasuredAtomicBox::new(
+                        InlineIfcSize::new(42.0, 20.0),
+                        InlineIfcAtomicMeasureConstraints::new(Some(120.0)),
+                    ),
+                }],
+                edge_insets: [8.0, 8.0],
+            }])
+            .with_max_width(120.0),
+        );
+
+        let atomic = ifc
+            .atomic_box_placement_package(ATOMIC)
+            .placements
+            .into_iter()
+            .next()
+            .expect("atomic placement");
+        let fragments = ifc.element_decoration_paint_fragments(
+            SPAN,
+            InlineIfcDecorationBoxInsets::new(8.0, 8.0, 4.0, 4.0),
+        );
+        let fragment = fragments.first().expect("atomic-only span decoration");
+        assert!(fragment.is_first_for_source && fragment.is_last_for_source);
+        assert!(fragment.rect.x <= atomic.rect.x - 7.9);
+        assert!(fragment.rect.right() >= atomic.rect.right() + 7.9);
+        assert!(fragment.rect.y <= atomic.rect.y - 3.9);
+        assert!(fragment.rect.bottom() >= atomic.rect.bottom() + 3.9);
+    }
+
+    #[test]
+    fn fragmentable_span_vertical_align_moves_glyph_and_caret_together() {
+        const SPAN: InlineIfcSourceId = InlineIfcSourceId(221);
+        const TEXT: InlineIfcSourceId = InlineIfcSourceId(222);
+        const ATOMIC: InlineIfcSourceId = InlineIfcSourceId(223);
+        let build = |vertical_align| {
+            InlineFormattingContext::build(
+                InlineIfcInput::new(vec![
+                    InlineIfcItem::Span {
+                        source: SPAN,
+                        style: Some(InlineIfcStyle {
+                            vertical_align,
+                            ..InlineIfcStyle::default()
+                        }),
+                        children: vec![InlineIfcItem::TextSpan {
+                            source: TEXT,
+                            text: "text".to_string(),
+                            style: None,
+                        }],
+                        edge_insets: [0.0; 2],
+                    },
+                    InlineIfcItem::AtomicInlineBox {
+                        source: ATOMIC,
+                        measurement: InlineIfcMeasuredAtomicBox::new(
+                            InlineIfcSize::new(20.0, 48.0),
+                            InlineIfcAtomicMeasureConstraints::new(Some(160.0)),
+                        ),
+                    },
+                ])
+                .with_max_width(160.0),
+            )
+        };
+        let baseline = build(crate::style::VerticalAlign::Baseline);
+        let top = build(crate::style::VerticalAlign::Top);
+        let baseline_glyph_y = baseline.text_pass_paint_input_for_source(TEXT).glyphs[0].baseline_y
+            + baseline.text_pass_paint_input_for_source(TEXT).glyphs[0].glyph_y;
+        let top_glyph_y = top.text_pass_paint_input_for_source(TEXT).glyphs[0].baseline_y
+            + top.text_pass_paint_input_for_source(TEXT).glyphs[0].glyph_y;
+        assert!(top_glyph_y < baseline_glyph_y - 1.0);
+
+        let baseline_caret = baseline
+            .caret_geometry_for_byte(0, InlineIfcCaretAffinity::Downstream)
+            .expect("baseline caret");
+        let top_caret = top
+            .caret_geometry_for_byte(0, InlineIfcCaretAffinity::Downstream)
+            .expect("top caret");
+        assert!(top_caret.y < baseline_caret.y - 1.0);
+        assert!((top_caret.y - top.source_text_line_rects(TEXT)[0].1.y).abs() < 0.6);
+        let top_selection = top
+            .selection_rects_for_source_range(TEXT, 0..4)
+            .into_iter()
+            .next()
+            .expect("top selection rect");
+        assert!((top_selection.rect.y - top_caret.y).abs() < 0.6);
     }
 
     #[test]
@@ -4562,7 +4918,7 @@ mod tests {
             assert_eq!(fragment.metadata.fill_color, draw_style.fill_color);
             assert_eq!(fragment.metadata.opacity, draw_style.opacity);
             assert_eq!(fragment.metadata.border_widths, draw_style.border_widths);
-            assert_eq!(fragment.metadata.border_color, draw_style.border_color);
+            assert_eq!(fragment.metadata.border_colors, draw_style.border_colors);
         }
         assert!(
             package

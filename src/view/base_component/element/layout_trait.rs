@@ -202,7 +202,12 @@ impl Layoutable for Element {
             // union, is the auto size of this box.
             if self.computed_style.layout == Layout::Inline && !self.inline_ifc_owned_by_root {
                 if let Some((content_w, content_h)) =
-                    self.measure_inline_ifc_root_content_size(arena, inner_w)
+                    self.measure_inline_ifc_root_content_size(
+                        arena,
+                        inner_w,
+                        proposal.viewport_width,
+                        proposal.viewport_height,
+                    )
                     && (content_w > 0.0 || content_h > 0.0)
                 {
                     self.layout_state.content_size = Size {

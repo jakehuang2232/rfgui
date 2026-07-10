@@ -338,14 +338,13 @@ fn rsx_fragmentable_badge_text_aligns_with_sibling_inline_text() {
         let note_key = root_children[3];
         let badge_text_key = arena.children_of(badge_key)[0];
         let note_text_key = arena.children_of(note_key)[0];
-        let badge_paint_y = {
+        let badge_paint_rect = {
             let node = arena.get(badge_key).expect("badge node");
             node.element
                 .as_any()
                 .downcast_ref::<BaseElement>()
                 .expect("badge element")
                 .inline_fragment_rects()[0]
-                .y
         };
 
         let lead_fragment = {
@@ -397,17 +396,47 @@ fn rsx_fragmentable_badge_text_aligns_with_sibling_inline_text() {
             trailing_fragment.y,
             note_fragment.y
         );
+        let painted_above_text = lead_fragment.y - badge_paint_rect.y;
         assert!(
-            (lead_fragment.y - badge_paint_y - 8.0).abs() < 0.5,
-            "{vertical_align:?}: badge_paint_y={} should be padding-top above lead_y={}",
-            badge_paint_y,
-            lead_fragment.y
+            (painted_above_text - 8.0).abs() < 0.5,
+            "{vertical_align:?}: padding should start above aligned text; badge_paint_y={} lead_text_y={} delta={}",
+            badge_paint_rect.y,
+            lead_fragment.y,
+            painted_above_text
         );
         assert!(
             trailing_fragment.x > badge_fragment.x,
             "{vertical_align:?}: trailing text should follow badge text: trailing_x={} badge_x={}",
             trailing_fragment.x,
             badge_fragment.x
+        );
+        let trailing_gap = trailing_fragment.x - (badge_paint_rect.x + badge_paint_rect.width);
+        assert!(
+            trailing_gap >= 7.5,
+            "{vertical_align:?}: Layout::Inline gap must reserve at least 8px between the badge decoration and trailing text; gap={trailing_gap} badge={badge_paint_rect:?} trailing={trailing_fragment:?}",
+        );
+
+        let note_snapshot = arena
+            .get(note_key)
+            .expect("note host")
+            .element
+            .box_model_snapshot();
+        assert!(
+            (note_snapshot.width - 90.0).abs() < 0.5 && (note_snapshot.height - 50.0).abs() < 0.5,
+            "{vertical_align:?}: atomic note host must keep its measured 90x50 size, got {note_snapshot:?}",
+        );
+        assert!(
+            note_snapshot.should_render,
+            "{vertical_align:?}: atomic note host must remain inside the IFC root clip"
+        );
+        let root_snapshot = arena
+            .get(root)
+            .expect("inline root")
+            .element
+            .box_model_snapshot();
+        assert!(
+            root_snapshot.y + root_snapshot.height + 0.5 >= note_snapshot.y + note_snapshot.height,
+            "{vertical_align:?}: atomic note must fit inside the IFC root height; root={root_snapshot:?} note={note_snapshot:?}",
         );
     }
 }

@@ -45,6 +45,7 @@ fn shape_text_context(
             font_weight,
             brush: [0, 0, 0, 255],
             font_families: font_families.to_vec(),
+            vertical_align: crate::style::VerticalAlign::Baseline,
         }),
     }]);
     let options = InlineIfcLayoutOptions::new(max_width, allow_wrap).with_align(align);

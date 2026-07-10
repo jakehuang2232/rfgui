@@ -16,7 +16,10 @@ use crate::view::render_pass::text_pass::{
 
 use super::Text;
 use super::hit_test::current_text_area_selection_render_context;
-use crate::view::inline_text_pass_adapter::inline_ifc_paint_input_to_text_pass_staging_input_with_color;
+use crate::view::inline_text_pass_adapter::{
+    inline_ifc_paint_input_to_text_pass_staging_input,
+    inline_ifc_paint_input_to_text_pass_staging_input_with_color,
+};
 
 impl Renderable for Text {
     fn build(
@@ -28,16 +31,6 @@ impl Renderable for Text {
         if !self.layout_state.should_render || self.content.is_empty() {
             return ctx.into_state();
         }
-        // Glyphs owned by an inline IFC root render in the root's unified
-        // prepared-input pass; the Text node contributes no glyphs itself.
-        // The selection underlay still belongs to this Text, though — the
-        // unified pass paints only glyphs, so skipping it here left
-        // projection-hosted selections invisible.
-        if self.is_inline_ifc_owned() {
-            self.emit_selection_underlay(graph, &mut ctx);
-            return ctx.into_state();
-        }
-
         let opacity = if ctx.is_node_promoted(self.stable_id()) {
             1.0
         } else {
@@ -55,8 +48,13 @@ impl Renderable for Text {
             self.layout_state.layout_position.x,
             self.layout_state.layout_position.y,
         );
-        let Some(staging_input) = self.shaped_staging_input([x, y], opacity) else {
-            return ctx.into_state();
+        let staging_input = if let Some(input) = self.inline_ifc_owned_paint_input.as_ref() {
+            inline_ifc_paint_input_to_text_pass_staging_input(input, [x, y], opacity, 0, 1.0)
+        } else {
+            let Some(input) = self.shaped_staging_input([x, y], opacity) else {
+                return ctx.into_state();
+            };
+            input
         };
         if staging_input.glyphs.is_empty() {
             return ctx.into_state();

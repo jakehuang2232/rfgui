@@ -6609,7 +6609,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_root_glyph_pass_paints_after_span_decorations() {
+    fn inline_text_glyph_pass_paints_after_own_span_decoration() {
         let mut arena = new_test_arena();
         let mut parent = Element::new(0.0, 0.0, 160.0, 0.0);
         let mut parent_style = Style::new();
@@ -6678,7 +6678,7 @@ mod tests {
         let glyph_pass_index = pass_names
             .iter()
             .position(|name| name.contains("text_pass::TextPreparedInputPass"))
-            .expect("inline root should emit a unified glyph pass");
+            .expect("inline Text should emit its source-filtered glyph pass");
         // Span decoration fills promote to OpaqueRectPass (opaque solid
         // background); stencil clip scope passes stay DrawRectPass with
         // color writes disabled, so they are excluded here on purpose.
@@ -6688,8 +6688,149 @@ mod tests {
             .expect("span decoration should emit fill rect passes");
         assert!(
             last_decoration_index < glyph_pass_index,
-            "span backgrounds must paint under the unified glyphs (web z-order): {pass_names:?}"
+            "span background must paint under its own text: {pass_names:?}"
         );
+    }
+
+    #[test]
+    fn inline_sibling_paint_order_interleaves_backgrounds_and_text() {
+        let mut arena = new_test_arena();
+        let mut parent = Element::new(0.0, 0.0, 260.0, 0.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(260.0)));
+        parent.apply_style(parent_style);
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+
+        for (content, color) in [("first", "#ef4444"), ("second", "#3b82f6")] {
+            let mut wrapper = Element::new(0.0, 0.0, 0.0, 0.0);
+            let mut style = Style::new();
+            style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+            style.insert(PropertyId::Width, ParsedValue::Auto);
+            style.insert(PropertyId::Height, ParsedValue::Auto);
+            style.insert(
+                PropertyId::BackgroundColor,
+                ParsedValue::color_like(Color::hex(color)),
+            );
+            wrapper.apply_style(style);
+            let wrapper_key = commit_child(&mut arena, parent_key, Box::new(wrapper));
+            commit_child(
+                &mut arena,
+                wrapper_key,
+                Box::new(Text::from_content(content)),
+            );
+        }
+
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 260.0,
+                max_height: 120.0,
+                viewport_width: 260.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(260.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 260.0,
+                available_height: 120.0,
+                viewport_width: 260.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(260.0),
+                percent_base_height: Some(120.0),
+            },
+        );
+
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(260, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let target = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(target);
+        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next_state = arena
+            .with_element_taken(parent_key, |el, a| el.build(&mut graph, a, ctx_for_build))
+            .expect("build result");
+        ctx.set_state(next_state);
+
+        let pass_names = graph
+            .pass_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect::<Vec<_>>();
+        let text_indices = pass_names
+            .iter()
+            .enumerate()
+            .filter_map(|(index, name)| {
+                name.contains("text_pass::TextPreparedInputPass")
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(text_indices.len(), 2, "one glyph pass per Text: {pass_names:?}");
+        assert!(
+            pass_names[text_indices[0] + 1..text_indices[1]]
+                .iter()
+                .any(|name| name.contains("draw_rect_pass::OpaqueRectPass")),
+            "second sibling background must paint after first sibling text: {pass_names:?}"
+        );
+    }
+
+    #[test]
+    fn inline_slice_fragments_use_endpoint_radii_and_per_side_border_colors() {
+        const SPAN: InlineIfcSourceId = InlineIfcSourceId(301);
+        const TEXT_SOURCE: InlineIfcSourceId = InlineIfcSourceId(302);
+        let ifc = InlineFormattingContext::build(
+            InlineIfcInput::new(vec![InlineIfcItem::Span {
+                source: SPAN,
+                style: None,
+                children: vec![InlineIfcItem::TextSpan {
+                    source: TEXT_SOURCE,
+                    text: "alpha beta gamma delta epsilon".to_string(),
+                    style: None,
+                }],
+                edge_insets: [4.0, 4.0],
+            }])
+            .with_max_width(72.0),
+        );
+        let mut draw_style = InlineIfcElementDecorationDrawRectStyle::from_fill_style(
+            &InlineIfcStyle::default(),
+        );
+        draw_style.border_widths = [1.0, 2.0, 3.0, 4.0];
+        draw_style.border_colors = [
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [1.0, 1.0, 0.0, 1.0],
+        ];
+        let package = ifc.element_decoration_draw_rect_package(
+            SPAN,
+            InlineIfcDecorationBoxInsets::new(4.0, 4.0, 0.0, 0.0),
+            draw_style,
+        );
+        assert!(package.fragments.len() >= 2);
+
+        let mut element = Element::new(0.0, 0.0, 0.0, 0.0);
+        element.set_border_radius(6.0);
+        let first = element.inline_ifc_fragment_draw_rect_pass_metadata(
+            package.fragments.first().expect("first fragment"),
+            [0.0; 2],
+        );
+        let last = element.inline_ifc_fragment_draw_rect_pass_metadata(
+            package.fragments.last().expect("last fragment"),
+            [0.0; 2],
+        );
+        assert_eq!(first.fill.border_widths, [1.0, 0.0, 3.0, 4.0]);
+        assert_eq!(last.fill.border_widths, [0.0, 2.0, 3.0, 4.0]);
+        assert!(first.fill.border_radii[0][0] > 0.0);
+        assert_eq!(first.fill.border_radii[1][0], 0.0);
+        assert_eq!(last.fill.border_radii[0][0], 0.0);
+        assert!(last.fill.border_radii[1][0] > 0.0);
+        let first_border = first.border.expect("first border");
+        assert!(first_border.use_border_side_colors);
+        assert_eq!(first_border.border_side_colors, package.fragments[0].metadata.border_colors);
     }
 
     #[test]

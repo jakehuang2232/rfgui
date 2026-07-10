@@ -2,7 +2,9 @@ use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 use crate::style::{ColorLike, Cursor, HexColor, TextWrap};
-use crate::view::inline_formatting_context::{InlineFormattingContext, InlineIfcAlignment};
+use crate::view::inline_formatting_context::{
+    InlineFormattingContext, InlineIfcAlignment, InlineIfcTextPassPaintInput,
+};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -88,6 +90,7 @@ pub struct Text {
     /// hit-test/caret APIs consume this same context.
     pub(super) shaped_context: Option<Arc<InlineFormattingContext>>,
     pub(super) inline_ifc_owned_lines: Option<Vec<TextIfcOwnedLine>>,
+    pub(super) inline_ifc_owned_paint_input: Option<InlineIfcTextPassPaintInput>,
     pub(super) node_id: u64,
     pub(super) parent_id: Option<u64>,
     pub(super) dirty_flags: super::DirtyFlags,
@@ -115,6 +118,7 @@ pub(crate) struct TextInlineIfcStyleMetadata {
     pub(crate) font_weight: u16,
     pub(crate) brush: [u8; 4],
     pub(crate) font_families: Vec<String>,
+    pub(crate) vertical_align: crate::style::VerticalAlign,
 }
 
 pub(crate) use self::profile::{
@@ -176,6 +180,7 @@ impl Text {
             layout_cache: FxHashMap::default(),
             shaped_context: None,
             inline_ifc_owned_lines: None,
+            inline_ifc_owned_paint_input: None,
             dirty_flags: super::DirtyFlags::ALL,
             last_layout_placement: None,
             layout_state: LayoutState::new(x, y, width, height),
@@ -212,14 +217,20 @@ impl Text {
     }
 
     /// Install per-line geometry from the inline IFC root that owns this
-    /// Text node's glyphs. While owned, the Text neither self-renders nor
-    /// answers geometry queries from its own layout; everything reads the
-    /// installed lines.
-    pub(crate) fn install_inline_ifc_owned_geometry(&mut self, lines: Vec<TextIfcOwnedLine>) {
-        if self.inline_ifc_owned_lines.as_deref() != Some(lines.as_slice()) {
+    /// Text node's glyphs. While owned, the Text renders the root-shaped,
+    /// source-filtered payload and answers geometry from the installed lines.
+    pub(crate) fn install_inline_ifc_owned_geometry(
+        &mut self,
+        lines: Vec<TextIfcOwnedLine>,
+        paint_input: InlineIfcTextPassPaintInput,
+    ) {
+        if self.inline_ifc_owned_lines.as_deref() != Some(lines.as_slice())
+            || self.inline_ifc_owned_paint_input.as_ref() != Some(&paint_input)
+        {
             self.dirty_flags = self.dirty_flags.union(super::DirtyPassMask::PAINT);
         }
         self.inline_ifc_owned_lines = Some(lines);
+        self.inline_ifc_owned_paint_input = Some(paint_input);
     }
 
     /// In-place delta shift of installed owned lines: the owning IFC
@@ -247,7 +258,9 @@ impl Text {
     }
 
     pub(crate) fn clear_inline_ifc_owned_geometry(&mut self) {
-        if self.inline_ifc_owned_lines.take().is_some() {
+        let cleared_lines = self.inline_ifc_owned_lines.take().is_some();
+        let cleared_paint = self.inline_ifc_owned_paint_input.take().is_some();
+        if cleared_lines || cleared_paint {
             self.dirty_flags = self.dirty_flags.union(super::DirtyPassMask::PAINT);
         }
     }
@@ -275,10 +288,6 @@ impl Text {
                 )
             })
             .collect()
-    }
-
-    pub(crate) fn is_inline_ifc_owned(&self) -> bool {
-        self.inline_ifc_owned_lines.is_some()
     }
 
     #[cfg(test)]

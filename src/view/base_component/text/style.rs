@@ -155,6 +155,7 @@ impl Text {
             font_weight: self.font_weight,
             brush: self.color.to_rgba_u8(),
             font_families: self.font_families.clone(),
+            vertical_align: self.vertical_align,
         }
     }
 
