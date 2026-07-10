@@ -6779,6 +6779,97 @@ mod tests {
     }
 
     #[test]
+    fn nested_multiline_inline_text_keeps_its_first_glyph_line_at_tall_line_height() {
+        let mut arena = new_test_arena();
+        let mut root = Element::new(0.0, 0.0, 420.0, 0.0);
+        let mut root_style = Style::new().with_line_height(1.8);
+        root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        root_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(420.0)));
+        root.apply_style(root_style);
+        let root_key = commit_element(&mut arena, Box::new(root));
+
+        let mut outer = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut outer_style = Style::new();
+        outer_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        outer_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
+        outer.apply_style(outer_style);
+        let outer_key = commit_child(&mut arena, root_key, Box::new(outer));
+        commit_child(
+            &mut arena,
+            outer_key,
+            Box::new(Text::from_content(
+                "Permission is hereby granted, free of charge, Software without ",
+            )),
+        );
+
+        let mut nested = Element::new(0.0, 0.0, 0.0, 0.0);
+        let mut nested_style = Style::new();
+        nested_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+        nested_style.set_padding(crate::style::Padding::uniform(Length::px(8.0)));
+        nested.apply_style(nested_style);
+        let nested_key = commit_child(&mut arena, outer_key, Box::new(nested));
+        let nested_text_key = commit_child(
+            &mut arena,
+            nested_key,
+            Box::new(Text::from_content(
+                "restriction, including without limitation the rights to use, copy, modify, merge",
+            )),
+        );
+
+        measure_and_place(
+            &mut arena,
+            root_key,
+            LayoutConstraints {
+                max_width: 420.0,
+                max_height: 400.0,
+                viewport_width: 420.0,
+                viewport_height: 400.0,
+                percent_base_width: Some(420.0),
+                percent_base_height: Some(400.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 420.0,
+                available_height: 400.0,
+                viewport_width: 420.0,
+                viewport_height: 400.0,
+                percent_base_width: Some(420.0),
+                percent_base_height: Some(400.0),
+            },
+        );
+
+        let text = crate::view::test_support::get_element::<Text>(&arena, nested_text_key);
+        let (paint_bounds, paint_input) = text
+            .inline_ifc_owned_paint_geometry_for_test()
+            .expect("nested Text must receive owned paint geometry");
+        let first_line_index = paint_input
+            .glyphs
+            .iter()
+            .map(|glyph| glyph.line_index)
+            .min()
+            .expect("nested Text must retain glyphs");
+        let first_line_glyphs = paint_input
+            .glyphs
+            .iter()
+            .filter(|glyph| glyph.line_index == first_line_index)
+            .collect::<Vec<_>>();
+        assert!(!first_line_glyphs.is_empty());
+        assert!(
+            first_line_glyphs.iter().all(|glyph| {
+                let paint_y = glyph.baseline_y + glyph.glyph_y;
+                glyph.x >= -0.01
+                    && glyph.x <= paint_bounds.width + 0.01
+                    && paint_y >= -0.01
+                    && paint_y <= paint_bounds.height + 0.01
+            }),
+            "the nested source's first glyph line must stay inside its TextPass fragment: bounds={paint_bounds:?} glyphs={first_line_glyphs:?}"
+        );
+    }
+
+    #[test]
     fn inline_slice_fragments_use_endpoint_radii_and_per_side_border_colors() {
         const SPAN: InlineIfcSourceId = InlineIfcSourceId(301);
         const TEXT_SOURCE: InlineIfcSourceId = InlineIfcSourceId(302);

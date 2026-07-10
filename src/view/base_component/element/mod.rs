@@ -2354,6 +2354,8 @@ enum InlineIfcNodeInstallOp {
         lines: Vec<TextIfcOwnedLine>,
         /// Source-filtered glyph payload rebased to this Text shell.
         paint_input: Arc<InlineIfcTextPassPaintInput>,
+        /// Content-coordinate glyph bounds used only by TextPass clipping.
+        paint_bounds: InlineIfcPaintRect,
     },
     Atomic {
         node_key: NodeKey,
@@ -2433,6 +2435,7 @@ enum InlineIfcRootNodeGeometryKind {
     Text {
         lines: Vec<TextIfcOwnedLine>,
         paint_input: Arc<InlineIfcTextPassPaintInput>,
+        paint_bounds: InlineIfcPaintRect,
     },
     /// Atomic inline box: its vertical-align-adjusted line placement.
     Atomic { rect: InlineIfcPaintRect },
@@ -2487,6 +2490,35 @@ fn inline_ifc_root_geometry(
         if node.element.as_any().is::<Text>() {
             let lines = text_ifc_owned_lines_for_source(context, &snapshot, source);
             let paint_input = context.text_pass_paint_input_for_source(source);
+            let glyph_rects = context
+                .source_text_line_rects(source)
+                .into_iter()
+                .map(|(_, rect)| crate::ui::Rect {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                })
+                .collect::<Vec<_>>();
+            let glyph_bounds = bounding_rect(&glyph_rects);
+            let paint_bounds = if glyph_bounds.width > 0.0 && glyph_bounds.height > 0.0 {
+                InlineIfcPaintRect {
+                    x: glyph_bounds.x,
+                    y: glyph_bounds.y,
+                    width: glyph_bounds.width,
+                    height: glyph_bounds.height,
+                }
+            } else {
+                let fallback =
+                    bounding_rect(&lines.iter().map(|line| line.rect).collect::<Vec<_>>());
+                InlineIfcPaintRect {
+                    x: fallback.x,
+                    y: fallback.y,
+                    width: fallback.width,
+                    height: fallback.height,
+                }
+            };
+            merge(paint_bounds, &mut content);
             for line in &lines {
                 merge(
                     InlineIfcPaintRect {
@@ -2500,7 +2532,11 @@ fn inline_ifc_root_geometry(
             }
             nodes.push(InlineIfcRootNodeGeometry {
                 node_key,
-                kind: InlineIfcRootNodeGeometryKind::Text { lines, paint_input },
+                kind: InlineIfcRootNodeGeometryKind::Text {
+                    lines,
+                    paint_input,
+                    paint_bounds,
+                },
             });
             continue;
         }
@@ -2611,22 +2647,25 @@ fn build_inline_ifc_install_plan(
                     paint_fragments,
                 });
             }
-            InlineIfcRootNodeGeometryKind::Text { lines, paint_input } => {
-                let local_bounds =
-                    bounding_rect(&lines.iter().map(|line| line.rect).collect::<Vec<_>>());
+            InlineIfcRootNodeGeometryKind::Text {
+                lines,
+                paint_input,
+                paint_bounds,
+            } => {
                 let mut paint_input = (*paint_input).clone();
                 for line in &mut paint_input.lines {
-                    line.x -= local_bounds.x;
-                    line.y -= local_bounds.y;
+                    line.x -= paint_bounds.x;
+                    line.y -= paint_bounds.y;
                 }
                 for glyph in &mut paint_input.glyphs {
-                    glyph.x -= local_bounds.x;
-                    glyph.baseline_y -= local_bounds.y;
+                    glyph.x -= paint_bounds.x;
+                    glyph.baseline_y -= paint_bounds.y;
                 }
                 plan.push(InlineIfcNodeInstallOp::Text {
                     node_key,
                     lines,
                     paint_input: Arc::new(paint_input),
+                    paint_bounds,
                 });
             }
             InlineIfcRootNodeGeometryKind::Atomic { rect } => {
@@ -3609,6 +3648,7 @@ impl Element {
                     node_key,
                     lines,
                     paint_input,
+                    paint_bounds,
                 } => {
                     let absolute = lines
                         .iter()
@@ -3617,13 +3657,30 @@ impl Element {
                         .collect::<Vec<_>>();
                     arena.with_element_taken(*node_key, |child, _arena| {
                         if let Some(text) = child.as_any_mut().downcast_mut::<Text>() {
-                            let bounds = bounding_rect(
+                            let mut bounds = bounding_rect(
                                 &absolute.iter().map(|line| line.rect).collect::<Vec<_>>(),
                             );
+                            if (bounds.width <= 0.0 || bounds.height <= 0.0)
+                                && paint_bounds.width > 0.0
+                                && paint_bounds.height > 0.0
+                            {
+                                bounds = crate::ui::Rect {
+                                    x: origin_x + paint_bounds.x,
+                                    y: origin_y + paint_bounds.y - top_offset,
+                                    width: paint_bounds.width,
+                                    height: paint_bounds.height,
+                                };
+                            }
                             text.place_as_inline_ifc_owned_box(bounds);
                             text.install_inline_ifc_owned_geometry(
                                 absolute,
                                 Arc::clone(paint_input),
+                                crate::ui::Rect {
+                                    x: origin_x + paint_bounds.x,
+                                    y: origin_y + paint_bounds.y - top_offset,
+                                    width: paint_bounds.width,
+                                    height: paint_bounds.height,
+                                },
                             );
                         }
                     });

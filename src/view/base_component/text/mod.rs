@@ -49,6 +49,9 @@ pub(crate) struct TextIfcOwnedLine {
 struct TextInlineIfcOwnedState {
     lines: Vec<TextIfcOwnedLine>,
     paint_input: Arc<InlineIfcTextPassPaintInput>,
+    /// Absolute glyph-derived bounds used only as the TextPass fragment.
+    /// Hit testing and caret geometry continue to use `lines`.
+    paint_bounds: crate::ui::Rect,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -225,15 +228,21 @@ impl Text {
         &mut self,
         lines: Vec<TextIfcOwnedLine>,
         paint_input: Arc<InlineIfcTextPassPaintInput>,
+        paint_bounds: crate::ui::Rect,
     ) {
         let changed = self.inline_ifc_owned.as_deref().is_none_or(|owned| {
             owned.lines.as_slice() != lines.as_slice()
                 || !Arc::ptr_eq(&owned.paint_input, &paint_input)
+                || owned.paint_bounds != paint_bounds
         });
         if changed {
             self.dirty_flags = self.dirty_flags.union(super::DirtyPassMask::PAINT);
         }
-        self.inline_ifc_owned = Some(Box::new(TextInlineIfcOwnedState { lines, paint_input }));
+        self.inline_ifc_owned = Some(Box::new(TextInlineIfcOwnedState {
+            lines,
+            paint_input,
+            paint_bounds,
+        }));
     }
 
     /// In-place delta shift of installed owned lines: the owning IFC
@@ -250,6 +259,8 @@ impl Text {
                     *x += dx;
                 }
             }
+            owned.paint_bounds.x += dx;
+            owned.paint_bounds.y += dy;
             // Parity with install_inline_ifc_owned_geometry: changed
             // geometry marks PAINT.
             self.dirty_flags = self.dirty_flags.union(super::DirtyPassMask::PAINT);
@@ -276,6 +287,20 @@ impl Text {
         self.inline_ifc_owned
             .as_deref()
             .map(|owned| owned.paint_input.as_ref())
+    }
+
+    fn inline_ifc_owned_paint_bounds(&self) -> Option<crate::ui::Rect> {
+        self.inline_ifc_owned
+            .as_deref()
+            .map(|owned| owned.paint_bounds)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline_ifc_owned_paint_geometry_for_test(
+        &self,
+    ) -> Option<(crate::ui::Rect, &InlineIfcTextPassPaintInput)> {
+        let owned = self.inline_ifc_owned.as_deref()?;
+        Some((owned.paint_bounds, owned.paint_input.as_ref()))
     }
 
     /// Test observation: per visual line owned by an inline IFC root,
@@ -398,6 +423,24 @@ impl ElementTrait for Text {
         }
     }
 
+    fn promotion_composite_bounds(&self) -> super::PromotionCompositeBounds {
+        let bounds = self
+            .inline_ifc_owned_paint_bounds()
+            .unwrap_or(crate::ui::Rect {
+                x: self.layout_state.layout_position.x,
+                y: self.layout_state.layout_position.y,
+                width: self.layout_state.layout_size.width,
+                height: self.layout_state.layout_size.height,
+            });
+        super::PromotionCompositeBounds {
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width.max(0.0),
+            height: bounds.height.max(0.0),
+            corner_radii: [0.0; 4],
+        }
+    }
+
     fn has_active_animator(&self) -> bool {
         false
     }
@@ -443,6 +486,12 @@ impl ElementTrait for Text {
             line.rect.height.to_bits().hash(&mut hasher);
             line.char_range.start.hash(&mut hasher);
             line.char_range.end.hash(&mut hasher);
+        }
+        if let Some(bounds) = self.inline_ifc_owned_paint_bounds() {
+            bounds.x.to_bits().hash(&mut hasher);
+            bounds.y.to_bits().hash(&mut hasher);
+            bounds.width.to_bits().hash(&mut hasher);
+            bounds.height.to_bits().hash(&mut hasher);
         }
         hasher.finish()
     }

@@ -44,10 +44,14 @@ impl Renderable for Text {
             return ctx.into_state();
         };
         self.emit_selection_underlay(graph, &mut ctx);
-        let [x, y] = ctx.paint_point(
-            self.layout_state.layout_position.x,
-            self.layout_state.layout_position.y,
-        );
+        let owned_paint_bounds = self.inline_ifc_owned_paint_bounds();
+        let paint_bounds = owned_paint_bounds.unwrap_or(crate::ui::Rect {
+            x: self.layout_state.layout_position.x,
+            y: self.layout_state.layout_position.y,
+            width: self.size.width.max(self.layout_state.layout_size.width),
+            height: self.size.height.max(self.layout_state.layout_size.height),
+        });
+        let [x, y] = ctx.paint_point(paint_bounds.x, paint_bounds.y);
         let staging_input = if let Some(input) = self.inline_ifc_owned_paint_input() {
             inline_ifc_paint_input_to_text_pass_staging_input(input, [x, y], opacity, 0, 1.0)
         } else {
@@ -64,10 +68,7 @@ impl Renderable for Text {
                 staging_input,
                 fragments: vec![TextPassPreparedFragment {
                     origin: [x, y],
-                    size: [
-                        self.size.width.max(self.layout_state.layout_size.width),
-                        self.size.height.max(self.layout_state.layout_size.height),
-                    ],
+                    size: [paint_bounds.width, paint_bounds.height],
                 }],
                 scissor_rect: None,
                 stencil_clip_id: None,
