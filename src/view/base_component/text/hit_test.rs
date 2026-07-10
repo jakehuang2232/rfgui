@@ -80,7 +80,7 @@ impl Text {
 
         // Inline-IFC-owned path: the owning root installed per-line
         // boundary geometry; answer from it directly.
-        if let Some(lines) = self.inline_ifc_owned_lines.as_ref() {
+        if let Some(lines) = self.inline_ifc_owned_lines() {
             let boundary = target_char;
             for (idx, line) in lines.iter().enumerate() {
                 if boundary < line.char_range.start || boundary >= line.char_range.end {
@@ -138,7 +138,7 @@ impl Text {
     }
 
     pub(crate) fn visual_caret_screen_lines(&self) -> Vec<TextCaretLine> {
-        if let Some(lines) = self.inline_ifc_owned_lines.as_ref() {
+        if let Some(lines) = self.inline_ifc_owned_lines() {
             let mut out = lines
                 .iter()
                 .map(|line| TextCaretLine {
@@ -225,9 +225,13 @@ impl Text {
             return lines;
         }
 
-        let char_count = self.content.chars().count();
-        for char_index in 0..=char_count {
-            let byte_index = byte_index_at_char(&self.content, char_index);
+        for (char_index, byte_index) in self
+            .content
+            .char_indices()
+            .map(|(byte_index, _)| byte_index)
+            .chain(std::iter::once(self.content.len()))
+            .enumerate()
+        {
             let Some(downstream) =
                 context.caret_geometry_for_byte(byte_index, InlineIfcCaretAffinity::Downstream)
             else {
@@ -278,7 +282,7 @@ impl Text {
     /// `TextArea` calls this to render the lower-line head when its
     /// affinity logic decides the caret belongs to the new visual line.
     pub fn visual_line_heads(&self) -> Vec<(f32, f32, f32)> {
-        if let Some(lines) = self.inline_ifc_owned_lines.as_ref() {
+        if let Some(lines) = self.inline_ifc_owned_lines() {
             return lines
                 .iter()
                 .map(|line| {
@@ -318,7 +322,7 @@ impl Text {
             return Vec::new();
         }
 
-        if let Some(lines) = self.inline_ifc_owned_lines.as_ref() {
+        if let Some(lines) = self.inline_ifc_owned_lines() {
             let mut out = Vec::new();
             for line in lines {
                 // Boundaries on this line span [start, end); chars span
@@ -390,7 +394,7 @@ impl Text {
         // click and snap to the nearest caret boundary. Returns `None`
         // when the click misses every line (so callers don't snap a click
         // in empty space inside the outer Element to a phantom char).
-        if let Some(lines) = self.inline_ifc_owned_lines.as_ref() {
+        if let Some(lines) = self.inline_ifc_owned_lines() {
             for line in lines {
                 let inside = x >= line.rect.x
                     && x <= line.rect.x + line.rect.width.max(0.0)

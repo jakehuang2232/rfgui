@@ -2353,7 +2353,7 @@ enum InlineIfcNodeInstallOp {
         /// Content-coord owned lines (shifted to absolute at apply time).
         lines: Vec<TextIfcOwnedLine>,
         /// Source-filtered glyph payload rebased to this Text shell.
-        paint_input: InlineIfcTextPassPaintInput,
+        paint_input: Arc<InlineIfcTextPassPaintInput>,
     },
     Atomic {
         node_key: NodeKey,
@@ -2432,7 +2432,7 @@ enum InlineIfcRootNodeGeometryKind {
     /// Text node owned by the root: per-line rects plus caret stops.
     Text {
         lines: Vec<TextIfcOwnedLine>,
-        paint_input: InlineIfcTextPassPaintInput,
+        paint_input: Arc<InlineIfcTextPassPaintInput>,
     },
     /// Atomic inline box: its vertical-align-adjusted line placement.
     Atomic { rect: InlineIfcPaintRect },
@@ -2611,12 +2611,10 @@ fn build_inline_ifc_install_plan(
                     paint_fragments,
                 });
             }
-            InlineIfcRootNodeGeometryKind::Text {
-                lines,
-                mut paint_input,
-            } => {
+            InlineIfcRootNodeGeometryKind::Text { lines, paint_input } => {
                 let local_bounds =
                     bounding_rect(&lines.iter().map(|line| line.rect).collect::<Vec<_>>());
+                let mut paint_input = (*paint_input).clone();
                 for line in &mut paint_input.lines {
                     line.x -= local_bounds.x;
                     line.y -= local_bounds.y;
@@ -2628,7 +2626,7 @@ fn build_inline_ifc_install_plan(
                 plan.push(InlineIfcNodeInstallOp::Text {
                     node_key,
                     lines,
-                    paint_input,
+                    paint_input: Arc::new(paint_input),
                 });
             }
             InlineIfcRootNodeGeometryKind::Atomic { rect } => {
@@ -3623,7 +3621,10 @@ impl Element {
                                 &absolute.iter().map(|line| line.rect).collect::<Vec<_>>(),
                             );
                             text.place_as_inline_ifc_owned_box(bounds);
-                            text.install_inline_ifc_owned_geometry(absolute, paint_input.clone());
+                            text.install_inline_ifc_owned_geometry(
+                                absolute,
+                                Arc::clone(paint_input),
+                            );
                         }
                     });
                 }

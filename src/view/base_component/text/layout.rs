@@ -7,7 +7,6 @@ use crate::view::base_component::{
 use crate::view::node_arena::NodeArena;
 
 use super::Text;
-use super::cache::MeasuredTextIfc;
 
 impl Layoutable for Text {
     fn measured_size(&self) -> (f32, f32) {
@@ -59,28 +58,18 @@ impl Layoutable for Text {
         self.layout_override_width = None;
         self.layout_override_height = None;
         let parent_width_is_constrained = constraints.percent_base_width.is_some();
-        let next_allow_wrap = self.text_wrap == TextWrap::Wrap && parent_width_is_constrained;
-        if self.allow_wrap != next_allow_wrap {
-            self.allow_wrap = next_allow_wrap;
-        }
+        let allow_wrap = self.text_wrap == TextWrap::Wrap && parent_width_is_constrained;
         self.shaped_context = None;
 
         if !self.auto_width && !self.auto_height {
-            let layout = self.relayout_from_base(Some(self.size.width.max(1.0)), self.allow_wrap);
+            let layout = self.relayout_from_base(Some(self.size.width.max(1.0)), allow_wrap);
             self.shaped_context = Some(layout.context);
             self.dirty_flags = self.dirty_flags.without(DirtyFlags::LAYOUT);
             return;
         }
-        let mut intrinsic_layout: Option<MeasuredTextIfc> = None;
+        let mut intrinsic_layout = None;
         if self.auto_width {
-            let next_intrinsic_layout = match self.cached_intrinsic_layout.as_ref() {
-                Some((revision, layout)) if *revision == self.measure_revision => layout.clone(),
-                _ => {
-                    let layout = self.relayout_from_base(None, false);
-                    self.cached_intrinsic_layout = Some((self.measure_revision, layout.clone()));
-                    layout
-                }
-            };
+            let next_intrinsic_layout = self.relayout_from_base(None, false);
             let intrinsic_width = next_intrinsic_layout.width;
             intrinsic_layout = Some(next_intrinsic_layout);
             let available = if parent_width_is_constrained {
@@ -89,45 +78,38 @@ impl Layoutable for Text {
                 f32::INFINITY
             };
             self.size.width = intrinsic_width.min(available).max(0.0);
-            self.render_size.width = intrinsic_width.min(available).max(0.0);
         }
         if self.auto_height {
             let effective_width = if self.auto_width {
-                self.render_size.width.max(1.0)
+                self.size.width.max(1.0)
             } else {
                 self.size.width.min(constraints.max_width.max(1.0)).max(1.0)
             };
             if let Some(layout) = intrinsic_layout.as_ref()
-                && !self.allow_wrap
+                && !allow_wrap
                 && (effective_width - layout.width.max(1.0)).abs() <= 0.01
             {
-                self.cached_height_for_width =
-                    Some((self.measure_revision, effective_width, layout.height));
                 self.size.height = layout.height.max(1.0);
-                self.render_size.height = layout.height.max(1.0);
                 self.shaped_context = Some(layout.context.clone());
             } else {
-                let layout = self.relayout_from_base(Some(effective_width), self.allow_wrap);
+                let layout = self.relayout_from_base(Some(effective_width), allow_wrap);
                 let measured_height = layout.height;
-                self.cached_height_for_width =
-                    Some((self.measure_revision, effective_width, measured_height));
                 self.size.height = measured_height.max(1.0);
-                self.render_size.height = measured_height.max(1.0);
                 self.shaped_context = Some(layout.context);
             }
         } else {
             let final_width = if self.auto_width {
-                self.render_size.width.max(1.0)
+                self.size.width.max(1.0)
             } else {
                 self.size.width.max(1.0)
             };
             if let Some(layout) = intrinsic_layout
-                && !self.allow_wrap
+                && !allow_wrap
                 && (final_width - layout.width.max(1.0)).abs() <= 0.01
             {
                 self.shaped_context = Some(layout.context);
             } else {
-                let layout = self.relayout_from_base(Some(final_width), self.allow_wrap);
+                let layout = self.relayout_from_base(Some(final_width), allow_wrap);
                 self.shaped_context = Some(layout.context);
             }
         }

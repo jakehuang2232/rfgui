@@ -111,6 +111,51 @@ fn text_style_cold_path_uses_computed_bridge_for_supported_fields() {
 }
 
 #[test]
+fn text_style_cold_path_applies_authored_line_height_and_vertical_align() {
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::LineHeight,
+        ParsedValue::LineHeight(crate::style::LineHeight::new(1.6)),
+    );
+    style.insert(
+        PropertyId::VerticalAlign,
+        ParsedValue::VerticalAlign(VerticalAlign::Top),
+    );
+    let inherited = crate::view::renderer_adapter::StyleCascadeContext::from_viewport_style(
+        &Style::new(),
+        0.0,
+        0.0,
+    );
+
+    let mut text = Text::from_content("authored inline style");
+    text.apply_style_cold(Some(&style), &inherited)
+        .expect("text computed style bridge should apply");
+
+    assert!((text.line_height_value() - 1.6).abs() < f32::EPSILON);
+    assert_eq!(text.vertical_align(), VerticalAlign::Top);
+}
+
+#[test]
+fn explicit_text_vertical_align_survives_ancestor_recascade() {
+    let mut inherited_style = Style::new();
+    inherited_style.insert(
+        PropertyId::VerticalAlign,
+        ParsedValue::VerticalAlign(VerticalAlign::Bottom),
+    );
+    let inherited = crate::view::renderer_adapter::StyleCascadeContext::from_viewport_style(
+        &inherited_style,
+        0.0,
+        0.0,
+    );
+    let mut text = Text::from_content("explicit vertical align");
+    text.set_vertical_align(VerticalAlign::Top);
+
+    text.apply_inherited(&inherited);
+
+    assert_eq!(text.vertical_align(), VerticalAlign::Top);
+}
+
+#[test]
 fn text_style_computed_bridge_does_not_apply_unauthored_computed_defaults() {
     let mut style = Style::new();
     style.insert(
@@ -359,6 +404,16 @@ fn shared_measure_cache_separates_wrap_and_nowrap_layouts() {
         wrap_height_second > nowrap_height_first + 1.0,
         "wrapped measurement must not reuse the prior nowrap cache entry"
     );
+}
+
+#[test]
+fn per_text_layout_cache_only_retains_recent_widths() {
+    let mut text = Text::from_content("bounded per-node layout cache");
+    for width in 20..40 {
+        let _ = text.relayout_from_base(Some(width as f32), true);
+    }
+
+    assert_eq!(text.layout_cache.len(), 4);
 }
 
 #[test]

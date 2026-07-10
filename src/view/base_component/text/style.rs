@@ -8,7 +8,7 @@ use crate::view::base_component::{DirtyFlags, Position, Size};
 use crate::view::inline_formatting_context::InlineIfcAlignment;
 use crate::view::renderer_adapter::{StyleCascadeContext, computed_parent_from_style_cascade};
 
-use super::{Text, TextInlineIfcStyleMetadata};
+use super::{Text, TextExplicitProps, TextInlineIfcStyleMetadata};
 
 #[derive(Debug)]
 pub(crate) struct TextComputedStyleBridge {
@@ -21,6 +21,8 @@ pub(crate) struct TextComputedStyleBridge {
     has_color: bool,
     has_cursor: bool,
     has_text_wrap: bool,
+    has_line_height: bool,
+    has_vertical_align: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +73,8 @@ impl TextComputedStyleBridge {
             has_color: style.get(PropertyId::Color).is_some(),
             has_cursor: style.get(PropertyId::Cursor).is_some(),
             has_text_wrap: style.get(PropertyId::TextWrap).is_some(),
+            has_line_height: style.get(PropertyId::LineHeight).is_some(),
+            has_vertical_align: style.get(PropertyId::VerticalAlign).is_some(),
             computed,
         }
     }
@@ -103,16 +107,15 @@ fn authored_size_value_px(
 
 impl Text {
     pub fn set_position(&mut self, x: f32, y: f32) {
+        if self.position.x.to_bits() == x.to_bits() && self.position.y.to_bits() == y.to_bits() {
+            return;
+        }
         self.position = Position { x, y };
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::RUNTIME);
     }
 
     pub fn set_size(&mut self, width: f32, height: f32) {
         self.size = Size { width, height };
-        self.render_size = Size {
-            width: width.max(0.0),
-            height: height.max(0.0),
-        };
         self.layout_override_width = None;
         self.layout_override_height = None;
         self.auto_width = false;
@@ -122,7 +125,6 @@ impl Text {
 
     pub fn set_width(&mut self, width: f32) {
         self.size.width = width;
-        self.render_size.width = width.max(0.0);
         self.layout_override_width = None;
         self.auto_width = false;
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
@@ -130,7 +132,6 @@ impl Text {
 
     pub fn set_height(&mut self, height: f32) {
         self.size.height = height;
-        self.render_size.height = height.max(0.0);
         self.layout_override_height = None;
         self.auto_height = false;
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
@@ -160,8 +161,12 @@ impl Text {
     }
 
     pub fn set_color<T: ColorLike + 'static>(&mut self, color: T) {
+        if self.color.to_rgba_u8() == color.to_rgba_u8() {
+            self.explicit_props.insert(TextExplicitProps::COLOR);
+            return;
+        }
         self.color = Box::new(color);
-        self.color_explicit = true;
+        self.explicit_props.insert(TextExplicitProps::COLOR);
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
     }
 
@@ -178,7 +183,7 @@ impl Text {
             self.font_families = families;
             self.mark_measure_dirty();
         }
-        self.font_family_explicit = true;
+        self.explicit_props.insert(TextExplicitProps::FONT_FAMILY);
     }
 
     pub fn set_fonts<I, S>(&mut self, font_families: I)
@@ -196,7 +201,7 @@ impl Text {
             self.font_families = next;
             self.mark_measure_dirty();
         }
-        self.font_family_explicit = true;
+        self.explicit_props.insert(TextExplicitProps::FONT_FAMILY);
     }
 
     pub fn set_font_size(&mut self, font_size: f32) {
@@ -204,7 +209,7 @@ impl Text {
             self.font_size = font_size;
             self.mark_measure_dirty();
         }
-        self.font_size_explicit = true;
+        self.explicit_props.insert(TextExplicitProps::FONT_SIZE);
     }
 
     /// Crate-visible read for the M6 cascade tests; Text resolves
@@ -221,12 +226,18 @@ impl Text {
             self.line_height = line_height;
             self.mark_measure_dirty();
         }
-        self.line_height_explicit = true;
+        self.explicit_props.insert(TextExplicitProps::LINE_HEIGHT);
     }
 
     pub fn set_vertical_align(&mut self, vertical_align: crate::style::VerticalAlign) {
-        // No measure invalidation — vertical_align affects place only.
-        self.vertical_align = vertical_align;
+        if self.vertical_align != vertical_align {
+            self.vertical_align = vertical_align;
+            // Standalone shaping ignores vertical-align, but an ancestor
+            // inline IFC includes it in the child's style/cache key.
+            self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
+        }
+        self.explicit_props
+            .insert(TextExplicitProps::VERTICAL_ALIGN);
     }
 
     pub fn set_font_weight(&mut self, font_weight: u16) {
@@ -235,7 +246,7 @@ impl Text {
             self.font_weight = clamped;
             self.mark_measure_dirty();
         }
-        self.font_weight_explicit = true;
+        self.explicit_props.insert(TextExplicitProps::FONT_WEIGHT);
     }
 
     pub(crate) fn set_align(&mut self, align: InlineIfcAlignment) {
@@ -254,6 +265,9 @@ impl Text {
     }
 
     pub fn set_opacity(&mut self, opacity: f32) {
+        if self.opacity.to_bits() == opacity.to_bits() {
+            return;
+        }
         self.opacity = opacity;
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
     }
@@ -268,7 +282,7 @@ impl Text {
             self.clear_layout_caches();
             self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
         }
-        self.text_wrap_explicit = true;
+        self.explicit_props.insert(TextExplicitProps::TEXT_WRAP);
     }
 
     pub fn set_auto_width(&mut self, auto: bool) {
@@ -292,7 +306,7 @@ impl Text {
             self.cursor = cursor;
             self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
         }
-        self.cursor_explicit = true;
+        self.explicit_props.insert(TextExplicitProps::CURSOR);
     }
 
     /// 軌 1 #8: incremental-path replay of the cold-path `style`
@@ -403,6 +417,12 @@ impl Text {
         if bridge.has_text_wrap {
             self.set_text_wrap(bridge.computed.text_wrap);
         }
+        if bridge.has_line_height {
+            self.set_line_height(bridge.computed.line_height);
+        }
+        if bridge.has_vertical_align {
+            self.set_vertical_align(bridge.computed.vertical_align);
+        }
     }
 
     /// 軌 A #7: apply an ancestor-derived `StyleCascadeContext` to any
@@ -412,7 +432,7 @@ impl Text {
     /// author set via a public setter — are preserved.
     pub(crate) fn apply_inherited(&mut self, inherited: &StyleCascadeContext) -> bool {
         let mut changed = false;
-        if !self.font_family_explicit
+        if !self.explicit_props.contains(TextExplicitProps::FONT_FAMILY)
             && let Some(font_families) = inherited.inherited_font_families()
             && !font_families.is_empty()
             && self.font_families != font_families
@@ -421,7 +441,7 @@ impl Text {
             self.mark_measure_dirty();
             changed = true;
         }
-        if !self.font_size_explicit
+        if !self.explicit_props.contains(TextExplicitProps::FONT_SIZE)
             && let Some(fs) = inherited.inherited_font_size()
             && (self.font_size - fs).abs() > f32::EPSILON
         {
@@ -429,7 +449,7 @@ impl Text {
             self.mark_measure_dirty();
             changed = true;
         }
-        if !self.font_weight_explicit
+        if !self.explicit_props.contains(TextExplicitProps::FONT_WEIGHT)
             && let Some(fw) = inherited.inherited_font_weight()
             && self.font_weight != fw
         {
@@ -437,14 +457,14 @@ impl Text {
             self.mark_measure_dirty();
             changed = true;
         }
-        if !self.color_explicit
+        if !self.explicit_props.contains(TextExplicitProps::COLOR)
             && let Some(color) = inherited.inherited_color()
         {
             self.color = Box::new(color);
             self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
             changed = true;
         }
-        if !self.text_wrap_explicit {
+        if !self.explicit_props.contains(TextExplicitProps::TEXT_WRAP) {
             let next = inherited.inherited_text_wrap().unwrap_or(TextWrap::Wrap);
             if self.text_wrap != next {
                 self.text_wrap = next;
@@ -453,7 +473,7 @@ impl Text {
                 changed = true;
             }
         }
-        if !self.line_height_explicit
+        if !self.explicit_props.contains(TextExplicitProps::LINE_HEIGHT)
             && let Some(lh) = inherited.inherited_line_height()
             && (self.line_height - lh).abs() > f32::EPSILON
         {
@@ -461,7 +481,7 @@ impl Text {
             self.mark_measure_dirty();
             changed = true;
         }
-        if !self.cursor_explicit
+        if !self.explicit_props.contains(TextExplicitProps::CURSOR)
             && let Some(cursor) = inherited.inherited_cursor()
             && self.cursor != cursor
         {
@@ -469,15 +489,14 @@ impl Text {
             self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
             changed = true;
         }
-        // vertical-align is layout-only (place pass); no measure dirty.
-        // No explicit-flag tracking yet — explicit `set_vertical_align`
-        // will be re-overwritten by an ancestor cascade. Matches Sprint
-        // 3 acceptance footgun (`docs/design/inline-baseline.md` Risk
-        // #6: inheritance footgun, document-only mitigation).
-        if let Some(va) = inherited.inherited_vertical_align()
+        if !self
+            .explicit_props
+            .contains(TextExplicitProps::VERTICAL_ALIGN)
+            && let Some(va) = inherited.inherited_vertical_align()
             && self.vertical_align != va
         {
             self.vertical_align = va;
+            self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
             changed = true;
         }
         changed

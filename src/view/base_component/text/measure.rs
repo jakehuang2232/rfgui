@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use super::Text;
 use super::cache::{
-    MEASURE_TEXT_CACHE, MeasuredTextIfc, TextLayoutCacheKey, make_measure_cache_key, quantize_milli,
+    MEASURE_TEXT_CACHE, MeasuredTextIfc, TextLayoutCacheKey, make_measure_cache_lookup,
+    quantize_milli,
 };
 use super::profile::{record_text_measure_profile, text_measure_profile_enabled};
 use crate::time::Instant;
@@ -63,7 +64,7 @@ impl Text {
             width_milli: width.map(quantize_milli).unwrap_or(-1),
             allow_wrap,
         };
-        if let Some(cached) = self.layout_cache.get(&cache_key).cloned() {
+        if let Some(cached) = self.layout_cache.get_cloned(&cache_key) {
             if let Some(started_at) = started_at {
                 let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
                 record_text_measure_profile(|profile| {
@@ -97,14 +98,11 @@ impl Text {
     }
 
     pub(super) fn clear_layout_caches(&mut self) {
-        self.cached_intrinsic_layout = None;
-        self.cached_height_for_width = None;
         self.layout_cache.clear();
         self.shaped_context = None;
     }
 
     pub(super) fn mark_measure_dirty(&mut self) {
-        self.measure_revision = self.measure_revision.wrapping_add(1);
         self.clear_layout_caches();
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
     }
@@ -129,7 +127,7 @@ pub(in crate::view::base_component) fn measure_text_layout(
     } else {
         align
     };
-    let cache_key = make_measure_cache_key(
+    let cache_lookup = make_measure_cache_lookup(
         content,
         max_width,
         allow_wrap,
@@ -139,7 +137,8 @@ pub(in crate::view::base_component) fn measure_text_layout(
         align,
         font_families,
     );
-    if let Some(cached) = MEASURE_TEXT_CACHE.with(|cache| cache.borrow_mut().get_cloned(&cache_key))
+    if let Some(cached) =
+        MEASURE_TEXT_CACHE.with(|cache| cache.borrow_mut().get_cloned(&cache_lookup))
     {
         if let Some(started_at) = started_at {
             let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
@@ -168,8 +167,12 @@ pub(in crate::view::base_component) fn measure_text_layout(
         width,
         height,
     };
+    let cache_key = cache_lookup.to_owned_key();
+    let estimated_bytes = cache_lookup.estimated_entry_bytes();
     MEASURE_TEXT_CACHE.with(|cache| {
-        cache.borrow_mut().insert(cache_key, measured.clone());
+        cache
+            .borrow_mut()
+            .insert(cache_key, measured.clone(), estimated_bytes);
     });
     if let Some(started_at) = started_at {
         let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;

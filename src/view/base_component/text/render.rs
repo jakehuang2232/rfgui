@@ -48,7 +48,7 @@ impl Renderable for Text {
             self.layout_state.layout_position.x,
             self.layout_state.layout_position.y,
         );
-        let staging_input = if let Some(input) = self.inline_ifc_owned_paint_input.as_ref() {
+        let staging_input = if let Some(input) = self.inline_ifc_owned_paint_input() {
             inline_ifc_paint_input_to_text_pass_staging_input(input, [x, y], opacity, 0, 1.0)
         } else {
             let Some(input) = self.shaped_staging_input([x, y], opacity) else {
@@ -65,12 +65,8 @@ impl Renderable for Text {
                 fragments: vec![TextPassPreparedFragment {
                     origin: [x, y],
                     size: [
-                        self.render_size
-                            .width
-                            .max(self.layout_state.layout_size.width),
-                        self.render_size
-                            .height
-                            .max(self.layout_state.layout_size.height),
+                        self.size.width.max(self.layout_state.layout_size.width),
+                        self.size.height.max(self.layout_state.layout_size.height),
                     ],
                 }],
                 scissor_rect: None,

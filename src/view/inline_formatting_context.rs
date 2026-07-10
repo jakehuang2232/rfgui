@@ -6,6 +6,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use parley::{
     Affinity, Alignment as ParleyAlignment, AlignmentOptions, Cursor as ParleyCursor, FontData,
@@ -1557,11 +1558,10 @@ pub(crate) struct InlineFormattingContext {
     // geometry builder asks for them once per text source. Memoize so the
     // whole-layout stop set is built once and filtered per source.
     caret_stops_cache: std::cell::OnceCell<Vec<InlineIfcCaretStop>>,
-    // The text-pass paint payload is shared by source-filtered Text passes;
-    // memoize so steady-state repaints do not rebuild every glyph vector.
+    // The full text-pass paint payload is memoized once. Inline-root install
+    // plans retain their source-filtered payloads, so the context does not
+    // also keep a duplicate per-source copy.
     paint_input_cache: std::cell::OnceCell<InlineIfcTextPassPaintInput>,
-    source_paint_inputs_cache:
-        std::cell::OnceCell<HashMap<InlineIfcSourceId, InlineIfcTextPassPaintInput>>,
     /// Per-source per-line rect maps, built in one glyph pass. Queries
     /// like `source_line_rects` used to rescan every glyph per source,
     /// which made per-segment callers (TextArea child placement) O(n²).
@@ -1605,7 +1605,6 @@ impl InlineFormattingContext {
             snapshot_cache: std::cell::OnceCell::new(),
             caret_stops_cache: std::cell::OnceCell::new(),
             paint_input_cache: std::cell::OnceCell::new(),
-            source_paint_inputs_cache: std::cell::OnceCell::new(),
             source_line_rects_cache: std::cell::OnceCell::new(),
             source_text_line_rects_cache: std::cell::OnceCell::new(),
         }
@@ -1978,50 +1977,29 @@ impl InlineFormattingContext {
     pub(crate) fn text_pass_paint_input_for_source(
         &self,
         source: InlineIfcSourceId,
-    ) -> InlineIfcTextPassPaintInput {
-        self.source_paint_inputs_cache
-            .get_or_init(|| {
-                let input = self.text_pass_paint_input_ref();
-                let mut glyphs_by_source =
-                    HashMap::<InlineIfcSourceId, Vec<InlineIfcTextPassGlyphInput>>::new();
-                for glyph in &input.glyphs {
-                    glyphs_by_source
-                        .entry(glyph.source)
-                        .or_default()
-                        .push(glyph.clone());
-                }
-                glyphs_by_source
-                    .into_iter()
-                    .map(|(source, glyphs)| {
-                        let line_indices = glyphs
-                            .iter()
-                            .map(|glyph| glyph.line_index)
-                            .collect::<std::collections::HashSet<_>>();
-                        (
-                            source,
-                            InlineIfcTextPassPaintInput {
-                                lines: input
-                                    .lines
-                                    .iter()
-                                    .filter(|line| line_indices.contains(&line.line_index))
-                                    .cloned()
-                                    .collect(),
-                                batches: text_pass_batches_from_glyphs(&glyphs),
-                                glyphs,
-                                decorations: Vec::new(),
-                            },
-                        )
-                    })
-                    .collect()
-            })
-            .get(&source)
+    ) -> Arc<InlineIfcTextPassPaintInput> {
+        let input = self.text_pass_paint_input_ref();
+        let glyphs = input
+            .glyphs
+            .iter()
+            .filter(|glyph| glyph.source == source)
             .cloned()
-            .unwrap_or_else(|| InlineIfcTextPassPaintInput {
-                lines: Vec::new(),
-                glyphs: Vec::new(),
-                batches: Vec::new(),
-                decorations: Vec::new(),
-            })
+            .collect::<Vec<_>>();
+        let line_indices = glyphs
+            .iter()
+            .map(|glyph| glyph.line_index)
+            .collect::<std::collections::HashSet<_>>();
+        Arc::new(InlineIfcTextPassPaintInput {
+            lines: input
+                .lines
+                .iter()
+                .filter(|line| line_indices.contains(&line.line_index))
+                .cloned()
+                .collect(),
+            batches: text_pass_batches_from_glyphs(&glyphs),
+            glyphs,
+            decorations: Vec::new(),
+        })
     }
 
     /// Memoized paint payload. Built once per shaped context; every paint

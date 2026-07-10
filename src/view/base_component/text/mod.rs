@@ -1,4 +1,3 @@
-use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 use crate::style::{ColorLike, Cursor, HexColor, TextWrap};
@@ -25,7 +24,7 @@ mod style;
 #[cfg(test)]
 mod tests;
 
-use self::cache::{MeasuredTextIfc, TextLayoutCacheKey};
+use self::cache::TextLayoutCache;
 
 pub(in crate::view::base_component) use self::measure::measure_text_layout;
 
@@ -47,6 +46,33 @@ pub(crate) struct TextIfcOwnedLine {
     pub(crate) caret_xs: Vec<f32>,
 }
 
+struct TextInlineIfcOwnedState {
+    lines: Vec<TextIfcOwnedLine>,
+    paint_input: Arc<InlineIfcTextPassPaintInput>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct TextExplicitProps(u16);
+
+impl TextExplicitProps {
+    pub(super) const FONT_FAMILY: u16 = 1 << 0;
+    pub(super) const FONT_SIZE: u16 = 1 << 1;
+    pub(super) const FONT_WEIGHT: u16 = 1 << 2;
+    pub(super) const COLOR: u16 = 1 << 3;
+    pub(super) const CURSOR: u16 = 1 << 4;
+    pub(super) const TEXT_WRAP: u16 = 1 << 5;
+    pub(super) const LINE_HEIGHT: u16 = 1 << 6;
+    pub(super) const VERTICAL_ALIGN: u16 = 1 << 7;
+
+    pub(super) fn contains(self, flag: u16) -> bool {
+        self.0 & flag != 0
+    }
+
+    pub(super) fn insert(&mut self, flag: u16) {
+        self.0 |= flag;
+    }
+}
+
 impl TextIfcOwnedLine {
     pub(crate) fn shifted(mut self, dx: f32, dy: f32) -> Self {
         self.rect.x += dx;
@@ -63,7 +89,6 @@ impl TextIfcOwnedLine {
 pub struct Text {
     pub(super) position: Position,
     pub(super) size: Size,
-    pub(super) render_size: Size,
     pub(super) layout_override_width: Option<f32>,
     pub(super) layout_override_height: Option<f32>,
     pub(super) content: String,
@@ -81,16 +106,11 @@ pub struct Text {
     /// Effective `vertical-align` for this Text node. Default
     /// `Baseline`; written by parent cascade or explicit prop.
     pub(super) vertical_align: crate::style::VerticalAlign,
-    pub(super) allow_wrap: bool,
-    pub(super) measure_revision: u64,
-    pub(super) cached_intrinsic_layout: Option<(u64, MeasuredTextIfc)>,
-    pub(super) cached_height_for_width: Option<(u64, f32, f32)>,
-    pub(super) layout_cache: FxHashMap<TextLayoutCacheKey, MeasuredTextIfc>,
+    pub(super) layout_cache: TextLayoutCache,
     /// Shaped context installed by the last measure; render and the
     /// hit-test/caret APIs consume this same context.
     pub(super) shaped_context: Option<Arc<InlineFormattingContext>>,
-    pub(super) inline_ifc_owned_lines: Option<Vec<TextIfcOwnedLine>>,
-    pub(super) inline_ifc_owned_paint_input: Option<InlineIfcTextPassPaintInput>,
+    inline_ifc_owned: Option<Box<TextInlineIfcOwnedState>>,
     pub(super) node_id: u64,
     pub(super) parent_id: Option<u64>,
     pub(super) dirty_flags: super::DirtyFlags,
@@ -102,13 +122,7 @@ pub struct Text {
     // `apply_inherited` (the cascade side of this pair) only writes
     // props whose flag is currently `false`, so explicit authorship
     // always wins over an ancestor's cascade.
-    pub(super) font_family_explicit: bool,
-    pub(super) font_size_explicit: bool,
-    pub(super) font_weight_explicit: bool,
-    pub(super) color_explicit: bool,
-    pub(super) cursor_explicit: bool,
-    pub(super) text_wrap_explicit: bool,
-    pub(super) line_height_explicit: bool,
+    pub(super) explicit_props: TextExplicitProps,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -157,7 +171,6 @@ impl Text {
             parent_id: None,
             position: Position { x, y },
             size: Size { width, height },
-            render_size: Size { width, height },
             layout_override_width: None,
             layout_override_height: None,
             content: content.into(),
@@ -173,24 +186,13 @@ impl Text {
             text_wrap: TextWrap::Wrap,
             cursor: Cursor::Default,
             vertical_align: crate::style::VerticalAlign::Baseline,
-            allow_wrap: true,
-            measure_revision: 0,
-            cached_intrinsic_layout: None,
-            cached_height_for_width: None,
-            layout_cache: FxHashMap::default(),
+            layout_cache: TextLayoutCache::default(),
             shaped_context: None,
-            inline_ifc_owned_lines: None,
-            inline_ifc_owned_paint_input: None,
+            inline_ifc_owned: None,
             dirty_flags: super::DirtyFlags::ALL,
             last_layout_placement: None,
             layout_state: LayoutState::new(x, y, width, height),
-            font_family_explicit: false,
-            font_size_explicit: false,
-            font_weight_explicit: false,
-            color_explicit: false,
-            cursor_explicit: false,
-            text_wrap_explicit: false,
-            line_height_explicit: false,
+            explicit_props: TextExplicitProps::default(),
         }
     }
 
@@ -222,23 +224,24 @@ impl Text {
     pub(crate) fn install_inline_ifc_owned_geometry(
         &mut self,
         lines: Vec<TextIfcOwnedLine>,
-        paint_input: InlineIfcTextPassPaintInput,
+        paint_input: Arc<InlineIfcTextPassPaintInput>,
     ) {
-        if self.inline_ifc_owned_lines.as_deref() != Some(lines.as_slice())
-            || self.inline_ifc_owned_paint_input.as_ref() != Some(&paint_input)
-        {
+        let changed = self.inline_ifc_owned.as_deref().is_none_or(|owned| {
+            owned.lines.as_slice() != lines.as_slice()
+                || !Arc::ptr_eq(&owned.paint_input, &paint_input)
+        });
+        if changed {
             self.dirty_flags = self.dirty_flags.union(super::DirtyPassMask::PAINT);
         }
-        self.inline_ifc_owned_lines = Some(lines);
-        self.inline_ifc_owned_paint_input = Some(paint_input);
+        self.inline_ifc_owned = Some(Box::new(TextInlineIfcOwnedState { lines, paint_input }));
     }
 
     /// In-place delta shift of installed owned lines: the owning IFC
     /// root moved without reshaping, so every absolute coordinate moves
     /// by the same delta.
     pub(crate) fn shift_inline_ifc_owned_geometry(&mut self, dx: f32, dy: f32) {
-        if let Some(lines) = self.inline_ifc_owned_lines.as_mut() {
-            for line in lines.iter_mut() {
+        if let Some(owned) = self.inline_ifc_owned.as_mut() {
+            for line in &mut owned.lines {
                 line.rect.x += dx;
                 line.rect.y += dy;
                 line.text_rect.x += dx;
@@ -258,18 +261,28 @@ impl Text {
     }
 
     pub(crate) fn clear_inline_ifc_owned_geometry(&mut self) {
-        let cleared_lines = self.inline_ifc_owned_lines.take().is_some();
-        let cleared_paint = self.inline_ifc_owned_paint_input.take().is_some();
-        if cleared_lines || cleared_paint {
+        if self.inline_ifc_owned.take().is_some() {
             self.dirty_flags = self.dirty_flags.union(super::DirtyPassMask::PAINT);
         }
+    }
+
+    fn inline_ifc_owned_lines(&self) -> Option<&[TextIfcOwnedLine]> {
+        self.inline_ifc_owned
+            .as_deref()
+            .map(|owned| owned.lines.as_slice())
+    }
+
+    fn inline_ifc_owned_paint_input(&self) -> Option<&InlineIfcTextPassPaintInput> {
+        self.inline_ifc_owned
+            .as_deref()
+            .map(|owned| owned.paint_input.as_ref())
     }
 
     /// Test observation: per visual line owned by an inline IFC root,
     /// the line's text slice and its absolute origin.
     #[cfg(test)]
     pub(crate) fn inline_fragment_positions(&self) -> Vec<(String, Position)> {
-        let Some(lines) = self.inline_ifc_owned_lines.as_ref() else {
+        let Some(lines) = self.inline_ifc_owned_lines() else {
             return Vec::new();
         };
         let chars: Vec<char> = self.content.chars().collect();
@@ -409,7 +422,7 @@ impl ElementTrait for Text {
         self.line_height.to_bits().hash(&mut hasher);
         self.font_weight.hash(&mut hasher);
         self.align.hash(&mut hasher);
-        self.allow_wrap.hash(&mut hasher);
+        (self.text_wrap == TextWrap::Wrap).hash(&mut hasher);
         self.layout_state
             .layout_size
             .width
@@ -422,7 +435,7 @@ impl ElementTrait for Text {
             .max(0.0)
             .to_bits()
             .hash(&mut hasher);
-        let owned_lines = self.inline_ifc_owned_lines.as_deref().unwrap_or(&[]);
+        let owned_lines = self.inline_ifc_owned_lines().unwrap_or(&[]);
         for line in owned_lines {
             line.rect.x.to_bits().hash(&mut hasher);
             line.rect.y.to_bits().hash(&mut hasher);

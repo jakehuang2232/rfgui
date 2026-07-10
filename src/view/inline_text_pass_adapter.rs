@@ -3,8 +3,10 @@ use crate::view::inline_formatting_context::{
 };
 use crate::view::render_pass::text_pass::{
     TextPassGlyphPaintInput, TextPassPreparedStagingGlyphInput, TextPassPreparedStagingInput,
-    TextPassRasterGlyphInput, TextRasterKey, text_raster_key_for_raster_input,
+    TextPassRasterGlyphInput,
 };
+#[cfg(test)]
+use crate::view::render_pass::text_pass::{TextRasterKey, text_raster_key_for_raster_input};
 
 #[cfg(test)]
 use crate::view::render_pass::text_pass::{CachedRasterImage, rasterize_text_pass_glyph_input};
@@ -13,11 +15,13 @@ use rustc_hash::FxHashMap;
 #[cfg(test)]
 use swash::scale::ScaleContext as SwashScaleContext;
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineTextPassBridgeInput {
     pub(crate) glyphs: Vec<InlineTextPassBridgeGlyph>,
 }
 
+#[cfg(test)]
 impl InlineTextPassBridgeInput {
     pub(crate) fn from_ifc_paint_input(
         input: &InlineIfcTextPassPaintInput,
@@ -36,12 +40,14 @@ impl InlineTextPassBridgeInput {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineTextPassBridgeGlyph {
     pub(crate) raster: TextPassRasterGlyphInput,
     pub(crate) paint: TextPassGlyphPaintInput,
 }
 
+#[cfg(test)]
 impl InlineTextPassBridgeGlyph {
     pub(crate) fn from_ifc_glyph(
         glyph: &InlineIfcTextPassGlyphInput,
@@ -55,6 +61,7 @@ impl InlineTextPassBridgeGlyph {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct InlineTextPassBridgeBatchKey {
     pub(crate) color_bits: [u32; 4],
@@ -64,6 +71,7 @@ pub(crate) struct InlineTextPassBridgeBatchKey {
     pub(crate) normalized_coords_hash: u64,
 }
 
+#[cfg(test)]
 impl InlineTextPassBridgeBatchKey {
     fn from_glyph(glyph: &InlineTextPassBridgeGlyph) -> Self {
         Self {
@@ -81,18 +89,21 @@ impl InlineTextPassBridgeBatchKey {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineTextPassBridgeBatch {
     pub(crate) key: InlineTextPassBridgeBatchKey,
     pub(crate) glyph_indices: Vec<usize>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineTextPassBridgePackage {
     pub(crate) glyphs: Vec<InlineTextPassBridgeGlyph>,
     pub(crate) batches: Vec<InlineTextPassBridgeBatch>,
 }
 
+#[cfg(test)]
 impl InlineTextPassBridgePackage {
     #[cfg(test)]
     pub(crate) fn from_ifc_paint_input(
@@ -129,83 +140,6 @@ impl InlineTextPassBridgePackage {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct InlineTextPassPreparedInput {
-    pub(crate) scale_factor: f32,
-    pub(crate) batches: Vec<InlineTextPassPrepareComparableBatch>,
-    pub(crate) glyphs: Vec<InlineTextPassPreparedGlyph>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct InlineTextPassPreparedGlyph {
-    pub(crate) glyph_index: usize,
-    pub(crate) batch_index: Option<usize>,
-    pub(crate) raster_key: Option<TextRasterKey>,
-    pub(crate) paint: TextPassGlyphPaintInput,
-    pub(crate) raster: TextPassRasterGlyphInput,
-    pub(crate) final_paint_pos: [f32; 2],
-}
-
-pub(crate) fn build_inline_text_pass_prepared_input(
-    origin: [f32; 2],
-    package: &InlineTextPassBridgePackage,
-    scale_factor: f32,
-) -> InlineTextPassPreparedInput {
-    let mut batch_index_for_glyph = vec![None; package.glyphs.len()];
-    for (batch_index, batch) in package.batches.iter().enumerate() {
-        for &glyph_index in &batch.glyph_indices {
-            if let Some(slot) = batch_index_for_glyph.get_mut(glyph_index) {
-                *slot = Some(batch_index);
-            }
-        }
-    }
-
-    InlineTextPassPreparedInput {
-        scale_factor,
-        batches: package
-            .batches
-            .iter()
-            .map(|batch| InlineTextPassPrepareComparableBatch {
-                key: batch.key,
-                glyph_indices: batch.glyph_indices.clone(),
-            })
-            .collect(),
-        glyphs: package
-            .glyphs
-            .iter()
-            .enumerate()
-            .map(|(glyph_index, glyph)| InlineTextPassPreparedGlyph {
-                glyph_index,
-                batch_index: batch_index_for_glyph[glyph_index],
-                raster_key: text_raster_key_for_raster_input(&glyph.raster, scale_factor),
-                paint: glyph.paint,
-                raster: glyph.raster.clone(),
-                final_paint_pos: [
-                    origin[0] + glyph.paint.local_pos[0],
-                    origin[1] + glyph.paint.local_pos[1],
-                ],
-            })
-            .collect(),
-    }
-}
-
-pub(crate) fn inline_prepared_input_to_text_pass_staging_input(
-    input: &InlineTextPassPreparedInput,
-) -> TextPassPreparedStagingInput {
-    TextPassPreparedStagingInput {
-        scale_factor: input.scale_factor,
-        glyphs: input
-            .glyphs
-            .iter()
-            .map(|glyph| TextPassPreparedStagingGlyphInput {
-                raster: glyph.raster.clone(),
-                paint: glyph.paint,
-                final_paint_pos: glyph.final_paint_pos,
-            })
-            .collect(),
-    }
-}
-
 pub(crate) fn inline_ifc_paint_input_to_text_pass_staging_input(
     input: &InlineIfcTextPassPaintInput,
     origin: [f32; 2],
@@ -234,16 +168,29 @@ pub(crate) fn inline_ifc_paint_input_to_text_pass_staging_input_with_color(
     scale_factor: f32,
     color_override: Option<[f32; 4]>,
 ) -> TextPassPreparedStagingInput {
-    let mut bridge =
-        InlineTextPassBridgeInput::from_ifc_paint_input(input, opacity, fragment_index);
-    if let Some(color) = color_override {
-        for glyph in &mut bridge.glyphs {
-            glyph.paint.color = color;
-        }
+    TextPassPreparedStagingInput {
+        scale_factor,
+        glyphs: input
+            .glyphs
+            .iter()
+            .map(|glyph| {
+                let raster = inline_ifc_glyph_to_text_pass_raster_input(glyph);
+                let mut paint =
+                    inline_ifc_glyph_to_text_pass_paint_input(glyph, opacity, fragment_index);
+                if let Some(color) = color_override {
+                    paint.color = color;
+                }
+                TextPassPreparedStagingGlyphInput {
+                    raster,
+                    paint,
+                    final_paint_pos: [
+                        origin[0] + paint.local_pos[0],
+                        origin[1] + paint.local_pos[1],
+                    ],
+                }
+            })
+            .collect(),
     }
-    let package = InlineTextPassBridgePackage::from_bridge_input(bridge);
-    let prepared_input = build_inline_text_pass_prepared_input(origin, &package, scale_factor);
-    inline_prepared_input_to_text_pass_staging_input(&prepared_input)
 }
 
 #[cfg(test)]
@@ -263,6 +210,7 @@ pub(crate) struct InlineTextPassPrepareComparablePackage {
     pub(crate) glyphs: Vec<InlineTextPassPrepareComparableGlyph>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineTextPassPrepareComparableBatch {
     pub(crate) key: InlineTextPassBridgeBatchKey,
