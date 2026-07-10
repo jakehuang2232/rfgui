@@ -151,16 +151,7 @@ impl TextArea {
                 if let Some(run) = child.as_any_mut().downcast_mut::<TextAreaTextRun>() {
                     run.is_placeholder = is_placeholder;
                     run.set_text(display_text.clone(), 0..char_count);
-                    run.cascade_style(
-                        self.font_families.clone(),
-                        self.font_size,
-                        self.line_height,
-                        self.vertical_align,
-                        self.font_weight,
-                        cascade_color,
-                        self.cursor,
-                        self.auto_wrap,
-                    );
+                    run.cascade_style(self.run_style(cascade_color));
                     cx.invalidate(run.local_dirty_flags());
                     updated = true;
                 }
@@ -488,16 +479,7 @@ impl TextArea {
             run.is_placeholder = is_placeholder;
             run.set_preedit_run(is_preedit, preedit_cursor);
             run.set_text(text_owned, range);
-            run.cascade_style(
-                self.font_families.clone(),
-                self.font_size,
-                self.line_height,
-                self.vertical_align,
-                self.font_weight,
-                cascade_color,
-                self.cursor,
-                self.auto_wrap,
-            );
+            run.cascade_style(self.run_style(cascade_color));
             cx.invalidate(run.local_dirty_flags());
         });
     }
@@ -710,16 +692,7 @@ impl TextArea {
         let mut run = TextAreaTextRun::new(text, range);
         run.is_placeholder = is_placeholder;
         run.set_preedit_run(is_preedit, preedit_cursor);
-        run.cascade_style(
-            self.font_families.clone(),
-            self.font_size,
-            self.line_height,
-            self.vertical_align,
-            self.font_weight,
-            cascade_color,
-            self.cursor,
-            self.auto_wrap,
-        );
+        run.cascade_style(self.run_style(cascade_color));
         let desc = crate::view::renderer_adapter::ElementDescriptor::leaf(
             Box::new(run) as Box<dyn ElementTrait>
         );
@@ -1600,8 +1573,8 @@ mod tests {
         assert_eq!(package.text_run_count(), 4);
         assert_eq!(package.projection_segment_count(), 2);
         assert_eq!(
-            package.input.items.len(),
             package.source_segments.len(),
+            arena.children_of(root).len(),
             "each TextArea child source should map to one IFC root item"
         );
 

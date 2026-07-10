@@ -63,7 +63,10 @@ impl TextArea {
         }
 
         let cursor_host_is_projection = self.cursor_host_is_projection(arena);
+        let cursor_inside_projection = self.cursor_strictly_inside_projection(arena);
+        let mut has_unified_package = false;
         if let Some(package) = self.unified_inline_ifc_render_package(arena) {
+            has_unified_package = true;
             let origin_x = self.layout_state.layout_position.x - self.scroll_x;
             let origin_y = self.layout_state.layout_position.y - self.scroll_y;
             if let Some(geometry) = package.preedit_caret_geometry_for_char(self.cursor_char) {
@@ -73,24 +76,24 @@ impl TextArea {
                     geometry.height,
                 ));
             }
-            drop(package);
             // A cursor strictly inside a projection renders from the
             // chip's real inner glyphs (below); the navigation map only
             // has proportional rect-fraction stops there, which drift
             // off the rendered chip text.
-            let cursor_inside_projection = self.cursor_strictly_inside_projection(arena);
             if !(cursor_host_is_projection && !self.ime_preedit.is_empty())
                 && !cursor_inside_projection
+                && let Some(geometry) =
+                    package.caret_geometry_for_char(self.cursor_char, self.cursor_affinity)
             {
-                let map = super::caret_map::CaretNavigationMap::build(self, arena);
-                if let Some(stop) = map.caret_stop_for_char(self.cursor_char, self.cursor_affinity)
-                {
-                    return Some((stop.x, stop.y_top, stop.height));
-                }
+                return Some((
+                    origin_x + geometry.x,
+                    origin_y + geometry.y_top,
+                    geometry.height,
+                ));
             }
         }
 
-        if !cursor_host_is_projection && !self.cursor_strictly_inside_projection(arena) {
+        if !has_unified_package && !cursor_host_is_projection && !cursor_inside_projection {
             let map = super::caret_map::CaretNavigationMap::build(self, arena);
             if let Some(stop) = map.caret_stop_for_char(self.cursor_char, self.cursor_affinity) {
                 return Some((stop.x, stop.y_top, stop.height));
@@ -1369,7 +1372,7 @@ mod tests {
         (arena, root)
     }
 
-    fn shared_soft_wrap_boundary(arena: &NodeArena, root: NodeKey) -> usize {
+    fn consumed_soft_wrap_slots(arena: &NodeArena, root: NodeKey) -> (usize, usize) {
         arena
             .with_element_taken_ref(root, |el, arena| {
                 let text_area = el
@@ -1378,17 +1381,20 @@ mod tests {
                     .expect("TextArea root");
                 let map = super::super::caret_map::CaretNavigationMap::build(text_area, arena);
                 map.lines.windows(2).find_map(|pair| {
-                    pair[0].stops.iter().find_map(|upper| {
-                        pair[1]
-                            .stops
-                            .iter()
-                            .any(|lower| lower.char_index == upper.char_index)
-                            .then_some(upper.char_index)
-                    })
+                    let upper = pair[0].stops.last()?;
+                    let lower = pair[1].stops.first()?;
+                    let consumed = text_area
+                        .content
+                        .chars()
+                        .skip(upper.char_index)
+                        .take(lower.char_index.saturating_sub(upper.char_index));
+                    let consumed = consumed.collect::<String>();
+                    (!consumed.is_empty() && consumed.chars().all(char::is_whitespace))
+                        .then_some((upper.char_index, lower.char_index))
                 })
             })
             .expect("root exists")
-            .expect("fixture should contain a shared soft-wrap boundary")
+            .expect("fixture should contain a soft wrap that consumes whitespace")
     }
 
     fn run_text_pass_fragments(arena: &NodeArena, root: NodeKey) -> Vec<(String, Rect)> {
@@ -1918,8 +1924,8 @@ mod tests {
         let content = "the quick brown fox jumps over the lazy dog";
         let width = 80.0;
         let (base_arena, base_root) = wrapped_plain_fixture(content, width);
-        let boundary = shared_soft_wrap_boundary(&base_arena, base_root);
-        let cursor = boundary.saturating_sub(1);
+        let (upper_tail, lower_head) = consumed_soft_wrap_slots(&base_arena, base_root);
+        let cursor = upper_tail;
         let (upper_y, lower_y) = base_arena
             .with_element_taken_ref(base_root, |el, arena| {
                 let text_area = el
@@ -1928,11 +1934,11 @@ mod tests {
                     .expect("TextArea root");
                 let map = super::super::caret_map::CaretNavigationMap::build(text_area, arena);
                 let upper = map
-                    .caret_stop_for_char(boundary, CaretAffinity::Upstream)
-                    .expect("upstream boundary stop");
+                    .caret_stop_for_char(upper_tail, CaretAffinity::Upstream)
+                    .expect("upstream upper-tail stop");
                 let lower = map
-                    .caret_stop_for_char(boundary, CaretAffinity::Downstream)
-                    .expect("downstream boundary stop");
+                    .caret_stop_for_char(lower_head, CaretAffinity::Downstream)
+                    .expect("downstream lower-head stop");
                 (upper.y_top, lower.y_top)
             })
             .expect("root exists");
@@ -2109,11 +2115,11 @@ mod tests {
         let content = "the quick brown fox jumps over the lazy dog";
         let width = 80.0;
         let (base_arena, base_root) = wrapped_plain_fixture(content, width);
-        let boundary = shared_soft_wrap_boundary(&base_arena, base_root);
+        let (upper_tail, _) = consumed_soft_wrap_slots(&base_arena, base_root);
         let preedit = "\u{4E2D}".repeat(12);
         let (arena, root) = plain_preedit_fixture_with_options(
             content,
-            boundary,
+            upper_tail,
             &preedit,
             Some((preedit.len(), preedit.len())),
             CaretAffinity::Upstream,

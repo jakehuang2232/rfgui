@@ -30,6 +30,7 @@ pub(super) struct CaretStop {
     pub x: f32,
     pub y_top: f32,
     pub height: f32,
+    pub affinity: Option<CaretAffinity>,
 }
 
 /// One visual line — a contiguous horizontal band of caret stops the user
@@ -84,19 +85,20 @@ impl CaretNavigationMap {
             let origin_x = text_area.layout_state.layout_position.x - text_area.scroll_x;
             let origin_y = text_area.layout_state.layout_position.y - text_area.scroll_y;
             let mut lines = package
-                .visual_caret_lines()
-                .into_iter()
+                .visual_caret_lines_ref()
+                .iter()
                 .map(|line| CaretVisualLine {
                     y_top: origin_y + line.y_top,
                     y_bottom: origin_y + line.y_bottom,
                     stops: line
                         .stops
-                        .into_iter()
+                        .iter()
                         .map(|stop| CaretStop {
                             char_index: stop.char_index,
                             x: origin_x + stop.x,
                             y_top: origin_y + stop.y_top,
                             height: stop.height,
+                            affinity: Some(stop.affinity),
                         })
                         .collect(),
                 })
@@ -137,6 +139,7 @@ impl CaretNavigationMap {
                                     x: origin_x + s.local_x,
                                     y_top: origin_y + s.local_y_top,
                                     height: s.height,
+                                    affinity: None,
                                 })
                                 .collect();
                             translated.push(CaretVisualLine {
@@ -357,6 +360,15 @@ impl CaretNavigationMap {
     }
 
     fn affinity_for_char_on_line(&self, char_index: usize, line_idx: usize) -> CaretAffinity {
+        if let Some(affinity) = self
+            .lines
+            .get(line_idx)
+            .and_then(|line| line.stops.iter().find(|stop| stop.char_index == char_index))
+            .and_then(|stop| stop.affinity)
+        {
+            return affinity;
+        }
+
         let first = self
             .lines
             .iter()
@@ -1466,6 +1478,7 @@ fn projection_text_lines(
                                     x: stop.x,
                                     y_top: stop.y_top,
                                     height: stop.height,
+                                    affinity: None,
                                 })
                             })
                             .collect(),
@@ -1511,6 +1524,7 @@ fn group_probes_into_visual_lines(probes: Vec<(usize, f32, f32, f32)>) -> Vec<Ca
             x,
             y_top,
             height,
+            affinity: None,
         };
         let merge_into_last = lines
             .last()
@@ -1598,6 +1612,7 @@ fn projection_box_lines(
                 x: rx + rw * frac,
                 y_top: ry,
                 height: rh.max(1.0),
+                affinity: None,
             });
         }
         lines.push(CaretVisualLine {

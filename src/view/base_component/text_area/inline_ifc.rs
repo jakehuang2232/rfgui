@@ -73,7 +73,7 @@ pub(crate) struct TextAreaUnifiedIfcProjectionOverlaySource {
 }
 
 pub(crate) struct TextAreaUnifiedIfcRootPackage {
-    pub(crate) input: InlineIfcInput,
+    pub(crate) default_style: InlineIfcStyle,
     pub(crate) ifc: InlineFormattingContext,
     pub(crate) source_segments: Vec<TextAreaUnifiedIfcSourceSegment>,
     pub(crate) atomic_sources: Vec<InlineIfcSourceId>,
@@ -92,7 +92,7 @@ pub(crate) struct TextAreaUnifiedIfcRootPackage {
 
 #[derive(Default)]
 pub(crate) struct TextAreaUnifiedIfcRootCache {
-    entry: Option<TextAreaUnifiedIfcRootCacheEntry>,
+    entry: Option<Box<TextAreaUnifiedIfcRootCacheEntry>>,
     #[cfg(test)]
     build_count: usize,
 }
@@ -132,22 +132,31 @@ struct TextAreaUnifiedIfcRootSource {
 
 impl TextAreaUnifiedIfcRootSource {
     fn into_package(self) -> TextAreaUnifiedIfcRootPackage {
-        let ifc =
-            InlineFormattingContext::build_with_options(self.input.clone(), self.layout_options);
-        let segment_index_by_child = self
-            .source_segments
+        let TextAreaUnifiedIfcRootSource {
+            key: _,
+            input,
+            layout_options,
+            source_segments,
+            atomic_sources,
+            width_constraint,
+            allow_wrap,
+            vertical_align,
+        } = self;
+        let default_style = input.default_style.clone();
+        let ifc = InlineFormattingContext::build_with_options(input, layout_options);
+        let segment_index_by_child = source_segments
             .iter()
             .enumerate()
             .map(|(index, segment)| (segment.child_key, index))
             .collect();
         TextAreaUnifiedIfcRootPackage {
-            input: self.input,
+            default_style,
             ifc,
-            source_segments: self.source_segments,
-            atomic_sources: self.atomic_sources,
-            width_constraint: self.width_constraint,
-            allow_wrap: self.allow_wrap,
-            vertical_align: self.vertical_align,
+            source_segments,
+            atomic_sources,
+            width_constraint,
+            allow_wrap,
+            vertical_align,
             segment_index_by_child,
             visual_caret_lines_cache: std::cell::OnceCell::new(),
         }
@@ -212,6 +221,7 @@ impl TextAreaUnifiedIfcRootPackage {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn projection_overlay_sources(
         &self,
     ) -> Vec<TextAreaUnifiedIfcProjectionOverlaySource> {
@@ -603,6 +613,7 @@ impl TextAreaUnifiedIfcRootPackage {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn visual_caret_lines(&self) -> Vec<TextAreaUnifiedIfcCaretLine> {
         self.visual_caret_lines_ref().to_vec()
     }
@@ -610,13 +621,18 @@ impl TextAreaUnifiedIfcRootPackage {
     pub(crate) fn visual_caret_lines_ref(&self) -> &[TextAreaUnifiedIfcCaretLine] {
         self.visual_caret_lines_cache.get_or_init(|| {
             let mut lines = Vec::new();
+            let consumed_wrap_whitespace = self.ifc.soft_wrap_trailing_whitespace_ranges();
             for segment in self.source_segments.iter().filter(|segment| {
                 matches!(
                     segment.kind,
                     TextAreaUnifiedIfcSourceKind::TextRun | TextAreaUnifiedIfcSourceKind::LineBreak
                 )
             }) {
-                self.push_text_segment_committed_caret_stops(segment, &mut lines);
+                self.push_text_segment_committed_caret_stops(
+                    segment,
+                    &consumed_wrap_whitespace,
+                    &mut lines,
+                );
             }
             self.push_missing_empty_paragraph_caret_stops(&mut lines);
             for segment in self
@@ -674,6 +690,7 @@ impl TextAreaUnifiedIfcRootPackage {
     fn push_text_segment_committed_caret_stops(
         &self,
         segment: &TextAreaUnifiedIfcSourceSegment,
+        consumed_wrap_whitespace: &[Range<usize>],
         lines: &mut Vec<IndexedTextAreaUnifiedIfcCaretLine>,
     ) {
         let span = segment
@@ -694,7 +711,6 @@ impl TextAreaUnifiedIfcRootPackage {
             other.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox
                 && other.char_range.end == segment.char_range.start
         });
-        let consumed_wrap_whitespace = self.ifc.soft_wrap_trailing_whitespace_ranges();
         for local_char in 0..=span {
             let byte_index = self.committed_local_char_to_backing_byte(segment, local_char);
             for affinity in [
@@ -1071,7 +1087,7 @@ impl TextAreaUnifiedIfcRootPackage {
         let Some(line) = snapshot.lines.get(line_index) else {
             return 0.0;
         };
-        let style = &self.input.default_style;
+        let style = &self.default_style;
         let text_height = (style.font_size.max(1.0) * style.line_height.max(0.8)).max(1.0);
         let font_size = style.font_size.max(1.0);
         let leading = (text_height - font_size).max(0.0);
@@ -1094,12 +1110,12 @@ impl TextAreaUnifiedIfcRootPackage {
     }
 
     fn text_line_height(&self) -> f32 {
-        let style = &self.input.default_style;
+        let style = &self.default_style;
         (style.font_size.max(1.0) * style.line_height.max(0.8)).max(1.0)
     }
 
     fn inline_baseline_for_line_height(&self, height: f32) -> f32 {
-        let style = &self.input.default_style;
+        let style = &self.default_style;
         let font_size = style.font_size.max(1.0);
         let leading = (height.max(font_size) - font_size).max(0.0);
         (font_size * 0.8779297 + leading / 2.0).max(0.0)
@@ -1164,7 +1180,7 @@ fn byte_offset_for_char_count(backing_text: &str, range: Range<usize>, char_coun
 }
 
 impl TextArea {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn unified_inline_ifc_root_package(
         &self,
         arena: &NodeArena,
@@ -1196,7 +1212,7 @@ impl TextArea {
             && entry.key.ime_preedit == self.ime_preedit
             && entry.key.ime_preedit_cursor == self.ime_preedit_cursor
             && entry.package.width_constraint == self.current_unified_ifc_width_constraint()
-            && entry.style_probe == self.current_unified_ifc_style()
+            && self.unified_ifc_style_matches(&entry.style_probe)
             // Projection segments receive char_range updates straight from
             // fiber prop application (segment.rs), bypassing every TextArea
             // choke point that bumps the source revision — compare the live
@@ -1221,14 +1237,12 @@ impl TextArea {
                 })
     }
 
-    fn current_unified_ifc_style(&self) -> InlineIfcStyle {
-        InlineIfcStyle {
-            font_size: self.font_size,
-            line_height: self.line_height,
-            font_weight: self.font_weight,
-            brush: self.color.to_rgba_u8(),
-            font_families: self.font_families.clone(),
-        }
+    fn unified_ifc_style_matches(&self, style: &InlineIfcStyle) -> bool {
+        style.font_size == self.font_size
+            && style.line_height == self.line_height
+            && style.font_weight == self.font_weight
+            && style.brush == self.color.to_rgba_u8()
+            && style.font_families.as_slice() == self.font_families.as_slice()
     }
 
     fn current_unified_ifc_width_constraint(&self) -> Option<f32> {
@@ -1277,13 +1291,13 @@ impl TextArea {
             let mut cache = self.unified_inline_ifc_root_cache.borrow_mut();
             if needs_update {
                 let style_probe = source.input.default_style.clone();
-                cache.entry = Some(TextAreaUnifiedIfcRootCacheEntry {
+                cache.entry = Some(Box::new(TextAreaUnifiedIfcRootCacheEntry {
                     key: source.key.clone(),
                     source_revision: self.unified_ifc_source_revision.get(),
                     children_snapshot: self.children.clone(),
                     style_probe,
                     package: source.into_package(),
-                });
+                }));
                 #[cfg(test)]
                 {
                     cache.build_count += 1;
@@ -1928,6 +1942,15 @@ mod tests {
     use crate::view::base_component::{ElementTrait, Size};
     use crate::view::renderer_adapter::ElementDescriptor;
     use crate::view::test_support::{commit_descriptor, new_test_arena};
+
+    #[test]
+    fn unified_root_cache_keeps_the_package_out_of_line() {
+        assert!(
+            std::mem::size_of::<TextAreaUnifiedIfcRootCache>()
+                < std::mem::size_of::<TextAreaUnifiedIfcRootPackage>() / 4,
+            "an empty TextArea cache must not reserve inline space for a full package"
+        );
+    }
 
     fn text_area_with_run(
         text: &str,

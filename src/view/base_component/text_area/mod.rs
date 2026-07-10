@@ -41,7 +41,7 @@ mod style;
 pub use ime_context::TextAreaImeContext;
 pub use render_string::{TextAreaRenderProjection, TextAreaRenderString};
 #[allow(unused_imports)] // re-exported for P2+; not yet referenced outside the module.
-pub(crate) use run::{TextAreaLineBreak, TextAreaTextRun};
+pub(crate) use run::{TextAreaLineBreak, TextAreaRunStyle, TextAreaTextRun};
 #[allow(unused_imports)] // P8 M1+: emitted by TextArea schema render.
 pub(crate) use segment::TextAreaProjectionSegment;
 
@@ -233,6 +233,19 @@ impl TextArea {
 
     pub(crate) fn set_self_node_key(&mut self, key: NodeKey) {
         self.self_node_key = Some(key);
+    }
+
+    pub(crate) fn run_style(&self, color: crate::style::Color) -> TextAreaRunStyle<'_> {
+        TextAreaRunStyle {
+            font_families: &self.font_families,
+            font_size: self.font_size,
+            line_height: self.line_height,
+            vertical_align: self.vertical_align,
+            font_weight: self.font_weight,
+            color,
+            cursor: self.cursor,
+            auto_wrap: self.auto_wrap,
+        }
     }
 
     /// Patch entrypoint for `Patch::SetText` from incremental commit.
@@ -484,20 +497,11 @@ impl ElementTrait for TextArea {
             let char_count = display_text.chars().count();
             let mut run = run::TextAreaTextRun::new(display_text, 0..char_count);
             run.is_placeholder = is_placeholder;
-            run.cascade_style(
-                self.font_families.clone(),
-                self.font_size,
-                self.line_height,
-                self.vertical_align,
-                self.font_weight,
-                if is_placeholder {
-                    self.placeholder_color
-                } else {
-                    self.color
-                },
-                self.cursor,
-                self.auto_wrap,
-            );
+            run.cascade_style(self.run_style(if is_placeholder {
+                self.placeholder_color
+            } else {
+                self.color
+            }));
             child_descriptors.push(crate::view::renderer_adapter::ElementDescriptor::leaf(
                 Box::new(run) as Box<dyn ElementTrait>,
             ));
@@ -649,7 +653,7 @@ impl ElementTrait for TextArea {
                     crate::ui::PropValue::F64(f) => Some((*f).max(0.0) as usize),
                     _ => return PropApplyOutcome::DecodeFailed(name),
                 };
-                self.max_length = v;
+                self.set_max_length(v);
                 PropApplyOutcome::Applied
             }
             "font" => {

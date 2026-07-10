@@ -137,32 +137,25 @@ impl TextAreaTextRun {
 
     /// Cascade-style cascaded set: owner TextArea calls this after edit/
     /// content-rebuild so the run picks up the up-to-date inherited values.
-    pub(crate) fn cascade_style(
-        &mut self,
-        font_families: Vec<String>,
-        font_size: f32,
-        line_height: f32,
-        vertical_align: crate::style::VerticalAlign,
-        font_weight: u16,
-        color: crate::style::Color,
-        cursor: Cursor,
-        auto_wrap: bool,
-    ) {
-        let layout_changed = self.font_families != font_families
-            || self.font_size != font_size
-            || self.line_height != line_height
-            || self.vertical_align != vertical_align
-            || self.font_weight != font_weight
-            || self.color != color
-            || self.auto_wrap != auto_wrap;
-        self.font_families = font_families;
-        self.font_size = font_size;
-        self.line_height = line_height;
-        self.vertical_align = vertical_align;
-        self.font_weight = font_weight;
-        self.color = color;
-        self.cursor = cursor;
-        self.auto_wrap = auto_wrap;
+    pub(crate) fn cascade_style(&mut self, style: TextAreaRunStyle<'_>) {
+        let font_families_changed = self.font_families.as_slice() != style.font_families;
+        let layout_changed = font_families_changed
+            || self.font_size != style.font_size
+            || self.line_height != style.line_height
+            || self.vertical_align != style.vertical_align
+            || self.font_weight != style.font_weight
+            || self.color != style.color
+            || self.auto_wrap != style.auto_wrap;
+        if font_families_changed {
+            self.font_families = style.font_families.to_vec();
+        }
+        self.font_size = style.font_size;
+        self.line_height = style.line_height;
+        self.vertical_align = style.vertical_align;
+        self.font_weight = style.font_weight;
+        self.color = style.color;
+        self.cursor = style.cursor;
+        self.auto_wrap = style.auto_wrap;
         if layout_changed {
             self.mark_measure_dirty();
         }
@@ -243,6 +236,18 @@ pub struct RunCaretLine {
     pub local_y_top: f32,
     pub local_y_bottom: f32,
     pub stops: Vec<RunCaretStop>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TextAreaRunStyle<'a> {
+    pub(crate) font_families: &'a [String],
+    pub(crate) font_size: f32,
+    pub(crate) line_height: f32,
+    pub(crate) vertical_align: crate::style::VerticalAlign,
+    pub(crate) font_weight: u16,
+    pub(crate) color: crate::style::Color,
+    pub(crate) cursor: Cursor,
+    pub(crate) auto_wrap: bool,
 }
 
 pub(crate) struct TextAreaLineBreak {

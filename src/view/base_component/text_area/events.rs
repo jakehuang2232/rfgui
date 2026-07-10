@@ -960,7 +960,7 @@ impl EventTarget for TextArea {
         // route through the dedicated `Key::Home` / `Key::End` branches.
         let line_jump = cfg!(target_os = "macos") && modifiers.meta();
         let mut handled = true;
-        let prev_content = self.content.clone();
+        let content_revision = self.unified_ifc_source_revision.get();
 
         match key {
             Key::ArrowLeft => {
@@ -1071,7 +1071,7 @@ impl EventTarget for TextArea {
             }
         }
 
-        if self.content != prev_content {
+        if self.unified_ifc_source_revision.get() != content_revision {
             self.notify_change_handlers();
         }
         if handled {
@@ -1105,11 +1105,8 @@ impl EventTarget for TextArea {
             return;
         }
         let had_preedit = self.clear_preedit();
-        let prev = self.content.clone();
         if self.insert_text(event.text.as_str()) {
-            if self.content != prev {
-                self.notify_change_handlers();
-            }
+            self.notify_change_handlers();
             if had_preedit {
                 self.route_preedit_to_runs(arena);
             }
@@ -1228,8 +1225,7 @@ impl EventTarget for TextArea {
         };
         event.data.set_text(text);
         if !self.read_only {
-            let prev = self.content.clone();
-            if self.delete_selected_text() && self.content != prev {
+            if self.delete_selected_text() {
                 self.notify_change_handlers();
             }
             control.request_redraw();
@@ -1256,8 +1252,7 @@ impl EventTarget for TextArea {
             event.meta.stop_propagation();
             return;
         }
-        let prev = self.content.clone();
-        if self.insert_text(&text) && self.content != prev {
+        if self.insert_text(&text) {
             self.notify_change_handlers();
             self.scroll_caret_into_view(arena);
             set_platform_ime_cursor_rect(self, &event.meta, arena);

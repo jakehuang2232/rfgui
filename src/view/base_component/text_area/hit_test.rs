@@ -26,14 +26,6 @@ use super::TextArea;
 use super::caret_map::{CaretAffinity, CaretNavigationMap, VerticalTarget};
 
 impl TextArea {
-    /// Resolve a screen-space `(x, y)` hit to a root-content char index.
-    /// See module doc for the three-step shape. Always returns some
-    /// char index — falls back to the current `cursor_char` only when
-    /// the TextArea has no children (empty content with no placeholder).
-    pub(super) fn cursor_char_at_screen(&self, arena: &NodeArena, x: f32, y: f32) -> usize {
-        self.cursor_target_at_screen(arena, x, y).char_index
-    }
-
     pub(super) fn cursor_target_at_screen(
         &self,
         arena: &NodeArena,
@@ -124,7 +116,8 @@ mod tests {
                 el.as_any()
                     .downcast_ref::<TextArea>()
                     .unwrap()
-                    .cursor_char_at_screen(arena, click_x_left, click_y)
+                    .cursor_target_at_screen(arena, click_x_left, click_y)
+                    .char_index
             })
             .unwrap();
         let cursor_right = arena
@@ -132,7 +125,8 @@ mod tests {
                 el.as_any()
                     .downcast_ref::<TextArea>()
                     .unwrap()
-                    .cursor_char_at_screen(arena, click_x_right, click_y)
+                    .cursor_target_at_screen(arena, click_x_right, click_y)
+                    .char_index
             })
             .unwrap();
         assert_eq!(

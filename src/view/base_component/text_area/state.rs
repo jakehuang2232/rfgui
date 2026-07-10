@@ -12,7 +12,6 @@ use crate::view::base_component::DirtyFlags;
 
 use super::TextArea;
 use super::caret_map::CaretAffinity;
-use super::edit::normalize_multiline;
 
 impl TextArea {
     pub(super) fn content_char_len(&self) -> usize {
@@ -30,30 +29,6 @@ impl TextArea {
         self.reset_caret_blink();
         self.clear_vertical_goal();
         self.mark_caret_scroll_pending();
-    }
-
-    pub(super) fn move_cursor_left(&mut self) -> bool {
-        if self.cursor_char == 0 {
-            return false;
-        }
-        self.cursor_char -= 1;
-        self.clear_selection();
-        self.reset_caret_blink();
-        self.clear_vertical_goal();
-        self.mark_caret_scroll_pending();
-        true
-    }
-
-    pub(super) fn move_cursor_right(&mut self) -> bool {
-        if self.cursor_char >= self.content_char_len() {
-            return false;
-        }
-        self.cursor_char += 1;
-        self.clear_selection();
-        self.reset_caret_blink();
-        self.clear_vertical_goal();
-        self.mark_caret_scroll_pending();
-        true
     }
 
     /// Move cursor to start of current paragraph (preceding `\n` boundary
@@ -201,10 +176,6 @@ impl TextArea {
     /// Pointer-drag selection start: collapse selection at `at`, mark
     /// pointer_selecting. The pointer-move handler then calls
     /// `update_pointer_selection` to extend.
-    pub(super) fn start_pointer_selection(&mut self, at: usize) {
-        self.start_pointer_selection_with_affinity(at, CaretAffinity::Downstream);
-    }
-
     pub(super) fn start_pointer_selection_with_affinity(
         &mut self,
         at: usize,
@@ -219,10 +190,6 @@ impl TextArea {
         self.clear_vertical_goal();
         self.cursor_affinity = affinity;
         self.mark_caret_scroll_pending();
-    }
-
-    pub(super) fn update_pointer_selection(&mut self, focus: usize) {
-        self.update_pointer_selection_with_affinity(focus, CaretAffinity::Downstream);
     }
 
     pub(super) fn update_pointer_selection_with_affinity(
@@ -276,7 +243,11 @@ impl TextArea {
     /// the target child Run lives in `projection::route_preedit_to_runs`
     /// since it needs arena access; callers in `events.rs` invoke both.
     pub(super) fn set_preedit(&mut self, text: String, cursor: Option<(usize, usize)>) -> bool {
-        let normalized = normalize_multiline(&text, self.multiline);
+        let normalized = if self.multiline {
+            text
+        } else {
+            text.replace('\n', " ")
+        };
         if self.ime_preedit == normalized && self.ime_preedit_cursor == cursor {
             return false;
         }
@@ -344,7 +315,7 @@ mod tests {
         text_area.selection_anchor_char = Some(0);
         text_area.selection_focus_char = Some(0);
 
-        text_area.update_pointer_selection(3);
+        text_area.update_pointer_selection_with_affinity(3, CaretAffinity::Downstream);
 
         assert_eq!(text_area.cursor_char, 3);
         assert_eq!(text_area.selection_focus_char, Some(3));

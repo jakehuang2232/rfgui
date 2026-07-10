@@ -1,12 +1,10 @@
 //! `TextAreaProjectionSegment` — transparent inline-flow host that wraps
 //! a single user projection in a TextArea's inline child list.
 //!
-//! Each segment carries the source content `char_range` it covers
-//! (used by TextArea for hit-test, selection, caret, IME routing) and an
-//! optional `TextAreaImeContext` written by TextArea's pre-measure
-//! routing step (used by descendant `<Text>` elements to render IME
-//! preedit at arena-walk time, replacing the v1 RSX-time
-//! `<Provider<TextAreaImeContext>>` mechanism).
+//! Each segment carries the source content `char_range` it covers, used by
+//! TextArea for hit-test, selection, caret, and IME routing. Projection IME
+//! state is supplied to descendants by the stable
+//! `<Provider<TextAreaImeContext>>` wrapper built in `projection.rs`.
 //!
 //! Layout: forwards measure / place to its children, reporting the
 //! children's content size as its own measured size. Renderable is a no-op
@@ -23,7 +21,6 @@ use crate::view::frame_graph::FrameGraph;
 use crate::view::layout::{FlexLayoutInfo, LayoutState};
 use crate::view::node_arena::NodeKey;
 
-use super::ime_context::TextAreaImeContext;
 use super::next_ui_node_id;
 
 /// Host element backing the `<TextAreaProjectionSegment>` RSX tag.
@@ -34,10 +31,6 @@ use super::next_ui_node_id;
 pub(crate) struct TextAreaProjectionSegment {
     char_range: Range<usize>,
     children: Vec<NodeKey>,
-    /// Set by TextArea's pre-measure IME routing when the caret falls
-    /// inside this segment's char range. Read by descendant `<Text>`
-    /// elements via arena ancestor walk during their measure/shape.
-    ime_context: Option<TextAreaImeContext>,
     flow_offset: Position,
     layout_state: LayoutState,
     flex_info: Option<FlexLayoutInfo>,
@@ -56,7 +49,6 @@ impl Default for TextAreaProjectionSegment {
         Self {
             char_range: 0..0,
             children: Vec::new(),
-            ime_context: None,
             flow_offset: Position { x: 0.0, y: 0.0 },
             layout_state: LayoutState::new(0.0, 0.0, 0.0, 0.0),
             flex_info: None,
@@ -90,14 +82,6 @@ impl TextAreaProjectionSegment {
 
     pub(crate) fn set_char_range(&mut self, range: Range<usize>) {
         self.char_range = range;
-    }
-
-    pub(crate) fn ime_context(&self) -> Option<&TextAreaImeContext> {
-        self.ime_context.as_ref()
-    }
-
-    pub(crate) fn set_ime_context(&mut self, ctx: Option<TextAreaImeContext>) {
-        self.ime_context = ctx;
     }
 
     pub(crate) fn set_vertical_align(&mut self, vertical_align: VerticalAlign) {

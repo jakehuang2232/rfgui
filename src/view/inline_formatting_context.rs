@@ -1689,11 +1689,7 @@ impl InlineFormattingContext {
             let trailing_wrap_whitespace_start = line_ranges
                 .get(line_index)
                 .cloned()
-                .filter(|range| {
-                    line_ranges
-                        .get(line_index + 1)
-                        .is_some_and(|next| next.start == range.end)
-                })
+                .filter(|_| self.is_soft_wrap_after(&line_ranges, line_index))
                 .and_then(|range| self.trailing_whitespace_start(range));
             let mut consumed_glyphs_by_run = HashMap::<usize, usize>::new();
             for item in line.items() {
@@ -2331,9 +2327,7 @@ impl InlineFormattingContext {
                 }
                 continue;
             }
-            let is_soft_wrap = line_text_ranges
-                .get(line_index + 1)
-                .is_some_and(|next_range| next_range.start == line_range.end);
+            let is_soft_wrap = self.is_soft_wrap_after(&line_text_ranges, line_index);
             // Parley consumes whitespace at a word-wrap boundary: it has
             // no glyph and must not create a second, invisible caret stop.
             // Keep the upper-line tail before that whitespace; the lower
@@ -2341,6 +2335,7 @@ impl InlineFormattingContext {
             let trailing_wrap_whitespace_start = is_soft_wrap
                 .then(|| self.trailing_whitespace_start(line_range.clone()))
                 .flatten();
+            let mandatory_line_break_start = self.mandatory_line_break_start(&line_range);
             self.push_visual_caret_stop(
                 &mut stops,
                 line_index,
@@ -2375,7 +2370,9 @@ impl InlineFormattingContext {
             self.push_visual_caret_stop(
                 &mut stops,
                 line_index,
-                trailing_wrap_whitespace_start.unwrap_or(line_range.end),
+                trailing_wrap_whitespace_start
+                    .or(mandatory_line_break_start)
+                    .unwrap_or(line_range.end),
                 InlineIfcCaretAffinity::Upstream,
                 false,
                 true,
@@ -2437,6 +2434,28 @@ impl InlineFormattingContext {
         (visible_len < text.len()).then_some(range.start + visible_len)
     }
 
+    fn is_soft_wrap_after(&self, line_ranges: &[Range<usize>], line_index: usize) -> bool {
+        let Some(range) = line_ranges.get(line_index) else {
+            return false;
+        };
+        let Some(next) = line_ranges.get(line_index + 1) else {
+            return false;
+        };
+        next.start == range.end && self.mandatory_line_break_start(range).is_none()
+    }
+
+    fn mandatory_line_break_start(&self, range: &Range<usize>) -> Option<usize> {
+        let text = self.backing_text.get(range.clone())?;
+        let (mut offset, ch) = text.char_indices().next_back()?;
+        if !is_mandatory_line_break(ch) {
+            return None;
+        }
+        if ch == '\n' && text[..offset].ends_with('\r') {
+            offset -= '\r'.len_utf8();
+        }
+        Some(range.start + offset)
+    }
+
     /// Byte ranges of whitespace consumed at automatic word-wrap points.
     /// The text remains in the backing string, but has neither paint glyphs
     /// nor an intermediate caret position.
@@ -2450,9 +2469,7 @@ impl InlineFormattingContext {
             .iter()
             .enumerate()
             .filter_map(|(line_index, range)| {
-                line_ranges
-                    .get(line_index + 1)
-                    .is_some_and(|next| next.start == range.end)
+                self.is_soft_wrap_after(&line_ranges, line_index)
                     .then(|| self.trailing_whitespace_start(range.clone()))
                     .flatten()
                     .map(|start| start..range.end)
@@ -2714,6 +2731,13 @@ impl InlineFormattingContext {
                 (y0 <= y && y <= y1).then_some(line_index)
             })
     }
+}
+
+fn is_mandatory_line_break(ch: char) -> bool {
+    matches!(
+        ch,
+        '\n' | '\r' | '\u{000B}' | '\u{000C}' | '\u{0085}' | '\u{2028}' | '\u{2029}'
+    )
 }
 
 fn point_in_rect(x: f32, y: f32, rect_x: f32, rect_y: f32, width: f32, height: f32) -> bool {
@@ -5505,6 +5529,41 @@ mod tests {
         );
         assert!(soft_tail.style.is_some());
         assert!(soft_head.style.is_some());
+    }
+
+    #[test]
+    fn hard_line_break_keeps_distinct_affinity_stops() {
+        let content = "line1\nline2";
+        let ifc = InlineFormattingContext::build(
+            InlineIfcInput::new(vec![InlineIfcItem::TextSpan {
+                source: ROOT,
+                text: content.to_string(),
+                style: None,
+            }])
+            .with_max_width(300.0),
+        );
+
+        assert!(
+            ifc.soft_wrap_trailing_whitespace_ranges().is_empty(),
+            "an explicit newline must not be reported as consumed soft-wrap whitespace"
+        );
+        let stops = ifc.visual_caret_stops();
+        let (upstream, downstream) = stops
+            .iter()
+            .filter(|stop| stop.is_line_tail && stop.affinity == InlineIfcCaretAffinity::Upstream)
+            .find_map(|tail| {
+                stops
+                    .iter()
+                    .find(|head| {
+                        head.is_line_head
+                            && head.affinity == InlineIfcCaretAffinity::Downstream
+                            && head.line_index == tail.line_index + 1
+                            && &ifc.backing_text()[tail.byte_index..head.byte_index] == "\n"
+                    })
+                    .map(|head| (tail, head))
+            })
+            .expect("hard break must separate upper-tail and lower-head caret stops");
+        assert!(upstream.line_index < downstream.line_index);
     }
 
     #[test]

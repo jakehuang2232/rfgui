@@ -1571,6 +1571,54 @@ fn text_area_auto_wrap_toggle_cascades_to_existing_projection_text() {
 }
 
 #[test]
+fn text_area_incremental_max_length_normalizes_existing_content() {
+    let tree = host_text_area_node().with_prop("content", "abcdef");
+    let mut arena = crate::view::test_support::new_test_arena();
+    let roots = commit_rsx_tree(&mut arena, &tree);
+    let root = *roots.first().expect("single root");
+    let viewport_style = crate::style::Style::new();
+    let ctx = crate::view::fiber_work::ApplyContext {
+        viewport_style: &viewport_style,
+        viewport_width: 800.0,
+        viewport_height: 600.0,
+    };
+
+    arena.with_element_taken(root, |element, arena_ref| {
+        {
+            let text_area = element
+                .as_any_mut()
+                .downcast_mut::<TextArea>()
+                .expect("TextArea root");
+            text_area.cursor_char = 6;
+            text_area.selection_anchor_char = Some(1);
+            text_area.selection_focus_char = Some(6);
+            text_area.ime_preedit = "pending".to_string();
+            text_area.ime_preedit_cursor = Some((7, 7));
+        }
+        element.apply_prop(
+            arena_ref,
+            root,
+            &ctx,
+            "max_length",
+            crate::ui::PropValue::I64(3),
+        );
+    });
+
+    let root_node = arena.get(root).expect("TextArea root");
+    let text_area = root_node
+        .element
+        .as_any()
+        .downcast_ref::<TextArea>()
+        .expect("TextArea root");
+    assert_eq!(text_area.content, "abc");
+    assert_eq!(text_area.cursor_char, 3);
+    assert_eq!(text_area.selection_anchor_char, None);
+    assert_eq!(text_area.selection_focus_char, None);
+    assert!(text_area.ime_preedit.is_empty());
+    assert_eq!(text_area.ime_preedit_cursor, None);
+}
+
+#[test]
 fn text_area_v2_no_content_no_placeholder_has_no_children() {
     let tree = host_text_area_node();
     let mut arena = crate::view::test_support::new_test_arena();

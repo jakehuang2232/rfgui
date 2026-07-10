@@ -186,7 +186,11 @@ impl TextArea {
         if self.content == value {
             return false;
         }
-        let normalized = normalize_multiline(&value, self.multiline);
+        let normalized = if self.multiline {
+            value
+        } else {
+            value.replace('\n', " ")
+        };
         let normalized = match self.max_length {
             Some(limit) => truncate_to_chars(&normalized, limit),
             None => normalized,
@@ -204,6 +208,31 @@ impl TextArea {
         self.reset_caret_blink();
         self.clear_vertical_goal();
         self.mark_caret_scroll_pending();
+        true
+    }
+
+    /// Apply a new character limit to the live value. The cold conversion
+    /// path truncates after ingesting all props, so the incremental path must
+    /// perform the same normalization when the limit is lowered.
+    pub(super) fn set_max_length(&mut self, max_length: Option<usize>) -> bool {
+        self.max_length = max_length;
+        let Some(limit) = max_length else {
+            return false;
+        };
+        if self.content.chars().count() <= limit {
+            return false;
+        }
+
+        self.content = truncate_to_chars(&self.content, limit);
+        self.cursor_char = self.cursor_char.min(limit);
+        self.clear_selection();
+        self.ime_preedit.clear();
+        self.ime_preedit_cursor = None;
+        self.mark_content_dirty();
+        self.reset_caret_blink();
+        self.clear_vertical_goal();
+        self.mark_caret_scroll_pending();
+        self.sync_bound_text();
         true
     }
 
@@ -408,5 +437,22 @@ mod tests {
         assert!(t.delete_prev_word());
         assert_eq!(t.content, "herld");
         assert_eq!(t.cursor_char, 2);
+    }
+
+    #[test]
+    fn lowering_max_length_normalizes_live_edit_state() {
+        let mut text_area = ta("abcdef", 6);
+        text_area.selection_anchor_char = Some(1);
+        text_area.selection_focus_char = Some(6);
+        text_area.ime_preedit = "pending".to_string();
+        text_area.ime_preedit_cursor = Some((7, 7));
+
+        assert!(text_area.set_max_length(Some(3)));
+        assert_eq!(text_area.content, "abc");
+        assert_eq!(text_area.cursor_char, 3);
+        assert_eq!(text_area.selection_range_chars(), None);
+        assert!(text_area.ime_preedit.is_empty());
+        assert_eq!(text_area.ime_preedit_cursor, None);
+        assert!(text_area.children_dirty);
     }
 }
