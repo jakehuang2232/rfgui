@@ -1,4 +1,5 @@
 use proc_macro::TokenStream;
+use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Delimiter, Span, TokenTree};
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::parse::{Parse, ParseStream};
@@ -11,6 +12,7 @@ use syn::{
 
 #[proc_macro]
 pub fn rsx(input: TokenStream) -> TokenStream {
+    let rfgui = rfgui_path();
     let nodes = match syn::parse::<MultipleNodes>(input) {
         Ok(m) => m.nodes,
         Err(err) => return err.to_compile_error().into(),
@@ -21,18 +23,31 @@ pub fn rsx(input: TokenStream) -> TokenStream {
     } else {
         let children = nodes.iter().map(expand_node);
         quote! {
-            ::rfgui::ui::RsxNode::fragment(vec![
+            #rfgui::ui::RsxNode::fragment(vec![
                 #(#children),*
             ])
         }
     };
 
     quote! {
-        ::rfgui::ui::rsx_scope(|| {
+        #rfgui::ui::rsx_scope(|| {
             #body
         })
     }
     .into()
+}
+
+fn rfgui_path() -> proc_macro2::TokenStream {
+    match crate_name("rfgui") {
+        Ok(FoundCrate::Itself) => quote!(crate),
+        Ok(FoundCrate::Name(name)) => {
+            let ident = Ident::new(&name, Span::call_site());
+            quote!(::#ident)
+        }
+        // Keep the established diagnostic when the consumer has not declared
+        // rfgui at all; it is clearer than failing inside this proc macro.
+        Err(_) => quote!(::rfgui),
+    }
 }
 
 struct MultipleNodes {
@@ -104,11 +119,11 @@ struct Prop {
 
 #[derive(Clone)]
 enum PropValueExpr {
-    Expr(Expr),
+    Expr(Box<Expr>),
     Macro(proc_macro2::TokenStream),
     Object(Vec<ObjectEntry>),
     Missing,
-    Invalid(proc_macro2::TokenStream),
+    Invalid,
 }
 
 #[derive(Clone)]
@@ -119,7 +134,7 @@ struct ObjectEntry {
 
 #[derive(Clone)]
 enum ObjectValueExpr {
-    Expr(Expr),
+    Expr(Box<Expr>),
     Object(Vec<ObjectEntry>),
     Missing,
 }
@@ -146,7 +161,7 @@ impl Parse for ElementNode {
 
         let mut props = Vec::new();
         let mut diagnostics = Vec::new();
-        while !input.peek(Token![>]) && !(input.peek(Token![/]) && input.peek2(Token![>])) {
+        while !(input.peek(Token![>]) || (input.peek(Token![/]) && input.peek2(Token![>]))) {
             if input.is_empty() || input.peek(Token![<]) {
                 diagnostics.push(
                     syn::Error::new(tag.span(), "expected `>` to finish the start tag")
@@ -209,16 +224,27 @@ impl Parse for ElementNode {
                     Ok(value) => value,
                     Err(err) => {
                         diagnostics.push(err.to_compile_error());
-                        PropValueExpr::Invalid(quote_spanned! {key.span()=>
-                            compile_error!("invalid prop value");
-                        })
+                        PropValueExpr::Invalid
                     }
                 }
             } else {
                 let lit: Lit = input.parse()?;
-                PropValueExpr::Expr(parse_quote!(#lit))
+                PropValueExpr::Expr(Box::new(parse_quote!(#lit)))
             };
             props.push(Prop { key, value });
+        }
+
+        for (index, prop) in props.iter().enumerate() {
+            if props[..index].iter().any(|prior| prior.key == prop.key) {
+                return Err(syn::Error::new(
+                    prop.key.span(),
+                    format!(
+                        "duplicate prop `{}` on `<{}>`; each prop may be specified only once",
+                        prop.key,
+                        tag.to_token_stream(),
+                    ),
+                ));
+            }
         }
 
         if input.peek(Token![/]) {
@@ -256,7 +282,7 @@ impl Parse for ElementNode {
         }
 
         let mut parsed_children = Vec::new();
-        while !input.is_empty() && !(input.peek(Token![<]) && input.peek2(Token![/])) {
+        while !(input.is_empty() || (input.peek(Token![<]) && input.peek2(Token![/]))) {
             parsed_children.push(parse_child(input)?);
         }
         let unfinished_source_end = parsed_children
@@ -361,7 +387,7 @@ fn parse_prop_value_expr(key: &Ident, input: ParseStream) -> Result<PropValueExp
 
     let expr_tokens: proc_macro2::TokenStream = input.parse()?;
     match syn::parse2::<Expr>(expr_tokens.clone()) {
-        Ok(expr) => Ok(PropValueExpr::Expr(expr)),
+        Ok(expr) => Ok(PropValueExpr::Expr(Box::new(expr))),
         Err(parse_err) => {
             if let Some(assign_span) = prop_assignment_like_span(&expr_tokens) {
                 return Err(syn::Error::new(
@@ -372,15 +398,13 @@ fn parse_prop_value_expr(key: &Ident, input: ParseStream) -> Result<PropValueExp
                     ),
                 ));
             }
-            let mut err = syn::Error::new(
+            Err(syn::Error::new(
                 parse_err.span(),
                 format!(
-                    "invalid Rust expression for prop `{}` inside `{{...}}`",
-                    key
+                    "invalid Rust expression for prop `{}` inside `{{...}}`: {}",
+                    key, parse_err
                 ),
-            );
-            err.combine(parse_err);
-            Err(err)
+            ))
         }
     }
 }
@@ -394,10 +418,10 @@ fn prop_assignment_like_span(tokens: &proc_macro2::TokenStream) -> Option<Span> 
         let Some(next) = iter.peek() else {
             continue;
         };
-        if let TokenTree::Punct(punct) = next {
-            if punct.as_char() == '=' {
-                return Some(punct.span());
-            }
+        if let TokenTree::Punct(punct) = next
+            && punct.as_char() == '='
+        {
+            return Some(punct.span());
         }
     }
     None
@@ -440,7 +464,7 @@ fn parse_object_entries(input: ParseStream, recover: bool) -> Result<Vec<ObjectE
             let nested_tokens: proc_macro2::TokenStream = nested.parse()?;
             ObjectValueExpr::Object(parse_object_entries_from_tokens(nested_tokens, recover)?)
         } else {
-            ObjectValueExpr::Expr(input.parse()?)
+            ObjectValueExpr::Expr(Box::new(input.parse()?))
         };
         entries.push(ObjectEntry { key, value });
         if input.peek(Token![,]) {
@@ -642,12 +666,13 @@ fn insert_collapsed_boundary_space(children: &mut Vec<Child>, next: &mut Child) 
 }
 
 fn component_key_tokens(element: &ElementNode) -> proc_macro2::TokenStream {
+    let rfgui = rfgui_path();
     let Some(prop) = element.props.iter().find(|p| p.key == "key") else {
         return quote! { ::core::option::Option::None };
     };
     match &prop.value {
         PropValueExpr::Expr(expr) => {
-            quote! { ::core::option::Option::Some(::rfgui::ui::classify_component_key(&(#expr))) }
+            quote! { ::core::option::Option::Some(#rfgui::ui::classify_component_key(&(#expr))) }
         }
         PropValueExpr::Macro(_) | PropValueExpr::Object(_) => {
             quote_spanned! {prop.key.span()=>
@@ -659,13 +684,7 @@ fn component_key_tokens(element: &ElementNode) -> proc_macro2::TokenStream {
                 compile_error!("`key` is incomplete; expected `=` and a value")
             }
         }
-        PropValueExpr::Invalid(error_tokens) => {
-            quote! {{
-                #error_tokens
-                compile_error!("`key` must be a valid Rust expression");
-                ::core::option::Option::None
-            }}
-        }
+        PropValueExpr::Invalid => quote! { ::core::option::Option::None },
     }
 }
 
@@ -812,13 +831,14 @@ fn expand_event_closure_assignment(
     expr: &Expr,
     parent_path: &proc_macro2::TokenStream,
 ) -> Option<proc_macro2::TokenStream> {
+    let rfgui = rfgui_path();
     let Expr::Closure(closure) = expr else {
         return None;
     };
     let helper = if closure.inputs.is_empty() {
-        quote!(::rfgui::ui::__rsx_ev_no_arg_to_handler)
+        quote!(#rfgui::ui::__rsx_ev_no_arg_to_handler)
     } else {
-        quote!(::rfgui::ui::__rsx_ev_to_handler)
+        quote!(#rfgui::ui::__rsx_ev_to_handler)
     };
     Some(quote_spanned! {key.span()=>
         #parent_path.#key = ::core::option::Option::Some(
@@ -885,6 +905,7 @@ fn close_tag_has_args(path: &Path) -> bool {
 }
 
 fn expand_component_impl(mut input_impl: syn::ItemImpl) -> proc_macro2::TokenStream {
+    let rfgui = rfgui_path();
     // Validate that this is `impl <...> RsxTag for T`.
     let trait_ok = input_impl
         .trait_
@@ -942,9 +963,9 @@ fn expand_component_impl(mut input_impl: syn::ItemImpl) -> proc_macro2::TokenStr
     }
     if !has_vtable_fn {
         let vtable_fn: syn::ImplItemFn = parse_quote! {
-            fn component_vtable() -> ::core::option::Option<&'static ::rfgui::ui::ComponentVTable> {
+            fn component_vtable() -> ::core::option::Option<&'static #rfgui::ui::ComponentVTable> {
                 ::core::option::Option::Some(
-                    <Self as ::rfgui::ui::ComponentTag>::VTABLE,
+                    <Self as #rfgui::ui::ComponentTag>::VTABLE,
                 )
             }
         };
@@ -966,12 +987,12 @@ fn expand_component_impl(mut input_impl: syn::ItemImpl) -> proc_macro2::TokenStr
             #[doc(hidden)]
             unsafe fn __rsx_vtable_render_shim(
                 props: ::core::ptr::NonNull<()>,
-                children: ::std::vec::Vec<::rfgui::ui::RsxNode>,
-            ) -> ::rfgui::ui::RsxNode {
+                children: ::std::vec::Vec<#rfgui::ui::RsxNode>,
+            ) -> #rfgui::ui::RsxNode {
                 let boxed: ::std::boxed::Box<#strict_props_ty> = unsafe {
                     ::std::boxed::Box::from_raw(props.as_ptr().cast())
                 };
-                <#self_ty as ::rfgui::ui::RsxComponent<#strict_props_ty>>::render(*boxed, children)
+                <#self_ty as #rfgui::ui::RsxComponent<#strict_props_ty>>::render(*boxed, children)
             }
 
             #[doc(hidden)]
@@ -996,9 +1017,9 @@ fn expand_component_impl(mut input_impl: syn::ItemImpl) -> proc_macro2::TokenStr
             }
         }
 
-        impl #impl_generics ::rfgui::ui::ComponentTag for #self_ty #where_clause {
-            const VTABLE: &'static ::rfgui::ui::ComponentVTable =
-                &::rfgui::ui::ComponentVTable {
+        impl #impl_generics #rfgui::ui::ComponentTag for #self_ty #where_clause {
+            const VTABLE: &'static #rfgui::ui::ComponentVTable =
+                &#rfgui::ui::ComponentVTable {
                     render: <#self_ty>::__rsx_vtable_render_shim,
                     drop_props: <#self_ty>::__rsx_vtable_drop_props_shim,
                     clone_props: <#self_ty>::__rsx_vtable_clone_props_shim,
@@ -1010,6 +1031,33 @@ fn expand_component_impl(mut input_impl: syn::ItemImpl) -> proc_macro2::TokenStr
 }
 
 fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
+    let rfgui = rfgui_path();
+    if input_fn.sig.asyncness.is_some()
+        || input_fn.sig.constness.is_some()
+        || input_fn.sig.unsafety.is_some()
+        || input_fn.sig.abi.is_some()
+        || input_fn.sig.variadic.is_some()
+    {
+        return syn::Error::new(
+            input_fn.sig.span(),
+            "#[component] requires a synchronous, safe Rust function without `const`, an ABI, or variadic arguments",
+        )
+        .to_compile_error();
+    }
+
+    let mut component_attrs = Vec::new();
+    for attr in &input_fn.attrs {
+        if attr.path().is_ident("doc") || attr.path().is_ident("deprecated") {
+            component_attrs.push(attr);
+        } else {
+            return syn::Error::new_spanned(
+                attr,
+                "this attribute cannot be preserved on a #[component] function; use `#[doc]` or `#[deprecated]`, or apply the attribute to the generated component type instead",
+            )
+            .to_compile_error();
+        }
+    }
+
     let vis = &input_fn.vis;
     let comp_name = &input_fn.sig.ident;
     let helper_name = format_ident!("__rsx_component_impl_{}", comp_name);
@@ -1020,7 +1068,7 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
     let has_generics = !input_fn.sig.generics.params.is_empty();
 
     let output_ty = match &input_fn.sig.output {
-        ReturnType::Default => quote!(::rfgui::ui::RsxNode),
+        ReturnType::Default => quote!(#rfgui::ui::RsxNode),
         ReturnType::Type(_, ty) => quote!(#ty),
     };
 
@@ -1057,7 +1105,7 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             // bound if the user's type is incompatible, which is the right
             // place for that error.
             accepts_children = true;
-            helper_args.push(parse_quote!(#field_ident: #ty));
+            helper_args.push(arg.clone());
             helper_call_args.push(quote!(children));
             continue;
         } else {
@@ -1092,7 +1140,7 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             });
         }
 
-        helper_args.push(parse_quote!(#field_ident: #ty));
+        helper_args.push(arg.clone());
         helper_call_args.push(quote!(props.#field_ident));
     }
 
@@ -1130,6 +1178,7 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
     };
 
     quote! {
+        #(#component_attrs)*
         #component_struct_tokens
 
         // React parity P2: Props must be `Clone` so the `unwrap_components`
@@ -1162,14 +1211,14 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             }
         }
 
-        impl #impl_generics ::rfgui::ui::RsxComponent<#props_name #ty_generics> for #comp_name #ty_generics #where_clause {
-            fn render(props: #props_name #ty_generics, children: ::std::vec::Vec<::rfgui::ui::RsxNode>) -> ::rfgui::ui::RsxNode {
+        impl #impl_generics #rfgui::ui::RsxComponent<#props_name #ty_generics> for #comp_name #ty_generics #where_clause {
+            fn render(props: #props_name #ty_generics, children: ::std::vec::Vec<#rfgui::ui::RsxNode>) -> #rfgui::ui::RsxNode {
                 let _ = &children;
                 #helper_name(#(#helper_call_args),*)
             }
         }
 
-        impl #impl_generics ::rfgui::ui::RsxTag for #comp_name #ty_generics #where_clause {
+        impl #impl_generics #rfgui::ui::RsxTag for #comp_name #ty_generics #where_clause {
             type Props = #init_name #ty_generics;
             type StrictProps = #props_name #ty_generics;
             const ACCEPTS_CHILDREN: bool = #accepts_children;
@@ -1180,15 +1229,15 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
 
             fn create_node(
                 props: Self::StrictProps,
-                children: ::std::vec::Vec<::rfgui::ui::RsxNode>,
-                _key: ::core::option::Option<::rfgui::ui::RsxKey>,
-            ) -> ::rfgui::ui::RsxNode {
-                <#comp_name #ty_generics as ::rfgui::ui::RsxComponent<#props_name #ty_generics>>::render(props, children)
+                children: ::std::vec::Vec<#rfgui::ui::RsxNode>,
+                _key: ::core::option::Option<#rfgui::ui::RsxKey>,
+            ) -> #rfgui::ui::RsxNode {
+                <#comp_name #ty_generics as #rfgui::ui::RsxComponent<#props_name #ty_generics>>::render(props, children)
             }
 
-            fn component_vtable() -> ::core::option::Option<&'static ::rfgui::ui::ComponentVTable> {
+            fn component_vtable() -> ::core::option::Option<&'static #rfgui::ui::ComponentVTable> {
                 ::core::option::Option::Some(
-                    <Self as ::rfgui::ui::ComponentTag>::VTABLE,
+                    <Self as #rfgui::ui::ComponentTag>::VTABLE,
                 )
             }
         }
@@ -1202,11 +1251,11 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             #[doc(hidden)]
             unsafe fn __rsx_vtable_render_shim(
                 props: ::core::ptr::NonNull<()>,
-                children: ::std::vec::Vec<::rfgui::ui::RsxNode>,
-            ) -> ::rfgui::ui::RsxNode {
+                children: ::std::vec::Vec<#rfgui::ui::RsxNode>,
+            ) -> #rfgui::ui::RsxNode {
                 let boxed: ::std::boxed::Box<#props_name #ty_generics> =
                     unsafe { ::std::boxed::Box::from_raw(props.as_ptr().cast()) };
-                <#comp_name #ty_generics as ::rfgui::ui::RsxComponent<#props_name #ty_generics>>::render(*boxed, children)
+                <#comp_name #ty_generics as #rfgui::ui::RsxComponent<#props_name #ty_generics>>::render(*boxed, children)
             }
 
             #[doc(hidden)]
@@ -1231,9 +1280,9 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             }
         }
 
-        impl #impl_generics ::rfgui::ui::ComponentTag for #comp_name #ty_generics #where_clause {
-            const VTABLE: &'static ::rfgui::ui::ComponentVTable =
-                &::rfgui::ui::ComponentVTable {
+        impl #impl_generics #rfgui::ui::ComponentTag for #comp_name #ty_generics #where_clause {
+            const VTABLE: &'static #rfgui::ui::ComponentVTable =
+                &#rfgui::ui::ComponentVTable {
                     render: <Self>::__rsx_vtable_render_shim,
                     drop_props: <Self>::__rsx_vtable_drop_props_shim,
                     clone_props: <Self>::__rsx_vtable_clone_props_shim,
@@ -1252,18 +1301,20 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
 // ============================================================================
 
 fn expand_node(child: &Child) -> proc_macro2::TokenStream {
+    let rfgui = rfgui_path();
     match child {
         Child::Element(element) => expand_element(element),
-        Child::TextLiteral(text) => quote! { ::rfgui::ui::RsxNode::text(#text) },
-        Child::TextRaw(text) => quote! { ::rfgui::ui::RsxNode::text(#text) },
-        Child::Expr(expr) => quote! { ::rfgui::ui::IntoRsxNode::into_rsx_node(#expr) },
+        Child::TextLiteral(text) => quote! { #rfgui::ui::RsxNode::text(#text) },
+        Child::TextRaw(text) => quote! { #rfgui::ui::RsxNode::text(#text) },
+        Child::Expr(expr) => quote! { #rfgui::ui::IntoRsxNode::into_rsx_node(#expr) },
     }
 }
 
 fn expand_child_append(child: &Child) -> proc_macro2::TokenStream {
+    let rfgui = rfgui_path();
     match child {
         Child::Expr(expr) => quote! {
-            ::rfgui::ui::append_rsx_child_node(&mut __rsx_children, #expr);
+            #rfgui::ui::append_rsx_child_node(&mut __rsx_children, #expr);
         },
         _ => {
             let node = expand_node(child);
@@ -1273,6 +1324,7 @@ fn expand_child_append(child: &Child) -> proc_macro2::TokenStream {
 }
 
 fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
+    let rfgui = rfgui_path();
     let tag = &element.tag;
     let has_children = !element.children.is_empty();
     let child_appends = element.children.iter().map(expand_child_append);
@@ -1295,15 +1347,19 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
     }
     let component_key = component_key_tokens(element);
     let children_schema_check = if has_children {
-        quote! {
-            let _: [(); 1] = [(); <#tag as ::rfgui::ui::RsxTag>::ACCEPTS_CHILDREN as usize];
+        let message = format!("`<{}>` does not accept children", tag.to_token_stream(),);
+        quote_spanned! {tag.span()=>
+            const {
+                assert!(<#tag as #rfgui::ui::RsxTag>::ACCEPTS_CHILDREN, #message);
+            };
         }
     } else {
         quote! {}
     };
     let children_value = if has_children {
+        let static_children_capacity = element.children.len();
         quote! {{
-            let mut __rsx_children = ::std::vec::Vec::new();
+            let mut __rsx_children = ::std::vec::Vec::with_capacity(#static_children_capacity);
             #(#child_appends)*
             __rsx_children
         }}
@@ -1331,8 +1387,8 @@ fn expand_element(element: &ElementNode) -> proc_macro2::TokenStream {
             #(#diagnostics)*
             let _ = ::core::marker::PhantomData::<#close_phantom_tag>;
             #children_schema_check
-            ::rfgui::ui::__rsx_create_element::<#tag, _>(
-                |__init: &mut <#tag as ::rfgui::ui::RsxTag>::Props| {
+            #rfgui::ui::__rsx_create_element::<#tag, _>(
+                |__init: &mut <#tag as #rfgui::ui::RsxTag>::Props| {
                     #(#prop_assignments)*
                 },
                 #children_value,
@@ -1377,6 +1433,7 @@ fn expand_prop_assignment(
     prop: &Prop,
     parent_path: &proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
+    let rfgui = rfgui_path();
     let key = &prop.key;
     let key_span = key.span();
     match &prop.value {
@@ -1391,16 +1448,14 @@ fn expand_prop_assignment(
                 return tokens;
             }
             quote_spanned! {key_span=>
-                #parent_path.#key = ::rfgui::ui::IntoOptionalProp::into_optional_prop(#expr);
+                #parent_path.#key = #rfgui::ui::IntoOptionalProp::into_optional_prop(#expr);
             }
         }
         PropValueExpr::Macro(tokens) => quote_spanned! {key_span=>
-            #parent_path.#key = ::rfgui::ui::IntoOptionalProp::into_optional_prop(#tokens);
+            #parent_path.#key = #rfgui::ui::IntoOptionalProp::into_optional_prop(#tokens);
         },
         PropValueExpr::Object(entries) => expand_object_literal(key, parent_path, entries),
-        PropValueExpr::Invalid(error_tokens) => quote! {
-            #error_tokens
-        },
+        PropValueExpr::Invalid => quote! {},
     }
 }
 
@@ -1409,6 +1464,7 @@ fn expand_object_literal(
     parent_path: &proc_macro2::TokenStream,
     entries: &[ObjectEntry],
 ) -> proc_macro2::TokenStream {
+    let rfgui = rfgui_path();
     let inner_parent = quote!(__obj);
     let inner_assignments: Vec<proc_macro2::TokenStream> = entries
         .iter()
@@ -1417,7 +1473,7 @@ fn expand_object_literal(
 
     quote_spanned! {key.span()=>
         #parent_path.#key = ::core::option::Option::Some({
-            let mut __obj = ::rfgui::ui::__rsx_default_inner_option(&#parent_path.#key);
+            let mut __obj = #rfgui::ui::__rsx_default_inner_option(&#parent_path.#key);
             #(#inner_assignments)*
             __obj
         });
@@ -1433,6 +1489,7 @@ fn expand_assignment_with_none_rewrite(
     key: &Ident,
     expr: &Expr,
 ) -> proc_macro2::TokenStream {
+    let rfgui = rfgui_path();
     if is_none_expr(expr) {
         return quote! {};
     }
@@ -1441,7 +1498,7 @@ fn expand_assignment_with_none_rewrite(
     }
     quote! {
         #parent_path.#key =
-            ::rfgui::ui::IntoOptionalProp::into_optional_prop(#expr);
+            #rfgui::ui::IntoOptionalProp::into_optional_prop(#expr);
     }
 }
 
@@ -1450,6 +1507,7 @@ fn rewrite_conditional_assignment(
     key: &Ident,
     expr: &Expr,
 ) -> Option<proc_macro2::TokenStream> {
+    let rfgui = rfgui_path();
     if is_none_expr(expr) {
         return Some(quote! {});
     }
@@ -1502,7 +1560,7 @@ fn rewrite_conditional_assignment(
     }
     Some(quote! {
         #parent_path.#key =
-            ::rfgui::ui::IntoOptionalProp::into_optional_prop(#expr);
+            #rfgui::ui::IntoOptionalProp::into_optional_prop(#expr);
     })
 }
 
@@ -1526,7 +1584,9 @@ fn expand_object_entry_assignment(
 
 #[cfg(test)]
 mod tests {
-    use super::{Child, MultipleNodes, ObjectValueExpr, PropValueExpr, expand_node};
+    use super::{
+        Child, MultipleNodes, ObjectValueExpr, PropValueExpr, expand_component, expand_node,
+    };
     use quote::ToTokens;
 
     #[test]
@@ -1683,12 +1743,13 @@ mod tests {
             super::Child::Element(node) => node,
             _ => panic!("expected first node to be element"),
         };
-        assert!(matches!(first.props[0].value, PropValueExpr::Invalid(_)));
+        assert!(matches!(first.props[0].value, PropValueExpr::Invalid));
 
         let expanded = expand_node(&parsed.nodes[0]).to_string();
         assert!(
             expanded.contains("invalid Rust expression for prop `on_pointer_down` inside `{...}`")
         );
+        assert!(!expanded.contains("invalid prop value"));
 
         match &parsed.nodes[1] {
             super::Child::Element(node) => {
@@ -1800,5 +1861,49 @@ mod tests {
                 .iter()
                 .all(|child| matches!(child, Child::Element(_)))
         );
+    }
+
+    #[test]
+    fn rejects_duplicate_props_including_key() {
+        let err = syn::parse_str::<MultipleNodes>(r#"<Element key=1 key=2 />"#)
+            .err()
+            .expect("duplicate props must be rejected");
+        assert!(err.to_string().contains("duplicate prop `key`"));
+    }
+
+    #[test]
+    fn component_preserves_supported_attributes_and_parameter_patterns() {
+        let component = syn::parse_str(
+            r#"
+                #[doc = "A mutable component"]
+                #[deprecated(note = "use another component")]
+                fn Mutable(mut value: i32) -> RsxNode { value += 1; RsxNode::text(value.to_string()) }
+            "#,
+        )
+        .expect("component should parse");
+
+        let expanded = expand_component(component).to_string();
+        assert!(expanded.contains("deprecated"));
+        assert!(expanded.contains("doc = \"A mutable component\""));
+        assert!(expanded.contains("mut value : i32"));
+    }
+
+    #[test]
+    fn component_rejects_unsupported_function_qualifiers() {
+        let component = syn::parse_str("async fn AsyncComponent() -> RsxNode { todo!() }")
+            .expect("component should parse");
+
+        let expanded = expand_component(component).to_string();
+        assert!(expanded.contains("requires a synchronous, safe Rust function"));
+    }
+
+    #[test]
+    fn child_policy_expansion_is_named_and_preallocates_static_children() {
+        let parsed = syn::parse_str::<MultipleNodes>(r#"<Image><Element /></Image>"#)
+            .expect("rsx should parse");
+
+        let expanded = expand_node(&parsed.nodes[0]).to_string();
+        assert!(expanded.contains("does not accept children"));
+        assert!(expanded.contains("with_capacity (1usize)"));
     }
 }
