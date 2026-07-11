@@ -744,15 +744,13 @@ impl Viewport {
             .compile_cache
             .take()
             .map(|c| (c.topology_hash, c.graph));
+        let mut compiled_topology_hash = None;
         let compiled = match graph.compile_with_upload_cached(self, prior_cache) {
-            Ok((profile, topology_hash, compiled_graph)) => {
+            Ok((profile, topology_hash)) => {
                 timings.compile_ms = profile.total_ms;
                 timings.compile_children =
                     build_compile_trace_nodes(&profile, self.debug_options.trace_compile_detail);
-                self.frame.compile_cache = Some(CachedCompiledGraph {
-                    topology_hash,
-                    graph: compiled_graph,
-                });
+                compiled_topology_hash = Some(topology_hash);
                 true
             }
             Err(err) => {
@@ -765,7 +763,8 @@ impl Viewport {
         // --- Execute ---
         let mut executed = false;
         if compiled {
-            if let Ok(profile) = graph.execute_profiled(self) {
+            if let Ok(profile) = graph.execute_profiled(self, self.debug_options.trace_render_time)
+            {
                 timings.execute_ms = profile.total_ms;
                 timings.execute_pass_count = profile.pass_count;
                 timings.execute_ordered_passes = profile.ordered_passes;
@@ -781,6 +780,15 @@ impl Viewport {
                     root_key,
                     crate::view::base_component::DirtyFlags::PAINT,
                 );
+            }
+        }
+
+        if let Some(topology_hash) = compiled_topology_hash {
+            if let Some(compiled_graph) = graph.take_compiled_graph() {
+                self.frame.compile_cache = Some(CachedCompiledGraph {
+                    topology_hash,
+                    graph: compiled_graph,
+                });
             }
         }
 

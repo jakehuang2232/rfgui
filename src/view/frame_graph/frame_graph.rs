@@ -1120,12 +1120,14 @@ impl FrameGraph {
     /// Like [`compile_with_upload`] but accepts an optional cached `(topology_hash, CompiledGraph)`.
     /// When the topology hash of the current frame matches the cached hash, the expensive
     /// `annotate_resource_versions` + `build_compiled_graph_profiled` phases are skipped.
-    /// Returns `(profile, topology_hash, compiled_graph)` so the caller can cache the result.
+    /// Leaves the compiled graph installed in `self`; callers can move it
+    /// into a cross-frame cache with [`FrameGraph::take_compiled_graph`]
+    /// after execution completes.
     pub fn compile_with_upload_cached(
         &mut self,
         viewport: &mut Viewport,
         cache: Option<(u64, CompiledGraph)>,
-    ) -> Result<(CompileProfile, u64, CompiledGraph), FrameGraphError> {
+    ) -> Result<(CompileProfile, u64), FrameGraphError> {
         let compile_started_at = Instant::now();
         self.order.clear();
         self.compiled_graph = None;
@@ -1224,34 +1226,30 @@ impl FrameGraph {
             }
         }
 
-        self.compiled_graph = Some(compiled_graph.clone());
+        self.compiled_graph = Some(compiled_graph);
         self.compiled = true;
 
         // Prepare phase
-        let textures = self.textures.clone();
-        let buffers = self.buffers.clone();
-        let (texture_allocations, texture_stable_keys, buffer_allocations) = {
-            let compiled = self
-                .compiled_graph
-                .as_ref()
-                .expect("compiled graph should exist");
-            (
-                compiled.texture_allocation_ids.clone(),
-                compiled.texture_stable_keys.clone(),
-                compiled.buffer_allocation_ids.clone(),
-            )
-        };
+        let textures = std::mem::take(&mut self.textures);
+        let buffers = std::mem::take(&mut self.buffers);
+        let compiled_graph = self
+            .compiled_graph
+            .take()
+            .expect("compiled graph should exist");
         let prepare_started_at = Instant::now();
         let mut ctx = PrepareContext::new(
             viewport,
             &textures,
             &buffers,
-            &texture_allocations,
-            &texture_stable_keys,
-            &buffer_allocations,
+            &compiled_graph.texture_allocation_ids,
+            &compiled_graph.texture_stable_keys,
+            &compiled_graph.buffer_allocation_ids,
         );
         let prepare_by_pass_name = self.run_prepare_passes(&mut ctx);
         let prepare_upload_ms = prepare_started_at.elapsed().as_secs_f64() * 1000.0;
+        self.textures = textures;
+        self.buffers = buffers;
+        self.compiled_graph = Some(compiled_graph);
 
         let profile = CompileProfile {
             total_ms: compile_started_at.elapsed().as_secs_f64() * 1000.0,
@@ -1266,7 +1264,7 @@ impl FrameGraph {
             graph: graph_profile,
         };
 
-        Ok((profile, topology_hash, compiled_graph))
+        Ok((profile, topology_hash))
     }
 
     /// Run every pass's prepare; when compile detail tracing is enabled,
@@ -1306,32 +1304,28 @@ impl FrameGraph {
         viewport: &mut Viewport,
     ) -> Result<CompileProfile, FrameGraphError> {
         let mut profile = self.compile_profiled_internal()?;
-        let textures = self.textures.clone();
-        let buffers = self.buffers.clone();
-        let (texture_allocations, texture_stable_keys, buffer_allocations) = {
-            let compiled = self
-                .compiled_graph
-                .as_ref()
-                .expect("compiled graph should exist");
-            (
-                compiled.texture_allocation_ids.clone(),
-                compiled.texture_stable_keys.clone(),
-                compiled.buffer_allocation_ids.clone(),
-            )
-        };
+        let textures = std::mem::take(&mut self.textures);
+        let buffers = std::mem::take(&mut self.buffers);
+        let compiled_graph = self
+            .compiled_graph
+            .take()
+            .expect("compiled graph should exist");
         let prepare_started_at = Instant::now();
         let mut ctx = PrepareContext::new(
             viewport,
             &textures,
             &buffers,
-            &texture_allocations,
-            &texture_stable_keys,
-            &buffer_allocations,
+            &compiled_graph.texture_allocation_ids,
+            &compiled_graph.texture_stable_keys,
+            &compiled_graph.buffer_allocation_ids,
         );
         profile.prepare_by_pass_name = self.run_prepare_passes(&mut ctx);
         profile.prepare_upload_ms = prepare_started_at.elapsed().as_secs_f64() * 1000.0;
         profile.prepare_pass_count = self.order.len();
         profile.total_ms += profile.prepare_upload_ms;
+        self.textures = textures;
+        self.buffers = buffers;
+        self.compiled_graph = Some(compiled_graph);
         Ok(profile)
     }
 
@@ -1341,6 +1335,10 @@ impl FrameGraph {
 
     pub fn compiled_graph(&self) -> Option<&CompiledGraph> {
         self.compiled_graph.as_ref()
+    }
+
+    pub(crate) fn take_compiled_graph(&mut self) -> Option<CompiledGraph> {
+        self.compiled_graph.take()
     }
 
     pub fn debug_graphics_split_reasons(&self) -> Vec<String> {
@@ -2416,92 +2414,56 @@ impl FrameGraph {
     pub(crate) fn execute_profiled(
         &mut self,
         viewport: &mut Viewport,
+        collect_timings: bool,
     ) -> Result<ExecuteProfile, FrameGraphError> {
         if !self.compiled {
             return Err(FrameGraphError::NotCompiled);
         }
         let execute_started_at = Instant::now();
-        let mut pass_timings: FxHashMap<String, f64> = FxHashMap::default();
-        let mut pass_counts: FxHashMap<String, usize> = FxHashMap::default();
-        let mut pass_first_seen_order: Vec<String> = Vec::new();
-        let textures = self.textures.clone();
-        let buffers = self.buffers.clone();
-        let (texture_allocations, texture_stable_keys, buffer_allocations) = {
-            let compiled = self
-                .compiled_graph
-                .as_ref()
-                .expect("compiled graph should exist");
-            (
-                compiled.texture_allocation_ids.clone(),
-                compiled.texture_stable_keys.clone(),
-                compiled.buffer_allocation_ids.clone(),
-            )
-        };
+        let mut timings = PassTimingCollector::new(collect_timings);
+        let textures = std::mem::take(&mut self.textures);
+        let buffers = std::mem::take(&mut self.buffers);
+        let compiled_graph = self
+            .compiled_graph
+            .take()
+            .expect("compiled graph should exist");
         let mut ctx = RecordContext::new(
             viewport,
             &textures,
             &buffers,
-            &texture_allocations,
-            &texture_stable_keys,
-            &buffer_allocations,
+            &compiled_graph.texture_allocation_ids,
+            &compiled_graph.texture_stable_keys,
+            &compiled_graph.buffer_allocation_ids,
         );
         // Take execute_steps out of self so we can call &mut self methods while iterating,
         // then restore it afterward — zero clones, no heap allocations.
         let execute_steps = std::mem::take(&mut self.execute_steps);
         for step in &execute_steps {
             match step {
-                ExecuteStep::GraphicsPass { index } => self.execute_graphics_pass(
-                    *index,
-                    &mut ctx,
-                    &mut pass_timings,
-                    &mut pass_counts,
-                    &mut pass_first_seen_order,
-                ),
-                ExecuteStep::ComputePass { index } => self.execute_compute_pass(
-                    *index,
-                    &mut ctx,
-                    &mut pass_timings,
-                    &mut pass_counts,
-                    &mut pass_first_seen_order,
-                ),
-                ExecuteStep::TransferPass { index } => self.execute_transfer_pass(
-                    *index,
-                    &mut ctx,
-                    &mut pass_timings,
-                    &mut pass_counts,
-                    &mut pass_first_seen_order,
-                ),
-                ExecuteStep::GraphicsPassGroup(group) => self.execute_graphics_group(
-                    group,
-                    &mut ctx,
-                    &mut pass_timings,
-                    &mut pass_counts,
-                    &mut pass_first_seen_order,
-                ),
+                ExecuteStep::GraphicsPass { index } => {
+                    self.execute_graphics_pass(*index, &mut ctx, &mut timings)
+                }
+                ExecuteStep::ComputePass { index } => {
+                    self.execute_compute_pass(*index, &mut ctx, &mut timings)
+                }
+                ExecuteStep::TransferPass { index } => {
+                    self.execute_transfer_pass(*index, &mut ctx, &mut timings)
+                }
+                ExecuteStep::GraphicsPassGroup(group) => {
+                    self.execute_graphics_group(group, &mut ctx, &mut timings)
+                }
             }
         }
         self.execute_steps = execute_steps;
-        let mut top_passes: Vec<(String, f64)> = pass_timings
-            .iter()
-            .map(|(name, ms)| (name.clone(), *ms))
-            .collect();
-        top_passes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        if top_passes.len() > 6 {
-            top_passes.truncate(6);
-        }
-        let ordered_passes = pass_first_seen_order
-            .into_iter()
-            .filter_map(|name| {
-                let elapsed_ms = pass_timings.get(&name).copied()?;
-                let count = pass_counts.get(&name).copied().unwrap_or(0);
-                Some((name, elapsed_ms, count))
-            })
-            .collect();
+        let detail_ordered = ctx.take_detail_timings();
+        self.textures = textures;
+        self.buffers = buffers;
+        self.compiled_graph = Some(compiled_graph);
         Ok(ExecuteProfile {
             total_ms: execute_started_at.elapsed().as_secs_f64() * 1000.0,
             pass_count: self.order.len(),
-            ordered_passes,
-            detail_ordered: ctx.take_detail_timings(),
+            ordered_passes: timings.finish(),
+            detail_ordered,
         })
     }
 }
@@ -2513,15 +2475,59 @@ struct BatchAnchorInfo {
     distance_to_anchor: usize,
 }
 
+struct PassTimingCollector {
+    enabled: bool,
+    timings: FxHashMap<&'static str, f64>,
+    counts: FxHashMap<&'static str, usize>,
+    first_seen_order: Vec<&'static str>,
+}
+
+impl PassTimingCollector {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            timings: FxHashMap::default(),
+            counts: FxHashMap::default(),
+            first_seen_order: Vec::new(),
+        }
+    }
+
+    fn start(&self) -> Option<Instant> {
+        self.enabled.then(Instant::now)
+    }
+
+    fn record(&mut self, name: &'static str, started_at: Option<Instant>) {
+        let Some(started_at) = started_at else {
+            return;
+        };
+        if !self.timings.contains_key(name) {
+            self.first_seen_order.push(name);
+        }
+        *self.timings.entry(name).or_insert(0.0) += started_at.elapsed().as_secs_f64() * 1000.0;
+        *self.counts.entry(name).or_insert(0) += 1;
+    }
+
+    fn finish(mut self) -> Vec<(String, f64, usize)> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        self.first_seen_order
+            .into_iter()
+            .filter_map(|name| {
+                let elapsed_ms = self.timings.remove(name)?;
+                let count = self.counts.remove(name).unwrap_or(0);
+                Some((name.to_string(), elapsed_ms, count))
+            })
+            .collect()
+    }
+}
+
 impl FrameGraph {
-    #[allow(clippy::too_many_arguments)]
     fn execute_graphics_pass(
         &mut self,
         index: usize,
         ctx: &mut RecordContext<'_, '_>,
-        pass_timings: &mut FxHashMap<String, f64>,
-        pass_counts: &mut FxHashMap<String, usize>,
-        pass_first_seen_order: &mut Vec<String>,
+        timings: &mut PassTimingCollector,
     ) {
         let encoder_ptr = {
             let Some(parts) = ctx.viewport.frame_parts() else {
@@ -2534,15 +2540,7 @@ impl FrameGraph {
             let compatibility =
                 render_pass_descriptor_compatibility(&self.passes[index].descriptor)
                     .expect("graphics pass descriptor should produce render-pass compatibility");
-            self.execute_graphics_passes(
-                &[index],
-                &compatibility,
-                ctx,
-                encoder,
-                pass_timings,
-                pass_counts,
-                pass_first_seen_order,
-            );
+            self.execute_graphics_passes(&[index], &compatibility, ctx, encoder, timings);
         }));
         if let Err(payload) = result {
             let detail = if let Some(message) = payload.downcast_ref::<&str>() {
@@ -2560,17 +2558,14 @@ impl FrameGraph {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn execute_compute_pass(
         &mut self,
         index: usize,
         ctx: &mut RecordContext<'_, '_>,
-        pass_timings: &mut FxHashMap<String, f64>,
-        pass_counts: &mut FxHashMap<String, usize>,
-        pass_first_seen_order: &mut Vec<String>,
+        timings: &mut PassTimingCollector,
     ) {
-        let pass_name = self.passes[index].pass.name().to_string();
-        let pass_started_at = Instant::now();
+        let pass_name = self.passes[index].pass.name();
+        let pass_started_at = timings.start();
         let encoder_ptr = {
             let Some(parts) = ctx.viewport.frame_parts() else {
                 return;
@@ -2588,13 +2583,7 @@ impl FrameGraph {
                 ComputeCtx::from_compute_pass(&mut compute_ctx, &mut compute_pass);
             self.passes[index].pass.execute_compute(&mut compute_ctx);
         }));
-        record_pass_timing(
-            pass_name,
-            pass_started_at,
-            pass_timings,
-            pass_counts,
-            pass_first_seen_order,
-        );
+        timings.record(pass_name, pass_started_at);
         if let Err(payload) = result {
             let detail = if let Some(message) = payload.downcast_ref::<&str>() {
                 *message
@@ -2611,17 +2600,14 @@ impl FrameGraph {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn execute_transfer_pass(
         &mut self,
         index: usize,
         ctx: &mut RecordContext<'_, '_>,
-        pass_timings: &mut FxHashMap<String, f64>,
-        pass_counts: &mut FxHashMap<String, usize>,
-        pass_first_seen_order: &mut Vec<String>,
+        timings: &mut PassTimingCollector,
     ) {
-        let pass_name = self.passes[index].pass.name().to_string();
-        let pass_started_at = Instant::now();
+        let pass_name = self.passes[index].pass.name();
+        let pass_started_at = timings.start();
         let encoder_ptr = {
             let Some(parts) = ctx.viewport.frame_parts() else {
                 return;
@@ -2634,13 +2620,7 @@ impl FrameGraph {
             let mut transfer_ctx = TransferCtx::new(&mut transfer_ctx, encoder);
             self.passes[index].pass.execute_transfer(&mut transfer_ctx);
         }));
-        record_pass_timing(
-            pass_name,
-            pass_started_at,
-            pass_timings,
-            pass_counts,
-            pass_first_seen_order,
-        );
+        timings.record(pass_name, pass_started_at);
         if let Err(payload) = result {
             let detail = if let Some(message) = payload.downcast_ref::<&str>() {
                 *message
@@ -2657,14 +2637,11 @@ impl FrameGraph {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn execute_graphics_group(
         &mut self,
         group: &RenderPassGroup,
         ctx: &mut RecordContext<'_, '_>,
-        pass_timings: &mut FxHashMap<String, f64>,
-        pass_counts: &mut FxHashMap<String, usize>,
-        pass_first_seen_order: &mut Vec<String>,
+        timings: &mut PassTimingCollector,
     ) {
         let Some(parts) = ctx.viewport.frame_parts() else {
             return;
@@ -2676,28 +2653,18 @@ impl FrameGraph {
             &group.compatibility,
             ctx,
             encoder,
-            pass_timings,
-            pass_counts,
-            pass_first_seen_order,
+            timings,
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn execute_graphics_passes(
         &mut self,
         pass_indices: &[usize],
         compatibility: &RenderPassCompatibilityKey,
         ctx: &mut RecordContext<'_, '_>,
         encoder: &mut wgpu::CommandEncoder,
-        pass_timings: &mut FxHashMap<String, f64>,
-        pass_counts: &mut FxHashMap<String, usize>,
-        pass_first_seen_order: &mut Vec<String>,
+        timings: &mut PassTimingCollector,
     ) {
-        let pass_names = pass_indices
-            .iter()
-            .map(|&index| self.passes[index].descriptor.name.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
         let (surface_view, surface_resolve_view, depth_view) = {
             let Some(parts) = ctx.viewport.frame_parts() else {
                 return;
@@ -2728,6 +2695,7 @@ impl FrameGraph {
             let actual_sample_count =
                 color_attachment_sample_count(ctx, attachment.target, attachment.resolve_target);
             if expected_sample_count != actual_sample_count {
+                let pass_names = pass_names_for_error(pass_indices, &self.passes);
                 eprintln!(
                     "[error] frame graph color attachment sample-count mismatch before wgpu validation: passes=[{}], target={:?}, expected_sample_count={}, actual_sample_count={}, resolve_target={:?}",
                     pass_names,
@@ -2745,6 +2713,7 @@ impl FrameGraph {
         if let Some((target, _, _)) = compatibility.depth_stencil_attachment.as_ref() {
             let depth_sample_count = depth_attachment_sample_count(ctx, *target);
             if expected_sample_count != depth_sample_count {
+                let pass_names = pass_names_for_error(pass_indices, &self.passes);
                 eprintln!(
                     "[error] frame graph depth attachment sample-count mismatch before wgpu validation: passes=[{}], expected_sample_count={}, depth_target={:?}, depth_sample_count={}",
                     pass_names, expected_sample_count, target, depth_sample_count,
@@ -2803,35 +2772,22 @@ impl FrameGraph {
         });
 
         for &index in pass_indices {
-            let pass_name = self.passes[index].pass.name().to_string();
-            let pass_started_at = Instant::now();
+            let pass_name = self.passes[index].pass.name();
+            let pass_started_at = timings.start();
             let mut graphics_ctx = GraphicsRecordContext::new(ctx);
             let mut pass_ctx = GraphicsCtx::new(&mut graphics_ctx, &mut render_pass);
             self.passes[index].pass.execute_graphics(&mut pass_ctx);
-            record_pass_timing(
-                pass_name,
-                pass_started_at,
-                pass_timings,
-                pass_counts,
-                pass_first_seen_order,
-            );
+            timings.record(pass_name, pass_started_at);
         }
     }
 }
 
-fn record_pass_timing(
-    pass_name: String,
-    pass_started_at: Instant,
-    pass_timings: &mut FxHashMap<String, f64>,
-    pass_counts: &mut FxHashMap<String, usize>,
-    pass_first_seen_order: &mut Vec<String>,
-) {
-    let elapsed_ms = pass_started_at.elapsed().as_secs_f64() * 1000.0;
-    if !pass_timings.contains_key(&pass_name) {
-        pass_first_seen_order.push(pass_name.clone());
-    }
-    *pass_timings.entry(pass_name.clone()).or_insert(0.0) += elapsed_ms;
-    *pass_counts.entry(pass_name).or_insert(0) += 1;
+fn pass_names_for_error(pass_indices: &[usize], passes: &[PassNode]) -> String {
+    pass_indices
+        .iter()
+        .map(|&index| passes[index].descriptor.name)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn resolve_color_attachment_views(
@@ -4301,9 +4257,9 @@ pub struct RecordContext<'a, 'b> {
     texture_allocation_ids: &'b FxHashMap<TextureHandle, AllocationId>,
     texture_stable_keys: &'b FxHashMap<TextureHandle, u64>,
     buffer_allocation_ids: &'b FxHashMap<BufferHandle, AllocationId>,
-    detail_timings: FxHashMap<String, f64>,
-    detail_counts: FxHashMap<String, usize>,
-    detail_order: Vec<String>,
+    detail_timings: FxHashMap<&'static str, f64>,
+    detail_counts: FxHashMap<&'static str, usize>,
+    detail_order: Vec<&'static str>,
 }
 
 impl<'a, 'b> RecordContext<'a, 'b> {
@@ -4335,7 +4291,7 @@ impl<'a, 'b> RecordContext<'a, 'b> {
                 continue;
             };
             let count = self.detail_counts.remove(&name).unwrap_or(0);
-            ordered.push((name, elapsed_ms, count));
+            ordered.push((name.to_string(), elapsed_ms, count));
         }
         ordered
     }
@@ -4374,9 +4330,9 @@ pub struct GraphicsRecordContext<'ctx, 'res> {
     texture_allocation_ids: &'res FxHashMap<TextureHandle, AllocationId>,
     texture_stable_keys: &'res FxHashMap<TextureHandle, u64>,
     buffer_allocation_ids: &'res FxHashMap<BufferHandle, AllocationId>,
-    detail_timings: &'ctx mut FxHashMap<String, f64>,
-    detail_counts: &'ctx mut FxHashMap<String, usize>,
-    detail_order: &'ctx mut Vec<String>,
+    detail_timings: &'ctx mut FxHashMap<&'static str, f64>,
+    detail_counts: &'ctx mut FxHashMap<&'static str, usize>,
+    detail_order: &'ctx mut Vec<&'static str>,
 }
 
 impl<'ctx, 'res> GraphicsRecordContext<'ctx, 'res> {
@@ -4413,11 +4369,10 @@ impl<'ctx, 'res> GraphicsRecordContext<'ctx, 'res> {
         if !self.viewport.debug_options().trace_render_time || elapsed_ms <= 0.0 {
             return;
         }
-        let name = name.to_string();
         if !self.detail_timings.contains_key(&name) {
-            self.detail_order.push(name.clone());
+            self.detail_order.push(name);
         }
-        *self.detail_timings.entry(name.clone()).or_insert(0.0) += elapsed_ms;
+        *self.detail_timings.entry(name).or_insert(0.0) += elapsed_ms;
         *self.detail_counts.entry(name).or_insert(0) += 1;
     }
 
@@ -4425,11 +4380,10 @@ impl<'ctx, 'res> GraphicsRecordContext<'ctx, 'res> {
         if !self.viewport.debug_options().trace_render_time {
             return;
         }
-        let name = name.to_string();
         if !self.detail_timings.contains_key(&name) {
-            self.detail_order.push(name.clone());
+            self.detail_order.push(name);
         }
-        self.detail_timings.entry(name.clone()).or_insert(0.0);
+        self.detail_timings.entry(name).or_insert(0.0);
         *self.detail_counts.entry(name).or_insert(0) += 1;
     }
 }
@@ -4467,9 +4421,9 @@ pub struct ComputeRecordContext<'ctx, 'res> {
     texture_allocation_ids: &'res FxHashMap<TextureHandle, AllocationId>,
     texture_stable_keys: &'res FxHashMap<TextureHandle, u64>,
     buffer_allocation_ids: &'res FxHashMap<BufferHandle, AllocationId>,
-    detail_timings: &'ctx mut FxHashMap<String, f64>,
-    detail_counts: &'ctx mut FxHashMap<String, usize>,
-    detail_order: &'ctx mut Vec<String>,
+    detail_timings: &'ctx mut FxHashMap<&'static str, f64>,
+    detail_counts: &'ctx mut FxHashMap<&'static str, usize>,
+    detail_order: &'ctx mut Vec<&'static str>,
 }
 
 impl<'ctx, 'res> ComputeRecordContext<'ctx, 'res> {
@@ -4506,11 +4460,10 @@ impl<'ctx, 'res> ComputeRecordContext<'ctx, 'res> {
         if !self.viewport.debug_options().trace_render_time || elapsed_ms <= 0.0 {
             return;
         }
-        let name = name.to_string();
         if !self.detail_timings.contains_key(&name) {
-            self.detail_order.push(name.clone());
+            self.detail_order.push(name);
         }
-        *self.detail_timings.entry(name.clone()).or_insert(0.0) += elapsed_ms;
+        *self.detail_timings.entry(name).or_insert(0.0) += elapsed_ms;
         *self.detail_counts.entry(name).or_insert(0) += 1;
     }
 
@@ -4518,11 +4471,10 @@ impl<'ctx, 'res> ComputeRecordContext<'ctx, 'res> {
         if !self.viewport.debug_options().trace_render_time {
             return;
         }
-        let name = name.to_string();
         if !self.detail_timings.contains_key(&name) {
-            self.detail_order.push(name.clone());
+            self.detail_order.push(name);
         }
-        self.detail_timings.entry(name.clone()).or_insert(0.0);
+        self.detail_timings.entry(name).or_insert(0.0);
         *self.detail_counts.entry(name).or_insert(0) += 1;
     }
 }
@@ -4560,9 +4512,9 @@ pub struct TransferRecordContext<'ctx, 'res> {
     texture_allocation_ids: &'res FxHashMap<TextureHandle, AllocationId>,
     texture_stable_keys: &'res FxHashMap<TextureHandle, u64>,
     buffer_allocation_ids: &'res FxHashMap<BufferHandle, AllocationId>,
-    detail_timings: &'ctx mut FxHashMap<String, f64>,
-    detail_counts: &'ctx mut FxHashMap<String, usize>,
-    detail_order: &'ctx mut Vec<String>,
+    detail_timings: &'ctx mut FxHashMap<&'static str, f64>,
+    detail_counts: &'ctx mut FxHashMap<&'static str, usize>,
+    detail_order: &'ctx mut Vec<&'static str>,
 }
 
 impl<'ctx, 'res> TransferRecordContext<'ctx, 'res> {
@@ -4599,11 +4551,10 @@ impl<'ctx, 'res> TransferRecordContext<'ctx, 'res> {
         if !self.viewport.debug_options().trace_render_time || elapsed_ms <= 0.0 {
             return;
         }
-        let name = name.to_string();
         if !self.detail_timings.contains_key(&name) {
-            self.detail_order.push(name.clone());
+            self.detail_order.push(name);
         }
-        *self.detail_timings.entry(name.clone()).or_insert(0.0) += elapsed_ms;
+        *self.detail_timings.entry(name).or_insert(0.0) += elapsed_ms;
         *self.detail_counts.entry(name).or_insert(0) += 1;
     }
 
@@ -4611,11 +4562,10 @@ impl<'ctx, 'res> TransferRecordContext<'ctx, 'res> {
         if !self.viewport.debug_options().trace_render_time {
             return;
         }
-        let name = name.to_string();
         if !self.detail_timings.contains_key(&name) {
-            self.detail_order.push(name.clone());
+            self.detail_order.push(name);
         }
-        self.detail_timings.entry(name.clone()).or_insert(0.0);
+        self.detail_timings.entry(name).or_insert(0.0);
         *self.detail_counts.entry(name).or_insert(0) += 1;
     }
 }
@@ -4841,6 +4791,32 @@ mod tests {
     use crate::view::render_pass::{
         ComputeCtx, ComputePass, GraphicsCtx, GraphicsPass, TransferCtx, TransferPass,
     };
+
+    #[test]
+    fn disabled_pass_timing_collector_keeps_storage_empty() {
+        let mut collector = PassTimingCollector::new(false);
+        collector.record("pass", collector.start());
+
+        assert!(collector.timings.is_empty());
+        assert!(collector.counts.is_empty());
+        assert!(collector.first_seen_order.is_empty());
+        assert!(collector.finish().is_empty());
+    }
+
+    #[test]
+    fn enabled_pass_timing_collector_preserves_first_seen_order_and_counts() {
+        let mut collector = PassTimingCollector::new(true);
+        collector.record("first", collector.start());
+        collector.record("second", collector.start());
+        collector.record("first", collector.start());
+
+        let rows = collector.finish();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "first");
+        assert_eq!(rows[0].2, 2);
+        assert_eq!(rows[1].0, "second");
+        assert_eq!(rows[1].2, 1);
+    }
 
     #[derive(Default)]
     struct WritePass {
