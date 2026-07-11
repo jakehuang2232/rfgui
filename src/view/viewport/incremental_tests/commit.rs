@@ -6,6 +6,7 @@ use crate::style::{
     ClipMode, Color, Cursor, Layout, Length, Padding, ParsedValue, Position, PropertyId,
     ScrollDirection, Style, Transition, TransitionProperty, Transitions, VerticalAlign,
 };
+use crate::transition::{StyleField, StyleValue};
 use crate::ui::{
     Binding, DragEffect, RsxNode, RsxTagDescriptor, global_state, on_drag_over, on_drop, rsx,
 };
@@ -2026,4 +2027,64 @@ fn incremental_commit_fragment_at_root_set_text_on_second_root_child() {
         .expect("fragment-root SetText on root[1] child must go incremental");
 
     assert_eq!(viewport.scene.ui_root_keys, original);
+}
+
+#[test]
+fn transition_sample_resolves_global_target_after_reparent_parent_chain_drift() {
+    let target = rsx! {
+        <HostElement style={{
+            width: Length::px(88.0),
+            height: Length::px(40.0),
+            background: Color::hex("#61afef"),
+            transition: [Transition::new(TransitionProperty::All, 10_000)],
+        }} />
+    };
+    let tree = RsxNode::fragment(vec![
+        rsx! { <HostElement>{target}</HostElement> },
+        host_el(),
+    ]);
+    let mut viewport = Viewport::new();
+    viewport.render_rsx(&tree).expect("cold render");
+
+    let actual_root = viewport.scene.ui_root_keys[0];
+    let stale_parent_root = viewport.scene.ui_root_keys[1];
+    let target_key = viewport.scene.node_arena.children_of(actual_root)[0];
+    let target_id = viewport
+        .scene
+        .node_arena
+        .get(target_key)
+        .expect("target node")
+        .element
+        .stable_id();
+
+    // Cross-parent GlobalKey moves update the active child walk before every
+    // retained parent link has necessarily converged. Stable ids are global,
+    // so transition dispatch must not reject the resolved target based on the
+    // stale parent chain.
+    viewport
+        .scene
+        .node_arena
+        .set_parent(target_key, Some(stale_parent_root));
+    let stale_duplicate = viewport
+        .scene
+        .node_arena
+        .insert(crate::view::node_arena::Node::new(Box::new(
+            crate::view::base_component::Element::new_with_id(target_id, 0.0, 0.0, 1.0, 1.0),
+        )));
+    assert_eq!(
+        viewport.scene.node_arena.find_by_stable_id(target_id),
+        Some(stale_duplicate),
+        "fixture must make the secondary index point at the retiring duplicate"
+    );
+
+    assert!(
+        crate::view::viewport::transitions_tick::set_style_field_by_id(
+            &mut viewport.scene.node_arena,
+            actual_root,
+            target_id,
+            StyleField::BackgroundColor,
+            StyleValue::Color(Color::rgb(198, 120, 221)),
+        ),
+        "globally unique transition target must remain writable after reparent"
+    );
 }

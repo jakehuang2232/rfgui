@@ -1260,6 +1260,36 @@ pub(crate) fn set_style_field_by_id(
     set_arena_dirty_style_field_by_id(arena, root_key, stable_id, field, &value)
 }
 
+fn find_active_transition_target(
+    arena: &crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    stable_id: u64,
+) -> Option<crate::view::node_arena::NodeKey> {
+    if let Some(indexed_key) = arena.find_by_stable_id(stable_id)
+        && arena.root_for(indexed_key) == root_key
+    {
+        return Some(indexed_key);
+    }
+
+    fn walk(
+        arena: &crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        stable_id: u64,
+    ) -> Option<crate::view::node_arena::NodeKey> {
+        let node = arena.get(key)?;
+        if node.element.stable_id() == stable_id {
+            return Some(key);
+        }
+        let children = node.children.clone();
+        drop(node);
+        children
+            .into_iter()
+            .find_map(|child| walk(arena, child, stable_id))
+    }
+
+    walk(arena, root_key, stable_id)
+}
+
 fn set_arena_dirty_style_field_by_id(
     arena: &mut crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
@@ -1267,12 +1297,9 @@ fn set_arena_dirty_style_field_by_id(
     field: StyleField,
     value: &StyleValue,
 ) -> bool {
-    let Some(target_key) = arena.find_by_stable_id(stable_id) else {
+    let Some(target_key) = find_active_transition_target(arena, root_key, stable_id) else {
         return false;
     };
-    if arena.root_for(target_key) != root_key {
-        return false;
-    }
     if !matches!(
         (field, value),
         (StyleField::Opacity, StyleValue::Scalar(_))
@@ -1474,12 +1501,9 @@ pub(crate) fn set_layout_field_by_id(
     field: LayoutField,
     value: f32,
 ) -> bool {
-    let Some(target_key) = arena.find_by_stable_id(node_id) else {
+    let Some(target_key) = find_active_transition_target(arena, root_key, node_id) else {
         return false;
     };
-    if arena.root_for(target_key) != root_key {
-        return false;
-    }
 
     arena
         .mutate_element_with_invalidation(target_key, |element, cx| {
@@ -1535,12 +1559,9 @@ pub(crate) fn set_visual_field_by_id(
     field: VisualField,
     value: f32,
 ) -> bool {
-    let Some(target_key) = arena.find_by_stable_id(node_id) else {
+    let Some(target_key) = find_active_transition_target(arena, root_key, node_id) else {
         return false;
     };
-    if arena.root_for(target_key) != root_key {
-        return false;
-    }
 
     arena
         .mutate_element_with_invalidation(target_key, |element, cx| {
