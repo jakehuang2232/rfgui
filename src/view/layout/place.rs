@@ -16,13 +16,13 @@ use crate::view::node_arena::{NodeArena, NodeKey};
 
 /// Inputs to `place_axis_children`.
 ///
-/// `flex_info` is consumed (taken by value); caller reads its line
-/// breakdown. `align` / `justify_content` / `cross_size` are pre-resolved
+/// `flex_info` is borrowed from the container's retained measure result;
+/// `align` / `justify_content` / `cross_size` are pre-resolved
 /// from the container's style.
 pub(crate) struct PlaceAxisChildrenInputs<'a> {
     pub layout: Layout,
     pub children: &'a [NodeKey],
-    pub flex_info: FlexLayoutInfo,
+    pub flex_info: &'a FlexLayoutInfo,
     pub is_row: bool,
     pub gap: f32,
     pub main_limit: f32,

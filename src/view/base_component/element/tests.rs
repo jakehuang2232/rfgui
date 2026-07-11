@@ -7308,6 +7308,53 @@ mod tests {
         assert!(after_width > before_width + 1.0);
     }
 
+    #[test]
+    fn flex_place_retains_measured_plan_for_placement_only_reuse() {
+        let constraints = LayoutConstraints {
+            max_width: 240.0,
+            max_height: 120.0,
+            viewport_width: 240.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(240.0),
+            percent_base_height: Some(120.0),
+        };
+        let placement = LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 240.0,
+            available_height: 120.0,
+            viewport_width: 240.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(240.0),
+            percent_base_height: Some(120.0),
+        };
+
+        let mut arena = new_test_arena();
+        let mut root = Element::new(0.0, 0.0, 240.0, 120.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Layout,
+            ParsedValue::Layout(Layout::flex().row().into()),
+        );
+        root.apply_style(style);
+        let root_key = commit_element(&mut arena, Box::new(root));
+        commit_child(
+            &mut arena,
+            root_key,
+            Box::new(Text::from_content("retained flex plan")),
+        );
+
+        arena.with_element_taken(root_key, |root, arena| {
+            root.measure(constraints, arena);
+            root.place(placement, arena);
+        });
+
+        let root = crate::view::test_support::get_element::<Element>(&arena, root_key);
+        assert!(root.flex_info.is_some());
+    }
+
     fn place_grandparent_parent_child(
         parent_box: (f32, f32, f32, f32),
         child_anchor: crate::style::Anchor,

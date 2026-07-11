@@ -103,9 +103,14 @@ impl Viewport {
         // subtree_dirty_flags via an O(1) cache lookup instead of walking
         // its entire subtree (an O(N²) trap pre-cache).
         let dirty_refresh_before_measure_started_at = Instant::now();
-        for &root_key in &root_keys {
-            arena.refresh_subtree_dirty_cache(root_key);
-        }
+        let measure_dirty_roots = root_keys
+            .iter()
+            .map(|&root_key| {
+                arena
+                    .refresh_subtree_dirty_cache(root_key)
+                    .intersects(crate::view::base_component::DirtyFlags::LAYOUT)
+            })
+            .collect::<Vec<_>>();
         traversal_profile.dirty_refresh_before_measure_ms = dirty_refresh_before_measure_started_at
             .elapsed()
             .as_secs_f64()
@@ -116,11 +121,13 @@ impl Viewport {
                 root.measure(constraints, arena);
             });
         }
-        for &root_key in &root_keys {
-            arena.clear_arena_dirty_subtree(
-                root_key,
-                crate::view::base_component::DirtyFlags::LAYOUT,
-            );
+        for (&root_key, was_layout_dirty) in root_keys.iter().zip(measure_dirty_roots) {
+            if was_layout_dirty {
+                arena.clear_cached_arena_dirty_subtree(
+                    root_key,
+                    crate::view::base_component::DirtyFlags::LAYOUT,
+                );
+            }
         }
         traversal_profile.measure_roots_ms =
             measure_roots_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -144,9 +151,14 @@ impl Viewport {
         // Measure mutated per-node dirty bits, so refresh the cache again
         // before place so `Element::place` can read it in O(1).
         let dirty_refresh_before_place_started_at = Instant::now();
-        for &root_key in &root_keys {
-            arena.refresh_subtree_dirty_cache(root_key);
-        }
+        let place_dirty_roots = root_keys
+            .iter()
+            .map(|&root_key| {
+                arena
+                    .refresh_subtree_dirty_cache(root_key)
+                    .intersects(crate::view::base_component::DirtyFlags::PLACE)
+            })
+            .collect::<Vec<_>>();
         traversal_profile.dirty_refresh_before_place_ms = dirty_refresh_before_place_started_at
             .elapsed()
             .as_secs_f64()
@@ -157,11 +169,13 @@ impl Viewport {
                 root.place(placement, arena);
             });
         }
-        for &root_key in &root_keys {
-            arena.clear_arena_dirty_subtree(
-                root_key,
-                crate::view::base_component::DirtyFlags::PLACE,
-            );
+        for (&root_key, was_place_dirty) in root_keys.iter().zip(place_dirty_roots) {
+            if was_place_dirty {
+                arena.clear_cached_arena_dirty_subtree(
+                    root_key,
+                    crate::view::base_component::DirtyFlags::PLACE,
+                );
+            }
         }
         traversal_profile.place_roots_ms = place_roots_started_at.elapsed().as_secs_f64() * 1000.0;
         let place_ms = place_started_at.elapsed().as_secs_f64() * 1000.0;

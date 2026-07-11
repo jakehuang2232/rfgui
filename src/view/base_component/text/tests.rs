@@ -746,6 +746,30 @@ fn text_measure_clears_layout_dirty() {
 }
 
 #[test]
+fn clean_text_measure_with_same_constraints_skips_relayout() {
+    let mut a = arena();
+    let mut text = Text::from_content("cached text");
+    let constraints = LayoutConstraints {
+        max_width: 200.0,
+        max_height: 120.0,
+        viewport_width: 200.0,
+        viewport_height: 120.0,
+        percent_base_width: Some(200.0),
+        percent_base_height: Some(120.0),
+    };
+    text.measure(constraints, &mut a);
+
+    crate::view::base_component::reset_text_measure_profile();
+    crate::view::base_component::set_text_measure_profile_enabled(true);
+    text.measure(constraints, &mut a);
+    crate::view::base_component::set_text_measure_profile_enabled(false);
+    let profile = crate::view::base_component::take_text_measure_profile();
+
+    assert_eq!(profile.relayout_from_base_calls, 0);
+    assert_eq!(profile.measure_text_layout_calls, 0);
+}
+
+#[test]
 fn auto_measured_text_size_preserves_fractional_precision() {
     let mut a = arena();
     let mut text = Text::from_content("rounded measurement");

@@ -1031,6 +1031,72 @@ impl NodeArena {
         }
     }
 
+    /// Clear arena-owned dirty bits only along branches whose refreshed
+    /// subtree cache intersects `flags`.
+    ///
+    /// Unlike [`Self::clear_arena_dirty_subtree`], this is a layout-pass hot
+    /// path and requires a current (or conservatively dirty) subtree cache.
+    /// Clean sibling branches are left untouched and keep their already-valid
+    /// aggregate, so clearing one dirty leaf costs O(dirty branches + depth)
+    /// rather than O(the entire root subtree).
+    pub(crate) fn clear_cached_arena_dirty_subtree(&self, key: NodeKey, flags: DirtyFlags) {
+        if flags.is_empty() || !self.subtree_dirty_intersects(key, flags) {
+            return;
+        }
+
+        fn collect_dirty_postorder(
+            arena: &NodeArena,
+            key: NodeKey,
+            flags: DirtyFlags,
+            out: &mut Vec<NodeKey>,
+        ) {
+            if !arena.subtree_dirty_intersects(key, flags) {
+                return;
+            }
+            let child_count = arena
+                .slots
+                .get(key)
+                .map(|node| node.children.len())
+                .unwrap_or(0);
+            for index in 0..child_count {
+                if let Some(child) = arena.child_key_at(key, index) {
+                    collect_dirty_postorder(arena, child, flags, out);
+                }
+            }
+            if arena.slots.contains_key(key) {
+                out.push(key);
+            }
+        }
+
+        let mut dirty_subtree = Vec::new();
+        collect_dirty_postorder(self, key, flags, &mut dirty_subtree);
+        for node_key in &dirty_subtree {
+            if let Some(node) = self.slots.get(*node_key) {
+                node.arena_local_dirty
+                    .set(node.arena_local_dirty.get().without(flags));
+            }
+        }
+        for node_key in &dirty_subtree {
+            let Some(node) = self.slots.get(*node_key) else {
+                continue;
+            };
+            let element = node.element.borrow();
+            let mut aggregate = element
+                .local_dirty_flags()
+                .union(node.arena_local_dirty.get());
+            drop(element);
+            for index in 0..node.children.len() {
+                if let Some(child) = self.child_key_at(*node_key, index) {
+                    aggregate = aggregate.union(self.cached_subtree_dirty(child));
+                }
+            }
+            node.cached_subtree_dirty.set(aggregate);
+        }
+        if let Some(parent) = self.parent_of(key) {
+            self.repair_cached_subtree_dirty_ancestors(parent);
+        }
+    }
+
     /// Fast O(1) read of the cached aggregate dirty flags for the subtree
     /// rooted at `key`. The cache is stale unless
     /// [`Self::refresh_subtree_dirty_cache`] has been called this pass.
@@ -1972,6 +2038,33 @@ mod tests {
         assert_cached_paint_clean(&arena, grandchild);
         assert_cached_paint_clean(&arena, child);
         assert_cached_paint_clean(&arena, root);
+    }
+
+    #[test]
+    fn clear_cached_arena_dirty_subtree_repairs_only_matching_dirty_branches() {
+        let mut arena = NodeArena::new();
+        let root = insert_test_node(&mut arena, 1, DirtyFlags::NONE);
+        let layout_branch = insert_test_node(&mut arena, 2, DirtyFlags::NONE);
+        let paint_branch = insert_test_node(&mut arena, 3, DirtyFlags::NONE);
+        let layout_leaf = insert_test_node(&mut arena, 4, DirtyFlags::NONE);
+        link_child(&mut arena, root, layout_branch);
+        link_child(&mut arena, root, paint_branch);
+        link_child(&mut arena, layout_branch, layout_leaf);
+
+        arena.refresh_subtree_dirty_cache(root);
+        arena.mark_dirty(layout_leaf, DirtyFlags::LAYOUT);
+        arena.mark_dirty(paint_branch, DirtyFlags::PAINT);
+
+        arena.clear_cached_arena_dirty_subtree(root, DirtyFlags::LAYOUT);
+
+        assert_eq!(arena.arena_local_dirty(layout_leaf), DirtyFlags::NONE);
+        assert!(!arena.subtree_dirty_intersects(root, DirtyFlags::LAYOUT));
+        assert!(
+            arena
+                .arena_local_dirty(paint_branch)
+                .contains(DirtyFlags::PAINT)
+        );
+        assert!(arena.subtree_dirty_intersects(root, DirtyFlags::PAINT));
     }
 
     #[test]

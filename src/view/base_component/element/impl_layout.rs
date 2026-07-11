@@ -1485,6 +1485,7 @@ impl Element {
         child_inner_height: f32,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
+        let absolute_mask = self.compute_children_absolute_mask(arena);
         let child_parent_hit_test_clip = self.current_child_hit_test_clip_rect();
         self.last_child_hit_test_clip_rect = Some(child_parent_hit_test_clip);
         self.push_hit_test_clip_scope(child_parent_hit_test_clip);
@@ -1524,6 +1525,7 @@ impl Element {
                         child_percent_base_width,
                         child_percent_base_height,
                         child_parent_hit_test_clip,
+                        &absolute_mask,
                         arena,
                     );
                 });
@@ -1540,7 +1542,6 @@ impl Element {
             // RefCell::borrow + downcast, and this loop used to do it twice
             // per child (non-abs then abs pass), with more redundant calls
             // from update_content_size_from_children.
-            let absolute_mask = self.compute_children_absolute_mask(arena);
             let in_flow_owned_by_inline_ifc = matches!(self.computed_style.layout, Layout::Inline);
             profile_layout_place_time(LayoutPlaceTiming::ChildPlace, || {
                 for (idx, child_key) in child_keys.iter().copied().enumerate() {
@@ -1614,12 +1615,8 @@ impl Element {
                 }
             });
         }
-        // Mask is scoped per-branch above (axis layout builds its own);
-        // recompute once here so both branches feed the helper without
-        // paying for another per-child downcast inside it.
-        let absolute_mask_for_content = self.compute_children_absolute_mask(arena);
         profile_layout_place_time(LayoutPlaceTiming::UpdateContentSize, || {
-            self.update_content_size_from_children(arena, &absolute_mask_for_content);
+            self.update_content_size_from_children(arena, &absolute_mask);
         });
         profile_layout_place_time(LayoutPlaceTiming::ClampScroll, || {
             self.clamp_scroll_offset();
@@ -1642,6 +1639,7 @@ impl Element {
         child_percent_base_width: Option<f32>,
         child_percent_base_height: Option<f32>,
         child_parent_hit_test_clip: Rect,
+        absolute_mask: &[bool],
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
         if self.children.is_empty() {
@@ -1680,14 +1678,11 @@ impl Element {
         let visual_offset_y =
             self.layout_state.layout_position.y - self.layout_state.layout_flow_position.y;
 
-        let absolute_mask = self.compute_children_absolute_mask(arena);
-        let info = if let Some(cached) = self.flex_info.take() {
-            cached
-        } else {
+        if self.flex_info.is_none() {
             let is_real_flex = matches!(self.computed_style.layout, Layout::Flex { .. });
             let solver_wrap =
                 !is_real_flex && matches!(self.computed_style.layout_flow_wrap(), FlowWrap::Wrap);
-            crate::view::layout::flex_solver::compute_flex_info(
+            self.flex_info = Some(crate::view::layout::flex_solver::compute_flex_info(
                 crate::view::layout::flex_solver::FlexSolverInputs {
                     layout_kind: self.computed_style.layout,
                     children: &self.children,
@@ -1705,8 +1700,12 @@ impl Element {
                     child_percent_base_height,
                 },
                 arena,
-            )
-        };
+            ));
+        }
+        let info = self
+            .flex_info
+            .as_ref()
+            .expect("axis layout must retain a flex plan after measure or fallback solve");
 
         crate::view::layout::place::place_axis_children(
             crate::view::layout::place::PlaceAxisChildrenInputs {
@@ -1738,7 +1737,7 @@ impl Element {
         crate::view::layout::place::place_absolute_children(
             crate::view::layout::place::PlaceAbsoluteChildrenInputs {
                 children: &self.children,
-                absolute_mask: &absolute_mask,
+                absolute_mask,
                 origin_x,
                 origin_y,
                 visual_offset_x,

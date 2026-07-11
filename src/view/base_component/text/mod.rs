@@ -117,6 +117,7 @@ pub struct Text {
     pub(super) node_id: u64,
     pub(super) parent_id: Option<u64>,
     pub(super) dirty_flags: super::DirtyFlags,
+    pub(super) last_layout_constraints: Option<crate::view::base_component::LayoutConstraints>,
     pub(super) last_layout_placement: Option<crate::view::base_component::LayoutPlacement>,
     pub(super) layout_state: LayoutState,
     // 軌 A #7: per-prop "set explicitly by the author?" flags. Flipped
@@ -193,6 +194,7 @@ impl Text {
             shaped_context: None,
             inline_ifc_owned: None,
             dirty_flags: super::DirtyFlags::ALL,
+            last_layout_constraints: None,
             last_layout_placement: None,
             layout_state: LayoutState::new(x, y, width, height),
             explicit_props: TextExplicitProps::default(),

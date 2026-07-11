@@ -55,6 +55,11 @@ impl Layoutable for Text {
     }
 
     fn measure(&mut self, constraints: LayoutConstraints, _arena: &mut NodeArena) {
+        if !self.dirty_flags.intersects(DirtyFlags::LAYOUT)
+            && self.last_layout_constraints == Some(constraints)
+        {
+            return;
+        }
         self.layout_override_width = None;
         self.layout_override_height = None;
         let parent_width_is_constrained = constraints.percent_base_width.is_some();
@@ -65,6 +70,7 @@ impl Layoutable for Text {
             let layout = self.relayout_from_base(Some(self.size.width.max(1.0)), allow_wrap);
             self.shaped_context = Some(layout.context);
             self.dirty_flags = self.dirty_flags.without(DirtyFlags::LAYOUT);
+            self.last_layout_constraints = Some(constraints);
             return;
         }
         let mut intrinsic_layout = None;
@@ -114,6 +120,7 @@ impl Layoutable for Text {
             }
         }
         self.dirty_flags = self.dirty_flags.without(DirtyFlags::LAYOUT);
+        self.last_layout_constraints = Some(constraints);
     }
 
     fn place(&mut self, placement: LayoutPlacement, _arena: &mut NodeArena) {

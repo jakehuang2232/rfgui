@@ -70,8 +70,8 @@ impl LayoutState {
 ///
 /// One `FlexLayoutInfo` per axis-layout container (Inline / Flex / Flow).
 /// Captures the line breakdown after wrap, gap distribution, and flex
-/// grow/shrink resolution. Consumed by the place pipeline to position
-/// children.
+/// grow/shrink resolution. Reused by the place pipeline until the next
+/// measure replaces it.
 #[derive(Clone, Debug)]
 pub(crate) struct FlexLayoutInfo {
     pub lines: Vec<Vec<FlexLineItem>>,
