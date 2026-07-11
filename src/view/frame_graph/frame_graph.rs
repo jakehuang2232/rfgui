@@ -764,6 +764,12 @@ pub struct CompileProfile {
 }
 
 impl FrameGraph {
+    pub(crate) fn declared_persistent_texture_keys(&self) -> impl Iterator<Item = u64> + '_ {
+        self.texture_metadata
+            .iter()
+            .filter_map(|metadata| metadata.stable_key)
+    }
+
     pub fn new() -> Self {
         Self {
             passes: Vec::new(),
@@ -1169,6 +1175,13 @@ impl FrameGraph {
             return Err(err);
         }
 
+        // Persistent resources remain semantically live while they are
+        // declared, even when pass culling removes every current-frame use.
+        // A promoted base layer is one such resource while its final composed
+        // layer is reused; keep its pool binding alive for a later
+        // composition-only reraster.
+        viewport.touch_persistent_render_targets(self.declared_persistent_texture_keys());
+
         // Compute topology hash after setup has populated usages.
         let topology_hash = self.compute_topology_hash();
 
@@ -1304,6 +1317,7 @@ impl FrameGraph {
         viewport: &mut Viewport,
     ) -> Result<CompileProfile, FrameGraphError> {
         let mut profile = self.compile_profiled_internal()?;
+        viewport.touch_persistent_render_targets(self.declared_persistent_texture_keys());
         let textures = std::mem::take(&mut self.textures);
         let buffers = std::mem::take(&mut self.buffers);
         let compiled_graph = self
@@ -5359,6 +5373,43 @@ mod tests {
             AttachmentLoadOp::Load
         );
         assert_eq!(graphics.color_attachments[0].clear_color, None);
+    }
+
+    #[test]
+    fn declared_persistent_keys_include_resources_culled_from_compiled_graph() {
+        let mut graph = FrameGraph::new();
+        let persistent_key = 0xA11CE;
+        let _unused_persistent = graph.declare_texture_internal::<()>(
+            test_texture_desc(),
+            ResourceLifetime::Persistent,
+            Some(persistent_key),
+        );
+        let live = graph.declare_texture::<()>(test_texture_desc());
+        graph.add_graphics_pass(WritePass {
+            output: live.clone(),
+        });
+        let present = graph.add_graphics_pass(make_present_pass(&live));
+        graph
+            .add_pass_sink(present, ExternalSinkKind::SurfacePresent)
+            .expect("sink registration should succeed");
+
+        graph.compile().expect("compile should succeed");
+
+        assert!(
+            graph
+                .declared_persistent_texture_keys()
+                .any(|key| key == persistent_key),
+            "declaration liveness must not depend on executable pass usage"
+        );
+        assert!(
+            !graph
+                .compiled_graph()
+                .expect("compiled graph")
+                .texture_stable_keys
+                .values()
+                .any(|&key| key == persistent_key),
+            "fixture must prove the persistent resource was culled from the compiled graph"
+        );
     }
 
     #[test]

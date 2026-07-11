@@ -156,6 +156,12 @@ impl OffscreenRenderTargetPool {
         self.evict();
     }
 
+    pub fn touch_persistent(&mut self, stable_key: u64) {
+        if let Some(binding) = self.persistent_bindings.get_mut(&stable_key) {
+            binding.last_used_epoch = self.frame_epoch;
+        }
+    }
+
     pub fn clear(&mut self) {
         for entry in self.entries.values() {
             entry.texture.destroy();
@@ -659,6 +665,7 @@ pub(crate) fn logical_scissor_to_target_physical(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view::frame_graph::{FrameGraph, ResourceLifetime};
     use crate::view::viewport::Viewport;
 
     #[test]
@@ -715,5 +722,70 @@ mod tests {
         }
 
         assert!(pool.persistent_bindings.contains_key(&7));
+    }
+
+    #[test]
+    fn promoted_base_survives_final_layer_reuse_then_expires_after_unmount() {
+        const BASE_KEY: u64 = 0xB453;
+        const FINAL_KEY: u64 = 0xF1A1;
+
+        let mut pool = OffscreenRenderTargetPool::new();
+        for (stable_key, entry_id) in [(BASE_KEY, 11), (FINAL_KEY, 12)] {
+            pool.persistent_bindings.insert(
+                stable_key,
+                PersistentRenderTargetBinding {
+                    entry_id,
+                    last_used_epoch: 0,
+                },
+            );
+        }
+
+        let desc = TextureDesc::new(
+            64,
+            64,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureDimension::D2,
+        );
+        let mut mounted_graph = FrameGraph::new();
+        let _base = mounted_graph.declare_texture_internal::<()>(
+            desc.clone(),
+            ResourceLifetime::Persistent,
+            Some(BASE_KEY),
+        );
+        let _final_layer = mounted_graph.declare_texture_internal::<()>(
+            desc.clone(),
+            ResourceLifetime::Persistent,
+            Some(FINAL_KEY),
+        );
+
+        // Final-layer reuse can cull every pass involving the base. Both
+        // resources remain declared while the promoted node is mounted, so
+        // the base must survive beyond the normal 60-frame expiry window.
+        for _ in 0..OffscreenRenderTargetPool::EVICT_UNUSED_AFTER_FRAMES * 2 {
+            pool.begin_frame();
+            for stable_key in mounted_graph.declared_persistent_texture_keys() {
+                pool.touch_persistent(stable_key);
+            }
+        }
+        assert!(pool.persistent_bindings.contains_key(&BASE_KEY));
+        assert!(pool.persistent_bindings.contains_key(&FINAL_KEY));
+
+        // Unmounting removes the base declaration. A graph that only retains
+        // the final layer must no longer keep the old base binding alive.
+        let mut unmounted_graph = FrameGraph::new();
+        let _final_layer = unmounted_graph.declare_texture_internal::<()>(
+            desc,
+            ResourceLifetime::Persistent,
+            Some(FINAL_KEY),
+        );
+
+        for _ in 0..OffscreenRenderTargetPool::EVICT_UNUSED_AFTER_FRAMES {
+            pool.begin_frame();
+            for stable_key in unmounted_graph.declared_persistent_texture_keys() {
+                pool.touch_persistent(stable_key);
+            }
+        }
+        assert!(!pool.persistent_bindings.contains_key(&BASE_KEY));
+        assert!(pool.persistent_bindings.contains_key(&FINAL_KEY));
     }
 }

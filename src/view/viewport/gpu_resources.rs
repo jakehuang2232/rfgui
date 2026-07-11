@@ -6,6 +6,17 @@
 use super::*;
 
 impl Viewport {
+    pub(crate) fn touch_persistent_render_targets(
+        &mut self,
+        stable_keys: impl IntoIterator<Item = u64>,
+    ) {
+        for stable_key in stable_keys {
+            self.frame
+                .offscreen_render_target_pool
+                .touch_persistent(stable_key);
+        }
+    }
+
     pub(crate) fn acquire_offscreen_render_target(
         &mut self,
         allocation_id: AllocationId,
