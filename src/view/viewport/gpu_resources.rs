@@ -572,5 +572,7 @@ impl Viewport {
         }
         self.frame.gradient_stops_byte_cursor = 0;
         self.gpu.upload_staging_belt = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.gpu.in_flight_submissions.clear();
     }
 }

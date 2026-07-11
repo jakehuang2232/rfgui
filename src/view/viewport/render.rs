@@ -1337,7 +1337,7 @@ impl Viewport {
 
         let submit_started_at = Instant::now();
         let queue = self.gpu.queue.as_ref().unwrap();
-        queue.submit(Some(frame.encoder.finish()));
+        let _submission_index = queue.submit(Some(frame.encoder.finish()));
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(staging_belt) = self.gpu.upload_staging_belt.as_mut() {
             staging_belt.recall();
@@ -1349,6 +1349,29 @@ impl Viewport {
         let present_started_at = Instant::now();
         queue.present(frame.render_texture);
         let present_ms = present_started_at.elapsed().as_secs_f64() * 1000.0;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Surface latency limits acquired swapchain images, but it does not
+            // bound every resource referenced by submitted command buffers.
+            // Keep a small native submission pipeline and wait only when the
+            // oldest frame falls outside it, so per-frame buffers and bind
+            // groups can be retired instead of accumulating indefinitely.
+            const MAX_IN_FLIGHT_SUBMISSIONS: usize = 2;
+            self.gpu.in_flight_submissions.push_back(_submission_index);
+            if self.gpu.in_flight_submissions.len() > MAX_IN_FLIGHT_SUBMISSIONS {
+                let oldest = self
+                    .gpu
+                    .in_flight_submissions
+                    .pop_front()
+                    .expect("submission queue exceeded its non-zero limit");
+                if let Some(device) = self.gpu.device.as_ref() {
+                    let _ = device.poll(wgpu::PollType::Wait {
+                        submission_index: Some(oldest),
+                        timeout: None,
+                    });
+                }
+            }
+        }
         self.frame.frame_presented = true;
         EndFrameProfile {
             total_ms: total_started_at.elapsed().as_secs_f64() * 1000.0,

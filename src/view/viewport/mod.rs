@@ -400,6 +400,8 @@ struct GpuContext {
     depth_texture: Option<wgpu::Texture>,
     depth_view: Option<wgpu::TextureView>,
     upload_staging_belt: Option<StagingBelt>,
+    #[cfg(not(target_arch = "wasm32"))]
+    in_flight_submissions: std::collections::VecDeque<wgpu::SubmissionIndex>,
 }
 
 /// Phase-7 extraction. Groups everything the layer-promotion / compositor
@@ -534,6 +536,8 @@ impl Viewport {
                 depth_texture: None,
                 depth_view: None,
                 upload_staging_belt: None,
+                #[cfg(not(target_arch = "wasm32"))]
+                in_flight_submissions: std::collections::VecDeque::new(),
             },
             frame: FrameRuntime::new(debug_options.trace_fps),
             pending_size: None,

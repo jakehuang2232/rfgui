@@ -119,9 +119,15 @@ pub(crate) struct RenderTargetBundle {
 pub(crate) struct OffscreenRenderTargetPool {
     entries: FxHashMap<u32, RenderTargetEntry>,
     frame_bindings: FxHashMap<u32, u32>,
-    persistent_bindings: FxHashMap<u64, u32>,
+    persistent_bindings: FxHashMap<u64, PersistentRenderTargetBinding>,
     frame_epoch: u64,
     next_entry_id: u32,
+}
+
+#[derive(Clone, Copy)]
+struct PersistentRenderTargetBinding {
+    entry_id: u32,
+    last_used_epoch: u64,
 }
 
 impl OffscreenRenderTargetPool {
@@ -143,6 +149,10 @@ impl OffscreenRenderTargetPool {
     pub fn begin_frame(&mut self) {
         self.frame_epoch = self.frame_epoch.saturating_add(1);
         self.frame_bindings.clear();
+        let frame_epoch = self.frame_epoch;
+        self.persistent_bindings.retain(|_, binding| {
+            frame_epoch.saturating_sub(binding.last_used_epoch) < Self::EVICT_UNUSED_AFTER_FRAMES
+        });
         self.evict();
     }
 
@@ -182,7 +192,10 @@ impl OffscreenRenderTargetPool {
         let mut best_fit: Option<u32> = None;
         for (&entry_id, entry) in &self.entries {
             if entry.frame_busy_epoch == self.frame_epoch
-                || self.persistent_bindings.values().any(|&id| id == entry_id)
+                || self
+                    .persistent_bindings
+                    .values()
+                    .any(|binding| binding.entry_id == entry_id)
                 || entry.format != format
                 || entry.dimension != dimension
                 || entry.msaa_sample_count != msaa_sample_count
@@ -231,7 +244,11 @@ impl OffscreenRenderTargetPool {
         let dimension = desc.dimension();
         let label = color_texture_label(&desc);
 
-        let entry_id = match self.persistent_bindings.get(&stable_key).copied() {
+        let entry_id = match self
+            .persistent_bindings
+            .get(&stable_key)
+            .map(|binding| binding.entry_id)
+        {
             Some(entry_id) => {
                 let recreate = self.entries.get(&entry_id).is_none_or(|entry| {
                     entry.format != format
@@ -249,7 +266,13 @@ impl OffscreenRenderTargetPool {
                         new_entry_id,
                         Self::create_entry(device, &desc, msaa_sample_count),
                     );
-                    self.persistent_bindings.insert(stable_key, new_entry_id);
+                    self.persistent_bindings.insert(
+                        stable_key,
+                        PersistentRenderTargetBinding {
+                            entry_id: new_entry_id,
+                            last_used_epoch: self.frame_epoch,
+                        },
+                    );
                     new_entry_id
                 } else {
                     entry_id
@@ -262,10 +285,20 @@ impl OffscreenRenderTargetPool {
                     new_entry_id,
                     Self::create_entry(device, &desc, msaa_sample_count),
                 );
-                self.persistent_bindings.insert(stable_key, new_entry_id);
+                self.persistent_bindings.insert(
+                    stable_key,
+                    PersistentRenderTargetBinding {
+                        entry_id: new_entry_id,
+                        last_used_epoch: self.frame_epoch,
+                    },
+                );
                 new_entry_id
             }
         };
+
+        if let Some(binding) = self.persistent_bindings.get_mut(&stable_key) {
+            binding.last_used_epoch = self.frame_epoch;
+        }
 
         if let Some(entry) = self.entries.get_mut(&entry_id) {
             entry.frame_busy_epoch = self.frame_epoch;
@@ -376,7 +409,11 @@ impl OffscreenRenderTargetPool {
                 if entry.frame_busy_epoch == self.frame_epoch {
                     return None;
                 }
-                if self.persistent_bindings.values().any(|&id| id == entry_id) {
+                if self
+                    .persistent_bindings
+                    .values()
+                    .any(|binding| binding.entry_id == entry_id)
+                {
                     return None;
                 }
                 if entry.last_used_epoch <= stale_before {
@@ -413,7 +450,7 @@ impl OffscreenRenderTargetPool {
                     && !self
                         .persistent_bindings
                         .values()
-                        .any(|&bound_id| bound_id == **entry_id)
+                        .any(|binding| binding.entry_id == **entry_id)
             })
             .min_by(|a, b| {
                 let (_, a_entry) = a;
@@ -442,7 +479,7 @@ impl OffscreenRenderTargetPool {
         self.frame_bindings
             .retain(|_, bound_id| *bound_id != entry_id);
         self.persistent_bindings
-            .retain(|_, bound_id| *bound_id != entry_id);
+            .retain(|_, binding| binding.entry_id != entry_id);
     }
 }
 
@@ -633,5 +670,50 @@ mod tests {
             logical_scissor_to_target_physical(&viewport, [10, 20, 101, 51], (3, 7), (200, 200));
 
         assert_eq!(physical, Some([9, 18, 127, 64]));
+    }
+
+    #[test]
+    fn persistent_binding_expires_after_unused_frame_budget() {
+        let mut pool = OffscreenRenderTargetPool::new();
+        pool.persistent_bindings.insert(
+            7,
+            PersistentRenderTargetBinding {
+                entry_id: 11,
+                last_used_epoch: 0,
+            },
+        );
+
+        for _ in 0..OffscreenRenderTargetPool::EVICT_UNUSED_AFTER_FRAMES - 1 {
+            pool.begin_frame();
+        }
+        assert!(pool.persistent_bindings.contains_key(&7));
+
+        pool.begin_frame();
+        assert!(!pool.persistent_bindings.contains_key(&7));
+    }
+
+    #[test]
+    fn persistent_binding_last_use_refreshes_expiration_budget() {
+        let mut pool = OffscreenRenderTargetPool::new();
+        pool.persistent_bindings.insert(
+            7,
+            PersistentRenderTargetBinding {
+                entry_id: 11,
+                last_used_epoch: 0,
+            },
+        );
+
+        for _ in 0..30 {
+            pool.begin_frame();
+        }
+        pool.persistent_bindings
+            .get_mut(&7)
+            .expect("binding should still be alive")
+            .last_used_epoch = pool.frame_epoch;
+        for _ in 0..OffscreenRenderTargetPool::EVICT_UNUSED_AFTER_FRAMES - 1 {
+            pool.begin_frame();
+        }
+
+        assert!(pool.persistent_bindings.contains_key(&7));
     }
 }
