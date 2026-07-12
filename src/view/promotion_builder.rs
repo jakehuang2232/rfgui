@@ -12,6 +12,7 @@ pub(crate) fn collect_promotion_candidates(
     active_animator_hints: &FxHashMap<u64, AnimationPromotionHint>,
     active_channels: &FxHashMap<u64, FxHashSet<crate::transition::ChannelId>>,
     viewport_size: (f32, f32),
+    scale_factor: f32,
 ) -> Vec<PromotionCandidate> {
     /// Walk and collect candidates.
     ///
@@ -27,6 +28,7 @@ pub(crate) fn collect_promotion_candidates(
         active_animator_hints: &FxHashMap<u64, AnimationPromotionHint>,
         active_channels: &FxHashMap<u64, FxHashSet<crate::transition::ChannelId>>,
         viewport_size: (f32, f32),
+        scale_factor: f32,
         arena: &crate::view::node_arena::NodeArena,
         out: &mut Vec<PromotionCandidate>,
         ancestor_supports_promotion: bool,
@@ -47,6 +49,7 @@ pub(crate) fn collect_promotion_candidates(
                 active_animator_hints,
                 active_channels,
                 viewport_size,
+                scale_factor,
                 arena,
                 out,
                 descendants_supported,
@@ -65,17 +68,22 @@ pub(crate) fn collect_promotion_candidates(
             .get(&snapshot.node_id)
             .copied()
             .unwrap_or_default();
+        let target_memory_bytes = promoted_target_memory_bytes(node, scale_factor);
         out.push(PromotionCandidate {
             node_id: snapshot.node_id,
             parent_id: snapshot.parent_id,
-            width: snapshot.width.max(0.0),
-            height: snapshot.height.max(0.0),
             subtree_node_count,
             estimated_pass_count,
             visible_area_ratio,
             viewport_coverage,
             distance_to_viewport,
             info,
+            base_memory_bytes: target_memory_bytes,
+            composition_memory_bytes: target_memory_bytes,
+            mask_memory_bytes: node
+                .promotion_requires_mask_surface(arena)
+                .then_some(target_memory_bytes)
+                .unwrap_or(0),
             has_active_animator: active_animator_hints.contains_key(&snapshot.node_id),
             has_composite_only_animator: animator_hint.composite_only,
             active_channels: active_channels
@@ -97,12 +105,33 @@ pub(crate) fn collect_promotion_candidates(
             active_animator_hints,
             active_channels,
             viewport_size,
+            scale_factor,
             arena,
             &mut out,
             true,
         );
     }
     out
+}
+
+fn promoted_target_memory_bytes(node: &dyn ElementTrait, scale_factor: f32) -> usize {
+    let bounds = node.promotion_composite_bounds();
+    let scale = scale_factor.max(0.0001);
+    let origin_x = (bounds.x * scale).floor().max(0.0) as u64;
+    let origin_y = (bounds.y * scale).floor().max(0.0) as u64;
+    let max_x = ((bounds.x + bounds.width.max(0.0)) * scale).ceil().max(0.0) as u64;
+    let max_y = ((bounds.y + bounds.height.max(0.0)) * scale)
+        .ceil()
+        .max(0.0) as u64;
+    let width = max_x.saturating_sub(origin_x).max(1);
+    let height = max_y.saturating_sub(origin_y).max(1);
+
+    // Every persistent render target has one RGBA8 color texture and one
+    // Depth24PlusStencil8 attachment (8 bytes/pixel total).
+    width
+        .saturating_mul(height)
+        .saturating_mul(8)
+        .min(usize::MAX as u64) as usize
 }
 
 pub(crate) fn collect_promoted_layer_updates(
@@ -957,6 +986,7 @@ mod tests {
             &active_animator_hints,
             &FxHashMap::default(),
             (320.0, 240.0),
+            1.0,
         );
 
         assert_eq!(candidates.len(), 1);
@@ -970,6 +1000,26 @@ mod aware_filter_tests {
     use super::*;
     use crate::view::base_component::{Element, ElementTrait};
     use crate::view::node_arena::{Node, NodeArena, NodeKey};
+
+    #[test]
+    fn promoted_surface_estimate_uses_composite_bounds_and_physical_scale() {
+        let element = Element::new_with_id(1, 10.25, 20.25, 100.0, 50.0);
+
+        // floor(10.25*2)..ceil(110.25*2) = 201 px, likewise 101 px tall.
+        // One color + depth/stencil target = 8 bytes per physical pixel.
+        assert_eq!(promoted_target_memory_bytes(&element, 2.0), 201 * 101 * 8);
+    }
+
+    #[test]
+    fn promoted_element_opacity_is_applied_by_the_composite() {
+        let mut element = Element::new_with_id(1, 0.0, 0.0, 100.0, 50.0);
+        element.set_opacity(0.35);
+
+        assert_eq!(
+            crate::view::base_component::promoted_composite_opacity(&element),
+            0.35
+        );
+    }
 
     /// Minimal non-aware host: claims `supports_promoted_descendants() ==
     /// false` so its subtree must be filtered out of the candidate list.
@@ -1073,6 +1123,7 @@ mod aware_filter_tests {
             &FxHashMap::default(),
             &FxHashMap::default(),
             (320.0, 240.0),
+            1.0,
         );
         let ids: FxHashSet<u64> = candidates.iter().map(|c| c.node_id).collect();
         assert!(ids.contains(&1), "Element root should be candidate");
@@ -1101,6 +1152,7 @@ mod aware_filter_tests {
             &FxHashMap::default(),
             &FxHashMap::default(),
             (320.0, 240.0),
+            1.0,
         );
         let ids: FxHashSet<u64> = candidates.iter().map(|c| c.node_id).collect();
         assert!(ids.contains(&1), "aware root remains a candidate");
@@ -1136,6 +1188,7 @@ mod aware_filter_tests {
             &FxHashMap::default(),
             &FxHashMap::default(),
             (320.0, 240.0),
+            1.0,
         );
         let ids: FxHashSet<u64> = candidates.iter().map(|c| c.node_id).collect();
         assert!(!ids.contains(&3), "Element under non-aware host filtered");
@@ -1247,6 +1300,7 @@ mod aware_filter_tests {
             &FxHashMap::default(),
             &FxHashMap::default(),
             (320.0, 240.0),
+            1.0,
         );
         let ids: FxHashSet<u64> = candidates.iter().map(|c| c.node_id).collect();
         assert!(ids.contains(&1), "Element root candidate");

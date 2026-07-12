@@ -21,6 +21,10 @@ pub use svg::*;
 pub use text::*;
 pub use text_area::{TextArea, TextAreaImeContext, TextAreaRenderProjection, TextAreaRenderString};
 
+pub(crate) fn promoted_composite_opacity(node: &dyn ElementTrait) -> f32 {
+    node.promotion_node_info().opacity.clamp(0.0, 1.0)
+}
+
 fn next_ui_node_id() -> u64 {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
@@ -163,11 +167,7 @@ pub(crate) fn build_node_by_id(
                     node.promotion_composite_bounds(),
                     ctx.paint_offset(),
                 );
-            let opacity = if node.as_any().downcast_ref::<Element>().is_some() {
-                1.0
-            } else {
-                node.promotion_node_info().opacity.clamp(0.0, 1.0)
-            };
+            let opacity = promoted_composite_opacity(node);
             let parent_target = ctx.current_target().unwrap_or_else(|| {
                 let target = ctx.allocate_target(graph);
                 ctx.set_current_target(target);

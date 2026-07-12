@@ -1037,6 +1037,17 @@ impl Element {
         self.build_base_descendants_only(graph, arena, ctx, false)
     }
 
+    fn build_promoted_base_only(
+        &mut self,
+        graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
+        ctx: UiBuildContext,
+    ) -> BuildState {
+        // Element opacity belongs to the promoted composite. Rasterize the
+        // base opaque so opacity-only animation can reuse it safely.
+        self.build_base_descendants_only(graph, arena, ctx, true)
+    }
+
     pub(crate) fn compose_promoted_descendants_only(
         &mut self,
         graph: &mut FrameGraph,
@@ -1218,11 +1229,7 @@ impl Element {
             raw_composite_bounds,
             ctx.paint_offset(),
         );
-        let opacity = if child.as_any().downcast_ref::<Element>().is_some() {
-            1.0
-        } else {
-            child.promotion_node_info().opacity.clamp(0.0, 1.0)
-        };
+        let opacity = crate::view::base_component::promoted_composite_opacity(child);
         Self::composite_layer_target_into_current(
             graph,
             ctx,
@@ -1351,11 +1358,7 @@ impl Element {
                 ]),
                 use_mask: true,
                 source_is_premultiplied: true,
-                opacity: if child.as_any().downcast_ref::<Element>().is_some() {
-                    1.0
-                } else {
-                    child.promotion_node_info().opacity.clamp(0.0, 1.0)
-                },
+                opacity: crate::view::base_component::promoted_composite_opacity(child),
                 scissor_rect: ctx.state.scissor_rect,
             },
             crate::view::render_pass::TextureCompositeInput {
@@ -1431,7 +1434,7 @@ impl Element {
                     render_target: base_target,
                 },
             ));
-            self.build_base_only(graph, arena, ctx)
+            self.build_promoted_base_only(graph, arena, ctx)
         };
 
         let probe_ctx = UiBuildContext::from_parts(viewport.clone(), base_state.clone());

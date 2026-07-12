@@ -1959,6 +1959,10 @@ pub trait ElementTrait:
         0
     }
 
+    fn promotion_requires_mask_surface(&self, _arena: &crate::view::node_arena::NodeArena) -> bool {
+        false
+    }
+
     fn promotion_composite_bounds(&self) -> PromotionCompositeBounds {
         let snapshot = self.box_model_snapshot();
         PromotionCompositeBounds {
@@ -4436,6 +4440,23 @@ impl ElementTrait for Element {
             }
         }
         hasher.finish()
+    }
+
+    fn promotion_requires_mask_surface(&self, arena: &crate::view::node_arena::NodeArena) -> bool {
+        if self.children.is_empty() {
+            return false;
+        }
+        let overflow_child_indices: Vec<bool> = (0..self.children.len())
+            .map(|idx| self.child_renders_outside_inner_clip(idx, arena))
+            .collect();
+        let outer_radii = normalize_corner_radii(
+            self.border_radii,
+            self.layout_state.layout_size.width.max(0.0),
+            self.layout_state.layout_size.height.max(0.0),
+        );
+        let inner_radii = self.inner_clip_radii(outer_radii);
+        inner_radii.has_any_rounding()
+            && self.should_clip_children(&overflow_child_indices, inner_radii, arena)
     }
 
     fn promotion_composite_bounds(&self) -> PromotionCompositeBounds {

@@ -81,6 +81,7 @@ pub struct PromotionDecision {
     pub threshold: i32,
     pub should_promote: bool,
     pub hard_reason: Option<PromotionHardReason>,
+    pub budget_rejection: Option<PromotionBudgetRejection>,
     pub breakdown: PromotionScoreBreakdown,
     pub subtree_node_count: usize,
     pub estimated_pass_count: usize,
@@ -88,6 +89,12 @@ pub struct PromotionDecision {
     pub viewport_coverage: f32,
     pub distance_to_viewport: f32,
     pub estimated_memory_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromotionBudgetRejection {
+    LayerLimit,
+    SurfaceBytesLimit,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -119,14 +126,15 @@ pub struct PromotedLayerUpdate {
 pub(crate) struct PromotionCandidate {
     pub node_id: u64,
     pub parent_id: Option<u64>,
-    pub width: f32,
-    pub height: f32,
     pub subtree_node_count: usize,
     pub estimated_pass_count: usize,
     pub visible_area_ratio: f32,
     pub viewport_coverage: f32,
     pub distance_to_viewport: f32,
     pub info: PromotionNodeInfo,
+    pub base_memory_bytes: usize,
+    pub composition_memory_bytes: usize,
+    pub mask_memory_bytes: usize,
     pub has_active_animator: bool,
     pub has_composite_only_animator: bool,
     pub active_channels: FxHashSet<ChannelId>,
@@ -135,13 +143,19 @@ pub(crate) struct PromotionCandidate {
 pub(crate) fn evaluate_promotion(
     candidates: Vec<PromotionCandidate>,
     viewport_size: (f32, f32),
+    scale_factor: f32,
     config: ViewportPromotionConfig,
 ) -> PromotionState {
     if !config.enabled {
         return PromotionState::default();
     }
-    let max_surface_bytes = estimate_surface_budget_bytes(viewport_size, config);
+    let max_surface_bytes = estimate_surface_budget_bytes(viewport_size, scale_factor, config);
     let mut state = PromotionState::default();
+    let topology_candidates = candidates
+        .iter()
+        .map(|candidate| (candidate.node_id, candidate.clone()))
+        .collect::<FxHashMap<_, _>>();
+    let mut accepted_order = Vec::new();
 
     let mut hard = Vec::new();
     let mut scored = Vec::new();
@@ -153,20 +167,32 @@ pub(crate) fn evaluate_promotion(
         }
     }
 
-    hard.sort_by_key(|(candidate, _)| Reverse(candidate.subtree_node_count));
+    hard.sort_by(|(left, left_reason), (right, right_reason)| {
+        hard_reason_priority(*left_reason)
+            .cmp(&hard_reason_priority(*right_reason))
+            .then_with(|| right.visible_area_ratio.total_cmp(&left.visible_area_ratio))
+            .then_with(|| right.subtree_node_count.cmp(&left.subtree_node_count))
+            .then_with(|| left.node_id.cmp(&right.node_id))
+    });
     for (candidate, reason) in hard {
-        let estimated_memory_bytes = estimate_memory_bytes(candidate.width, candidate.height);
-        state.total_estimated_memory_bytes = state
-            .total_estimated_memory_bytes
-            .saturating_add(estimated_memory_bytes);
-        state.promoted_node_ids.insert(candidate.node_id);
+        let estimated_memory_bytes = candidate.base_memory_bytes;
+        let budget_rejection = promotion_layer_rejection(&state, config);
+        let should_promote = budget_rejection.is_none();
+        if should_promote {
+            state.total_estimated_memory_bytes = state
+                .total_estimated_memory_bytes
+                .saturating_add(estimated_memory_bytes);
+            state.promoted_node_ids.insert(candidate.node_id);
+            accepted_order.push(candidate.node_id);
+        }
         state.decisions.push(PromotionDecision {
             node_id: candidate.node_id,
             parent_id: candidate.parent_id,
             score: 100,
             threshold: 0,
-            should_promote: true,
+            should_promote,
             hard_reason: Some(reason),
+            budget_rejection,
             breakdown: PromotionScoreBreakdown::default(),
             subtree_node_count: candidate.subtree_node_count,
             estimated_pass_count: candidate.estimated_pass_count,
@@ -196,10 +222,14 @@ pub(crate) fn evaluate_promotion(
         let threshold =
             effective_threshold(&candidate, &state, max_surface_bytes, viewport_size, config);
         let score = breakdown.total();
-        let estimated_memory_bytes = estimate_memory_bytes(candidate.width, candidate.height);
-        let should_promote = score >= threshold;
+        let estimated_memory_bytes = candidate.base_memory_bytes;
+        let budget_rejection = (score >= threshold)
+            .then(|| promotion_layer_rejection(&state, config))
+            .flatten();
+        let should_promote = score >= threshold && budget_rejection.is_none();
         if should_promote {
             state.promoted_node_ids.insert(candidate.node_id);
+            accepted_order.push(candidate.node_id);
             state.total_estimated_memory_bytes = state
                 .total_estimated_memory_bytes
                 .saturating_add(estimated_memory_bytes);
@@ -211,6 +241,7 @@ pub(crate) fn evaluate_promotion(
             threshold,
             should_promote,
             hard_reason: None,
+            budget_rejection,
             breakdown,
             subtree_node_count: candidate.subtree_node_count,
             estimated_pass_count: candidate.estimated_pass_count,
@@ -221,15 +252,39 @@ pub(crate) fn evaluate_promotion(
         });
     }
 
+    state.total_estimated_memory_bytes =
+        topology_memory_bytes(&state.promoted_node_ids, &topology_candidates);
+    while state.total_estimated_memory_bytes > max_surface_bytes {
+        let Some(node_id) = accepted_order.pop() else {
+            break;
+        };
+        if !state.promoted_node_ids.remove(&node_id) {
+            continue;
+        }
+        if let Some(decision) = state
+            .decisions
+            .iter_mut()
+            .find(|decision| decision.node_id == node_id)
+        {
+            decision.should_promote = false;
+            decision.budget_rejection = Some(PromotionBudgetRejection::SurfaceBytesLimit);
+        }
+        state.total_estimated_memory_bytes =
+            topology_memory_bytes(&state.promoted_node_ids, &topology_candidates);
+    }
+
     state.decisions.sort_by_key(|decision| decision.node_id);
     state
 }
 
 fn estimate_surface_budget_bytes(
     viewport_size: (f32, f32),
+    scale_factor: f32,
     config: ViewportPromotionConfig,
 ) -> usize {
-    let viewport_area = viewport_size.0.max(1.0) * viewport_size.1.max(1.0);
+    let scale = scale_factor.max(0.0001);
+    let viewport_area =
+        (viewport_size.0.max(1.0) * scale).ceil() * (viewport_size.1.max(1.0) * scale).ceil();
     ((viewport_area * 4.0) * config.max_surface_bytes_multiplier.max(1.0)) as usize
 }
 
@@ -244,6 +299,64 @@ fn hard_reason(active_channels: &FxHashSet<ChannelId>) -> Option<PromotionHardRe
         return Some(PromotionHardReason::ActiveScrollLinkedMovement);
     }
     None
+}
+
+fn hard_reason_priority(reason: PromotionHardReason) -> u8 {
+    match reason {
+        PromotionHardReason::ActiveOpacityAnimation => 0,
+        PromotionHardReason::ActiveTransformAnimation => 1,
+        PromotionHardReason::ActiveScrollLinkedMovement => 2,
+    }
+}
+
+fn promotion_layer_rejection(
+    state: &PromotionState,
+    config: ViewportPromotionConfig,
+) -> Option<PromotionBudgetRejection> {
+    if state.promoted_node_ids.len() >= config.max_layers {
+        return Some(PromotionBudgetRejection::LayerLimit);
+    }
+    None
+}
+
+fn topology_memory_bytes(
+    promoted_node_ids: &FxHashSet<u64>,
+    candidates: &FxHashMap<u64, PromotionCandidate>,
+) -> usize {
+    let mut ancestors_with_promoted_descendants = FxHashSet::default();
+    for &node_id in promoted_node_ids {
+        let mut parent_id = candidates
+            .get(&node_id)
+            .and_then(|candidate| candidate.parent_id);
+        while let Some(parent) = parent_id {
+            if !ancestors_with_promoted_descendants.insert(parent) {
+                break;
+            }
+            parent_id = candidates
+                .get(&parent)
+                .and_then(|candidate| candidate.parent_id);
+        }
+    }
+
+    candidates.values().fold(0usize, |total, candidate| {
+        let has_promoted_descendant =
+            ancestors_with_promoted_descendants.contains(&candidate.node_id);
+        let base = promoted_node_ids
+            .contains(&candidate.node_id)
+            .then_some(candidate.base_memory_bytes)
+            .unwrap_or(0);
+        let composition = (promoted_node_ids.contains(&candidate.node_id)
+            && has_promoted_descendant)
+            .then_some(candidate.composition_memory_bytes)
+            .unwrap_or(0);
+        let mask = has_promoted_descendant
+            .then_some(candidate.mask_memory_bytes)
+            .unwrap_or(0);
+        total
+            .saturating_add(base)
+            .saturating_add(composition)
+            .saturating_add(mask)
+    })
 }
 
 fn score_candidate(candidate: &PromotionCandidate) -> PromotionScoreBreakdown {
@@ -387,10 +500,6 @@ fn effective_threshold(
     threshold.max(0)
 }
 
-fn estimate_memory_bytes(width: f32, height: f32) -> usize {
-    (width.max(1.0) * height.max(1.0) * 4.0).round() as usize
-}
-
 pub(crate) fn active_channels_by_node(
     claims: &FxHashMap<TrackKey<TrackTarget>, TransitionPluginId>,
 ) -> FxHashMap<u64, FxHashSet<ChannelId>> {
@@ -409,8 +518,6 @@ mod tests {
         PromotionCandidate {
             node_id,
             parent_id: None,
-            width: 320.0,
-            height: 240.0,
             subtree_node_count: 8,
             estimated_pass_count: 6,
             visible_area_ratio: 1.0,
@@ -425,6 +532,9 @@ mod tests {
                 is_scroll_container: false,
                 is_hovered: false,
             },
+            base_memory_bytes: 320 * 240 * 8,
+            composition_memory_bytes: 0,
+            mask_memory_bytes: 0,
             has_active_animator: false,
             has_composite_only_animator: false,
             active_channels: FxHashSet::default(),
@@ -435,8 +545,12 @@ mod tests {
     fn hard_reason_promotes_without_scoring() {
         let mut c = candidate(1);
         c.active_channels.insert(CHANNEL_STYLE_OPACITY);
-        let state =
-            evaluate_promotion(vec![c], (1280.0, 720.0), ViewportPromotionConfig::default());
+        let state = evaluate_promotion(
+            vec![c],
+            (1280.0, 720.0),
+            1.0,
+            ViewportPromotionConfig::default(),
+        );
         assert_eq!(state.decisions.len(), 1);
         assert!(state.decisions[0].should_promote);
         assert_eq!(
@@ -459,6 +573,7 @@ mod tests {
         let state = evaluate_promotion(
             vec![near, far],
             (1280.0, 720.0),
+            1.0,
             ViewportPromotionConfig::default(),
         );
         let near = state.decisions.iter().find(|d| d.node_id == 1).unwrap();
@@ -472,17 +587,135 @@ mod tests {
             max_layers: 1,
             ..ViewportPromotionConfig::default()
         };
-        let state = evaluate_promotion(vec![candidate(1), candidate(2)], (1280.0, 720.0), config);
+        let state = evaluate_promotion(
+            vec![candidate(1), candidate(2)],
+            (1280.0, 720.0),
+            1.0,
+            config,
+        );
         let first = state.decisions.iter().find(|d| d.node_id == 1).unwrap();
         let second = state.decisions.iter().find(|d| d.node_id == 2).unwrap();
         assert!(second.threshold >= first.threshold);
     }
 
     #[test]
+    fn max_layers_is_a_hard_cap_for_scored_candidates() {
+        let config = ViewportPromotionConfig {
+            max_layers: 1,
+            ..ViewportPromotionConfig::default()
+        };
+        let state = evaluate_promotion(
+            vec![candidate(1), candidate(2)],
+            (1280.0, 720.0),
+            1.0,
+            config,
+        );
+
+        assert_eq!(state.promoted_node_ids.len(), 1);
+        let rejected = state
+            .decisions
+            .iter()
+            .find(|decision| !decision.should_promote)
+            .expect("one otherwise-qualified candidate should hit the layer cap");
+        assert_eq!(
+            rejected.budget_rejection,
+            Some(PromotionBudgetRejection::LayerLimit)
+        );
+    }
+
+    #[test]
+    fn hard_candidates_obey_layer_cap_in_priority_order() {
+        let mut opacity = candidate(1);
+        opacity.active_channels.insert(CHANNEL_STYLE_OPACITY);
+        let mut scroll = candidate(2);
+        scroll.active_channels.insert(CHANNEL_SCROLL_Y);
+        let config = ViewportPromotionConfig {
+            max_layers: 1,
+            ..ViewportPromotionConfig::default()
+        };
+
+        let state = evaluate_promotion(vec![scroll, opacity], (1280.0, 720.0), 1.0, config);
+
+        assert_eq!(state.promoted_node_ids, FxHashSet::from_iter([1]));
+        let scroll = state
+            .decisions
+            .iter()
+            .find(|decision| decision.node_id == 2)
+            .unwrap();
+        assert_eq!(
+            scroll.budget_rejection,
+            Some(PromotionBudgetRejection::LayerLimit)
+        );
+    }
+
+    #[test]
+    fn surface_budget_rejects_candidate_that_would_exceed_it() {
+        let mut oversized = candidate(1);
+        // 100 x 100 viewport at the minimum 1x multiplier = 40,000 bytes.
+        oversized.base_memory_bytes = 40_001;
+        let config = ViewportPromotionConfig {
+            max_surface_bytes_multiplier: 1.0,
+            ..ViewportPromotionConfig::default()
+        };
+
+        let state = evaluate_promotion(vec![oversized], (100.0, 100.0), 1.0, config);
+
+        assert!(state.promoted_node_ids.is_empty());
+        assert_eq!(
+            state.decisions[0].budget_rejection,
+            Some(PromotionBudgetRejection::SurfaceBytesLimit)
+        );
+    }
+
+    #[test]
+    fn surface_budget_scales_with_physical_viewport_size() {
+        let mut candidate_2x = candidate(1);
+        candidate_2x.base_memory_bytes = 100_000;
+        let config = ViewportPromotionConfig {
+            max_surface_bytes_multiplier: 1.0,
+            ..ViewportPromotionConfig::default()
+        };
+
+        let state_1x = evaluate_promotion(vec![candidate_2x.clone()], (100.0, 100.0), 1.0, config);
+        let state_2x = evaluate_promotion(vec![candidate_2x], (100.0, 100.0), 2.0, config);
+
+        assert!(state_1x.promoted_node_ids.is_empty());
+        assert_eq!(state_2x.promoted_node_ids, FxHashSet::from_iter([1]));
+    }
+
+    #[test]
+    fn topology_budget_charges_final_surface_only_for_promoted_descendants() {
+        let mut parent = candidate(1);
+        parent.base_memory_bytes = 10_000;
+        parent.composition_memory_bytes = 25_000;
+        let mut child = candidate(2);
+        child.parent_id = Some(1);
+        child.base_memory_bytes = 10_000;
+        let config = ViewportPromotionConfig {
+            max_surface_bytes_multiplier: 1.0,
+            ..ViewportPromotionConfig::default()
+        };
+
+        // Both base targets fit in 40 KB, but the parent's final target only
+        // exists when the child is also promoted, taking the topology to 45 KB.
+        let state = evaluate_promotion(vec![parent, child], (100.0, 100.0), 1.0, config);
+
+        assert_eq!(state.promoted_node_ids, FxHashSet::from_iter([1]));
+        assert_eq!(state.total_estimated_memory_bytes, 10_000);
+        let child = state
+            .decisions
+            .iter()
+            .find(|decision| decision.node_id == 2)
+            .unwrap();
+        assert_eq!(
+            child.budget_rejection,
+            Some(PromotionBudgetRejection::SurfaceBytesLimit)
+        );
+    }
+
+    #[test]
     fn active_animator_boosts_candidate_score_without_hard_promote() {
         let mut animated = candidate(1);
-        animated.width = 56.0;
-        animated.height = 56.0;
         animated.subtree_node_count = 1;
         animated.estimated_pass_count = 1;
         animated.viewport_coverage = 0.01;
@@ -494,6 +727,7 @@ mod tests {
         let state = evaluate_promotion(
             vec![animated],
             (1280.0, 720.0),
+            1.0,
             ViewportPromotionConfig::default(),
         );
         assert_eq!(state.decisions.len(), 1);
@@ -512,6 +746,7 @@ mod tests {
         let state = evaluate_promotion(
             vec![animated],
             (1280.0, 720.0),
+            1.0,
             ViewportPromotionConfig::default(),
         );
         assert_eq!(state.decisions.len(), 1);
@@ -522,8 +757,6 @@ mod tests {
     #[test]
     fn composite_only_animator_gets_extra_bonus() {
         let mut animated = candidate(1);
-        animated.width = 56.0;
-        animated.height = 56.0;
         animated.subtree_node_count = 1;
         animated.estimated_pass_count = 1;
         animated.viewport_coverage = 0.01;
@@ -536,6 +769,7 @@ mod tests {
         let state = evaluate_promotion(
             vec![animated],
             (1280.0, 720.0),
+            1.0,
             ViewportPromotionConfig::default(),
         );
         let decision = &state.decisions[0];

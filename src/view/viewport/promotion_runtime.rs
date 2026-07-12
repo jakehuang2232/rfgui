@@ -12,10 +12,12 @@ impl Viewport {
             &active_animator_hints,
             &active_channels,
             (self.logical_width, self.logical_height),
+            self.scale_factor,
         );
         let next_promotion_state = evaluate_promotion(
             candidates,
             (self.logical_width, self.logical_height),
+            self.scale_factor,
             self.compositor.promotion_config,
         );
         let promotion_topology_changed = self.compositor.promotion_state.promoted_node_ids
@@ -150,15 +152,7 @@ impl Viewport {
                 root.promotion_composite_bounds(),
                 ctx.paint_offset(),
             );
-        let opacity = if root
-            .as_any()
-            .downcast_ref::<crate::view::base_component::Element>()
-            .is_some()
-        {
-            1.0
-        } else {
-            root.promotion_node_info().opacity.clamp(0.0, 1.0)
-        };
+        let opacity = crate::view::base_component::promoted_composite_opacity(root);
         let parent_target = ctx.current_target().unwrap_or_else(|| {
             let target = ctx.allocate_target(graph);
             ctx.set_current_target(target);
