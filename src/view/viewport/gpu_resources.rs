@@ -6,6 +6,73 @@
 use super::*;
 
 impl Viewport {
+    pub(crate) fn reclaim_idle_frame_gpu_pools(&mut self) {
+        const MAX_IDLE_FRAMES: u64 = 120;
+        let frame_number = self.frame.frame_number;
+        self.frame.draw_rect_uniform_pool.retain(|entry| {
+            let keep = frame_number.saturating_sub(entry.last_used_frame) <= MAX_IDLE_FRAMES;
+            if !keep {
+                entry.buffer.destroy();
+            }
+            keep
+        });
+        self.frame.draw_rect_uniform_cursor = self
+            .frame
+            .draw_rect_uniform_cursor
+            .min(self.frame.draw_rect_uniform_pool.len());
+
+        let Some(entry) = self.frame.gradient_stops_buffer.as_ref() else {
+            return;
+        };
+        if frame_number.saturating_sub(entry.last_used_frame) > MAX_IDLE_FRAMES {
+            if let Some(entry) = self.frame.gradient_stops_buffer.take() {
+                entry.buffer.destroy();
+            }
+            for entry in &mut self.frame.draw_rect_uniform_pool {
+                entry.bind_groups.clear();
+            }
+            return;
+        }
+
+        use crate::view::render_pass::draw_rect_pass::GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY;
+        let previous_usage = self.frame.gradient_stops_byte_cursor;
+        let should_shrink = entry.size > GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY
+            && previous_usage.saturating_mul(4) <= entry.size
+            && frame_number.saturating_sub(entry.last_high_usage_frame) > MAX_IDLE_FRAMES;
+        if !should_shrink {
+            return;
+        }
+        let Some(device) = self.gpu.device.as_ref() else {
+            return;
+        };
+        let new_size = previous_usage
+            .max(1)
+            .checked_next_power_of_two()
+            .unwrap_or(u64::MAX)
+            .max(GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Gradient Stops Storage Buffer"),
+            size: new_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if let Some(old) = self
+            .frame
+            .gradient_stops_buffer
+            .replace(GradientStopsBufferEntry {
+                buffer,
+                size: new_size,
+                last_used_frame: frame_number,
+                last_high_usage_frame: frame_number,
+            })
+        {
+            old.buffer.destroy();
+        }
+        for entry in &mut self.frame.draw_rect_uniform_pool {
+            entry.bind_groups.clear();
+        }
+    }
+
     pub(crate) fn touch_persistent_render_targets(
         &mut self,
         stable_keys: impl IntoIterator<Item = u64>,
@@ -348,6 +415,7 @@ impl Viewport {
                 .push(DrawRectUniformBufferEntry {
                     buffer,
                     size: required_size,
+                    last_used_frame: self.frame.frame_number,
                     bind_groups: FxHashMap::default(),
                 });
         } else if self.frame.draw_rect_uniform_pool[target_index].size < required_size {
@@ -362,12 +430,14 @@ impl Viewport {
                         mapped_at_creation: false,
                     }),
                     size: required_size,
+                    last_used_frame: self.frame.frame_number,
                     bind_groups: FxHashMap::default(),
                 },
             );
             old.buffer.destroy();
         }
         let dynamic_offset = self.frame.draw_rect_uniform_offset;
+        self.frame.draw_rect_uniform_pool[target_index].last_used_frame = self.frame.frame_number;
         let buffer = self.frame.draw_rect_uniform_pool[target_index]
             .buffer
             .clone();
@@ -445,6 +515,8 @@ impl Viewport {
             self.frame.gradient_stops_buffer = Some(GradientStopsBufferEntry {
                 buffer,
                 size: new_size,
+                last_used_frame: self.frame.frame_number,
+                last_high_usage_frame: self.frame.frame_number,
             });
             buffer_grew = true;
         }
@@ -456,7 +528,11 @@ impl Viewport {
             }
         }
 
-        let entry = self.frame.gradient_stops_buffer.as_ref()?;
+        let entry = self.frame.gradient_stops_buffer.as_mut()?;
+        entry.last_used_frame = self.frame.frame_number;
+        if needed_end.saturating_mul(2) > entry.size {
+            entry.last_high_usage_frame = self.frame.frame_number;
+        }
         let byte_offset = self.frame.gradient_stops_byte_cursor;
         #[cfg(target_arch = "wasm32")]
         {
@@ -497,6 +573,8 @@ impl Viewport {
             self.frame.gradient_stops_buffer = Some(GradientStopsBufferEntry {
                 buffer,
                 size: GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY,
+                last_used_frame: self.frame.frame_number,
+                last_high_usage_frame: self.frame.frame_number,
             });
         }
         self.frame.gradient_stops_buffer.as_ref().map(|e| &e.buffer)

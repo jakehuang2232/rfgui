@@ -15,6 +15,11 @@ use wasm_bindgen::JsCast;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 
+const IMAGE_CACHE_MAX_ENTRIES: usize = 4096;
+const IMAGE_CACHE_EVICT_TO_ENTRIES: usize = 3072;
+const IMAGE_CACHE_PRESSURE_BYTES: usize = 64 * 1024 * 1024;
+const IMAGE_CACHE_EVICT_TO_BYTES: usize = 48 * 1024 * 1024;
+
 #[derive(Clone, Debug)]
 pub struct ReadyImage {
     pub width: u32,
@@ -56,6 +61,49 @@ struct ImageEntry {
     state: ImageState,
     ref_count: usize,
     last_access_tick: u64,
+}
+
+impl ImageEntry {
+    fn estimated_bytes(&self) -> usize {
+        match &self.state {
+            ImageState::Loading => 0,
+            ImageState::Ready { pixels, .. } => pixels.len(),
+            ImageState::Error { message } => message.len(),
+        }
+    }
+}
+
+fn evict_image_entries_under_pressure(entries: &mut FxHashMap<u64, ImageEntry>) {
+    let mut estimated_bytes = entries
+        .values()
+        .map(ImageEntry::estimated_bytes)
+        .sum::<usize>();
+    if entries.len() <= IMAGE_CACHE_MAX_ENTRIES && estimated_bytes <= IMAGE_CACHE_PRESSURE_BYTES {
+        return;
+    }
+
+    let mut candidates = entries
+        .iter()
+        .filter_map(|(key, entry)| {
+            (entry.ref_count == 0).then_some((
+                *key,
+                entry.last_access_tick,
+                entry.estimated_bytes(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by_key(|(_, tick, _)| *tick);
+
+    for (key, _, bytes) in candidates {
+        if entries.len() <= IMAGE_CACHE_EVICT_TO_ENTRIES
+            && estimated_bytes <= IMAGE_CACHE_EVICT_TO_BYTES
+        {
+            break;
+        }
+        if entries.remove(&key).is_some() {
+            estimated_bytes = estimated_bytes.saturating_sub(bytes);
+        }
+    }
 }
 
 /// RAII handle for a cached image asset. Holds a ref on the entry for its
@@ -250,6 +298,7 @@ pub fn acquire_image_resource(source: &ImageSource) -> ImageHandle {
                                 entry.state = ImageState::Error { message };
                             }
                         }
+                        evict_image_entries_under_pressure(&mut entries);
                         mark_redraw_dirty();
                     });
                 }
@@ -276,6 +325,7 @@ pub fn acquire_image_resource(source: &ImageSource) -> ImageHandle {
                                 entry.state = ImageState::Error { message };
                             }
                         }
+                        evict_image_entries_under_pressure(&mut entries);
                         mark_redraw_dirty();
                     });
                 }
@@ -307,6 +357,7 @@ pub fn acquire_image_resource(source: &ImageSource) -> ImageHandle {
                     ref_count: 1,
                     last_access_tick: tick,
                 });
+            evict_image_entries_under_pressure(&mut entries);
             ImageHandle { key }
         }
     }
@@ -322,6 +373,7 @@ fn release_image_entry(key: u64) {
         entry.ref_count -= 1;
     }
     entry.last_access_tick = tick;
+    evict_image_entries_under_pressure(&mut entries);
 }
 
 pub fn snapshot_image(key: u64) -> Option<ImageSnapshot> {
@@ -398,8 +450,12 @@ pub fn image_asset_retention_info(key: u64) -> Option<ImageAssetRetentionInfo> {
 
 #[cfg(test)]
 mod tests {
-    use super::absolute_normalized_path;
+    use super::{
+        ImageEntry, ImageState, absolute_normalized_path, evict_image_entries_under_pressure,
+    };
+    use rustc_hash::FxHashMap;
     use std::path::Path;
+    use std::sync::Arc;
 
     #[test]
     fn normalize_relative_path_without_fs_resolution() {
@@ -408,5 +464,31 @@ mod tests {
         assert!(text.ends_with("/examples/assets/test.png"));
         assert!(!text.contains("/./"));
         assert!(!text.contains("/../"));
+    }
+
+    #[test]
+    fn image_cache_evicts_unreferenced_entries_but_keeps_live_entries() {
+        let mut entries = FxHashMap::default();
+        for key in 0..4097_u64 {
+            entries.insert(
+                key,
+                ImageEntry {
+                    state: ImageState::Ready {
+                        width: 1,
+                        height: 1,
+                        pixels: Arc::from([0_u8; 4]),
+                        generation: key,
+                        uploaded_generation: None,
+                    },
+                    ref_count: usize::from(key == 0),
+                    last_access_tick: key,
+                },
+            );
+        }
+
+        evict_image_entries_under_pressure(&mut entries);
+
+        assert!(entries.contains_key(&0));
+        assert!(entries.len() <= super::IMAGE_CACHE_EVICT_TO_ENTRIES);
     }
 }

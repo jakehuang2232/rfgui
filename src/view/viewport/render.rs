@@ -1258,6 +1258,7 @@ impl Viewport {
             return None;
         }
         self.frame.offscreen_render_target_pool.begin_frame();
+        self.reclaim_idle_frame_gpu_pools();
         self.frame.draw_rect_uniform_cursor = 0;
         self.frame.draw_rect_uniform_offset = 0;
         self.frame.gradient_stops_byte_cursor = 0;

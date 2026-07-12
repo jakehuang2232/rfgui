@@ -583,6 +583,14 @@ impl InlineIfcCache {
         }
     }
 
+    fn slim_cold_entries(&mut self, keep: &InlineIfcShapeCacheKey) {
+        for (key, entry) in &mut self.entries {
+            if key != keep {
+                entry.context.clear_derived_caches();
+            }
+        }
+    }
+
     pub(crate) fn lookup_input(&self, input: &InlineIfcInput) -> InlineIfcCacheLookup<'_> {
         let cache_key = input.cache_key();
         self.lookup_key(&cache_key)
@@ -617,6 +625,7 @@ impl InlineIfcCache {
         );
         self.touch(&shape_key);
         self.evict_to_capacity(&shape_key);
+        self.slim_cold_entries(&shape_key);
         self.entries
             .get(&shape_key)
             .expect("inserted IFC cache entry should be available")
@@ -642,6 +651,7 @@ impl InlineIfcCache {
 
         if invalidation == InlineIfcInvalidation::Reuse {
             self.touch(&shape_key);
+            self.slim_cold_entries(&shape_key);
             let entry = self
                 .entries
                 .get(&shape_key)
@@ -664,6 +674,7 @@ impl InlineIfcCache {
         );
         self.touch(&shape_key);
         self.evict_to_capacity(&shape_key);
+        self.slim_cold_entries(&shape_key);
         let entry = self
             .entries
             .get(&shape_key)
@@ -1564,6 +1575,15 @@ pub(crate) struct InlineFormattingContext {
 }
 
 impl InlineFormattingContext {
+    fn clear_derived_caches(&mut self) {
+        self.glyph_items_cache.take();
+        self.snapshot_cache.take();
+        self.caret_stops_cache.take();
+        self.paint_input_cache.take();
+        self.source_line_rects_cache.take();
+        self.source_text_line_rects_cache.take();
+    }
+
     pub(crate) fn build(input: InlineIfcInput) -> Self {
         let layout_options = InlineIfcLayoutOptions::from_input(&input);
         Self::build_with_options(input, layout_options)
@@ -3856,6 +3876,30 @@ mod tests {
             ),
             "latest entry must be retained"
         );
+    }
+
+    #[test]
+    fn cache_drops_derived_data_from_cold_entries() {
+        let mut cache = InlineIfcCache::new();
+        let first_options = InlineIfcLayoutOptions::new(Some(100.0), true);
+        let first_key =
+            plain_text_input("cold derived data").cache_key_with_layout_options(first_options);
+        let _ = cache.update_with_options(plain_text_input("cold derived data"), first_options);
+        let first_shape_key = InlineIfcShapeCacheKey::from_cache_key(&first_key);
+        let first = cache.entries.get(&first_shape_key).expect("first shape");
+        let _ = first.context.glyph_items_ref();
+        assert!(first.context.glyph_items_cache.get().is_some());
+
+        let _ = cache.update_with_options(
+            plain_text_input("cold derived data"),
+            InlineIfcLayoutOptions::new(Some(200.0), true),
+        );
+
+        let first = cache
+            .entries
+            .get(&first_shape_key)
+            .expect("retained cold shape");
+        assert!(first.context.glyph_items_cache.get().is_none());
     }
 
     #[test]

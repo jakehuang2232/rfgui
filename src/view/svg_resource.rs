@@ -12,6 +12,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 const SVG_RASTER_BUCKET_SMALL: u32 = 32;
 const SVG_RASTER_BUCKET_LARGE: u32 = 64;
 const SVG_RASTER_BUCKET_THRESHOLD: u32 = 256;
+const SVG_DOCUMENT_MAX_ENTRIES: usize = 1024;
+const SVG_DOCUMENT_EVICT_TO_ENTRIES: usize = 768;
+const SVG_DOCUMENT_PRESSURE_BYTES: usize = 32 * 1024 * 1024;
+const SVG_DOCUMENT_EVICT_TO_BYTES: usize = 24 * 1024 * 1024;
+const SVG_RASTER_MAX_ENTRIES: usize = 1024;
+const SVG_RASTER_EVICT_TO_ENTRIES: usize = 768;
 const SVG_RASTER_PRESSURE_BYTES: u64 = 32 * 1024 * 1024;
 const SVG_RASTER_EVICT_TO_BYTES: u64 = 24 * 1024 * 1024;
 
@@ -55,6 +61,27 @@ enum SvgDocumentOrigin {
 struct SvgDocumentEntry {
     state: SvgDocumentState,
     origin: SvgDocumentOrigin,
+    estimated_bytes: usize,
+}
+
+impl SvgDocumentEntry {
+    fn ref_count(&self) -> usize {
+        match &self.origin {
+            SvgDocumentOrigin::Path { ref_count, .. }
+            | SvgDocumentOrigin::Content { ref_count, .. } => *ref_count,
+        }
+    }
+
+    fn last_access_tick(&self) -> u64 {
+        match &self.origin {
+            SvgDocumentOrigin::Path {
+                last_access_tick, ..
+            }
+            | SvgDocumentOrigin::Content {
+                last_access_tick, ..
+            } => *last_access_tick,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -171,16 +198,22 @@ fn parse_svg_intrinsic_size(tree: &Tree) -> (f32, f32) {
     (size.width().max(1.0), size.height().max(1.0))
 }
 
-fn load_svg_source(source: &SvgSource) -> Result<(Arc<Tree>, f32, f32), Arc<str>> {
+fn load_svg_source(source: &SvgSource) -> Result<(Arc<Tree>, f32, f32, usize), Arc<str>> {
     let svg_text = match source {
         SvgSource::Path(path) => fs::read_to_string(path).map_err(|err| {
             Arc::<str>::from(format!("Failed to load svg {}: {err}", path.display()))
         })?,
         SvgSource::Content(content) => content.clone(),
     };
+    let source_bytes = svg_text.len();
     let tree = parse_svg_tree(&svg_text)?;
     let (intrinsic_width, intrinsic_height) = parse_svg_intrinsic_size(&tree);
-    Ok((Arc::new(tree), intrinsic_width, intrinsic_height))
+    Ok((
+        Arc::new(tree),
+        intrinsic_width,
+        intrinsic_height,
+        source_bytes,
+    ))
 }
 
 fn raster_key(document_key: u64, width: u32, height: u32) -> u64 {
@@ -223,16 +256,50 @@ fn total_svg_raster_bytes(rasters: &FxHashMap<u64, SvgRasterEntry>) -> u64 {
     rasters.values().map(SvgRasterEntry::byte_size).sum()
 }
 
+fn evict_svg_documents_under_pressure(documents: &mut FxHashMap<u64, SvgDocumentEntry>) {
+    let mut estimated_bytes = documents
+        .values()
+        .map(|entry| entry.estimated_bytes)
+        .sum::<usize>();
+    if documents.len() <= SVG_DOCUMENT_MAX_ENTRIES && estimated_bytes <= SVG_DOCUMENT_PRESSURE_BYTES
+    {
+        return;
+    }
+
+    let mut candidates = documents
+        .iter()
+        .filter_map(|(key, entry)| {
+            (entry.ref_count() == 0).then_some((
+                *key,
+                entry.last_access_tick(),
+                entry.estimated_bytes,
+            ))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by_key(|(_, tick, _)| *tick);
+
+    for (key, _, bytes) in candidates {
+        if documents.len() <= SVG_DOCUMENT_EVICT_TO_ENTRIES
+            && estimated_bytes <= SVG_DOCUMENT_EVICT_TO_BYTES
+        {
+            break;
+        }
+        if documents.remove(&key).is_some() {
+            estimated_bytes = estimated_bytes.saturating_sub(bytes);
+        }
+    }
+}
+
 fn evict_svg_rasters_under_pressure(rasters: &mut FxHashMap<u64, SvgRasterEntry>) {
     let mut total_bytes = total_svg_raster_bytes(rasters);
-    if total_bytes <= SVG_RASTER_PRESSURE_BYTES {
+    if rasters.len() <= SVG_RASTER_MAX_ENTRIES && total_bytes <= SVG_RASTER_PRESSURE_BYTES {
         return;
     }
 
     let mut candidates = rasters
         .iter()
         .filter_map(|(key, entry)| {
-            if entry.ref_count == 0 && entry.byte_size() > 0 {
+            if entry.ref_count == 0 {
                 Some((*key, entry.last_access_tick, entry.byte_size()))
             } else {
                 None
@@ -242,7 +309,8 @@ fn evict_svg_rasters_under_pressure(rasters: &mut FxHashMap<u64, SvgRasterEntry>
     candidates.sort_by_key(|(_, tick, _)| *tick);
 
     for (key, _, bytes) in candidates {
-        if total_bytes <= SVG_RASTER_EVICT_TO_BYTES {
+        if rasters.len() <= SVG_RASTER_EVICT_TO_ENTRIES && total_bytes <= SVG_RASTER_EVICT_TO_BYTES
+        {
             break;
         }
         if rasters.remove(&key).is_some() {
@@ -273,6 +341,10 @@ pub fn acquire_svg_document(source: &SvgSource) -> u64 {
                 }
             }
         } else {
+            let estimated_bytes = match source {
+                SvgSource::Path(_) => normalized_path.as_ref().map_or(0, |path| path.len()),
+                SvgSource::Content(content) => content.len(),
+            };
             let origin = match source {
                 SvgSource::Path(_) => SvgDocumentOrigin::Path {
                     _normalized_path: normalized_path.expect("path source should normalize"),
@@ -289,8 +361,10 @@ pub fn acquire_svg_document(source: &SvgSource) -> u64 {
                 SvgDocumentEntry {
                     state: SvgDocumentState::Loading,
                     origin,
+                    estimated_bytes,
                 },
             );
+            evict_svg_documents_under_pressure(&mut entries);
             spawn_loader = true;
         }
     }
@@ -305,13 +379,20 @@ pub fn acquire_svg_document(source: &SvgSource) -> u64 {
                 return key;
             };
             entry.state = match loaded {
-                Ok((tree, intrinsic_width, intrinsic_height)) => SvgDocumentState::Ready {
-                    tree,
-                    intrinsic_width,
-                    intrinsic_height,
-                },
-                Err(message) => SvgDocumentState::Error { message },
+                Ok((tree, intrinsic_width, intrinsic_height, source_bytes)) => {
+                    entry.estimated_bytes = source_bytes;
+                    SvgDocumentState::Ready {
+                        tree,
+                        intrinsic_width,
+                        intrinsic_height,
+                    }
+                }
+                Err(message) => {
+                    entry.estimated_bytes = message.len();
+                    SvgDocumentState::Error { message }
+                }
             };
+            evict_svg_documents_under_pressure(&mut entries);
             mark_redraw_dirty();
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -323,13 +404,20 @@ pub fn acquire_svg_document(source: &SvgSource) -> u64 {
                     return;
                 };
                 entry.state = match loaded {
-                    Ok((tree, intrinsic_width, intrinsic_height)) => SvgDocumentState::Ready {
-                        tree,
-                        intrinsic_width,
-                        intrinsic_height,
-                    },
-                    Err(message) => SvgDocumentState::Error { message },
+                    Ok((tree, intrinsic_width, intrinsic_height, source_bytes)) => {
+                        entry.estimated_bytes = source_bytes;
+                        SvgDocumentState::Ready {
+                            tree,
+                            intrinsic_width,
+                            intrinsic_height,
+                        }
+                    }
+                    Err(message) => {
+                        entry.estimated_bytes = message.len();
+                        SvgDocumentState::Error { message }
+                    }
                 };
+                evict_svg_documents_under_pressure(&mut entries);
                 mark_redraw_dirty();
             });
         }
@@ -360,6 +448,7 @@ pub fn release_svg_document(key: u64) {
             *last_access_tick = tick;
         }
     }
+    evict_svg_documents_under_pressure(&mut entries);
 }
 
 pub fn snapshot_svg_document(key: u64) -> Option<SvgDocumentSnapshot> {
@@ -557,7 +646,12 @@ pub fn svg_asset_retention_info(key: u64) -> Option<ImageAssetRetentionInfo> {
 
 #[cfg(test)]
 mod tests {
-    use super::quantize_svg_raster_size;
+    use super::{
+        SvgDocumentEntry, SvgDocumentOrigin, SvgDocumentState, SvgRasterEntry, SvgRasterState,
+        evict_svg_documents_under_pressure, evict_svg_rasters_under_pressure,
+        quantize_svg_raster_size,
+    };
+    use rustc_hash::FxHashMap;
 
     #[test]
     fn quantize_svg_raster_size_rounds_up_small_sizes_to_32px_buckets() {
@@ -568,5 +662,48 @@ mod tests {
     #[test]
     fn quantize_svg_raster_size_rounds_large_sizes_to_64px_buckets() {
         assert_eq!(quantize_svg_raster_size(257, 513), (320, 576));
+    }
+
+    #[test]
+    fn svg_document_cache_evicts_unreferenced_entries() {
+        let mut entries = FxHashMap::default();
+        for key in 0..1025_u64 {
+            entries.insert(
+                key,
+                SvgDocumentEntry {
+                    state: SvgDocumentState::Loading,
+                    origin: SvgDocumentOrigin::Content {
+                        ref_count: usize::from(key == 0),
+                        last_access_tick: key,
+                    },
+                    estimated_bytes: 1,
+                },
+            );
+        }
+
+        evict_svg_documents_under_pressure(&mut entries);
+
+        assert!(entries.contains_key(&0));
+        assert!(entries.len() <= super::SVG_DOCUMENT_EVICT_TO_ENTRIES);
+    }
+
+    #[test]
+    fn svg_raster_cache_caps_zero_byte_entries() {
+        let mut entries = FxHashMap::default();
+        for key in 0..1025_u64 {
+            entries.insert(
+                key,
+                SvgRasterEntry {
+                    state: SvgRasterState::Loading,
+                    ref_count: usize::from(key == 0),
+                    last_access_tick: key,
+                },
+            );
+        }
+
+        evict_svg_rasters_under_pressure(&mut entries);
+
+        assert!(entries.contains_key(&0));
+        assert!(entries.len() <= super::SVG_RASTER_EVICT_TO_ENTRIES);
     }
 }

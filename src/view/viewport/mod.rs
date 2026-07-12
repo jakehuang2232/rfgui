@@ -466,6 +466,7 @@ pub(super) struct FrameBufferEntry {
 pub(super) struct DrawRectUniformBufferEntry {
     pub(super) buffer: wgpu::Buffer,
     pub(super) size: u64,
+    pub(super) last_used_frame: u64,
     /// Cached bind groups keyed by layout_cache_key.  The bind group binds the buffer
     /// at offset 0 / size=slot_size; the per-draw dynamic offset is supplied separately,
     /// so one bind group is valid for *all* slots in this buffer.
@@ -475,6 +476,8 @@ pub(super) struct DrawRectUniformBufferEntry {
 pub(super) struct GradientStopsBufferEntry {
     pub(super) buffer: wgpu::Buffer,
     pub(super) size: u64,
+    pub(super) last_used_frame: u64,
+    pub(super) last_high_usage_frame: u64,
 }
 
 pub(super) struct SampledTextureEntry {

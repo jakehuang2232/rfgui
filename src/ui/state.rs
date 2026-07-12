@@ -546,6 +546,22 @@ pub fn current_build_depth() -> usize {
     STORE.with(|store| store.borrow().build_depth)
 }
 
+fn shrink_map_if_sparse<K: Eq + Hash, V>(map: &mut FxHashMap<K, V>) {
+    const MIN_CAPACITY_BEFORE_SHRINK: usize = 256;
+    let target = map.len().saturating_mul(2).max(16);
+    if map.capacity() > MIN_CAPACITY_BEFORE_SHRINK && map.capacity() > target.saturating_mul(2) {
+        map.shrink_to(target);
+    }
+}
+
+fn shrink_set_if_sparse<T: Eq + Hash>(set: &mut FxHashSet<T>) {
+    const MIN_CAPACITY_BEFORE_SHRINK: usize = 256;
+    let target = set.len().saturating_mul(2).max(16);
+    if set.capacity() > MIN_CAPACITY_BEFORE_SHRINK && set.capacity() > target.saturating_mul(2) {
+        set.shrink_to(target);
+    }
+}
+
 pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
     STORE.with(|store| {
         let mut store = store.borrow_mut();
@@ -576,12 +592,18 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
                 .retain(|key, _| live_global.contains(key));
             // Prune memo cache of components that did not render this build.
             store.memo_cache.retain(|k, _| live.contains(k));
+            shrink_map_if_sparse(&mut store.slots);
+            shrink_map_if_sparse(&mut store.global_component_keys);
+            shrink_map_if_sparse(&mut store.memo_cache);
+            shrink_set_if_sparse(&mut store.live_keys);
+            shrink_set_if_sparse(&mut store.live_global_keys);
+            shrink_set_if_sparse(&mut store.active_build_global_keys);
             LIVE_TIMER_HOOKS.with(|hooks| {
                 let live_hooks = hooks.borrow().clone();
                 TIMER_STORE.with(|timers| {
-                    timers
-                        .borrow_mut()
-                        .retain(|key, _| live_hooks.contains(key));
+                    let mut timers = timers.borrow_mut();
+                    timers.retain(|key, _| live_hooks.contains(key));
+                    shrink_map_if_sparse(&mut timers);
                 });
             });
             // Prune mount entries for unmounted components first so their
@@ -590,24 +612,32 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
             LIVE_MOUNT_HOOKS.with(|hooks| {
                 let live_hooks = hooks.borrow().clone();
                 MOUNT_STORE.with(|mounts| {
-                    mounts
-                        .borrow_mut()
-                        .retain(|key, _| live_hooks.contains(key));
+                    let mut mounts = mounts.borrow_mut();
+                    mounts.retain(|key, _| live_hooks.contains(key));
+                    shrink_map_if_sparse(&mut mounts);
                 });
             });
             LIVE_VIEWPORT_POINTER_HOOKS.with(|hooks| {
                 let live_hooks = hooks.borrow().clone();
                 VIEWPORT_POINTER_DOWN_HOOKS.with(|store| {
-                    store.borrow_mut().retain(|key, _| live_hooks.contains(key));
+                    let mut store = store.borrow_mut();
+                    store.retain(|key, _| live_hooks.contains(key));
+                    shrink_map_if_sparse(&mut store);
                 });
                 VIEWPORT_POINTER_MOVE_HOOKS.with(|store| {
-                    store.borrow_mut().retain(|key, _| live_hooks.contains(key));
+                    let mut store = store.borrow_mut();
+                    store.retain(|key, _| live_hooks.contains(key));
+                    shrink_map_if_sparse(&mut store);
                 });
                 VIEWPORT_POINTER_UP_HOOKS.with(|store| {
-                    store.borrow_mut().retain(|key, _| live_hooks.contains(key));
+                    let mut store = store.borrow_mut();
+                    store.retain(|key, _| live_hooks.contains(key));
+                    shrink_map_if_sparse(&mut store);
                 });
                 VIEWPORT_POINTER_STATE_HOOKS.with(|store| {
-                    store.borrow_mut().retain(|key| live_hooks.contains(key));
+                    let mut store = store.borrow_mut();
+                    store.retain(|key| live_hooks.contains(key));
+                    shrink_set_if_sparse(&mut store);
                 });
             });
             drain_pending_mounts();
