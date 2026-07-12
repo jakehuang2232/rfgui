@@ -115,6 +115,21 @@ impl Layoutable for TextArea {
         placement: LayoutPlacement,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
+        // `measure` clamps the viewport to its incoming max-height, but an
+        // auto-height parent can then grow from TextArea's measured content.
+        // By place time `layout_size.height` is the final assigned height
+        // (or the measured content height when no setter was needed), so use
+        // it to reveal rows added by a wrap reflow. Do not derive this from
+        // `content_size`: an explicitly shorter parent assignment must stay
+        // authoritative so caret-follow scrolling continues to work.
+        let final_height = self.layout_state.layout_size.height.max(0.0);
+        if final_height <= placement.available_height.max(0.0) + f32::EPSILON
+            && (self.viewport_size.height - final_height).abs() > f32::EPSILON
+        {
+            self.viewport_size.height = final_height;
+            self.clamp_scroll_to_content();
+        }
+
         let x = placement.parent_x + placement.visual_offset_x + self.flow_offset.x;
         let y = placement.parent_y + placement.visual_offset_y + self.flow_offset.y;
         self.layout_state.layout_position = Position { x, y };
