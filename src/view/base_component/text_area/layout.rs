@@ -115,17 +115,6 @@ impl Layoutable for TextArea {
         placement: LayoutPlacement,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
-        let viewport_height = self
-            .layout_state
-            .content_size
-            .height
-            .min(placement.available_height.max(0.0))
-            .max(0.0);
-        if (self.viewport_size.height - viewport_height).abs() > f32::EPSILON {
-            self.viewport_size.height = viewport_height;
-            self.clamp_scroll_to_content();
-        }
-
         let x = placement.parent_x + placement.visual_offset_x + self.flow_offset.x;
         let y = placement.parent_y + placement.visual_offset_y + self.flow_offset.y;
         self.layout_state.layout_position = Position { x, y };
@@ -1088,6 +1077,64 @@ mod tests {
 
             assert!(text_area.scroll_y > 0.0);
             assert!(caret_y + caret_h <= viewport_bottom + 0.5);
+        });
+    }
+
+    #[test]
+    fn place_preserves_parent_assigned_height_for_vertical_caret_follow() {
+        let content = "one\ntwo\nthree\nfour\nfive";
+        let mut text_area = TextArea::new();
+        text_area.content = content.to_string();
+        text_area.cursor_char = content.chars().count();
+        text_area.font_size = 14.0;
+        text_area.line_height = 1.25;
+        text_area.pending_caret_scroll = true;
+
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = crate::view::test_support::commit_element(
+            &mut arena,
+            Box::new(text_area) as Box<dyn ElementTrait>,
+        );
+        arena.with_element_taken(root, |el, _| {
+            let text_area = el.as_any_mut().downcast_mut::<TextArea>().unwrap();
+            text_area.set_self_node_key(root);
+        });
+        arena.with_element_taken(root, |el, arena| {
+            el.measure(
+                LayoutConstraints {
+                    max_width: 200.0,
+                    max_height: 600.0,
+                    viewport_width: 200.0,
+                    viewport_height: 600.0,
+                    percent_base_width: Some(200.0),
+                    percent_base_height: Some(600.0),
+                },
+                arena,
+            );
+            el.set_layout_height(35.0);
+            el.place(
+                LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: 0.0,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: 200.0,
+                    available_height: 600.0,
+                    viewport_width: 200.0,
+                    viewport_height: 600.0,
+                    percent_base_width: Some(200.0),
+                    percent_base_height: Some(600.0),
+                },
+                arena,
+            );
+        });
+
+        arena.with_element_taken_ref(root, |el, arena| {
+            let text_area = el.as_any().downcast_ref::<TextArea>().unwrap();
+            let (_, caret_y, caret_h) = text_area.caret_screen_position(arena).expect("caret");
+            assert_eq!(text_area.viewport_size.height, 35.0);
+            assert!(text_area.scroll_y > 0.0);
+            assert!(caret_y + caret_h <= 35.5);
         });
     }
 
