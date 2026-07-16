@@ -1,7 +1,11 @@
 use crate::transition::AnimationPromotionHint;
-use crate::view::base_component::{BoxModelSnapshot, ElementTrait};
+use crate::view::base_component::{
+    BoxModelSnapshot, ElementTrait, persistent_target_texture_descriptors,
+    promoted_layer_stable_key, texture_desc_for_logical_bounds,
+};
 use crate::view::node_arena::NodeKey;
 use crate::view::promotion::{PromotedLayerUpdate, PromotedLayerUpdateKind, PromotionCandidate};
+use crate::view::raster_cost::texture_desc_payload_bytes;
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
 use std::hash::{Hash, Hasher};
@@ -13,6 +17,7 @@ pub(crate) fn collect_promotion_candidates(
     active_channels: &FxHashMap<u64, FxHashSet<crate::transition::ChannelId>>,
     viewport_size: (f32, f32),
     scale_factor: f32,
+    target_format: wgpu::TextureFormat,
 ) -> Vec<PromotionCandidate> {
     /// Walk and collect candidates.
     ///
@@ -29,6 +34,7 @@ pub(crate) fn collect_promotion_candidates(
         active_channels: &FxHashMap<u64, FxHashSet<crate::transition::ChannelId>>,
         viewport_size: (f32, f32),
         scale_factor: f32,
+        target_format: wgpu::TextureFormat,
         arena: &crate::view::node_arena::NodeArena,
         out: &mut Vec<PromotionCandidate>,
         ancestor_supports_promotion: bool,
@@ -50,6 +56,7 @@ pub(crate) fn collect_promotion_candidates(
                 active_channels,
                 viewport_size,
                 scale_factor,
+                target_format,
                 arena,
                 out,
                 descendants_supported,
@@ -68,7 +75,7 @@ pub(crate) fn collect_promotion_candidates(
             .get(&snapshot.node_id)
             .copied()
             .unwrap_or_default();
-        let target_memory_bytes = promoted_target_memory_bytes(node, scale_factor);
+        let target_memory_bytes = promoted_target_memory_bytes(node, scale_factor, target_format);
         out.push(PromotionCandidate {
             node_id: snapshot.node_id,
             parent_id: snapshot.parent_id,
@@ -106,6 +113,7 @@ pub(crate) fn collect_promotion_candidates(
             active_channels,
             viewport_size,
             scale_factor,
+            target_format,
             arena,
             &mut out,
             true,
@@ -114,26 +122,50 @@ pub(crate) fn collect_promotion_candidates(
     out
 }
 
-fn promoted_target_memory_bytes(node: &dyn ElementTrait, scale_factor: f32) -> usize {
-    let bounds = node.promotion_composite_bounds();
-    let scale = scale_factor.max(0.0001);
-    let origin_x = (bounds.x * scale).floor().max(0.0) as u64;
-    let origin_y = (bounds.y * scale).floor().max(0.0) as u64;
-    let max_x = ((bounds.x + bounds.width.max(0.0)) * scale).ceil().max(0.0) as u64;
-    let max_y = ((bounds.y + bounds.height.max(0.0)) * scale)
-        .ceil()
-        .max(0.0) as u64;
-    let width = max_x.saturating_sub(origin_x).max(1);
-    let height = max_y.saturating_sub(origin_y).max(1);
-
-    // Every persistent render target has one RGBA8 color texture and one
-    // Depth24PlusStencil8 attachment (8 bytes/pixel total).
-    width
-        .saturating_mul(height)
-        .saturating_mul(8)
+fn promoted_target_memory_bytes(
+    node: &dyn ElementTrait,
+    scale_factor: f32,
+    target_format: wgpu::TextureFormat,
+) -> usize {
+    let color = texture_desc_for_logical_bounds(
+        node.promotion_composite_bounds(),
+        scale_factor,
+        None,
+        target_format,
+    );
+    let (color, depth) =
+        persistent_target_texture_descriptors(color, promoted_layer_stable_key(node.stable_id()));
+    let color_cost = texture_desc_payload_bytes(&color);
+    let depth_cost = texture_desc_payload_bytes(&depth);
+    if !color_cost.confidence.budget_usable() || !depth_cost.confidence.budget_usable() {
+        return usize::MAX;
+    }
+    color_cost
+        .bytes
+        .saturating_add(depth_cost.bytes)
         .min(usize::MAX as u64) as usize
 }
 
+pub(crate) struct PromotedLayerCollection {
+    pub(crate) updates: Vec<PromotedLayerUpdate>,
+    pub(crate) base_signatures: FxHashMap<u64, u64>,
+    pub(crate) composition_signatures: FxHashMap<u64, u64>,
+    pub(crate) base_generations: FxHashMap<NodeKey, u64>,
+    pub(crate) composition_generations: FxHashMap<NodeKey, u64>,
+    pub(crate) debug_subtree_signatures: FxHashMap<u64, (u64, u64, u64, bool)>,
+}
+
+struct GenerationCollectionContext<'a> {
+    tracker: &'a mut crate::view::compositor::PaintGenerationTracker,
+    property_trees: &'a crate::view::compositor::PropertyTrees,
+    previous_base: &'a FxHashMap<NodeKey, u64>,
+    previous_composition: &'a FxHashMap<NodeKey, u64>,
+    next_base: FxHashMap<NodeKey, u64>,
+    next_composition: FxHashMap<NodeKey, u64>,
+    root_topology_revision: u64,
+}
+
+#[cfg(test)]
 pub(crate) fn collect_promoted_layer_updates(
     arena: &crate::view::node_arena::NodeArena,
     root_keys: &[NodeKey],
@@ -145,10 +177,74 @@ pub(crate) fn collect_promoted_layer_updates(
     FxHashMap<u64, u64>,
     FxHashMap<u64, u64>,
 ) {
+    let collection = collect_promoted_layer_updates_internal(
+        arena,
+        root_keys,
+        promoted_node_ids,
+        previous_base_signatures,
+        previous_composition_signatures,
+        None,
+        false,
+    );
+    (
+        collection.updates,
+        collection.base_signatures,
+        collection.composition_signatures,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn collect_promoted_layer_updates_with_generations(
+    arena: &crate::view::node_arena::NodeArena,
+    root_keys: &[NodeKey],
+    promoted_node_ids: &FxHashSet<u64>,
+    previous_base_signatures: &FxHashMap<u64, u64>,
+    previous_composition_signatures: &FxHashMap<u64, u64>,
+    tracker: &mut crate::view::compositor::PaintGenerationTracker,
+    property_trees: &crate::view::compositor::PropertyTrees,
+    previous_base_generations: &FxHashMap<NodeKey, u64>,
+    previous_composition_generations: &FxHashMap<NodeKey, u64>,
+    collect_debug_signatures: bool,
+) -> PromotedLayerCollection {
+    tracker.begin_frame(root_keys);
+    let root_topology_revision = tracker.root_topology_revision_value();
+    let generation = GenerationCollectionContext {
+        tracker,
+        property_trees,
+        previous_base: previous_base_generations,
+        previous_composition: previous_composition_generations,
+        next_base: FxHashMap::default(),
+        next_composition: FxHashMap::default(),
+        root_topology_revision,
+    };
+    let collection = collect_promoted_layer_updates_internal(
+        arena,
+        root_keys,
+        promoted_node_ids,
+        previous_base_signatures,
+        previous_composition_signatures,
+        Some(generation),
+        collect_debug_signatures,
+    );
+    collection
+}
+
+fn collect_promoted_layer_updates_internal(
+    arena: &crate::view::node_arena::NodeArena,
+    root_keys: &[NodeKey],
+    promoted_node_ids: &FxHashSet<u64>,
+    previous_base_signatures: &FxHashMap<u64, u64>,
+    previous_composition_signatures: &FxHashMap<u64, u64>,
+    mut generation: Option<GenerationCollectionContext<'_>>,
+    collect_debug_signatures: bool,
+) -> PromotedLayerCollection {
     struct WalkState {
         base_signature: u64,
         _composition_signature: u64,
         output_signature: u64,
+        base_generation: u64,
+        _composition_generation: u64,
+        output_generation: u64,
         has_promoted_output: bool,
     }
 
@@ -175,21 +271,63 @@ pub(crate) fn collect_promoted_layer_updates(
     }
 
     fn walk(
+        key: NodeKey,
         node: &dyn ElementTrait,
+        is_root: bool,
         promoted_node_ids: &FxHashSet<u64>,
         previous_base_signatures: &FxHashMap<u64, u64>,
         previous_composition_signatures: &FxHashMap<u64, u64>,
         updates: &mut Vec<PromotedLayerUpdate>,
         next_base_signatures: &mut FxHashMap<u64, u64>,
         next_composition_signatures: &mut FxHashMap<u64, u64>,
+        debug_subtree_signatures: &mut FxHashMap<u64, (u64, u64, u64, bool)>,
+        collect_debug_signatures: bool,
+        mut generation: Option<&mut GenerationCollectionContext<'_>>,
         arena: &crate::view::node_arena::NodeArena,
     ) -> WalkState {
         let mut hasher = FxHasher::default();
         let mut composition_hasher = FxHasher::default();
-        node.promotion_self_signature().hash(&mut hasher);
+        let self_signature = node.promotion_self_signature();
+        self_signature.hash(&mut hasher);
         node.promotion_clip_intersection_signature(arena)
             .hash(&mut hasher);
         let self_is_promoted = promoted_node_ids.contains(&node.stable_id());
+        let local_generations = generation.as_deref_mut().map(|generation| {
+            generation.tracker.observe_node(
+                key,
+                arena.parent_of(key),
+                node.children(),
+                node,
+                self_signature,
+                generation.property_trees,
+            )
+        });
+        let mut base_generation_hasher = FxHasher::default();
+        let mut composition_generation_hasher = FxHasher::default();
+        if let Some(local) = local_generations {
+            local.self_paint_revision.hash(&mut base_generation_hasher);
+            local.topology_revision.hash(&mut base_generation_hasher);
+            // A non-promoted node is flattened into its nearest promoted
+            // ancestor's raster. Its local opacity/effect therefore changes
+            // pixels in that ancestor's base even though the same property
+            // is composite-only when the node owns a promoted layer.
+            if !self_is_promoted {
+                local.composite_revision.hash(&mut base_generation_hasher);
+            }
+            local
+                .composite_revision
+                .hash(&mut composition_generation_hasher);
+            local
+                .topology_revision
+                .hash(&mut composition_generation_hasher);
+            if is_root {
+                generation
+                    .as_deref()
+                    .expect("generation context exists")
+                    .root_topology_revision
+                    .hash(&mut composition_generation_hasher);
+            }
+        }
         let mut has_promoted_output = self_is_promoted;
         if self_is_promoted {
             hash_composition_state(node, &mut composition_hasher, arena);
@@ -200,13 +338,18 @@ pub(crate) fn collect_promoted_layer_updates(
             };
             let child = child_node.element.as_ref();
             let child_state = walk(
+                *child_key,
                 child,
+                false,
                 promoted_node_ids,
                 previous_base_signatures,
                 previous_composition_signatures,
                 updates,
                 next_base_signatures,
                 next_composition_signatures,
+                debug_subtree_signatures,
+                collect_debug_signatures,
+                generation.as_deref_mut(),
                 arena,
             );
             index.hash(&mut hasher);
@@ -215,6 +358,11 @@ pub(crate) fn collect_promoted_layer_updates(
             child_is_promoted.hash(&mut hasher);
             if !child_is_promoted {
                 child_state.base_signature.hash(&mut hasher);
+                index.hash(&mut base_generation_hasher);
+                child_key.hash(&mut base_generation_hasher);
+                child_state
+                    .base_generation
+                    .hash(&mut base_generation_hasher);
             }
 
             let child_is_deferred = child
@@ -235,6 +383,12 @@ pub(crate) fn collect_promoted_layer_updates(
                 child.stable_id().hash(&mut composition_hasher);
                 child_is_promoted.hash(&mut composition_hasher);
                 child_state.output_signature.hash(&mut composition_hasher);
+                index.hash(&mut composition_generation_hasher);
+                child_key.hash(&mut composition_generation_hasher);
+                child_is_promoted.hash(&mut composition_generation_hasher);
+                child_state
+                    .output_generation
+                    .hash(&mut composition_generation_hasher);
             }
         }
         let base_signature = hasher.finish();
@@ -251,9 +405,42 @@ pub(crate) fn collect_promoted_layer_updates(
         } else {
             base_signature
         };
+        let base_generation = local_generations
+            .map(|_| base_generation_hasher.finish())
+            .unwrap_or(0);
+        let composition_generation = if local_generations.is_some() && has_promoted_output {
+            composition_generation_hasher.finish()
+        } else {
+            0
+        };
+        let output_generation = if local_generations.is_some() && has_promoted_output {
+            let mut output_hasher = FxHasher::default();
+            base_generation.hash(&mut output_hasher);
+            composition_generation.hash(&mut output_hasher);
+            output_hasher.finish()
+        } else {
+            base_generation
+        };
+        if collect_debug_signatures {
+            debug_subtree_signatures.insert(
+                node.stable_id(),
+                (
+                    base_signature,
+                    composition_signature,
+                    output_signature,
+                    has_promoted_output,
+                ),
+            );
+        }
         if promoted_node_ids.contains(&node.stable_id()) {
             let previous_base_signature = previous_base_signatures.get(&node.stable_id()).copied();
-            let kind = if previous_base_signature == Some(base_signature) {
+            let previous_base_generation = generation
+                .as_deref()
+                .and_then(|generation| generation.previous_base.get(&key).copied());
+            let base_generation_reuses =
+                generation.is_none() || previous_base_generation == Some(base_generation);
+            let kind = if previous_base_signature == Some(base_signature) && base_generation_reuses
+            {
                 PromotedLayerUpdateKind::Reuse
             } else {
                 PromotedLayerUpdateKind::Reraster
@@ -261,7 +448,13 @@ pub(crate) fn collect_promoted_layer_updates(
             let previous_composition_signature = previous_composition_signatures
                 .get(&node.stable_id())
                 .copied();
+            let previous_composition_generation = generation
+                .as_deref()
+                .and_then(|generation| generation.previous_composition.get(&key).copied());
+            let composition_generation_reuses = generation.is_none()
+                || previous_composition_generation == Some(composition_generation);
             let composition_kind = if previous_composition_signature == Some(composition_signature)
+                && composition_generation_reuses
             {
                 PromotedLayerUpdateKind::Reuse
             } else {
@@ -269,6 +462,12 @@ pub(crate) fn collect_promoted_layer_updates(
             };
             next_base_signatures.insert(node.stable_id(), base_signature);
             next_composition_signatures.insert(node.stable_id(), composition_signature);
+            if let Some(generation) = generation.as_deref_mut() {
+                generation.next_base.insert(key, base_generation);
+                generation
+                    .next_composition
+                    .insert(key, composition_generation);
+            }
             updates.push(PromotedLayerUpdate {
                 node_id: node.stable_id(),
                 parent_id: node.parent_id(),
@@ -278,12 +477,19 @@ pub(crate) fn collect_promoted_layer_updates(
                 composition_kind,
                 composition_signature,
                 previous_composition_signature,
+                base_generation,
+                previous_base_generation,
+                composition_generation,
+                previous_composition_generation,
             });
         }
         WalkState {
             base_signature,
             _composition_signature: composition_signature,
             output_signature,
+            base_generation,
+            _composition_generation: composition_generation,
+            output_generation,
             has_promoted_output,
         }
     }
@@ -293,25 +499,46 @@ pub(crate) fn collect_promoted_layer_updates(
     let mut next_base_signatures = FxHashMap::with_capacity_and_hasher(cap, Default::default());
     let mut next_composition_signatures =
         FxHashMap::with_capacity_and_hasher(cap, Default::default());
+    let mut debug_subtree_signatures = FxHashMap::default();
     for &root_key in root_keys {
         let Some(root_node) = arena.get(root_key) else {
             continue;
         };
         walk(
+            root_key,
             root_node.element.as_ref(),
+            true,
             promoted_node_ids,
             previous_base_signatures,
             previous_composition_signatures,
             &mut updates,
             &mut next_base_signatures,
             &mut next_composition_signatures,
+            &mut debug_subtree_signatures,
+            collect_debug_signatures,
+            generation.as_mut(),
             arena,
         );
     }
+    if let Some(generation) = generation.as_mut() {
+        generation.tracker.finish_frame(arena);
+    }
     updates.sort_by_key(|update| update.node_id);
-    (updates, next_base_signatures, next_composition_signatures)
+    let (base_generations, composition_generations) = generation
+        .map(|generation| (generation.next_base, generation.next_composition))
+        .unwrap_or_default();
+    PromotedLayerCollection {
+        updates,
+        base_signatures: next_base_signatures,
+        composition_signatures: next_composition_signatures,
+        base_generations,
+        composition_generations,
+        debug_subtree_signatures,
+    }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn collect_debug_subtree_signatures(
     arena: &crate::view::node_arena::NodeArena,
     root_keys: &[NodeKey],
@@ -510,6 +737,557 @@ fn rect_distance(a: Rect, b: Rect) -> f32 {
         0.0
     };
     dx.max(dy)
+}
+
+#[cfg(test)]
+mod generation_update_tests {
+    use super::*;
+    use crate::style::{Color, Length, Style, Transform, Translate};
+    use crate::view::base_component::{
+        BoxModelSnapshot, BuildState, Element, EventTarget, LayoutConstraints, LayoutPlacement,
+        Layoutable, Renderable, UiBuildContext,
+    };
+    use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
+    use crate::view::frame_graph::FrameGraph;
+    use crate::view::node_arena::{Node, NodeArena};
+    use std::cell::Cell;
+
+    struct UntrackedHost {
+        sid: u64,
+        children: Vec<NodeKey>,
+        signature_calls: Cell<usize>,
+        complete_signature: bool,
+    }
+
+    impl UntrackedHost {
+        fn new(sid: u64) -> Self {
+            Self {
+                sid,
+                children: Vec::new(),
+                signature_calls: Cell::new(0),
+                complete_signature: false,
+            }
+        }
+
+        fn new_complete(sid: u64) -> Self {
+            Self {
+                complete_signature: true,
+                ..Self::new(sid)
+            }
+        }
+    }
+
+    impl Layoutable for UntrackedHost {
+        fn measure(&mut self, _constraints: LayoutConstraints, _arena: &mut NodeArena) {}
+        fn place(&mut self, _placement: LayoutPlacement, _arena: &mut NodeArena) {}
+        fn measured_size(&self) -> (f32, f32) {
+            (100.0, 100.0)
+        }
+        fn set_layout_width(&mut self, _width: f32) {}
+        fn set_layout_height(&mut self, _height: f32) {}
+    }
+
+    impl EventTarget for UntrackedHost {}
+
+    impl Renderable for UntrackedHost {
+        fn build(
+            &mut self,
+            _graph: &mut FrameGraph,
+            _arena: &mut NodeArena,
+            ctx: UiBuildContext,
+        ) -> BuildState {
+            ctx.into_state()
+        }
+    }
+
+    impl ElementTrait for UntrackedHost {
+        fn stable_id(&self) -> u64 {
+            self.sid
+        }
+
+        fn box_model_snapshot(&self) -> BoxModelSnapshot {
+            BoxModelSnapshot {
+                node_id: self.sid,
+                parent_id: None,
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+                border_radius: 0.0,
+                should_render: true,
+            }
+        }
+
+        fn children(&self) -> &[NodeKey] {
+            &self.children
+        }
+
+        fn sync_children_mirror(&mut self, children: &[NodeKey]) {
+            self.children.clear();
+            self.children.extend_from_slice(children);
+        }
+
+        fn supports_promoted_descendants(&self) -> bool {
+            true
+        }
+
+        fn promotion_self_signature(&self) -> u64 {
+            self.signature_calls
+                .set(self.signature_calls.get().saturating_add(1));
+            0
+        }
+
+        fn promotion_signature_is_complete(&self) -> bool {
+            self.complete_signature
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+
+    fn insert_element(arena: &mut NodeArena, sid: u64) -> NodeKey {
+        arena.insert(Node::new(Box::new(Element::new_with_id(
+            sid, 0.0, 0.0, 100.0, 100.0,
+        ))))
+    }
+
+    fn insert_untracked(arena: &mut NodeArena, sid: u64) -> NodeKey {
+        arena.insert(Node::new(Box::new(UntrackedHost::new(sid))))
+    }
+
+    fn insert_complete_custom(arena: &mut NodeArena, sid: u64) -> NodeKey {
+        arena.insert(Node::new(Box::new(UntrackedHost::new_complete(sid))))
+    }
+
+    fn attach(arena: &mut NodeArena, parent: NodeKey, child: NodeKey) {
+        arena.set_parent(child, Some(parent));
+        arena.push_child(parent, child);
+    }
+
+    fn collect(
+        arena: &NodeArena,
+        roots: &[NodeKey],
+        promoted: &FxHashSet<u64>,
+        tracker: &mut PaintGenerationTracker,
+        trees: &mut PropertyTrees,
+        previous: Option<&PromotedLayerCollection>,
+    ) -> PromotedLayerCollection {
+        trees.sync(arena, roots);
+        collect_promoted_layer_updates_with_generations(
+            arena,
+            roots,
+            promoted,
+            previous
+                .map(|collection| &collection.base_signatures)
+                .unwrap_or(&FxHashMap::default()),
+            previous
+                .map(|collection| &collection.composition_signatures)
+                .unwrap_or(&FxHashMap::default()),
+            tracker,
+            trees,
+            previous
+                .map(|collection| &collection.base_generations)
+                .unwrap_or(&FxHashMap::default()),
+            previous
+                .map(|collection| &collection.composition_generations)
+                .unwrap_or(&FxHashMap::default()),
+            false,
+        )
+    }
+
+    fn update(collection: &PromotedLayerCollection, sid: u64) -> &PromotedLayerUpdate {
+        collection
+            .updates
+            .iter()
+            .find(|update| update.node_id == sid)
+            .expect("promoted update")
+    }
+
+    #[test]
+    fn equal_signature_and_generation_reuse() {
+        let mut arena = NodeArena::new();
+        let root = insert_element(&mut arena, 1);
+        let promoted = FxHashSet::from_iter([1]);
+        let mut tracker = PaintGenerationTracker::default();
+        let mut trees = PropertyTrees::default();
+
+        let first = collect(&arena, &[root], &promoted, &mut tracker, &mut trees, None);
+        let second = collect(
+            &arena,
+            &[root],
+            &promoted,
+            &mut tracker,
+            &mut trees,
+            Some(&first),
+        );
+
+        assert_eq!(update(&second, 1).kind, PromotedLayerUpdateKind::Reuse);
+        assert_eq!(
+            update(&second, 1).composition_kind,
+            PromotedLayerUpdateKind::Reuse
+        );
+    }
+
+    #[test]
+    fn transform_change_remains_a_conservative_promoted_base_reraster_veto() {
+        let mut arena = NodeArena::new();
+        let root = insert_element(&mut arena, 1);
+        let promoted = FxHashSet::from_iter([1]);
+        let mut tracker = PaintGenerationTracker::default();
+        let mut trees = PropertyTrees::default();
+        let first = collect(&arena, &[root], &promoted, &mut tracker, &mut trees, None);
+
+        let mut style = Style::new();
+        style.set_transform(Transform::new([Translate::x(Length::px(24.0))]));
+        arena
+            .get_mut(root)
+            .unwrap()
+            .element
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .unwrap()
+            .apply_style(style);
+        let second = collect(
+            &arena,
+            &[root],
+            &promoted,
+            &mut tracker,
+            &mut trees,
+            Some(&first),
+        );
+
+        assert_eq!(update(&second, 1).kind, PromotedLayerUpdateKind::Reraster);
+        assert_ne!(
+            update(&second, 1).base_generation,
+            update(&first, 1).base_generation,
+        );
+    }
+
+    #[test]
+    fn signature_mismatch_reraster_even_when_generation_matches() {
+        let mut arena = NodeArena::new();
+        let root = insert_element(&mut arena, 1);
+        let promoted = FxHashSet::from_iter([1]);
+        let mut tracker = PaintGenerationTracker::default();
+        let mut trees = PropertyTrees::default();
+        let first = collect(&arena, &[root], &promoted, &mut tracker, &mut trees, None);
+        trees.sync(&arena, &[root]);
+
+        let second = collect_promoted_layer_updates_with_generations(
+            &arena,
+            &[root],
+            &promoted,
+            &FxHashMap::default(),
+            &first.composition_signatures,
+            &mut tracker,
+            &trees,
+            &first.base_generations,
+            &first.composition_generations,
+            false,
+        );
+
+        assert_eq!(update(&second, 1).kind, PromotedLayerUpdateKind::Reraster);
+        assert_eq!(
+            update(&second, 1).base_generation,
+            update(&first, 1).base_generation
+        );
+    }
+
+    #[test]
+    fn generation_mismatch_reraster_even_when_signature_matches_and_calls_signature_once() {
+        let mut arena = NodeArena::new();
+        let root = insert_untracked(&mut arena, 1);
+        let promoted = FxHashSet::from_iter([1]);
+        let mut tracker = PaintGenerationTracker::default();
+        let mut trees = PropertyTrees::default();
+        let first = collect(&arena, &[root], &promoted, &mut tracker, &mut trees, None);
+        let second = collect(
+            &arena,
+            &[root],
+            &promoted,
+            &mut tracker,
+            &mut trees,
+            Some(&first),
+        );
+
+        assert_eq!(
+            update(&second, 1).base_signature,
+            update(&first, 1).base_signature
+        );
+        assert_eq!(update(&second, 1).kind, PromotedLayerUpdateKind::Reraster);
+        let node = arena.get(root).unwrap();
+        let host = node
+            .element
+            .as_any()
+            .downcast_ref::<UntrackedHost>()
+            .unwrap();
+        assert_eq!(host.signature_calls.get(), 2);
+    }
+
+    #[test]
+    fn opacity_only_changes_composition_generation() {
+        let mut arena = NodeArena::new();
+        let root = insert_element(&mut arena, 1);
+        let promoted = FxHashSet::from_iter([1]);
+        let mut tracker = PaintGenerationTracker::default();
+        let mut trees = PropertyTrees::default();
+        let first = collect(&arena, &[root], &promoted, &mut tracker, &mut trees, None);
+        arena
+            .get_mut(root)
+            .unwrap()
+            .element
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .unwrap()
+            .set_opacity(0.5);
+        let second = collect(
+            &arena,
+            &[root],
+            &promoted,
+            &mut tracker,
+            &mut trees,
+            Some(&first),
+        );
+        let current = update(&second, 1);
+
+        assert_eq!(current.kind, PromotedLayerUpdateKind::Reuse);
+        assert_eq!(current.composition_kind, PromotedLayerUpdateKind::Reraster);
+        assert_eq!(current.base_generation, update(&first, 1).base_generation);
+        assert_ne!(
+            current.composition_generation,
+            update(&first, 1).composition_generation
+        );
+    }
+
+    #[test]
+    fn untracked_child_forces_promoted_ancestor_base_reraster() {
+        let mut arena = NodeArena::new();
+        let root = insert_element(&mut arena, 1);
+        let child = insert_untracked(&mut arena, 2);
+        attach(&mut arena, root, child);
+        let promoted = FxHashSet::from_iter([1]);
+        let mut tracker = PaintGenerationTracker::default();
+        let mut trees = PropertyTrees::default();
+        let first = collect(&arena, &[root], &promoted, &mut tracker, &mut trees, None);
+        let second = collect(
+            &arena,
+            &[root],
+            &promoted,
+            &mut tracker,
+            &mut trees,
+            Some(&first),
+        );
+
+        assert_eq!(
+            update(&second, 1).base_signature,
+            update(&first, 1).base_signature
+        );
+        assert_eq!(update(&second, 1).kind, PromotedLayerUpdateKind::Reraster);
+    }
+
+    #[test]
+    fn complete_custom_can_reuse_while_default_custom_remains_conservative() {
+        let mut arena = NodeArena::new();
+        let complete = insert_complete_custom(&mut arena, 1);
+        let untracked = insert_untracked(&mut arena, 2);
+        let promoted = FxHashSet::from_iter([1, 2]);
+        let mut tracker = PaintGenerationTracker::default();
+        let mut trees = PropertyTrees::default();
+        let first = collect(
+            &arena,
+            &[complete, untracked],
+            &promoted,
+            &mut tracker,
+            &mut trees,
+            None,
+        );
+        let second = collect(
+            &arena,
+            &[complete, untracked],
+            &promoted,
+            &mut tracker,
+            &mut trees,
+            Some(&first),
+        );
+
+        assert_eq!(update(&second, 1).kind, PromotedLayerUpdateKind::Reuse);
+        assert_eq!(update(&second, 2).kind, PromotedLayerUpdateKind::Reraster);
+    }
+
+    #[test]
+    fn non_promoted_child_opacity_dirties_promoted_ancestor_base() {
+        let mut arena = NodeArena::new();
+        let root = insert_element(&mut arena, 1);
+        let child = insert_element(&mut arena, 2);
+        attach(&mut arena, root, child);
+        let promoted = FxHashSet::from_iter([1]);
+        let mut tracker = PaintGenerationTracker::default();
+        let mut trees = PropertyTrees::default();
+        let first = collect(&arena, &[root], &promoted, &mut tracker, &mut trees, None);
+        arena
+            .get_mut(child)
+            .unwrap()
+            .element
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .unwrap()
+            .set_opacity(0.5);
+        let second = collect(
+            &arena,
+            &[root],
+            &promoted,
+            &mut tracker,
+            &mut trees,
+            Some(&first),
+        );
+
+        assert_eq!(update(&second, 1).kind, PromotedLayerUpdateKind::Reraster);
+    }
+
+    #[test]
+    fn nested_non_promoted_opacity_dirties_promoted_ancestor_base() {
+        let mut arena = NodeArena::new();
+        let root = insert_element(&mut arena, 1);
+        let middle = insert_element(&mut arena, 2);
+        let leaf = insert_element(&mut arena, 3);
+        attach(&mut arena, root, middle);
+        attach(&mut arena, middle, leaf);
+        let promoted = FxHashSet::from_iter([1]);
+        let mut tracker = PaintGenerationTracker::default();
+        let mut trees = PropertyTrees::default();
+        let first = collect(&arena, &[root], &promoted, &mut tracker, &mut trees, None);
+        arena
+            .get_mut(leaf)
+            .unwrap()
+            .element
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .unwrap()
+            .set_opacity(0.5);
+        let second = collect(
+            &arena,
+            &[root],
+            &promoted,
+            &mut tracker,
+            &mut trees,
+            Some(&first),
+        );
+
+        assert_eq!(update(&second, 1).kind, PromotedLayerUpdateKind::Reraster);
+    }
+
+    #[test]
+    fn promoted_child_opacity_stays_out_of_parent_base() {
+        let mut arena = NodeArena::new();
+        let root = insert_element(&mut arena, 1);
+        let child = insert_element(&mut arena, 2);
+        attach(&mut arena, root, child);
+        let promoted = FxHashSet::from_iter([1, 2]);
+        let mut tracker = PaintGenerationTracker::default();
+        let mut trees = PropertyTrees::default();
+        let first = collect(&arena, &[root], &promoted, &mut tracker, &mut trees, None);
+        arena
+            .get_mut(child)
+            .unwrap()
+            .element
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .unwrap()
+            .set_opacity(0.5);
+        let second = collect(
+            &arena,
+            &[root],
+            &promoted,
+            &mut tracker,
+            &mut trees,
+            Some(&first),
+        );
+
+        assert_eq!(update(&second, 1).kind, PromotedLayerUpdateKind::Reuse);
+        assert_eq!(
+            update(&second, 1).composition_kind,
+            PromotedLayerUpdateKind::Reraster
+        );
+        assert_eq!(update(&second, 2).kind, PromotedLayerUpdateKind::Reuse);
+        assert_eq!(
+            update(&second, 2).composition_kind,
+            PromotedLayerUpdateKind::Reraster
+        );
+    }
+
+    #[test]
+    fn promoted_child_change_only_dirties_parent_composition_generation() {
+        let mut arena = NodeArena::new();
+        let root = insert_element(&mut arena, 1);
+        let child = insert_element(&mut arena, 2);
+        attach(&mut arena, root, child);
+        let promoted = FxHashSet::from_iter([1, 2]);
+        let mut tracker = PaintGenerationTracker::default();
+        let mut trees = PropertyTrees::default();
+        let first = collect(&arena, &[root], &promoted, &mut tracker, &mut trees, None);
+        arena
+            .get_mut(child)
+            .unwrap()
+            .element
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .unwrap()
+            .set_background_color_value(Color::rgb(255, 0, 0));
+        let second = collect(
+            &arena,
+            &[root],
+            &promoted,
+            &mut tracker,
+            &mut trees,
+            Some(&first),
+        );
+
+        assert_eq!(update(&second, 1).kind, PromotedLayerUpdateKind::Reuse);
+        assert_eq!(
+            update(&second, 1).composition_kind,
+            PromotedLayerUpdateKind::Reraster
+        );
+        assert_eq!(update(&second, 2).kind, PromotedLayerUpdateKind::Reraster);
+    }
+
+    #[test]
+    fn root_reorder_vetoes_composition_reuse_without_dirtying_layer_base() {
+        let mut arena = NodeArena::new();
+        let left = insert_element(&mut arena, 1);
+        let right = insert_element(&mut arena, 2);
+        let promoted = FxHashSet::from_iter([1, 2]);
+        let mut tracker = PaintGenerationTracker::default();
+        let mut trees = PropertyTrees::default();
+        let first = collect(
+            &arena,
+            &[left, right],
+            &promoted,
+            &mut tracker,
+            &mut trees,
+            None,
+        );
+        let second = collect(
+            &arena,
+            &[right, left],
+            &promoted,
+            &mut tracker,
+            &mut trees,
+            Some(&first),
+        );
+
+        for sid in [1, 2] {
+            assert_eq!(update(&second, sid).kind, PromotedLayerUpdateKind::Reuse);
+            assert_eq!(
+                update(&second, sid).composition_kind,
+                PromotedLayerUpdateKind::Reraster
+            );
+        }
+    }
 }
 
 #[cfg(any())]
@@ -1006,8 +1784,71 @@ mod aware_filter_tests {
         let element = Element::new_with_id(1, 10.25, 20.25, 100.0, 50.0);
 
         // floor(10.25*2)..ceil(110.25*2) = 201 px, likewise 101 px tall.
-        // One color + depth/stencil target = 8 bytes per physical pixel.
-        assert_eq!(promoted_target_memory_bytes(&element, 2.0), 201 * 101 * 8);
+        // RGBA8 color (4 B) + conservative D32S8-compatible depth upper
+        // bound (8 B) = 12 bytes per physical pixel.
+        assert_eq!(
+            promoted_target_memory_bytes(&element, 2.0, wgpu::TextureFormat::Bgra8Unorm),
+            201 * 101 * 12
+        );
+    }
+
+    #[test]
+    fn promoted_surface_estimate_rejects_unknown_color_cost() {
+        let element = Element::new_with_id(1, 0.0, 0.0, 100.0, 50.0);
+        assert_eq!(
+            promoted_target_memory_bytes(&element, 1.0, wgpu::TextureFormat::R32Float),
+            usize::MAX
+        );
+    }
+
+    #[test]
+    fn conservative_surface_cost_respects_exact_budget_boundary() {
+        let mut arena = NodeArena::new();
+        let root = arena.insert(Node::new(Box::new(Element::new_with_id(
+            1, 0.0, 0.0, 100.0, 100.0,
+        ))));
+        let active_channels = FxHashMap::from_iter([(
+            1,
+            FxHashSet::from_iter([crate::transition::CHANNEL_STYLE_OPACITY]),
+        )]);
+        let candidates = collect_promotion_candidates(
+            &arena,
+            &[root],
+            &FxHashMap::default(),
+            &active_channels,
+            (100.0, 100.0),
+            1.0,
+            wgpu::TextureFormat::Bgra8Unorm,
+        );
+        assert_eq!(candidates[0].base_memory_bytes, 120_000);
+
+        let at_boundary = crate::view::promotion::evaluate_promotion(
+            candidates.clone(),
+            (100.0, 100.0),
+            1.0,
+            crate::view::promotion::ViewportPromotionConfig {
+                max_surface_bytes_multiplier: 3.0,
+                ..Default::default()
+            },
+        );
+        assert!(at_boundary.promoted_node_ids.contains(&1));
+        assert_eq!(at_boundary.total_estimated_memory_bytes, 120_000);
+
+        let below_boundary = crate::view::promotion::evaluate_promotion(
+            candidates,
+            (100.0, 100.0),
+            1.0,
+            crate::view::promotion::ViewportPromotionConfig {
+                max_surface_bytes_multiplier: 2.99,
+                ..Default::default()
+            },
+        );
+        assert!(!below_boundary.promoted_node_ids.contains(&1));
+        assert_eq!(below_boundary.total_estimated_memory_bytes, 0);
+        assert_eq!(
+            below_boundary.decisions[0].budget_rejection,
+            Some(crate::view::promotion::PromotionBudgetRejection::SurfaceBytesLimit)
+        );
     }
 
     #[test]
@@ -1124,6 +1965,7 @@ mod aware_filter_tests {
             &FxHashMap::default(),
             (320.0, 240.0),
             1.0,
+            wgpu::TextureFormat::Bgra8Unorm,
         );
         let ids: FxHashSet<u64> = candidates.iter().map(|c| c.node_id).collect();
         assert!(ids.contains(&1), "Element root should be candidate");
@@ -1153,6 +1995,7 @@ mod aware_filter_tests {
             &FxHashMap::default(),
             (320.0, 240.0),
             1.0,
+            wgpu::TextureFormat::Bgra8Unorm,
         );
         let ids: FxHashSet<u64> = candidates.iter().map(|c| c.node_id).collect();
         assert!(ids.contains(&1), "aware root remains a candidate");
@@ -1189,6 +2032,7 @@ mod aware_filter_tests {
             &FxHashMap::default(),
             (320.0, 240.0),
             1.0,
+            wgpu::TextureFormat::Bgra8Unorm,
         );
         let ids: FxHashSet<u64> = candidates.iter().map(|c| c.node_id).collect();
         assert!(!ids.contains(&3), "Element under non-aware host filtered");
@@ -1301,6 +2145,7 @@ mod aware_filter_tests {
             &FxHashMap::default(),
             (320.0, 240.0),
             1.0,
+            wgpu::TextureFormat::Bgra8Unorm,
         );
         let ids: FxHashSet<u64> = candidates.iter().map(|c| c.node_id).collect();
         assert!(ids.contains(&1), "Element root candidate");
