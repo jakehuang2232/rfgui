@@ -47,6 +47,184 @@ pub enum ResourceLifetime {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RetainedTextureRole {
+    RootEffectColor,
+    RootEffectDepthStencil,
+    PromotedBaseColor,
+    PromotedBaseDepthStencil,
+    PromotedClipMaskColor,
+    PromotedClipMaskDepthStencil,
+    PromotedFinalColor,
+    PromotedFinalDepthStencil,
+    TransformedColor,
+    TransformedDepthStencil,
+    IsolationColor,
+    IsolationDepthStencil,
+    ScrollHostColor,
+    ScrollHostDepthStencil,
+    ScrollContentColor,
+    ScrollContentDepthStencil,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PersistentTextureKey {
+    Generic(u64),
+    Retained {
+        role: RetainedTextureRole,
+        stable_id: u64,
+    },
+    /// One persistent tile of an offset-zero scroll-content raster.
+    /// The coordinate stays structural instead of being hashed into the
+    /// content stable ID.
+    RetainedScrollContentTile {
+        role: RetainedTextureRole,
+        stable_id: u64,
+        column: u32,
+        row: u32,
+    },
+}
+
+impl PersistentTextureKey {
+    pub const fn retained(role: RetainedTextureRole, stable_id: u64) -> Self {
+        Self::Retained { role, stable_id }
+    }
+
+    pub const fn retained_scroll_content_tile(
+        role: RetainedTextureRole,
+        stable_id: u64,
+        column: u32,
+        row: u32,
+    ) -> Option<Self> {
+        match role {
+            RetainedTextureRole::ScrollContentColor
+            | RetainedTextureRole::ScrollContentDepthStencil => {
+                Some(Self::RetainedScrollContentTile {
+                    role,
+                    stable_id,
+                    column,
+                    row,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    pub const fn depth_stencil(self) -> Option<Self> {
+        let (role, stable_id, tile) = match self {
+            Self::Retained { role, stable_id } => (role, stable_id, None),
+            Self::RetainedScrollContentTile {
+                role,
+                stable_id,
+                column,
+                row,
+            } => (role, stable_id, Some((column, row))),
+            Self::Generic(_) => return None,
+        };
+        let role = match role {
+            RetainedTextureRole::RootEffectColor => RetainedTextureRole::RootEffectDepthStencil,
+            RetainedTextureRole::PromotedBaseColor => RetainedTextureRole::PromotedBaseDepthStencil,
+            RetainedTextureRole::PromotedClipMaskColor => {
+                RetainedTextureRole::PromotedClipMaskDepthStencil
+            }
+            RetainedTextureRole::PromotedFinalColor => {
+                RetainedTextureRole::PromotedFinalDepthStencil
+            }
+            RetainedTextureRole::TransformedColor => RetainedTextureRole::TransformedDepthStencil,
+            RetainedTextureRole::IsolationColor => RetainedTextureRole::IsolationDepthStencil,
+            RetainedTextureRole::ScrollHostColor => RetainedTextureRole::ScrollHostDepthStencil,
+            RetainedTextureRole::ScrollContentColor => {
+                RetainedTextureRole::ScrollContentDepthStencil
+            }
+            _ => return None,
+        };
+        match tile {
+            Some((column, row)) => Self::retained_scroll_content_tile(role, stable_id, column, row),
+            None => Some(Self::Retained { role, stable_id }),
+        }
+    }
+}
+
+fn is_failed_execution_retained_color_key(key: PersistentTextureKey) -> bool {
+    matches!(
+        key,
+        PersistentTextureKey::Retained {
+            role: RetainedTextureRole::RootEffectColor
+                | RetainedTextureRole::TransformedColor
+                | RetainedTextureRole::ScrollHostColor
+                | RetainedTextureRole::ScrollContentColor,
+            ..
+        } | PersistentTextureKey::RetainedScrollContentTile {
+            role: RetainedTextureRole::ScrollContentColor,
+            ..
+        }
+    )
+}
+
+#[cfg(test)]
+mod scroll_content_retained_key_tests {
+    use super::*;
+
+    #[test]
+    fn scroll_content_pair_and_failed_execution_cleanup_roles_are_exact() {
+        let color = PersistentTextureKey::retained(RetainedTextureRole::ScrollContentColor, 41);
+        let depth =
+            PersistentTextureKey::retained(RetainedTextureRole::ScrollContentDepthStencil, 41);
+        assert_eq!(color.depth_stencil(), Some(depth));
+        assert!(is_failed_execution_retained_color_key(color));
+        assert!(!is_failed_execution_retained_color_key(depth));
+        assert!(!is_failed_execution_retained_color_key(
+            PersistentTextureKey::Generic(41)
+        ));
+        assert_ne!(
+            color,
+            PersistentTextureKey::retained(RetainedTextureRole::ScrollHostColor, 41)
+        );
+        assert_ne!(
+            color,
+            PersistentTextureKey::retained(RetainedTextureRole::TransformedColor, 41)
+        );
+
+        let tile = PersistentTextureKey::retained_scroll_content_tile(
+            RetainedTextureRole::ScrollContentColor,
+            41,
+            3,
+            7,
+        )
+        .unwrap();
+        let tile_depth = PersistentTextureKey::retained_scroll_content_tile(
+            RetainedTextureRole::ScrollContentDepthStencil,
+            41,
+            3,
+            7,
+        )
+        .unwrap();
+        assert_eq!(tile.depth_stencil(), Some(tile_depth));
+        assert!(is_failed_execution_retained_color_key(tile));
+        assert!(!is_failed_execution_retained_color_key(tile_depth));
+        assert_ne!(
+            tile,
+            PersistentTextureKey::retained_scroll_content_tile(
+                RetainedTextureRole::ScrollContentColor,
+                41,
+                4,
+                7,
+            )
+            .unwrap()
+        );
+        assert_ne!(tile, color);
+        assert!(
+            PersistentTextureKey::retained_scroll_content_tile(
+                RetainedTextureRole::ScrollHostColor,
+                41,
+                3,
+                7,
+            )
+            .is_none()
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AllocationOwner {
     AllocatorManaged,
     ExternalOwned,
@@ -65,6 +243,7 @@ pub enum ExternalSinkKind {
     SurfacePresent,
     Readback,
     DebugCapture,
+    PersistentMaterialization,
     ExportTexture,
     ExportBuffer,
 }
@@ -78,6 +257,7 @@ impl ExternalSinkKind {
         matches!(
             self,
             ExternalSinkKind::DebugCapture
+                | ExternalSinkKind::PersistentMaterialization
                 | ExternalSinkKind::ExportTexture
                 | ExternalSinkKind::Readback
         )
@@ -108,7 +288,7 @@ pub struct ExternalSink {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ResourceMetadata {
-    pub stable_key: Option<u64>,
+    pub stable_key: Option<PersistentTextureKey>,
     pub kind: ResourceKind,
     pub allocation_class: AllocationClass,
     pub lifetime: ResourceLifetime,
@@ -545,6 +725,159 @@ struct PassNode {
     usages: Vec<PassResourceUsage>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TopologyGraphicsColorAttachment {
+    target: AttachmentTarget,
+    load_op: AttachmentLoadOp,
+    store_op: AttachmentStoreOp,
+    clear_color_bits: Option<[u64; 4]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TopologyDepthAspect {
+    load_op: AttachmentLoadOp,
+    store_op: AttachmentStoreOp,
+    clear_depth_bits: Option<u32>,
+    usage: ResourceUsage,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TopologyStencilAspect {
+    load_op: AttachmentLoadOp,
+    store_op: AttachmentStoreOp,
+    clear_stencil: Option<u32>,
+    usage: ResourceUsage,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TopologyDepthStencilAttachment {
+    target: AttachmentTarget,
+    depth: Option<TopologyDepthAspect>,
+    stencil: Option<TopologyStencilAspect>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TopologyPassDetails {
+    Graphics {
+        color_attachments: Vec<TopologyGraphicsColorAttachment>,
+        depth_stencil_attachment: Option<TopologyDepthStencilAttachment>,
+        sample_count: SampleCountPolicy,
+        viewport_policy: ViewportPolicy,
+        scissor_policy: ScissorPolicy,
+        merge_policy: GraphicsPassMergePolicy,
+        requirements: GraphicsPipelineRequirements,
+    },
+    Compute,
+    Transfer,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TopologyPassSignature {
+    name: &'static str,
+    kind: PassKind,
+    details: TopologyPassDetails,
+    usages: Vec<(ResourceHandle, ResourceUsage)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TopologyBufferDescriptor {
+    size: u64,
+    usage: wgpu::BufferUsages,
+    label: Option<&'static str>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TopologySignature {
+    passes: Vec<TopologyPassSignature>,
+    external_sinks: Vec<ExternalSink>,
+    textures: Vec<TextureDesc>,
+    texture_metadata: Vec<ResourceMetadata>,
+    buffers: Vec<TopologyBufferDescriptor>,
+    buffer_metadata: Vec<ResourceMetadata>,
+    texture_attachment_pairs: Vec<(TextureHandle, AttachmentTarget)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TopologyCacheKey {
+    pub(crate) hash: u64,
+    signature: TopologySignature,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum FramePassTestPayload {
+    Clear(crate::view::render_pass::clear_pass::ClearPassTestSnapshot),
+    DrawRect(crate::view::render_pass::draw_rect_pass::RectPassTestSnapshot),
+    PreparedText(crate::view::render_pass::text_pass::TextPreparedPassTestSnapshot),
+    TextureComposite(
+        crate::view::render_pass::texture_composite_pass::TextureCompositePassTestSnapshot,
+    ),
+    CompositeLayer(crate::view::render_pass::composite_layer_pass::CompositeLayerPassTestSnapshot),
+    ShadowFill(crate::view::render_pass::shadow_module::ShadowFillPassTestSnapshot),
+    PresentSurface(crate::view::render_pass::present_surface_pass::PresentSurfacePassTestSnapshot),
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FrameGraphTestSnapshot {
+    topology: TopologySignature,
+    execution_order: Vec<usize>,
+    culled_passes: Vec<usize>,
+    pass_payloads: Vec<FramePassTestPayload>,
+}
+
+#[cfg(test)]
+impl FrameGraphTestSnapshot {
+    pub(crate) fn pass_payloads(&self) -> &[FramePassTestPayload] {
+        &self.pass_payloads
+    }
+}
+
+fn topology_cache_matches(cached: &TopologyCacheKey, current: &TopologyCacheKey) -> bool {
+    cached.hash == current.hash && cached.signature == current.signature
+}
+
+fn topology_pass_details(details: &PassDetails) -> TopologyPassDetails {
+    match details {
+        PassDetails::Graphics(graphics) => TopologyPassDetails::Graphics {
+            color_attachments: graphics
+                .color_attachments
+                .iter()
+                .map(|attachment| TopologyGraphicsColorAttachment {
+                    target: attachment.target,
+                    load_op: attachment.load_op,
+                    store_op: attachment.store_op,
+                    clear_color_bits: attachment.clear_color.map(|color| color.map(f64::to_bits)),
+                })
+                .collect(),
+            depth_stencil_attachment: graphics.depth_stencil_attachment.map(|attachment| {
+                TopologyDepthStencilAttachment {
+                    target: attachment.target,
+                    depth: attachment.depth.map(|depth| TopologyDepthAspect {
+                        load_op: depth.load_op,
+                        store_op: depth.store_op,
+                        clear_depth_bits: depth.clear_depth.map(f32::to_bits),
+                        usage: depth.usage,
+                    }),
+                    stencil: attachment.stencil.map(|stencil| TopologyStencilAspect {
+                        load_op: stencil.load_op,
+                        store_op: stencil.store_op,
+                        clear_stencil: stencil.clear_stencil,
+                        usage: stencil.usage,
+                    }),
+                }
+            }),
+            sample_count: graphics.sample_count,
+            viewport_policy: graphics.viewport_policy,
+            scissor_policy: graphics.scissor_policy,
+            merge_policy: graphics.merge_policy,
+            requirements: graphics.requirements,
+        },
+        PassDetails::Compute(_) => TopologyPassDetails::Compute,
+        PassDetails::Transfer(_) => TopologyPassDetails::Transfer,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CompiledPass {
     pub original_index: usize,
@@ -561,7 +894,7 @@ pub struct CompiledPass {
 #[derive(Clone, Debug)]
 pub struct CompiledResource {
     pub handle: ResourceHandle,
-    pub stable_key: Option<u64>,
+    pub stable_key: Option<PersistentTextureKey>,
     pub kind: ResourceKind,
     pub allocation_class: AllocationClass,
     pub lifetime: ResourceLifetime,
@@ -666,7 +999,7 @@ pub struct CompiledGraph {
     pub resource_timelines: Vec<CompiledResourceTimeline>,
     texture_allocation_ids: FxHashMap<TextureHandle, AllocationId>,
     buffer_allocation_ids: FxHashMap<BufferHandle, AllocationId>,
-    texture_stable_keys: FxHashMap<TextureHandle, u64>,
+    texture_stable_keys: FxHashMap<TextureHandle, PersistentTextureKey>,
 }
 
 #[derive(Clone)]
@@ -764,10 +1097,60 @@ pub struct CompileProfile {
 }
 
 impl FrameGraph {
-    pub(crate) fn declared_persistent_texture_keys(&self) -> impl Iterator<Item = u64> + '_ {
+    #[cfg(test)]
+    pub(crate) fn build_state_snapshot_for_test(&self) -> TopologySignature {
+        self.topology_signature()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn topology_cache_key_for_test(&self) -> TopologyCacheKey {
+        self.topology_cache_key()
+    }
+
+    #[allow(dead_code)] // C4A prepared-surface validation; production dispatch lands in C4B.
+    pub(crate) fn contains_texture_handle(&self, handle: TextureHandle) -> bool {
+        usize::try_from(handle.0).is_ok_and(|index| index < self.textures.len())
+    }
+
+    #[allow(dead_code)] // C4A prepared-surface validation; production dispatch lands in C4B.
+    pub(crate) fn texture_desc_for_handle(&self, handle: TextureHandle) -> Option<&TextureDesc> {
+        usize::try_from(handle.0)
+            .ok()
+            .and_then(|index| self.textures.get(index))
+    }
+
+    pub(crate) fn declared_persistent_texture_keys(
+        &self,
+    ) -> impl Iterator<Item = PersistentTextureKey> + '_ {
         self.texture_metadata
             .iter()
             .filter_map(|metadata| metadata.stable_key)
+    }
+
+    pub(crate) fn declared_persistent_textures(
+        &self,
+    ) -> impl Iterator<Item = (PersistentTextureKey, &TextureDesc)> + '_ {
+        self.texture_metadata
+            .iter()
+            .zip(&self.textures)
+            .filter_map(|(metadata, desc)| {
+                (metadata.lifetime == ResourceLifetime::Persistent)
+                    .then_some(metadata.stable_key)
+                    .flatten()
+                    .map(|stable_key| (stable_key, desc))
+            })
+    }
+
+    fn validate_unique_persistent_texture_keys(&self) -> Result<(), FrameGraphError> {
+        let mut seen = FxHashSet::default();
+        for stable_key in self.declared_persistent_texture_keys() {
+            if !seen.insert(stable_key) {
+                return Err(FrameGraphError::Validation(format!(
+                    "duplicate persistent texture key {stable_key:?}"
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub fn new() -> Self {
@@ -927,10 +1310,26 @@ impl FrameGraph {
         let handle = TextureHandle(self.textures.len() as u32);
         self.textures.push(desc);
         self.texture_metadata.push(ResourceMetadata {
-            stable_key,
+            stable_key: stable_key.map(PersistentTextureKey::Generic),
             kind: ResourceKind::Texture,
             allocation_class: AllocationClass::Texture,
             lifetime,
+        });
+        super::slot::OutSlot::with_handle(handle)
+    }
+
+    pub(crate) fn declare_persistent_texture_internal<Tag>(
+        &mut self,
+        desc: TextureDesc,
+        stable_key: PersistentTextureKey,
+    ) -> super::slot::OutSlot<super::texture_resource::TextureResource, Tag> {
+        let handle = TextureHandle(self.textures.len() as u32);
+        self.textures.push(desc);
+        self.texture_metadata.push(ResourceMetadata {
+            stable_key: Some(stable_key),
+            kind: ResourceKind::Texture,
+            allocation_class: AllocationClass::Texture,
+            lifetime: ResourceLifetime::Persistent,
         });
         super::slot::OutSlot::with_handle(handle)
     }
@@ -945,7 +1344,7 @@ impl FrameGraph {
         let handle = BufferHandle(self.buffers.len() as u32);
         self.buffers.push(desc);
         self.buffer_metadata.push(ResourceMetadata {
-            stable_key,
+            stable_key: stable_key.map(PersistentTextureKey::Generic),
             kind: ResourceKind::Buffer,
             allocation_class: AllocationClass::Buffer,
             lifetime,
@@ -994,6 +1393,7 @@ impl FrameGraph {
         if let Some(err) = self.build_errors.pop() {
             return Err(err);
         }
+        self.validate_unique_persistent_texture_keys()?;
 
         let annotate_started_at = Instant::now();
         self.annotate_resource_versions();
@@ -1103,6 +1503,54 @@ impl FrameGraph {
         hasher.finish()
     }
 
+    fn topology_signature(&self) -> TopologySignature {
+        let passes = self
+            .passes
+            .iter()
+            .map(|node| TopologyPassSignature {
+                name: node.descriptor.name,
+                kind: node.descriptor.kind,
+                details: topology_pass_details(&node.descriptor.details),
+                usages: node
+                    .usages
+                    .iter()
+                    .map(|usage| (usage.resource, usage.usage))
+                    .collect(),
+            })
+            .collect();
+        let buffers = self
+            .buffers
+            .iter()
+            .map(|desc| TopologyBufferDescriptor {
+                size: desc.size,
+                usage: desc.usage,
+                label: desc.label,
+            })
+            .collect();
+        let mut texture_attachment_pairs = self
+            .texture_attachment_pairs
+            .iter()
+            .map(|(&color, &depth)| (color, depth))
+            .collect::<Vec<_>>();
+        texture_attachment_pairs.sort_by_key(|(color, _)| color.0);
+        TopologySignature {
+            passes,
+            external_sinks: self.external_sinks.clone(),
+            textures: self.textures.clone(),
+            texture_metadata: self.texture_metadata.clone(),
+            buffers,
+            buffer_metadata: self.buffer_metadata.clone(),
+            texture_attachment_pairs,
+        }
+    }
+
+    fn topology_cache_key(&self) -> TopologyCacheKey {
+        TopologyCacheKey {
+            hash: self.compute_topology_hash(),
+            signature: self.topology_signature(),
+        }
+    }
+
     /// Run annotate + build_compiled_graph phases; returns the compiled graph and timings.
     fn compile_annotate_and_build(
         &mut self,
@@ -1123,17 +1571,17 @@ impl FrameGraph {
         ))
     }
 
-    /// Like [`compile_with_upload`] but accepts an optional cached `(topology_hash, CompiledGraph)`.
-    /// When the topology hash of the current frame matches the cached hash, the expensive
-    /// `annotate_resource_versions` + `build_compiled_graph_profiled` phases are skipped.
+    /// Like [`compile_with_upload`] but accepts an optional cached topology key and graph.
+    /// The hash is only a fast rejection filter; reuse requires full canonical topology
+    /// equality before the expensive annotation and graph-build phases may be skipped.
     /// Leaves the compiled graph installed in `self`; callers can move it
     /// into a cross-frame cache with [`FrameGraph::take_compiled_graph`]
     /// after execution completes.
-    pub fn compile_with_upload_cached(
+    pub(crate) fn compile_with_upload_cached(
         &mut self,
         viewport: &mut Viewport,
-        cache: Option<(u64, CompiledGraph)>,
-    ) -> Result<(CompileProfile, u64), FrameGraphError> {
+        cache: Option<(TopologyCacheKey, CompiledGraph)>,
+    ) -> Result<(CompileProfile, TopologyCacheKey), FrameGraphError> {
         let compile_started_at = Instant::now();
         self.order.clear();
         self.compiled_graph = None;
@@ -1174,6 +1622,7 @@ impl FrameGraph {
         if let Some(err) = self.build_errors.pop() {
             return Err(err);
         }
+        self.validate_unique_persistent_texture_keys()?;
 
         // Persistent resources remain semantically live while they are
         // declared, even when pass culling removes every current-frame use.
@@ -1182,14 +1631,16 @@ impl FrameGraph {
         // composition-only reraster.
         viewport.touch_persistent_render_targets(self.declared_persistent_texture_keys());
 
-        // Compute topology hash after setup has populated usages.
-        let topology_hash = self.compute_topology_hash();
+        // Capture every canonical input that affects CompiledGraph reuse after
+        // setup has populated pass descriptors and usages. The hash is not a
+        // correctness boundary; full equality below is mandatory.
+        let topology_key = self.topology_cache_key();
 
         // Try to reuse cached CompiledGraph; fall back to full compile on miss.
         let mut topology_cache_hit = false;
         let (compiled_graph, annotate_resource_versions_ms, build_compiled_graph_ms, graph_profile) =
-            if let Some((cached_hash, cached_graph)) = cache {
-                if cached_hash == topology_hash {
+            if let Some((cached_key, cached_graph)) = cache {
+                if topology_cache_matches(&cached_key, &topology_key) {
                     topology_cache_hit = true;
                     (
                         cached_graph,
@@ -1277,7 +1728,7 @@ impl FrameGraph {
             graph: graph_profile,
         };
 
-        Ok((profile, topology_hash))
+        Ok((profile, topology_key))
     }
 
     /// Run every pass's prepare; when compile detail tracing is enabled,
@@ -1345,6 +1796,183 @@ impl FrameGraph {
 
     pub fn pass_descriptors(&self) -> Vec<&PassDescriptor> {
         self.passes.iter().map(|node| &node.descriptor).collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_graphics_passes<P: crate::view::render_pass::GraphicsPass + 'static>(
+        &self,
+    ) -> Vec<&P> {
+        self.passes
+            .iter()
+            .filter_map(|node| {
+                node.pass
+                    .as_any()
+                    .downcast_ref::<crate::view::render_pass::GraphicsPassWrapper<P>>()
+                    .map(|wrapper| &wrapper.pass)
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_graphics_passes_mut<P: crate::view::render_pass::GraphicsPass + 'static>(
+        &mut self,
+    ) -> Vec<&mut P> {
+        self.passes
+            .iter_mut()
+            .filter_map(|node| {
+                node.pass
+                    .as_any_mut()
+                    .downcast_mut::<crate::view::render_pass::GraphicsPassWrapper<P>>()
+                    .map(|wrapper| &mut wrapper.pass)
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_rect_pass_snapshots(
+        &self,
+    ) -> Vec<crate::view::render_pass::draw_rect_pass::RectPassTestSnapshot> {
+        use crate::view::render_pass::draw_rect_pass::{DrawRectPass, OpaqueRectPass};
+
+        self.passes
+            .iter()
+            .filter_map(|node| {
+                if let Some(wrapper) = node
+                    .pass
+                    .as_any()
+                    .downcast_ref::<crate::view::render_pass::GraphicsPassWrapper<DrawRectPass>>(
+                ) {
+                    return Some(wrapper.pass.test_snapshot());
+                }
+                node.pass
+                    .as_any()
+                    .downcast_ref::<crate::view::render_pass::GraphicsPassWrapper<OpaqueRectPass>>()
+                    .map(|wrapper| wrapper.pass.test_snapshot())
+            })
+            .collect()
+    }
+
+    /// Compile and capture every render-affecting input used by the current
+    /// artifact parity corpus. Unknown live pass types fail closed so adding a
+    /// new pass can never make a structural comparison silently incomplete.
+    #[cfg(test)]
+    pub(crate) fn test_compile_snapshot(
+        &mut self,
+    ) -> Result<FrameGraphTestSnapshot, FrameGraphError> {
+        use crate::view::render_pass::draw_rect_pass::{DrawRectPass, OpaqueRectPass};
+
+        self.compile()?;
+        let compiled = self
+            .compiled_graph
+            .as_ref()
+            .expect("successful compile must install a compiled graph");
+        let execution_order = compiled
+            .passes
+            .iter()
+            .map(|pass| pass.original_index)
+            .collect::<Vec<_>>();
+        let culled_passes = compiled.culled_passes.clone();
+        let mut pass_payloads = Vec::with_capacity(execution_order.len());
+        for &index in &execution_order {
+            let node = &self.passes[index];
+            if let Some(wrapper) =
+                node.pass
+                    .as_any()
+                    .downcast_ref::<crate::view::render_pass::GraphicsPassWrapper<
+                        crate::view::render_pass::ClearPass,
+                    >>()
+            {
+                pass_payloads.push(FramePassTestPayload::Clear(wrapper.pass.test_snapshot()));
+                continue;
+            }
+            if let Some(wrapper) = node
+                .pass
+                .as_any()
+                .downcast_ref::<crate::view::render_pass::GraphicsPassWrapper<DrawRectPass>>()
+            {
+                pass_payloads.push(FramePassTestPayload::DrawRect(wrapper.pass.test_snapshot()));
+                continue;
+            }
+            if let Some(wrapper) = node
+                .pass
+                .as_any()
+                .downcast_ref::<crate::view::render_pass::GraphicsPassWrapper<OpaqueRectPass>>()
+            {
+                pass_payloads.push(FramePassTestPayload::DrawRect(wrapper.pass.test_snapshot()));
+                continue;
+            }
+            if let Some(wrapper) = node
+                .pass
+                .as_any()
+                .downcast_ref::<crate::view::render_pass::GraphicsPassWrapper<
+                    crate::view::render_pass::text_pass::TextPreparedInputPass,
+                >>()
+            {
+                pass_payloads.push(FramePassTestPayload::PreparedText(
+                    wrapper.pass.test_snapshot(),
+                ));
+                continue;
+            }
+            if let Some(wrapper) = node
+                .pass
+                .as_any()
+                .downcast_ref::<crate::view::render_pass::GraphicsPassWrapper<
+                    crate::view::render_pass::TextureCompositePass,
+                >>()
+            {
+                pass_payloads.push(FramePassTestPayload::TextureComposite(
+                    wrapper.pass.test_snapshot(),
+                ));
+                continue;
+            }
+            if let Some(wrapper) = node
+                .pass
+                .as_any()
+                .downcast_ref::<crate::view::render_pass::GraphicsPassWrapper<
+                    crate::view::render_pass::composite_layer_pass::CompositeLayerPass,
+                >>()
+            {
+                pass_payloads.push(FramePassTestPayload::CompositeLayer(
+                    wrapper.pass.test_snapshot(),
+                ));
+                continue;
+            }
+            if let Some(wrapper) = node
+                .pass
+                .as_any()
+                .downcast_ref::<crate::view::render_pass::GraphicsPassWrapper<
+                    crate::view::render_pass::shadow_module::ShadowFillPass,
+                >>()
+            {
+                pass_payloads.push(FramePassTestPayload::ShadowFill(
+                    wrapper.pass.test_snapshot(),
+                ));
+                continue;
+            }
+            if let Some(wrapper) = node
+                .pass
+                .as_any()
+                .downcast_ref::<crate::view::render_pass::GraphicsPassWrapper<
+                    crate::view::render_pass::present_surface_pass::PresentSurfacePass,
+                >>()
+            {
+                pass_payloads.push(FramePassTestPayload::PresentSurface(
+                    wrapper.pass.test_snapshot(),
+                ));
+                continue;
+            }
+            return Err(FrameGraphError::Validation(format!(
+                "strict test snapshot has no payload adapter for live pass {}",
+                node.descriptor.name
+            )));
+        }
+
+        Ok(FrameGraphTestSnapshot {
+            topology: self.topology_signature(),
+            execution_order,
+            culled_passes,
+            pass_payloads,
+        })
     }
 
     pub fn compiled_graph(&self) -> Option<&CompiledGraph> {
@@ -2452,8 +3080,9 @@ impl FrameGraph {
         // Take execute_steps out of self so we can call &mut self methods while iterating,
         // then restore it afterward — zero clones, no heap allocations.
         let execute_steps = std::mem::take(&mut self.execute_steps);
+        let mut execution_error = None;
         for step in &execute_steps {
-            match step {
+            let result = match step {
                 ExecuteStep::GraphicsPass { index } => {
                     self.execute_graphics_pass(*index, &mut ctx, &mut timings)
                 }
@@ -2466,6 +3095,21 @@ impl FrameGraph {
                 ExecuteStep::GraphicsPassGroup(group) => {
                     self.execute_graphics_group(group, &mut ctx, &mut timings)
                 }
+            };
+            if let Err(error) = result {
+                execution_error = Some(error);
+                break;
+            }
+        }
+        if execution_error.is_some() {
+            let failed_retained_color_keys = compiled_graph
+                .texture_stable_keys
+                .values()
+                .copied()
+                .filter(|key| is_failed_execution_retained_color_key(*key))
+                .collect::<Vec<_>>();
+            for key in failed_retained_color_keys {
+                ctx.viewport.release_persistent_render_target_pair(key);
             }
         }
         self.execute_steps = execute_steps;
@@ -2473,6 +3117,9 @@ impl FrameGraph {
         self.textures = textures;
         self.buffers = buffers;
         self.compiled_graph = Some(compiled_graph);
+        if let Some(error) = execution_error {
+            return Err(error);
+        }
         Ok(ExecuteProfile {
             total_ms: execute_started_at.elapsed().as_secs_f64() * 1000.0,
             pass_count: self.order.len(),
@@ -2536,16 +3183,51 @@ impl PassTimingCollector {
     }
 }
 
+fn execution_panic_error(
+    pass_kind: &str,
+    pass_name: &str,
+    payload: Box<dyn std::any::Any + Send>,
+) -> FrameGraphError {
+    let detail = if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
+    };
+    FrameGraphError::Execution(format!("{pass_kind} pass panicked: {pass_name} ({detail})"))
+}
+
+fn execution_witness_result(
+    execution_failed: bool,
+    pass_kind: &str,
+    pass_name: &str,
+) -> Result<(), FrameGraphError> {
+    if execution_failed {
+        Err(FrameGraphError::Execution(format!(
+            "{pass_kind} reported a missing required resource: {pass_name}"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn graphics_group_can_continue(execution_failed: bool) -> bool {
+    !execution_failed
+}
+
 impl FrameGraph {
     fn execute_graphics_pass(
         &mut self,
         index: usize,
         ctx: &mut RecordContext<'_, '_>,
         timings: &mut PassTimingCollector,
-    ) {
+    ) -> Result<(), FrameGraphError> {
         let encoder_ptr = {
             let Some(parts) = ctx.viewport.frame_parts() else {
-                return;
+                return Err(FrameGraphError::Execution(
+                    "graphics pass requires an active frame encoder".to_string(),
+                ));
             };
             parts.encoder as *mut wgpu::CommandEncoder
         };
@@ -2556,20 +3238,14 @@ impl FrameGraph {
                     .expect("graphics pass descriptor should produce render-pass compatibility");
             self.execute_graphics_passes(&[index], &compatibility, ctx, encoder, timings);
         }));
-        if let Err(payload) = result {
-            let detail = if let Some(message) = payload.downcast_ref::<&str>() {
-                *message
-            } else if let Some(message) = payload.downcast_ref::<String>() {
-                message.as_str()
-            } else {
-                "unknown panic payload"
-            };
-            eprintln!(
-                "[warn] render pass panicked and was skipped: {} ({})",
-                self.passes[index].pass.name(),
-                detail
-            );
-        }
+        result.map_err(|payload| {
+            execution_panic_error("graphics", self.passes[index].pass.name(), payload)
+        })?;
+        execution_witness_result(
+            ctx.execution_failed,
+            "graphics pass",
+            self.passes[index].pass.name(),
+        )
     }
 
     fn execute_compute_pass(
@@ -2577,12 +3253,14 @@ impl FrameGraph {
         index: usize,
         ctx: &mut RecordContext<'_, '_>,
         timings: &mut PassTimingCollector,
-    ) {
+    ) -> Result<(), FrameGraphError> {
         let pass_name = self.passes[index].pass.name();
         let pass_started_at = timings.start();
         let encoder_ptr = {
             let Some(parts) = ctx.viewport.frame_parts() else {
-                return;
+                return Err(FrameGraphError::Execution(
+                    "compute pass requires an active frame encoder".to_string(),
+                ));
             };
             parts.encoder as *mut wgpu::CommandEncoder
         };
@@ -2598,20 +3276,8 @@ impl FrameGraph {
             self.passes[index].pass.execute_compute(&mut compute_ctx);
         }));
         timings.record(pass_name, pass_started_at);
-        if let Err(payload) = result {
-            let detail = if let Some(message) = payload.downcast_ref::<&str>() {
-                *message
-            } else if let Some(message) = payload.downcast_ref::<String>() {
-                message.as_str()
-            } else {
-                "unknown panic payload"
-            };
-            eprintln!(
-                "[warn] compute pass panicked and was skipped: {} ({})",
-                self.passes[index].pass.name(),
-                detail
-            );
-        }
+        result.map_err(|payload| execution_panic_error("compute", pass_name, payload))?;
+        execution_witness_result(ctx.execution_failed, "compute pass", pass_name)
     }
 
     fn execute_transfer_pass(
@@ -2619,12 +3285,14 @@ impl FrameGraph {
         index: usize,
         ctx: &mut RecordContext<'_, '_>,
         timings: &mut PassTimingCollector,
-    ) {
+    ) -> Result<(), FrameGraphError> {
         let pass_name = self.passes[index].pass.name();
         let pass_started_at = timings.start();
         let encoder_ptr = {
             let Some(parts) = ctx.viewport.frame_parts() else {
-                return;
+                return Err(FrameGraphError::Execution(
+                    "transfer pass requires an active frame encoder".to_string(),
+                ));
             };
             parts.encoder as *mut wgpu::CommandEncoder
         };
@@ -2635,20 +3303,8 @@ impl FrameGraph {
             self.passes[index].pass.execute_transfer(&mut transfer_ctx);
         }));
         timings.record(pass_name, pass_started_at);
-        if let Err(payload) = result {
-            let detail = if let Some(message) = payload.downcast_ref::<&str>() {
-                *message
-            } else if let Some(message) = payload.downcast_ref::<String>() {
-                message.as_str()
-            } else {
-                "unknown panic payload"
-            };
-            eprintln!(
-                "[warn] transfer pass panicked and was skipped: {} ({})",
-                self.passes[index].pass.name(),
-                detail
-            );
-        }
+        result.map_err(|payload| execution_panic_error("transfer", pass_name, payload))?;
+        execution_witness_result(ctx.execution_failed, "transfer pass", pass_name)
     }
 
     fn execute_graphics_group(
@@ -2656,19 +3312,28 @@ impl FrameGraph {
         group: &RenderPassGroup,
         ctx: &mut RecordContext<'_, '_>,
         timings: &mut PassTimingCollector,
-    ) {
-        let Some(parts) = ctx.viewport.frame_parts() else {
-            return;
+    ) -> Result<(), FrameGraphError> {
+        let encoder_ptr = {
+            let Some(parts) = ctx.viewport.frame_parts() else {
+                return Err(FrameGraphError::Execution(
+                    "graphics group requires an active frame encoder".to_string(),
+                ));
+            };
+            parts.encoder as *mut wgpu::CommandEncoder
         };
-        let encoder = parts.encoder as *mut wgpu::CommandEncoder;
-        let encoder = unsafe { &mut *encoder };
-        self.execute_graphics_passes(
-            &group.pass_indices,
-            &group.compatibility,
-            ctx,
-            encoder,
-            timings,
-        );
+        let pass_names = pass_names_for_error(&group.pass_indices, &self.passes);
+        catch_unwind(AssertUnwindSafe(|| {
+            let encoder = unsafe { &mut *encoder_ptr };
+            self.execute_graphics_passes(
+                &group.pass_indices,
+                &group.compatibility,
+                ctx,
+                encoder,
+                timings,
+            );
+        }))
+        .map_err(|payload| execution_panic_error("graphics group", &pass_names, payload))?;
+        execution_witness_result(ctx.execution_failed, "graphics group", &pass_names)
     }
 
     fn execute_graphics_passes(
@@ -2700,6 +3365,7 @@ impl FrameGraph {
                 surface_resolve_view.as_ref(),
             );
             let Some(view) = view else {
+                ctx.execution_failed = true;
                 return;
             };
             owned_color_views.push((view, resolve_target));
@@ -2778,6 +3444,10 @@ impl FrameGraph {
                     }),
                 },
             );
+        if compatibility.depth_stencil_attachment.is_some() && depth_attachment.is_none() {
+            ctx.execution_failed = true;
+            return;
+        }
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("FrameGraph GraphicsGroup"),
             color_attachments: &color_attachments,
@@ -2792,6 +3462,9 @@ impl FrameGraph {
             let mut pass_ctx = GraphicsCtx::new(&mut graphics_ctx, &mut render_pass);
             self.passes[index].pass.execute_graphics(&mut pass_ctx);
             timings.record(pass_name, pass_started_at);
+            if !graphics_group_can_continue(graphics_ctx.execution_failed()) {
+                break;
+            }
         }
     }
 }
@@ -4184,7 +4857,7 @@ pub trait FrameResourceContext {
     fn textures(&self) -> &[TextureDesc];
     fn buffers(&self) -> &[BufferDesc];
     fn texture_allocation_id(&self, handle: TextureHandle) -> Option<AllocationId>;
-    fn texture_stable_key(&self, handle: TextureHandle) -> Option<u64>;
+    fn texture_stable_key(&self, handle: TextureHandle) -> Option<PersistentTextureKey>;
     fn buffer_allocation_id(&self, handle: BufferHandle) -> Option<AllocationId>;
 
     fn buffer_desc(&self, handle: BufferHandle) -> Option<BufferDesc> {
@@ -4203,7 +4876,7 @@ pub struct PrepareContext<'a, 'b> {
     pub(crate) textures: &'b [TextureDesc],
     pub(crate) buffers: &'b [BufferDesc],
     texture_allocation_ids: &'b FxHashMap<TextureHandle, AllocationId>,
-    texture_stable_keys: &'b FxHashMap<TextureHandle, u64>,
+    texture_stable_keys: &'b FxHashMap<TextureHandle, PersistentTextureKey>,
     buffer_allocation_ids: &'b FxHashMap<BufferHandle, AllocationId>,
 }
 
@@ -4213,7 +4886,7 @@ impl<'a, 'b> PrepareContext<'a, 'b> {
         textures: &'b [TextureDesc],
         buffers: &'b [BufferDesc],
         texture_allocation_ids: &'b FxHashMap<TextureHandle, AllocationId>,
-        texture_stable_keys: &'b FxHashMap<TextureHandle, u64>,
+        texture_stable_keys: &'b FxHashMap<TextureHandle, PersistentTextureKey>,
         buffer_allocation_ids: &'b FxHashMap<BufferHandle, AllocationId>,
     ) -> Self {
         Self {
@@ -4255,7 +4928,7 @@ impl FrameResourceContext for PrepareContext<'_, '_> {
         self.texture_allocation_ids.get(&handle).copied()
     }
 
-    fn texture_stable_key(&self, handle: TextureHandle) -> Option<u64> {
+    fn texture_stable_key(&self, handle: TextureHandle) -> Option<PersistentTextureKey> {
         self.texture_stable_keys.get(&handle).copied()
     }
 
@@ -4269,11 +4942,12 @@ pub struct RecordContext<'a, 'b> {
     pub(crate) textures: &'b [TextureDesc],
     pub(crate) buffers: &'b [BufferDesc],
     texture_allocation_ids: &'b FxHashMap<TextureHandle, AllocationId>,
-    texture_stable_keys: &'b FxHashMap<TextureHandle, u64>,
+    texture_stable_keys: &'b FxHashMap<TextureHandle, PersistentTextureKey>,
     buffer_allocation_ids: &'b FxHashMap<BufferHandle, AllocationId>,
     detail_timings: FxHashMap<&'static str, f64>,
     detail_counts: FxHashMap<&'static str, usize>,
     detail_order: Vec<&'static str>,
+    execution_failed: bool,
 }
 
 impl<'a, 'b> RecordContext<'a, 'b> {
@@ -4282,7 +4956,7 @@ impl<'a, 'b> RecordContext<'a, 'b> {
         textures: &'b [TextureDesc],
         buffers: &'b [BufferDesc],
         texture_allocation_ids: &'b FxHashMap<TextureHandle, AllocationId>,
-        texture_stable_keys: &'b FxHashMap<TextureHandle, u64>,
+        texture_stable_keys: &'b FxHashMap<TextureHandle, PersistentTextureKey>,
         buffer_allocation_ids: &'b FxHashMap<BufferHandle, AllocationId>,
     ) -> Self {
         Self {
@@ -4295,6 +4969,7 @@ impl<'a, 'b> RecordContext<'a, 'b> {
             detail_timings: FxHashMap::default(),
             detail_counts: FxHashMap::default(),
             detail_order: Vec::new(),
+            execution_failed: false,
         }
     }
 
@@ -4328,7 +5003,7 @@ impl FrameResourceContext for RecordContext<'_, '_> {
         self.texture_allocation_ids.get(&handle).copied()
     }
 
-    fn texture_stable_key(&self, handle: TextureHandle) -> Option<u64> {
+    fn texture_stable_key(&self, handle: TextureHandle) -> Option<PersistentTextureKey> {
         self.texture_stable_keys.get(&handle).copied()
     }
 
@@ -4342,11 +5017,12 @@ pub struct GraphicsRecordContext<'ctx, 'res> {
     pub(crate) textures: &'res [TextureDesc],
     pub(crate) buffers: &'res [BufferDesc],
     texture_allocation_ids: &'res FxHashMap<TextureHandle, AllocationId>,
-    texture_stable_keys: &'res FxHashMap<TextureHandle, u64>,
+    texture_stable_keys: &'res FxHashMap<TextureHandle, PersistentTextureKey>,
     buffer_allocation_ids: &'res FxHashMap<BufferHandle, AllocationId>,
     detail_timings: &'ctx mut FxHashMap<&'static str, f64>,
     detail_counts: &'ctx mut FxHashMap<&'static str, usize>,
     detail_order: &'ctx mut Vec<&'static str>,
+    execution_failed: &'ctx mut bool,
 }
 
 impl<'ctx, 'res> GraphicsRecordContext<'ctx, 'res> {
@@ -4361,6 +5037,7 @@ impl<'ctx, 'res> GraphicsRecordContext<'ctx, 'res> {
             detail_timings,
             detail_counts,
             detail_order,
+            execution_failed,
         } = record;
         Self {
             viewport,
@@ -4372,11 +5049,20 @@ impl<'ctx, 'res> GraphicsRecordContext<'ctx, 'res> {
             detail_timings,
             detail_counts,
             detail_order,
+            execution_failed,
         }
     }
 
     pub fn viewport(&mut self) -> &mut Viewport {
         self.viewport
+    }
+
+    pub fn mark_execution_failed(&mut self) {
+        *self.execution_failed = true;
+    }
+
+    pub fn execution_failed(&self) -> bool {
+        *self.execution_failed
     }
 
     pub fn record_detail_timing(&mut self, name: &'static str, elapsed_ms: f64) {
@@ -4419,7 +5105,7 @@ impl FrameResourceContext for GraphicsRecordContext<'_, '_> {
         self.texture_allocation_ids.get(&handle).copied()
     }
 
-    fn texture_stable_key(&self, handle: TextureHandle) -> Option<u64> {
+    fn texture_stable_key(&self, handle: TextureHandle) -> Option<PersistentTextureKey> {
         self.texture_stable_keys.get(&handle).copied()
     }
 
@@ -4433,7 +5119,7 @@ pub struct ComputeRecordContext<'ctx, 'res> {
     pub(crate) textures: &'res [TextureDesc],
     pub(crate) buffers: &'res [BufferDesc],
     texture_allocation_ids: &'res FxHashMap<TextureHandle, AllocationId>,
-    texture_stable_keys: &'res FxHashMap<TextureHandle, u64>,
+    texture_stable_keys: &'res FxHashMap<TextureHandle, PersistentTextureKey>,
     buffer_allocation_ids: &'res FxHashMap<BufferHandle, AllocationId>,
     detail_timings: &'ctx mut FxHashMap<&'static str, f64>,
     detail_counts: &'ctx mut FxHashMap<&'static str, usize>,
@@ -4452,6 +5138,7 @@ impl<'ctx, 'res> ComputeRecordContext<'ctx, 'res> {
             detail_timings,
             detail_counts,
             detail_order,
+            execution_failed: _,
         } = record;
         Self {
             viewport,
@@ -4510,7 +5197,7 @@ impl FrameResourceContext for ComputeRecordContext<'_, '_> {
         self.texture_allocation_ids.get(&handle).copied()
     }
 
-    fn texture_stable_key(&self, handle: TextureHandle) -> Option<u64> {
+    fn texture_stable_key(&self, handle: TextureHandle) -> Option<PersistentTextureKey> {
         self.texture_stable_keys.get(&handle).copied()
     }
 
@@ -4524,7 +5211,7 @@ pub struct TransferRecordContext<'ctx, 'res> {
     pub(crate) textures: &'res [TextureDesc],
     pub(crate) buffers: &'res [BufferDesc],
     texture_allocation_ids: &'res FxHashMap<TextureHandle, AllocationId>,
-    texture_stable_keys: &'res FxHashMap<TextureHandle, u64>,
+    texture_stable_keys: &'res FxHashMap<TextureHandle, PersistentTextureKey>,
     buffer_allocation_ids: &'res FxHashMap<BufferHandle, AllocationId>,
     detail_timings: &'ctx mut FxHashMap<&'static str, f64>,
     detail_counts: &'ctx mut FxHashMap<&'static str, usize>,
@@ -4543,6 +5230,7 @@ impl<'ctx, 'res> TransferRecordContext<'ctx, 'res> {
             detail_timings,
             detail_counts,
             detail_order,
+            execution_failed: _,
         } = record;
         Self {
             viewport,
@@ -4601,7 +5289,7 @@ impl FrameResourceContext for TransferRecordContext<'_, '_> {
         self.texture_allocation_ids.get(&handle).copied()
     }
 
-    fn texture_stable_key(&self, handle: TextureHandle) -> Option<u64> {
+    fn texture_stable_key(&self, handle: TextureHandle) -> Option<PersistentTextureKey> {
         self.texture_stable_keys.get(&handle).copied()
     }
 
@@ -4619,6 +5307,7 @@ pub enum FrameGraphError {
     CyclicDependency,
     MissingRootPass,
     NotCompiled,
+    Execution(String),
 }
 
 /// Counters for a cache's lifetime. Incremented with `Relaxed` atomics so the
@@ -4710,6 +5399,17 @@ impl<T> ResourceCache<T> {
                 .fetch_add(self.store.len() as u64, Ordering::Relaxed);
         }
         self.store.clear();
+    }
+
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&u64, &mut T) -> bool) {
+        let before = self.store.len();
+        self.store.retain(|key, value| keep(key, value));
+        if let Some(stats) = self.stats {
+            stats.evictions.fetch_add(
+                before.saturating_sub(self.store.len()) as u64,
+                Ordering::Relaxed,
+            );
+        }
     }
 
     pub fn get_or_insert_with<F: FnOnce() -> T>(&mut self, key: u64, create: F) -> &mut T {
@@ -5307,6 +6007,21 @@ mod tests {
     }
 
     #[test]
+    fn strict_test_snapshot_rejects_unknown_live_pass_payload() {
+        let mut graph = FrameGraph::new();
+        graph.add_graphics_pass(SurfacePass);
+
+        let error = graph
+            .test_compile_snapshot()
+            .expect_err("unknown live pass payload must fail closed");
+        let FrameGraphError::Validation(message) = error else {
+            panic!("unexpected strict snapshot error: {error:?}");
+        };
+        assert!(message.contains("strict test snapshot has no payload adapter"));
+        assert!(message.contains("SurfacePass"));
+    }
+
+    #[test]
     fn compiler_clears_first_transient_color_load_attachment() {
         let mut graph = FrameGraph::new();
         let texture = graph.declare_texture::<()>(test_texture_desc());
@@ -5376,6 +6091,73 @@ mod tests {
     }
 
     #[test]
+    fn persistent_read_without_current_frame_producer_compiles() {
+        let mut graph = FrameGraph::new();
+        let texture = graph.declare_persistent_texture_internal::<()>(
+            test_texture_desc(),
+            PersistentTextureKey::retained(RetainedTextureRole::RootEffectColor, 17),
+        );
+        graph.add_graphics_pass(ReadPass {
+            input: InSlot::with_handle(texture.handle().expect("persistent texture handle")),
+        });
+
+        graph
+            .compile()
+            .expect("resident persistent texture is a valid external input");
+    }
+
+    #[test]
+    fn root_effect_color_maps_to_distinct_depth_stencil_role() {
+        let color = PersistentTextureKey::retained(
+            RetainedTextureRole::RootEffectColor,
+            0xABCD_EF01_2345_6789,
+        );
+        assert_eq!(
+            color.depth_stencil(),
+            Some(PersistentTextureKey::retained(
+                RetainedTextureRole::RootEffectDepthStencil,
+                0xABCD_EF01_2345_6789,
+            ))
+        );
+        assert_eq!(color.depth_stencil().unwrap().depth_stencil(), None);
+    }
+
+    #[test]
+    fn graphics_execution_witness_fails_closed_and_stops_group_progress() {
+        let mut viewport = Viewport::new();
+        let texture_allocations = FxHashMap::default();
+        let texture_keys = FxHashMap::default();
+        let buffer_allocations = FxHashMap::default();
+        let mut record = RecordContext::new(
+            &mut viewport,
+            &[],
+            &[],
+            &texture_allocations,
+            &texture_keys,
+            &buffer_allocations,
+        );
+        {
+            let mut graphics = GraphicsRecordContext::new(&mut record);
+            graphics.mark_execution_failed();
+            assert!(!graphics_group_can_continue(graphics.execution_failed()));
+        }
+        assert!(matches!(
+            execution_witness_result(record.execution_failed, "graphics group", "fixture"),
+            Err(FrameGraphError::Execution(message))
+                if message.contains("missing required resource")
+        ));
+
+        let mut visited = 0;
+        for _ in 0..2 {
+            visited += 1;
+            if !graphics_group_can_continue(record.execution_failed) {
+                break;
+            }
+        }
+        assert_eq!(visited, 1, "a failed group must not execute its next pass");
+    }
+
+    #[test]
     fn declared_persistent_keys_include_resources_culled_from_compiled_graph() {
         let mut graph = FrameGraph::new();
         let persistent_key = 0xA11CE;
@@ -5398,18 +6180,88 @@ mod tests {
         assert!(
             graph
                 .declared_persistent_texture_keys()
-                .any(|key| key == persistent_key),
+                .any(|key| key == PersistentTextureKey::Generic(persistent_key)),
             "declaration liveness must not depend on executable pass usage"
         );
+        let declared = graph
+            .declared_persistent_textures()
+            .find(|(key, _)| *key == PersistentTextureKey::Generic(persistent_key))
+            .expect("culled persistent declaration should retain its descriptor");
+        assert_eq!(declared.1, &test_texture_desc());
         assert!(
             !graph
                 .compiled_graph()
                 .expect("compiled graph")
                 .texture_stable_keys
                 .values()
-                .any(|&key| key == persistent_key),
+                .any(|&key| key == PersistentTextureKey::Generic(persistent_key)),
             "fixture must prove the persistent resource was culled from the compiled graph"
         );
+    }
+
+    #[test]
+    fn duplicate_persistent_texture_key_fails_compile_before_resource_acquire() {
+        let mut graph = FrameGraph::new();
+        let desc = test_texture_desc();
+        let _first = graph.declare_texture_internal::<()>(
+            desc.clone(),
+            ResourceLifetime::Persistent,
+            Some(0xA11CE),
+        );
+        let _second =
+            graph.declare_texture_internal::<()>(desc, ResourceLifetime::Persistent, Some(0xA11CE));
+
+        let error = graph
+            .compile()
+            .expect_err("duplicate stable key must fail closed");
+        assert!(matches!(
+            error,
+            FrameGraphError::Validation(message)
+                if message.contains("duplicate persistent texture key")
+        ));
+    }
+
+    #[test]
+    fn topology_cache_rejects_equal_hash_with_different_typed_key_mapping() {
+        let desc = test_texture_desc();
+        let mut cached_graph = FrameGraph::new();
+        let _ = cached_graph.declare_persistent_texture_internal::<()>(
+            desc.clone(),
+            PersistentTextureKey::retained(RetainedTextureRole::PromotedBaseColor, u64::MAX),
+        );
+        let mut current_graph = FrameGraph::new();
+        let _ = current_graph.declare_persistent_texture_internal::<()>(
+            desc,
+            PersistentTextureKey::retained(RetainedTextureRole::PromotedFinalColor, u64::MAX),
+        );
+
+        // Inject the same fast hash to model an actual hash collision. Full
+        // canonical equality must remain the correctness boundary.
+        let cached = TopologyCacheKey {
+            hash: 7,
+            signature: cached_graph.topology_signature(),
+        };
+        let current = TopologyCacheKey {
+            hash: 7,
+            signature: current_graph.topology_signature(),
+        };
+        assert!(!topology_cache_matches(&cached, &current));
+    }
+
+    #[test]
+    fn topology_cache_accepts_equal_hash_and_equal_canonical_signature() {
+        let mut graph = FrameGraph::new();
+        let _ = graph.declare_persistent_texture_internal::<()>(
+            test_texture_desc(),
+            PersistentTextureKey::retained(RetainedTextureRole::PromotedBaseColor, u64::MAX),
+        );
+        let cached = TopologyCacheKey {
+            hash: 11,
+            signature: graph.topology_signature(),
+        };
+        let current = cached.clone();
+
+        assert!(topology_cache_matches(&cached, &current));
     }
 
     #[test]
@@ -5992,7 +6844,10 @@ mod tests {
             .iter()
             .find(|resource| resource.lifetime == ResourceLifetime::Persistent)
             .expect("persistent resource should exist");
-        assert_eq!(resource.stable_key, Some(0xCAFE));
+        assert_eq!(
+            resource.stable_key,
+            Some(PersistentTextureKey::Generic(0xCAFE))
+        );
         assert_eq!(resource.allocation_id, None);
         assert!(compiled.allocation_plan.texture_allocations.is_empty());
     }

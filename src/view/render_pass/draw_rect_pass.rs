@@ -113,6 +113,141 @@ pub struct DrawRectPass {
     output: DrawRectOutput,
 }
 
+#[cfg(test)]
+impl DrawRectPass {
+    pub(crate) fn test_params(&self) -> &RectPassParams {
+        &self.params
+    }
+
+    pub(crate) fn test_snapshot(&self) -> RectPassTestSnapshot {
+        RectPassTestSnapshot::from_pass(self, false, None)
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GradientStopTestSnapshot {
+    pub(crate) color_bits: [u32; 4],
+    pub(crate) position_bits: [u32; 4],
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GradientPaintTestSnapshot {
+    pub(crate) kind: GradientKindGpu,
+    pub(crate) axis_bits: [u32; 4],
+    pub(crate) repeating: bool,
+    pub(crate) stops: Vec<GradientStopTestSnapshot>,
+}
+
+#[cfg(test)]
+impl From<&GradientPaint> for GradientPaintTestSnapshot {
+    fn from(paint: &GradientPaint) -> Self {
+        Self {
+            kind: paint.kind,
+            axis_bits: paint.axis.map(f32::to_bits),
+            repeating: paint.repeating,
+            stops: paint
+                .stops
+                .iter()
+                .map(|stop| GradientStopTestSnapshot {
+                    color_bits: stop.color.map(f32::to_bits),
+                    position_bits: stop.pos.map(f32::to_bits),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RectStencilModeTestSnapshot {
+    Disabled,
+    Test { clip_id: u8 },
+    Increment { clip_id: u8 },
+    Decrement { clip_id: u8 },
+}
+
+#[cfg(test)]
+impl From<RectStencilMode> for RectStencilModeTestSnapshot {
+    fn from(mode: RectStencilMode) -> Self {
+        match mode {
+            RectStencilMode::Disabled => Self::Disabled,
+            RectStencilMode::Test { clip_id } => Self::Test { clip_id },
+            RectStencilMode::Increment { clip_id } => Self::Increment { clip_id },
+            RectStencilMode::Decrement { clip_id } => Self::Decrement { clip_id },
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RectPassTestSnapshot {
+    pub(crate) opaque: bool,
+    pub(crate) opaque_depth_order: Option<u32>,
+    pub(crate) position_bits: [u32; 2],
+    pub(crate) size_bits: [u32; 2],
+    pub(crate) fill_color_bits: [u32; 4],
+    pub(crate) opacity_bits: u32,
+    pub(crate) border_width_bits: [u32; 4],
+    pub(crate) border_radius_bits: [[u32; 2]; 4],
+    pub(crate) border_color_bits: [u32; 4],
+    pub(crate) border_side_color_bits: [[u32; 4]; 4],
+    pub(crate) use_border_side_colors: bool,
+    pub(crate) depth_bits: u32,
+    pub(crate) gradient: Option<GradientPaintTestSnapshot>,
+    pub(crate) border_gradient: Option<GradientPaintTestSnapshot>,
+    pub(crate) mode: RectRenderMode,
+    pub(crate) explicit_scissor_rect: Option<[u32; 4]>,
+    pub(crate) effective_scissor_rect: Option<[u32; 4]>,
+    pub(crate) stencil_mode: RectStencilModeTestSnapshot,
+    pub(crate) color_write_enabled: bool,
+    pub(crate) clear_target: bool,
+    pub(crate) input_target: Option<TextureHandle>,
+    pub(crate) output_target: Option<TextureHandle>,
+    pub(crate) pass_context: RenderPassContext,
+}
+
+#[cfg(test)]
+impl RectPassTestSnapshot {
+    fn from_pass(pass: &DrawRectPass, opaque: bool, opaque_depth_order: Option<u32>) -> Self {
+        Self {
+            opaque,
+            opaque_depth_order,
+            position_bits: pass.params.position.map(f32::to_bits),
+            size_bits: pass.params.size.map(f32::to_bits),
+            fill_color_bits: pass.params.fill_color.map(f32::to_bits),
+            opacity_bits: pass.params.opacity.to_bits(),
+            border_width_bits: pass.params.border_widths.map(f32::to_bits),
+            border_radius_bits: pass
+                .params
+                .border_radii
+                .map(|radius| radius.map(f32::to_bits)),
+            border_color_bits: pass.params.border_color.map(f32::to_bits),
+            border_side_color_bits: pass
+                .params
+                .border_side_colors
+                .map(|color| color.map(f32::to_bits)),
+            use_border_side_colors: pass.params.use_border_side_colors,
+            depth_bits: pass.params.depth.to_bits(),
+            gradient: pass.params.gradient.as_ref().map(Into::into),
+            border_gradient: pass.params.border_gradient.as_ref().map(Into::into),
+            mode: pass.render_mode,
+            explicit_scissor_rect: pass.scissor_rect,
+            effective_scissor_rect: intersect_scissor_rects(
+                pass.input.pass_context.scissor_rect,
+                pass.scissor_rect,
+            ),
+            stencil_mode: pass.stencil_mode.into(),
+            color_write_enabled: pass.color_write_enabled,
+            clear_target: pass.clear_target,
+            input_target: pass.input.render_target.handle(),
+            output_target: pass.output.render_target.handle(),
+            pass_context: pass.input.pass_context,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RectStencilMode {
     Disabled,
@@ -516,6 +651,16 @@ impl DrawRectPass {
 }
 
 impl OpaqueRectPass {
+    #[cfg(test)]
+    pub(crate) fn test_params(&self) -> &RectPassParams {
+        self.inner.test_params()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_snapshot(&self) -> RectPassTestSnapshot {
+        RectPassTestSnapshot::from_pass(&self.inner, true, Some(self.depth_order))
+    }
+
     pub(crate) fn draw_rect_input_mut(&mut self) -> &mut DrawRectInput {
         &mut self.inner.input
     }
@@ -886,7 +1031,10 @@ fn encode_draw_rect_into_existing_pass(
     let scale = ctx.viewport().scale_factor();
     let device = match ctx.viewport().device() {
         Some(device) => device.clone(),
-        None => return,
+        None => {
+            ctx.mark_execution_failed();
+            return;
+        }
     };
     let format = ctx.viewport().offscreen_format();
     let sample_count = draw
@@ -1885,5 +2033,37 @@ mod tests {
             pass.inner.stencil_mode,
             RectStencilMode::Test { clip_id: 3 }
         );
+    }
+
+    #[test]
+    fn rect_test_snapshot_is_bit_strict_for_negative_zero_and_nan() {
+        const NAN_BITS: u32 = 0x7fc0_1234;
+        let nan = f32::from_bits(NAN_BITS);
+        let mut negative_zero_params = RectPassParams::default();
+        negative_zero_params.position = [-0.0, nan];
+        let negative_zero = DrawRectPass::new(
+            negative_zero_params,
+            DrawRectInput::default(),
+            DrawRectOutput::default(),
+        )
+        .test_snapshot();
+
+        let mut positive_zero_params = RectPassParams::default();
+        positive_zero_params.position = [0.0, f32::from_bits(NAN_BITS)];
+        let positive_zero = DrawRectPass::new(
+            positive_zero_params,
+            DrawRectInput::default(),
+            DrawRectOutput::default(),
+        )
+        .test_snapshot();
+
+        assert_eq!(
+            negative_zero.position_bits,
+            [(-0.0_f32).to_bits(), NAN_BITS]
+        );
+        assert_eq!(positive_zero.position_bits, [0.0_f32.to_bits(), NAN_BITS]);
+        assert_ne!(negative_zero, positive_zero);
+        assert_eq!(negative_zero, negative_zero.clone());
+        assert_eq!(positive_zero, positive_zero.clone());
     }
 }

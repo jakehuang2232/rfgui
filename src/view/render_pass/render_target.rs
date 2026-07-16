@@ -1,5 +1,5 @@
 use crate::view::frame_graph::texture_resource::{TextureDesc, TextureHandle};
-use crate::view::frame_graph::{AllocationId, FrameResourceContext};
+use crate::view::frame_graph::{AllocationId, FrameResourceContext, PersistentTextureKey};
 use rustc_hash::FxHashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -22,6 +22,47 @@ struct RenderTargetEntry {
     msaa_sample_count: u32,
     frame_busy_epoch: u64,
     last_used_epoch: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RenderTargetCompatibility {
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+    dimension: wgpu::TextureDimension,
+    sample_count: u32,
+    label: String,
+}
+
+impl RenderTargetCompatibility {
+    fn from_desc(desc: &TextureDesc, sample_count: u32) -> Self {
+        Self {
+            width: desc.width().max(1),
+            height: desc.height().max(1),
+            format: desc.format(),
+            dimension: desc.dimension(),
+            sample_count,
+            label: color_texture_label(desc),
+        }
+    }
+
+    fn from_entry(entry: &RenderTargetEntry) -> Self {
+        Self {
+            width: entry.width,
+            height: entry.height,
+            format: entry.format,
+            dimension: entry.dimension,
+            sample_count: entry.msaa_sample_count,
+            label: entry.label.clone(),
+        }
+    }
+}
+
+fn persistent_compatibility_matches(
+    actual: Option<&RenderTargetCompatibility>,
+    expected: &RenderTargetCompatibility,
+) -> bool {
+    actual.is_some_and(|actual| actual == expected)
 }
 
 fn color_texture_label(desc: &TextureDesc) -> String {
@@ -119,7 +160,7 @@ pub(crate) struct RenderTargetBundle {
 pub(crate) struct OffscreenRenderTargetPool {
     entries: FxHashMap<u32, RenderTargetEntry>,
     frame_bindings: FxHashMap<u32, u32>,
-    persistent_bindings: FxHashMap<u64, PersistentRenderTargetBinding>,
+    persistent_bindings: FxHashMap<PersistentTextureKey, PersistentRenderTargetBinding>,
     frame_epoch: u64,
     next_entry_id: u32,
 }
@@ -128,6 +169,17 @@ pub(crate) struct OffscreenRenderTargetPool {
 struct PersistentRenderTargetBinding {
     entry_id: u32,
     last_used_epoch: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PersistentRenderTargetObservation {
+    pub(crate) stable_key: PersistentTextureKey,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) dimension: wgpu::TextureDimension,
+    pub(crate) sample_count: u32,
+    pub(crate) last_used_epoch: u64,
 }
 
 impl OffscreenRenderTargetPool {
@@ -156,10 +208,54 @@ impl OffscreenRenderTargetPool {
         self.evict();
     }
 
-    pub fn touch_persistent(&mut self, stable_key: u64) {
+    pub fn touch_persistent(&mut self, stable_key: PersistentTextureKey) {
         if let Some(binding) = self.persistent_bindings.get_mut(&stable_key) {
             binding.last_used_epoch = self.frame_epoch;
         }
+    }
+
+    #[allow(dead_code)] // C2b build-time reuse decision consumes this read-only query.
+    pub fn has_compatible_persistent(
+        &self,
+        stable_key: PersistentTextureKey,
+        desc: &TextureDesc,
+        sample_count: u32,
+    ) -> bool {
+        let expected = RenderTargetCompatibility::from_desc(desc, sample_count);
+        let actual = self
+            .persistent_bindings
+            .get(&stable_key)
+            .and_then(|binding| self.entries.get(&binding.entry_id))
+            .map(RenderTargetCompatibility::from_entry);
+        persistent_compatibility_matches(actual.as_ref(), &expected)
+    }
+
+    pub fn release_persistent_pair(&mut self, color_key: PersistentTextureKey) -> bool {
+        let mut released = self.release_persistent(color_key);
+        if let Some(depth_key) = color_key.depth_stencil() {
+            released |= self.release_persistent(depth_key);
+        }
+        released
+    }
+
+    pub(crate) fn persistent_resident_observations(
+        &self,
+    ) -> Vec<PersistentRenderTargetObservation> {
+        self.persistent_bindings
+            .iter()
+            .filter_map(|(&stable_key, binding)| {
+                let entry = self.entries.get(&binding.entry_id)?;
+                Some(PersistentRenderTargetObservation {
+                    stable_key,
+                    width: entry.width,
+                    height: entry.height,
+                    format: entry.format,
+                    dimension: entry.dimension,
+                    sample_count: entry.msaa_sample_count,
+                    last_used_epoch: binding.last_used_epoch,
+                })
+            })
+            .collect()
     }
 
     pub fn clear(&mut self) {
@@ -240,15 +336,11 @@ impl OffscreenRenderTargetPool {
     pub fn acquire_persistent(
         &mut self,
         device: &wgpu::Device,
-        stable_key: u64,
+        stable_key: PersistentTextureKey,
         desc: TextureDesc,
         msaa_sample_count: u32,
     ) -> Option<RenderTargetBundle> {
-        let width = desc.width().max(1);
-        let height = desc.height().max(1);
-        let format = desc.format();
-        let dimension = desc.dimension();
-        let label = color_texture_label(&desc);
+        let expected = RenderTargetCompatibility::from_desc(&desc, msaa_sample_count);
 
         let entry_id = match self
             .persistent_bindings
@@ -256,14 +348,11 @@ impl OffscreenRenderTargetPool {
             .map(|binding| binding.entry_id)
         {
             Some(entry_id) => {
-                let recreate = self.entries.get(&entry_id).is_none_or(|entry| {
-                    entry.format != format
-                        || entry.dimension != dimension
-                        || entry.msaa_sample_count != msaa_sample_count
-                        || entry.width != width
-                        || entry.height != height
-                        || entry.label != label
-                });
+                let actual = self
+                    .entries
+                    .get(&entry_id)
+                    .map(RenderTargetCompatibility::from_entry);
+                let recreate = !persistent_compatibility_matches(actual.as_ref(), &expected);
                 if recreate {
                     self.remove_entry(entry_id);
                     let new_entry_id = self.next_entry_id;
@@ -487,6 +576,18 @@ impl OffscreenRenderTargetPool {
         self.persistent_bindings
             .retain(|_, binding| binding.entry_id != entry_id);
     }
+
+    fn release_persistent(&mut self, stable_key: PersistentTextureKey) -> bool {
+        let Some(entry_id) = self
+            .persistent_bindings
+            .get(&stable_key)
+            .map(|binding| binding.entry_id)
+        else {
+            return false;
+        };
+        self.remove_entry(entry_id);
+        true
+    }
 }
 
 fn round_up_to_power_of_two(value: u32) -> u32 {
@@ -665,8 +766,93 @@ pub(crate) fn logical_scissor_to_target_physical(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::frame_graph::{FrameGraph, ResourceLifetime};
+    use crate::view::frame_graph::{FrameGraph, ResourceLifetime, RetainedTextureRole};
     use crate::view::viewport::Viewport;
+
+    fn generic(key: u64) -> PersistentTextureKey {
+        PersistentTextureKey::Generic(key)
+    }
+
+    fn compatibility_fixture() -> RenderTargetCompatibility {
+        RenderTargetCompatibility {
+            width: 37,
+            height: 19,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            dimension: wgpu::TextureDimension::D2,
+            sample_count: 4,
+            label: "Root Effect".to_string(),
+        }
+    }
+
+    #[test]
+    fn persistent_compatibility_query_is_read_only_and_rejects_missing_binding() {
+        let pool = OffscreenRenderTargetPool::new();
+        let desc = TextureDesc::new(
+            37,
+            19,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureDimension::D2,
+        )
+        .with_label("Root Effect");
+
+        assert!(!pool.has_compatible_persistent(generic(7), &desc, 4));
+        assert_eq!(pool.frame_epoch, 0);
+        assert!(pool.persistent_bindings.is_empty());
+    }
+
+    #[test]
+    fn persistent_compatibility_rejects_every_recreate_field_mismatch() {
+        let expected = compatibility_fixture();
+        assert!(persistent_compatibility_matches(Some(&expected), &expected));
+        assert!(!persistent_compatibility_matches(None, &expected));
+
+        let mut cases = Vec::new();
+        let mut width = expected.clone();
+        width.width += 1;
+        cases.push(width);
+        let mut height = expected.clone();
+        height.height += 1;
+        cases.push(height);
+        let mut format = expected.clone();
+        format.format = wgpu::TextureFormat::Rgba16Float;
+        cases.push(format);
+        let mut dimension = expected.clone();
+        dimension.dimension = wgpu::TextureDimension::D1;
+        cases.push(dimension);
+        let mut sample_count = expected.clone();
+        sample_count.sample_count = 1;
+        cases.push(sample_count);
+        let mut label = expected.clone();
+        label.label.push_str(" changed");
+        cases.push(label);
+
+        for actual in cases {
+            assert!(!persistent_compatibility_matches(Some(&actual), &expected));
+        }
+    }
+
+    #[test]
+    fn targeted_persistent_release_removes_color_depth_pair_only() {
+        let mut pool = OffscreenRenderTargetPool::new();
+        let color = PersistentTextureKey::retained(RetainedTextureRole::RootEffectColor, 9);
+        let depth = color.depth_stencil().expect("root depth key");
+        let unrelated = generic(99);
+        for (key, entry_id) in [(color, 10), (depth, 11), (unrelated, 12)] {
+            pool.persistent_bindings.insert(
+                key,
+                PersistentRenderTargetBinding {
+                    entry_id,
+                    last_used_epoch: 0,
+                },
+            );
+        }
+
+        assert!(pool.release_persistent_pair(color));
+        assert!(!pool.persistent_bindings.contains_key(&color));
+        assert!(!pool.persistent_bindings.contains_key(&depth));
+        assert!(pool.persistent_bindings.contains_key(&unrelated));
+        assert!(!pool.release_persistent_pair(color));
+    }
 
     #[test]
     fn logical_scissor_to_target_physical_preserves_fractional_scaled_coverage() {
@@ -683,7 +869,7 @@ mod tests {
     fn persistent_binding_expires_after_unused_frame_budget() {
         let mut pool = OffscreenRenderTargetPool::new();
         pool.persistent_bindings.insert(
-            7,
+            generic(7),
             PersistentRenderTargetBinding {
                 entry_id: 11,
                 last_used_epoch: 0,
@@ -693,17 +879,17 @@ mod tests {
         for _ in 0..OffscreenRenderTargetPool::EVICT_UNUSED_AFTER_FRAMES - 1 {
             pool.begin_frame();
         }
-        assert!(pool.persistent_bindings.contains_key(&7));
+        assert!(pool.persistent_bindings.contains_key(&generic(7)));
 
         pool.begin_frame();
-        assert!(!pool.persistent_bindings.contains_key(&7));
+        assert!(!pool.persistent_bindings.contains_key(&generic(7)));
     }
 
     #[test]
     fn persistent_binding_last_use_refreshes_expiration_budget() {
         let mut pool = OffscreenRenderTargetPool::new();
         pool.persistent_bindings.insert(
-            7,
+            generic(7),
             PersistentRenderTargetBinding {
                 entry_id: 11,
                 last_used_epoch: 0,
@@ -714,14 +900,23 @@ mod tests {
             pool.begin_frame();
         }
         pool.persistent_bindings
-            .get_mut(&7)
+            .get_mut(&generic(7))
             .expect("binding should still be alive")
             .last_used_epoch = pool.frame_epoch;
+        let epoch_before_observation = pool.frame_epoch;
+        let last_used_before_observation = pool.persistent_bindings[&generic(7)].last_used_epoch;
+        let _ = pool.persistent_resident_observations();
+        assert_eq!(pool.frame_epoch, epoch_before_observation);
+        assert_eq!(
+            pool.persistent_bindings[&generic(7)].last_used_epoch,
+            last_used_before_observation,
+            "readonly resident observation must not refresh persistent lifetime"
+        );
         for _ in 0..OffscreenRenderTargetPool::EVICT_UNUSED_AFTER_FRAMES - 1 {
             pool.begin_frame();
         }
 
-        assert!(pool.persistent_bindings.contains_key(&7));
+        assert!(pool.persistent_bindings.contains_key(&generic(7)));
     }
 
     #[test]
@@ -732,7 +927,7 @@ mod tests {
         let mut pool = OffscreenRenderTargetPool::new();
         for (stable_key, entry_id) in [(BASE_KEY, 11), (FINAL_KEY, 12)] {
             pool.persistent_bindings.insert(
-                stable_key,
+                generic(stable_key),
                 PersistentRenderTargetBinding {
                     entry_id,
                     last_used_epoch: 0,
@@ -767,8 +962,8 @@ mod tests {
                 pool.touch_persistent(stable_key);
             }
         }
-        assert!(pool.persistent_bindings.contains_key(&BASE_KEY));
-        assert!(pool.persistent_bindings.contains_key(&FINAL_KEY));
+        assert!(pool.persistent_bindings.contains_key(&generic(BASE_KEY)));
+        assert!(pool.persistent_bindings.contains_key(&generic(FINAL_KEY)));
 
         // Unmounting removes the base declaration. A graph that only retains
         // the final layer must no longer keep the old base binding alive.
@@ -785,7 +980,7 @@ mod tests {
                 pool.touch_persistent(stable_key);
             }
         }
-        assert!(!pool.persistent_bindings.contains_key(&BASE_KEY));
-        assert!(pool.persistent_bindings.contains_key(&FINAL_KEY));
+        assert!(!pool.persistent_bindings.contains_key(&generic(BASE_KEY)));
+        assert!(pool.persistent_bindings.contains_key(&generic(FINAL_KEY)));
     }
 }

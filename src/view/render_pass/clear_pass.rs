@@ -40,6 +40,25 @@ impl ClearPass {
             output,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_snapshot(&self) -> ClearPassTestSnapshot {
+        ClearPassTestSnapshot {
+            color_bits: self.params.color.map(f32::to_bits),
+            pass_context: self.input.pass_context,
+            clear_depth_stencil: self.input.clear_depth_stencil,
+            output_target: self.output.render_target.handle(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ClearPassTestSnapshot {
+    pub(crate) color_bits: [u32; 4],
+    pub(crate) pass_context: RenderPassContext,
+    pub(crate) clear_depth_stencil: bool,
+    pub(crate) output_target: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
 }
 
 impl GraphicsPass for ClearPass {

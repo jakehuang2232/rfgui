@@ -63,6 +63,84 @@ impl TextPreparedInputPass {
             output,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_snapshot(&self) -> TextPreparedPassTestSnapshot {
+        TextPreparedPassTestSnapshot {
+            scale_factor_bits: self.params.staging_input.scale_factor.to_bits(),
+            glyphs: self
+                .params
+                .staging_input
+                .glyphs
+                .iter()
+                .map(|glyph| TextPreparedGlyphTestSnapshot {
+                    glyph_id: glyph.raster.glyph_id,
+                    declared_font_data_id: glyph.raster.font_data_id,
+                    declared_font_index: glyph.raster.font_index,
+                    actual_font_identity: glyph
+                        .raster
+                        .font_data
+                        .as_ref()
+                        .map(|font| (font.data.id(), font.index)),
+                    font_size_bits: glyph.raster.font_size.to_bits(),
+                    normalized_coords_hash: glyph.raster.normalized_coords_hash,
+                    local_position_bits: glyph.paint.local_pos.map(f32::to_bits),
+                    final_paint_position_bits: glyph.final_paint_pos.map(f32::to_bits),
+                    color_bits: glyph.paint.color.map(f32::to_bits),
+                    opacity_bits: glyph.paint.opacity.to_bits(),
+                    fragment_index: glyph.paint.fragment_index,
+                })
+                .collect(),
+            fragments: self
+                .params
+                .fragments
+                .iter()
+                .map(|fragment| TextPreparedFragmentTestSnapshot {
+                    origin_bits: fragment.origin.map(f32::to_bits),
+                    size_bits: fragment.size.map(f32::to_bits),
+                })
+                .collect(),
+            explicit_scissor_rect: self.params.scissor_rect,
+            explicit_stencil_clip_id: self.params.stencil_clip_id,
+            pass_context: self.input.pass_context,
+            output_target: self.output.render_target.handle(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TextPreparedGlyphTestSnapshot {
+    pub(crate) glyph_id: u32,
+    pub(crate) declared_font_data_id: u64,
+    pub(crate) declared_font_index: u32,
+    pub(crate) actual_font_identity: Option<(u64, u32)>,
+    pub(crate) font_size_bits: u32,
+    pub(crate) normalized_coords_hash: u64,
+    pub(crate) local_position_bits: [u32; 2],
+    pub(crate) final_paint_position_bits: [u32; 2],
+    pub(crate) color_bits: [u32; 4],
+    pub(crate) opacity_bits: u32,
+    pub(crate) fragment_index: u32,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TextPreparedFragmentTestSnapshot {
+    pub(crate) origin_bits: [u32; 2],
+    pub(crate) size_bits: [u32; 2],
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TextPreparedPassTestSnapshot {
+    pub(crate) scale_factor_bits: u32,
+    pub(crate) glyphs: Vec<TextPreparedGlyphTestSnapshot>,
+    pub(crate) fragments: Vec<TextPreparedFragmentTestSnapshot>,
+    pub(crate) explicit_scissor_rect: Option<[u32; 4]>,
+    pub(crate) explicit_stencil_clip_id: Option<u8>,
+    pub(crate) pass_context: RenderPassContext,
+    pub(crate) output_target: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
 }
 
 struct TextPreparedState {
@@ -460,6 +538,9 @@ impl GraphicsPass for TextPreparedInputPass {
 
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
         let Some(prepared) = self.prepared.as_ref() else {
+            if !self.params.fragments.is_empty() && !self.params.staging_input.glyphs.is_empty() {
+                ctx.mark_execution_failed();
+            }
             return;
         };
         if let Some(scissor) = prepared.scissor_rect {
@@ -1274,11 +1355,13 @@ fn draw_prepared_text(
     TEXT_RESOURCES.with(|slot| {
         let resources = slot.borrow();
         let Some(pipeline) = resources.pipelines.get(&(prepared.renderer_key, kind)) else {
+            ctx.mark_execution_failed();
             return;
         };
         let atlas_bind_group = match &draw.atlas {
             PreparedAtlasBinding::Persistent(kind) => {
                 let Some(atlas) = resources.persistent_atlases.get(kind) else {
+                    ctx.mark_execution_failed();
                     return;
                 };
                 &atlas.bind_group

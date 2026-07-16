@@ -160,7 +160,7 @@ impl<'a> PassBuilderState<'a> {
         let handle = TextureHandle(self.textures.len() as u32);
         self.textures.push(desc);
         self.texture_metadata.push(ResourceMetadata {
-            stable_key,
+            stable_key: stable_key.map(super::frame_graph::PersistentTextureKey::Generic),
             kind: super::frame_graph::ResourceKind::Texture,
             allocation_class: super::frame_graph::AllocationClass::Texture,
             lifetime,
@@ -182,7 +182,7 @@ impl<'a> PassBuilderState<'a> {
         let handle = BufferHandle(self.buffers.len() as u32);
         self.buffers.push(desc);
         self.buffer_metadata.push(ResourceMetadata {
-            stable_key,
+            stable_key: stable_key.map(super::frame_graph::PersistentTextureKey::Generic),
             kind: super::frame_graph::ResourceKind::Buffer,
             allocation_class: super::frame_graph::AllocationClass::Buffer,
             lifetime,

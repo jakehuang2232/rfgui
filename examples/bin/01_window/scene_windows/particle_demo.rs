@@ -730,17 +730,11 @@ impl Renderable for ParticleCanvas {
                 opacity: 1.0,
                 scissor_rect: None,
             },
-            TextureCompositeInput {
-                source: source_in,
-                sampled_source_key: None,
-                sampled_source_size: None,
-                sampled_source_upload: None,
-                sampled_upload_state_key: None,
-                sampled_upload_generation: None,
-                sampled_source_sampling: None,
-                mask: Default::default(),
-                pass_context: Default::default(),
-            },
+            TextureCompositeInput::from_render_target(
+                source_in,
+                Default::default(),
+                Default::default(),
+            ),
             TextureCompositeOutput {
                 render_target: output_target,
             },

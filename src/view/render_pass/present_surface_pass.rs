@@ -51,6 +51,19 @@ impl PresentSurfacePass {
             uniform_buffer: PresentSurfaceUniformBufferOut::default(),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_snapshot(&self) -> PresentSurfacePassTestSnapshot {
+        PresentSurfacePassTestSnapshot {
+            source_handle: self.input.source.handle(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PresentSurfacePassTestSnapshot {
+    pub(crate) source_handle: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
 }
 
 impl GraphicsPass for PresentSurfacePass {

@@ -195,10 +195,36 @@ pub struct ShadowModuleSpec {
     pub output: RenderTargetOut,
 }
 
-struct ShadowFillPass {
+pub(crate) struct ShadowFillPass {
     mesh: ShadowMesh,
     color: [f32; 4],
     render_target: RenderTargetOut,
+}
+
+#[cfg(test)]
+impl ShadowFillPass {
+    pub(crate) fn test_snapshot(&self) -> ShadowFillPassTestSnapshot {
+        ShadowFillPassTestSnapshot {
+            vertices_bits: self
+                .mesh
+                .vertices
+                .iter()
+                .map(|vertex| vertex.map(f32::to_bits))
+                .collect(),
+            indices: self.mesh.indices.clone(),
+            color_bits: self.color.map(f32::to_bits),
+            render_target: self.render_target.handle(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ShadowFillPassTestSnapshot {
+    pub(crate) vertices_bits: Vec<[u32; 2]>,
+    pub(crate) indices: Vec<u32>,
+    pub(crate) color_bits: [u32; 4],
+    pub(crate) render_target: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
 }
 
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -225,13 +251,18 @@ impl GraphicsPass for ShadowFillPass {
             return;
         }
         let Some(device) = ctx.viewport().device().cloned() else {
+            ctx.mark_execution_failed();
             return;
         };
         let surface_size = ctx.viewport().surface_size();
         let (target_w, target_h) = match self.render_target.handle() {
-            Some(handle) => render_target_ref(ctx.frame_resources(), handle)
-                .map(|texture_ref| texture_ref.physical_size())
-                .unwrap_or(surface_size),
+            Some(handle) => {
+                let Some(texture_ref) = render_target_ref(ctx.frame_resources(), handle) else {
+                    ctx.mark_execution_failed();
+                    return;
+                };
+                texture_ref.physical_size()
+            }
             None => surface_size,
         };
         if target_w == 0 || target_h == 0 {
@@ -439,23 +470,17 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
             opacity: 1.0,
             ..Default::default()
         },
-        TextureCompositeInput {
-            source: composite_source
+        TextureCompositeInput::from_render_target(
+            composite_source
                 .handle()
                 .map(TextureCompositeSourceIn::with_handle)
                 .unwrap_or_default(),
-            sampled_source_key: None,
-            sampled_source_size: None,
-            sampled_source_upload: None,
-            sampled_upload_state_key: None,
-            sampled_upload_generation: None,
-            sampled_source_sampling: None,
-            mask: shadow_mask_layer
+            shadow_mask_layer
                 .handle()
                 .map(TextureCompositeMaskIn::with_handle)
                 .unwrap_or_default(),
-            pass_context: spec.pass_context,
-        },
+            spec.pass_context,
+        ),
         TextureCompositeOutput {
             render_target: spec.output,
         },

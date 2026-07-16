@@ -1,4 +1,6 @@
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
+#[cfg(test)]
+use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{BufferDesc, BufferReadUsage, BufferResource};
 use crate::view::frame_graph::{
@@ -21,6 +23,8 @@ pub type LayerIn = InSlot<TextureResource, LayerTag>;
 
 pub struct CompositeLayerPass {
     params: CompositeLayerParams,
+    #[cfg(test)]
+    explicit_scissor_rect: Option<[u32; 4]>,
     vertex_buffer: CompositeVertexBufferOut,
     index_buffer: CompositeIndexBufferOut,
     prepared_vertices: Vec<CompositeVertex>,
@@ -89,8 +93,12 @@ impl CompositeLayerPass {
         input: CompositeLayerInput,
         output: CompositeLayerOutput,
     ) -> Self {
+        #[cfg(test)]
+        let explicit_scissor_rect = params.scissor_rect;
         Self {
             params,
+            #[cfg(test)]
+            explicit_scissor_rect,
             vertex_buffer: CompositeVertexBufferOut::default(),
             index_buffer: CompositeIndexBufferOut::default(),
             prepared_vertices: Vec::new(),
@@ -99,6 +107,42 @@ impl CompositeLayerPass {
             output,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_params(&self) -> &CompositeLayerParams {
+        &self.params
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_snapshot(&self) -> CompositeLayerPassTestSnapshot {
+        CompositeLayerPassTestSnapshot {
+            rect_pos_bits: self.params.rect_pos.map(f32::to_bits),
+            rect_size_bits: self.params.rect_size.map(f32::to_bits),
+            corner_radii_bits: self.params.corner_radii.map(f32::to_bits),
+            opacity_bits: self.params.opacity.to_bits(),
+            explicit_scissor_rect: self.explicit_scissor_rect,
+            effective_scissor_rect: self.params.scissor_rect,
+            clear_target: self.params.clear_target,
+            layer_handle: self.input.layer.handle(),
+            pass_context: self.input.pass_context,
+            output_target: self.output.render_target.handle(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CompositeLayerPassTestSnapshot {
+    pub(crate) rect_pos_bits: [u32; 2],
+    pub(crate) rect_size_bits: [u32; 2],
+    pub(crate) corner_radii_bits: [u32; 4],
+    pub(crate) opacity_bits: u32,
+    pub(crate) explicit_scissor_rect: Option<[u32; 4]>,
+    pub(crate) effective_scissor_rect: Option<[u32; 4]>,
+    pub(crate) clear_target: bool,
+    pub(crate) layer_handle: Option<TextureHandle>,
+    pub(crate) pass_context: RenderPassContext,
+    pub(crate) output_target: Option<TextureHandle>,
 }
 
 impl GraphicsPass for CompositeLayerPass {
@@ -212,9 +256,11 @@ impl GraphicsPass for CompositeLayerPass {
 
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
         let Some(layer_handle) = self.input.layer.handle() else {
+            ctx.mark_execution_failed();
             return;
         };
         let Some(layer_view) = render_target_view(ctx.frame_resources(), layer_handle) else {
+            ctx.mark_execution_failed();
             return;
         };
         let surface_size = ctx.viewport().surface_size();
@@ -233,7 +279,10 @@ impl GraphicsPass for CompositeLayerPass {
             .unwrap_or((0, 0));
         let device = match ctx.viewport().device() {
             Some(device) => device.clone(),
-            None => return,
+            None => {
+                ctx.mark_execution_failed();
+                return;
+            }
         };
         let format = ctx.viewport().offscreen_format();
         let sample_count = self
@@ -260,6 +309,7 @@ impl GraphicsPass for CompositeLayerPass {
                 .handle()
                 .and_then(|h| ctx.frame_resources().acquire_buffer(h))
             else {
+                ctx.mark_execution_failed();
                 return;
             };
             let Some(index_buffer) = self
@@ -267,6 +317,7 @@ impl GraphicsPass for CompositeLayerPass {
                 .handle()
                 .and_then(|h| ctx.frame_resources().acquire_buffer(h))
             else {
+                ctx.mark_execution_failed();
                 return;
             };
 

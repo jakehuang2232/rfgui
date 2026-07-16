@@ -13,12 +13,15 @@ use crate::view::render_pass::render_target::{
     resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
-use std::sync::Arc;
-
-const TEXTURE_COMPOSITE_RESOURCES: u64 = 205;
+use crate::view::sampled_texture::SampledTextureUpload;
+use std::hash::{Hash, Hasher};
 
 pub struct TextureCompositePass {
     params: TextureCompositeParams,
+    #[cfg(test)]
+    explicit_scissor_rect: Option<[u32; 4]>,
+    #[cfg(test)]
+    force_transient_geometry_fallback: bool,
     uniform_buffer: TextureCompositeUniformBufferOut,
     vertex_buffer: TextureCompositeVertexBufferOut,
     index_buffer: TextureCompositeIndexBufferOut,
@@ -74,14 +77,38 @@ pub type TextureCompositeIndexBufferOut = OutSlot<BufferResource, TextureComposi
 #[derive(Default)]
 pub struct TextureCompositeInput {
     pub source: TextureCompositeSourceIn,
-    pub sampled_source_key: Option<u64>,
-    pub sampled_source_size: Option<(u32, u32)>,
-    pub sampled_source_upload: Option<Arc<[u8]>>,
-    pub sampled_upload_state_key: Option<u64>,
-    pub sampled_upload_generation: Option<u64>,
-    pub sampled_source_sampling: Option<ImageSampling>,
+    pub(crate) sampled_source: Option<SampledTextureUpload>,
     pub mask: TextureCompositeMaskIn,
     pub pass_context: RenderPassContext,
+}
+
+impl TextureCompositeInput {
+    /// Creates an input that composites an existing frame-graph texture.
+    pub fn from_render_target(
+        source: TextureCompositeSourceIn,
+        mask: TextureCompositeMaskIn,
+        pass_context: RenderPassContext,
+    ) -> Self {
+        Self {
+            source,
+            sampled_source: None,
+            mask,
+            pass_context,
+        }
+    }
+
+    pub(crate) fn from_sampled_texture(
+        sampled_source: SampledTextureUpload,
+        mask: TextureCompositeMaskIn,
+        pass_context: RenderPassContext,
+    ) -> Self {
+        Self {
+            source: Default::default(),
+            sampled_source: Some(sampled_source),
+            mask,
+            pass_context,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -107,6 +134,7 @@ struct CompositeVertex {
 }
 
 struct TextureCompositeResources {
+    resource_scope_id: u64,
     pipeline_no_depth: wgpu::RenderPipeline,
     pipeline_depth_no_stencil: wgpu::RenderPipeline,
     pipeline_stencil_test: wgpu::RenderPipeline,
@@ -123,8 +151,14 @@ impl TextureCompositePass {
         input: TextureCompositeInput,
         output: TextureCompositeOutput,
     ) -> Self {
+        #[cfg(test)]
+        let explicit_scissor_rect = params.scissor_rect;
         Self {
             params,
+            #[cfg(test)]
+            explicit_scissor_rect,
+            #[cfg(test)]
+            force_transient_geometry_fallback: false,
             uniform_buffer: TextureCompositeUniformBufferOut::default(),
             vertex_buffer: TextureCompositeVertexBufferOut::default(),
             index_buffer: TextureCompositeIndexBufferOut::default(),
@@ -132,6 +166,80 @@ impl TextureCompositePass {
             output,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_snapshot(&self) -> TextureCompositePassTestSnapshot {
+        TextureCompositePassTestSnapshot {
+            bounds_bits: self.params.bounds.map(f32::to_bits),
+            quad_position_bits: self
+                .params
+                .quad_positions
+                .map(|quad| quad.map(|point| point.map(f32::to_bits))),
+            uv_bounds_bits: self.params.uv_bounds.map(|bounds| bounds.map(f32::to_bits)),
+            mask_uv_bounds_bits: self
+                .params
+                .mask_uv_bounds
+                .map(|bounds| bounds.map(f32::to_bits)),
+            use_mask: self.params.use_mask,
+            source_is_premultiplied: self.params.source_is_premultiplied,
+            opacity_bits: self.params.opacity.to_bits(),
+            explicit_scissor_rect: self.explicit_scissor_rect,
+            effective_scissor_rect: self.params.scissor_rect,
+            source_handle: self.input.source.handle(),
+            sampled_source: self.input.sampled_source.as_ref().map(|upload| {
+                SampledTextureUploadTestSnapshot {
+                    id: upload.id,
+                    generation: upload.generation,
+                    width: upload.width,
+                    height: upload.height,
+                    format: upload.format,
+                    alpha_mode: upload.alpha_mode,
+                    pixels: upload.pixels.clone(),
+                    sampling: upload.sampling,
+                }
+            }),
+            mask_handle: self.input.mask.handle(),
+            pass_context: self.input.pass_context,
+            output_target: self.output.render_target.handle(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_transient_geometry_fallback_for_test(&mut self) {
+        self.force_transient_geometry_fallback = true;
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SampledTextureUploadTestSnapshot {
+    pub(crate) id: crate::view::sampled_texture::SampledTextureId,
+    pub(crate) generation: u64,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) alpha_mode: crate::view::sampled_texture::SampledTextureAlphaMode,
+    pub(crate) pixels: std::sync::Arc<[u8]>,
+    pub(crate) sampling: ImageSampling,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TextureCompositePassTestSnapshot {
+    pub(crate) bounds_bits: [u32; 4],
+    pub(crate) quad_position_bits: Option<[[u32; 2]; 4]>,
+    pub(crate) uv_bounds_bits: Option<[u32; 4]>,
+    pub(crate) mask_uv_bounds_bits: Option<[u32; 4]>,
+    pub(crate) use_mask: bool,
+    pub(crate) source_is_premultiplied: bool,
+    pub(crate) opacity_bits: u32,
+    pub(crate) explicit_scissor_rect: Option<[u32; 4]>,
+    pub(crate) effective_scissor_rect: Option<[u32; 4]>,
+    pub(crate) source_handle: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
+    pub(crate) sampled_source: Option<SampledTextureUploadTestSnapshot>,
+    pub(crate) mask_handle: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
+    pub(crate) pass_context: RenderPassContext,
+    pub(crate) output_target: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
 }
 
 impl GraphicsPass for TextureCompositePass {
@@ -189,56 +297,24 @@ impl GraphicsPass for TextureCompositePass {
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
         let surface_size = ctx.viewport.surface_size();
-        let target_meta =
-            resolve_target_meta(self.output.render_target.handle(), ctx, surface_size, None);
-        let source_meta = resolve_target_meta(
+        let scale = ctx.viewport.scale_factor();
+        let resolved = resolve_composite_geometry(
+            &self.params,
             self.input.source.handle(),
+            self.input
+                .sampled_source
+                .as_ref()
+                .map(SampledTextureUpload::extent),
+            self.input.mask.handle(),
+            self.output.render_target.handle(),
             ctx,
             surface_size,
-            self.input.sampled_source_size,
+            scale,
         );
-        let mask_meta = resolve_target_meta(
-            self.input.mask.handle(),
-            ctx,
-            source_meta.physical_size,
-            None,
-        )
-        .with_fallback_origin(source_meta.global_origin)
-        .with_fallback_logical_origin(source_meta.logical_origin);
-        let (target_w, target_h) = target_meta.physical_size;
+        let (target_w, target_h) = resolved.target_meta.physical_size;
         if target_w == 0 || target_h == 0 {
             return;
         }
-
-        let scale = ctx.viewport.scale_factor();
-        let bounds = resolve_bounds(
-            self.params.bounds,
-            scale,
-            target_w as f32,
-            target_h as f32,
-            target_meta.global_origin_f32(),
-            target_meta.logical_origin_f32(),
-        );
-        let uv_bounds = resolve_uv_bounds(
-            self.params.uv_bounds,
-            if self.input.sampled_source_key.is_none() && self.input.source.handle().is_some() {
-                scale
-            } else {
-                1.0
-            },
-            source_meta.physical_size.0 as f32,
-            source_meta.physical_size.1 as f32,
-            source_meta.global_origin_f32(),
-            source_meta.logical_origin_f32(),
-        );
-        let mask_uv_bounds = resolve_uv_bounds(
-            self.params.mask_uv_bounds.or(self.params.uv_bounds),
-            scale,
-            mask_meta.physical_size.0 as f32,
-            mask_meta.physical_size.1 as f32,
-            mask_meta.global_origin_f32(),
-            mask_meta.logical_origin_f32(),
-        );
 
         let uniform = TextureCompositeUniform {
             use_mask: if self.params.use_mask { 1.0 } else { 0.0 },
@@ -250,74 +326,62 @@ impl GraphicsPass for TextureCompositePass {
             opacity: self.params.opacity.clamp(0.0, 1.0),
             _pad: 0.0,
         };
-        let (vertices, indices) = texture_composite_geometry(
-            self.params.quad_positions,
-            bounds,
-            scale,
-            target_w as f32,
-            target_h as f32,
-            target_meta.global_origin_f32(),
-            target_meta.logical_origin_f32(),
-            uv_bounds,
-            mask_uv_bounds,
-        );
-
         if let Some(handle) = self.uniform_buffer.handle() {
             let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&uniform));
         }
         if let Some(handle) = self.vertex_buffer.handle() {
-            let _ = ctx.upload_buffer(handle, 0, bytemuck::cast_slice(&vertices));
+            let _ = ctx.upload_buffer(handle, 0, bytemuck::cast_slice(&resolved.vertices));
         }
         if let Some(handle) = self.index_buffer.handle() {
-            let _ = ctx.upload_buffer(handle, 0, bytemuck::cast_slice(&indices));
+            let _ = ctx.upload_buffer(handle, 0, bytemuck::cast_slice(&resolved.indices));
         }
     }
 
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
         let source_view = if let Some(source_handle) = self.input.source.handle() {
             let Some(source_view) = render_target_view(ctx.frame_resources(), source_handle) else {
+                ctx.mark_execution_failed();
                 return;
             };
             source_view
-        } else if let Some(sampled_key) = self.input.sampled_source_key {
-            if let (Some(bytes), Some((width, height))) = (
-                self.input.sampled_source_upload.as_ref(),
-                self.input.sampled_source_size,
-            ) {
-                if ctx.viewport().upload_sampled_texture_rgba(
-                    sampled_key,
-                    width,
-                    height,
-                    wgpu::TextureFormat::Rgba8UnormSrgb,
-                    bytes.as_ref(),
-                ) {
-                    if let (Some(state_key), Some(generation)) = (
-                        self.input.sampled_upload_state_key,
-                        self.input.sampled_upload_generation,
-                    ) {
-                        crate::view::image_resource::mark_uploaded(state_key, generation);
-                        crate::view::svg_resource::mark_uploaded(state_key, generation);
-                    }
-                }
+        } else if let Some(sampled_source) = self.input.sampled_source.as_ref() {
+            if !ctx.viewport().ensure_sampled_texture(sampled_source) {
+                ctx.mark_execution_failed();
+                return;
             }
-            let Some(source_view) = ctx.viewport().sampled_texture_view(sampled_key) else {
+            let Some(source_view) = ctx.viewport().sampled_texture_view(sampled_source.id) else {
+                ctx.mark_execution_failed();
                 return;
             };
             source_view
         } else {
+            ctx.mark_execution_failed();
             return;
         };
-        let mask_view = self
-            .input
-            .mask
-            .handle()
-            .and_then(|h| render_target_view(ctx.frame_resources(), h));
+        let mask_view = match (self.params.use_mask, self.input.mask.handle()) {
+            (true, Some(handle)) => {
+                let Some(view) = render_target_view(ctx.frame_resources(), handle) else {
+                    ctx.mark_execution_failed();
+                    return;
+                };
+                Some(view)
+            }
+            (true, None) => {
+                ctx.mark_execution_failed();
+                return;
+            }
+            (false, handle) => handle.and_then(|h| render_target_view(ctx.frame_resources(), h)),
+        };
 
         let device = match ctx.viewport().device() {
             Some(device) => device.clone(),
-            None => return,
+            None => {
+                ctx.mark_execution_failed();
+                return;
+            }
         };
         let format = ctx.viewport().offscreen_format();
+        let resource_scope_id = ctx.viewport().render_resource_scope_id();
         let sample_count = self
             .output
             .render_target
@@ -325,13 +389,18 @@ impl GraphicsPass for TextureCompositePass {
             .and_then(|handle| render_target_sample_count(ctx.frame_resources(), handle))
             .unwrap_or_else(|| ctx.viewport().msaa_sample_count());
         with_texture_composite_resources_cache(|cache| {
-            let resources = cache.get_or_insert_with(TEXTURE_COMPOSITE_RESOURCES, || {
-                create_resources(&device, format, sample_count)
+            let cache_key =
+                texture_composite_resources_key(resource_scope_id, format, sample_count);
+            let resources = cache.get_or_insert_with(cache_key, || {
+                create_resources(&device, resource_scope_id, format, sample_count)
             });
-            if resources.pipeline_format != format
-                || resources.pipeline_sample_count != sample_count
-            {
-                *resources = create_resources(&device, format, sample_count);
+            if !texture_composite_resources_match(
+                resources,
+                resource_scope_id,
+                format,
+                sample_count,
+            ) {
+                *resources = create_resources(&device, resource_scope_id, format, sample_count);
             }
 
             let acquired_uniform_buffer = self
@@ -379,7 +448,12 @@ impl GraphicsPass for TextureCompositePass {
                     wgpu::BindGroupEntry {
                         binding: 2,
                         resource: wgpu::BindingResource::Sampler(
-                            match self.input.sampled_source_sampling {
+                            match self
+                                .input
+                                .sampled_source
+                                .as_ref()
+                                .map(|source| source.sampling)
+                            {
                                 Some(ImageSampling::Nearest) => &resources.nearest_sampler,
                                 _ => &resources.linear_sampler,
                             },
@@ -392,14 +466,24 @@ impl GraphicsPass for TextureCompositePass {
                 ],
             });
 
-            let acquired_vertex_buffer = self
-                .vertex_buffer
-                .handle()
-                .and_then(|h| ctx.frame_resources().acquire_buffer(h));
-            let acquired_index_buffer = self
-                .index_buffer
-                .handle()
-                .and_then(|h| ctx.frame_resources().acquire_buffer(h));
+            #[cfg(test)]
+            let force_transient_geometry_fallback = self.force_transient_geometry_fallback;
+            #[cfg(not(test))]
+            let force_transient_geometry_fallback = false;
+            let acquired_vertex_buffer = (!force_transient_geometry_fallback)
+                .then(|| {
+                    self.vertex_buffer
+                        .handle()
+                        .and_then(|h| ctx.frame_resources().acquire_buffer(h))
+                })
+                .flatten();
+            let acquired_index_buffer = (!force_transient_geometry_fallback)
+                .then(|| {
+                    self.index_buffer
+                        .handle()
+                        .and_then(|h| ctx.frame_resources().acquire_buffer(h))
+                })
+                .flatten();
             let fallback_vertex_buffer;
             let fallback_index_buffer;
             let (vertex_buffer, index_buffer): (&wgpu::Buffer, &wgpu::Buffer) =
@@ -410,67 +494,25 @@ impl GraphicsPass for TextureCompositePass {
                     (vb, ib)
                 } else {
                     let surface_size = ctx.viewport().surface_size();
-                    let target_meta = resolve_target_meta(
+                    let scale = ctx.viewport().scale_factor();
+                    let resolved = resolve_composite_geometry(
+                        &self.params,
+                        self.input.source.handle(),
+                        self.input
+                            .sampled_source
+                            .as_ref()
+                            .map(SampledTextureUpload::extent),
+                        self.input.mask.handle(),
                         self.output.render_target.handle(),
                         ctx.frame_resources(),
                         surface_size,
-                        None,
-                    );
-                    let scale = ctx.viewport().scale_factor();
-                    let bounds = resolve_bounds(
-                        self.params.bounds,
                         scale,
-                        target_meta.physical_size.0 as f32,
-                        target_meta.physical_size.1 as f32,
-                        target_meta.global_origin_f32(),
-                        target_meta.logical_origin_f32(),
-                    );
-                    let source_meta = resolve_target_meta(
-                        self.input.source.handle(),
-                        ctx.frame_resources(),
-                        surface_size,
-                        None,
-                    );
-                    let mask_meta = resolve_target_meta(
-                        self.input.mask.handle(),
-                        ctx.frame_resources(),
-                        source_meta.physical_size,
-                        None,
-                    )
-                    .with_fallback_origin(source_meta.global_origin)
-                    .with_fallback_logical_origin(source_meta.logical_origin);
-                    let source_uv_bounds = resolve_uv_bounds(
-                        self.params.uv_bounds,
-                        scale,
-                        source_meta.physical_size.0 as f32,
-                        source_meta.physical_size.1 as f32,
-                        source_meta.global_origin_f32(),
-                        source_meta.logical_origin_f32(),
-                    );
-                    let mask_uv_bounds = resolve_uv_bounds(
-                        self.params.mask_uv_bounds.or(self.params.uv_bounds),
-                        scale,
-                        mask_meta.physical_size.0 as f32,
-                        mask_meta.physical_size.1 as f32,
-                        mask_meta.global_origin_f32(),
-                        mask_meta.logical_origin_f32(),
-                    );
-                    let (vertices, indices) = texture_composite_geometry(
-                        self.params.quad_positions,
-                        bounds,
-                        scale,
-                        target_meta.physical_size.0 as f32,
-                        target_meta.physical_size.1 as f32,
-                        target_meta.global_origin_f32(),
-                        target_meta.logical_origin_f32(),
-                        source_uv_bounds,
-                        mask_uv_bounds,
                     );
                     fallback_vertex_buffer = super::create_transient_buffer(
                         &device,
                         &wgpu::util::BufferInitDescriptor {
                             label: Some("TextureComposite Vertex (Fallback)"),
-                            contents: bytemuck::cast_slice(&vertices),
+                            contents: bytemuck::cast_slice(&resolved.vertices),
                             usage: wgpu::BufferUsages::VERTEX,
                         },
                     );
@@ -478,7 +520,7 @@ impl GraphicsPass for TextureCompositePass {
                         &device,
                         &wgpu::util::BufferInitDescriptor {
                             label: Some("TextureComposite Index (Fallback)"),
-                            contents: bytemuck::cast_slice(&indices),
+                            contents: bytemuck::cast_slice(&resolved.indices),
                             usage: wgpu::BufferUsages::INDEX,
                         },
                     );
@@ -532,6 +574,71 @@ fn resolve_target_meta(
     resolve_texture_ref(handle, ctx, fallback_size, sampled_size)
 }
 
+struct ResolvedCompositeGeometry {
+    target_meta: ResolvedTextureRef,
+    vertices: [CompositeVertex; 4],
+    indices: [u16; 6],
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_composite_geometry(
+    params: &TextureCompositeParams,
+    source_handle: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
+    sampled_extent: Option<(u32, u32)>,
+    mask_handle: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
+    target_handle: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
+    ctx: &mut impl FrameResourceContext,
+    surface_size: (u32, u32),
+    scale: f32,
+) -> ResolvedCompositeGeometry {
+    let target_meta = resolve_target_meta(target_handle, ctx, surface_size, None);
+    let source_meta = resolve_target_meta(source_handle, ctx, surface_size, sampled_extent);
+    let mask_meta = resolve_target_meta(mask_handle, ctx, source_meta.physical_size, None)
+        .with_fallback_origin(source_meta.global_origin)
+        .with_fallback_logical_origin(source_meta.logical_origin);
+    let (target_w, target_h) = target_meta.physical_size;
+    let bounds = resolve_bounds(
+        params.bounds,
+        scale,
+        target_w as f32,
+        target_h as f32,
+        target_meta.global_origin_f32(),
+        target_meta.logical_origin_f32(),
+    );
+    let source_uv_bounds = resolve_uv_bounds(
+        params.uv_bounds,
+        if sampled_extent.is_some() { 1.0 } else { scale },
+        source_meta.physical_size.0 as f32,
+        source_meta.physical_size.1 as f32,
+        source_meta.global_origin_f32(),
+        source_meta.logical_origin_f32(),
+    );
+    let mask_uv_bounds = resolve_uv_bounds(
+        params.mask_uv_bounds.or(params.uv_bounds),
+        scale,
+        mask_meta.physical_size.0 as f32,
+        mask_meta.physical_size.1 as f32,
+        mask_meta.global_origin_f32(),
+        mask_meta.logical_origin_f32(),
+    );
+    let (vertices, indices) = texture_composite_geometry(
+        params.quad_positions,
+        bounds,
+        scale,
+        target_w as f32,
+        target_h as f32,
+        target_meta.global_origin_f32(),
+        target_meta.logical_origin_f32(),
+        source_uv_bounds,
+        mask_uv_bounds,
+    );
+    ResolvedCompositeGeometry {
+        target_meta,
+        vertices,
+        indices,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)]
 pub(crate) fn composite_immediate(
@@ -550,17 +657,19 @@ pub(crate) fn composite_immediate(
         return;
     };
     let format = ctx.viewport.offscreen_format();
+    let resource_scope_id = ctx.viewport.render_resource_scope_id();
     let sample_count = if offscreen_msaa_view.is_some() {
         ctx.viewport.msaa_sample_count()
     } else {
         1
     };
     with_texture_composite_resources_cache(|cache| {
-        let resources = cache.get_or_insert_with(TEXTURE_COMPOSITE_RESOURCES, || {
-            create_resources(&device, format, sample_count)
+        let cache_key = texture_composite_resources_key(resource_scope_id, format, sample_count);
+        let resources = cache.get_or_insert_with(cache_key, || {
+            create_resources(&device, resource_scope_id, format, sample_count)
         });
-        if resources.pipeline_format != format || resources.pipeline_sample_count != sample_count {
-            *resources = create_resources(&device, format, sample_count);
+        if !texture_composite_resources_match(resources, resource_scope_id, format, sample_count) {
+            *resources = create_resources(&device, resource_scope_id, format, sample_count);
         }
 
         let uniform = TextureCompositeUniform {
@@ -722,6 +831,7 @@ fn encode_pass(
 
 fn create_resources(
     device: &wgpu::Device,
+    resource_scope_id: u64,
     format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> TextureCompositeResources {
@@ -827,6 +937,7 @@ fn create_resources(
     );
 
     TextureCompositeResources {
+        resource_scope_id,
         pipeline_no_depth,
         pipeline_depth_no_stencil,
         pipeline_stencil_test,
@@ -1151,10 +1262,81 @@ crate::static_resource_cache! {
         = stats("texture_composite_pipeline")
 }
 
-pub(crate) fn clear_texture_composite_resources_cache() {
+fn texture_composite_resources_key(
+    resource_scope_id: u64,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    resource_scope_id.hash(&mut hasher);
+    format.hash(&mut hasher);
+    sample_count.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn texture_composite_resources_match(
+    resources: &TextureCompositeResources,
+    resource_scope_id: u64,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> bool {
+    texture_composite_resource_descriptor_matches(
+        resources.resource_scope_id,
+        resources.pipeline_format,
+        resources.pipeline_sample_count,
+        resource_scope_id,
+        format,
+        sample_count,
+    )
+}
+
+fn texture_composite_resource_descriptor_matches(
+    stored_scope_id: u64,
+    stored_format: wgpu::TextureFormat,
+    stored_sample_count: u32,
+    requested_scope_id: u64,
+    requested_format: wgpu::TextureFormat,
+    requested_sample_count: u32,
+) -> bool {
+    stored_scope_id == requested_scope_id
+        && stored_format == requested_format
+        && stored_sample_count == requested_sample_count
+}
+
+pub(crate) fn clear_texture_composite_resources_cache(resource_scope_id: u64) {
     with_texture_composite_resources_cache(|cache| {
-        cache.clear();
+        cache.retain(|_, resources| resources.resource_scope_id != resource_scope_id);
     });
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn texture_composite_resources_cache_len() -> usize {
+    with_texture_composite_resources_cache(|cache| cache.len())
+}
+
+#[cfg(test)]
+mod resource_scope_tests {
+    use super::texture_composite_resource_descriptor_matches;
+
+    #[test]
+    fn canonical_scope_is_checked_even_when_cache_lookup_key_collides() {
+        assert!(texture_composite_resource_descriptor_matches(
+            1,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            4,
+            1,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            4,
+        ));
+        assert!(!texture_composite_resource_descriptor_matches(
+            1,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            4,
+            2,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            4,
+        ));
+    }
 }
 
 fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
@@ -1180,6 +1362,107 @@ fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::view::sampled_texture::{
+        ImageAssetId, SampledTextureAlphaMode, SampledTextureId, SampledTextureUpload,
+    };
+    use std::sync::Arc;
+
+    fn sampled_pass(pixels: Arc<[u8]>) -> TextureCompositePass {
+        TextureCompositePass::new(
+            TextureCompositeParams {
+                bounds: [1.25, 2.5, 3.75, 4.0],
+                uv_bounds: Some([0.0, 0.0, 1.0, 1.0]),
+                opacity: 0.5,
+                scissor_rect: Some([1, 2, 3, 4]),
+                ..Default::default()
+            },
+            TextureCompositeInput::from_sampled_texture(
+                SampledTextureUpload {
+                    id: SampledTextureId::Image(ImageAssetId::for_test(81)),
+                    generation: 7,
+                    width: 1,
+                    height: 1,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    alpha_mode: SampledTextureAlphaMode::Straight,
+                    pixels,
+                    sampling: ImageSampling::Linear,
+                },
+                Default::default(),
+                RenderPassContext::default(),
+            ),
+            TextureCompositeOutput::default(),
+        )
+    }
+
+    #[test]
+    fn strict_snapshot_compares_actual_pixels_and_every_sampled_render_field() {
+        let base = sampled_pass(Arc::from([1_u8, 2, 3, 4])).test_snapshot();
+        let changed_pixels = sampled_pass(Arc::from([1_u8, 2, 3, 5])).test_snapshot();
+        assert_ne!(base, changed_pixels);
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.params.bounds[0] = -0.0;
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.params.opacity = 0.25;
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.input.sampled_source.as_mut().unwrap().generation += 1;
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.input.sampled_source.as_mut().unwrap().id =
+            SampledTextureId::Image(ImageAssetId::for_test(82));
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.input.sampled_source.as_mut().unwrap().width = 2;
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.input.sampled_source.as_mut().unwrap().height = 2;
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.input.sampled_source.as_mut().unwrap().format = wgpu::TextureFormat::Rgba8Unorm;
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.input.sampled_source.as_mut().unwrap().sampling = ImageSampling::Nearest;
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.params.uv_bounds = Some([0.25, 0.0, 0.75, 1.0]);
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.params.quad_positions = Some([[0.0, 0.0]; 4]);
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.params.mask_uv_bounds = Some([0.0, 0.0, 0.5, 0.5]);
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.params.use_mask = true;
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.params.source_is_premultiplied = true;
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.params.scissor_rect = Some([9, 9, 9, 9]);
+        assert_ne!(base, changed.test_snapshot());
+
+        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
+        changed.input.pass_context.scissor_rect = Some([9, 8, 7, 6]);
+        assert_ne!(base, changed.test_snapshot());
+    }
+
     fn assert_rgba_close(actual: [f32; 4], expected: [f32; 4]) {
         for (actual, expected) in actual.into_iter().zip(expected) {
             assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");

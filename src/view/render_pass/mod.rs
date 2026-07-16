@@ -49,6 +49,10 @@ impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
         self.frame_resources.viewport()
     }
 
+    pub fn mark_execution_failed(&mut self) {
+        self.frame_resources.mark_execution_failed();
+    }
+
     pub fn set_pipeline(&mut self, pipeline: &wgpu::RenderPipeline) {
         self.render_pass.set_pipeline(pipeline);
     }
@@ -188,6 +192,10 @@ pub(crate) trait PassNodeDyn {
     fn execute_compute(&mut self, ctx: &mut ComputeCtx<'_, '_, '_, '_>);
     fn execute_transfer(&mut self, ctx: &mut TransferCtx<'_, '_, '_>);
     fn name(&self) -> &'static str;
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any;
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 enum BackendComputeScope<'a, 'pass> {
@@ -203,7 +211,8 @@ enum BackendComputeScope<'a, 'pass> {
 // tens of GB of GPU memory growth.
 //
 // We collect all per-frame ("transient") buffers in a thread-local Vec and
-// explicitly call `buffer.destroy()` after `queue.submit()` each frame.
+// explicitly call `buffer.destroy()` after the frame encoder is either
+// submitted or discarded.
 // Destroying a buffer that is in use by already-submitted GPU work is valid
 // per the WebGPU specification.
 // ---------------------------------------------------------------------------
@@ -215,7 +224,8 @@ std::thread_local! {
 }
 
 /// Create a GPU buffer via `create_buffer_init`, and on wasm32 register it
-/// for explicit destruction after the current frame's queue submission.
+/// for explicit destruction after the current frame's encoder is submitted
+/// or discarded.
 ///
 /// Use this for buffers that live only until the end of the current frame
 /// (vertex/index/uniform buffers created inside render-pass `execute`).
@@ -231,7 +241,7 @@ pub(crate) fn create_transient_buffer(
 }
 
 /// Destroy all transient buffers that were created during the current frame.
-/// Call once after `queue.submit()`.
+/// Call once after `queue.submit()` or after dropping an unsubmitted encoder.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn destroy_frame_transient_buffers() {
     FRAME_TRANSIENT_BUFFERS.with(|v| {
@@ -270,6 +280,16 @@ impl<P: GraphicsPass + 'static> PassNodeDyn for GraphicsPassWrapper<P> {
     fn name(&self) -> &'static str {
         self.pass.name()
     }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 pub(crate) struct ComputePassWrapper<P: ComputePass> {
@@ -301,6 +321,16 @@ impl<P: ComputePass + 'static> PassNodeDyn for ComputePassWrapper<P> {
     fn name(&self) -> &'static str {
         std::any::type_name::<P>()
     }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 pub(crate) struct TransferPassWrapper<P: TransferPass> {
@@ -331,5 +361,15 @@ impl<P: TransferPass + 'static> PassNodeDyn for TransferPassWrapper<P> {
 
     fn name(&self) -> &'static str {
         std::any::type_name::<P>()
+    }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
