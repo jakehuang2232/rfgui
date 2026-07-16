@@ -8,10 +8,17 @@ pub(super) struct BeginFrameProfile {
     pub create_encoder_ms: f64,
 }
 
+#[derive(Default)]
 pub(super) struct EndFrameProfile {
     pub total_ms: f64,
     pub submit_ms: f64,
     pub present_ms: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FrameDisposition {
+    SubmitAndPresent,
+    Abort,
 }
 
 pub(super) struct FrameStats {
@@ -74,11 +81,54 @@ impl FrameStats {
 }
 
 pub(super) struct FrameState {
+    #[cfg(not(test))]
     pub render_texture: wgpu::SurfaceTexture,
+    #[cfg(test)]
+    pub render_texture: Option<wgpu::SurfaceTexture>,
+    #[cfg(test)]
+    pub offscreen_texture: Option<wgpu::Texture>,
     pub view: wgpu::TextureView,
     pub resolve_view: Option<wgpu::TextureView>,
     pub encoder: wgpu::CommandEncoder,
     pub depth_view: Option<wgpu::TextureView>,
+}
+
+impl FrameState {
+    /// Discard an acquired frame without finishing its encoder. Dropping the
+    /// unsubmitted encoder abandons every command recorded so far, while the
+    /// final `SurfaceTexture` drop releases the acquired image without
+    /// presenting it.
+    pub(super) fn discard_unsubmitted(self) {
+        #[cfg(not(test))]
+        let Self {
+            render_texture,
+            view,
+            resolve_view,
+            encoder,
+            depth_view,
+        } = self;
+        #[cfg(test)]
+        let Self {
+            render_texture,
+            offscreen_texture,
+            view,
+            resolve_view,
+            encoder,
+            depth_view,
+        } = self;
+
+        // Encoder first: all views and transient resources may be referenced
+        // by commands that must never become a command buffer.
+        drop(encoder);
+        drop(resolve_view);
+        drop(depth_view);
+        drop(view);
+        #[cfg(test)]
+        drop(offscreen_texture);
+        // Keep the acquired surface image last so its Drop path can discard it
+        // after every unsubmitted reference owned by FrameState is gone.
+        drop(render_texture);
+    }
 }
 
 /// Collects all per-frame profiling timings so they can be passed to trace

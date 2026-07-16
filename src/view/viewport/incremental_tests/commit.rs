@@ -196,7 +196,8 @@ fn incremental_commit_replace_node_rebuilds_child_preserves_parent_key() {
     )
     .expect("ReplaceNode must translate to a FiberWork");
     assert!(work.is_committable(&viewport.scene.node_arena));
-    apply_fiber_works(&mut viewport.scene.node_arena, test_apply_ctx(), vec![work]);
+    apply_fiber_works(&mut viewport.scene.node_arena, test_apply_ctx(), vec![work])
+        .expect("ReplaceNode work applies");
 
     // Parent NodeKey unchanged; children list still length 2; kept
     // sibling survives at slot 1; first slot is a fresh NodeKey.
@@ -1287,7 +1288,8 @@ fn incremental_commit_applies_padding_change_via_setter() {
     )
     .expect("padding patch must translate to FiberWork");
     assert!(work.is_committable(&viewport.scene.node_arena));
-    apply_fiber_works(&mut viewport.scene.node_arena, test_apply_ctx(), vec![work]);
+    apply_fiber_works(&mut viewport.scene.node_arena, test_apply_ctx(), vec![work])
+        .expect("padding work applies");
 
     // The setter is fire-and-forget — no public getter for padding,
     // but we can confirm the work was committed (NodeKey untouched
@@ -1328,7 +1330,7 @@ fn incremental_commit_applies_image_fit_and_source_swap() {
     let work = patch_to_fiber_work(fit_patch, arena.stable_id_index(), &arena, key, None)
         .expect("fit patch must translate");
     assert!(work.is_committable(&arena));
-    apply_fiber_works(&mut arena, test_apply_ctx(), vec![work]);
+    apply_fiber_works(&mut arena, test_apply_ctx(), vec![work]).expect("image fit work applies");
 
     // Source swap — the apply side acquires a fresh handle; the old
     // one drops via RAII. We can't easily peek at the resource entry
@@ -1343,7 +1345,7 @@ fn incremental_commit_applies_image_fit_and_source_swap() {
     let work = patch_to_fiber_work(source_patch, arena.stable_id_index(), &arena, key, None)
         .expect("source patch must translate");
     assert!(work.is_committable(&arena));
-    apply_fiber_works(&mut arena, test_apply_ctx(), vec![work]);
+    apply_fiber_works(&mut arena, test_apply_ctx(), vec![work]).expect("image source work applies");
     assert!(
         arena.get(key).is_some(),
         "Image slot must survive source swap"
@@ -1395,7 +1397,8 @@ fn incremental_commit_applies_fragment_insert_child_creates_many() {
     )
     .expect("Fragment InsertChild must translate to CreateMany");
     assert!(work.is_committable(&viewport.scene.node_arena));
-    apply_fiber_works(&mut viewport.scene.node_arena, test_apply_ctx(), vec![work]);
+    apply_fiber_works(&mut viewport.scene.node_arena, test_apply_ctx(), vec![work])
+        .expect("Fragment insert work applies");
 
     // Parent identity stable; two new children landed in order at
     // indices 0 and 1.
@@ -1459,7 +1462,8 @@ fn incremental_commit_resolves_em_font_size_via_inherited_cascade() {
         work.is_committable(&viewport.scene.node_arena),
         "em font_size now committable via cascade resolver",
     );
-    apply_fiber_works(&mut viewport.scene.node_arena, test_apply_ctx(), vec![work]);
+    apply_fiber_works(&mut viewport.scene.node_arena, test_apply_ctx(), vec![work])
+        .expect("font-size work applies");
 
     let arena = &viewport.scene.node_arena;
     let node = arena.get(text_key).unwrap();
@@ -1513,7 +1517,8 @@ fn incremental_commit_replace_node_with_fragment_expands_to_n_descriptors() {
     )
     .expect("Fragment ReplaceNode must translate");
     assert!(work.is_committable(&viewport.scene.node_arena));
-    apply_fiber_works(&mut viewport.scene.node_arena, test_apply_ctx(), vec![work]);
+    apply_fiber_works(&mut viewport.scene.node_arena, test_apply_ctx(), vec![work])
+        .expect("Fragment replace work applies");
 
     let arena = &viewport.scene.node_arena;
     let children = arena.children_of(parent_key);
@@ -1597,7 +1602,8 @@ fn incremental_commit_applies_svg_loading_slot_swap() {
     let work = patch_to_fiber_work(patch, arena.stable_id_index(), &arena, key, None)
         .expect("loading patch must translate");
     assert!(work.is_committable(&arena));
-    apply_fiber_works(&mut arena, test_apply_ctx(), vec![work]);
+    apply_fiber_works(&mut arena, test_apply_ctx(), vec![work])
+        .expect("Svg loading slot work applies");
 
     // Svg slot now holds 1 key (the wrapper). Use the `loading_slot_len`
     // accessor — the wrapper sits in the Vec until `sync_active_slot`
@@ -1605,6 +1611,226 @@ fn incremental_commit_applies_svg_loading_slot_swap() {
     let node = arena.get(key).expect("Svg slot survives slot swap");
     let svg = node.element.as_any().downcast_ref::<Svg>().unwrap();
     assert_eq!(svg.loading_slot_len(), 1);
+}
+
+#[test]
+fn structural_slot_failure_after_root_create_cold_rebuilds_without_orphans() {
+    use crate::ui::{IntoPropValue, RsxComponent};
+    use crate::view::ImageSource;
+    use crate::view::base_component::{Element as ElementHost, Image};
+    use crate::view::fiber_work::{FiberWork, UpdateFailure, apply_fiber_works};
+    use crate::view::node_arena::Node;
+    use crate::view::renderer_adapter::ElementDescriptor;
+    use crate::view::tags::{Image as ImageTag, ImagePropSchema};
+
+    fn image_tree(source: ImageSource, loading: RsxNode) -> RsxNode {
+        <ImageTag as RsxComponent<ImagePropSchema>>::render(
+            ImagePropSchema {
+                source,
+                style: None,
+                fit: None,
+                sampling: None,
+                loading: Some(loading),
+                error: None,
+            },
+            Vec::new(),
+        )
+    }
+
+    let source = ImageSource::Rgba {
+        width: 1,
+        height: 1,
+        pixels: std::sync::Arc::<[u8]>::from(vec![0, 0, 0, 255]),
+    };
+    let old_loading = host_el();
+    let new_loading = host_el().with_child(host_el());
+    let first = image_tree(source.clone(), old_loading);
+    let second = image_tree(source, new_loading.clone());
+    let mut viewport = Viewport::new();
+    viewport.render_rsx(&first).expect("cold image render");
+    let old_root = viewport.scene.ui_root_keys[0];
+    let retained_len_before_corruption = viewport.scene.node_arena.len();
+
+    // Make the Image's arena children disagree with its latent-slot mirror so
+    // the later loading replacement returns a structural failure.
+    let rogue_sid = 0x51_07_u64;
+    let rogue = viewport.scene.node_arena.insert(Node::with_parent(
+        Box::new(ElementHost::new_with_id(rogue_sid, 0.0, 0.0, 1.0, 1.0)),
+        Some(old_root),
+    ));
+    viewport
+        .scene
+        .node_arena
+        .set_children(old_root, vec![rogue]);
+
+    // The root Create succeeds before the slot Update fails. This models a
+    // partially-applied, non-transactional Fiber batch.
+    let extra_sid = 0x51_08_u64;
+    let extra_descriptor = ElementDescriptor::leaf(Box::new(ElementHost::new_with_id(
+        extra_sid, 0.0, 0.0, 1.0, 1.0,
+    )));
+    let result = apply_fiber_works(
+        &mut viewport.scene.node_arena,
+        test_apply_ctx(),
+        vec![
+            FiberWork::Create {
+                parent: None,
+                index: 0,
+                descriptor: extra_descriptor,
+                stable_id: extra_sid,
+            },
+            FiberWork::Update {
+                key: old_root,
+                changed: vec![("loading", new_loading.into_prop_value())],
+                removed: Vec::new(),
+            },
+        ],
+    );
+    assert_eq!(
+        result,
+        Err(UpdateFailure::StructuralPropApplyFailed("loading"))
+    );
+    assert_eq!(
+        viewport.scene.node_arena.len(),
+        retained_len_before_corruption + 2,
+        "only the deliberately-created rogue and extra root may remain"
+    );
+    assert_eq!(viewport.scene.ui_root_keys, vec![old_root]);
+    assert_eq!(viewport.scene.node_arena.roots().len(), 2);
+    assert!(
+        viewport
+            .scene
+            .node_arena
+            .find_by_stable_id(extra_sid)
+            .is_some()
+    );
+    {
+        let old_image_node = viewport.scene.node_arena.get(old_root).unwrap();
+        let old_image = old_image_node
+            .element
+            .as_any()
+            .downcast_ref::<Image>()
+            .unwrap();
+        assert_eq!(
+            old_image.loading_slot_len(),
+            1,
+            "old slot remains authoritative"
+        );
+    }
+
+    // This is the exact recovery hook used by render_rsx's Err branch. The
+    // subsequent forced cold render must remove both current arena roots and
+    // the stale viewport mirror before committing the new RSX tree.
+    viewport
+        .scene
+        .refresh_roots_for_cold_rebuild_after_incremental_failure();
+    assert_eq!(viewport.scene.ui_root_keys.len(), 2);
+    viewport.set_use_incremental_commit(false);
+    viewport.render_rsx(&second).expect("cold fallback render");
+
+    assert_eq!(viewport.scene.ui_root_keys.len(), 1);
+    assert_eq!(
+        viewport.scene.node_arena.roots(),
+        viewport.scene.ui_root_keys.as_slice()
+    );
+    assert_ne!(viewport.scene.ui_root_keys[0], old_root);
+    assert!(!viewport.scene.node_arena.contains_key(old_root));
+    assert_eq!(viewport.scene.node_arena.find_by_stable_id(extra_sid), None);
+    assert_eq!(viewport.scene.node_arena.find_by_stable_id(rogue_sid), None);
+    let mut cold_oracle = Viewport::new();
+    cold_oracle.set_use_incremental_commit(false);
+    cold_oracle
+        .render_rsx(&second)
+        .expect("fresh cold oracle render");
+    assert_eq!(
+        viewport.scene.node_arena.len(),
+        cold_oracle.scene.node_arena.len(),
+        "fallback arena must contain exactly the fresh cold tree"
+    );
+    assert_eq!(
+        viewport.scene.node_arena.arena_sync_node_count_for_test(),
+        1,
+        "only the rebuilt Image host may remain registered for arena sync"
+    );
+    let rebuilt_root = viewport.scene.ui_root_keys[0];
+    let rebuilt_image_node = viewport.scene.node_arena.get(rebuilt_root).unwrap();
+    let rebuilt_image = rebuilt_image_node
+        .element
+        .as_any()
+        .downcast_ref::<Image>()
+        .unwrap();
+    assert_eq!(rebuilt_image.loading_slot_len(), 1);
+}
+
+#[test]
+fn viewport_structural_slot_failure_automatically_falls_back_to_cold_rebuild() {
+    use crate::ui::RsxComponent;
+    use crate::view::ImageSource;
+    use crate::view::base_component::Element as ElementHost;
+    use crate::view::node_arena::Node;
+    use crate::view::tags::{Image as ImageTag, ImagePropSchema};
+
+    fn image_tree(source: ImageSource, loading: RsxNode) -> RsxNode {
+        <ImageTag as RsxComponent<ImagePropSchema>>::render(
+            ImagePropSchema {
+                source,
+                style: None,
+                fit: None,
+                sampling: None,
+                loading: Some(loading),
+                error: None,
+            },
+            Vec::new(),
+        )
+    }
+
+    let source = ImageSource::Rgba {
+        width: 1,
+        height: 1,
+        pixels: std::sync::Arc::<[u8]>::from(vec![0, 0, 0, 255]),
+    };
+    let first = image_tree(source.clone(), host_el());
+    let second = image_tree(source, host_el().with_child(host_el()));
+    let mut viewport = Viewport::new();
+    viewport.render_rsx(&first).expect("cold image render");
+    let old_root = viewport.scene.ui_root_keys[0];
+    let rogue_sid = 0x51_09_u64;
+    let rogue = viewport.scene.node_arena.insert(Node::with_parent(
+        Box::new(ElementHost::new_with_id(rogue_sid, 0.0, 0.0, 1.0, 1.0)),
+        Some(old_root),
+    ));
+    viewport
+        .scene
+        .node_arena
+        .set_children(old_root, vec![rogue]);
+
+    // render_rsx must observe StructuralPropApplyFailed, keep needs_rebuild
+    // set, clean the failed retained tree, and commit the authoritative RSX.
+    viewport
+        .render_rsx(&second)
+        .expect("structural failure cold fallback");
+
+    assert_eq!(viewport.scene.ui_root_keys.len(), 1);
+    assert_ne!(viewport.scene.ui_root_keys[0], old_root);
+    assert_eq!(
+        viewport.scene.node_arena.roots(),
+        viewport.scene.ui_root_keys.as_slice()
+    );
+    assert!(!viewport.scene.node_arena.contains_key(old_root));
+    assert_eq!(viewport.scene.node_arena.find_by_stable_id(rogue_sid), None);
+    assert_eq!(viewport.scene.last_rsx_root.as_ref(), Some(&second));
+
+    let mut cold_oracle = Viewport::new();
+    cold_oracle.set_use_incremental_commit(false);
+    cold_oracle.render_rsx(&second).expect("cold oracle render");
+    assert_eq!(
+        viewport.scene.node_arena.len(),
+        cold_oracle.scene.node_arena.len()
+    );
+    assert_eq!(
+        viewport.scene.node_arena.arena_sync_node_count_for_test(),
+        1
+    );
 }
 
 #[test]

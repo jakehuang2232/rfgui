@@ -50,6 +50,8 @@ impl Viewport {
     pub(super) fn invalidate_promoted_layer_reuse(&mut self) {
         self.compositor.promoted_base_signatures.clear();
         self.compositor.promoted_composition_signatures.clear();
+        self.compositor.promoted_base_generations.clear();
+        self.compositor.promoted_composition_generations.clear();
         self.compositor.debug_previous_subtree_signatures.clear();
         self.compositor.promoted_layer_updates.clear();
         self.compositor.promoted_reuse_cooldown_frames = Self::PROMOTED_REUSE_COOLDOWN_FRAMES;
