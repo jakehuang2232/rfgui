@@ -17,7 +17,8 @@ use crate::ui::Rect;
 use crate::view::base_component::text::measure_text_layout;
 use crate::view::base_component::{
     BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, LayoutConstraints,
-    LayoutPlacement, Layoutable, Position, Renderable, Size, UiBuildContext,
+    LayoutPlacement, Layoutable, Position, Renderable, ShadowPaintRecordingCapability, Size,
+    UiBuildContext,
 };
 use crate::view::frame_graph::FrameGraph;
 use crate::view::inline_formatting_context::InlineIfcAlignment;
@@ -571,6 +572,38 @@ impl EventTarget for TextAreaTextRun {
 impl EventTarget for TextAreaLineBreak {}
 
 impl ElementTrait for TextAreaTextRun {
+    #[allow(private_interfaces)]
+    fn shadow_paint_recording_capability(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+        deferred_phase_root: bool,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> ShadowPaintRecordingCapability {
+        if !recording_context.inside_text_area {
+            return ShadowPaintRecordingCapability::Unsupported;
+        }
+        let Some(self_key) = unique_run_key(arena, self) else {
+            return ShadowPaintRecordingCapability::Unsupported;
+        };
+        let Some(parent_key) = arena.parent_of(self_key) else {
+            return ShadowPaintRecordingCapability::Unsupported;
+        };
+        let Some(parent) = arena.get(parent_key) else {
+            return ShadowPaintRecordingCapability::Unsupported;
+        };
+        let Some(text_area) = parent.element.as_any().downcast_ref::<super::TextArea>() else {
+            return ShadowPaintRecordingCapability::Unsupported;
+        };
+        text_area.plain_leaf_shadow_capability(
+            parent_key,
+            self_key,
+            self.node_id,
+            super::inline_ifc::TextAreaUnifiedIfcSourceKind::TextRun,
+            arena,
+            deferred_phase_root,
+        )
+    }
+
     fn placement_eligibility_metadata(
         &self,
     ) -> crate::view::node_arena::PlacementEligibilityMetadata {
@@ -686,9 +719,45 @@ impl ElementTrait for TextAreaTextRun {
         self.preedit_cursor.hash(&mut hasher);
         hasher.finish()
     }
+
+    fn promotion_signature_is_complete(&self) -> bool {
+        true
+    }
 }
 
 impl ElementTrait for TextAreaLineBreak {
+    #[allow(private_interfaces)]
+    fn shadow_paint_recording_capability(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+        deferred_phase_root: bool,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> ShadowPaintRecordingCapability {
+        if !recording_context.inside_text_area {
+            return ShadowPaintRecordingCapability::Unsupported;
+        }
+        let Some(self_key) = unique_line_break_key(arena, self) else {
+            return ShadowPaintRecordingCapability::Unsupported;
+        };
+        let Some(parent_key) = arena.parent_of(self_key) else {
+            return ShadowPaintRecordingCapability::Unsupported;
+        };
+        let Some(parent) = arena.get(parent_key) else {
+            return ShadowPaintRecordingCapability::Unsupported;
+        };
+        let Some(text_area) = parent.element.as_any().downcast_ref::<super::TextArea>() else {
+            return ShadowPaintRecordingCapability::Unsupported;
+        };
+        text_area.plain_leaf_shadow_capability(
+            parent_key,
+            self_key,
+            self.node_id,
+            super::inline_ifc::TextAreaUnifiedIfcSourceKind::LineBreak,
+            arena,
+            deferred_phase_root,
+        )
+    }
+
     fn placement_eligibility_metadata(
         &self,
     ) -> crate::view::node_arena::PlacementEligibilityMetadata {
@@ -764,6 +833,36 @@ impl ElementTrait for TextAreaLineBreak {
             .hash(&mut hasher);
         hasher.finish()
     }
+
+    fn promotion_signature_is_complete(&self) -> bool {
+        true
+    }
+}
+
+fn unique_run_key(
+    arena: &crate::view::node_arena::NodeArena,
+    run: &TextAreaTextRun,
+) -> Option<NodeKey> {
+    let key = arena.find_by_stable_id(run.node_id)?;
+    let node = arena.get(key)?;
+    node.element
+        .as_any()
+        .downcast_ref::<TextAreaTextRun>()
+        .is_some_and(|candidate| std::ptr::eq(candidate, run))
+        .then_some(key)
+}
+
+fn unique_line_break_key(
+    arena: &crate::view::node_arena::NodeArena,
+    line_break: &TextAreaLineBreak,
+) -> Option<NodeKey> {
+    let key = arena.find_by_stable_id(line_break.node_id)?;
+    let node = arena.get(key)?;
+    node.element
+        .as_any()
+        .downcast_ref::<TextAreaLineBreak>()
+        .is_some_and(|candidate| std::ptr::eq(candidate, line_break))
+        .then_some(key)
 }
 
 /// Round `byte_index` down to the nearest valid UTF-8 char boundary in

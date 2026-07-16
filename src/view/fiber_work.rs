@@ -773,9 +773,10 @@ fn fallback_replace_node_patch(
 /// Hosts return one of these for each `(name, value)` pair they're
 /// asked to apply. fiber_work aggregates: any `NeedsCascade` triggers
 /// `recascade_text_subtree` after the element is back in its slot;
-/// `UnknownProp` / `DecodeFailed` log + continue (never promote to
-/// cold rebuild).
-#[derive(Debug, Clone)]
+/// `UnknownProp` / `DecodeFailed` log + continue. Structural failures are
+/// distinct: they abort the batch so the viewport can cold rebuild from the
+/// authoritative RSX tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropApplyOutcome {
     /// Prop applied; no further action.
     Applied,
@@ -787,6 +788,9 @@ pub enum PropApplyOutcome {
     /// Host recognises the prop but couldn't decode the `PropValue`
     /// to its expected shape. Caller logs and skips.
     DecodeFailed(&'static str),
+    /// The prop decoded, but applying it would violate retained arena
+    /// topology. The caller must stop this batch and cold rebuild.
+    RequiresColdRebuild(&'static str),
     /// `reset_prop` only: this host can't reset the named prop without
     /// a full rebuild. Caller logs and skips.
     CannotReset(&'static str),
@@ -796,12 +800,15 @@ pub enum PropApplyOutcome {
 /// from `apply_update_work` / `apply_set_text_work` so the gate can
 /// fall back to the full-rebuild path without the arena ever being
 /// partially mutated (all failures are detected pre-apply).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateFailure {
     /// SetText target isn't a Text or TextArea node.
     SetTextOnNonTextTarget,
     /// Target NodeKey vanished from the arena (stale work batch).
     MissingTarget,
+    /// A decoded prop could not be installed without violating retained
+    /// topology. The incremental batch is no longer authoritative.
+    StructuralPropApplyFailed(&'static str),
 }
 
 impl FiberWork {
@@ -1017,11 +1024,15 @@ fn target_is_text_like(arena: &NodeArena, key: NodeKey) -> bool {
 
 /// Apply a batch of `FiberWork` items against `arena`.
 ///
-/// Supports Create/Delete/Move/Replace/Update/SetText work. Update and
-/// SetText return through the setter layer; when a target or prop cannot
-/// be applied safely, the caller's commit gate is responsible for falling
-/// back to a full rebuild before this function is used.
-pub fn apply_fiber_works(arena: &mut NodeArena, ctx: ApplyContext<'_>, works: Vec<FiberWork>) {
+/// Supports Create/Delete/Move/Replace/Update/SetText work. The batch is not
+/// transactional: if a later Update/SetText fails, earlier work may already
+/// be visible in `arena`. Callers receiving `Err` must discard or roll back
+/// the partial arena; the viewport immediately cold rebuilds from RSX.
+pub fn apply_fiber_works(
+    arena: &mut NodeArena,
+    ctx: ApplyContext<'_>,
+    works: Vec<FiberWork>,
+) -> Result<(), UpdateFailure> {
     for work in works {
         match work {
             FiberWork::Create {
@@ -1060,14 +1071,10 @@ pub fn apply_fiber_works(arena: &mut NodeArena, ctx: ApplyContext<'_>, works: Ve
                 // for user-authoring bugs already surfaced on the cold
                 // render path, so a silent log matches existing
                 // convert_* error handling.
-                if let Err(err) = apply_update_work(arena, ctx, key, changed, removed) {
-                    eprintln!("[fiber_work] Update dropped: {err:?}");
-                }
+                apply_update_work(arena, ctx, key, changed, removed)?;
             }
             FiberWork::SetText { key, text } => {
-                if let Err(err) = apply_set_text_work(arena, key, text) {
-                    eprintln!("[fiber_work] SetText dropped: {err:?}");
-                }
+                apply_set_text_work(arena, key, text)?;
             }
             FiberWork::Move {
                 parent,
@@ -1140,6 +1147,7 @@ pub fn apply_fiber_works(arena: &mut NodeArena, ctx: ApplyContext<'_>, works: Ve
             },
         }
     }
+    Ok(())
 }
 
 /// Apply a prop-diff to the element at `key` via host-owned dispatch
@@ -1181,6 +1189,7 @@ fn apply_update_work(
         }
     }
 
+    let mut structural_failure = None;
     arena.mutate_element_with_invalidation(key, |element, cx| {
         for (name, value) in changed {
             match element.apply_prop(cx.arena(), key, &ctx, name, value) {
@@ -1194,27 +1203,40 @@ fn apply_update_work(
                 PropApplyOutcome::DecodeFailed(p) => {
                     eprintln!("[fiber_work] Update skipped prop {p:?} (decode failed)");
                 }
+                PropApplyOutcome::RequiresColdRebuild(p) => {
+                    structural_failure = Some(UpdateFailure::StructuralPropApplyFailed(p));
+                    break;
+                }
                 PropApplyOutcome::CannotReset(_) => {
                     unreachable!("apply_prop never returns CannotReset")
                 }
             }
         }
-        for name in removed {
-            match element.reset_prop(cx.arena(), key, &ctx, name) {
-                PropApplyOutcome::Applied => {}
-                PropApplyOutcome::NeedsCascade => {
-                    cascade_dirty = true;
-                }
-                PropApplyOutcome::CannotReset(p) => {
-                    eprintln!("[fiber_work] Reset skipped prop {p:?} (no reset path)");
-                }
-                PropApplyOutcome::UnknownProp | PropApplyOutcome::DecodeFailed(_) => {
-                    eprintln!("[fiber_work] Reset skipped unknown prop {name:?}");
+        if structural_failure.is_none() {
+            for name in removed {
+                match element.reset_prop(cx.arena(), key, &ctx, name) {
+                    PropApplyOutcome::Applied => {}
+                    PropApplyOutcome::NeedsCascade => {
+                        cascade_dirty = true;
+                    }
+                    PropApplyOutcome::CannotReset(p) => {
+                        eprintln!("[fiber_work] Reset skipped prop {p:?} (no reset path)");
+                    }
+                    PropApplyOutcome::UnknownProp | PropApplyOutcome::DecodeFailed(_) => {
+                        eprintln!("[fiber_work] Reset skipped unknown prop {name:?}");
+                    }
+                    PropApplyOutcome::RequiresColdRebuild(p) => {
+                        structural_failure = Some(UpdateFailure::StructuralPropApplyFailed(p));
+                        break;
+                    }
                 }
             }
         }
         cx.invalidate(element.local_dirty_flags());
     });
+    if let Some(failure) = structural_failure {
+        return Err(failure);
+    }
     // 軌 A #7: recascade after the element is back in its slot —
     // the walker relies on ancestor chain being intact.
     if cascade_dirty {
@@ -1489,7 +1511,8 @@ mod tests {
                 parent: None,
                 key: root,
             }],
-        );
+        )
+        .expect("delete root work applies");
 
         assert!(arena.is_empty());
         assert!(arena.roots().is_empty());
@@ -1511,7 +1534,8 @@ mod tests {
                 parent: Some(parent),
                 key: child,
             }],
-        );
+        )
+        .expect("delete child work applies");
 
         assert_eq!(arena.children_of(parent).len(), 0);
         assert!(arena.find_by_stable_id(2).is_none());
@@ -1540,7 +1564,8 @@ mod tests {
                 from: 0,
                 to: 2,
             }],
-        );
+        )
+        .expect("move work applies");
 
         assert_eq!(arena.children_of(parent), vec![b, c, a]);
     }
@@ -1569,7 +1594,8 @@ mod tests {
                     text: "ignored".into(),
                 },
             ],
-        );
+        )
+        .expect_err("SetText on an unknown host must surface failure");
 
         assert_eq!(arena.len(), 1);
         assert_eq!(arena.find_by_stable_id(5), Some(k));
@@ -1612,7 +1638,8 @@ mod tests {
                 changed: vec![("loading", loading_a.into_prop_value())],
                 removed: vec![],
             }],
-        );
+        )
+        .expect("first image loading slot applies");
         {
             let node = arena.get(image_key).expect("image survived");
             let image = node
@@ -1647,7 +1674,8 @@ mod tests {
                 changed: vec![("loading", loading_b.into_prop_value())],
                 removed: vec![],
             }],
-        );
+        )
+        .expect("second image loading slot applies");
         {
             let node = arena.get(image_key).expect("image survived second update");
             let image = node
@@ -1670,6 +1698,128 @@ mod tests {
             delta, 1,
             "arena net growth must be +1 (old slot removed, new 2-node slot committed)",
         );
+    }
+
+    #[test]
+    fn image_slot_structural_failure_surfaces_and_stops_later_props() {
+        use crate::ui::{IntoPropValue, RsxNode, RsxTagDescriptor};
+        use crate::view::base_component::{Element, Image};
+        use crate::view::{ImageFit, ImageSource};
+        use std::sync::Arc;
+
+        let source = ImageSource::Rgba {
+            width: 1,
+            height: 1,
+            pixels: Arc::<[u8]>::from(vec![0, 0, 0, 255]),
+        };
+        let mut arena = NodeArena::new();
+        let owner = arena.insert(Node::new(Box::new(Image::new_with_id(70, source))));
+        let old_slot = arena.insert(Node::with_parent(
+            Box::new(Element::new_with_id(71, 0.0, 0.0, 1.0, 1.0)),
+            Some(owner),
+        ));
+        arena.with_element_taken(owner, |element, _| {
+            element
+                .as_any_mut()
+                .downcast_mut::<Image>()
+                .unwrap()
+                .attach_loading_slot_cold(vec![old_slot]);
+        });
+
+        // Deliberately corrupt the active mirror. The slot replacement must
+        // fail before deleting old_slot, and the later fit prop must not run.
+        let rogue = arena.insert(Node::with_parent(
+            Box::new(Element::new_with_id(72, 0.0, 0.0, 1.0, 1.0)),
+            Some(owner),
+        ));
+        arena.set_children(owner, vec![rogue]);
+        let signature_before = arena.get(owner).unwrap().element.promotion_self_signature();
+        let len_before = arena.len();
+        let replacement = RsxNode::tagged(
+            "Element",
+            RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+        );
+
+        let result = apply_fiber_works(
+            &mut arena,
+            test_apply_ctx(),
+            vec![FiberWork::Update {
+                key: owner,
+                changed: vec![
+                    ("loading", replacement.into_prop_value()),
+                    ("fit", ImageFit::Cover.into_prop_value()),
+                ],
+                removed: vec![],
+            }],
+        );
+
+        assert_eq!(
+            result,
+            Err(UpdateFailure::StructuralPropApplyFailed("loading"))
+        );
+        assert_eq!(arena.len(), len_before, "new slot subtree must be cleaned");
+        assert!(
+            arena.contains_key(old_slot),
+            "old slot must remain authoritative"
+        );
+        let image_node = arena.get(owner).unwrap();
+        let image = image_node.element.as_any().downcast_ref::<Image>().unwrap();
+        assert_eq!(image.loading_slot_len(), 1);
+        assert_eq!(image.promotion_self_signature(), signature_before);
+    }
+
+    #[test]
+    fn svg_slot_structural_failure_surfaces_as_update_failure() {
+        use crate::ui::{IntoPropValue, RsxNode, RsxTagDescriptor};
+        use crate::view::SvgSource;
+        use crate::view::base_component::{Element, Svg};
+
+        let mut arena = NodeArena::new();
+        let owner = arena.insert(Node::new(Box::new(Svg::new_with_id(
+            80,
+            SvgSource::Content(
+                r#"<svg width="1" height="1" xmlns="http://www.w3.org/2000/svg"/>"#.into(),
+            ),
+        ))));
+        let old_slot = arena.insert(Node::with_parent(
+            Box::new(Element::new_with_id(81, 0.0, 0.0, 1.0, 1.0)),
+            Some(owner),
+        ));
+        arena.with_element_taken(owner, |element, _| {
+            element
+                .as_any_mut()
+                .downcast_mut::<Svg>()
+                .unwrap()
+                .attach_error_slot_cold(vec![old_slot]);
+        });
+        let rogue = arena.insert(Node::with_parent(
+            Box::new(Element::new_with_id(82, 0.0, 0.0, 1.0, 1.0)),
+            Some(owner),
+        ));
+        arena.set_children(owner, vec![rogue]);
+        let len_before = arena.len();
+        let replacement = RsxNode::tagged(
+            "Element",
+            RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+        );
+
+        assert_eq!(
+            apply_fiber_works(
+                &mut arena,
+                test_apply_ctx(),
+                vec![FiberWork::Update {
+                    key: owner,
+                    changed: vec![("error", replacement.into_prop_value())],
+                    removed: vec![],
+                }],
+            ),
+            Err(UpdateFailure::StructuralPropApplyFailed("error"))
+        );
+        assert_eq!(arena.len(), len_before);
+        assert!(arena.contains_key(old_slot));
+        let svg_node = arena.get(owner).unwrap();
+        let svg = svg_node.element.as_any().downcast_ref::<Svg>().unwrap();
+        assert_eq!(svg.loading_slot_len(), 0);
     }
 
     /// A FiberWork::Update with `removed = ["opacity"]` on a Text host
@@ -1696,7 +1846,8 @@ mod tests {
                 changed: vec![],
                 removed: vec!["opacity"],
             }],
-        );
+        )
+        .expect("text opacity reset applies");
 
         let node = arena.get(k).expect("node survived");
         let text = node

@@ -921,6 +921,26 @@ fn placed_text_box_preserves_fractional_layout_coordinates() {
 }
 
 #[test]
+fn retained_transform_text_bounds_apply_nonzero_inherited_paint_offset() {
+    let text = Text::new(3.25, 4.5, 10.0, 5.0, "offset bounds");
+    let arena = arena();
+    let exact = text
+        .retained_transform_output_bounds(&arena, [0.2, -0.3])
+        .expect("Text explicitly owns exact transformed-ancestor coverage");
+    assert_eq!(
+        [exact.x, exact.y, exact.width, exact.height].map(f32::to_bits),
+        [3.45, 4.2, 10.0, 5.0].map(f32::to_bits)
+    );
+    let legacy = text
+        .legacy_transform_output_bounds(&arena, [0.2, -0.3])
+        .expect("legacy Text coverage");
+    assert_eq!(
+        [legacy.x, legacy.y, legacy.width, legacy.height].map(f32::to_bits),
+        [exact.x, exact.y, exact.width, exact.height].map(f32::to_bits)
+    );
+}
+
+#[test]
 fn text_build_emits_prepared_input_pass_from_shaped_context() {
     let mut text = Text::new(0.0, 0.0, 92.0, 80.0, "prepared text");
     place_text_for_read_only_ifc_test(&mut text, 92.0, 120.0);
@@ -965,6 +985,45 @@ fn text_build_skips_non_renderable_text() {
     place_text_for_read_only_ifc_test(&mut hidden, 92.0, 120.0);
     hidden.layout_state.should_render = false;
     assert!(build_text_for_read_only_ifc_test(&mut hidden).is_empty());
+}
+
+#[test]
+fn text_build_promoted_visibility_uses_neutral_opacity_authority() {
+    let stable_id = 0x7a11;
+    let mut text = Text::new_with_id(stable_id, 0.0, 0.0, 92.0, 80.0, "promoted transparent text");
+    text.set_opacity(0.0);
+    place_text_for_read_only_ifc_test(&mut text, 92.0, 120.0);
+
+    let mut graph = FrameGraph::new();
+    let mut ctx = UiBuildContext::new(200, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let target = ctx.allocate_target(&mut graph);
+    ctx.set_current_target(target);
+    ctx.set_promoted_runtime(
+        std::sync::Arc::new(rustc_hash::FxHashSet::from_iter([stable_id])),
+        Default::default(),
+        Default::default(),
+    );
+    let mut arena = arena();
+    text.build(&mut graph, &mut arena, ctx);
+
+    assert!(graph.pass_descriptors().iter().any(|descriptor| {
+        descriptor
+            .name
+            .ends_with("render_pass::text_pass::TextPreparedInputPass")
+    }));
+}
+
+#[test]
+fn text_opacity_marks_paint_and_composite_without_layout() {
+    let mut text = Text::new(0.0, 0.0, 92.0, 80.0, "opacity");
+    text.clear_local_dirty_flags(DirtyFlags::ALL);
+
+    text.set_opacity(0.5);
+
+    let dirty = text.local_dirty_flags();
+    assert!(dirty.contains(DirtyFlags::PAINT));
+    assert!(dirty.contains(DirtyFlags::COMPOSITE));
+    assert!(!dirty.intersects(DirtyFlags::LAYOUT));
 }
 
 #[test]

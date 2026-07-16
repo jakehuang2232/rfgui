@@ -237,18 +237,24 @@ fn diff_and_apply_props(
                 PropApplyOutcome::Applied | PropApplyOutcome::NeedsCascade => {}
                 PropApplyOutcome::UnknownProp
                 | PropApplyOutcome::DecodeFailed(_)
+                | PropApplyOutcome::RequiresColdRebuild(_)
                 | PropApplyOutcome::CannotReset(_) => {
                     all_ok = false;
+                    break;
                 }
             }
         }
-        for name in removed {
-            match element.reset_prop(cx.arena(), anchor, apply_ctx, name) {
-                PropApplyOutcome::Applied | PropApplyOutcome::NeedsCascade => {}
-                PropApplyOutcome::UnknownProp
-                | PropApplyOutcome::DecodeFailed(_)
-                | PropApplyOutcome::CannotReset(_) => {
-                    all_ok = false;
+        if all_ok {
+            for name in removed {
+                match element.reset_prop(cx.arena(), anchor, apply_ctx, name) {
+                    PropApplyOutcome::Applied | PropApplyOutcome::NeedsCascade => {}
+                    PropApplyOutcome::UnknownProp
+                    | PropApplyOutcome::DecodeFailed(_)
+                    | PropApplyOutcome::RequiresColdRebuild(_)
+                    | PropApplyOutcome::CannotReset(_) => {
+                        all_ok = false;
+                        break;
+                    }
                 }
             }
         }

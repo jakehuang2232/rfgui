@@ -64,19 +64,7 @@ fn normalize_corner_radii(mut radii: CornerRadii, width: f32, height: f32) -> Co
 }
 
 fn rect_to_scissor_rect(rect: Rect) -> Option<[u32; 4]> {
-    let left = rect.x.floor().max(0.0) as i64;
-    let top = rect.y.floor().max(0.0) as i64;
-    let right = (rect.x + rect.width).ceil().max(0.0) as i64;
-    let bottom = (rect.y + rect.height).ceil().max(0.0) as i64;
-    if right <= left || bottom <= top {
-        return None;
-    }
-    Some([
-        left as u32,
-        top as u32,
-        (right - left) as u32,
-        (bottom - top) as u32,
-    ])
+    exact_logical_scissor_for_rect(rect)
 }
 
 fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
@@ -707,4 +695,35 @@ fn resolve_gradient_paint(
         }
     }
     paint
+}
+
+pub(crate) fn hash_resolved_gradient_paint<H: std::hash::Hasher>(
+    hasher: &mut H,
+    tag: u8,
+    gradient: Option<&crate::style::Gradient>,
+    width: f32,
+    height: f32,
+) {
+    use std::hash::Hash;
+
+    tag.hash(hasher);
+    gradient.is_some().hash(hasher);
+    let Some(gradient) = gradient else {
+        return;
+    };
+    let paint = resolve_gradient_paint(gradient, width, height);
+    paint.kind.hash(hasher);
+    paint.repeating.hash(hasher);
+    for value in paint.axis {
+        value.to_bits().hash(hasher);
+    }
+    paint.stops.len().hash(hasher);
+    for stop in paint.stops.iter() {
+        for value in stop.color {
+            value.to_bits().hash(hasher);
+        }
+        for value in stop.pos {
+            value.to_bits().hash(hasher);
+        }
+    }
 }

@@ -197,6 +197,7 @@ pub struct DebugDirtyFlags {
     pub box_model: bool,
     pub hit_test: bool,
     pub paint: bool,
+    pub composite: bool,
 }
 
 impl DebugDirtyFlags {
@@ -207,11 +208,17 @@ impl DebugDirtyFlags {
             box_model: flags.contains(DirtyFlags::BOX_MODEL),
             hit_test: flags.contains(DirtyFlags::HIT_TEST),
             paint: flags.contains(DirtyFlags::PAINT),
+            composite: flags.contains(DirtyFlags::COMPOSITE),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        !self.layout && !self.place && !self.box_model && !self.hit_test && !self.paint
+        !self.layout
+            && !self.place
+            && !self.box_model
+            && !self.hit_test
+            && !self.paint
+            && !self.composite
     }
 }
 

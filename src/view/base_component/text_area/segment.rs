@@ -19,7 +19,7 @@ use crate::view::base_component::{
 };
 use crate::view::frame_graph::FrameGraph;
 use crate::view::layout::{FlexLayoutInfo, LayoutState};
-use crate::view::node_arena::NodeKey;
+use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::next_ui_node_id;
 
@@ -42,6 +42,16 @@ pub(crate) struct TextAreaProjectionSegment {
     dirty_flags: DirtyFlags,
     node_id: u64,
     parent_id: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TextAreaProjectionAtomicLayoutWitness {
+    pub(crate) flow_offset: Position,
+    pub(crate) vertical_align: VerticalAlign,
+    pub(crate) owner_inline_baseline: f32,
+    pub(crate) auto_wrap: bool,
+    pub(crate) inline_full_available_width: f32,
+    pub(crate) has_inline_paint_fragments: bool,
 }
 
 impl Default for TextAreaProjectionSegment {
@@ -108,6 +118,17 @@ impl TextAreaProjectionSegment {
         }
         self.auto_wrap = auto_wrap;
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::LAYOUT);
+    }
+
+    pub(crate) fn exact_atomic_layout_witness(&self) -> TextAreaProjectionAtomicLayoutWitness {
+        TextAreaProjectionAtomicLayoutWitness {
+            flow_offset: self.flow_offset,
+            vertical_align: self.vertical_align,
+            owner_inline_baseline: self.owner_inline_baseline,
+            auto_wrap: self.auto_wrap,
+            inline_full_available_width: self.inline_full_available_width,
+            has_inline_paint_fragments: !self.inline_paint_fragments.is_empty(),
+        }
     }
 
     fn measure_with_inline_first_width(
@@ -342,6 +363,80 @@ impl EventTarget for TextAreaProjectionSegment {
 }
 
 impl ElementTrait for TextAreaProjectionSegment {
+    #[allow(private_interfaces)]
+    fn shadow_paint_recording_capability(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+        deferred_phase_root: bool,
+        _recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> crate::view::base_component::ShadowPaintRecordingCapability {
+        let Some(self_key) = unique_projection_segment_key(arena, self) else {
+            return crate::view::base_component::ShadowPaintRecordingCapability::Unsupported;
+        };
+        let Some(parent_key) = arena.parent_of(self_key) else {
+            return crate::view::base_component::ShadowPaintRecordingCapability::Unsupported;
+        };
+        let Some(parent) = arena.get(parent_key) else {
+            return crate::view::base_component::ShadowPaintRecordingCapability::Unsupported;
+        };
+        let Some(text_area) = parent.element.as_any().downcast_ref::<super::TextArea>() else {
+            return crate::view::base_component::ShadowPaintRecordingCapability::Unsupported;
+        };
+        text_area.projection_segment_shadow_capability(
+            parent_key,
+            self_key,
+            self.node_id,
+            arena,
+            deferred_phase_root,
+        )
+    }
+
+    #[allow(private_interfaces)]
+    fn shadow_paint_recording_context(
+        &self,
+        parent: crate::view::paint::PaintRecordingContext,
+    ) -> crate::view::paint::PaintRecordingContext {
+        parent
+    }
+
+    #[allow(private_interfaces)]
+    fn shadow_paint_recording_context_for_child(
+        &self,
+        child: NodeKey,
+        arena: &NodeArena,
+        parent: crate::view::paint::PaintRecordingContext,
+    ) -> crate::view::paint::PaintRecordingContext {
+        let mut child_context = parent.without_text_area_child_authority();
+        let Some(self_key) = unique_projection_segment_key(arena, self) else {
+            return child_context;
+        };
+        let exact_child = arena.parent_of(child) == Some(self_key)
+            && self.children.as_slice() == [child]
+            && arena.children_of(self_key) == [child];
+        if let Some(witness) = parent.text_area_selection {
+            let target_matches = exact_child
+                && witness.target_owner == child
+                && arena
+                    .get(child)
+                    .is_some_and(|node| node.element.stable_id() == witness.target_stable_id);
+            if target_matches {
+                child_context.text_area_selection = Some(witness);
+            }
+        }
+        if let Some(witness) = parent.text_area_preedit {
+            let target_matches = exact_child
+                && witness.projection_owner == self_key
+                && witness.target_owner == child
+                && arena
+                    .get(child)
+                    .is_some_and(|node| node.element.stable_id() == witness.target_stable_id);
+            if target_matches {
+                child_context.text_area_preedit = Some(witness);
+            }
+        }
+        child_context
+    }
+
     fn placement_eligibility_metadata(
         &self,
     ) -> crate::view::node_arena::PlacementEligibilityMetadata {
@@ -406,6 +501,12 @@ impl ElementTrait for TextAreaProjectionSegment {
         crate::view::promotion::PromotionNodeInfo::default()
     }
 
+    // Projection segments paint no pixels of their own; ordered descendants
+    // and topology are tracked by the arena walker.
+    fn promotion_signature_is_complete(&self) -> bool {
+        true
+    }
+
     fn apply_prop(
         &mut self,
         _arena: &mut crate::view::node_arena::NodeArena,
@@ -460,4 +561,17 @@ impl ElementTrait for TextAreaProjectionSegment {
             _ => PropApplyOutcome::UnknownProp,
         }
     }
+}
+
+fn unique_projection_segment_key(
+    arena: &crate::view::node_arena::NodeArena,
+    segment: &TextAreaProjectionSegment,
+) -> Option<NodeKey> {
+    let key = arena.find_by_stable_id(segment.node_id)?;
+    let node = arena.get(key)?;
+    node.element
+        .as_any()
+        .downcast_ref::<TextAreaProjectionSegment>()
+        .is_some_and(|candidate| std::ptr::eq(candidate, segment))
+        .then_some(key)
 }

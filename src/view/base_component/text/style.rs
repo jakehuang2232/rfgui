@@ -269,7 +269,10 @@ impl Text {
             return;
         }
         self.opacity = opacity;
-        self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
+        self.dirty_flags = self
+            .dirty_flags
+            .union(DirtyFlags::PAINT)
+            .union(DirtyFlags::COMPOSITE);
     }
 
     pub fn opacity(&self) -> f32 {

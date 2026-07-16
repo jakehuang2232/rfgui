@@ -282,7 +282,8 @@ impl TextArea {
     }
 
     pub(super) fn reset_caret_blink(&mut self) {
-        self.caret_blink_started_at = crate::time::Instant::now();
+        self.caret_visible = self.is_focused && self.layout_state.should_render;
+        self.caret_blink_epoch = None;
         self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
     }
 

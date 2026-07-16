@@ -676,7 +676,7 @@ impl NodeArena {
             popup_stack.register(node.stable_id);
         }
         for node in &collected {
-            ctx.append_to_defer(node.key, node.stable_id);
+            ctx.register_deferred(node.key, node.stable_id);
         }
     }
 
@@ -728,6 +728,11 @@ impl NodeArena {
         self.slots.contains_key(key)
     }
 
+    #[cfg(test)]
+    pub(crate) fn arena_sync_node_count_for_test(&self) -> usize {
+        self.arena_sync_nodes.len()
+    }
+
     /// Clone the child list of `key`. Returning owned `Vec` lets the caller
     /// iterate and recurse without holding a `Ref` into the arena.
     pub fn children_of(&self, key: NodeKey) -> Vec<NodeKey> {
@@ -773,6 +778,17 @@ impl NodeArena {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_arena_children_without_mirror_for_test(
+        &mut self,
+        key: NodeKey,
+        children: Vec<NodeKey>,
+    ) {
+        if let Some(node) = self.slots.get_mut(key) {
+            node.children = children;
+        }
+    }
+
     pub fn push_child(&mut self, parent: NodeKey, child: NodeKey) {
         if let Some(node) = self.slots.get_mut(parent) {
             node.children.push(child);
@@ -788,6 +804,21 @@ impl NodeArena {
         let registered = self.arena_sync_nodes.clone();
         for key in registered {
             self.with_element_taken(key, |element, arena| element.sync_arena(arena));
+        }
+    }
+
+    /// Freeze paint-only resources for registered hosts after final layout.
+    /// The element hook receives no arena reference, so this pass cannot
+    /// invalidate layout by changing child topology.
+    pub fn prepare_registered_paint_resources(
+        &mut self,
+        context: crate::view::base_component::PaintResourcePreparationContext,
+    ) {
+        let registered = self.arena_sync_nodes.clone();
+        for key in registered {
+            self.with_element_taken(key, |element, _arena| {
+                element.prepare_paint_resources(context)
+            });
         }
     }
 
@@ -1666,8 +1697,8 @@ mod tests {
 
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        ctx.append_to_defer(second, 42);
-        let deferred = ctx.take_deferred_nodes();
+        ctx.register_deferred(second, 42);
+        let deferred: Vec<_> = std::iter::from_fn(|| ctx.next_deferred()).collect();
         assert_eq!(deferred.len(), 1);
 
         crate::view::base_component::build_node_by_key(
@@ -1681,6 +1712,111 @@ mod tests {
         RECORDED_BUILDS.with(|builds| {
             assert_eq!(&*builds.borrow(), &["second"]);
         });
+    }
+
+    #[test]
+    fn deferred_queue_deduplicates_repeated_node_registration() {
+        let mut arena = NodeArena::new();
+        let key = arena.insert(Node::new(Box::new(RecordingElement::new(42, "node"))));
+        let mut ctx = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+
+        ctx.register_deferred(key, 42);
+        ctx.register_deferred(key, 99);
+
+        assert_eq!(
+            ctx.next_deferred().map(|node| (node.key, node.stable_id)),
+            Some((key, 42))
+        );
+        assert_eq!(ctx.next_deferred(), None);
+    }
+
+    #[test]
+    fn deferred_queue_accepts_new_nodes_while_it_is_being_drained() {
+        let mut arena = NodeArena::new();
+        let first = arena.insert(Node::new(Box::new(RecordingElement::new(1, "first"))));
+        let second = arena.insert(Node::new(Box::new(RecordingElement::new(2, "second"))));
+        let mut ctx = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+
+        ctx.register_deferred(first, 1);
+        assert_eq!(ctx.next_deferred().map(|node| node.key), Some(first));
+
+        ctx.register_deferred(second, 2);
+        assert_eq!(ctx.next_deferred().map(|node| node.key), Some(second));
+        assert_eq!(ctx.next_deferred(), None);
+    }
+
+    #[test]
+    fn deferred_queue_does_not_follow_a_cached_viewport_context_into_a_new_frame() {
+        let mut arena = NodeArena::new();
+        let old_node = arena.insert(Node::new(Box::new(RecordingElement::new(1, "old"))));
+        let current_node = arena.insert(Node::new(Box::new(RecordingElement::new(2, "current"))));
+
+        let mut old_frame = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let cached_viewport = old_frame.viewport();
+        old_frame.register_deferred(old_node, 1);
+
+        let current_frame = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let mut rebuilt = UiBuildContext::from_parts(cached_viewport, current_frame.into_state());
+        rebuilt.register_deferred(current_node, 2);
+
+        assert_eq!(
+            rebuilt.next_deferred().map(|node| node.key),
+            Some(current_node)
+        );
+        assert_eq!(rebuilt.next_deferred(), None);
+        assert_eq!(
+            old_frame.next_deferred().map(|node| node.key),
+            Some(old_node)
+        );
+    }
+
+    #[test]
+    fn deferred_queue_does_not_follow_a_cached_build_state_into_a_new_frame() {
+        let mut arena = NodeArena::new();
+        let old_node = arena.insert(Node::new(Box::new(RecordingElement::new(1, "old"))));
+        let current_node = arena.insert(Node::new(Box::new(RecordingElement::new(2, "current"))));
+
+        let mut old_frame = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        old_frame.register_deferred(old_node, 1);
+        let cached_state = old_frame.state_clone();
+
+        let current_frame = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let mut rebuilt = UiBuildContext::from_parts(current_frame.viewport(), cached_state);
+        rebuilt.register_deferred(current_node, 2);
+
+        assert_eq!(
+            rebuilt.next_deferred().map(|node| node.key),
+            Some(current_node)
+        );
+        assert_eq!(rebuilt.next_deferred(), None);
+        assert_eq!(
+            old_frame.next_deferred().map(|node| node.key),
+            Some(old_node)
+        );
+    }
+
+    #[test]
+    fn deferred_queue_is_shared_with_a_layer_subtree_context_in_the_current_frame() {
+        let mut arena = NodeArena::new();
+        let root_node = arena.insert(Node::new(Box::new(RecordingElement::new(1, "root"))));
+        let layer_node = arena.insert(Node::new(Box::new(RecordingElement::new(2, "layer"))));
+        let mut root_ctx = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+
+        root_ctx.register_deferred(root_node, 1);
+        let layer_state =
+            root_ctx.layer_subtree_state_with_ancestor_clip(root_ctx.ancestor_clip_context());
+        let mut layer_ctx = UiBuildContext::from_parts(root_ctx.viewport(), layer_state);
+        layer_ctx.register_deferred(layer_node, 2);
+
+        assert_eq!(
+            root_ctx.next_deferred().map(|node| node.key),
+            Some(root_node)
+        );
+        assert_eq!(
+            root_ctx.next_deferred().map(|node| node.key),
+            Some(layer_node)
+        );
+        assert_eq!(root_ctx.next_deferred(), None);
     }
 
     #[test]
@@ -2236,7 +2372,20 @@ mod tests {
                 .local_dirty_flags()
                 .contains(DirtyFlags::PAINT)
         );
+        assert!(
+            arena
+                .get(child)
+                .expect("child exists")
+                .element
+                .local_dirty_flags()
+                .contains(DirtyFlags::COMPOSITE)
+        );
         assert!(arena.arena_local_dirty(child).contains(DirtyFlags::PAINT));
+        assert!(
+            arena
+                .arena_local_dirty(child)
+                .contains(DirtyFlags::COMPOSITE)
+        );
         assert!(
             arena
                 .cached_subtree_dirty(child)
@@ -2246,6 +2395,54 @@ mod tests {
             arena
                 .cached_subtree_dirty(root)
                 .intersects(DirtyFlags::PAINT)
+        );
+        assert!(
+            arena
+                .cached_subtree_dirty(child)
+                .contains(DirtyFlags::COMPOSITE)
+        );
+        assert!(
+            arena
+                .cached_subtree_dirty(root)
+                .contains(DirtyFlags::COMPOSITE)
+        );
+    }
+
+    #[test]
+    fn composite_shadow_dirty_bubbles_and_clears_independently() {
+        let mut arena = NodeArena::new();
+        let root = arena.insert(Node::new(Box::new(clean_element())));
+        let child = arena.insert(Node::new(Box::new(clean_element())));
+        link_child(&mut arena, root, child);
+        arena.refresh_subtree_dirty_cache(root);
+
+        arena.mark_dirty(child, DirtyFlags::COMPOSITE);
+        assert!(
+            arena
+                .arena_local_dirty(child)
+                .contains(DirtyFlags::COMPOSITE)
+        );
+        assert!(
+            arena
+                .cached_subtree_dirty(root)
+                .contains(DirtyFlags::COMPOSITE)
+        );
+        assert!(
+            !arena
+                .cached_subtree_dirty(root)
+                .intersects(DirtyFlags::PAINT)
+        );
+
+        arena.clear_arena_dirty(child, DirtyFlags::COMPOSITE);
+        assert!(
+            !arena
+                .arena_local_dirty(child)
+                .intersects(DirtyFlags::COMPOSITE)
+        );
+        assert!(
+            !arena
+                .cached_subtree_dirty(root)
+                .intersects(DirtyFlags::COMPOSITE)
         );
     }
 

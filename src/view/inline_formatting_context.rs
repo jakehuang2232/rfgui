@@ -1245,6 +1245,36 @@ impl InlineIfcElementRootCandidateCache {
             InlineIfcCacheLookup::Miss { .. } => None,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn damage_atomic_package_cardinality_for_test(
+        &mut self,
+        cache_key: &InlineIfcCacheKey,
+        source: InlineIfcSourceId,
+        duplicate: bool,
+    ) {
+        let shape_key = InlineIfcShapeCacheKey::from_cache_key(cache_key);
+        let context = &mut self
+            .cache
+            .entries
+            .get_mut(&shape_key)
+            .expect("test fixture must retain the current IFC context")
+            .context;
+        if duplicate {
+            let replacement = context
+                .inline_boxes
+                .iter_mut()
+                .find(|mapping| {
+                    mapping.role == InlineIfcInlineBoxRole::Atomic && mapping.source != source
+                })
+                .expect("duplicate-package fixture requires a second atomic mapping");
+            replacement.source = source;
+        } else {
+            context
+                .inline_boxes
+                .retain(|mapping| mapping.source != source);
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2020,6 +2050,20 @@ impl InlineFormattingContext {
             .get_or_init(|| self.text_layout_snapshot_ref().text_pass_paint_input())
     }
 
+    /// Materialize the retained text-pass payload during layout/frame
+    /// preparation. Artifact recording must only borrow the result through
+    /// [`Self::prepared_text_pass_paint_input_ref`].
+    pub(crate) fn prepare_text_pass_paint_input(&self) {
+        let _ = self.text_pass_paint_input_ref();
+    }
+
+    /// Side-effect-free access used by retained paint recording.
+    pub(crate) fn prepared_text_pass_paint_input_ref(
+        &self,
+    ) -> Option<&InlineIfcTextPassPaintInput> {
+        self.paint_input_cache.get()
+    }
+
     /// Measured content size matching the legacy text engine's formula:
     /// max glyph right edge across lines by max line bottom, floored at
     /// 1.0 per axis; (1.0, 1.0) when nothing shaped.
@@ -2141,11 +2185,11 @@ impl InlineFormattingContext {
                 let PositionedLayoutItem::InlineBox(inline_box) = item else {
                     continue;
                 };
-                let Some(mapping) = self
-                    .inline_boxes
-                    .iter()
-                    .find(|mapping| mapping.id == inline_box.id && mapping.source == source)
-                else {
+                let Some(mapping) = self.inline_boxes.iter().find(|mapping| {
+                    mapping.id == inline_box.id
+                        && mapping.source == source
+                        && mapping.role == InlineIfcInlineBoxRole::Atomic
+                }) else {
                     continue;
                 };
                 placements.push(InlineIfcAtomicBoxPlacement {
@@ -2164,6 +2208,38 @@ impl InlineFormattingContext {
             }
         }
         InlineIfcAtomicBoxPlacementPackage { source, placements }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_atomic_measurement_for_test(
+        &mut self,
+        source: InlineIfcSourceId,
+        constraint: bool,
+    ) {
+        let mapping = self
+            .inline_boxes
+            .iter_mut()
+            .find(|mapping| {
+                mapping.role == InlineIfcInlineBoxRole::Atomic && mapping.source == source
+            })
+            .expect("test fixture must retain the atomic source mapping");
+        if constraint {
+            mapping.measurement.constraints.max_width = Some(999.0);
+        } else {
+            mapping.measurement.measured_size.width += 1.0;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_atomic_insertion_byte_for_test(&mut self, source: InlineIfcSourceId) {
+        let mapping = self
+            .inline_boxes
+            .iter_mut()
+            .find(|mapping| {
+                mapping.role == InlineIfcInlineBoxRole::Atomic && mapping.source == source
+            })
+            .expect("test fixture must retain the atomic source mapping");
+        mapping.insertion_byte = mapping.insertion_byte.saturating_add(1);
     }
 
     /// Per-line bounding rects of the glyph runs contributed by `source`,

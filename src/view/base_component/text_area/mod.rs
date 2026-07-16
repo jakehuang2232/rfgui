@@ -10,6 +10,7 @@
 #![allow(dead_code)] // P1: stubs; fields wired in later phases.
 
 mod caret_map;
+pub(crate) use caret_map::CaretAffinity;
 
 /// Test probe: the caret stop the navigation map resolves for `char_index`
 /// with the TextArea's current affinity.
@@ -22,6 +23,34 @@ pub(crate) fn caret_map_probe(
     let map = caret_map::CaretNavigationMap::build(text_area, arena);
     map.caret_stop_for_char(char_index, text_area.cursor_affinity)
         .map(|stop| (stop.char_index, stop.x, stop.y_top))
+}
+
+/// Test probe for comparing both retained soft-wrap affinity branches without
+/// exposing the private affinity enum outside the TextArea module.
+#[cfg(test)]
+pub(crate) fn caret_map_probe_with_affinity(
+    text_area: &TextArea,
+    arena: &crate::view::node_arena::NodeArena,
+    char_index: usize,
+    upstream: bool,
+) -> Option<(usize, f32, f32)> {
+    let map = caret_map::CaretNavigationMap::build(text_area, arena);
+    let affinity = if upstream {
+        caret_map::CaretAffinity::Upstream
+    } else {
+        caret_map::CaretAffinity::Downstream
+    };
+    map.caret_stop_for_char(char_index, affinity)
+        .map(|stop| (stop.char_index, stop.x, stop.y_top))
+}
+
+#[cfg(test)]
+pub(crate) fn set_caret_affinity_probe(text_area: &mut TextArea, upstream: bool) {
+    text_area.cursor_affinity = if upstream {
+        caret_map::CaretAffinity::Upstream
+    } else {
+        caret_map::CaretAffinity::Downstream
+    };
 }
 mod edit;
 mod events;
@@ -45,19 +74,20 @@ pub(crate) use run::{TextAreaLineBreak, TextAreaRunStyle, TextAreaTextRun};
 #[allow(unused_imports)] // P8 M1+: emitted by TextArea schema render.
 pub(crate) use segment::TextAreaProjectionSegment;
 
+use slotmap::Key;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::style::Cursor;
-use crate::time::Instant;
 use crate::ui::{
     Binding, BlurHandlerProp, Rect, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp,
     TextChangeHandlerProp,
 };
 use crate::view::base_component::{BoxModelSnapshot, DirtyFlags, ElementTrait, LayoutConstraints};
 use crate::view::layout::{FlexLayoutInfo, LayoutState};
-use crate::view::node_arena::NodeKey;
+use crate::view::node_arena::{NodeArena, NodeKey};
 
-use super::next_ui_node_id;
+use super::{next_ui_node_id, round_layout_value};
 
 /// TextArea v2 — see `docs/design/textarea-v2.md`.
 ///
@@ -66,6 +96,572 @@ use super::next_ui_node_id;
 /// all real arena children laid out via `view/layout/*` Inline pipeline.
 /// Decision A9: char index is the single source of truth; children carry no
 /// cursor/selection/IME state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetainedTextAreaPaintGrammar {
+    GlyphOnly,
+    SelectionGlyphs {
+        start_char: usize,
+        end_char: usize,
+        color_rgba_bits: [u32; 4],
+    },
+}
+
+impl RetainedTextAreaPaintGrammar {
+    pub(crate) fn is_canonical(self) -> bool {
+        match self {
+            Self::GlyphOnly => true,
+            Self::SelectionGlyphs {
+                start_char,
+                end_char,
+                color_rgba_bits,
+            } => {
+                start_char < end_char
+                    && color_rgba_bits
+                        .map(f32::from_bits)
+                        .into_iter()
+                        .all(|channel| channel.is_finite() && (0.0..=1.0).contains(&channel))
+            }
+        }
+    }
+}
+
+/// Closed resident-base grammar for focused plain TextArea retention.
+/// Caret visibility deliberately lives in a separate dynamic overlay seal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetainedInteractiveTextAreaPaintGrammar {
+    FocusedGlyphs,
+    FocusedSelectionGlyphs {
+        start_char: usize,
+        end_char: usize,
+        color_rgba_bits: [u32; 4],
+    },
+    FocusedPreeditGlyphs,
+}
+
+impl RetainedInteractiveTextAreaPaintGrammar {
+    pub(crate) fn is_canonical(self) -> bool {
+        match self {
+            Self::FocusedGlyphs | Self::FocusedPreeditGlyphs => true,
+            Self::FocusedSelectionGlyphs {
+                start_char,
+                end_char,
+                color_rgba_bits,
+            } => {
+                start_char < end_char
+                    && color_rgba_bits
+                        .map(f32::from_bits)
+                        .into_iter()
+                        .all(|channel| channel.is_finite() && (0.0..=1.0).contains(&channel))
+            }
+        }
+    }
+
+    pub(crate) fn has_preedit(self) -> bool {
+        matches!(self, Self::FocusedPreeditGlyphs)
+    }
+}
+
+/// Closed C3a source grammar for one realized atomic projection.
+///
+/// This freezes only engine-owned, post-layout facts.  The `on_render`
+/// callback is deliberately absent: admission must never execute or trust a
+/// user `FnMut` during planning.  Recorder/compiler authority is a later
+/// migration segment and must independently seal its artifact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetainedAtomicProjectionTextAreaTopologyKind {
+    TextRun,
+    LineBreak,
+    ProjectionSegment,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RetainedAtomicProjectionTextAreaTopologySeal {
+    pub(crate) topology_index: usize,
+    pub(crate) owner: NodeKey,
+    pub(crate) stable_id: u64,
+    pub(crate) source_id: u64,
+    pub(crate) kind: RetainedAtomicProjectionTextAreaTopologyKind,
+    pub(crate) start_char: usize,
+    pub(crate) end_char: usize,
+    pub(crate) backing_start_byte: usize,
+    pub(crate) backing_end_byte: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RetainedAtomicProjectionIntrinsicSizeSeal {
+    pub(crate) min_content_width_bits: u32,
+    pub(crate) max_content_width_bits: u32,
+    pub(crate) preferred_width_bits: Option<u32>,
+    pub(crate) preferred_height_bits: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RetainedAtomicProjectionMeasureConstraintsSeal {
+    pub(crate) max_width_bits: Option<u32>,
+    pub(crate) available_height_bits: Option<u32>,
+    pub(crate) viewport_bits: Option<[u32; 2]>,
+    pub(crate) percent_base_width_bits: Option<u32>,
+    pub(crate) percent_base_height_bits: Option<u32>,
+    pub(crate) min_width_bits: Option<u32>,
+    pub(crate) max_sizing_width_bits: Option<u32>,
+    pub(crate) min_height_bits: Option<u32>,
+    pub(crate) max_height_bits: Option<u32>,
+    pub(crate) intrinsic_size: Option<RetainedAtomicProjectionIntrinsicSizeSeal>,
+}
+
+/// Unforgeable TextArea-module proof for the complete C3a source snapshot.
+/// Sibling paint/element modules can read the public grammar witnesses but
+/// cannot construct or update this identity when attempting to mutate them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RetainedAtomicProjectionTextAreaFrozenSourceIdentity {
+    projection_index: usize,
+    projection_owner: NodeKey,
+    projection_stable_id: u64,
+    projection_text_owner: NodeKey,
+    projection_text_stable_id: u64,
+    projection_start_char: usize,
+    projection_end_char: usize,
+    projection_backing_start_byte: usize,
+    projection_backing_end_byte: usize,
+    atomic_source_id: u64,
+    atomic_id: u64,
+    atomic_insertion_byte: usize,
+    atomic_line_index: usize,
+    measurement_constraints: RetainedAtomicProjectionMeasureConstraintsSeal,
+    measured_size_bits: [u32; 2],
+    placement_rect_bits: [u32; 4],
+    projection_segment_bounds_bits: [u32; 4],
+    projection_text_bounds_bits: [u32; 4],
+    flow_offset_bits: [u32; 2],
+    owner_inline_baseline_bits: u32,
+    inline_full_available_width_bits: u32,
+    auto_wrap: bool,
+    vertical_align: crate::style::VerticalAlign,
+    unified_ifc_source_revision: u64,
+    last_unified_apply_bits: (u32, u32, u64),
+    topology: Arc<[RetainedAtomicProjectionTextAreaTopologySeal]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RetainedAtomicProjectionTextAreaPaintGrammar {
+    pub(crate) projection_index: usize,
+    pub(crate) projection_owner: NodeKey,
+    pub(crate) projection_stable_id: u64,
+    pub(crate) projection_text_owner: NodeKey,
+    pub(crate) projection_text_stable_id: u64,
+    pub(crate) projection_start_char: usize,
+    pub(crate) projection_end_char: usize,
+    pub(crate) projection_backing_start_byte: usize,
+    pub(crate) projection_backing_end_byte: usize,
+    pub(crate) atomic_source_id: u64,
+    pub(crate) atomic_id: u64,
+    pub(crate) atomic_insertion_byte: usize,
+    pub(crate) atomic_line_index: usize,
+    pub(crate) measurement_constraints: RetainedAtomicProjectionMeasureConstraintsSeal,
+    pub(crate) measured_size_bits: [u32; 2],
+    pub(crate) placement_rect_bits: [u32; 4],
+    pub(crate) projection_segment_bounds_bits: [u32; 4],
+    pub(crate) projection_text_bounds_bits: [u32; 4],
+    pub(crate) flow_offset_bits: [u32; 2],
+    pub(crate) owner_inline_baseline_bits: u32,
+    pub(crate) inline_full_available_width_bits: u32,
+    pub(crate) auto_wrap: bool,
+    pub(crate) vertical_align: crate::style::VerticalAlign,
+    pub(crate) unified_ifc_source_revision: u64,
+    pub(crate) last_unified_apply_bits: (u32, u32, u64),
+    pub(crate) topology: Arc<[RetainedAtomicProjectionTextAreaTopologySeal]>,
+    frozen_source_identity: RetainedAtomicProjectionTextAreaFrozenSourceIdentity,
+}
+
+impl RetainedAtomicProjectionTextAreaPaintGrammar {
+    fn from_frozen_source_identity(
+        frozen: RetainedAtomicProjectionTextAreaFrozenSourceIdentity,
+    ) -> Option<Self> {
+        let grammar = Self {
+            projection_index: frozen.projection_index,
+            projection_owner: frozen.projection_owner,
+            projection_stable_id: frozen.projection_stable_id,
+            projection_text_owner: frozen.projection_text_owner,
+            projection_text_stable_id: frozen.projection_text_stable_id,
+            projection_start_char: frozen.projection_start_char,
+            projection_end_char: frozen.projection_end_char,
+            projection_backing_start_byte: frozen.projection_backing_start_byte,
+            projection_backing_end_byte: frozen.projection_backing_end_byte,
+            atomic_source_id: frozen.atomic_source_id,
+            atomic_id: frozen.atomic_id,
+            atomic_insertion_byte: frozen.atomic_insertion_byte,
+            atomic_line_index: frozen.atomic_line_index,
+            measurement_constraints: frozen.measurement_constraints,
+            measured_size_bits: frozen.measured_size_bits,
+            placement_rect_bits: frozen.placement_rect_bits,
+            projection_segment_bounds_bits: frozen.projection_segment_bounds_bits,
+            projection_text_bounds_bits: frozen.projection_text_bounds_bits,
+            flow_offset_bits: frozen.flow_offset_bits,
+            owner_inline_baseline_bits: frozen.owner_inline_baseline_bits,
+            inline_full_available_width_bits: frozen.inline_full_available_width_bits,
+            auto_wrap: frozen.auto_wrap,
+            vertical_align: frozen.vertical_align,
+            unified_ifc_source_revision: frozen.unified_ifc_source_revision,
+            last_unified_apply_bits: frozen.last_unified_apply_bits,
+            topology: Arc::clone(&frozen.topology),
+            frozen_source_identity: frozen,
+        };
+        grammar.is_canonical().then_some(grammar)
+    }
+
+    pub(crate) fn is_canonical(&self) -> bool {
+        let finite = |bits: u32| f32::from_bits(bits).is_finite();
+        let non_negative = |bits: u32| finite(bits) && f32::from_bits(bits) >= 0.0;
+        if self.projection_start_char >= self.projection_end_char
+            || self.projection_backing_start_byte != self.projection_backing_end_byte
+            || self.projection_owner == self.projection_text_owner
+            || self.projection_owner.is_null()
+            || self.projection_text_owner.is_null()
+            || self.projection_stable_id == 0
+            || self.projection_text_stable_id == 0
+            || self.atomic_source_id == 0
+            || self.atomic_insertion_byte != self.projection_backing_start_byte
+            || self.unified_ifc_source_revision == 0
+            || self.last_unified_apply_bits.2 != self.unified_ifc_source_revision
+            || !finite(self.last_unified_apply_bits.0)
+            || !finite(self.last_unified_apply_bits.1)
+            || self
+                .measurement_constraints
+                .max_width_bits
+                .is_some_and(|bits| !finite(bits) || f32::from_bits(bits) <= 0.0)
+            || self.measurement_constraints.available_height_bits.is_some()
+            || self.measurement_constraints.viewport_bits.is_some()
+            || self
+                .measurement_constraints
+                .percent_base_width_bits
+                .is_some()
+            || self
+                .measurement_constraints
+                .percent_base_height_bits
+                .is_some()
+            || self.measurement_constraints.min_width_bits.is_some()
+            || self.measurement_constraints.max_sizing_width_bits.is_some()
+            || self.measurement_constraints.min_height_bits.is_some()
+            || self.measurement_constraints.max_height_bits.is_some()
+            || self.measurement_constraints.intrinsic_size.is_some()
+            || self.auto_wrap != self.measurement_constraints.max_width_bits.is_some()
+            || !self.measured_size_bits.into_iter().all(non_negative)
+            || !self.placement_rect_bits.into_iter().all(finite)
+            || !self.placement_rect_bits[2..]
+                .iter()
+                .copied()
+                .all(non_negative)
+            || !self.flow_offset_bits.into_iter().all(finite)
+            || !self.projection_segment_bounds_bits.into_iter().all(finite)
+            || !self.projection_text_bounds_bits.into_iter().all(finite)
+            || !self.projection_segment_bounds_bits[2..]
+                .iter()
+                .copied()
+                .all(non_negative)
+            || !self.projection_text_bounds_bits[2..]
+                .iter()
+                .copied()
+                .all(|bits| non_negative(bits) && f32::from_bits(bits) > 0.0)
+            || self.projection_segment_bounds_bits != self.projection_text_bounds_bits
+            || self.flow_offset_bits != [self.placement_rect_bits[0], self.placement_rect_bits[1]]
+            || !non_negative(self.owner_inline_baseline_bits)
+            || !non_negative(self.inline_full_available_width_bits)
+            || self.measured_size_bits != [self.placement_rect_bits[2], self.placement_rect_bits[3]]
+            || f32::from_bits(self.inline_full_available_width_bits)
+                < f32::from_bits(self.measured_size_bits[0])
+            || self.projection_index >= self.topology.len()
+        {
+            return false;
+        }
+
+        let mut owners = std::collections::HashSet::with_capacity(self.topology.len());
+        let mut stable_ids = std::collections::HashSet::with_capacity(self.topology.len());
+        let mut sources = std::collections::HashSet::with_capacity(self.topology.len());
+        let mut char_cursor = 0usize;
+        let mut backing_cursor = 0usize;
+        let mut projection_count = 0usize;
+        for (index, node) in self.topology.iter().enumerate() {
+            if node.topology_index != index
+                || node.start_char != char_cursor
+                || node.end_char < node.start_char
+                || node.backing_start_byte != backing_cursor
+                || node.backing_end_byte < node.backing_start_byte
+                || node.owner.is_null()
+                || node.stable_id == 0
+                || !owners.insert(node.owner)
+                || !stable_ids.insert(node.stable_id)
+                || !sources.insert(node.source_id)
+            {
+                return false;
+            }
+            match node.kind {
+                RetainedAtomicProjectionTextAreaTopologyKind::ProjectionSegment => {
+                    projection_count += 1;
+                    if index != self.projection_index
+                        || node.owner != self.projection_owner
+                        || node.stable_id != self.projection_stable_id
+                        || node.source_id != self.atomic_source_id
+                        || node.start_char != self.projection_start_char
+                        || node.end_char != self.projection_end_char
+                        || node.backing_start_byte != self.projection_backing_start_byte
+                        || node.backing_end_byte != self.projection_backing_end_byte
+                    {
+                        return false;
+                    }
+                }
+                RetainedAtomicProjectionTextAreaTopologyKind::TextRun
+                | RetainedAtomicProjectionTextAreaTopologyKind::LineBreak => {}
+            }
+            char_cursor = node.end_char;
+            backing_cursor = node.backing_end_byte;
+        }
+        projection_count == 1
+            && !owners.contains(&self.projection_text_owner)
+            && !stable_ids.contains(&self.projection_text_stable_id)
+            && self.frozen_source_identity
+                == RetainedAtomicProjectionTextAreaFrozenSourceIdentity {
+                    projection_index: self.projection_index,
+                    projection_owner: self.projection_owner,
+                    projection_stable_id: self.projection_stable_id,
+                    projection_text_owner: self.projection_text_owner,
+                    projection_text_stable_id: self.projection_text_stable_id,
+                    projection_start_char: self.projection_start_char,
+                    projection_end_char: self.projection_end_char,
+                    projection_backing_start_byte: self.projection_backing_start_byte,
+                    projection_backing_end_byte: self.projection_backing_end_byte,
+                    atomic_source_id: self.atomic_source_id,
+                    atomic_id: self.atomic_id,
+                    atomic_insertion_byte: self.atomic_insertion_byte,
+                    atomic_line_index: self.atomic_line_index,
+                    measurement_constraints: self.measurement_constraints,
+                    measured_size_bits: self.measured_size_bits,
+                    placement_rect_bits: self.placement_rect_bits,
+                    projection_segment_bounds_bits: self.projection_segment_bounds_bits,
+                    projection_text_bounds_bits: self.projection_text_bounds_bits,
+                    flow_offset_bits: self.flow_offset_bits,
+                    owner_inline_baseline_bits: self.owner_inline_baseline_bits,
+                    inline_full_available_width_bits: self.inline_full_available_width_bits,
+                    auto_wrap: self.auto_wrap,
+                    vertical_align: self.vertical_align,
+                    unified_ifc_source_revision: self.unified_ifc_source_revision,
+                    last_unified_apply_bits: self.last_unified_apply_bits,
+                    topology: Arc::clone(&self.topology),
+                }
+    }
+}
+
+/// Exact focused-caret paint sealed at the atomic-projection source boundary.
+/// Clipping is deliberately not represented here: a present caret remains a
+/// source fact even when a later compositor phase culls it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum FocusedAtomicCaretSourcePaintSeal {
+    Hidden,
+    Present {
+        bounds_bits: [u32; 4],
+        payload_identity: crate::view::paint::PaintPayloadIdentity,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FocusedAtomicCaretFrozenSourceIdentity {
+    owner: NodeKey,
+    stable_id: u64,
+    focused: bool,
+    should_render: bool,
+    caret_visible: bool,
+    foreground_color_bits: [u32; 4],
+    cursor_char: usize,
+    cursor_affinity: CaretAffinity,
+    ime_preedit_cursor: Option<(usize, usize)>,
+    local_scroll_bits: [u32; 2],
+    unified_ifc_source_revision: u64,
+    last_unified_apply_bits: Option<(u32, u32, u64)>,
+    paint: FocusedAtomicCaretSourcePaintSeal,
+}
+
+/// Component-owned focused caret proof.  It is independent of the older
+/// interactive TextArea oracle so projection topology never inherits that
+/// oracle's generated-run assumptions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FocusedAtomicCaretSourceSeal {
+    pub(crate) owner: NodeKey,
+    pub(crate) stable_id: u64,
+    pub(crate) focused: bool,
+    pub(crate) should_render: bool,
+    pub(crate) caret_visible: bool,
+    pub(crate) foreground_color_bits: [u32; 4],
+    pub(crate) cursor_char: usize,
+    pub(crate) cursor_affinity: CaretAffinity,
+    pub(crate) ime_preedit_cursor: Option<(usize, usize)>,
+    pub(crate) local_scroll_bits: [u32; 2],
+    pub(crate) unified_ifc_source_revision: u64,
+    pub(crate) last_unified_apply_bits: Option<(u32, u32, u64)>,
+    pub(crate) paint: FocusedAtomicCaretSourcePaintSeal,
+    frozen_source_identity: FocusedAtomicCaretFrozenSourceIdentity,
+}
+
+impl FocusedAtomicCaretSourceSeal {
+    fn from_frozen_source_identity(frozen: FocusedAtomicCaretFrozenSourceIdentity) -> Option<Self> {
+        let seal = Self {
+            owner: frozen.owner,
+            stable_id: frozen.stable_id,
+            focused: frozen.focused,
+            should_render: frozen.should_render,
+            caret_visible: frozen.caret_visible,
+            foreground_color_bits: frozen.foreground_color_bits,
+            cursor_char: frozen.cursor_char,
+            cursor_affinity: frozen.cursor_affinity,
+            ime_preedit_cursor: frozen.ime_preedit_cursor,
+            local_scroll_bits: frozen.local_scroll_bits,
+            unified_ifc_source_revision: frozen.unified_ifc_source_revision,
+            last_unified_apply_bits: frozen.last_unified_apply_bits,
+            paint: frozen.paint.clone(),
+            frozen_source_identity: frozen,
+        };
+        seal.is_canonical().then_some(seal)
+    }
+
+    pub(crate) fn is_canonical(&self) -> bool {
+        let last_apply_is_current = self
+            .last_unified_apply_bits
+            .is_some_and(|(x, y, revision)| {
+                f32::from_bits(x).is_finite()
+                    && f32::from_bits(y).is_finite()
+                    && revision == self.unified_ifc_source_revision
+            });
+        let paint_is_canonical = match &self.paint {
+            FocusedAtomicCaretSourcePaintSeal::Hidden => !self.caret_visible,
+            FocusedAtomicCaretSourcePaintSeal::Present {
+                bounds_bits,
+                payload_identity,
+            } => {
+                let [x, y, width, height] = bounds_bits.map(f32::from_bits);
+                matches!(
+                    payload_identity,
+                    crate::view::paint::PaintPayloadIdentity::PreparedRects(rects)
+                        if rects.len() == 1
+                ) && self.caret_visible
+                    && [x, y, width, height].into_iter().all(f32::is_finite)
+                    && width.to_bits() == 1.0_f32.to_bits()
+                    && height > 0.0
+            }
+        };
+        !self.owner.is_null()
+            && self.stable_id != 0
+            && self.focused
+            && self.should_render
+            && self.ime_preedit_cursor.is_none()
+            && self.local_scroll_bits == [0.0_f32.to_bits(); 2]
+            && self.unified_ifc_source_revision != 0
+            && last_apply_is_current
+            && self
+                .foreground_color_bits
+                .map(f32::from_bits)
+                .into_iter()
+                .all(|channel| channel.is_finite() && (0.0..=1.0).contains(&channel))
+            && paint_is_canonical
+            && self.frozen_source_identity
+                == FocusedAtomicCaretFrozenSourceIdentity {
+                    owner: self.owner,
+                    stable_id: self.stable_id,
+                    focused: self.focused,
+                    should_render: self.should_render,
+                    caret_visible: self.caret_visible,
+                    foreground_color_bits: self.foreground_color_bits,
+                    cursor_char: self.cursor_char,
+                    cursor_affinity: self.cursor_affinity,
+                    ime_preedit_cursor: self.ime_preedit_cursor,
+                    local_scroll_bits: self.local_scroll_bits,
+                    unified_ifc_source_revision: self.unified_ifc_source_revision,
+                    last_unified_apply_bits: self.last_unified_apply_bits,
+                    paint: self.paint.clone(),
+                }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RetainedFocusedAtomicProjectionTextAreaFrozenSourceIdentity {
+    atomic_source: RetainedAtomicProjectionTextAreaPaintGrammar,
+    caret: FocusedAtomicCaretSourceSeal,
+}
+
+/// Closed focused glyph source with exactly one atomic projection and its
+/// post-children caret source fact.  No planner or compositor decision is
+/// encoded in this source grammar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RetainedFocusedAtomicProjectionTextAreaPaintGrammar {
+    pub(crate) atomic_source: RetainedAtomicProjectionTextAreaPaintGrammar,
+    pub(crate) caret: FocusedAtomicCaretSourceSeal,
+    frozen_source_identity: RetainedFocusedAtomicProjectionTextAreaFrozenSourceIdentity,
+}
+
+impl RetainedFocusedAtomicProjectionTextAreaPaintGrammar {
+    fn from_frozen_source_identity(
+        frozen: RetainedFocusedAtomicProjectionTextAreaFrozenSourceIdentity,
+    ) -> Option<Self> {
+        let grammar = Self {
+            atomic_source: frozen.atomic_source.clone(),
+            caret: frozen.caret.clone(),
+            frozen_source_identity: frozen,
+        };
+        grammar.is_canonical().then_some(grammar)
+    }
+
+    pub(crate) fn is_canonical(&self) -> bool {
+        self.atomic_source.is_canonical()
+            && self.caret.is_canonical()
+            && self.frozen_source_identity
+                == RetainedFocusedAtomicProjectionTextAreaFrozenSourceIdentity {
+                    atomic_source: self.atomic_source.clone(),
+                    caret: self.caret.clone(),
+                }
+    }
+}
+
+/// Closed source grammar for one root-owned nonempty selection plus one
+/// realized atomic projection.  The nested atomic grammar retains the full
+/// topology/geometry proof; this sibling additionally freezes the exact
+/// root selection that must paint before the root glyph.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RetainedAtomicProjectionSelectionTextAreaFrozenSourceIdentity {
+    atomic_source: RetainedAtomicProjectionTextAreaPaintGrammar,
+    selection: RetainedTextAreaPaintGrammar,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RetainedAtomicProjectionSelectionTextAreaPaintGrammar {
+    pub(crate) atomic_source: RetainedAtomicProjectionTextAreaPaintGrammar,
+    pub(crate) selection: RetainedTextAreaPaintGrammar,
+    frozen_source_identity: RetainedAtomicProjectionSelectionTextAreaFrozenSourceIdentity,
+}
+
+impl RetainedAtomicProjectionSelectionTextAreaPaintGrammar {
+    fn from_frozen_source_identity(
+        frozen: RetainedAtomicProjectionSelectionTextAreaFrozenSourceIdentity,
+    ) -> Option<Self> {
+        let grammar = Self {
+            atomic_source: frozen.atomic_source.clone(),
+            selection: frozen.selection,
+            frozen_source_identity: frozen,
+        };
+        grammar.is_canonical().then_some(grammar)
+    }
+
+    pub(crate) fn is_canonical(&self) -> bool {
+        self.atomic_source.is_canonical()
+            && matches!(
+                self.selection,
+                RetainedTextAreaPaintGrammar::SelectionGlyphs { .. }
+            )
+            && self.selection.is_canonical()
+            && self.frozen_source_identity
+                == RetainedAtomicProjectionSelectionTextAreaFrozenSourceIdentity {
+                    atomic_source: self.atomic_source.clone(),
+                    selection: self.selection,
+                }
+    }
+}
+
 pub struct TextArea {
     // text
     pub(crate) content: String,
@@ -104,7 +700,11 @@ pub struct TextArea {
     pub(crate) ime_preedit: String,
     pub(crate) ime_preedit_cursor: Option<(usize, usize)>,
     pub(crate) vertical_cursor_x: Option<f32>,
-    pub(crate) caret_blink_started_at: Instant,
+    /// Retained caret phase consumed by paint, metadata, and promotion.
+    pub(crate) caret_visible: bool,
+    /// Viewport-owned monotonic anchor. Only the generic animation tick may
+    /// install or read it; paint paths are pure retained-state readers.
+    pub(crate) caret_blink_epoch: Option<crate::time::Instant>,
 
     // children (TextAreaTextRun + projection mixed)
     pub(crate) on_render_handler: Option<TextAreaRenderHandlerProp>,
@@ -140,6 +740,11 @@ pub struct TextArea {
     pub(crate) inline_paint_fragments: Vec<Rect>,
     pub(crate) flex_info: Option<FlexLayoutInfo>,
     pub(crate) dirty_flags: DirtyFlags,
+
+    #[cfg(test)]
+    pub(crate) retained_source_test_active_animator: bool,
+    #[cfg(test)]
+    pub(crate) retained_source_test_deferred: bool,
 
     // handlers
     pub(crate) on_change_handlers: Vec<TextChangeHandlerProp>,
@@ -187,7 +792,8 @@ impl Default for TextArea {
             ime_preedit: String::new(),
             ime_preedit_cursor: None,
             vertical_cursor_x: None,
-            caret_blink_started_at: Instant::now(),
+            caret_visible: false,
+            caret_blink_epoch: None,
 
             on_render_handler: None,
             children: Vec::new(),
@@ -205,6 +811,11 @@ impl Default for TextArea {
             inline_paint_fragments: Vec::new(),
             flex_info: None,
             dirty_flags: DirtyFlags::ALL,
+
+            #[cfg(test)]
+            retained_source_test_active_animator: false,
+            #[cfg(test)]
+            retained_source_test_deferred: false,
 
             on_change_handlers: Vec::new(),
             on_focus_handlers: Vec::new(),
@@ -320,6 +931,347 @@ impl TextArea {
 }
 
 impl ElementTrait for TextArea {
+    fn has_active_animator(&self) -> bool {
+        #[cfg(test)]
+        {
+            return self.retained_source_test_active_animator;
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+
+    fn is_deferred_to_root_viewport_render(&self) -> bool {
+        #[cfg(test)]
+        {
+            return self.retained_source_test_deferred;
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+
+    fn tick_animation_frame(&mut self, now: crate::time::Instant) -> DirtyFlags {
+        self.tick_caret_blink(now)
+    }
+
+    fn contents_logical_scissor(&self) -> Option<[u32; 4]> {
+        Some(self.viewport_logical_scissor_rect())
+    }
+
+    #[allow(private_interfaces)]
+    fn shadow_paint_recording_context(
+        &self,
+        mut parent: crate::view::paint::PaintRecordingContext,
+    ) -> crate::view::paint::PaintRecordingContext {
+        let paint_x = self.layout_state.layout_position.x + parent.paint_offset[0];
+        let paint_y = self.layout_state.layout_position.y + parent.paint_offset[1];
+        parent.paint_offset[0] += round_layout_value(paint_x) - paint_x;
+        parent.paint_offset[1] += round_layout_value(paint_y) - paint_y;
+        parent.inside_text_area = true;
+        parent
+    }
+
+    #[allow(private_interfaces)]
+    fn shadow_paint_recording_context_for_child(
+        &self,
+        child: NodeKey,
+        arena: &NodeArena,
+        parent: crate::view::paint::PaintRecordingContext,
+    ) -> crate::view::paint::PaintRecordingContext {
+        let mut child_context = parent.without_text_area_child_authority();
+        child_context.text_area_selection =
+            self.projection_selection_witness_for_child(child, arena);
+        child_context.text_area_preedit = self.projection_preedit_witness_for_child(child, arena);
+        child_context
+    }
+
+    #[allow(private_interfaces)]
+    fn shadow_paint_recording_capability(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+        deferred_phase_root: bool,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> crate::view::base_component::ShadowPaintRecordingCapability {
+        let Some(owner) = self.self_node_key else {
+            return crate::view::base_component::ShadowPaintRecordingCapability::Unsupported;
+        };
+        match self.prepared_plain_shadow_text_payload(
+            owner,
+            arena,
+            deferred_phase_root,
+            recording_context.paint_offset,
+        ) {
+            Ok(payload)
+                if payload.glyph_op.is_some()
+                    || payload.selection.is_some()
+                    || payload.decoration.is_some()
+                    || payload.caret.is_some() =>
+            {
+                crate::view::base_component::ShadowPaintRecordingCapability::Recordable
+            }
+            Ok(_) => crate::view::base_component::ShadowPaintRecordingCapability::Transparent,
+            Err(render::PlainTextAreaPaintFailure::Unsupported) => {
+                crate::view::base_component::ShadowPaintRecordingCapability::Unsupported
+            }
+            Err(render::PlainTextAreaPaintFailure::Legacy(blocker)) => {
+                crate::view::base_component::ShadowPaintRecordingCapability::Legacy(blocker)
+            }
+        }
+    }
+
+    #[allow(private_interfaces)]
+    fn record_shadow_paint_metadata_plan(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        _properties: crate::view::compositor::property_tree::PropertyTreeState,
+        contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
+        content_revision: crate::view::paint::PaintContentRevision,
+        arena: &crate::view::node_arena::NodeArena,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintChunkMetadata>> {
+        let mut payload = self
+            .prepared_plain_shadow_text_payload(owner, arena, false, recording_context.paint_offset)
+            .ok()?;
+        if recording_context.suppresses_interactive_text_area_caret(owner) {
+            payload.caret = None;
+        }
+        let mut before_children = Vec::with_capacity(2);
+        if let Some(selection) = payload.selection.as_ref() {
+            before_children.push(crate::view::paint::PaintChunkMetadata {
+                id: crate::view::paint::PaintChunkId {
+                    owner,
+                    scope: crate::view::paint::PaintPropertyScope::Contents,
+                    phase: crate::view::paint::PaintNodePhase::BeforeChildren,
+                    slot: 0,
+                    role: crate::view::paint::PaintChunkRole::SelectionUnderlay,
+                },
+                owner,
+                bounds: selection.bounds,
+                properties: contents_properties,
+                content_revision,
+                payload_identity: crate::view::paint::PaintPayloadIdentity::prepared_rects(
+                    selection.ops.iter(),
+                )?,
+            });
+        }
+        if let Some(op) = payload.glyph_op.as_ref() {
+            before_children.push(crate::view::paint::PaintChunkMetadata {
+                id: crate::view::paint::PaintChunkId {
+                    owner,
+                    scope: crate::view::paint::PaintPropertyScope::Contents,
+                    phase: crate::view::paint::PaintNodePhase::BeforeChildren,
+                    slot: 1,
+                    role: crate::view::paint::PaintChunkRole::TextGlyphs,
+                },
+                owner,
+                bounds: payload.glyph_bounds,
+                properties: contents_properties,
+                content_revision,
+                payload_identity: crate::view::paint::PaintPayloadIdentity::prepared_texts([op]),
+            });
+        }
+        let mut after_children = Vec::with_capacity(2);
+        if let Some(decoration) = payload.decoration.as_ref() {
+            after_children.push(crate::view::paint::PaintChunkMetadata {
+                id: crate::view::paint::PaintChunkId {
+                    owner,
+                    scope: crate::view::paint::PaintPropertyScope::Contents,
+                    phase: crate::view::paint::PaintNodePhase::AfterChildren,
+                    slot: 0,
+                    role: crate::view::paint::PaintChunkRole::TextDecoration,
+                },
+                owner,
+                bounds: decoration.bounds,
+                properties: contents_properties,
+                content_revision,
+                payload_identity: crate::view::paint::PaintPayloadIdentity::prepared_rects(
+                    decoration.ops.iter(),
+                )?,
+            });
+        }
+        if let Some(caret) = payload.caret.as_ref() {
+            after_children.push(crate::view::paint::PaintChunkMetadata {
+                id: crate::view::paint::PaintChunkId {
+                    owner,
+                    scope: crate::view::paint::PaintPropertyScope::Contents,
+                    phase: crate::view::paint::PaintNodePhase::AfterChildren,
+                    slot: 1,
+                    role: crate::view::paint::PaintChunkRole::Caret,
+                },
+                owner,
+                bounds: caret.bounds,
+                properties: contents_properties,
+                content_revision,
+                payload_identity: crate::view::paint::PaintPayloadIdentity::prepared_rects([
+                    &caret.op,
+                ])?,
+            });
+        }
+        (!before_children.is_empty() || !after_children.is_empty()).then_some(
+            crate::view::paint::PaintNodePlan {
+                before_children,
+                after_children,
+            },
+        )
+    }
+
+    #[allow(private_interfaces)]
+    fn record_shadow_paint_artifact_plan(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        _properties: crate::view::compositor::property_tree::PropertyTreeState,
+        contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
+        content_revision: crate::view::paint::PaintContentRevision,
+        arena: &crate::view::node_arena::NodeArena,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintArtifact>> {
+        let mut payload = self
+            .prepared_plain_shadow_text_payload(owner, arena, false, recording_context.paint_offset)
+            .ok()?;
+        if recording_context.suppresses_interactive_text_area_caret(owner) {
+            payload.caret = None;
+        }
+        let mut before_children = Vec::with_capacity(2);
+        if let Some(selection) = payload.selection {
+            let payload_identity =
+                crate::view::paint::PaintPayloadIdentity::prepared_rects(selection.ops.iter())?;
+            let op_count = selection.ops.len();
+            before_children.push(crate::view::paint::PaintArtifact {
+                target: Default::default(),
+                chunks: vec![crate::view::paint::PaintChunk {
+                    id: crate::view::paint::PaintChunkId {
+                        owner,
+                        scope: crate::view::paint::PaintPropertyScope::Contents,
+                        phase: crate::view::paint::PaintNodePhase::BeforeChildren,
+                        slot: 0,
+                        role: crate::view::paint::PaintChunkRole::SelectionUnderlay,
+                    },
+                    owner,
+                    op_range: 0..op_count,
+                    bounds: selection.bounds,
+                    properties: contents_properties,
+                    content_revision,
+                    payload_identity,
+                }],
+                ops: selection
+                    .ops
+                    .into_iter()
+                    .map(crate::view::paint::PaintOp::DrawRect)
+                    .collect(),
+                clip_nodes: Vec::new(),
+                effect_nodes: Vec::new(),
+                owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
+                    owner,
+                    parent: None,
+                }],
+            });
+        }
+        if let Some(op) = payload.glyph_op {
+            let payload_identity = crate::view::paint::PaintPayloadIdentity::prepared_texts([&op]);
+            before_children.push(crate::view::paint::PaintArtifact {
+                target: Default::default(),
+                chunks: vec![crate::view::paint::PaintChunk {
+                    id: crate::view::paint::PaintChunkId {
+                        owner,
+                        scope: crate::view::paint::PaintPropertyScope::Contents,
+                        phase: crate::view::paint::PaintNodePhase::BeforeChildren,
+                        slot: 1,
+                        role: crate::view::paint::PaintChunkRole::TextGlyphs,
+                    },
+                    owner,
+                    op_range: 0..1,
+                    bounds: payload.glyph_bounds,
+                    properties: contents_properties,
+                    content_revision,
+                    payload_identity,
+                }],
+                ops: vec![crate::view::paint::PaintOp::PreparedText(op)],
+                clip_nodes: Vec::new(),
+                effect_nodes: Vec::new(),
+                owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
+                    owner,
+                    parent: None,
+                }],
+            });
+        }
+        let mut after_children = Vec::with_capacity(2);
+        if let Some(decoration) = payload.decoration {
+            let payload_identity =
+                crate::view::paint::PaintPayloadIdentity::prepared_rects(decoration.ops.iter())?;
+            let op_count = decoration.ops.len();
+            after_children.push(crate::view::paint::PaintArtifact {
+                target: Default::default(),
+                chunks: vec![crate::view::paint::PaintChunk {
+                    id: crate::view::paint::PaintChunkId {
+                        owner,
+                        scope: crate::view::paint::PaintPropertyScope::Contents,
+                        phase: crate::view::paint::PaintNodePhase::AfterChildren,
+                        slot: 0,
+                        role: crate::view::paint::PaintChunkRole::TextDecoration,
+                    },
+                    owner,
+                    op_range: 0..op_count,
+                    bounds: decoration.bounds,
+                    properties: contents_properties,
+                    content_revision,
+                    payload_identity,
+                }],
+                ops: decoration
+                    .ops
+                    .into_iter()
+                    .map(crate::view::paint::PaintOp::DrawRect)
+                    .collect(),
+                clip_nodes: Vec::new(),
+                effect_nodes: Vec::new(),
+                owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
+                    owner,
+                    parent: None,
+                }],
+            });
+        }
+        if let Some(caret) = payload.caret {
+            let payload_identity =
+                crate::view::paint::PaintPayloadIdentity::prepared_rects([&caret.op])?;
+            after_children.push(crate::view::paint::PaintArtifact {
+                target: Default::default(),
+                chunks: vec![crate::view::paint::PaintChunk {
+                    id: crate::view::paint::PaintChunkId {
+                        owner,
+                        scope: crate::view::paint::PaintPropertyScope::Contents,
+                        phase: crate::view::paint::PaintNodePhase::AfterChildren,
+                        slot: 1,
+                        role: crate::view::paint::PaintChunkRole::Caret,
+                    },
+                    owner,
+                    op_range: 0..1,
+                    bounds: caret.bounds,
+                    properties: contents_properties,
+                    content_revision,
+                    payload_identity,
+                }],
+                ops: vec![crate::view::paint::PaintOp::DrawRect(caret.op)],
+                clip_nodes: Vec::new(),
+                effect_nodes: Vec::new(),
+                owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
+                    owner,
+                    parent: None,
+                }],
+            });
+        }
+        if before_children.is_empty() && after_children.is_empty() {
+            return None;
+        }
+        #[cfg(test)]
+        crate::view::paint::note_full_artifact_record();
+        Some(crate::view::paint::PaintNodePlan {
+            before_children,
+            after_children,
+        })
+    }
+
     fn placement_eligibility_metadata(
         &self,
     ) -> crate::view::node_arena::PlacementEligibilityMetadata {
@@ -460,9 +1412,13 @@ impl ElementTrait for TextArea {
         self.ime_preedit.hash(&mut hasher);
         self.ime_preedit_cursor.hash(&mut hasher);
         self.is_focused.hash(&mut hasher);
-        self.should_draw_caret().hash(&mut hasher);
+        self.caret_visible.hash(&mut hasher);
         self.children.len().hash(&mut hasher);
         hasher.finish()
+    }
+
+    fn promotion_signature_is_complete(&self) -> bool {
+        true
     }
 
     fn apply_inherited(&mut self, inherited: &crate::view::renderer_adapter::StyleCascadeContext) {

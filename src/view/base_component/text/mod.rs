@@ -279,6 +279,65 @@ impl Text {
         }
     }
 
+    pub(crate) fn matches_inline_ifc_owned_install(
+        &self,
+        expected_lines: &[TextIfcOwnedLine],
+        expected_paint_input: &InlineIfcTextPassPaintInput,
+        expected_paint_bounds: crate::ui::Rect,
+        expected_shell_bounds: crate::ui::Rect,
+    ) -> bool {
+        fn rect_bits_eq(left: crate::ui::Rect, right: crate::ui::Rect) -> bool {
+            left.x.to_bits() == right.x.to_bits()
+                && left.y.to_bits() == right.y.to_bits()
+                && left.width.to_bits() == right.width.to_bits()
+                && left.height.to_bits() == right.height.to_bits()
+        }
+
+        fn line_bits_eq(left: &TextIfcOwnedLine, right: &TextIfcOwnedLine) -> bool {
+            rect_bits_eq(left.rect, right.rect)
+                && rect_bits_eq(left.text_rect, right.text_rect)
+                && left.char_range == right.char_range
+                && left.caret_xs.len() == right.caret_xs.len()
+                && left
+                    .caret_xs
+                    .iter()
+                    .zip(&right.caret_xs)
+                    .all(|(left, right)| left.to_bits() == right.to_bits())
+        }
+
+        let Some(owned) = self.inline_ifc_owned.as_deref() else {
+            return false;
+        };
+        owned.lines.len() == expected_lines.len()
+            && owned
+                .lines
+                .iter()
+                .zip(expected_lines)
+                .all(|(left, right)| line_bits_eq(left, right))
+            && owned.paint_input.as_ref() == expected_paint_input
+            && rect_bits_eq(owned.paint_bounds, expected_paint_bounds)
+            && self.layout_state.layout_position.x.to_bits() == expected_shell_bounds.x.to_bits()
+            && self.layout_state.layout_position.y.to_bits() == expected_shell_bounds.y.to_bits()
+            && self.layout_state.layout_flow_position.x.to_bits()
+                == expected_shell_bounds.x.to_bits()
+            && self.layout_state.layout_flow_position.y.to_bits()
+                == expected_shell_bounds.y.to_bits()
+            && self.layout_state.layout_inner_position.x.to_bits()
+                == expected_shell_bounds.x.to_bits()
+            && self.layout_state.layout_inner_position.y.to_bits()
+                == expected_shell_bounds.y.to_bits()
+            && self.layout_state.layout_size.width.to_bits()
+                == expected_shell_bounds.width.to_bits()
+            && self.layout_state.layout_size.height.to_bits()
+                == expected_shell_bounds.height.to_bits()
+            && self.layout_state.layout_inner_size.width.to_bits()
+                == expected_shell_bounds.width.to_bits()
+            && self.layout_state.layout_inner_size.height.to_bits()
+                == expected_shell_bounds.height.to_bits()
+            && self.layout_state.should_render
+                == (expected_shell_bounds.width > 0.0 && expected_shell_bounds.height > 0.0)
+    }
+
     fn inline_ifc_owned_lines(&self) -> Option<&[TextIfcOwnedLine]> {
         self.inline_ifc_owned
             .as_deref()
@@ -345,14 +404,480 @@ impl Text {
     pub(crate) fn text_wrap(&self) -> crate::style::TextWrap {
         self.text_wrap
     }
+
+    #[cfg(test)]
+    pub(crate) fn set_should_render_for_test(&mut self, should_render: bool) {
+        self.layout_state.should_render = should_render;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_prepared_standalone_text_for_test(&mut self) {
+        self.shaped_context = None;
+        self.dirty_flags = self.dirty_flags.union(super::DirtyPassMask::PAINT);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_layout_position_for_test(&mut self, dx: f32, dy: f32) {
+        self.layout_state.layout_position.x += dx;
+        self.layout_state.layout_position.y += dy;
+    }
 }
 
 #[cfg(test)]
 pub(crate) use self::measure::measure_text_size;
 
+struct PreparedShadowTextSelectionPayload {
+    bounds: crate::view::base_component::Rect,
+    ops: Vec<crate::view::paint::DrawRectOp>,
+}
+
+impl Text {
+    fn shadow_text_recording_bounds(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        mut bounds: crate::view::base_component::Rect,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> crate::view::base_component::Rect {
+        if recording_context.authorizes_scroll_content_local_owner(owner) {
+            bounds.x += recording_context.paint_offset[0];
+            bounds.y += recording_context.paint_offset[1];
+        }
+        bounds
+    }
+
+    fn validate_shadow_text_preedit_witness(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> Result<(), super::ShadowPaintBlocker> {
+        let Some(witness) = recording_context.text_area_preedit else {
+            return Ok(());
+        };
+        let effective_opacity = recording_context.paint_opacity(self.opacity);
+        let content_char_count = self.content.chars().count();
+        let start_byte = self
+            .content
+            .char_indices()
+            .nth(witness.local_start_char)
+            .map(|(byte, _)| byte)
+            .unwrap_or(self.content.len());
+        let end_byte = self
+            .content
+            .char_indices()
+            .nth(witness.local_end_char)
+            .map(|(byte, _)| byte)
+            .unwrap_or(self.content.len());
+        let caret_char = self
+            .content
+            .get(..witness.target_caret_byte)
+            .map(str::chars)
+            .map(Iterator::count);
+        if !recording_context.inside_text_area
+            || !witness.is_canonical_for(owner, self.node_id)
+            || arena.parent_of(owner) != Some(witness.projection_owner)
+            || witness.local_end_char > content_char_count
+            || start_byte != witness.target_start_byte
+            || end_byte != witness.target_end_byte
+            || !self.content.is_char_boundary(witness.target_start_byte)
+            || !self.content.is_char_boundary(witness.target_end_byte)
+            || !self.content.is_char_boundary(witness.target_caret_byte)
+            || caret_char != Some(witness.target_caret_char)
+            || !self.is_paint_visible(effective_opacity)
+        {
+            return Err(super::ShadowPaintBlocker::TextAreaSelection);
+        }
+        Ok(())
+    }
+
+    fn prepared_shadow_text_selection_payload(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> Result<Option<PreparedShadowTextSelectionPayload>, super::ShadowPaintBlocker> {
+        let Some(witness) = recording_context.text_area_selection else {
+            return Ok(None);
+        };
+        let owner_matches = witness.target_owner == owner;
+        let stable_id_matches = witness.target_stable_id == self.node_id;
+        if !owner_matches && !stable_id_matches {
+            return Ok(None);
+        }
+        let effective_opacity = recording_context.paint_opacity(self.opacity);
+        if owner_matches && stable_id_matches && !self.is_paint_visible(effective_opacity) {
+            return Ok(None);
+        }
+        if !owner_matches
+            || !stable_id_matches
+            || !recording_context.inside_text_area
+            || !witness.is_canonical_for(owner, self.node_id)
+            || witness.local_end > self.content.chars().count()
+        {
+            return Err(super::ShadowPaintBlocker::TextAreaSelection);
+        }
+
+        let rects = self.local_selection_screen_rects(witness.local_start, witness.local_end);
+        if rects.is_empty() {
+            return Err(super::ShadowPaintBlocker::TextAreaSelection);
+        }
+        let mut ops = Vec::with_capacity(rects.len());
+        let mut left = f32::INFINITY;
+        let mut top = f32::INFINITY;
+        let mut right = f32::NEG_INFINITY;
+        let mut bottom = f32::NEG_INFINITY;
+        for rect in rects {
+            let params = crate::view::render_pass::draw_rect_pass::RectPassParams {
+                position: [
+                    rect.x + recording_context.paint_offset[0],
+                    rect.y + recording_context.paint_offset[1],
+                ],
+                size: [rect.width.max(1.0), rect.height.max(1.0)],
+                fill_color: witness.fill,
+                opacity: 1.0,
+                ..Default::default()
+            };
+            if params
+                .position
+                .iter()
+                .chain(params.size.iter())
+                .chain(params.fill_color.iter())
+                .any(|value| !value.is_finite())
+                || params.size.iter().any(|value| *value <= 0.0)
+            {
+                return Err(super::ShadowPaintBlocker::TextAreaSelection);
+            }
+            left = left.min(params.position[0]);
+            top = top.min(params.position[1]);
+            right = right.max(params.position[0] + params.size[0]);
+            bottom = bottom.max(params.position[1] + params.size[1]);
+            ops.push(crate::view::paint::DrawRectOp {
+                params,
+                mode: crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
+            });
+        }
+        if ![left, top, right, bottom].into_iter().all(f32::is_finite)
+            || right < left
+            || bottom < top
+            || crate::view::paint::PaintPayloadIdentity::prepared_rects(ops.iter()).is_none()
+        {
+            return Err(super::ShadowPaintBlocker::TextAreaSelection);
+        }
+        Ok(Some(PreparedShadowTextSelectionPayload {
+            bounds: crate::view::base_component::Rect {
+                x: left,
+                y: top,
+                width: right - left,
+                height: bottom - top,
+            },
+            ops,
+        }))
+    }
+}
+
 impl ElementTrait for Text {
     fn stable_id(&self) -> u64 {
         self.node_id
+    }
+
+    #[allow(private_interfaces)]
+    fn shadow_paint_recording_capability(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+        _deferred_phase_root: bool,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> super::ShadowPaintRecordingCapability {
+        let effective_opacity = recording_context.paint_opacity(self.opacity);
+        if recording_context.text_area_preedit.is_some_and(|witness| {
+            self.validate_shadow_text_preedit_witness(
+                witness.target_owner,
+                arena,
+                recording_context,
+            )
+            .is_err()
+        }) {
+            return super::ShadowPaintRecordingCapability::Legacy(
+                super::ShadowPaintBlocker::TextAreaSelection,
+            );
+        }
+        if recording_context.inside_text_area && !self.is_paint_visible(effective_opacity) {
+            return super::ShadowPaintRecordingCapability::Transparent;
+        }
+        if let Some(witness) = recording_context.text_area_selection
+            && witness.target_stable_id == self.node_id
+            && self
+                .prepared_shadow_text_selection_payload(witness.target_owner, recording_context)
+                .is_err()
+        {
+            return super::ShadowPaintRecordingCapability::Legacy(
+                super::ShadowPaintBlocker::TextAreaSelection,
+            );
+        }
+        if let Err(blocker) =
+            self.prepared_shadow_text_payload(recording_context.paint_offset, effective_opacity)
+        {
+            return super::ShadowPaintRecordingCapability::Legacy(blocker);
+        }
+        super::ShadowPaintRecordingCapability::Recordable
+    }
+
+    #[allow(private_interfaces)]
+    fn record_shadow_paint_metadata_plan(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        properties: crate::view::compositor::property_tree::PropertyTreeState,
+        _contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
+        content_revision: crate::view::paint::PaintContentRevision,
+        arena: &crate::view::node_arena::NodeArena,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintChunkMetadata>> {
+        let effective_opacity = recording_context.paint_opacity(self.opacity);
+        if recording_context.inside_text_area && !self.is_paint_visible(effective_opacity) {
+            return None;
+        }
+        self.validate_shadow_text_preedit_witness(owner, arena, recording_context)
+            .ok()?;
+        let glyph = self
+            .prepared_shadow_text_payload(recording_context.paint_offset, effective_opacity)
+            .ok()?;
+        let glyph_bounds =
+            self.shadow_text_recording_bounds(owner, glyph.bounds, recording_context);
+        let selection = self
+            .prepared_shadow_text_selection_payload(owner, recording_context)
+            .ok()?;
+        let glyph_slot = u16::from(recording_context.inside_text_area);
+        let mut before_children = Vec::with_capacity(1 + usize::from(selection.is_some()));
+        if let Some(selection) = selection {
+            before_children.push(crate::view::paint::PaintChunkMetadata {
+                id: crate::view::paint::PaintChunkId {
+                    owner,
+                    scope: crate::view::paint::PaintPropertyScope::SelfPaint,
+                    phase: crate::view::paint::PaintNodePhase::BeforeChildren,
+                    slot: 0,
+                    role: crate::view::paint::PaintChunkRole::SelectionUnderlay,
+                },
+                owner,
+                bounds: selection.bounds,
+                properties,
+                content_revision,
+                payload_identity: crate::view::paint::PaintPayloadIdentity::prepared_rects(
+                    selection.ops.iter(),
+                )?,
+            });
+        }
+        before_children.push(crate::view::paint::PaintChunkMetadata {
+            id: crate::view::paint::PaintChunkId {
+                owner,
+                scope: crate::view::paint::PaintPropertyScope::SelfPaint,
+                phase: crate::view::paint::PaintNodePhase::BeforeChildren,
+                slot: glyph_slot,
+                role: crate::view::paint::PaintChunkRole::TextGlyphs,
+            },
+            owner,
+            bounds: glyph_bounds,
+            properties,
+            content_revision,
+            payload_identity: crate::view::paint::PaintPayloadIdentity::prepared_texts(
+                glyph.op.iter(),
+            ),
+        });
+        Some(crate::view::paint::PaintNodePlan {
+            before_children,
+            after_children: Vec::new(),
+        })
+    }
+
+    #[allow(private_interfaces)]
+    fn record_shadow_paint_artifact_plan(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        properties: crate::view::compositor::property_tree::PropertyTreeState,
+        _contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
+        content_revision: crate::view::paint::PaintContentRevision,
+        arena: &crate::view::node_arena::NodeArena,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintArtifact>> {
+        let effective_opacity = recording_context.paint_opacity(self.opacity);
+        if recording_context.inside_text_area && !self.is_paint_visible(effective_opacity) {
+            return None;
+        }
+        self.validate_shadow_text_preedit_witness(owner, arena, recording_context)
+            .ok()?;
+        let glyph = self
+            .prepared_shadow_text_payload(recording_context.paint_offset, effective_opacity)
+            .ok()?;
+        let glyph_bounds =
+            self.shadow_text_recording_bounds(owner, glyph.bounds, recording_context);
+        let selection = self
+            .prepared_shadow_text_selection_payload(owner, recording_context)
+            .ok()?;
+        #[cfg(test)]
+        crate::view::paint::note_full_artifact_record();
+        let glyph_slot = u16::from(recording_context.inside_text_area);
+        let mut before_children = Vec::with_capacity(1 + usize::from(selection.is_some()));
+        if let Some(selection) = selection {
+            let payload_identity =
+                crate::view::paint::PaintPayloadIdentity::prepared_rects(selection.ops.iter())?;
+            let ops = selection
+                .ops
+                .into_iter()
+                .map(crate::view::paint::PaintOp::DrawRect)
+                .collect::<Vec<_>>();
+            before_children.push(crate::view::paint::PaintArtifact {
+                target: Default::default(),
+                chunks: vec![crate::view::paint::PaintChunk {
+                    id: crate::view::paint::PaintChunkId {
+                        owner,
+                        scope: crate::view::paint::PaintPropertyScope::SelfPaint,
+                        phase: crate::view::paint::PaintNodePhase::BeforeChildren,
+                        slot: 0,
+                        role: crate::view::paint::PaintChunkRole::SelectionUnderlay,
+                    },
+                    owner,
+                    op_range: 0..ops.len(),
+                    bounds: selection.bounds,
+                    properties,
+                    content_revision,
+                    payload_identity,
+                }],
+                ops,
+                clip_nodes: Vec::new(),
+                effect_nodes: Vec::new(),
+                owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
+                    owner,
+                    parent: None,
+                }],
+            });
+        }
+        let payload_identity =
+            crate::view::paint::PaintPayloadIdentity::prepared_texts(glyph.op.iter());
+        let ops = glyph
+            .op
+            .into_iter()
+            .map(crate::view::paint::PaintOp::PreparedText)
+            .collect::<Vec<_>>();
+        before_children.push(crate::view::paint::PaintArtifact {
+            target: Default::default(),
+            chunks: vec![crate::view::paint::PaintChunk {
+                id: crate::view::paint::PaintChunkId {
+                    owner,
+                    scope: crate::view::paint::PaintPropertyScope::SelfPaint,
+                    phase: crate::view::paint::PaintNodePhase::BeforeChildren,
+                    slot: glyph_slot,
+                    role: crate::view::paint::PaintChunkRole::TextGlyphs,
+                },
+                owner,
+                op_range: 0..ops.len(),
+                bounds: glyph_bounds,
+                properties,
+                content_revision,
+                payload_identity,
+            }],
+            ops,
+            clip_nodes: Vec::new(),
+            effect_nodes: Vec::new(),
+            owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
+                owner,
+                parent: None,
+            }],
+        });
+        Some(crate::view::paint::PaintNodePlan {
+            before_children,
+            after_children: Vec::new(),
+        })
+    }
+
+    #[allow(private_interfaces)]
+    fn record_shadow_paint_metadata(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        properties: crate::view::compositor::property_tree::PropertyTreeState,
+        content_revision: crate::view::paint::PaintContentRevision,
+        arena: &crate::view::node_arena::NodeArena,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> Option<crate::view::paint::PaintChunkMetadata> {
+        let effective_opacity = recording_context.paint_opacity(self.opacity);
+        if recording_context.inside_text_area && !self.is_paint_visible(effective_opacity) {
+            return None;
+        }
+        self.validate_shadow_text_preedit_witness(owner, arena, recording_context)
+            .ok()?;
+        let payload = self
+            .prepared_shadow_text_payload(recording_context.paint_offset, effective_opacity)
+            .ok()?;
+        let payload_bounds =
+            self.shadow_text_recording_bounds(owner, payload.bounds, recording_context);
+        Some(crate::view::paint::PaintChunkMetadata {
+            id: crate::view::paint::PaintChunkId {
+                owner,
+                scope: crate::view::paint::PaintPropertyScope::SelfPaint,
+                phase: crate::view::paint::PaintNodePhase::BeforeChildren,
+                slot: 0,
+                role: crate::view::paint::PaintChunkRole::TextGlyphs,
+            },
+            owner,
+            bounds: payload_bounds,
+            properties,
+            content_revision,
+            payload_identity: crate::view::paint::PaintPayloadIdentity::prepared_texts(
+                payload.op.iter(),
+            ),
+        })
+    }
+
+    #[allow(private_interfaces)]
+    fn record_shadow_paint_artifact(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        properties: crate::view::compositor::property_tree::PropertyTreeState,
+        content_revision: crate::view::paint::PaintContentRevision,
+        arena: &crate::view::node_arena::NodeArena,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> Option<crate::view::paint::PaintArtifact> {
+        let effective_opacity = recording_context.paint_opacity(self.opacity);
+        if recording_context.inside_text_area && !self.is_paint_visible(effective_opacity) {
+            return None;
+        }
+        self.validate_shadow_text_preedit_witness(owner, arena, recording_context)
+            .ok()?;
+        let payload = self
+            .prepared_shadow_text_payload(recording_context.paint_offset, effective_opacity)
+            .ok()?;
+        let payload_bounds =
+            self.shadow_text_recording_bounds(owner, payload.bounds, recording_context);
+        #[cfg(test)]
+        crate::view::paint::note_full_artifact_record();
+        let payload_identity =
+            crate::view::paint::PaintPayloadIdentity::prepared_texts(payload.op.iter());
+        let ops = payload
+            .op
+            .into_iter()
+            .map(crate::view::paint::PaintOp::PreparedText)
+            .collect::<Vec<_>>();
+        Some(crate::view::paint::PaintArtifact {
+            target: Default::default(),
+            chunks: vec![crate::view::paint::PaintChunk {
+                id: crate::view::paint::PaintChunkId {
+                    owner,
+                    scope: crate::view::paint::PaintPropertyScope::SelfPaint,
+                    phase: crate::view::paint::PaintNodePhase::BeforeChildren,
+                    slot: 0,
+                    role: crate::view::paint::PaintChunkRole::TextGlyphs,
+                },
+                owner,
+                op_range: 0..ops.len(),
+                bounds: payload_bounds,
+                properties,
+                content_revision,
+                payload_identity,
+            }],
+            ops,
+            clip_nodes: Vec::new(),
+            effect_nodes: Vec::new(),
+            owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
+                owner,
+                parent: None,
+            }],
+        })
     }
 
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
@@ -443,6 +968,25 @@ impl ElementTrait for Text {
         }
     }
 
+    fn retained_transform_output_bounds(
+        &self,
+        _arena: &crate::view::node_arena::NodeArena,
+        paint_offset: [f32; 2],
+    ) -> Option<super::PromotionCompositeBounds> {
+        let mut bounds = self.promotion_composite_bounds();
+        bounds.x += paint_offset[0];
+        bounds.y += paint_offset[1];
+        Some(bounds)
+    }
+
+    fn legacy_transform_output_bounds(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+        paint_offset: [f32; 2],
+    ) -> Option<super::PromotionCompositeBounds> {
+        self.retained_transform_output_bounds(arena, paint_offset)
+    }
+
     fn has_active_animator(&self) -> bool {
         false
     }
@@ -496,6 +1040,10 @@ impl ElementTrait for Text {
             bounds.height.to_bits().hash(&mut hasher);
         }
         hasher.finish()
+    }
+
+    fn promotion_signature_is_complete(&self) -> bool {
+        true
     }
 
     fn local_dirty_flags(&self) -> super::DirtyFlags {

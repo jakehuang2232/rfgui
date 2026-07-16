@@ -2,12 +2,17 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use rustc_hash::FxHashSet;
+
 mod core;
 mod element;
 mod hit_test;
 mod image;
+mod resource_slot;
 mod style_consumer;
 mod svg;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use svg::prepare_svg_fixture_for_test;
 mod text;
 pub(crate) mod text_area;
 
@@ -98,7 +103,7 @@ pub(crate) fn build_node_by_id(
             ) && can_reuse_subtree;
             let mut node_ctx = UiBuildContext::from_parts(
                 ctx.viewport(),
-                BuildState::for_layer_subtree_with_ancestor_clip(ctx.ancestor_clip_context()),
+                ctx.layer_subtree_state_with_ancestor_clip(ctx.ancestor_clip_context()),
             );
             let layer_target = node_ctx.allocate_promoted_layer_target(
                 graph,
@@ -159,7 +164,7 @@ pub(crate) fn build_node_by_id(
                 ));
                 node.build(graph, arena, node_ctx)
             };
-            ctx.merge_child_state_side_effects(&next_state);
+            ctx.merge_child_render_state(&next_state);
             let layer_target = next_state.current_target().unwrap_or(layer_target);
             let composite_bounds =
                 crate::view::viewport::scene_helpers::paint_snapped_promotion_composite_bounds(
@@ -368,23 +373,112 @@ pub fn has_animation_frame_request(
     arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
 ) -> bool {
-    let Some(node) = arena.get(root_key) else {
-        return false;
-    };
-    if node.element.wants_animation_frame() {
-        return true;
-    }
-    let child_count = node.children.len();
-    drop(node);
-    for index in 0..child_count {
-        let Some(child_key) = arena.child_key_at(root_key, index) else {
-            break;
+    fn visit(
+        arena: &crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        seen: &mut FxHashSet<crate::view::node_arena::NodeKey>,
+    ) -> bool {
+        if !seen.insert(key) {
+            return false;
+        }
+        let Some(node) = arena.get(key) else {
+            return false;
         };
-        if has_animation_frame_request(arena, child_key) {
+        if node.element.wants_animation_frame() {
             return true;
         }
+        let children = node.children.clone();
+        drop(node);
+        for child in children {
+            if visit(arena, child, seen) {
+                return true;
+            }
+        }
+        false
     }
-    false
+
+    visit(arena, root_key, &mut FxHashSet::default())
+}
+
+/// Advance retained animation state using one viewport-owned time sample.
+///
+/// The generic hook keeps the viewport independent of concrete components.
+/// Element-owned and arena-owned dirty state are updated together through the
+/// scoped invalidation path.
+pub(crate) fn tick_animation_frames(
+    arena: &mut crate::view::node_arena::NodeArena,
+    roots: &[crate::view::node_arena::NodeKey],
+    now: crate::time::Instant,
+) -> bool {
+    fn visit(
+        arena: &mut crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        now: crate::time::Instant,
+        seen: &mut FxHashSet<crate::view::node_arena::NodeKey>,
+    ) -> bool {
+        if !seen.insert(key) {
+            return false;
+        }
+        let Some((children, dirty)) = arena.mutate_element_with_invalidation(key, |element, cx| {
+            let children = element.children().to_vec();
+            let dirty = element.tick_animation_frame(now);
+            if !dirty.is_empty() {
+                cx.invalidate(dirty);
+            }
+            (children, dirty)
+        }) else {
+            return false;
+        };
+        let mut changed = !dirty.is_empty();
+        for child in children {
+            changed |= visit(arena, child, now, seen);
+        }
+        changed
+    }
+
+    let mut seen = FxHashSet::default();
+    roots.iter().copied().fold(false, |changed, root| {
+        visit(arena, root, now, &mut seen) || changed
+    })
+}
+
+/// Resolve retained visual state that depends on final layout using the same
+/// viewport-owned semantic time sample as the pre-layout animation tick.
+pub(crate) fn tick_post_layout_animation_frames(
+    arena: &mut crate::view::node_arena::NodeArena,
+    roots: &[crate::view::node_arena::NodeKey],
+    now: crate::time::Instant,
+) -> bool {
+    fn visit(
+        arena: &mut crate::view::node_arena::NodeArena,
+        key: crate::view::node_arena::NodeKey,
+        now: crate::time::Instant,
+        seen: &mut FxHashSet<crate::view::node_arena::NodeKey>,
+    ) -> bool {
+        if !seen.insert(key) {
+            return false;
+        }
+        let Some((children, dirty)) = arena.mutate_element_with_invalidation(key, |element, cx| {
+            let children = element.children().to_vec();
+            let dirty = element.tick_post_layout_animation_frame(now);
+            if !dirty.is_empty() {
+                cx.invalidate(dirty);
+            }
+            (children, dirty)
+        }) else {
+            return false;
+        };
+        let mut changed = !dirty.is_empty();
+        for child in children {
+            changed |= visit(arena, child, now, seen);
+        }
+        changed
+    }
+
+    let mut seen = FxHashSet::default();
+    roots.iter().copied().fold(false, |changed, root| {
+        visit(arena, root, now, &mut seen) || changed
+    })
 }
 
 /// Forward `EventTarget` methods to an inner field (typically `element`).
@@ -655,7 +749,9 @@ pub(crate) use forward_event_target;
 
 #[cfg(test)]
 mod tests {
-    use super::{hit_test, hit_test_roots};
+    use super::{
+        hit_test, hit_test_roots, tick_animation_frames, tick_post_layout_animation_frames,
+    };
     use crate::style::{Anchor, AnchorName, Color, Layout};
     use crate::style::{
         Angle, ClipMode, Length, ParsedValue, Position, PropertyId, Rotate, ScrollDirection, Style,
@@ -664,7 +760,13 @@ mod tests {
     use crate::ui::{
         ClickEvent, EventMeta, Modifiers, NodeId, PointerButton, PointerButtons, PointerEventData,
     };
-    use crate::view::base_component::{Element, EventTarget, LayoutConstraints, LayoutPlacement};
+    use crate::view::base_component::{
+        BoxModelSnapshot, BuildState, DirtyFlags, Element, ElementTrait, EventTarget,
+        LayoutConstraints, LayoutPlacement, Layoutable, PaintResourcePreparationContext,
+        Renderable, UiBuildContext,
+    };
+    use crate::view::frame_graph::FrameGraph;
+    use crate::view::node_arena::{NodeArena, NodeKey};
     use crate::view::test_support::{
         commit_child, commit_element, measure_and_place, new_test_arena,
     };
@@ -672,6 +774,167 @@ mod tests {
     use crate::view::{Viewport, ViewportControl};
     use std::cell::Cell;
     use std::rc::Rc;
+
+    struct AnimationTickProbe {
+        id: u64,
+        children: Vec<NodeKey>,
+        ticks: Rc<Cell<u32>>,
+        wants_checks: Rc<Cell<u32>>,
+        tick_now: Rc<Cell<Option<crate::time::Instant>>>,
+        post_tick_now: Rc<Cell<Option<crate::time::Instant>>>,
+        resource_now: Rc<Cell<Option<crate::time::Instant>>>,
+    }
+
+    impl Layoutable for AnimationTickProbe {
+        fn requires_arena_sync(&self) -> bool {
+            true
+        }
+        fn prepare_paint_resources(&mut self, context: PaintResourcePreparationContext) {
+            self.resource_now.set(Some(context.now));
+        }
+        fn measure(&mut self, _constraints: LayoutConstraints, _arena: &mut NodeArena) {}
+        fn place(&mut self, _placement: LayoutPlacement, _arena: &mut NodeArena) {}
+        fn measured_size(&self) -> (f32, f32) {
+            (1.0, 1.0)
+        }
+        fn set_layout_width(&mut self, _width: f32) {}
+        fn set_layout_height(&mut self, _height: f32) {}
+    }
+
+    impl EventTarget for AnimationTickProbe {
+        fn wants_animation_frame(&self) -> bool {
+            self.wants_checks.set(self.wants_checks.get() + 1);
+            false
+        }
+    }
+
+    impl Renderable for AnimationTickProbe {
+        fn build(
+            &mut self,
+            _graph: &mut FrameGraph,
+            _arena: &mut NodeArena,
+            ctx: UiBuildContext,
+        ) -> BuildState {
+            ctx.into_state()
+        }
+    }
+
+    impl ElementTrait for AnimationTickProbe {
+        fn stable_id(&self) -> u64 {
+            self.id
+        }
+
+        fn box_model_snapshot(&self) -> BoxModelSnapshot {
+            BoxModelSnapshot {
+                node_id: self.id,
+                parent_id: None,
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+                border_radius: 0.0,
+                should_render: true,
+            }
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+
+        fn tick_animation_frame(&mut self, now: crate::time::Instant) -> DirtyFlags {
+            self.ticks.set(self.ticks.get() + 1);
+            self.tick_now.set(Some(now));
+            DirtyFlags::NONE
+        }
+
+        fn tick_post_layout_animation_frame(&mut self, now: crate::time::Instant) -> DirtyFlags {
+            self.post_tick_now.set(Some(now));
+            DirtyFlags::NONE
+        }
+
+        fn children(&self) -> &[NodeKey] {
+            &self.children
+        }
+
+        fn sync_children_mirror(&mut self, children: &[NodeKey]) {
+            self.children.clear();
+            self.children.extend_from_slice(children);
+        }
+    }
+
+    #[test]
+    fn animation_tick_visits_duplicate_and_cyclic_topology_once() {
+        let root_ticks = Rc::new(Cell::new(0));
+        let child_ticks = Rc::new(Cell::new(0));
+        let root_wants_checks = Rc::new(Cell::new(0));
+        let child_wants_checks = Rc::new(Cell::new(0));
+        let root_tick_now = Rc::new(Cell::new(None));
+        let root_post_tick_now = Rc::new(Cell::new(None));
+        let root_resource_now = Rc::new(Cell::new(None));
+        let child_tick_now = Rc::new(Cell::new(None));
+        let child_post_tick_now = Rc::new(Cell::new(None));
+        let child_resource_now = Rc::new(Cell::new(None));
+        let mut arena = new_test_arena();
+        let root = commit_element(
+            &mut arena,
+            Box::new(AnimationTickProbe {
+                id: 0xa001,
+                children: Vec::new(),
+                ticks: root_ticks.clone(),
+                wants_checks: root_wants_checks.clone(),
+                tick_now: root_tick_now.clone(),
+                post_tick_now: root_post_tick_now.clone(),
+                resource_now: root_resource_now.clone(),
+            }),
+        );
+        let child = commit_child(
+            &mut arena,
+            root,
+            Box::new(AnimationTickProbe {
+                id: 0xa002,
+                children: Vec::new(),
+                ticks: child_ticks.clone(),
+                wants_checks: child_wants_checks.clone(),
+                tick_now: child_tick_now.clone(),
+                post_tick_now: child_post_tick_now.clone(),
+                resource_now: child_resource_now.clone(),
+            }),
+        );
+        arena.set_children(root, vec![child, child]);
+        arena.set_children(child, vec![root]);
+
+        let semantic_now = crate::time::Instant::now();
+        assert!(!tick_animation_frames(
+            &mut arena,
+            &[root, root],
+            semantic_now
+        ));
+        assert!(!tick_post_layout_animation_frames(
+            &mut arena,
+            &[root, root],
+            semantic_now,
+        ));
+        arena.prepare_registered_paint_resources(PaintResourcePreparationContext {
+            frame_number: 7,
+            device_scale: 1.0,
+            now: semantic_now,
+        });
+        assert_eq!(root_ticks.get(), 1);
+        assert_eq!(child_ticks.get(), 1);
+        assert_eq!(root_tick_now.get(), Some(semantic_now));
+        assert_eq!(root_post_tick_now.get(), Some(semantic_now));
+        assert_eq!(root_resource_now.get(), Some(semantic_now));
+        assert_eq!(child_tick_now.get(), Some(semantic_now));
+        assert_eq!(child_post_tick_now.get(), Some(semantic_now));
+        assert_eq!(child_resource_now.get(), Some(semantic_now));
+        assert!(!super::has_animation_frame_request(&arena, root));
+        assert_eq!(root_wants_checks.get(), 1);
+        assert_eq!(child_wants_checks.get(), 1);
+    }
 
     fn constraints(w: f32, h: f32) -> LayoutConstraints {
         LayoutConstraints {

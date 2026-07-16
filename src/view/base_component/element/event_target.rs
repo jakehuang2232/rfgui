@@ -336,7 +336,11 @@ impl EventTarget for Element {
     }
 
     fn cancel_pointer_interaction(&mut self) -> bool {
-        self.scrollbar_drag.take().is_some()
+        let canceled = self.scrollbar_drag.take().is_some();
+        if canceled {
+            self.note_scrollbar_interaction();
+        }
+        canceled
     }
 
     fn set_hovered(&mut self, hovered: bool) -> bool {
@@ -344,9 +348,9 @@ impl EventTarget for Element {
             return false;
         }
         self.is_hovered = hovered;
-        if hovered {
-            self.note_scrollbar_interaction();
-        }
+        // Both edges are animation boundaries. Enter forces opacity; leave
+        // starts a fresh hold/fade epoch at the next viewport frame sample.
+        self.note_scrollbar_interaction();
         self.recompute_style();
         true
     }
@@ -453,6 +457,13 @@ impl EventTarget for Element {
 
     fn cursor(&self) -> Cursor {
         self.computed_style.cursor
+    }
+
+    fn wants_animation_frame(&self) -> bool {
+        self.scrollbar_interaction_pending
+            || (!self.is_hovered
+                && self.scrollbar_drag.is_none()
+                && self.last_scrollbar_interaction.is_some())
     }
 
     fn take_style_transition_requests(&mut self) -> Vec<StyleTrackRequest> {

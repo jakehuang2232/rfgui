@@ -1,6 +1,11 @@
 use crate::view::node_arena::InvalidationContext;
 
 impl Element {
+    #[cfg(test)]
+    pub(crate) fn set_stable_id_for_test(&mut self, stable_id: u64) {
+        self.core.id = stable_id;
+    }
+
     const SHOULD_RENDER_OVERSCAN_PX: f32 = 24.0;
 
     fn has_visible_background(&self) -> bool {
@@ -109,6 +114,87 @@ impl Element {
             }
             ClipMode::AnchorParent => self.absolute_clip_rect.and_then(rect_to_scissor_rect),
         }
+    }
+
+    /// Exact resolved self-clip payload admitted by the first clip-authority
+    /// slice. Keep this deliberately narrower than `absolute_clip_scissor_rect`:
+    /// viewport/deferred clips and non-leaf contents scopes remain legacy.
+    pub(crate) fn anchor_parent_leaf_self_clip_scissor_rect(&self) -> Option<[u32; 4]> {
+        if !self.children.is_empty()
+            || self.computed_style.position.mode() != PositionMode::Absolute
+            || self.computed_style.position.clip_mode() != ClipMode::AnchorParent
+        {
+            return None;
+        }
+        self.absolute_clip_scissor_rect()
+    }
+
+    /// Exact `AnchorParent` self clip that the artifact walk may own.
+    ///
+    /// Nested `AnchorParent` children are painted by legacy Element parents in
+    /// a second, overflow-only phase. The artifact walk keeps arena order, so a
+    /// nested leaf is admissible only when the parent's children are already
+    /// partitioned normal-before-overflow. Checking the complete parent order
+    /// here prevents one admitted child from hiding a later ordering mismatch.
+    pub(crate) fn exact_anchor_parent_leaf_self_clip_scissor_rect(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+        is_frame_root: bool,
+    ) -> Option<[u32; 4]> {
+        let scissor = self.anchor_parent_leaf_self_clip_scissor_rect()?;
+        if !arena.children_of(owner).is_empty() {
+            return None;
+        }
+        if is_frame_root {
+            return Some(scissor);
+        }
+
+        let parent_key = arena.parent_of(owner)?;
+        let parent_node = arena.get(parent_key)?;
+        if parent_node.children() != parent_node.element.children() {
+            return None;
+        }
+        let parent = parent_node.element.as_any().downcast_ref::<Element>()?;
+        if parent.is_fragmentable_inline_element() || parent.inline_ifc_owned_by_root {
+            return None;
+        }
+
+        let mut owner_seen = false;
+        let mut overflow_seen = false;
+        for child in parent_node.children().iter().copied() {
+            let is_overflow = if child == owner {
+                true
+            } else {
+                let child_node = arena.get(child)?;
+                if child_node.element.is_deferred_to_root_viewport_render() {
+                    return None;
+                }
+                match child_node.element.as_any().downcast_ref::<Element>() {
+                    Some(child)
+                        if child.computed_style.position.mode() == PositionMode::Absolute =>
+                    {
+                        match child.computed_style.position.clip_mode() {
+                            ClipMode::Parent => false,
+                            ClipMode::AnchorParent => true,
+                            // Viewport children leave the normal frame walk and
+                            // are therefore not covered by this ordering proof.
+                            ClipMode::Viewport => return None,
+                        }
+                    }
+                    _ => false,
+                }
+            };
+            if child == owner {
+                owner_seen = true;
+            }
+            if is_overflow {
+                overflow_seen = true;
+            } else if overflow_seen {
+                return None;
+            }
+        }
+        owner_seen.then_some(scissor)
     }
 
     /// Apply this element's own clip scissor on top of `ctx`. For most
@@ -614,6 +700,8 @@ impl Element {
             inline_ifc_layout_call_site: ElementInlineIfcLayoutCallSiteState::default(),
             scrollbar_drag: None,
             last_scrollbar_interaction: None,
+            scrollbar_interaction_pending: false,
+            sampled_scrollbar_alpha: 0.0,
             scrollbar_shadow_blur_radius: 3.0,
             transition_requests: None,
             last_started_animator: None,
@@ -1049,7 +1137,7 @@ impl Element {
 
     pub fn set_opacity(&mut self, opacity: f32) {
         self.opacity = opacity;
-        self.mark_paint_dirty();
+        self.mark_local_dirty(DirtyPassMask::PAINT.union(DirtyPassMask::COMPOSITE));
     }
 
     pub fn set_opacity_with_invalidation(
@@ -1058,7 +1146,9 @@ impl Element {
         cx: &mut InvalidationContext<'_>,
     ) {
         self.opacity = opacity;
-        self.mark_paint_dirty_with(cx);
+        let flags = DirtyPassMask::PAINT.union(DirtyPassMask::COMPOSITE);
+        self.mark_local_dirty(flags);
+        cx.invalidate(flags);
     }
 
     /// Crate-visible read for the incremental-commit tests (M4 #7).
@@ -1404,11 +1494,15 @@ impl ComputedStyleConsumer for Element {
         computed: ComputedStyle,
         previous_snapshot: Option<&ElementStyleSnapshot>,
     ) {
+        let previous_opacity = self.opacity;
         self.computed_style = computed;
         if let Some(previous_snapshot) = previous_snapshot {
             self.collect_style_transition_requests(previous_snapshot);
         }
         self.sync_props_from_computed_style();
+        if previous_opacity.to_bits() != self.opacity.to_bits() {
+            self.mark_local_dirty(DirtyPassMask::PAINT.union(DirtyPassMask::COMPOSITE));
+        }
         if let Some(previous_snapshot) = previous_snapshot {
             self.preserve_transform_transition_baseline(previous_snapshot);
         }

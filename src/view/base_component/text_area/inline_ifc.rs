@@ -1258,6 +1258,28 @@ impl TextArea {
             .is_some_and(|entry| self.unified_ifc_cache_entry_is_current(entry, arena))
     }
 
+    /// Borrow the unified package only when the already-installed cache entry
+    /// is current. Unlike [`Self::unified_inline_ifc_render_package`], this is
+    /// a paint-read API: it never rebuilds source data, shapes text, or updates
+    /// cache validity state.
+    pub(crate) fn strictly_current_unified_inline_ifc_render_package(
+        &self,
+        arena: &NodeArena,
+    ) -> Option<Ref<'_, TextAreaUnifiedIfcRootPackage>> {
+        let cache = self.unified_inline_ifc_root_cache.borrow();
+        let is_current = cache
+            .entry
+            .as_ref()
+            .is_some_and(|entry| self.unified_ifc_cache_entry_is_current(entry, arena));
+        if !is_current {
+            return None;
+        }
+        Ref::filter_map(cache, |cache| {
+            cache.entry.as_ref().map(|entry| &entry.package)
+        })
+        .ok()
+    }
+
     fn cached_unified_inline_ifc_root_package(
         &self,
         arena: &NodeArena,
@@ -1717,6 +1739,140 @@ impl TextArea {
     #[cfg(test)]
     pub(crate) fn unified_inline_ifc_root_cache_build_count(&self) -> usize {
         self.unified_inline_ifc_root_cache.borrow().build_count
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_cached_unified_segment_char_range_for_test(
+        &self,
+        index: usize,
+        range: Range<usize>,
+    ) {
+        if let Some(segment) = self
+            .unified_inline_ifc_root_cache
+            .borrow_mut()
+            .entry
+            .as_mut()
+            .and_then(|entry| entry.package.source_segments.get_mut(index))
+        {
+            segment.char_range = range;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_cached_unified_segment_backing_range_for_test(
+        &self,
+        index: usize,
+        range: Range<usize>,
+    ) {
+        if let Some(segment) = self
+            .unified_inline_ifc_root_cache
+            .borrow_mut()
+            .entry
+            .as_mut()
+            .and_then(|entry| entry.package.source_segments.get_mut(index))
+        {
+            segment.backing_byte_range = range;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_cached_unified_segment_preedit_range_for_test(
+        &self,
+        index: usize,
+        range: Option<Range<usize>>,
+    ) {
+        if let Some(segment) = self
+            .unified_inline_ifc_root_cache
+            .borrow_mut()
+            .entry
+            .as_mut()
+            .and_then(|entry| entry.package.source_segments.get_mut(index))
+        {
+            segment.preedit_backing_byte_range = range;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_cached_unified_segment_preedit_caret_for_test(
+        &self,
+        index: usize,
+        caret: Option<usize>,
+    ) {
+        if let Some(segment) = self
+            .unified_inline_ifc_root_cache
+            .borrow_mut()
+            .entry
+            .as_mut()
+            .and_then(|entry| entry.package.source_segments.get_mut(index))
+        {
+            segment.preedit_caret_backing_byte = caret;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_cached_unified_segment_source_for_test(&self, index: usize) {
+        if let Some(segment) = self
+            .unified_inline_ifc_root_cache
+            .borrow_mut()
+            .entry
+            .as_mut()
+            .and_then(|entry| entry.package.source_segments.get_mut(index))
+        {
+            segment.source.0 = segment.source.0.wrapping_add(1);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_cached_unified_atomic_sources_for_test(&self, duplicate: bool) {
+        if let Some(atomic_sources) = self
+            .unified_inline_ifc_root_cache
+            .borrow_mut()
+            .entry
+            .as_mut()
+            .map(|entry| &mut entry.package.atomic_sources)
+        {
+            if duplicate {
+                if let Some(source) = atomic_sources.first().copied() {
+                    atomic_sources.push(source);
+                }
+            } else {
+                atomic_sources.clear();
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_cached_unified_atomic_measurement_for_test(
+        &self,
+        index: usize,
+        constraint: bool,
+    ) {
+        if let Some(package) = self
+            .unified_inline_ifc_root_cache
+            .borrow_mut()
+            .entry
+            .as_mut()
+            .map(|entry| &mut entry.package)
+        {
+            let source = package.source_segments[index].source;
+            package
+                .ifc
+                .tamper_atomic_measurement_for_test(source, constraint);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_cached_unified_atomic_insertion_for_test(&self, index: usize) {
+        if let Some(package) = self
+            .unified_inline_ifc_root_cache
+            .borrow_mut()
+            .entry
+            .as_mut()
+            .map(|entry| &mut entry.package)
+        {
+            let source = package.source_segments[index].source;
+            package.ifc.tamper_atomic_insertion_byte_for_test(source);
+        }
     }
 }
 

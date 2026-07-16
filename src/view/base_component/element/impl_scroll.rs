@@ -1,6 +1,10 @@
 impl Element {
     fn note_scrollbar_interaction(&mut self) {
-        self.last_scrollbar_interaction = Some(Instant::now());
+        // Event dispatch must not sample time independently from the frame.
+        // Keep an immediate interaction visible to same-turn hit testing,
+        // then let `tick_animation_frame` bind both alpha and the hold/fade
+        // epoch to the viewport-owned frame sample.
+        self.scrollbar_interaction_pending = true;
     }
 
     fn max_scroll(&self) -> (f32, f32) {
@@ -18,37 +22,61 @@ impl Element {
     }
 
     fn scrollbar_visibility_alpha(&self) -> f32 {
+        if self.scrollbar_interaction_pending {
+            1.0
+        } else {
+            self.sampled_scrollbar_alpha
+        }
+    }
+
+    fn tick_scrollbar_visibility(&mut self, now: Instant) -> bool {
         const HOLD: Duration = Duration::from_millis(900);
         const FADE: Duration = Duration::from_millis(350);
-        if self.scrollbar_drag.is_some() {
-            return 1.0;
+
+        let lifecycle_changed = self.scrollbar_interaction_pending;
+        if lifecycle_changed {
+            self.last_scrollbar_interaction = Some(now);
+            self.scrollbar_interaction_pending = false;
         }
+
         let (max_x, max_y) = self.max_scroll();
-        if max_x <= 0.0 && max_y <= 0.0 {
-            return 0.0;
-        }
-        if self.is_hovered {
-            return 1.0;
-        }
-        let Some(last) = self.last_scrollbar_interaction else {
-            return 0.0;
+        let has_scrollbar = (matches!(
+            self.scroll_direction,
+            ScrollDirection::Horizontal | ScrollDirection::Both
+        ) && max_x > 0.0)
+            || (matches!(
+                self.scroll_direction,
+                ScrollDirection::Vertical | ScrollDirection::Both
+            ) && max_y > 0.0);
+        let forced_opaque = self.scrollbar_drag.is_some() || self.is_hovered;
+        let next_alpha = if !has_scrollbar {
+            self.last_scrollbar_interaction = None;
+            0.0
+        } else if forced_opaque {
+            1.0
+        } else if let Some(last) = self.last_scrollbar_interaction {
+            let elapsed = now.duration_since(last);
+            if elapsed <= HOLD {
+                1.0
+            } else {
+                let fade_elapsed = elapsed - HOLD;
+                if fade_elapsed >= FADE {
+                    self.last_scrollbar_interaction = None;
+                    0.0
+                } else {
+                    1.0 - (fade_elapsed.as_secs_f32() / FADE.as_secs_f32())
+                }
+            }
+        } else {
+            0.0
         };
-        let elapsed = last.elapsed();
-        if elapsed <= HOLD {
-            return 1.0;
-        }
-        let fade_elapsed = elapsed - HOLD;
-        if fade_elapsed >= FADE {
-            return 0.0;
-        }
-        1.0 - (fade_elapsed.as_secs_f32() / FADE.as_secs_f32())
+        let changed = lifecycle_changed
+            || self.sampled_scrollbar_alpha.to_bits() != next_alpha.to_bits();
+        self.sampled_scrollbar_alpha = next_alpha;
+        changed
     }
 
     fn scrollbar_geometry(&self, inner_x: f32, inner_y: f32) -> ScrollbarGeometry {
-        const THICKNESS: f32 = 6.0;
-        const MARGIN: f32 = 3.0;
-        const MIN_THUMB: f32 = 24.0;
-
         let mut geometry = ScrollbarGeometry::default();
         let (max_scroll_x, max_scroll_y) = self.max_scroll();
         let can_scroll_x = matches!(
@@ -61,60 +89,48 @@ impl Element {
         ) && max_scroll_y > 0.0;
 
         let reserve_v = if can_scroll_y {
-            THICKNESS + MARGIN
-        } else {
-            0.0
-        };
-        let reserve_h = if can_scroll_x {
-            THICKNESS + MARGIN
+            SCROLLBAR_THICKNESS + SCROLLBAR_MARGIN
         } else {
             0.0
         };
 
         if can_scroll_y {
-            let track_x = inner_x + self.layout_state.layout_inner_size.width - THICKNESS - MARGIN;
-            let track_y = inner_y + MARGIN;
-            let track_h = (self.layout_state.layout_inner_size.height - MARGIN * 2.0 - reserve_h).max(0.0);
-            if track_h > 0.0 {
-                let track = Rect {
-                    x: track_x,
-                    y: track_y,
-                    width: THICKNESS,
-                    height: track_h,
-                };
-                let ratio = (self.layout_state.layout_inner_size.height / self.layout_state.content_size.height.max(1.0))
-                    .clamp(0.0, 1.0);
-                let thumb_h = (track_h * ratio).clamp(MIN_THUMB.min(track_h), track_h);
-                let travel = (track_h - thumb_h).max(0.0);
-                let thumb_offset = if max_scroll_y > 0.0 {
-                    (self.scroll_offset.y / max_scroll_y).clamp(0.0, 1.0) * travel
-                } else {
-                    0.0
-                };
+            if let Some((track, thumb)) = canonical_vertical_scrollbar_geometry(
+                Rect {
+                    x: inner_x,
+                    y: inner_y,
+                    width: self.layout_state.layout_inner_size.width,
+                    height: self.layout_state.layout_inner_size.height,
+                },
+                self.layout_state.content_size.height,
+                self.scroll_offset.y,
+                can_scroll_x,
+            ) {
                 geometry.vertical_track = Some(track);
-                geometry.vertical_thumb = Some(Rect {
-                    x: track.x,
-                    y: track.y + thumb_offset,
-                    width: track.width,
-                    height: thumb_h,
-                });
+                geometry.vertical_thumb = Some(thumb);
             }
         }
 
         if can_scroll_x {
-            let track_x = inner_x + MARGIN;
-            let track_y = inner_y + self.layout_state.layout_inner_size.height - THICKNESS - MARGIN;
-            let track_w = (self.layout_state.layout_inner_size.width - MARGIN * 2.0 - reserve_v).max(0.0);
+            let track_x = inner_x + SCROLLBAR_MARGIN;
+            let track_y = inner_y + self.layout_state.layout_inner_size.height
+                - SCROLLBAR_THICKNESS
+                - SCROLLBAR_MARGIN;
+            let track_w = (self.layout_state.layout_inner_size.width
+                - SCROLLBAR_MARGIN * 2.0
+                - reserve_v)
+                .max(0.0);
             if track_w > 0.0 {
                 let track = Rect {
                     x: track_x,
                     y: track_y,
                     width: track_w,
-                    height: THICKNESS,
+                    height: SCROLLBAR_THICKNESS,
                 };
                 let ratio = (self.layout_state.layout_inner_size.width / self.layout_state.content_size.width.max(1.0))
                     .clamp(0.0, 1.0);
-                let thumb_w = (track_w * ratio).clamp(MIN_THUMB.min(track_w), track_w);
+                let thumb_w = (track_w * ratio)
+                    .clamp(SCROLLBAR_MIN_THUMB.min(track_w), track_w);
                 let travel = (track_w - thumb_w).max(0.0);
                 let thumb_offset = if max_scroll_x > 0.0 {
                     (self.scroll_offset.x / max_scroll_x).clamp(0.0, 1.0) * travel

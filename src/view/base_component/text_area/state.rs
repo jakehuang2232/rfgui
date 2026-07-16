@@ -288,6 +288,16 @@ impl TextArea {
         true
     }
 
+    #[cfg(test)]
+    pub(crate) fn commit_preedit_for_paint_test(&mut self) -> bool {
+        self.commit_preedit()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_preedit_for_paint_test(&mut self) -> bool {
+        self.clear_preedit()
+    }
+
     pub(super) fn set_focused(&mut self, focused: bool) -> bool {
         if self.is_focused == focused {
             return false;

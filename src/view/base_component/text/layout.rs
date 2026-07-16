@@ -69,6 +69,10 @@ impl Layoutable for Text {
         if !self.auto_width && !self.auto_height {
             let layout = self.relayout_from_base(Some(self.size.width.max(1.0)), allow_wrap);
             self.shaped_context = Some(layout.context);
+            self.shaped_context
+                .as_ref()
+                .expect("fixed-size text installs shaped context")
+                .prepare_text_pass_paint_input();
             self.dirty_flags = self.dirty_flags.without(DirtyFlags::LAYOUT);
             self.last_layout_constraints = Some(constraints);
             return;
@@ -119,6 +123,10 @@ impl Layoutable for Text {
                 self.shaped_context = Some(layout.context);
             }
         }
+        self.shaped_context
+            .as_ref()
+            .expect("measured text installs shaped context")
+            .prepare_text_pass_paint_input();
         self.dirty_flags = self.dirty_flags.without(DirtyFlags::LAYOUT);
         self.last_layout_constraints = Some(constraints);
     }

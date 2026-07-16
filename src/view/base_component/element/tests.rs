@@ -12,15 +12,17 @@ mod tests {
     use super::super::core::Position as LayoutPosition;
     use super::{
         DirtyFlags, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
-        Layoutable, UiBuildContext, expand_corner_radii_for_spread, main_axis_start_and_gap,
-        normalize_corner_radii, resolve_px_with_base, resolve_signed_px_with_base,
+        Layoutable, ScrollbarAxis, ScrollbarDragState, Size, UiBuildContext,
+        expand_corner_radii_for_spread, main_axis_start_and_gap, normalize_corner_radii,
+        resolve_px_with_base, resolve_signed_px_with_base,
     };
     use super::{reset_test_promoted_build_counts, test_promoted_build_count};
     use crate::style::Layout;
     use crate::style::{
         Align, AnchorName, Angle, Border, BorderRadius, BoxShadow, ClipMode, Collision,
         CollisionBoundary, Color, ComputedStyle, CrossSize, JustifyContent, Length, Opacity,
-        Operator, Origin, Position, Rotate, Style, Transform, TransformOrigin, Translate,
+        Operator, Origin, Position, Rotate, ScrollDirection, Style, Transform, TransformOrigin,
+        Translate,
         VerticalAlign,
     };
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
@@ -42,6 +44,111 @@ mod tests {
     use rustc_hash::{FxHashMap, FxHashSet};
 
     use std::sync::Arc;
+
+    #[test]
+    fn scrollbar_fade_uses_one_frame_sample_and_stops_after_hidden() {
+        let mut element = Element::new(0.0, 0.0, 100.0, 80.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        element.apply_style(style);
+        element.layout_state.content_size = Size {
+            width: 100.0,
+            height: 300.0,
+        };
+
+        let frame = crate::time::Instant::now();
+        assert!(element.set_hovered(true));
+        assert!(element.wants_animation_frame());
+        assert!(element
+            .tick_post_layout_animation_frame(frame)
+            .contains(DirtyFlags::PAINT));
+        assert_eq!(element.scrollbar_visibility_alpha().to_bits(), 1.0_f32.to_bits());
+
+        assert!(element.set_hovered(false));
+        let leave_frame = frame + crate::time::Duration::from_millis(10);
+        assert!(element
+            .tick_post_layout_animation_frame(leave_frame)
+            .contains(DirtyFlags::PAINT));
+        assert!(element.wants_animation_frame());
+
+        let fade_frame = leave_frame + crate::time::Duration::from_millis(1_000);
+        assert!(element
+            .tick_post_layout_animation_frame(fade_frame)
+            .contains(DirtyFlags::PAINT));
+        assert!((0.0..1.0).contains(&element.scrollbar_visibility_alpha()));
+        assert!(element.wants_animation_frame());
+
+        let hidden_frame = leave_frame + crate::time::Duration::from_millis(1_250);
+        assert!(element
+            .tick_post_layout_animation_frame(hidden_frame)
+            .contains(DirtyFlags::PAINT));
+        assert_eq!(element.scrollbar_visibility_alpha().to_bits(), 0.0_f32.to_bits());
+        assert!(!element.wants_animation_frame());
+        assert!(element
+            .tick_post_layout_animation_frame(
+                hidden_frame + crate::time::Duration::from_millis(16),
+            )
+            .is_empty());
+
+        element.scrollbar_drag = Some(ScrollbarDragState {
+            axis: ScrollbarAxis::Vertical,
+            grab_offset: 0.0,
+            reanchor_on_first_move: false,
+        });
+        let drag_frame = hidden_frame + crate::time::Duration::from_millis(32);
+        assert!(element
+            .tick_post_layout_animation_frame(drag_frame)
+            .contains(DirtyFlags::PAINT));
+        assert!(element.cancel_pointer_interaction());
+        assert!(element.wants_animation_frame());
+        assert!(element
+            .tick_post_layout_animation_frame(drag_frame)
+            .contains(DirtyFlags::PAINT));
+        assert_eq!(element.scrollbar_visibility_alpha().to_bits(), 1.0_f32.to_bits());
+    }
+
+    #[test]
+    fn scrollbar_hover_resolves_against_same_frame_final_layout_geometry() {
+        let mut element = Element::new(0.0, 0.0, 100.0, 80.0);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        element.apply_style(style);
+        element.layout_state.content_size = Size {
+            width: 100.0,
+            height: 80.0,
+        };
+        assert!(element.set_hovered(true));
+
+        let semantic_now = crate::time::Instant::now();
+        assert!(
+            element.tick_animation_frame(semantic_now).is_empty(),
+            "pre-layout animation must not consume scrollbar pending state"
+        );
+
+        // Simulate this frame's final layout turning the same host from
+        // non-scrollable into scrollable before property observation.
+        element.layout_state.content_size.height = 300.0;
+        assert!(element
+            .tick_post_layout_animation_frame(semantic_now)
+            .contains(DirtyFlags::PAINT));
+        assert_eq!(
+            element.scrollbar_visibility_alpha().to_bits(),
+            1.0_f32.to_bits()
+        );
+        assert!(element.last_scrollbar_interaction.is_some());
+    }
+
+    fn drain_deferred(
+        ctx: &mut UiBuildContext,
+    ) -> Vec<crate::view::base_component::DeferredRenderNode> {
+        std::iter::from_fn(|| ctx.next_deferred()).collect()
+    }
 
     #[test]
     fn justify_content_space_evenly_distributes_free_space() {
@@ -1842,9 +1949,16 @@ mod tests {
             .expect("parent build returns state");
         ctx.set_state(next_state);
 
-        let deferred = ctx.take_deferred_nodes();
+        let deferred = drain_deferred(&mut ctx);
         let child_id = arena.get(child_k).unwrap().element.stable_id();
-        assert!(deferred.iter().any(|node| node.stable_id == child_id));
+        assert_eq!(
+            deferred
+                .iter()
+                .filter(|node| node.key == child_k && node.stable_id == child_id)
+                .count(),
+            1,
+            "canonical pre-seed and build-time registration must deduplicate by NodeKey"
+        );
     }
 
     #[test]
@@ -3897,6 +4011,7 @@ mod tests {
     #[test]
     fn computed_style_consumer_syncs_element_render_state() {
         let mut el = Element::new(0.0, 0.0, 100.0, 40.0);
+        el.clear_local_dirty_flags(DirtyFlags::ALL);
         let background = Color::rgb(9, 18, 27);
         let border_color = Color::rgb(36, 45, 54);
         let mut computed = ComputedStyle::default();
@@ -3928,6 +4043,8 @@ mod tests {
         assert!((el.border_widths.top - 2.0).abs() < 0.001);
         assert!((el.border_widths.bottom - 2.0).abs() < 0.001);
         assert!((render_state.opacity - 0.35).abs() < 0.001);
+        assert!(el.local_dirty_flags().contains(DirtyFlags::PAINT));
+        assert!(el.local_dirty_flags().contains(DirtyFlags::COMPOSITE));
     }
 
     #[test]
@@ -4479,7 +4596,7 @@ mod tests {
                 .promotion_composite_bounds();
         let mut layer_ctx = UiBuildContext::from_parts(
             ctx.viewport(),
-            super::BuildState::for_layer_subtree_with_ancestor_clip(ctx.ancestor_clip_context()),
+            ctx.layer_subtree_state_with_ancestor_clip(ctx.ancestor_clip_context()),
         );
         let layer_target =
             layer_ctx.allocate_promoted_layer_target(&mut graph, parent_id, promotion_bounds);
@@ -4512,6 +4629,171 @@ mod tests {
                 .iter()
                 .any(|name| name.contains("draw_rect_pass::DrawRectPass")),
             "expected scrollbar draw rect in promoted root base path, passes: {pass_names:?}"
+        );
+    }
+
+    #[test]
+    fn promoted_child_opacity_is_composited_while_its_base_stays_opaque_and_reusable() {
+        let mut parent = Element::new_with_id(1, 0.0, 0.0, 120.0, 120.0);
+        let mut parent_style = Style::new();
+        parent_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::rgb(0, 0, 255)),
+        );
+        parent.apply_style(parent_style);
+        let mut child = Element::new_with_id(2, 10.0, 10.0, 60.0, 60.0);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::rgb(255, 0, 0)),
+        );
+        child.apply_style(child_style);
+        child.set_opacity(0.6);
+
+        let mut arena = new_test_arena();
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let child_key = commit_child(&mut arena, parent_key, Box::new(child));
+        measure_and_place(
+            &mut arena,
+            parent_key,
+            LayoutConstraints {
+                max_width: 120.0,
+                max_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 120.0,
+                available_height: 120.0,
+                viewport_width: 120.0,
+                viewport_height: 120.0,
+                percent_base_width: Some(120.0),
+                percent_base_height: Some(120.0),
+            },
+        );
+
+        let build_frame = |arena: &mut crate::view::node_arena::NodeArena,
+                           update_kind: crate::view::promotion::PromotedLayerUpdateKind| {
+            let mut graph = FrameGraph::new();
+            let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+            let target = ctx.allocate_target(&mut graph);
+            ctx.set_current_target(target);
+            ctx.set_promoted_runtime(
+                Arc::new(FxHashSet::from_iter([2])),
+                Arc::new(FxHashMap::from_iter([(2, update_kind)])),
+                Arc::new(FxHashMap::from_iter([(
+                    2,
+                    crate::view::promotion::PromotedLayerUpdateKind::Reraster,
+                )])),
+            );
+            let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+            arena
+                .with_element_taken(parent_key, |element, arena| {
+                    element.build(&mut graph, arena, ctx_for_build)
+                })
+                .expect("parent build should return state");
+            graph
+        };
+
+        let first_graph = build_frame(
+            &mut arena,
+            crate::view::promotion::PromotedLayerUpdateKind::Reraster,
+        );
+        let first_rect_params = first_graph
+            .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::DrawRectPass>()
+            .into_iter()
+            .map(|pass| pass.test_params())
+            .chain(
+                first_graph
+                    .test_graphics_passes::<
+                        crate::view::render_pass::draw_rect_pass::OpaqueRectPass,
+                    >()
+                    .into_iter()
+                    .map(|pass| pass.test_params()),
+            )
+            .collect::<Vec<_>>();
+        let red_base_draw_opacities = first_rect_params
+            .iter()
+            .filter(|params| {
+                params.fill_color[0] > 0.9
+                    && params.fill_color[1] < 0.1
+                    && params.fill_color[2] < 0.1
+            })
+            .map(|params| params.opacity)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            red_base_draw_opacities,
+            vec![1.0],
+            "all rect params: {:?}",
+            (
+                first_rect_params
+                    .iter()
+                    .map(|params| (params.position, params.fill_color, params.opacity))
+                    .collect::<Vec<_>>(),
+                first_graph
+                    .pass_descriptors()
+                    .iter()
+                    .map(|descriptor| descriptor.name)
+                    .collect::<Vec<_>>()
+            )
+        );
+        assert!(
+            first_graph
+                .test_graphics_passes::<
+                    crate::view::render_pass::composite_layer_pass::CompositeLayerPass,
+                >()
+                .iter()
+                .any(|pass| (pass.test_params().opacity - 0.6).abs() < f32::EPSILON),
+            "promoted child opacity must be applied by its composite pass"
+        );
+
+        arena
+            .get_mut(child_key)
+            .expect("child should remain in arena")
+            .element
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .expect("child should be Element")
+            .set_opacity(0.25);
+
+        let second_graph = build_frame(
+            &mut arena,
+            crate::view::promotion::PromotedLayerUpdateKind::Reuse,
+        );
+        assert!(
+            second_graph
+                .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::DrawRectPass>()
+                .into_iter()
+                .map(|pass| pass.test_params())
+                .chain(
+                    second_graph
+                        .test_graphics_passes::<
+                            crate::view::render_pass::draw_rect_pass::OpaqueRectPass,
+                        >()
+                        .into_iter()
+                        .map(|pass| pass.test_params()),
+                )
+                .all(|params| {
+                    !(params.fill_color[0] > 0.9
+                        && params.fill_color[1] < 0.1
+                        && params.fill_color[2] < 0.1)
+                }),
+            "opacity-only update must not rerasterize the promoted child base"
+        );
+        assert!(
+            second_graph
+                .test_graphics_passes::<
+                    crate::view::render_pass::composite_layer_pass::CompositeLayerPass,
+                >()
+                .iter()
+                .any(|pass| (pass.test_params().opacity - 0.25).abs() < f32::EPSILON),
+            "reused promoted child must composite with the new opacity"
         );
     }
 
@@ -4861,7 +5143,7 @@ mod tests {
         assert_eq!(pushed, Some(1), "first pushed clip id should be 1");
 
         let ancestor_clip = ctx.ancestor_clip_context();
-        let layer_state = super::BuildState::for_layer_subtree_with_ancestor_clip(ancestor_clip);
+        let layer_state = ctx.layer_subtree_state_with_ancestor_clip(ancestor_clip);
         let layer_ctx = UiBuildContext::from_parts(ctx.viewport(), layer_state);
 
         assert_eq!(
@@ -4881,9 +5163,8 @@ mod tests {
             Some([10, 10, 40, 40])
         );
 
-        let layer_state = super::BuildState::for_layer_subtree_with_ancestor_clip(
-            super::AncestorClipContext::default(),
-        );
+        let layer_state =
+            ctx.layer_subtree_state_with_ancestor_clip(super::AncestorClipContext::default());
         let layer_ctx = UiBuildContext::from_parts(ctx.viewport(), layer_state);
 
         assert_eq!(
@@ -5690,6 +5971,24 @@ mod tests {
     }
 
     #[test]
+    fn setting_opacity_marks_paint_and_composite_without_layout_or_placement() {
+        let mut el = Element::new(0.0, 0.0, 20.0, 20.0);
+        el.clear_local_dirty_flags(DirtyFlags::ALL);
+
+        el.set_opacity(0.5);
+
+        let dirty = el.local_dirty_flags();
+        assert!(dirty.contains(DirtyFlags::PAINT));
+        assert!(dirty.contains(DirtyFlags::COMPOSITE));
+        assert!(!dirty.intersects(DirtyFlags::LAYOUT));
+        assert!(!dirty.intersects(
+            DirtyFlags::PLACE
+                .union(DirtyFlags::BOX_MODEL)
+                .union(DirtyFlags::HIT_TEST),
+        ));
+    }
+
+    #[test]
     fn border_radius_style_sample_preserves_resolved_corner_ratios() {
         let mut arena = new_test_arena();
         let mut el = Element::new(0.0, 0.0, 200.0, 150.0);
@@ -5952,7 +6251,12 @@ mod tests {
 
         let child = crate::view::test_support::get_element::<Element>(&arena, child_key);
         assert!((child.debug_render_state().opacity - 0.42).abs() < 0.001);
-        assert_style_sample_paint_dirty(&arena, root_key, child_key);
+        assert_style_sample_dirty_flags(
+            &arena,
+            root_key,
+            child_key,
+            DirtyFlags::PAINT.union(DirtyFlags::COMPOSITE),
+        );
     }
 
     macro_rules! color_style_sample_dirty_cache_test {
@@ -7853,7 +8157,7 @@ mod tests {
         let pass_count_before_defer = graph.pass_descriptors().len();
 
         // Defer pass.
-        let deferred = ctx.take_deferred_nodes();
+        let deferred = drain_deferred(&mut ctx);
         assert!(
             deferred.iter().any(|node| node.stable_id == snackbar_id),
             "snackbar should be in deferred list, got {:?}",
@@ -7977,7 +8281,7 @@ mod tests {
 
         // Window's build with should_render=false should still collect
         // viewport-anchored descendants into the deferred list.
-        let deferred = ctx.take_deferred_nodes();
+        let deferred = drain_deferred(&mut ctx);
         assert!(
             deferred.iter().any(|node| node.stable_id == snackbar_id),
             "snackbar should be deferred even when window not rendered, got {:?}",
@@ -8012,7 +8316,7 @@ mod tests {
     /// but `has_visible_inner_render_area` returns false because the
     /// inner rect's intersection with the current scissor is empty —
     /// the overflow loop is skipped and the descendant is never appended
-    /// via `append_to_defer`.
+    /// via `register_deferred`.
     #[test]
     fn viewport_anchored_descendant_collected_when_ancestor_inner_below_viewport() {
         // Window: clip:Viewport, top in viewport, content stretches below.
@@ -8110,7 +8414,7 @@ mod tests {
             .expect("window build returns state");
         ctx.set_state(next_state);
 
-        let deferred = ctx.take_deferred_nodes();
+        let deferred = drain_deferred(&mut ctx);
         assert!(
             deferred.iter().any(|node| node.stable_id == snackbar_id),
             "BUG: snackbar should be in deferred list when ancestor inner is below viewport, got {:?}",
@@ -8240,7 +8544,7 @@ mod tests {
             .expect("window build returns state");
         ctx.set_state(next_state);
 
-        let deferred = ctx.take_deferred_nodes();
+        let deferred = drain_deferred(&mut ctx);
         eprintln!("[deferred ids] {:?}", deferred);
         eprintln!("[snackbar id] {}", snackbar_id);
         assert!(
@@ -8360,7 +8664,7 @@ mod tests {
             .expect("window build returns state");
         ctx.set_state(next_state);
 
-        let deferred = ctx.take_deferred_nodes();
+        let deferred = drain_deferred(&mut ctx);
         assert!(
             deferred.iter().any(|node| node.stable_id == snackbar_id),
             "BUG: deeply nested snackbar must still be deferred. defer={:?} snackbar_id={}",
@@ -8703,4 +9007,86 @@ mod tests {
             "explicit line_height must beat cascade"
         );
     }
+}
+
+#[test]
+fn persistent_target_keys_are_unique_across_roles_and_full_u64_ids() {
+    use std::collections::HashSet;
+
+    let mut keys = HashSet::new();
+    for node_id in [0, 1, u64::MAX] {
+        for color in [
+            promoted_layer_stable_key(node_id),
+            promoted_clip_mask_stable_key(node_id),
+            promoted_final_layer_stable_key(node_id),
+            transformed_layer_stable_key(node_id),
+        ] {
+            assert!(keys.insert(color));
+            let depth = persistent_depth_stencil_stable_key(color)
+                .expect("known color role should produce a depth key");
+            assert!(keys.insert(depth));
+        }
+        assert!(keys.insert(PersistentTextureKey::Generic(node_id)));
+    }
+    assert_eq!(keys.len(), 27);
+    assert!(persistent_depth_stencil_stable_key(PersistentTextureKey::Generic(u64::MAX)).is_none());
+}
+
+#[test]
+fn root_effect_key_uses_the_full_generational_node_key() {
+    let mut slots = slotmap::SlotMap::<NodeKey, ()>::with_key();
+    let first = slots.insert(());
+    let first_key = root_effect_stable_key(first);
+    slots.remove(first);
+    let replacement = slots.insert(());
+    let replacement_key = root_effect_stable_key(replacement);
+
+    assert_ne!(first, replacement, "fixture must reuse a bumped generation");
+    assert_ne!(first_key, replacement_key);
+    assert_eq!(
+        first_key,
+        PersistentTextureKey::retained(
+            RetainedTextureRole::RootEffectColor,
+            first.data().as_ffi(),
+        )
+    );
+}
+
+#[test]
+fn full_viewport_persistent_target_uses_exact_physical_descriptor_and_pair() {
+    let format = wgpu::TextureFormat::Rgba16Float;
+    let mut ctx = UiBuildContext::new(641, 359, format, 2.75);
+    let mut graph = FrameGraph::new();
+    let color_key =
+        PersistentTextureKey::retained(RetainedTextureRole::RootEffectColor, 0xC2A);
+    let color = ctx.allocate_persistent_full_viewport_target(&mut graph, color_key);
+    ctx.set_current_target(color);
+
+    let color_desc = graph
+        .texture_desc(color.handle().expect("root color handle"))
+        .expect("root color descriptor");
+    assert_eq!((color_desc.width(), color_desc.height()), (641, 359));
+    assert_eq!(color_desc.origin(), (0, 0));
+    assert_eq!(color_desc.format(), format);
+    assert_eq!(color_desc.dimension(), wgpu::TextureDimension::D2);
+    assert_eq!(color_desc.sample_count(), 1);
+
+    let AttachmentTarget::Texture(depth_handle) =
+        ctx.depth_stencil_target().expect("root depth target")
+    else {
+        panic!("root depth target must be texture-backed");
+    };
+    let depth_desc = graph
+        .texture_desc(depth_handle)
+        .expect("root depth descriptor");
+    assert_eq!((depth_desc.width(), depth_desc.height()), (641, 359));
+    assert_eq!(depth_desc.origin(), (0, 0));
+    assert_eq!(depth_desc.format(), wgpu::TextureFormat::Depth24PlusStencil8);
+
+    let declared = graph
+        .declared_persistent_texture_keys()
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(declared.len(), 2);
+    assert!(declared.contains(&color_key));
+    assert!(declared.contains(&color_key.depth_stencil().unwrap()));
 }
