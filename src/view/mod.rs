@@ -16,10 +16,12 @@ pub mod popup_stack;
 /// Layer promotion analysis and configuration APIs.
 pub mod promotion;
 mod promotion_builder;
+pub(crate) mod raster_cost;
 pub mod render_pass;
 mod renderer_adapter;
 #[cfg(test)]
 mod renderer_adapter_tests;
+pub(crate) mod sampled_texture;
 pub(crate) mod svg_resource;
 mod tags;
 /// The retained viewport runtime and platform-facing integration surface.
