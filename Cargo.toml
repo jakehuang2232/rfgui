@@ -34,6 +34,9 @@ slotmap = "1.0"
 parley = "0.11.0"
 swash = "0.2.7"
 
+[dev-dependencies]
+pollster = "0.4.0"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 arboard = "3.6.1"
 

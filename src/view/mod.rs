@@ -2,6 +2,7 @@
 
 #[allow(missing_docs)]
 pub mod base_component;
+pub(crate) mod compositor;
 pub mod debug;
 pub mod fiber_work;
 pub(crate) mod font_system;
@@ -12,6 +13,7 @@ pub(crate) mod inline_formatting_context;
 pub(crate) mod inline_text_pass_adapter;
 pub(crate) mod layout;
 pub mod node_arena;
+pub(crate) mod paint;
 pub mod popup_stack;
 /// Layer promotion analysis and configuration APIs.
 pub mod promotion;
