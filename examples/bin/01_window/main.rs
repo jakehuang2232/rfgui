@@ -40,10 +40,14 @@ impl App for WindowDemoApp {
     }
 }
 
-fn parse_paint_renderer_mode(value: Option<&str>) -> ViewportPaintRendererMode {
+fn parse_paint_renderer_mode(
+    value: Option<&str>,
+    default_mode: ViewportPaintRendererMode,
+) -> ViewportPaintRendererMode {
     match value {
         Some(RETAINED_AUTO_LABEL) => ViewportPaintRendererMode::RetainedAuto,
-        Some(LEGACY_LABEL) | None => ViewportPaintRendererMode::Legacy,
+        Some(LEGACY_LABEL) => ViewportPaintRendererMode::Legacy,
+        None => default_mode,
         Some(_) => ViewportPaintRendererMode::Legacy,
     }
 }
@@ -68,7 +72,7 @@ fn query_parameter<'a>(query: &'a str, key: &str) -> Option<&'a str> {
 #[cfg(not(target_arch = "wasm32"))]
 fn configured_paint_renderer_mode() -> ViewportPaintRendererMode {
     let value = std::env::var(PAINT_RENDERER_ENV).ok();
-    parse_paint_renderer_mode(value.as_deref())
+    parse_paint_renderer_mode(value.as_deref(), ViewportPaintRendererMode::RetainedAuto)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -81,6 +85,7 @@ fn configured_paint_renderer_mode() -> ViewportPaintRendererMode {
         query
             .as_deref()
             .and_then(|query| query_parameter(query, PAINT_RENDERER_QUERY)),
+        ViewportPaintRendererMode::Legacy,
     )
 }
 
@@ -120,20 +125,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn paint_renderer_mode_parser_is_opt_in_and_fail_closed() {
+    fn paint_renderer_mode_parser_honors_default_and_fail_closed() {
         assert_eq!(
-            parse_paint_renderer_mode(Some(RETAINED_AUTO_LABEL)),
+            parse_paint_renderer_mode(Some(RETAINED_AUTO_LABEL), ViewportPaintRendererMode::Legacy),
             ViewportPaintRendererMode::RetainedAuto
         );
+        assert_eq!(
+            parse_paint_renderer_mode(None, ViewportPaintRendererMode::RetainedAuto),
+            ViewportPaintRendererMode::RetainedAuto
+        );
+        assert_eq!(
+            parse_paint_renderer_mode(None, ViewportPaintRendererMode::Legacy),
+            ViewportPaintRendererMode::Legacy
+        );
         for value in [
-            None,
             Some(LEGACY_LABEL),
             Some(""),
             Some("artifact"),
             Some("RETAINED-AUTO"),
         ] {
             assert_eq!(
-                parse_paint_renderer_mode(value),
+                parse_paint_renderer_mode(value, ViewportPaintRendererMode::RetainedAuto),
                 ViewportPaintRendererMode::Legacy
             );
         }
