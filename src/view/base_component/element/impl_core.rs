@@ -659,6 +659,7 @@ impl Element {
                 ElementCore::new_with_id(id, x, y, width, height)
             },
             anchor_name: None,
+            debug_type: DebugType::empty(),
             layout_state: crate::view::layout::LayoutState::new(x, y, width, height),
             intrinsic_size_is_percent_base: true,
             parsed_style: style,
@@ -808,6 +809,14 @@ impl Element {
     pub fn set_anchor_name(&mut self, name: Option<AnchorName>) {
         self.anchor_name = name;
         self.mark_place_dirty();
+    }
+
+    pub fn debug_type(&self) -> DebugType {
+        self.debug_type
+    }
+
+    pub fn set_debug_type(&mut self, debug_type: DebugType) {
+        self.debug_type = debug_type;
     }
 
     pub fn set_x(&mut self, x: f32) {

@@ -22,8 +22,8 @@ use crate::view::renderer_adapter::{
 };
 use crate::view::test_support::{commit_rsx_tree, measure_and_place};
 use crate::view::{
-    Element as HostElement, ElementStylePropSchema, Text as HostText, TextArea as HostTextArea,
-    TextStylePropSchema,
+    DebugType, Element as HostElement, ElementStylePropSchema, Text as HostText,
+    TextArea as HostTextArea, TextStylePropSchema,
 };
 
 fn host_element_node() -> RsxNode {
@@ -44,6 +44,63 @@ fn empty_element_style() -> ElementStylePropSchema {
 
 fn empty_text_style() -> TextStylePropSchema {
     TextStylePropSchema::default()
+}
+
+#[test]
+fn element_debug_type_defaults_empty_and_flows_through_prop_paths() {
+    let mut arena = crate::view::test_support::new_test_arena();
+    let default_root = commit_rsx_tree(&mut arena, &host_element_node())[0];
+    assert!(
+        crate::view::test_support::get_element::<BaseElement>(&arena, default_root)
+            .debug_type()
+            .is_empty()
+    );
+
+    // No concrete public flags exist yet. An unnamed retained bit exercises
+    // the bitflag transport without prematurely defining the flag surface.
+    let marker = DebugType::from_bits_retain(1);
+    let marked_tree = rsx! { <HostElement debug_type={marker} /> };
+    let marked_root = commit_rsx_tree(&mut arena, &marked_tree)[0];
+    assert_eq!(
+        crate::view::test_support::get_element::<BaseElement>(&arena, marked_root).debug_type(),
+        marker
+    );
+
+    let viewport_style = crate::style::Style::new();
+    let ctx = crate::view::fiber_work::ApplyContext {
+        viewport_style: &viewport_style,
+        viewport_width: 800.0,
+        viewport_height: 600.0,
+    };
+    let next = DebugType::from_bits_retain(2);
+    arena.with_element_taken(marked_root, |element, arena_ref| {
+        assert_eq!(
+            element.apply_prop(
+                arena_ref,
+                marked_root,
+                &ctx,
+                "debug_type",
+                next.into_prop_value(),
+            ),
+            crate::view::fiber_work::PropApplyOutcome::Applied
+        );
+    });
+    assert_eq!(
+        crate::view::test_support::get_element::<BaseElement>(&arena, marked_root).debug_type(),
+        next
+    );
+
+    arena.with_element_taken(marked_root, |element, arena_ref| {
+        assert_eq!(
+            element.reset_prop(arena_ref, marked_root, &ctx, "debug_type"),
+            crate::view::fiber_work::PropApplyOutcome::Applied
+        );
+    });
+    assert!(
+        crate::view::test_support::get_element::<BaseElement>(&arena, marked_root)
+            .debug_type()
+            .is_empty()
+    );
 }
 
 #[test]

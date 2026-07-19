@@ -1,0 +1,4 @@
+interface:
+  display_name: "rfgui Element Debug"
+  short_description: "Diagnose and extend rfgui Element debugging"
+  default_prompt: "Use $m12-element-debug to diagnose this rfgui Element issue with existing debug flags before adding a new one."

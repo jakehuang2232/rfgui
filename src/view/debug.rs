@@ -7,9 +7,38 @@
 
 use std::collections::HashMap;
 
+use bitflags::bitflags;
+
 use crate::view::base_component::{BoxModelSnapshot, DirtyFlags};
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::viewport::PointerButton;
+
+bitflags! {
+    /// Selects the element-scoped diagnostics attached to an `Element`.
+    ///
+    /// Concrete flags are intentionally added together with their matching
+    /// debug output path. An empty value is the default and carries no debug
+    /// behavior.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+    pub struct DebugType: u32 {}
+}
+
+impl crate::ui::IntoPropValue for DebugType {
+    fn into_prop_value(self) -> crate::ui::PropValue {
+        crate::ui::PropValue::I64(i64::from(self.bits()))
+    }
+}
+
+impl crate::ui::FromPropValue for DebugType {
+    fn from_prop_value(value: crate::ui::PropValue) -> Result<Self, String> {
+        match value {
+            crate::ui::PropValue::I64(bits) => u32::try_from(bits)
+                .map(Self::from_bits_retain)
+                .map_err(|_| "expected DebugType bits".to_string()),
+            _ => Err("expected DebugType value".to_string()),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DebugCaptureOptions {

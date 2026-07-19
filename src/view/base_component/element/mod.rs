@@ -29,6 +29,7 @@ use crate::ui::{
 };
 use crate::view::base_component::round_layout_value;
 use crate::view::base_component::text::TextIfcOwnedLine;
+use crate::view::debug::DebugType;
 use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::{
     AttachmentTarget, FrameGraph, PersistentTextureKey, RetainedTextureRole, TextureDesc,
@@ -5494,6 +5495,7 @@ impl ElementInlineIfcRolloutPackages {
 pub struct Element {
     core: ElementCore,
     anchor_name: Option<AnchorName>,
+    debug_type: DebugType,
     pub(crate) layout_state: crate::view::layout::LayoutState,
     intrinsic_size_is_percent_base: bool,
     parsed_style: Style,
@@ -8702,6 +8704,7 @@ impl ElementTrait for Element {
     }
 
     fn ingest_props(&mut self, node: &crate::ui::RsxElementNode) -> Result<(), String> {
+        use crate::ui::FromPropValue;
         use crate::view::renderer_adapter::{as_f32, as_owned_string};
         for (key, value) in node.props.iter() {
             match *key {
@@ -8712,6 +8715,7 @@ impl ElementTrait for Element {
                 "anchor" => self.set_anchor_name(Some(crate::style::AnchorName::new(
                     as_owned_string(value, key)?,
                 ))),
+                "debug_type" => self.set_debug_type(DebugType::from_prop_value(value.clone())?),
                 "padding" => self.set_padding(as_f32(value, key)?),
                 "padding_x" => self.set_padding_x(as_f32(value, key)?),
                 "padding_y" => self.set_padding_y(as_f32(value, key)?),
@@ -8738,6 +8742,7 @@ impl ElementTrait for Element {
         name: &'static str,
         value: crate::ui::PropValue,
     ) -> crate::view::fiber_work::PropApplyOutcome {
+        use crate::ui::FromPropValue;
         use crate::view::fiber_work::PropApplyOutcome;
         use crate::view::renderer_adapter::{
             StyleCascadeContext, as_element_style, as_owned_string,
@@ -8777,6 +8782,13 @@ impl ElementTrait for Element {
                     return PropApplyOutcome::DecodeFailed(name);
                 };
                 self.set_anchor_name(Some(crate::style::AnchorName::new(name_str)));
+                PropApplyOutcome::Applied
+            }
+            "debug_type" => {
+                let Ok(debug_type) = DebugType::from_prop_value(value) else {
+                    return PropApplyOutcome::DecodeFailed(name);
+                };
+                self.set_debug_type(debug_type);
                 PropApplyOutcome::Applied
             }
             other if RSX_EVENT_HANDLER_PROPS.contains(&other) => {
@@ -8830,6 +8842,10 @@ impl ElementTrait for Element {
             }
             "anchor" => {
                 self.set_anchor_name(None);
+                PropApplyOutcome::Applied
+            }
+            "debug_type" => {
+                self.set_debug_type(DebugType::empty());
                 PropApplyOutcome::Applied
             }
             "opacity" => {

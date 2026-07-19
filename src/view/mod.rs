@@ -32,6 +32,7 @@ pub mod viewport;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+pub use debug::DebugType;
 #[cfg(target_arch = "wasm32")]
 pub use font_system::load_browser_fonts;
 #[cfg(target_arch = "wasm32")]

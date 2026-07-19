@@ -77,6 +77,7 @@ pub enum SvgSource {
 #[props]
 pub struct ElementPropSchema {
     pub anchor: Option<String>,
+    pub debug_type: Option<crate::view::debug::DebugType>,
     pub style: Option<ElementStylePropSchema>,
     pub on_pointer_down: Option<PointerDownHandlerProp>,
     pub on_pointer_up: Option<PointerUpHandlerProp>,
@@ -280,6 +281,12 @@ impl RsxComponent<ElementPropSchema> for Element {
             RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::for_tag::<Element>());
         if let Some(anchor) = props.anchor {
             node = node.with_prop("anchor", anchor);
+        }
+        if let Some(debug_type) = props.debug_type {
+            node = node.with_prop(
+                "debug_type",
+                crate::ui::IntoPropValue::into_prop_value(debug_type),
+            );
         }
         if let Some(style) = props.style {
             node = node.with_prop("style", style);
