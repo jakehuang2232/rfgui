@@ -431,6 +431,225 @@ fn retained_scroll_scene_graph(
     Ok((graph, trace))
 }
 
+fn focused_atomic_projection_scroll_fixture(
+    caret_visible: bool,
+    preedit: Option<(&str, Option<(usize, usize)>)>,
+) -> (
+    NodeArena,
+    Vec<NodeKey>,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
+    let width = 60.0;
+    let height = 40.0;
+    let content_height = 120.0;
+    let mut text_area = crate::view::base_component::TextArea::new();
+    text_area.content = "before projected after".to_string();
+    text_area.font_size = 14.0;
+    text_area.line_height = 1.25;
+    text_area.is_focused = true;
+    text_area.caret_visible = caret_visible;
+    text_area.cursor_char = if preedit.is_some() { 8 } else { 7 };
+    if let Some((preedit, cursor)) = preedit {
+        text_area.ime_preedit = preedit.to_string();
+        text_area.ime_preedit_cursor = cursor;
+        text_area.children_dirty = true;
+        text_area.bump_unified_ifc_source_revision();
+        text_area.dirty_flags = DirtyFlags::ALL;
+    }
+    text_area.on_render_handler = Some(crate::ui::on_text_area_render(|render| {
+        render.range(7..16, |_text_area| crate::ui::RsxNode::text("projected"));
+    }));
+
+    let mut arena = NodeArena::new();
+    let text_area = arena.insert(Node::new(Box::new(text_area)));
+    arena.with_element_taken(text_area, |element, _| {
+        element
+            .as_any_mut()
+            .downcast_mut::<crate::view::base_component::TextArea>()
+            .unwrap()
+            .set_self_node_key(text_area);
+    });
+    crate::view::test_support::measure_and_place(
+        &mut arena,
+        text_area,
+        LayoutConstraints {
+            max_width: width,
+            max_height: content_height,
+            viewport_width: WIDTH as f32,
+            viewport_height: HEIGHT as f32,
+            percent_base_width: Some(WIDTH as f32),
+            percent_base_height: Some(HEIGHT as f32),
+        },
+        LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: width,
+            available_height: content_height,
+            viewport_width: WIDTH as f32,
+            viewport_height: HEIGHT as f32,
+            percent_base_width: Some(WIDTH as f32),
+            percent_base_height: Some(HEIGHT as f32),
+        },
+    );
+
+    let wrapper = arena.insert(Node::new(Box::new(Element::new_with_id(
+        0x5c_4301,
+        0.0,
+        0.0,
+        width,
+        content_height,
+    ))));
+    let root = arena.insert(Node::new(Box::new(Element::new_with_id(
+        0x5c_4300, 0.0, 0.0, width, height,
+    ))));
+    arena.set_parent(text_area, Some(wrapper));
+    arena.set_children(wrapper, vec![text_area]);
+    arena.set_parent(wrapper, Some(root));
+    arena.set_children(root, vec![wrapper]);
+    arena.with_element_taken(text_area, |element, arena| {
+        element.place(
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: width,
+                available_height: content_height,
+                viewport_width: WIDTH as f32,
+                viewport_height: HEIGHT as f32,
+                percent_base_width: Some(WIDTH as f32),
+                percent_base_height: Some(HEIGHT as f32),
+            },
+            arena,
+        );
+    });
+
+    let mut wrapper_style = Style::new();
+    wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    crate::view::test_support::get_element_mut::<Element>(&arena, wrapper)
+        .apply_style(wrapper_style);
+
+    let mut root_style = Style::new();
+    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    root_style.insert(
+        PropertyId::ScrollDirection,
+        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+    );
+    {
+        let mut root = crate::view::test_support::get_element_mut::<Element>(&arena, root);
+        root.apply_style(root_style);
+        root.layout_state.content_size = Size {
+            width,
+            height: content_height,
+        };
+        root.set_scroll_offset((0.0, 0.0));
+        root.clear_local_dirty_flags(DirtyFlags::ALL);
+    }
+    for key in [wrapper, text_area] {
+        arena
+            .get_mut(key)
+            .unwrap()
+            .element
+            .clear_local_dirty_flags(DirtyFlags::ALL);
+    }
+    arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
+    arena.refresh_subtree_dirty_cache(root);
+
+    let roots = vec![root];
+    let mut properties = PropertyTrees::default();
+    properties.sync(&arena, &roots);
+    assert!(
+        properties.validation_errors.is_empty(),
+        "focused atomic projection fixture property errors: {:?}",
+        properties.validation_errors
+    );
+    let mut generations = PaintGenerationTracker::default();
+    generations.sync(&arena, &roots, &properties);
+    assert!(generations.matches_live_snapshot(&arena, &roots, &properties));
+    (arena, roots, properties, generations)
+}
+
+fn legacy_focused_atomic_projection_scroll_graph(
+    caret_visible: bool,
+    preedit: Option<(&str, Option<(usize, usize)>)>,
+) -> Result<FrameGraph, String> {
+    let (mut arena, roots, _, _) = focused_atomic_projection_scroll_fixture(caret_visible, preedit);
+    let (mut graph, mut ctx, target) = graph_prelude();
+    for root in roots {
+        let child_ctx = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+        let next = arena
+            .with_element_taken(root, |element, arena| {
+                element.build(&mut graph, arena, child_ctx)
+            })
+            .ok_or_else(|| "legacy focused atomic projection root disappeared".to_string())?;
+        ctx.set_state(next);
+    }
+    add_present(&mut graph, &target)?;
+    Ok(graph)
+}
+
+fn retained_focused_atomic_projection_scroll_graph(
+    viewport: &mut Viewport,
+    caret_visible: bool,
+    preedit: Option<(&str, Option<(usize, usize)>)>,
+) -> Result<
+    (
+        FrameGraph,
+        RetainedPropertyScrollSceneBuildTrace,
+        crate::view::viewport::RetainedSurfaceFrameStageOwner,
+        Vec<ScrollForestResident>,
+    ),
+    String,
+> {
+    let (arena, roots, properties, generations) =
+        focused_atomic_projection_scroll_fixture(caret_visible, preedit);
+    let scene = plan_and_validate_property_scroll_scene(
+        &arena,
+        &roots,
+        &rustc_hash::FxHashSet::default(),
+        &properties,
+        &generations,
+        1.0,
+        [0.0; 2],
+        None,
+        crate::time::Instant::now(),
+        FORMAT,
+        ScrollSceneSingleTextureBudget::new(8192, 64 * 1024 * 1024)
+            .expect("focused atomic projection GPU budget is non-zero"),
+    )
+    .map_err(|error| format!("focused atomic projection planner rejected: {error:?}"))?;
+    if scene.boundary_count() != 1 {
+        return Err(format!(
+            "focused atomic projection planner returned {} boundaries",
+            scene.boundary_count()
+        ));
+    }
+    let owner = viewport
+        .begin_retained_surface_frame_stage()
+        .ok_or_else(|| "focused atomic projection retained stage is unavailable".to_string())?;
+    let mut graph = FrameGraph::new();
+    let prepared = prepare_retained_property_scroll_forest_from_pool(
+        viewport,
+        scene,
+        &mut graph,
+        UiBuildContext::new(WIDTH, HEIGHT, FORMAT, 1.0),
+        [0.0; 4],
+        owner,
+    )
+    .map_err(|error| format!("focused atomic projection prepare rejected: {error:?}"))?;
+    let outcome = emit_prepared_retained_property_scroll_forest(prepared);
+    let (state, trace) = outcome.into_parts();
+    let target = state
+        .current_target()
+        .ok_or_else(|| "focused atomic projection emitted no root target".to_string())?;
+    let residents = scroll_forest_residents(&graph)?;
+    add_present(&mut graph, &target)?;
+    Ok((graph, trace, owner, residents))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScrollForestContentVersion {
     Baseline,
@@ -2726,6 +2945,64 @@ fn production_multi_root_scroll_forest_builds_without_adapter() -> Result<(), St
 }
 
 #[test]
+fn focused_atomic_projection_scroll_forest_builds_without_adapter() -> Result<(), String> {
+    for (case, caret_visible, preedit) in [
+        ("caret-visible", true, None),
+        ("caret-hidden", false, None),
+        (
+            "preedit-caret-visible",
+            true,
+            Some(("中", Some((0, "中".len())))),
+        ),
+    ] {
+        let mut viewport = Viewport::new();
+        let (graph, trace, owner, residents) =
+            retained_focused_atomic_projection_scroll_graph(&mut viewport, caret_visible, preedit)?;
+        if trace.root_count != 1
+            || trace.scroll_group_count != 1
+            || trace.backing != ScrollSceneBackingKind::Single
+            || trace.tile_count != 1
+            || trace.reraster_count != 1
+            || trace.reuse_count != 0
+            || residents.len() != 1
+        {
+            return Err(format!(
+                "focused atomic projection CPU graph selected the wrong cold authority for {case}: trace={trace:?}, residents={residents:?}"
+            ));
+        }
+        if graph
+            .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
+            .len()
+            != 1
+        {
+            return Err(format!(
+                "focused atomic projection CPU graph must composite exactly one retained content target: {case}"
+            ));
+        }
+        if viewport.retained_surface_transaction_shape_for_test() != (0, Some(1)) {
+            return Err(format!(
+                "focused atomic projection CPU graph did not stage one scroll transaction for {case}: {:?}",
+                viewport.retained_surface_transaction_shape_for_test()
+            ));
+        }
+        if !viewport.finish_retained_surface_transaction_for_frame(Some(owner), false) {
+            return Err(format!(
+                "focused atomic projection CPU graph did not roll back its transaction for {case}"
+            ));
+        }
+        if legacy_focused_atomic_projection_scroll_graph(caret_visible, preedit)?
+            .pass_descriptors()
+            .is_empty()
+        {
+            return Err(format!(
+                "legacy focused atomic projection graph emitted no passes for {case}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 #[ignore = "requires native GPU adapter"]
 // Run explicitly with:
 // cargo test -q native_scroll_scene_single_backing_pixels_match_and_reuse -- --ignored --nocapture
@@ -2791,6 +3068,102 @@ fn native_scroll_scene_tiled_cross_tile_pixels_match_and_reuse() -> Result<(), S
         }
     }
     eprintln!("native tiled scroll-scene matrix passed on {}", gpu.label());
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires native GPU adapter"]
+// Run explicitly with:
+// cargo test -q native_focused_atomic_projection_scroll_forest_matches_legacy_and_reuses_real_pair -- --ignored --nocapture
+fn native_focused_atomic_projection_scroll_forest_matches_legacy_and_reuses_real_pair()
+-> Result<(), String> {
+    let gpu = native_gpu_test_context()?;
+    let gpu = gpu.as_ref().expect("native GPU initialized");
+    let adapter = gpu.label();
+
+    for (case, caret_visible, preedit) in [
+        ("caret-visible", true, None),
+        ("caret-hidden", false, None),
+        (
+            "preedit-caret-visible",
+            true,
+            Some(("中", Some((0, "中".len())))),
+        ),
+    ] {
+        let mut viewport = Viewport::new();
+        let (cold_graph, cold_trace, cold_owner, cold_residents) =
+            retained_focused_atomic_projection_scroll_graph(&mut viewport, caret_visible, preedit)?;
+        if cold_trace.reraster_count != 1
+            || cold_trace.reuse_count != 0
+            || cold_trace.tile_count != 1
+            || cold_residents.len() != 1
+        {
+            return Err(format!(
+                "cold focused atomic projection frame did not select one R pair on {adapter}: {case}, trace={cold_trace:?}, residents={cold_residents:?}"
+            ));
+        }
+        let (resident_key, resident_desc) = cold_residents[0].clone();
+        if viewport.has_compatible_persistent_render_target_pair(resident_key, &resident_desc) {
+            return Err(format!(
+                "fresh focused atomic projection viewport unexpectedly had resident pair on {adapter}: {case}"
+            ));
+        }
+        let cold_pixels = render_on_viewport(cold_graph, gpu, &mut viewport, 1.0, FORMAT)?;
+        if !viewport.finish_retained_surface_transaction_for_frame(Some(cold_owner), true) {
+            return Err(format!(
+                "cold focused atomic projection transaction did not commit on {adapter}: {case}"
+            ));
+        }
+        if !viewport.has_compatible_persistent_render_target_pair(resident_key, &resident_desc) {
+            return Err(format!(
+                "cold focused atomic projection frame did not establish real residency on {adapter}: {case}"
+            ));
+        }
+
+        let legacy_pixels = render(
+            legacy_focused_atomic_projection_scroll_graph(caret_visible, preedit)?,
+            gpu,
+        )?;
+        compare_pixels(
+            &legacy_pixels,
+            &cold_pixels,
+            [0, 0, WIDTH, HEIGHT],
+            &adapter,
+            &format!("focused-atomic-projection/cold-r/{case}"),
+        )?;
+
+        let (warm_graph, warm_trace, warm_owner, warm_residents) =
+            retained_focused_atomic_projection_scroll_graph(&mut viewport, caret_visible, preedit)?;
+        if warm_residents.as_slice() != cold_residents.as_slice()
+            || warm_trace.reraster_count != 0
+            || warm_trace.reuse_count != 1
+            || warm_trace.tile_count != 1
+        {
+            return Err(format!(
+                "warm focused atomic projection frame did not reuse the same resident pair on {adapter}: {case}, cold={cold_trace:?}/{cold_residents:?}, warm={warm_trace:?}/{warm_residents:?}"
+            ));
+        }
+        let warm_pixels = render_on_viewport(warm_graph, gpu, &mut viewport, 1.0, FORMAT)?;
+        if !viewport.finish_retained_surface_transaction_for_frame(Some(warm_owner), true) {
+            return Err(format!(
+                "warm focused atomic projection transaction did not commit on {adapter}: {case}"
+            ));
+        }
+        compare_pixels(
+            &legacy_pixels,
+            &warm_pixels,
+            [0, 0, WIDTH, HEIGHT],
+            &adapter,
+            &format!("focused-atomic-projection/warm-u/{case}"),
+        )?;
+        compare_pixels(
+            &cold_pixels,
+            &warm_pixels,
+            [0, 0, WIDTH, HEIGHT],
+            &adapter,
+            &format!("focused-atomic-projection/cold-warm/{case}"),
+        )?;
+    }
     Ok(())
 }
 

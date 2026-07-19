@@ -2248,8 +2248,6 @@ impl TextArea {
             || self.selection_focus_char.is_some()
             || self.pointer_selecting
             || self.pending_caret_scroll
-            || !self.ime_preedit.is_empty()
-            || self.ime_preedit_cursor.is_some()
             || self.scroll_x.to_bits() != 0.0_f32.to_bits()
             || self.scroll_y.to_bits() != 0.0_f32.to_bits()
             || self.has_active_animator()
@@ -2260,6 +2258,19 @@ impl TextArea {
             || self.cursor_char > self.content.chars().count()
         {
             return None;
+        }
+        let preedit_active = !self.ime_preedit.is_empty();
+        if !preedit_active && self.ime_preedit_cursor.is_some() {
+            return None;
+        }
+        if let Some((start, end)) = self.ime_preedit_cursor {
+            if start > end
+                || end > self.ime_preedit.len()
+                || !self.ime_preedit.is_char_boundary(start)
+                || !self.ime_preedit.is_char_boundary(end)
+            {
+                return None;
+            }
         }
         let paint_x = self.layout_state.layout_position.x + parent_paint_offset[0];
         let paint_y = self.layout_state.layout_position.y + parent_paint_offset[1];
@@ -2275,11 +2286,56 @@ impl TextArea {
         let root_glyph = payload.glyph_op.as_ref()?;
         if !root_glyph.has_canonical_identity()
             || payload.selection.is_some()
-            || payload.decoration.is_some()
+            || (payload.decoration.is_some() != preedit_active)
             || payload.caret.is_some() != self.caret_visible
         {
             return None;
         }
+        let preedit = if preedit_active {
+            let decoration = payload.decoration.as_ref()?;
+            let underline_identity =
+                crate::view::paint::PaintPayloadIdentity::prepared_rects(decoration.ops.iter())?;
+            let glyph_identity =
+                crate::view::paint::PaintPayloadIdentity::prepared_texts([root_glyph]);
+            let package = self
+                .exact_plain_unified_package(owner, arena, false)
+                .ok()??;
+            let seal = super::FocusedAtomicPreeditSourceSeal {
+                owner,
+                stable_id: self.stable_id(),
+                content: std::sync::Arc::from(self.content.as_str()),
+                backing_text: std::sync::Arc::from(package.ifc.backing_text()),
+                ime_preedit: std::sync::Arc::from(self.ime_preedit.as_str()),
+                ime_preedit_cursor: self.ime_preedit_cursor,
+                cursor_char: self.cursor_char,
+                cursor_affinity: self.cursor_affinity,
+                foreground_color_bits: self.color.to_rgba_f32().map(f32::to_bits),
+                glyph_bounds_bits: [
+                    payload.glyph_bounds.x,
+                    payload.glyph_bounds.y,
+                    payload.glyph_bounds.width,
+                    payload.glyph_bounds.height,
+                ]
+                .map(f32::to_bits),
+                underline_bounds_bits: [
+                    decoration.bounds.x,
+                    decoration.bounds.y,
+                    decoration.bounds.width,
+                    decoration.bounds.height,
+                ]
+                .map(f32::to_bits),
+                glyph_identity,
+                underline_identity,
+                unified_ifc_source_revision: self.unified_ifc_source_revision.get(),
+                last_unified_apply_bits: self
+                    .last_unified_apply
+                    .get()
+                    .map(|(x, y, revision)| (x.to_bits(), y.to_bits(), revision)),
+            };
+            Some(seal.is_canonical().then_some(seal)?)
+        } else {
+            None
+        };
         let paint = match payload.caret.as_ref() {
             None => super::FocusedAtomicCaretSourcePaintSeal::Hidden,
             Some(caret) => {
@@ -2332,6 +2388,7 @@ impl TextArea {
             super::RetainedFocusedAtomicProjectionTextAreaFrozenSourceIdentity {
                 atomic_source: core.atomic_source,
                 caret,
+                preedit,
             },
         )
     }

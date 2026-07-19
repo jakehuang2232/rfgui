@@ -7,6 +7,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::view::base_component::{
     RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollTextAreaSubtreeAdmissionSnapshot,
 };
@@ -27,6 +28,7 @@ use super::{
     PaintRecordingContext, PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
     PaintScrollAtomicProjectionTextAreaRecorderWitness as AtomicProjectionRecorderWitness,
     PaintScrollAtomicProjectionTextAreaSubtreeWitness, PaintScrollContentWitness,
+    PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
     PaintScrollInteractiveTextAreaSubtreeWitness, PaintScrollTextAreaSubtreeWitness,
     PaintTransformSurfaceWitness, RecordedRetainedTextAreaCaretOverlay,
     RetainedTextAreaPreeditRasterSeal,
@@ -240,6 +242,93 @@ impl RetainedAtomicProjectionTextAreaLiveRasterOracle {
             && self.owner_nodes == artifact.owner_nodes
             && artifact.effect_nodes.is_empty()
     }
+
+    fn without_chunk(mut self, index: usize) -> Option<Self> {
+        (index < self.chunks.len()).then_some(())?;
+        self.chunks.remove(index);
+        Some(self)
+    }
+}
+
+fn artifact_without_chunk(mut artifact: PaintArtifact, index: usize) -> Option<PaintArtifact> {
+    let chunk = artifact.chunks.get(index)?.clone();
+    let removed_start = chunk.op_range.start;
+    let removed_end = chunk.op_range.end;
+    let removed_len = removed_end.checked_sub(removed_start)?;
+    (removed_end <= artifact.ops.len()).then_some(())?;
+    artifact.ops.drain(removed_start..removed_end);
+    artifact.chunks.remove(index);
+    for chunk in &mut artifact.chunks {
+        if chunk.op_range.start >= removed_end {
+            chunk.op_range.start = chunk.op_range.start.checked_sub(removed_len)?;
+            chunk.op_range.end = chunk.op_range.end.checked_sub(removed_len)?;
+        } else if chunk.op_range.end > removed_start {
+            return None;
+        }
+    }
+    Some(artifact)
+}
+
+fn strip_preedit_underline_resident_view(
+    artifact: PaintArtifact,
+    oracle: RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    text_area_root: NodeKey,
+    paint_offset_bits: [u32; 2],
+    preedit: Option<&crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
+) -> Option<(
+    PaintArtifact,
+    RetainedAtomicProjectionTextAreaLiveRasterOracle,
+)> {
+    let Some(preedit) = preedit else {
+        return Some((artifact, oracle));
+    };
+    preedit.is_canonical().then_some(())?;
+    let [x, y, width, height] = preedit.underline_bounds_bits.map(f32::from_bits);
+    let [dx, dy] = paint_offset_bits.map(f32::from_bits);
+    let expected_bounds_bits = [
+        (x + dx).to_bits(),
+        (y + dy).to_bits(),
+        width.to_bits(),
+        height.to_bits(),
+    ];
+    let underline_index = artifact.chunks.iter().position(|chunk| {
+        chunk.owner == text_area_root
+            && chunk.id.owner == text_area_root
+            && chunk.id.scope == super::PaintPropertyScope::Contents
+            && chunk.id.phase == super::PaintNodePhase::AfterChildren
+            && chunk.id.slot == 0
+            && chunk.id.role == super::PaintChunkRole::TextDecoration
+            && [
+                chunk.bounds.x,
+                chunk.bounds.y,
+                chunk.bounds.width,
+                chunk.bounds.height,
+            ]
+            .map(f32::to_bits)
+                == expected_bounds_bits
+    });
+    let underline_index = underline_index?;
+    let ops = artifact
+        .ops
+        .get(artifact.chunks[underline_index].op_range.clone())?;
+    let rects = ops
+        .iter()
+        .map(|op| match op {
+            super::PaintOp::DrawRect(rect) => Some(rect),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (super::PaintPayloadIdentity::prepared_rects(rects.iter().copied()).as_ref()
+        == Some(&artifact.chunks[underline_index].payload_identity))
+    .then_some(())?;
+    let artifact_len = artifact.chunks.len();
+    let oracle_len = oracle.chunks.len();
+    let artifact = artifact_without_chunk(artifact, underline_index)?;
+    let oracle = match oracle_len.checked_add(1) {
+        Some(len) if len == artifact_len => oracle,
+        _ => oracle.without_chunk(underline_index)?,
+    };
+    Some((artifact, oracle))
 }
 
 #[derive(Clone, Debug)]
@@ -262,6 +351,26 @@ pub(super) struct RecordedRetainedAtomicProjectionTextAreaHost {
 pub(super) struct RecordedRetainedAtomicProjectionSelectionTextAreaSubtree {
     artifact: PaintArtifact,
     raster_oracle: RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct RecordedRetainedFocusedAtomicProjectionTextAreaSubtree {
+    artifact: PaintArtifact,
+    raster_oracle: RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    caret: crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal,
+    preedit: Option<crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct RecordedRetainedFocusedAtomicProjectionTextAreaHost {
+    artifact: PaintArtifact,
+    raster_oracle: RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    caret: crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal,
+    preedit: Option<crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
+    source_bounds_bits: [u32; 4],
+    outer_scroll: crate::view::compositor::property_tree::ScrollNodeSnapshot,
+    outer_contents_clip: crate::view::compositor::property_tree::ClipNodeSnapshot,
+    local_contents_clip: crate::view::compositor::property_tree::ClipNodeSnapshot,
 }
 
 #[derive(Clone, Debug)]
@@ -523,6 +632,29 @@ impl RecordedRetainedAtomicProjectionTextAreaSubtree {
     }
 }
 
+#[cfg(test)]
+impl RecordedRetainedFocusedAtomicProjectionTextAreaSubtree {
+    pub(crate) fn artifact_for_test(&self) -> &PaintArtifact {
+        &self.artifact
+    }
+
+    pub(crate) fn is_canonical_for_test(&self) -> bool {
+        self.caret.is_canonical() && self.raster_oracle.matches_artifact(&self.artifact)
+    }
+
+    pub(crate) fn caret_for_test(
+        &self,
+    ) -> &crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal {
+        &self.caret
+    }
+
+    pub(crate) fn preedit_for_test(
+        &self,
+    ) -> Option<&crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal> {
+        self.preedit.as_ref()
+    }
+}
+
 pub(super) fn validate_recorded_atomic_projection_text_area_subtree(
     recorded: RecordedRetainedAtomicProjectionTextAreaSubtree,
 ) -> Option<super::compiler::ValidatedScrollSceneAtomicProjectionTextAreaContentArtifact> {
@@ -566,6 +698,62 @@ pub(super) fn validate_recorded_atomic_projection_text_area_plan_parts(
         local_contents_clip,
         local_artifact,
         local_raster_oracle,
+    )
+}
+
+/// Focused glyph-only typed bridge. The resident raster authority is delegated
+/// to the existing C3a glyph validator; the focused caret remains a separate
+/// sealed source fact and never becomes a resident dependency.
+pub(super) fn validate_recorded_focused_atomic_projection_text_area_plan_parts(
+    host: RecordedRetainedFocusedAtomicProjectionTextAreaHost,
+    local: RecordedRetainedFocusedAtomicProjectionTextAreaSubtree,
+) -> Option<super::compiler::ValidatedScrollSceneFocusedAtomicProjectionTextAreaPlanParts> {
+    let RecordedRetainedFocusedAtomicProjectionTextAreaHost {
+        artifact: host_artifact,
+        raster_oracle: host_raster_oracle,
+        caret: host_caret,
+        preedit: host_preedit,
+        source_bounds_bits,
+        outer_scroll,
+        outer_contents_clip,
+        local_contents_clip,
+    } = host;
+    let RecordedRetainedFocusedAtomicProjectionTextAreaSubtree {
+        artifact: local_artifact,
+        raster_oracle: local_raster_oracle,
+        caret: local_caret,
+        preedit: local_preedit,
+    } = local;
+    let (host_artifact, host_raster_oracle) = strip_preedit_underline_resident_view(
+        host_artifact,
+        host_raster_oracle,
+        host_caret.owner,
+        [
+            (-outer_scroll.offset.x).to_bits(),
+            (-outer_scroll.offset.y).to_bits(),
+        ],
+        host_preedit.as_ref(),
+    )?;
+    let (local_artifact, local_raster_oracle) = strip_preedit_underline_resident_view(
+        local_artifact,
+        local_raster_oracle,
+        local_caret.owner,
+        [0.0_f32.to_bits(), 0.0_f32.to_bits()],
+        local_preedit.as_ref(),
+    )?;
+    super::compiler::validate_scroll_scene_focused_atomic_projection_text_area_plan_parts(
+        host_artifact,
+        host_raster_oracle,
+        host_caret,
+        host_preedit,
+        source_bounds_bits,
+        outer_scroll,
+        outer_contents_clip,
+        local_contents_clip,
+        local_artifact,
+        local_raster_oracle,
+        local_caret,
+        local_preedit,
     )
 }
 
@@ -2005,6 +2193,220 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
     })
 }
 
+/// Focused C3 glyph host recorder. It records the same glyph-only resident
+/// chunks as C3a while preserving the focused caret as a source sidecar.
+pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_host_artifact_for_plan(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    promoted_node_ids: &FxHashSet<u64>,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    admission: &RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    baked: PaintBakedScrollHostWitness,
+) -> Result<RecordedRetainedFocusedAtomicProjectionTextAreaHost, Vec<FrameArtifactFallbackReason>> {
+    let invalid = |owner| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)];
+    let outer_chain = property_trees
+        .clip_snapshot_for(Some(baked.contents_clip()))
+        .ok_or_else(|| invalid(admission.boundary_root))?;
+    let [outer_clip] = outer_chain.as_slice() else {
+        return Err(invalid(admission.boundary_root));
+    };
+    let outer = PaintScrollContentWitness::new(
+        admission.boundary_root,
+        admission.content_wrapper,
+        property_trees
+            .scroll_snapshot_for(baked.scroll())
+            .ok_or_else(|| invalid(admission.boundary_root))?,
+        *outer_clip,
+    )
+    .ok_or_else(|| invalid(admission.boundary_root))?;
+    if roots != [admission.boundary_root]
+        || baked.boundary_root() != admission.boundary_root
+        || baked.child() != admission.content_wrapper
+        || !admission.matches_scroll_node(outer.scroll_snapshot())
+        || !promoted_node_ids.is_empty()
+    {
+        return Err(invalid(admission.boundary_root));
+    }
+    let wrapper_node = arena
+        .get(admission.content_wrapper)
+        .ok_or_else(|| invalid(admission.content_wrapper))?;
+    let wrapper = wrapper_node
+        .element
+        .as_any()
+        .downcast_ref::<crate::view::base_component::Element>()
+        .ok_or_else(|| invalid(admission.content_wrapper))?;
+    let recording_offset = wrapper
+        .exact_retained_scroll_content_wrapper_recording_offset(outer.normalization_paint_offset())
+        .ok_or_else(|| invalid(admission.content_wrapper))?;
+    let text_area_node = arena
+        .get(admission.text_area_root)
+        .ok_or_else(|| invalid(admission.text_area_root))?;
+    let text_area = text_area_node
+        .element
+        .as_any()
+        .downcast_ref::<crate::view::base_component::TextArea>()
+        .ok_or_else(|| invalid(admission.text_area_root))?;
+    if arena
+        .get(admission.boundary_root)
+        .is_none_or(|node| node.element.stable_id() != admission.stable_id)
+        || wrapper_node.element.stable_id() != admission.content_wrapper_stable_id
+        || text_area_node.element.stable_id() != admission.text_area_stable_id
+    {
+        return Err(invalid(admission.boundary_root));
+    }
+    let source_before = text_area
+        .exact_retained_property_scroll_focused_atomic_projection_glyph_subtree(
+            admission.text_area_root,
+            arena,
+            recording_offset,
+        )
+        .filter(|grammar| grammar == &admission.paint_grammar)
+        .ok_or_else(|| invalid(admission.text_area_root))?;
+    let local_clip_id = crate::view::compositor::property_tree::ClipNodeId {
+        owner: admission.text_area_root,
+        role: crate::view::compositor::property_tree::ClipNodeRole::ContentsClip,
+    };
+    let live_chain = property_trees
+        .clip_snapshot_for(Some(local_clip_id))
+        .ok_or_else(|| invalid(admission.text_area_root))?;
+    let [live_text_area_clip, live_outer_clip] = live_chain.as_slice() else {
+        return Err(invalid(admission.text_area_root));
+    };
+    if live_outer_clip != outer_clip {
+        return Err(invalid(admission.text_area_root));
+    }
+    let local_scissor = text_area
+        .retained_property_scroll_local_contents_scissor(outer.normalization_paint_offset())
+        .ok_or_else(|| invalid(admission.text_area_root))?;
+    let recorder_witness = PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness::new(
+        outer,
+        admission.text_area_root,
+        *live_text_area_clip,
+        local_scissor,
+        &source_before,
+    )
+    .ok_or_else(|| invalid(admission.text_area_root))?;
+    let recorder_authority =
+        AtomicProjectionRecorderWitness::FocusedAtomicProjectionGlyph(recorder_witness);
+    let mut owners = vec![
+        super::PaintOwnerSnapshot {
+            owner: admission.boundary_root,
+            parent: None,
+        },
+        super::PaintOwnerSnapshot {
+            owner: admission.content_wrapper,
+            parent: Some(admission.boundary_root),
+        },
+        super::PaintOwnerSnapshot {
+            owner: admission.text_area_root,
+            parent: Some(admission.content_wrapper),
+        },
+    ];
+    for seal in source_before.atomic_source.topology.iter() {
+        owners.push(super::PaintOwnerSnapshot {
+            owner: seal.owner,
+            parent: Some(admission.text_area_root),
+        });
+        if seal.owner == source_before.atomic_source.projection_owner {
+            owners.push(super::PaintOwnerSnapshot {
+                owner: source_before.atomic_source.projection_text_owner,
+                parent: Some(seal.owner),
+            });
+        }
+    }
+    let policy = FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(
+        baked,
+        recorder_authority,
+    );
+    let oracle_context = PaintRecordingContext {
+        baked_scroll_host: Some(baked),
+        baked_scroll_atomic_projection_text_area_subtree: Some(recorder_authority),
+        opacity_authority: PaintOpacityAuthority::Baked,
+        ..PaintRecordingContext::default()
+    };
+    let raster_before = record_atomic_projection_live_raster_oracle(
+        arena,
+        roots,
+        promoted_node_ids,
+        property_trees,
+        paint_generations,
+        policy,
+        oracle_context,
+        admission.content_wrapper,
+        admission.text_area_root,
+        &source_before.atomic_source,
+        owners.clone(),
+    )?;
+    let mut artifact = match record_frame_artifact_with_policy(
+        arena,
+        roots,
+        promoted_node_ids,
+        property_trees,
+        paint_generations,
+        RendererMode::StrictPlan,
+        policy,
+        None,
+        None,
+    ) {
+        Ok(FrameArtifactRecordOutcome::Artifact { artifact, .. }) => artifact,
+        Ok(FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility)) => {
+            return Err(eligibility.reasons);
+        }
+        Err(error) => return Err(error.reasons),
+    };
+    let source_after = text_area
+        .exact_retained_property_scroll_focused_atomic_projection_glyph_subtree(
+            admission.text_area_root,
+            arena,
+            recording_offset,
+        )
+        .ok_or_else(|| {
+            vec![FrameArtifactFallbackReason::Validation(
+                PaintCoverageValidationError::RecordingPassMismatch,
+            )]
+        })?;
+    if source_before != source_after || source_after != admission.paint_grammar {
+        return Err(vec![FrameArtifactFallbackReason::Validation(
+            PaintCoverageValidationError::RecordingPassMismatch,
+        )]);
+    }
+    artifact.owner_nodes = owners.clone();
+    let raster_after = record_atomic_projection_live_raster_oracle(
+        arena,
+        roots,
+        promoted_node_ids,
+        property_trees,
+        paint_generations,
+        policy,
+        oracle_context,
+        admission.content_wrapper,
+        admission.text_area_root,
+        &source_after.atomic_source,
+        owners,
+    )?;
+    if raster_before != raster_after || !raster_before.matches_artifact(&artifact) {
+        return Err(vec![FrameArtifactFallbackReason::Validation(
+            PaintCoverageValidationError::RecordingPassMismatch,
+        )]);
+    }
+    Ok(RecordedRetainedFocusedAtomicProjectionTextAreaHost {
+        artifact,
+        raster_oracle: raster_before,
+        caret: source_before.caret,
+        preedit: source_before.preedit,
+        source_bounds_bits: [
+            admission.source_bounds.x.to_bits(),
+            admission.source_bounds.y.to_bits(),
+            admission.source_bounds.width.to_bits(),
+            admission.source_bounds.height.to_bits(),
+        ],
+        outer_scroll: outer.scroll_snapshot(),
+        outer_contents_clip: outer.contents_clip_snapshot(),
+        local_contents_clip: recorder_authority.local_contents_clip(),
+    })
+}
+
 /// Graph-inert host recorder for the root-owned selection atomic-projection
 /// grammar.  It records H -> wrapper -> selection -> root glyph -> projection
 /// glyph -> O and returns no raw artifact access.
@@ -3376,6 +3778,363 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
     Ok(RecordedRetainedAtomicProjectionTextAreaSubtree {
         artifact,
         raster_oracle: raster_before,
+    })
+}
+
+pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_artifact_for_plan(
+    arena: &NodeArena,
+    promoted_node_ids: &FxHashSet<u64>,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    admission: &RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    outer: PaintScrollContentWitness,
+) -> Result<RecordedRetainedFocusedAtomicProjectionTextAreaSubtree, Vec<FrameArtifactFallbackReason>>
+{
+    use crate::view::base_component::text_area::{
+        RetainedAtomicProjectionTextAreaTopologyKind as Kind, TextAreaLineBreak,
+        TextAreaProjectionSegment, TextAreaTextRun,
+    };
+    let content_root = admission.content_wrapper;
+    let text_area_root = admission.text_area_root;
+    let invalid = |owner| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)];
+    if outer.boundary_root() != admission.boundary_root
+        || outer.content_root() != content_root
+        || outer.scroll_snapshot().owner != admission.boundary_root
+        || !admission.matches_scroll_node(outer.scroll_snapshot())
+        || !admission.paint_grammar.is_canonical()
+        || !promoted_node_ids.is_empty()
+        || !property_trees.validation_errors.is_empty()
+        || !property_trees.transforms.is_empty()
+        || !property_trees.effects.is_empty()
+    {
+        return Err(invalid(content_root));
+    }
+    let content_node = arena
+        .get(content_root)
+        .ok_or_else(|| invalid(content_root))?;
+    let content = content_node
+        .element
+        .as_any()
+        .downcast_ref::<crate::view::base_component::Element>()
+        .ok_or_else(|| invalid(content_root))?;
+    let required_paint_offset = content
+        .exact_retained_scroll_content_wrapper_recording_offset(outer.normalization_paint_offset())
+        .ok_or_else(|| invalid(content_root))?;
+    let text_area_node = arena
+        .get(text_area_root)
+        .ok_or_else(|| invalid(text_area_root))?;
+    let text_area = text_area_node
+        .element
+        .as_any()
+        .downcast_ref::<crate::view::base_component::TextArea>()
+        .ok_or_else(|| invalid(text_area_root))?;
+    if content_node.element.stable_id() != admission.content_wrapper_stable_id
+        || text_area_node.element.stable_id() != admission.text_area_stable_id
+        || arena
+            .get(admission.boundary_root)
+            .is_none_or(|node| node.element.stable_id() != admission.stable_id)
+    {
+        return Err(invalid(content_root));
+    }
+    let source_before = text_area
+        .exact_retained_property_scroll_focused_atomic_projection_glyph_subtree(
+            text_area_root,
+            arena,
+            required_paint_offset,
+        )
+        .filter(|grammar| grammar == &admission.paint_grammar)
+        .ok_or_else(|| invalid(text_area_root))?;
+    let local_scissor = text_area
+        .retained_property_scroll_local_contents_scissor(outer.normalization_paint_offset())
+        .ok_or_else(|| invalid(text_area_root))?;
+    let local_clip_id = crate::view::compositor::property_tree::ClipNodeId {
+        owner: text_area_root,
+        role: crate::view::compositor::property_tree::ClipNodeRole::ContentsClip,
+    };
+    let live_chain = property_trees
+        .clip_snapshot_for(Some(local_clip_id))
+        .ok_or_else(|| invalid(text_area_root))?;
+    let [live_text_area_clip, live_outer_clip] = live_chain.as_slice() else {
+        return Err(invalid(text_area_root));
+    };
+    if *live_outer_clip != outer.contents_clip_snapshot() {
+        return Err(invalid(text_area_root));
+    }
+    let recorder_authority = AtomicProjectionRecorderWitness::FocusedAtomicProjectionGlyph(
+        PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness::new(
+            outer,
+            text_area_root,
+            *live_text_area_clip,
+            local_scissor,
+            &source_before,
+        )
+        .ok_or_else(|| invalid(text_area_root))?,
+    );
+    let outer_state = crate::view::compositor::property_tree::PropertyTreeState {
+        clip: Some(outer.contents_clip_snapshot().id),
+        scroll: Some(outer.scroll_snapshot().id),
+        ..Default::default()
+    };
+    let text_area_state = crate::view::compositor::property_tree::PropertyTreeState {
+        clip: Some(local_clip_id),
+        scroll: Some(outer.scroll_snapshot().id),
+        ..Default::default()
+    };
+    if arena.parent_of(content_root) != Some(admission.boundary_root)
+        || arena.children_of(content_root) != [text_area_root]
+        || property_trees
+            .states
+            .get(&content_root)
+            .is_none_or(|state| (state.paint, state.descendants) != (outer_state, outer_state))
+        || property_trees
+            .states
+            .get(&text_area_root)
+            .is_none_or(|state| (state.paint, state.descendants) != (outer_state, text_area_state))
+    {
+        return Err(invalid(content_root));
+    }
+    let atomic_source = &source_before.atomic_source;
+    let mut expected_owners = vec![
+        super::PaintOwnerSnapshot {
+            owner: content_root,
+            parent: None,
+        },
+        super::PaintOwnerSnapshot {
+            owner: text_area_root,
+            parent: Some(content_root),
+        },
+    ];
+    if arena.children_of(text_area_root).len() != atomic_source.topology.len() {
+        return Err(invalid(text_area_root));
+    }
+    for seal in atomic_source.topology.iter() {
+        let node = arena.get(seal.owner).ok_or_else(|| invalid(seal.owner))?;
+        if arena.parent_of(seal.owner) != Some(text_area_root)
+            || node.element.stable_id() != seal.stable_id
+            || node.element.is_deferred_to_root_viewport_render()
+            || node.element.has_active_animator()
+            || property_trees.states.get(&seal.owner).is_none_or(|state| {
+                (state.paint, state.descendants) != (text_area_state, text_area_state)
+            })
+        {
+            return Err(invalid(seal.owner));
+        }
+        let type_and_children_are_exact = match seal.kind {
+            Kind::TextRun => {
+                node.element.as_any().is::<TextAreaTextRun>() && node.element.children().is_empty()
+            }
+            Kind::LineBreak => {
+                node.element.as_any().is::<TextAreaLineBreak>()
+                    && node.element.children().is_empty()
+            }
+            Kind::ProjectionSegment => {
+                let [text] = node.element.children() else {
+                    return Err(invalid(seal.owner));
+                };
+                let text = *text;
+                let text_node = arena.get(text).ok_or_else(|| invalid(text))?;
+                if !node.element.as_any().is::<TextAreaProjectionSegment>()
+                    || text != atomic_source.projection_text_owner
+                    || arena.parent_of(text) != Some(seal.owner)
+                    || text_node.element.stable_id() != atomic_source.projection_text_stable_id
+                    || !text_node
+                        .element
+                        .as_any()
+                        .is::<crate::view::base_component::Text>()
+                    || !text_node.element.children().is_empty()
+                    || property_trees.states.get(&text).is_none_or(|state| {
+                        (state.paint, state.descendants) != (text_area_state, text_area_state)
+                    })
+                {
+                    return Err(invalid(text));
+                }
+                expected_owners.push(super::PaintOwnerSnapshot {
+                    owner: seal.owner,
+                    parent: Some(text_area_root),
+                });
+                expected_owners.push(super::PaintOwnerSnapshot {
+                    owner: text,
+                    parent: Some(seal.owner),
+                });
+                continue;
+            }
+        };
+        if !type_and_children_are_exact {
+            return Err(invalid(seal.owner));
+        }
+        expected_owners.push(super::PaintOwnerSnapshot {
+            owner: seal.owner,
+            parent: Some(text_area_root),
+        });
+    }
+
+    let policy = FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(
+        recorder_authority,
+    );
+    let oracle_context = PaintRecordingContext {
+        paint_offset: recorder_authority.outer().normalization_paint_offset(),
+        required_scroll_content_paint_offset_bits: Some(required_paint_offset.map(f32::to_bits)),
+        scroll_atomic_projection_text_area_subtree: Some(recorder_authority),
+        opacity_authority: PaintOpacityAuthority::Baked,
+        ..PaintRecordingContext::default()
+    };
+    let raster_before = record_atomic_projection_live_raster_oracle(
+        arena,
+        &[content_root],
+        promoted_node_ids,
+        property_trees,
+        paint_generations,
+        policy,
+        oracle_context,
+        content_root,
+        text_area_root,
+        atomic_source,
+        expected_owners.clone(),
+    )?;
+
+    let mut artifact = match record_frame_artifact_with_policy(
+        arena,
+        &[content_root],
+        promoted_node_ids,
+        property_trees,
+        paint_generations,
+        RendererMode::StrictPlan,
+        policy,
+        None,
+        Some(required_paint_offset.map(f32::to_bits)),
+    ) {
+        Ok(FrameArtifactRecordOutcome::Artifact { artifact, .. }) => artifact,
+        Ok(FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility)) => {
+            return Err(eligibility.reasons);
+        }
+        Err(error) => return Err(error.reasons),
+    };
+    let source_after = text_area
+        .exact_retained_property_scroll_focused_atomic_projection_glyph_subtree(
+            text_area_root,
+            arena,
+            required_paint_offset,
+        )
+        .ok_or_else(|| {
+            vec![FrameArtifactFallbackReason::Validation(
+                PaintCoverageValidationError::RecordingPassMismatch,
+            )]
+        })?;
+    if source_before != source_after || source_after != admission.paint_grammar {
+        return Err(vec![FrameArtifactFallbackReason::Validation(
+            PaintCoverageValidationError::RecordingPassMismatch,
+        )]);
+    }
+    artifact.owner_nodes = expected_owners.clone();
+    let raster_after = record_atomic_projection_live_raster_oracle(
+        arena,
+        &[content_root],
+        promoted_node_ids,
+        property_trees,
+        paint_generations,
+        policy,
+        oracle_context,
+        content_root,
+        text_area_root,
+        &source_after.atomic_source,
+        expected_owners.clone(),
+    )?;
+    if raster_before != raster_after || !raster_before.matches_artifact(&artifact) {
+        return Err(vec![FrameArtifactFallbackReason::Validation(
+            PaintCoverageValidationError::RecordingPassMismatch,
+        )]);
+    }
+    let local_state = crate::view::compositor::property_tree::PropertyTreeState {
+        clip: Some(local_clip_id),
+        ..Default::default()
+    };
+    let (wrapper, root_glyph, preedit_underline, projection_glyph) = match artifact
+        .chunks
+        .as_slice()
+    {
+        [wrapper, root_glyph, projection_glyph] if source_after.preedit.is_none() => {
+            (wrapper, root_glyph, None, projection_glyph)
+        }
+        [wrapper, root_glyph, projection_glyph, underline] if source_after.preedit.is_some() => {
+            (wrapper, root_glyph, Some(underline), projection_glyph)
+        }
+        _ => return Err(invalid(content_root)),
+    };
+    let glyph_exact = |chunk: &super::PaintChunk, owner, scope| {
+        matches!(&artifact.ops[chunk.op_range.clone()], [super::PaintOp::PreparedText(prepared)]
+            if prepared.has_canonical_identity()
+                && chunk.payload_identity == super::PaintPayloadIdentity::prepared_texts([prepared]))
+            && chunk.owner == owner
+            && chunk.id.owner == owner
+            && chunk.id.scope == scope
+            && chunk.id.phase == super::PaintNodePhase::BeforeChildren
+            && chunk.id.slot == 1
+            && chunk.id.role == super::PaintChunkRole::TextGlyphs
+            && chunk.properties == local_state
+    };
+    let underline_exact = |chunk: &super::PaintChunk| {
+        let Some(preedit) = source_after.preedit.as_ref() else {
+            return false;
+        };
+        let rects = artifact.ops[chunk.op_range.clone()]
+            .iter()
+            .map(|op| match op {
+                super::PaintOp::DrawRect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(rects) = rects.filter(|rects| !rects.is_empty()) else {
+            return false;
+        };
+        chunk.owner == text_area_root
+            && chunk.id.owner == text_area_root
+            && chunk.id.scope == super::PaintPropertyScope::Contents
+            && chunk.id.phase == super::PaintNodePhase::AfterChildren
+            && chunk.id.slot == 0
+            && chunk.id.role == super::PaintChunkRole::TextDecoration
+            && chunk.properties == local_state
+            && chunk.payload_identity == preedit.underline_identity
+            && [
+                chunk.bounds.x,
+                chunk.bounds.y,
+                chunk.bounds.width,
+                chunk.bounds.height,
+            ]
+            .map(f32::to_bits)
+                == preedit.underline_bounds_bits
+            && super::PaintPayloadIdentity::prepared_rects(rects.iter().copied()).as_ref()
+                == Some(&chunk.payload_identity)
+    };
+    let local_shape_is_exact = matches!(artifact.target, PaintArtifactTarget::CurrentTarget)
+        && artifact.effect_nodes.is_empty()
+        && artifact.clip_nodes.as_slice() == [recorder_authority.local_contents_clip()]
+        && artifact.owner_nodes == expected_owners
+        && wrapper.owner == content_root
+        && wrapper.id.owner == content_root
+        && wrapper.id.scope == super::PaintPropertyScope::SelfPaint
+        && wrapper.id.phase == super::PaintNodePhase::BeforeChildren
+        && wrapper.id.slot == 0
+        && wrapper.id.role == super::PaintChunkRole::SelfDecoration
+        && wrapper.properties == Default::default()
+        && glyph_exact(
+            root_glyph,
+            text_area_root,
+            super::PaintPropertyScope::Contents,
+        )
+        && glyph_exact(
+            projection_glyph,
+            atomic_source.projection_text_owner,
+            super::PaintPropertyScope::SelfPaint,
+        )
+        && !preedit_underline.is_some_and(|underline| !underline_exact(underline));
+    if !local_shape_is_exact {
+        return Err(invalid(content_root));
+    }
+    Ok(RecordedRetainedFocusedAtomicProjectionTextAreaSubtree {
+        artifact,
+        raster_oracle: raster_before,
+        caret: source_after.caret,
+        preedit: source_after.preedit,
     })
 }
 

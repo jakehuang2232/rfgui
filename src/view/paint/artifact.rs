@@ -330,13 +330,26 @@ impl PaintRecordingContext {
     }
 
     pub(crate) fn suppresses_interactive_text_area_caret(self, owner: NodeKey) -> bool {
+        let suppresses_focused_atomic = self
+            .scroll_atomic_projection_text_area_subtree
+            .or(self.baked_scroll_atomic_projection_text_area_subtree)
+            .is_some_and(|witness| {
+                matches!(
+                    witness,
+                    PaintScrollAtomicProjectionTextAreaRecorderWitness::FocusedAtomicProjectionGlyph(
+                        _
+                    )
+                ) && witness.property().text_area_root() == owner
+                    && witness.is_canonical_for(owner)
+            });
         self.recording_owner == Some(owner)
-            && self
-                .scroll_interactive_text_area_subtree
-                .or(self.baked_scroll_interactive_text_area_subtree)
-                .is_some_and(|witness| {
-                    witness.text_area_root() == owner && witness.is_canonical_for(owner)
-                })
+            && (suppresses_focused_atomic
+                || self
+                    .scroll_interactive_text_area_subtree
+                    .or(self.baked_scroll_interactive_text_area_subtree)
+                    .is_some_and(|witness| {
+                        witness.text_area_root() == owner && witness.is_canonical_for(owner)
+                    }))
     }
 
     /// Exact media-leaf exception for the bounded nested-scroll recorder. The
@@ -508,9 +521,35 @@ impl PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness {
+    property: PaintScrollAtomicProjectionTextAreaSubtreeWitness,
+}
+
+impl PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness {
+    pub(crate) fn new(
+        outer: PaintScrollContentWitness,
+        text_area_root: NodeKey,
+        live_contents_clip: ClipNodeSnapshot,
+        local_logical_scissor: [u32; 4],
+        grammar: &crate::view::base_component::text_area::RetainedFocusedAtomicProjectionTextAreaPaintGrammar,
+    ) -> Option<Self> {
+        (grammar.is_canonical()).then_some(Self {
+            property: PaintScrollAtomicProjectionTextAreaSubtreeWitness::new(
+                outer,
+                text_area_root,
+                live_contents_clip,
+                local_logical_scissor,
+                &grammar.atomic_source,
+            )?,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PaintScrollAtomicProjectionTextAreaRecorderWitness {
     ExistingAtomicGlyph(PaintScrollAtomicProjectionTextAreaSubtreeWitness),
     AtomicProjectionSelection(PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness),
+    FocusedAtomicProjectionGlyph(PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness),
 }
 
 impl PaintScrollAtomicProjectionTextAreaRecorderWitness {
@@ -518,6 +557,7 @@ impl PaintScrollAtomicProjectionTextAreaRecorderWitness {
         match self {
             Self::ExistingAtomicGlyph(witness) => witness,
             Self::AtomicProjectionSelection(witness) => witness.property,
+            Self::FocusedAtomicProjectionGlyph(witness) => witness.property,
         }
     }
 
@@ -531,6 +571,7 @@ impl PaintScrollAtomicProjectionTextAreaRecorderWitness {
                         crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs { .. }
                     ) && witness.selection.is_canonical()
                 }
+                Self::FocusedAtomicProjectionGlyph(_) => true,
             }
     }
 
@@ -562,6 +603,11 @@ impl PaintScrollAtomicProjectionTextAreaRecorderWitness {
                 PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness {
                     property: witness.property.for_target(target_owner),
                     ..witness
+                },
+            ),
+            Self::FocusedAtomicProjectionGlyph(witness) => Self::FocusedAtomicProjectionGlyph(
+                PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness {
+                    property: witness.property.for_target(target_owner),
                 },
             ),
         }
@@ -2925,7 +2971,7 @@ impl RetainedTextAreaPreeditRasterSeal {
     }
 }
 
-fn preedit_glyph_identity_is_exact(
+pub(crate) fn preedit_glyph_identity_is_exact(
     identity: &PaintPayloadIdentity,
     bounds_bits: [u32; 4],
     foreground_color_bits: [u32; 4],
@@ -2959,7 +3005,7 @@ fn preedit_glyph_identity_is_exact(
     [left, top, right - left, bottom - top].map(f32::to_bits) == bounds_bits
 }
 
-fn preedit_underline_identity_is_exact(
+pub(crate) fn preedit_underline_identity_is_exact(
     identity: &PaintPayloadIdentity,
     bounds_bits: [u32; 4],
     foreground_color_bits: [u32; 4],
@@ -3241,6 +3287,37 @@ impl PaintPayloadIdentity {
             .and_then(|grammar| Self::prepared_text_area_selection(grammar, rects))
             .as_ref()
             == Some(self)
+    }
+
+    pub(crate) fn exact_fill_rect_ops(&self) -> Option<Vec<DrawRectOp>> {
+        let Self::PreparedRects(rects) = self else {
+            return None;
+        };
+        let ops = rects
+            .iter()
+            .map(|rect| {
+                (rect.mode == RectRenderMode::FillOnly
+                    && rect.params.border_width_bits == [0.0_f32.to_bits(); 4]
+                    && rect.params.border_radius_bits == [[0.0_f32.to_bits(); 2]; 4]
+                    && rect.params.border_color_bits == [0.0_f32.to_bits(); 4]
+                    && rect.params.border_side_color_bits == [[0.0_f32.to_bits(); 4]; 4]
+                    && !rect.params.use_border_side_colors
+                    && rect.params.depth_bits == 0.0_f32.to_bits()
+                    && rect.params.gradient.is_none()
+                    && rect.params.border_gradient.is_none())
+                .then(|| DrawRectOp {
+                    params: RectPassParams {
+                        position: rect.params.position_bits.map(f32::from_bits),
+                        size: rect.params.size_bits.map(f32::from_bits),
+                        fill_color: rect.params.fill_color_bits.map(f32::from_bits),
+                        opacity: f32::from_bits(rect.params.opacity_bits),
+                        ..Default::default()
+                    },
+                    mode: rect.mode,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        (Self::prepared_rects(ops.iter()).as_ref() == Some(self)).then_some(ops)
     }
 
     pub(crate) fn prepared_text_area_selection<'a>(

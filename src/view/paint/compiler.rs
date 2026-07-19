@@ -4305,6 +4305,24 @@ pub(crate) struct ValidatedScrollSceneAtomicProjectionTextAreaPlanParts {
     frozen_identity: AtomicProjectionTextAreaPlanIdentity,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FocusedAtomicProjectionTextAreaPlanIdentity {
+    base: AtomicProjectionTextAreaPlanIdentity,
+    caret: crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal,
+    preedit: Option<crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
+}
+
+/// Opaque focused-glyph recorder token. It wraps the existing C3a glyph
+/// resident plan but keeps the focused caret as a separate source-side fact,
+/// so no caret identity can enter the resident raster stamp or transaction.
+#[derive(Clone, Debug)]
+pub(crate) struct ValidatedScrollSceneFocusedAtomicProjectionTextAreaPlanParts {
+    base: ValidatedScrollSceneAtomicProjectionTextAreaPlanParts,
+    caret: crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal,
+    preedit: Option<crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
+    frozen_identity: FocusedAtomicProjectionTextAreaPlanIdentity,
+}
+
 #[derive(Clone, Debug)]
 struct ValidatedScrollSceneAtomicProjectionSelectionTextAreaHostBeforeArtifact {
     artifact: PaintArtifact,
@@ -4625,6 +4643,97 @@ impl ValidatedScrollSceneAtomicProjectionTextAreaPlanParts {
     pub(crate) fn tamper_resident_for_test(mut self) -> Self {
         self.resident.projection_glyph_chunk.bounds_bits[0] ^= 1;
         self
+    }
+}
+
+impl ValidatedScrollSceneFocusedAtomicProjectionTextAreaPlanParts {
+    pub(crate) fn is_canonical(&self) -> bool {
+        self.caret.is_canonical()
+            && self.preedit.as_ref().is_none_or(|preedit| {
+                preedit.is_canonical()
+                    && preedit.owner == self.caret.owner
+                    && preedit.stable_id == self.caret.stable_id
+                    && preedit.cursor_char == self.caret.cursor_char
+                    && preedit.cursor_affinity == self.caret.cursor_affinity
+                    && preedit.ime_preedit_cursor == self.caret.ime_preedit_cursor
+                    && preedit.foreground_color_bits == self.caret.foreground_color_bits
+                    && preedit.unified_ifc_source_revision == self.caret.unified_ifc_source_revision
+                    && preedit.last_unified_apply_bits == self.caret.last_unified_apply_bits
+            })
+            && self.base.is_canonical()
+            && self.frozen_identity
+                == (FocusedAtomicProjectionTextAreaPlanIdentity {
+                    base: self.base.identity(),
+                    caret: self.caret.clone(),
+                    preedit: self.preedit.clone(),
+                })
+    }
+
+    pub(crate) fn boundary_root(&self) -> crate::view::node_arena::NodeKey {
+        self.base.boundary_root()
+    }
+
+    pub(crate) fn content_root(&self) -> crate::view::node_arena::NodeKey {
+        self.base.content_root()
+    }
+
+    pub(crate) fn text_area_root(&self) -> crate::view::node_arena::NodeKey {
+        self.base.text_area_root()
+    }
+
+    pub(crate) fn outer_scroll(&self) -> ScrollNodeSnapshot {
+        self.base.outer_scroll()
+    }
+
+    pub(crate) fn outer_contents_clip(&self) -> ClipNodeSnapshot {
+        self.base.outer_contents_clip()
+    }
+
+    pub(crate) fn resident(&self) -> &RetainedAtomicProjectionTextAreaResidentRasterSeal {
+        self.base.resident()
+    }
+
+    pub(crate) fn identity(&self) -> FocusedAtomicProjectionTextAreaPlanIdentity {
+        self.frozen_identity.clone()
+    }
+
+    pub(crate) fn matches_admission_geometry(
+        &self,
+        source_bounds_bits: [u32; 4],
+        scroll: ScrollNodeSnapshot,
+    ) -> bool {
+        self.base
+            .matches_admission_geometry(source_bounds_bits, scroll)
+    }
+
+    pub(crate) fn caret(
+        &self,
+    ) -> &crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal {
+        &self.caret
+    }
+
+    pub(crate) fn preedit(
+        &self,
+    ) -> Option<&crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal> {
+        self.preedit.as_ref()
+    }
+
+    pub(crate) fn atomic_projection_base_for_scene_steps(
+        &self,
+    ) -> ValidatedScrollSceneAtomicProjectionTextAreaPlanParts {
+        self.base.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resident_for_test(&self) -> &RetainedAtomicProjectionTextAreaResidentRasterSeal {
+        self.base.resident()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn caret_for_test(
+        &self,
+    ) -> crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal {
+        self.caret.clone()
     }
 }
 
@@ -6352,6 +6461,54 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
         overlay,
         resident,
         local_raster_oracle: frozen_local_raster_oracle,
+        frozen_identity,
+    };
+    plan.is_canonical().then_some(plan)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn validate_scroll_scene_focused_atomic_projection_text_area_plan_parts(
+    host_artifact: PaintArtifact,
+    host_raster_oracle: super::frame_recorder::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    host_caret: crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal,
+    host_preedit: Option<crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
+    source_bounds_bits: [u32; 4],
+    outer_scroll: ScrollNodeSnapshot,
+    outer_contents_clip: ClipNodeSnapshot,
+    host_local_contents_clip: ClipNodeSnapshot,
+    local_artifact: PaintArtifact,
+    local_raster_oracle: super::frame_recorder::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    local_caret: crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal,
+    local_preedit: Option<crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
+) -> Option<ValidatedScrollSceneFocusedAtomicProjectionTextAreaPlanParts> {
+    if host_caret != local_caret
+        || host_preedit != local_preedit
+        || !local_caret.is_canonical()
+        || local_preedit
+            .as_ref()
+            .is_some_and(|preedit| !preedit.is_canonical())
+    {
+        return None;
+    }
+    let base = validate_scroll_scene_atomic_projection_text_area_plan_parts(
+        host_artifact,
+        host_raster_oracle,
+        source_bounds_bits,
+        outer_scroll,
+        outer_contents_clip,
+        host_local_contents_clip,
+        local_artifact,
+        local_raster_oracle,
+    )?;
+    let frozen_identity = FocusedAtomicProjectionTextAreaPlanIdentity {
+        base: base.identity(),
+        caret: local_caret.clone(),
+        preedit: local_preedit.clone(),
+    };
+    let plan = ValidatedScrollSceneFocusedAtomicProjectionTextAreaPlanParts {
+        base,
+        caret: local_caret.clone(),
+        preedit: local_preedit,
         frozen_identity,
     };
     plan.is_canonical().then_some(plan)

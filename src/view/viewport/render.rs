@@ -5076,6 +5076,154 @@ mod legacy_root_render_tests {
         )
     }
 
+    fn prepared_focused_atomic_projection_scroll_text_area_scene() -> (
+        NodeArena,
+        Vec<NodeKey>,
+        PropertyTrees,
+        PaintGenerationTracker,
+    ) {
+        prepared_focused_atomic_projection_scroll_text_area_scene_with_preedit(None)
+    }
+
+    fn prepared_focused_atomic_projection_scroll_text_area_scene_with_preedit(
+        preedit: Option<(&str, Option<(usize, usize)>)>,
+    ) -> (
+        NodeArena,
+        Vec<NodeKey>,
+        PropertyTrees,
+        PaintGenerationTracker,
+    ) {
+        let width = 108.0;
+        let outer_scroll_y = 20.0;
+        let content_height = 300.0;
+        let content = "before projected after";
+        let mut arena = new_test_arena();
+        let mut text_area = TextArea::with_stable_id(0xd3_a1c3);
+        text_area.set_text(content.to_string());
+        text_area.font_size = 17.5;
+        text_area.line_height = 1.3;
+        text_area.on_render_handler = Some(crate::ui::on_text_area_render(|render| {
+            render.range(7..16, |_text_area| crate::ui::RsxNode::text("projected"));
+        }));
+        text_area.is_focused = true;
+        text_area.caret_visible = true;
+        text_area.cursor_char = if preedit.is_some() { 8 } else { 7 };
+        if let Some((preedit, cursor)) = preedit {
+            text_area.ime_preedit = preedit.to_string();
+            text_area.ime_preedit_cursor = cursor;
+            text_area.children_dirty = true;
+            text_area.bump_unified_ifc_source_revision();
+            text_area.dirty_flags = DirtyFlags::ALL;
+        }
+
+        let text_area = commit_element(&mut arena, Box::new(text_area));
+        arena.with_element_taken(text_area, |element, _arena| {
+            element
+                .as_any_mut()
+                .downcast_mut::<TextArea>()
+                .unwrap()
+                .set_self_node_key(text_area);
+        });
+        measure_and_place(
+            &mut arena,
+            text_area,
+            LayoutConstraints {
+                max_width: width,
+                max_height: 240.0,
+                viewport_width: 320.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(240.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: width,
+                available_height: 240.0,
+                viewport_width: 320.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(240.0),
+            },
+        );
+
+        let wrapper = commit_element(
+            &mut arena,
+            Box::new(Element::new_with_id(
+                0xe2_a3c1,
+                0.0,
+                -outer_scroll_y,
+                width,
+                content_height,
+            )),
+        );
+        let root = commit_element(
+            &mut arena,
+            Box::new(Element::new_with_id(0xe2_a3c0, 0.0, 0.0, width, 80.0)),
+        );
+        arena.set_parent(text_area, Some(wrapper));
+        arena.set_children(wrapper, vec![text_area]);
+        arena.set_parent(wrapper, Some(root));
+        arena.set_children(root, vec![wrapper]);
+        arena.with_element_taken(text_area, |element, arena| {
+            element.place(
+                LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: -outer_scroll_y,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: width,
+                    available_height: 240.0,
+                    viewport_width: 320.0,
+                    viewport_height: 240.0,
+                    percent_base_width: Some(320.0),
+                    percent_base_height: Some(240.0),
+                },
+                arena,
+            );
+        });
+
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+        crate::view::test_support::get_element_mut::<Element>(&arena, wrapper)
+            .apply_style(wrapper_style);
+
+        let mut root_style = Style::new();
+        root_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+        {
+            let mut root_element =
+                crate::view::test_support::get_element_mut::<Element>(&arena, root);
+            root_element.apply_style(root_style);
+            root_element.layout_state.content_size = Size {
+                width,
+                height: content_height,
+            };
+            root_element.set_scroll_offset((0.0, outer_scroll_y));
+            root_element.clear_local_dirty_flags(DirtyFlags::ALL);
+        }
+
+        let mut stack = vec![wrapper];
+        while let Some(key) = stack.pop() {
+            stack.extend(arena.children_of(key));
+            arena
+                .get_mut(key)
+                .unwrap()
+                .element
+                .clear_local_dirty_flags(DirtyFlags::ALL);
+        }
+        arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
+        arena.refresh_subtree_dirty_cache(root);
+        let roots = vec![root];
+        let (properties, generations) = synced_paint_state(&arena, &roots);
+        (arena, roots, properties, generations)
+    }
+
     fn prepared_scroll_text_area_scene_with(
         outer_scroll_y: f32,
         local_scroll_y: f32,
@@ -6438,6 +6586,212 @@ mod legacy_root_render_tests {
             crate::view::paint::ScrollSceneBackingKind::Single
         );
         assert_eq!(trace.tile_count, 1);
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true));
+    }
+
+    #[test]
+    fn retained_auto_focused_atomic_projection_text_area_selects_property_scene() {
+        let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let (arena, roots, properties, generations) =
+            prepared_focused_atomic_projection_scroll_text_area_scene();
+        let wrapper = arena.children_of(roots[0])[0];
+        let text_area = arena.children_of(wrapper)[0];
+        let root_node = arena.get(roots[0]).unwrap();
+        let root_element = root_node
+            .element
+            .as_any()
+            .downcast_ref::<Element>()
+            .unwrap();
+        assert!(
+            root_element
+                .exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(
+                    roots[0], &arena, 1.0,
+                )
+                .is_some(),
+            "focused projection fixture must satisfy C3b admission",
+        );
+
+        let decision = select_retained_auto_authority(
+            &arena,
+            &roots,
+            &properties,
+            &generations,
+            &FxHashSet::default(),
+            &ctx,
+            true,
+        );
+        let (scene, trace) = match decision {
+            AutoAuthorityDecision::PropertyScrollScene { scene, trace } => (scene, trace),
+            AutoAuthorityDecision::Legacy { trace } => panic!(
+                "focused atomic projection TextArea rejected PropertyScrollScene: {:?}",
+                trace.rejections
+            ),
+            _ => panic!("focused atomic projection TextArea selected wrong authority"),
+        };
+        assert!(trace.rejections.is_empty());
+        assert_eq!(scene.boundary_count(), 1);
+        assert!(scene.is_canonical());
+
+        let mut viewport = Viewport::new();
+        let frame_owner = viewport.begin_retained_surface_frame_stage().unwrap();
+        let mut graph = FrameGraph::new();
+        let graph_before = graph.build_state_snapshot_for_test();
+        let prepared = crate::view::paint::prepare_retained_property_scroll_forest_from_pool(
+            &mut viewport,
+            scene,
+            &mut graph,
+            ctx,
+            [0.0, 0.0, 0.0, 1.0],
+            frame_owner,
+        )
+        .expect("focused atomic projection scene must prepare through native RetainedAuto path");
+        assert_eq!(
+            prepared.graph_build_state_snapshot_for_test(),
+            graph_before,
+            "prepare must remain graph-inert until emit",
+        );
+        let stamps = prepared.scroll_content_stamps_for_test();
+        let [stamp] = stamps.as_slice() else {
+            panic!("focused C3b prepare must seal exactly one resident stamp")
+        };
+        let [local_clip] = stamp.clip_nodes.as_slice() else {
+            panic!("focused C3b resident must retain exactly one local TextArea clip")
+        };
+        assert_eq!(local_clip.owner, text_area);
+        assert!(local_clip.parent.is_none());
+        assert!(crate::view::paint::retained_surface_raster_stamp_is_canonical(stamp));
+
+        let outcome = crate::view::paint::emit_prepared_retained_property_scroll_forest(prepared);
+        let (state, trace) = outcome.into_parts();
+        assert_eq!(state.opaque_rect_order(), 1);
+        assert_eq!(
+            trace.backing,
+            crate::view::paint::ScrollSceneBackingKind::Single
+        );
+        assert_eq!(trace.tile_count, 1);
+        assert_eq!(trace.reraster_count, 1);
+        let pass_names = graph
+            .pass_descriptors()
+            .iter()
+            .map(|pass| pass.name)
+            .collect::<Vec<_>>();
+        let composite = pass_names
+            .iter()
+            .position(|name| name.ends_with("TextureCompositePass"))
+            .expect("resident atomic projection content must composite");
+        let caret = pass_names
+            .iter()
+            .position(|name| name.ends_with("OpaqueRectPass"))
+            .expect("visible focused atomic caret must emit dynamically");
+        assert!(composite < caret, "caret must follow resident composite");
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true));
+    }
+
+    #[test]
+    fn retained_auto_focused_atomic_projection_preedit_selects_property_scene() {
+        let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let (arena, roots, properties, generations) =
+            prepared_focused_atomic_projection_scroll_text_area_scene_with_preedit(Some((
+                "中",
+                Some((0, "中".len())),
+            )));
+        let wrapper = arena.children_of(roots[0])[0];
+        let text_area = arena.children_of(wrapper)[0];
+        let root_node = arena.get(roots[0]).unwrap();
+        let root_element = root_node
+            .element
+            .as_any()
+            .downcast_ref::<Element>()
+            .unwrap();
+        assert!(
+            root_element
+                .exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(
+                    roots[0], &arena, 1.0,
+                )
+                .is_some(),
+            "focused projection preedit fixture must satisfy C3b admission",
+        );
+
+        let decision = select_retained_auto_authority(
+            &arena,
+            &roots,
+            &properties,
+            &generations,
+            &FxHashSet::default(),
+            &ctx,
+            true,
+        );
+        let (scene, trace) = match decision {
+            AutoAuthorityDecision::PropertyScrollScene { scene, trace } => (scene, trace),
+            AutoAuthorityDecision::Legacy { trace } => panic!(
+                "focused atomic projection preedit rejected PropertyScrollScene: {:?}",
+                trace.rejections
+            ),
+            _ => panic!("focused atomic projection preedit selected wrong authority"),
+        };
+        assert!(trace.rejections.is_empty());
+        assert_eq!(scene.boundary_count(), 1);
+        assert!(scene.is_canonical());
+
+        let mut viewport = Viewport::new();
+        let frame_owner = viewport.begin_retained_surface_frame_stage().unwrap();
+        let mut graph = FrameGraph::new();
+        let prepared = crate::view::paint::prepare_retained_property_scroll_forest_from_pool(
+            &mut viewport,
+            scene,
+            &mut graph,
+            ctx,
+            [0.0, 0.0, 0.0, 1.0],
+            frame_owner,
+        )
+        .expect(
+            "focused atomic projection preedit scene must prepare through native RetainedAuto path",
+        );
+        let stamps = prepared.scroll_content_stamps_for_test();
+        let [stamp] = stamps.as_slice() else {
+            panic!("focused projection preedit prepare must seal exactly one resident stamp")
+        };
+        let [local_clip] = stamp.clip_nodes.as_slice() else {
+            panic!(
+                "focused projection preedit resident must retain exactly one local TextArea clip"
+            )
+        };
+        assert_eq!(local_clip.owner, text_area);
+        assert!(local_clip.parent.is_none());
+        assert!(crate::view::paint::retained_surface_raster_stamp_is_canonical(stamp));
+
+        let outcome = crate::view::paint::emit_prepared_retained_property_scroll_forest(prepared);
+        let (state, trace) = outcome.into_parts();
+        assert_eq!(state.opaque_rect_order(), 2);
+        assert_eq!(
+            trace.backing,
+            crate::view::paint::ScrollSceneBackingKind::Single
+        );
+        assert_eq!(trace.tile_count, 1);
+        assert_eq!(trace.reraster_count, 1);
+        let pass_names = graph
+            .pass_descriptors()
+            .iter()
+            .map(|pass| pass.name)
+            .collect::<Vec<_>>();
+        let composite = pass_names
+            .iter()
+            .position(|name| name.ends_with("TextureCompositePass"))
+            .expect("resident atomic projection content must composite");
+        let post_rects = pass_names
+            .iter()
+            .enumerate()
+            .filter_map(|(index, name)| name.ends_with("OpaqueRectPass").then_some(index))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            post_rects.len(),
+            2,
+            "preedit underline and caret must be post-composite sidecars"
+        );
+        assert!(
+            post_rects.into_iter().all(|index| composite < index),
+            "preedit sidecars must follow resident composite",
+        );
         assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true));
     }
 

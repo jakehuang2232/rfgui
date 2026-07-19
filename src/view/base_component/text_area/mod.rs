@@ -550,7 +550,9 @@ impl FocusedAtomicCaretSourceSeal {
             && self.stable_id != 0
             && self.focused
             && self.should_render
-            && self.ime_preedit_cursor.is_none()
+            && self
+                .ime_preedit_cursor
+                .is_none_or(|(start, end)| start <= end)
             && self.local_scroll_bits == [0.0_f32.to_bits(); 2]
             && self.unified_ifc_source_revision != 0
             && last_apply_is_current
@@ -580,9 +582,73 @@ impl FocusedAtomicCaretSourceSeal {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FocusedAtomicPreeditSourceSeal {
+    pub(crate) owner: NodeKey,
+    pub(crate) stable_id: u64,
+    pub(crate) content: Arc<str>,
+    pub(crate) backing_text: Arc<str>,
+    pub(crate) ime_preedit: Arc<str>,
+    pub(crate) ime_preedit_cursor: Option<(usize, usize)>,
+    pub(crate) cursor_char: usize,
+    pub(crate) cursor_affinity: CaretAffinity,
+    pub(crate) foreground_color_bits: [u32; 4],
+    pub(crate) glyph_bounds_bits: [u32; 4],
+    pub(crate) underline_bounds_bits: [u32; 4],
+    pub(crate) glyph_identity: crate::view::paint::PaintPayloadIdentity,
+    pub(crate) underline_identity: crate::view::paint::PaintPayloadIdentity,
+    pub(crate) unified_ifc_source_revision: u64,
+    pub(crate) last_unified_apply_bits: Option<(u32, u32, u64)>,
+}
+
+impl FocusedAtomicPreeditSourceSeal {
+    pub(crate) fn is_canonical(&self) -> bool {
+        if self.owner.is_null()
+            || self.stable_id == 0
+            || self.ime_preedit.is_empty()
+            || self.cursor_char > self.content.chars().count()
+            || self.backing_text.is_empty()
+            || !self.backing_text.is_char_boundary(self.backing_text.len())
+            || !self.ime_preedit_cursor.is_none_or(|(start, end)| {
+                start <= end
+                    && end <= self.ime_preedit.len()
+                    && self.ime_preedit.is_char_boundary(start)
+                    && self.ime_preedit.is_char_boundary(end)
+            })
+            || self.unified_ifc_source_revision == 0
+            || !self
+                .last_unified_apply_bits
+                .is_some_and(|(x, y, revision)| {
+                    f32::from_bits(x).is_finite()
+                        && f32::from_bits(y).is_finite()
+                        && revision == self.unified_ifc_source_revision
+                })
+            || self
+                .foreground_color_bits
+                .map(f32::from_bits)
+                .into_iter()
+                .any(|channel| !channel.is_finite() || !(0.0..=1.0).contains(&channel))
+            || !crate::view::paint::preedit_glyph_identity_is_exact(
+                &self.glyph_identity,
+                self.glyph_bounds_bits,
+                self.foreground_color_bits,
+            )
+            || !crate::view::paint::preedit_underline_identity_is_exact(
+                &self.underline_identity,
+                self.underline_bounds_bits,
+                self.foreground_color_bits,
+            )
+        {
+            return false;
+        }
+        true
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct RetainedFocusedAtomicProjectionTextAreaFrozenSourceIdentity {
     atomic_source: RetainedAtomicProjectionTextAreaPaintGrammar,
     caret: FocusedAtomicCaretSourceSeal,
+    preedit: Option<FocusedAtomicPreeditSourceSeal>,
 }
 
 /// Closed focused glyph source with exactly one atomic projection and its
@@ -592,6 +658,7 @@ struct RetainedFocusedAtomicProjectionTextAreaFrozenSourceIdentity {
 pub(crate) struct RetainedFocusedAtomicProjectionTextAreaPaintGrammar {
     pub(crate) atomic_source: RetainedAtomicProjectionTextAreaPaintGrammar,
     pub(crate) caret: FocusedAtomicCaretSourceSeal,
+    pub(crate) preedit: Option<FocusedAtomicPreeditSourceSeal>,
     frozen_source_identity: RetainedFocusedAtomicProjectionTextAreaFrozenSourceIdentity,
 }
 
@@ -602,6 +669,7 @@ impl RetainedFocusedAtomicProjectionTextAreaPaintGrammar {
         let grammar = Self {
             atomic_source: frozen.atomic_source.clone(),
             caret: frozen.caret.clone(),
+            preedit: frozen.preedit.clone(),
             frozen_source_identity: frozen,
         };
         grammar.is_canonical().then_some(grammar)
@@ -610,10 +678,22 @@ impl RetainedFocusedAtomicProjectionTextAreaPaintGrammar {
     pub(crate) fn is_canonical(&self) -> bool {
         self.atomic_source.is_canonical()
             && self.caret.is_canonical()
+            && self.preedit.as_ref().is_none_or(|preedit| {
+                preedit.is_canonical()
+                    && preedit.owner == self.caret.owner
+                    && preedit.stable_id == self.caret.stable_id
+                    && preedit.cursor_char == self.caret.cursor_char
+                    && preedit.cursor_affinity == self.caret.cursor_affinity
+                    && preedit.ime_preedit_cursor == self.caret.ime_preedit_cursor
+                    && preedit.foreground_color_bits == self.caret.foreground_color_bits
+                    && preedit.unified_ifc_source_revision == self.caret.unified_ifc_source_revision
+                    && preedit.last_unified_apply_bits == self.caret.last_unified_apply_bits
+            })
             && self.frozen_source_identity
                 == RetainedFocusedAtomicProjectionTextAreaFrozenSourceIdentity {
                     atomic_source: self.atomic_source.clone(),
                     caret: self.caret.clone(),
+                    preedit: self.preedit.clone(),
                 }
     }
 }

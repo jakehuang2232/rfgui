@@ -7,10 +7,12 @@ use crate::view::base_component::{
     AncestorClipContext, BuildState, PromotionCompositeBounds,
     RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollHostAdmissionSnapshot, RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollTextAreaSubtreeAdmissionSnapshot, RetainedScrollTransformHostAdmissionSnapshot,
     UiBuildContext, persistent_target_texture_descriptors, scroll_content_layer_stable_key,
-    texture_desc_for_logical_bounds, transient_target_texture_descriptors,
+    text_area::FocusedAtomicCaretSourcePaintSeal, texture_desc_for_logical_bounds,
+    transient_target_texture_descriptors,
 };
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeSnapshot,
@@ -41,6 +43,7 @@ use super::compiler::{
     ValidatedScrollSceneAtomicProjectionSelectionTextAreaPlanParts,
     ValidatedScrollSceneAtomicProjectionTextAreaHostEmission,
     ValidatedScrollSceneAtomicProjectionTextAreaPlanParts, ValidatedScrollSceneContentArtifact,
+    ValidatedScrollSceneFocusedAtomicProjectionTextAreaPlanParts,
     ValidatedScrollSceneHostBeforeArtifact, ValidatedScrollSceneOverlayArtifact,
     emit_validated_scroll_scene_atomic_projection_selection_text_area_content,
     emit_validated_scroll_scene_atomic_projection_selection_text_area_host,
@@ -81,6 +84,9 @@ enum PropertyScrollHostAdmissionKind {
     TextAreaSubtree(RetainedScrollTextAreaSubtreeAdmissionSnapshot),
     InteractiveTextAreaSubtree(RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot),
     AtomicProjectionTextAreaSubtree(RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot),
+    FocusedAtomicProjectionTextAreaSubtree(
+        Box<RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot>,
+    ),
     AtomicProjectionSelectionTextAreaSubtree(
         RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
     ),
@@ -123,17 +129,143 @@ impl PartialEq for PropertyScrollInteractiveTextAreaCaretSeal {
 
 impl Eq for PropertyScrollInteractiveTextAreaCaretSeal {}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PropertyScrollFocusedAtomicProjectionSidecarSeal {
+    caret: crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal,
+    preedit: Option<crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
+    text_area_clip: ClipNodeSnapshot,
+    outer_clip: ClipNodeSnapshot,
+}
+
+impl PropertyScrollFocusedAtomicProjectionSidecarSeal {
+    fn new(
+        caret: &crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal,
+        preedit: Option<&crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
+        text_area_clip: ClipNodeSnapshot,
+        outer_clip: ClipNodeSnapshot,
+    ) -> Option<Self> {
+        let seal = Self {
+            caret: caret.clone(),
+            preedit: preedit.cloned(),
+            text_area_clip,
+            outer_clip,
+        };
+        seal.is_canonical().then_some(seal)
+    }
+
+    fn is_canonical(&self) -> bool {
+        self.caret.is_canonical()
+            && self.preedit.as_ref().is_none_or(|preedit| {
+                preedit.is_canonical()
+                    && preedit.owner == self.caret.owner
+                    && preedit.stable_id == self.caret.stable_id
+                    && preedit.cursor_char == self.caret.cursor_char
+                    && preedit.cursor_affinity == self.caret.cursor_affinity
+                    && preedit.ime_preedit_cursor == self.caret.ime_preedit_cursor
+                    && preedit.foreground_color_bits == self.caret.foreground_color_bits
+                    && preedit.unified_ifc_source_revision == self.caret.unified_ifc_source_revision
+                    && preedit.last_unified_apply_bits == self.caret.last_unified_apply_bits
+            })
+            && self.text_area_clip.id.owner == self.caret.owner
+            && self.text_area_clip.owner == self.caret.owner
+            && self.text_area_clip.id.role == ClipNodeRole::ContentsClip
+            && self.text_area_clip.parent == Some(self.outer_clip.id)
+            && self.text_area_clip.behavior == ClipBehavior::Intersect
+            && self.text_area_clip.generation != 0
+            && self.outer_clip.id.owner == self.outer_clip.owner
+            && self.outer_clip.id.role == ClipNodeRole::ContentsClip
+            && self.outer_clip.owner != self.caret.owner
+            && self.outer_clip.parent.is_none()
+            && self.outer_clip.behavior == ClipBehavior::Intersect
+            && self.outer_clip.generation != 0
+            && self.text_area_clip.logical_scissor[0]
+                .checked_add(self.text_area_clip.logical_scissor[2])
+                .is_some()
+            && self.text_area_clip.logical_scissor[1]
+                .checked_add(self.text_area_clip.logical_scissor[3])
+                .is_some()
+            && self.outer_clip.logical_scissor[0]
+                .checked_add(self.outer_clip.logical_scissor[2])
+                .is_some()
+            && self.outer_clip.logical_scissor[1]
+                .checked_add(self.outer_clip.logical_scissor[3])
+                .is_some()
+    }
+
+    fn draw_op(&self) -> Option<super::DrawRectOp> {
+        if !self.is_canonical() {
+            return None;
+        }
+        let FocusedAtomicCaretSourcePaintSeal::Present {
+            bounds_bits,
+            payload_identity,
+        } = &self.caret.paint
+        else {
+            return None;
+        };
+        let [x, y, width, height] = bounds_bits.map(f32::from_bits);
+        let op = super::DrawRectOp {
+            params: crate::view::render_pass::draw_rect_pass::RectPassParams {
+                position: [x, y],
+                size: [width, height],
+                fill_color: self.caret.foreground_color_bits.map(f32::from_bits),
+                opacity: 1.0,
+                ..Default::default()
+            },
+            mode: crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
+        };
+        (super::PaintPayloadIdentity::prepared_rects([&op]).as_ref() == Some(payload_identity))
+            .then_some(op)
+    }
+
+    fn preedit_draw_op(&self) -> Option<super::DrawRectOp> {
+        let preedit = self.preedit.as_ref()?;
+        if !self.is_canonical() {
+            return None;
+        }
+        let [x, y, width, height] = preedit.underline_bounds_bits.map(f32::from_bits);
+        let op = super::DrawRectOp {
+            params: crate::view::render_pass::draw_rect_pass::RectPassParams {
+                position: [x, y],
+                size: [width, height],
+                fill_color: preedit.foreground_color_bits.map(f32::from_bits),
+                opacity: 1.0,
+                ..Default::default()
+            },
+            mode: crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
+        };
+        (super::PaintPayloadIdentity::prepared_rects([&op]).as_ref()
+            == Some(&preedit.underline_identity))
+        .then_some(op)
+    }
+}
+
 /// Closed schedule attached to the content-composite boundary. Existing
-/// grammars have no post-composite work; the interactive sibling carries one
-/// compiler-sealed caret sidecar. The forest prepare path freezes it before
-/// mutation and the emitter consumes it only at the content-composite edge.
+/// grammars have no post-composite work; TextArea variants carry only
+/// compiler-sealed sidecars such as caret and IME preedit underline. The forest
+/// prepare path freezes them before mutation and the emitter consumes them only
+/// at the content-composite edge, keeping resident content raster seals free of
+/// focus adornments.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PropertyScrollPostCompositeSchedule {
     NoneForExistingGrammar,
     InteractiveTextAreaCaret(PropertyScrollInteractiveTextAreaCaretSeal),
+    FocusedAtomicProjectionSidecars(Box<PropertyScrollFocusedAtomicProjectionSidecarSeal>),
 }
 
 impl PropertyScrollPostCompositeSchedule {
+    fn clip_intersection(text_area: [u32; 4], outer: [u32; 4]) -> Option<[u32; 4]> {
+        let left = text_area[0].max(outer[0]);
+        let top = text_area[1].max(outer[1]);
+        let right = text_area[0]
+            .checked_add(text_area[2])?
+            .min(outer[0].checked_add(outer[2])?);
+        let bottom = text_area[1]
+            .checked_add(text_area[3])?
+            .min(outer[1].checked_add(outer[3])?);
+        (right > left && bottom > top).then_some([left, top, right - left, bottom - top])
+    }
+
     fn opaque_order_delta(&self) -> Option<u32> {
         match self {
             Self::NoneForExistingGrammar => Some(0),
@@ -144,6 +276,14 @@ impl PropertyScrollPostCompositeSchedule {
                 let Some(op) = caret.recorded.op.as_ref() else {
                     return Some(0);
                 };
+                if Self::clip_intersection(
+                    caret.recorded.identity.text_area_clip.logical_scissor,
+                    caret.recorded.identity.outer_clip.logical_scissor,
+                )
+                .is_none()
+                {
+                    return Some(0);
+                }
                 let mut pass = DrawRectPass::new(
                     op.params.clone(),
                     DrawRectInput::default(),
@@ -152,46 +292,77 @@ impl PropertyScrollPostCompositeSchedule {
                 pass.set_render_mode(op.mode);
                 Some(u32::from(pass.is_opaque_candidate()))
             }
+            Self::FocusedAtomicProjectionSidecars(sidecars) => {
+                if Self::clip_intersection(
+                    sidecars.text_area_clip.logical_scissor,
+                    sidecars.outer_clip.logical_scissor,
+                )
+                .is_none()
+                {
+                    return Some(0);
+                }
+                let mut count = 0u32;
+                for op in [sidecars.preedit_draw_op(), sidecars.draw_op()]
+                    .into_iter()
+                    .flatten()
+                {
+                    let mut pass = DrawRectPass::new(
+                        op.params,
+                        DrawRectInput::default(),
+                        DrawRectOutput::default(),
+                    );
+                    pass.set_render_mode(op.mode);
+                    count = count.checked_add(u32::from(pass.is_opaque_candidate()))?;
+                }
+                sidecars.is_canonical().then_some(count)
+            }
         }
     }
 
     fn emit(self, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
-        let Self::InteractiveTextAreaCaret(caret) = self else {
+        let (ops, text_area, outer) = match self {
+            Self::NoneForExistingGrammar => return,
+            Self::InteractiveTextAreaCaret(caret) => {
+                assert!(caret.is_canonical());
+                let Some(op) = caret.recorded.op else {
+                    return;
+                };
+                (
+                    vec![op],
+                    caret.recorded.identity.text_area_clip.logical_scissor,
+                    caret.recorded.identity.outer_clip.logical_scissor,
+                )
+            }
+            Self::FocusedAtomicProjectionSidecars(sidecars) => {
+                assert!(sidecars.is_canonical());
+                let Some(op) = sidecars.draw_op() else {
+                    return;
+                };
+                let mut ops = Vec::new();
+                if let Some(preedit) = sidecars.preedit_draw_op() {
+                    ops.push(preedit);
+                }
+                ops.push(op);
+                (
+                    ops,
+                    sidecars.text_area_clip.logical_scissor,
+                    sidecars.outer_clip.logical_scissor,
+                )
+            }
+        };
+        let Some(scissor) = Self::clip_intersection(text_area, outer) else {
             return;
         };
-        assert!(caret.is_canonical());
-        let Some(op) = caret.recorded.op else {
-            return;
-        };
-        let text_area = caret.recorded.identity.text_area_clip.logical_scissor;
-        let outer = caret.recorded.identity.outer_clip.logical_scissor;
-        let left = text_area[0].max(outer[0]);
-        let top = text_area[1].max(outer[1]);
-        let right = text_area[0]
-            .checked_add(text_area[2])
-            .expect("sealed TextArea clip cannot overflow")
-            .min(
-                outer[0]
-                    .checked_add(outer[2])
-                    .expect("sealed outer clip cannot overflow"),
+        let previous = ctx.replace_scissor_rect(Some(scissor));
+        for op in ops {
+            let mut pass = DrawRectPass::new(
+                op.params,
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
             );
-        let bottom = text_area[1]
-            .checked_add(text_area[3])
-            .expect("sealed TextArea clip cannot overflow")
-            .min(
-                outer[1]
-                    .checked_add(outer[3])
-                    .expect("sealed outer clip cannot overflow"),
-            );
-        assert!(right > left && bottom > top);
-        let previous = ctx.replace_scissor_rect(Some([left, top, right - left, bottom - top]));
-        let mut pass = DrawRectPass::new(
-            op.params,
-            DrawRectInput::default(),
-            DrawRectOutput::default(),
-        );
-        pass.set_render_mode(op.mode);
-        ctx.emit_draw_rect_pass(graph, pass);
+            pass.set_render_mode(op.mode);
+            ctx.emit_draw_rect_pass(graph, pass);
+        }
         ctx.replace_scissor_rect(previous);
     }
 }
@@ -270,6 +441,21 @@ impl PropertyScrollHostAdmission {
         }
     }
 
+    fn focused_atomic_projection_text_area_subtree(
+        admission: RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    ) -> Self {
+        Self {
+            boundary_root: admission.boundary_root,
+            stable_id: admission.stable_id,
+            child: admission.content_wrapper,
+            child_stable_id: admission.content_wrapper_stable_id,
+            source_bounds: admission.source_bounds,
+            kind: PropertyScrollHostAdmissionKind::FocusedAtomicProjectionTextAreaSubtree(
+                Box::new(admission),
+            ),
+        }
+    }
+
     fn matches_scroll_node(&self, scroll: ScrollNodeSnapshot) -> bool {
         match &self.kind {
             PropertyScrollHostAdmissionKind::DirectLeaf(admission) => {
@@ -282,6 +468,9 @@ impl PropertyScrollHostAdmission {
                 (*admission).matches_scroll_node(scroll)
             }
             PropertyScrollHostAdmissionKind::AtomicProjectionTextAreaSubtree(admission) => {
+                admission.matches_scroll_node(scroll)
+            }
+            PropertyScrollHostAdmissionKind::FocusedAtomicProjectionTextAreaSubtree(admission) => {
                 admission.matches_scroll_node(scroll)
             }
             PropertyScrollHostAdmissionKind::AtomicProjectionSelectionTextAreaSubtree(
@@ -325,6 +514,9 @@ impl PropertyScrollHostAdmission {
             PropertyScrollHostAdmissionKind::AtomicProjectionTextAreaSubtree(admission) => {
                 Self::atomic_projection_text_area_subtree(admission.clone())
             }
+            PropertyScrollHostAdmissionKind::FocusedAtomicProjectionTextAreaSubtree(admission) => {
+                Self::focused_atomic_projection_text_area_subtree((**admission).clone())
+            }
             PropertyScrollHostAdmissionKind::AtomicProjectionSelectionTextAreaSubtree(
                 admission,
             ) => Self::atomic_projection_selection_text_area_subtree(admission.clone()),
@@ -338,7 +530,13 @@ impl PropertyScrollHostAdmission {
         interactive_sidecar: Option<RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot>,
         post_composite: &PropertyScrollPostCompositeSchedule,
     ) -> bool {
-        self.exactly_corresponds_to_with_atomic(sidecar, interactive_sidecar, None, post_composite)
+        self.exactly_corresponds_to_with_atomic(
+            sidecar,
+            interactive_sidecar,
+            None,
+            None,
+            post_composite,
+        )
     }
 
     fn exactly_corresponds_to_with_atomic(
@@ -346,6 +544,9 @@ impl PropertyScrollHostAdmission {
         sidecar: Option<RetainedScrollTextAreaSubtreeAdmissionSnapshot>,
         interactive_sidecar: Option<RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot>,
         atomic_sidecar: Option<&RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot>,
+        focused_atomic_sidecar: Option<
+            &RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+        >,
         post_composite: &PropertyScrollPostCompositeSchedule,
     ) -> bool {
         self.has_exact_kind_projection()
@@ -354,10 +555,12 @@ impl PropertyScrollHostAdmission {
                 sidecar,
                 interactive_sidecar,
                 atomic_sidecar,
+                focused_atomic_sidecar,
                 post_composite,
             ) {
                 (
                     PropertyScrollHostAdmissionKind::DirectLeaf(_),
+                    None,
                     None,
                     None,
                     None,
@@ -368,12 +571,14 @@ impl PropertyScrollHostAdmission {
                     Some(sidecar),
                     None,
                     None,
+                    None,
                     PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
                 ) => (*inline).bitwise_eq(sidecar),
                 (
                     PropertyScrollHostAdmissionKind::InteractiveTextAreaSubtree(inline),
                     None,
                     Some(sidecar),
+                    None,
                     None,
                     PropertyScrollPostCompositeSchedule::InteractiveTextAreaCaret(caret),
                 ) => {
@@ -389,10 +594,27 @@ impl PropertyScrollHostAdmission {
                     None,
                     None,
                     Some(sidecar),
+                    None,
                     PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
                 ) => inline.bitwise_eq(sidecar),
                 (
+                    PropertyScrollHostAdmissionKind::FocusedAtomicProjectionTextAreaSubtree(inline),
+                    None,
+                    None,
+                    None,
+                    Some(sidecar),
+                    PropertyScrollPostCompositeSchedule::FocusedAtomicProjectionSidecars(caret),
+                ) => {
+                    inline.bitwise_eq(sidecar)
+                        && caret.is_canonical()
+                        && caret.caret.owner == inline.text_area_root
+                        && caret.caret.stable_id == inline.text_area_stable_id
+                        && caret.text_area_clip.id.owner == inline.text_area_root
+                        && caret.text_area_clip.owner == inline.text_area_root
+                }
+                (
                     PropertyScrollHostAdmissionKind::AtomicProjectionSelectionTextAreaSubtree(_),
+                    None,
                     None,
                     None,
                     None,
@@ -409,6 +631,7 @@ impl PropertyScrollHostAdmission {
             PropertyScrollHostAdmissionKind::DirectLeaf(_)
             | PropertyScrollHostAdmissionKind::InteractiveTextAreaSubtree(_)
             | PropertyScrollHostAdmissionKind::AtomicProjectionTextAreaSubtree(_)
+            | PropertyScrollHostAdmissionKind::FocusedAtomicProjectionTextAreaSubtree(_)
             | PropertyScrollHostAdmissionKind::AtomicProjectionSelectionTextAreaSubtree(_) => None,
         }
     }
@@ -424,6 +647,7 @@ impl PropertyScrollHostAdmission {
             PropertyScrollHostAdmissionKind::DirectLeaf(_)
             | PropertyScrollHostAdmissionKind::TextAreaSubtree(_)
             | PropertyScrollHostAdmissionKind::AtomicProjectionTextAreaSubtree(_)
+            | PropertyScrollHostAdmissionKind::FocusedAtomicProjectionTextAreaSubtree(_)
             | PropertyScrollHostAdmissionKind::AtomicProjectionSelectionTextAreaSubtree(_) => None,
         }
     }
@@ -439,6 +663,23 @@ impl PropertyScrollHostAdmission {
             PropertyScrollHostAdmissionKind::DirectLeaf(_)
             | PropertyScrollHostAdmissionKind::TextAreaSubtree(_)
             | PropertyScrollHostAdmissionKind::InteractiveTextAreaSubtree(_)
+            | PropertyScrollHostAdmissionKind::FocusedAtomicProjectionTextAreaSubtree(_)
+            | PropertyScrollHostAdmissionKind::AtomicProjectionSelectionTextAreaSubtree(_) => None,
+        }
+    }
+
+    fn focused_atomic_projection_text_area_subtree_snapshot(
+        &self,
+    ) -> Option<&RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot> {
+        self.has_exact_kind_projection().then_some(())?;
+        match &self.kind {
+            PropertyScrollHostAdmissionKind::FocusedAtomicProjectionTextAreaSubtree(admission) => {
+                Some(admission)
+            }
+            PropertyScrollHostAdmissionKind::DirectLeaf(_)
+            | PropertyScrollHostAdmissionKind::TextAreaSubtree(_)
+            | PropertyScrollHostAdmissionKind::InteractiveTextAreaSubtree(_)
+            | PropertyScrollHostAdmissionKind::AtomicProjectionTextAreaSubtree(_)
             | PropertyScrollHostAdmissionKind::AtomicProjectionSelectionTextAreaSubtree(_) => None,
         }
     }
@@ -454,7 +695,8 @@ impl PropertyScrollHostAdmission {
             PropertyScrollHostAdmissionKind::DirectLeaf(_)
             | PropertyScrollHostAdmissionKind::TextAreaSubtree(_)
             | PropertyScrollHostAdmissionKind::InteractiveTextAreaSubtree(_)
-            | PropertyScrollHostAdmissionKind::AtomicProjectionTextAreaSubtree(_) => None,
+            | PropertyScrollHostAdmissionKind::AtomicProjectionTextAreaSubtree(_)
+            | PropertyScrollHostAdmissionKind::FocusedAtomicProjectionTextAreaSubtree(_) => None,
         }
     }
 
@@ -491,6 +733,18 @@ impl PropertyScrollHostAdmission {
                         && resident.source_grammar == admission.paint_grammar
                 }
                 (
+                    PropertyScrollHostAdmissionKind::FocusedAtomicProjectionTextAreaSubtree(
+                        admission,
+                    ),
+                    None,
+                    Some(resident),
+                ) => {
+                    resident.is_canonical()
+                        && resident.content_root == admission.content_wrapper
+                        && resident.text_area_root == admission.text_area_root
+                        && resident.source_grammar == admission.paint_grammar.atomic_source
+                }
+                (
                     PropertyScrollHostAdmissionKind::AtomicProjectionSelectionTextAreaSubtree(_),
                     None,
                     None,
@@ -521,6 +775,10 @@ impl PropertyScrollHostAdmission {
                     PropertyScrollHostAdmissionKind::AtomicProjectionTextAreaSubtree(right),
                 ) => left.bitwise_eq(right),
                 (
+                    PropertyScrollHostAdmissionKind::FocusedAtomicProjectionTextAreaSubtree(left),
+                    PropertyScrollHostAdmissionKind::FocusedAtomicProjectionTextAreaSubtree(right),
+                ) => left.bitwise_eq(right),
+                (
                     PropertyScrollHostAdmissionKind::AtomicProjectionSelectionTextAreaSubtree(left),
                     PropertyScrollHostAdmissionKind::AtomicProjectionSelectionTextAreaSubtree(
                         right,
@@ -543,6 +801,8 @@ struct ScrollScenePlan {
         Option<RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot>,
     atomic_projection_text_area_subtree_admission:
         Option<RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot>,
+    focused_atomic_projection_text_area_subtree_admission:
+        Option<RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot>,
     post_composite: PropertyScrollPostCompositeSchedule,
     interactive_resident: Option<RetainedInteractiveTextAreaResidentRasterSeal>,
     atomic_projection_resident: Option<RetainedAtomicProjectionTextAreaResidentRasterSeal>,
@@ -554,6 +814,8 @@ struct ScrollScenePlan {
         Option<RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot>,
     planned_atomic_projection_text_area_subtree_admission:
         Option<RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot>,
+    planned_focused_atomic_projection_text_area_subtree_admission:
+        Option<RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot>,
     planned_post_composite: PropertyScrollPostCompositeSchedule,
     planned_interactive_resident: Option<RetainedInteractiveTextAreaResidentRasterSeal>,
     planned_atomic_projection_resident: Option<RetainedAtomicProjectionTextAreaResidentRasterSeal>,
@@ -575,6 +837,9 @@ enum ScrollSceneRecordedAuthority {
     AtomicProjectionTextArea(ValidatedScrollSceneAtomicProjectionTextAreaPlanParts),
     AtomicProjectionSelectionTextArea(
         ValidatedScrollSceneAtomicProjectionSelectionTextAreaPlanParts,
+    ),
+    FocusedAtomicProjectionTextArea(
+        Box<ValidatedScrollSceneFocusedAtomicProjectionTextAreaPlanParts>,
     ),
 }
 
@@ -1075,6 +1340,8 @@ struct PropertyScrollScenePlanSeal {
         Option<RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot>,
     atomic_projection_text_area_subtree_admission:
         Option<RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot>,
+    focused_atomic_projection_text_area_subtree_admission:
+        Option<RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot>,
     post_composite: PropertyScrollPostCompositeSchedule,
     interactive_resident: Option<RetainedInteractiveTextAreaResidentRasterSeal>,
     atomic_projection_resident: Option<RetainedAtomicProjectionTextAreaResidentRasterSeal>,
@@ -1089,6 +1356,8 @@ struct PropertyScrollScenePlanSeal {
         Option<RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot>,
     planned_atomic_projection_text_area_subtree_admission:
         Option<RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot>,
+    planned_focused_atomic_projection_text_area_subtree_admission:
+        Option<RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot>,
     planned_post_composite: PropertyScrollPostCompositeSchedule,
     planned_interactive_resident: Option<RetainedInteractiveTextAreaResidentRasterSeal>,
     planned_atomic_projection_resident: Option<RetainedAtomicProjectionTextAreaResidentRasterSeal>,
@@ -1358,6 +1627,8 @@ struct PropertyScrollBoundaryCompilerWitness {
         Option<RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot>,
     atomic_projection_text_area_subtree_admission:
         Option<RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot>,
+    focused_atomic_projection_text_area_subtree_admission:
+        Option<RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot>,
     post_composite: PropertyScrollPostCompositeSchedule,
     interactive_resident: Option<RetainedInteractiveTextAreaResidentRasterSeal>,
     atomic_projection_resident: Option<RetainedAtomicProjectionTextAreaResidentRasterSeal>,
@@ -1375,11 +1646,16 @@ impl PartialEq for PropertyScrollBoundaryCompilerWitness {
             self.text_area_subtree_admission,
             self.interactive_text_area_subtree_admission,
             self.atomic_projection_text_area_subtree_admission.as_ref(),
+            self.focused_atomic_projection_text_area_subtree_admission
+                .as_ref(),
             &self.post_composite,
         ) && other.admission.exactly_corresponds_to_with_atomic(
             other.text_area_subtree_admission,
             other.interactive_text_area_subtree_admission,
             other.atomic_projection_text_area_subtree_admission.as_ref(),
+            other
+                .focused_atomic_projection_text_area_subtree_admission
+                .as_ref(),
             &other.post_composite,
         ) && self.admission.exactly_corresponds_to_resident_with_atomic(
             self.interactive_resident.as_ref(),
@@ -1410,6 +1686,17 @@ impl PartialEq for PropertyScrollBoundaryCompilerWitness {
             && match (
                 self.atomic_projection_text_area_subtree_admission.as_ref(),
                 other.atomic_projection_text_area_subtree_admission.as_ref(),
+            ) {
+                (None, None) => true,
+                (Some(left), Some(right)) => left.bitwise_eq(right),
+                _ => false,
+            }
+            && match (
+                self.focused_atomic_projection_text_area_subtree_admission
+                    .as_ref(),
+                other
+                    .focused_atomic_projection_text_area_subtree_admission
+                    .as_ref(),
             ) {
                 (None, None) => true,
                 (Some(left), Some(right)) => left.bitwise_eq(right),
@@ -4001,12 +4288,16 @@ fn property_scroll_plan_is_canonical(plan: &PropertyScrollScenePlan) -> bool {
             seal.text_area_subtree_admission,
             seal.interactive_text_area_subtree_admission,
             seal.atomic_projection_text_area_subtree_admission.as_ref(),
+            seal.focused_atomic_projection_text_area_subtree_admission
+                .as_ref(),
             &seal.post_composite,
         )
         || !seal.planned_admission.exactly_corresponds_to_with_atomic(
             seal.planned_text_area_subtree_admission,
             seal.planned_interactive_text_area_subtree_admission,
             seal.planned_atomic_projection_text_area_subtree_admission
+                .as_ref(),
+            seal.planned_focused_atomic_projection_text_area_subtree_admission
                 .as_ref(),
             &seal.planned_post_composite,
         )
@@ -4039,6 +4330,16 @@ fn property_scroll_plan_is_canonical(plan: &PropertyScrollScenePlan) -> bool {
         || match (
             seal.atomic_projection_text_area_subtree_admission.as_ref(),
             seal.planned_atomic_projection_text_area_subtree_admission
+                .as_ref(),
+        ) {
+            (None, None) => false,
+            (Some(live), Some(planned)) => !live.bitwise_eq(planned),
+            _ => true,
+        }
+        || match (
+            seal.focused_atomic_projection_text_area_subtree_admission
+                .as_ref(),
+            seal.planned_focused_atomic_projection_text_area_subtree_admission
                 .as_ref(),
         ) {
             (None, None) => false,
@@ -4201,12 +4502,28 @@ fn property_scroll_plan_is_canonical(plan: &PropertyScrollScenePlan) -> bool {
         },
     ] = plan.steps.as_slice()
     {
-        let Some(admission) = seal
+        let atomic_admission = seal
             .admission
-            .atomic_projection_text_area_subtree_snapshot()
-        else {
-            return false;
-        };
+            .atomic_projection_text_area_subtree_snapshot();
+        let focused_admission = seal
+            .admission
+            .focused_atomic_projection_text_area_subtree_snapshot();
+        let (admission_content_wrapper, admission_text_area_root, admission_paint_grammar) =
+            if let Some(admission) = atomic_admission {
+                (
+                    admission.content_wrapper,
+                    admission.text_area_root,
+                    &admission.paint_grammar,
+                )
+            } else if let Some(admission) = focused_admission {
+                (
+                    admission.content_wrapper,
+                    admission.text_area_root,
+                    &admission.paint_grammar.atomic_source,
+                )
+            } else {
+                return false;
+            };
         let Some(resident) = seal.atomic_projection_resident.as_ref() else {
             return false;
         };
@@ -4219,7 +4536,13 @@ fn property_scroll_plan_is_canonical(plan: &PropertyScrollScenePlan) -> bool {
         let Some(overlay_count) = overlay_authority.overlay_opaque_order_count() else {
             return false;
         };
-        let Some(parent_terminal) = host_terminal.checked_add(overlay_count) else {
+        let Some(post_composite_delta) = post_composite.opaque_order_delta() else {
+            return false;
+        };
+        let Some(parent_after_expected) = host_terminal.checked_add(post_composite_delta) else {
+            return false;
+        };
+        let Some(parent_terminal) = parent_after_expected.checked_add(overlay_count) else {
             return false;
         };
         let Some(expected_span) =
@@ -4230,8 +4553,41 @@ fn property_scroll_plan_is_canonical(plan: &PropertyScrollScenePlan) -> bool {
         let Some(local_clips) = content_authority.local_clip_snapshots() else {
             return false;
         };
+        let projection_sidecars_are_exact = match (atomic_admission, focused_admission) {
+            (Some(admission), None) => {
+                seal.atomic_projection_text_area_subtree_admission
+                    .as_ref()
+                    .is_some_and(|sidecar| admission.bitwise_eq(sidecar))
+                    && seal
+                        .focused_atomic_projection_text_area_subtree_admission
+                        .is_none()
+                    && matches!(
+                        post_composite,
+                        PropertyScrollPostCompositeSchedule::NoneForExistingGrammar
+                    )
+            }
+            (None, Some(admission)) => {
+                seal.focused_atomic_projection_text_area_subtree_admission
+                    .as_ref()
+                    .is_some_and(|sidecar| admission.bitwise_eq(sidecar))
+                    && seal.atomic_projection_text_area_subtree_admission.is_none()
+                    && matches!(
+                        post_composite,
+                        PropertyScrollPostCompositeSchedule::FocusedAtomicProjectionSidecars(caret)
+                            if caret.is_canonical()
+                                && caret.caret.owner == admission.text_area_root
+                                && caret.caret.stable_id == admission.text_area_stable_id
+                                && caret.outer_clip == seal.contents_clip
+                    )
+            }
+            _ => false,
+        };
         let expected_content_bounds = bounds_bits(content_zero_bounds(seal.scroll));
         if *boundary != seal.boundary
+            || !projection_sidecars_are_exact
+            || seal.text_area_subtree_admission.is_some()
+            || seal.interactive_text_area_subtree_admission.is_some()
+            || seal.interactive_resident.is_some()
             || !host_authority.same_authority(content_authority)
             || !host_authority.same_authority(overlay_authority)
             || !host_authority
@@ -4245,12 +4601,8 @@ fn property_scroll_plan_is_canonical(plan: &PropertyScrollScenePlan) -> bool {
             || host_identity != &host_authority.identity()
             || host_span != &(0..host_terminal)
             || *parent_before != host_terminal
-            || *parent_after != host_terminal
-            || overlay_span != &(host_terminal..parent_terminal)
-            || !matches!(
-                post_composite,
-                PropertyScrollPostCompositeSchedule::NoneForExistingGrammar
-            )
+            || *parent_after != parent_after_expected
+            || overlay_span != &(parent_after_expected..parent_terminal)
             || !matches!(backing, PropertyScrollBackingPlan::Single(_))
             || content.content_root != seal.admission.child
             || content.content_stable_id != seal.admission.child_stable_id
@@ -4269,9 +4621,9 @@ fn property_scroll_plan_is_canonical(plan: &PropertyScrollScenePlan) -> bool {
                     seal.scroll.offset.y.to_bits(),
                 ]
             || composite.contents_clip != seal.contents_clip.logical_scissor
-            || admission.content_wrapper != content.content_root
-            || admission.text_area_root != resident.text_area_root
-            || admission.paint_grammar != resident.source_grammar
+            || admission_content_wrapper != content.content_root
+            || admission_text_area_root != resident.text_area_root
+            || admission_paint_grammar != &resident.source_grammar
             || property_scroll_step_identities(&plan.steps).as_ref() != Some(&seal.steps_identity)
             || plan_property_scroll_backing(
                 seal.admission.child_stable_id,
@@ -4556,6 +4908,14 @@ fn property_scroll_plan_matches_exact_live_inputs(
             )
         })
         .flatten();
+    let focused_atomic_projection_text_area_subtree_admission = direct_admission
+        .is_none()
+        .then(|| {
+            element.exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(
+                *root, arena, 1.0,
+            )
+        })
+        .flatten();
     let atomic_projection_selection_text_area_subtree_admission = direct_admission
         .is_none()
         .then(|| {
@@ -4569,21 +4929,27 @@ fn property_scroll_plan_matches_exact_live_inputs(
         text_area_subtree_admission,
         interactive_text_area_subtree_admission,
         atomic_projection_text_area_subtree_admission.as_ref(),
+        focused_atomic_projection_text_area_subtree_admission.as_ref(),
         atomic_projection_selection_text_area_subtree_admission.as_ref(),
     ) {
-        (Some(admission), None, None, None, None) => {
+        (Some(admission), None, None, None, None, None) => {
             PropertyScrollHostAdmission::direct_leaf(admission)
         }
-        (None, Some(admission), None, None, None) => {
+        (None, Some(admission), None, None, None, None) => {
             PropertyScrollHostAdmission::text_area_subtree(admission)
         }
-        (None, None, Some(admission), None, None) => {
+        (None, None, Some(admission), None, None, None) => {
             PropertyScrollHostAdmission::interactive_text_area_subtree(admission)
         }
-        (None, None, None, Some(admission), None) => {
+        (None, None, None, Some(admission), None, None) => {
             PropertyScrollHostAdmission::atomic_projection_text_area_subtree(admission.clone())
         }
-        (None, None, None, None, Some(admission)) => {
+        (None, None, None, None, Some(admission), None) => {
+            PropertyScrollHostAdmission::focused_atomic_projection_text_area_subtree(
+                admission.clone(),
+            )
+        }
+        (None, None, None, None, None, Some(admission)) => {
             PropertyScrollHostAdmission::atomic_projection_selection_text_area_subtree(
                 admission.clone(),
             )
@@ -4594,6 +4960,7 @@ fn property_scroll_plan_matches_exact_live_inputs(
         text_area_subtree_admission,
         interactive_text_area_subtree_admission,
         atomic_projection_text_area_subtree_admission.as_ref(),
+        focused_atomic_projection_text_area_subtree_admission.as_ref(),
         &plan.seal.post_composite,
     ) {
         return false;
@@ -4628,6 +4995,9 @@ fn property_scroll_plan_matches_exact_live_inputs(
             plan.seal
                 .atomic_projection_text_area_subtree_admission
                 .as_ref(),
+            plan.seal
+                .focused_atomic_projection_text_area_subtree_admission
+                .as_ref(),
             &plan.seal.post_composite,
         )
         && match (
@@ -4650,6 +5020,16 @@ fn property_scroll_plan_matches_exact_live_inputs(
             atomic_projection_text_area_subtree_admission.as_ref(),
             plan.seal
                 .atomic_projection_text_area_subtree_admission
+                .as_ref(),
+        ) {
+            (None, None) => true,
+            (Some(live), Some(planned)) => live.bitwise_eq(planned),
+            _ => false,
+        }
+        && match (
+            focused_atomic_projection_text_area_subtree_admission.as_ref(),
+            plan.seal
+                .focused_atomic_projection_text_area_subtree_admission
                 .as_ref(),
         ) {
             (None, None) => true,
@@ -4938,6 +5318,7 @@ fn property_scroll_plan_from_exact_scene(
         text_area_subtree_admission,
         interactive_text_area_subtree_admission,
         atomic_projection_text_area_subtree_admission,
+        focused_atomic_projection_text_area_subtree_admission,
         post_composite,
         interactive_resident,
         atomic_projection_resident,
@@ -4947,6 +5328,7 @@ fn property_scroll_plan_from_exact_scene(
         planned_text_area_subtree_admission,
         planned_interactive_text_area_subtree_admission,
         planned_atomic_projection_text_area_subtree_admission,
+        planned_focused_atomic_projection_text_area_subtree_admission,
         planned_post_composite,
         planned_interactive_resident,
         planned_atomic_projection_resident,
@@ -4958,11 +5340,13 @@ fn property_scroll_plan_from_exact_scene(
         text_area_subtree_admission,
         interactive_text_area_subtree_admission,
         atomic_projection_text_area_subtree_admission.as_ref(),
+        focused_atomic_projection_text_area_subtree_admission.as_ref(),
         &post_composite,
     ) || !planned_admission_witness.exactly_corresponds_to_with_atomic(
         planned_text_area_subtree_admission,
         planned_interactive_text_area_subtree_admission,
         planned_atomic_projection_text_area_subtree_admission.as_ref(),
+        planned_focused_atomic_projection_text_area_subtree_admission.as_ref(),
         &planned_post_composite,
     ) || !admission.exactly_corresponds_to_resident_with_atomic(
         interactive_resident.as_ref(),
@@ -5133,6 +5517,7 @@ fn property_scroll_plan_from_exact_scene(
             text_area_subtree_admission: None,
             interactive_text_area_subtree_admission: None,
             atomic_projection_text_area_subtree_admission: None,
+            focused_atomic_projection_text_area_subtree_admission: None,
             post_composite: post_composite.clone(),
             interactive_resident: None,
             atomic_projection_resident: None,
@@ -5145,9 +5530,191 @@ fn property_scroll_plan_from_exact_scene(
             planned_text_area_subtree_admission: None,
             planned_interactive_text_area_subtree_admission: None,
             planned_atomic_projection_text_area_subtree_admission: None,
+            planned_focused_atomic_projection_text_area_subtree_admission: None,
             planned_post_composite,
             planned_interactive_resident: None,
             planned_atomic_projection_resident: None,
+            planned_semantic: semantic,
+            planned_steps_identity: steps_identity,
+            planned_joint_transaction: joint_transaction,
+            target_format,
+            budget,
+        };
+        let plan = PropertyScrollScenePlan { steps, seal };
+        return plan
+            .is_canonical()
+            .then_some(plan)
+            .ok_or(PropertyScrollScenePlanError::InvalidContract);
+    }
+    if let ScrollSceneRecordedAuthority::FocusedAtomicProjectionTextArea(parts) = recorded {
+        if !parts.is_canonical()
+            || parts.boundary_root() != boundary_root
+            || parts.content_root() != content_root
+            || parts.outer_scroll() != scroll
+            || parts.outer_contents_clip() != contents_clip
+            || !parts.matches_admission_geometry(bounds_bits(admission.source_bounds), scroll)
+            || !matches!(
+                post_composite,
+                PropertyScrollPostCompositeSchedule::FocusedAtomicProjectionSidecars(_)
+            )
+            || interactive_resident.is_some()
+        {
+            return Err(PropertyScrollScenePlanError::InvalidContract);
+        }
+        let Some(focused_admission) =
+            focused_atomic_projection_text_area_subtree_admission.as_ref()
+        else {
+            return Err(PropertyScrollScenePlanError::InvalidContract);
+        };
+        let Some(resident) = atomic_projection_resident.as_ref() else {
+            return Err(PropertyScrollScenePlanError::InvalidContract);
+        };
+        if parts.text_area_root() != focused_admission.text_area_root
+            || parts.resident() != resident
+        {
+            return Err(PropertyScrollScenePlanError::InvalidContract);
+        }
+        let base_parts = parts.atomic_projection_base_for_scene_steps();
+        let host_terminal = base_parts
+            .host_before_opaque_order_count()
+            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let content_terminal = base_parts
+            .content_opaque_order_count()
+            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let overlay_count = base_parts
+            .overlay_opaque_order_count()
+            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let post_composite_delta = post_composite
+            .opaque_order_delta()
+            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let content_local_span = 0..content_terminal;
+        let artifact_span = base_parts
+            .content_artifact_span_stamp(0, content_local_span.clone())
+            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let content_bounds_bits = bounds_bits(content_zero_bounds(scroll));
+        let content_identity = PropertyScrollContentRasterIdentity {
+            content_root,
+            content_stable_id,
+            source_bounds_bits: content_bounds_bits,
+            artifact_span,
+            local_opaque_span: content_local_span,
+        };
+        let budget = property_scroll_budget(budget);
+        let backing = plan_property_scroll_backing(
+            content_stable_id,
+            scroll,
+            contents_clip,
+            target_format,
+            budget,
+        )
+        .ok_or(PropertyScrollScenePlanError::BackingBudget)?;
+        if !matches!(backing, PropertyScrollBackingPlan::Single(_)) {
+            return Err(PropertyScrollScenePlanError::BackingBudget);
+        }
+        let local_clips = base_parts
+            .local_clip_snapshots()
+            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        if local_clips != [resident.contents_clip] {
+            return Err(PropertyScrollScenePlanError::InvalidContract);
+        }
+        let boundary = SceneBoundaryId {
+            ordinal: 0,
+            owner: boundary_root,
+            kind: SceneBoundaryKind::ScrollContents,
+        };
+        let composite = PropertyScrollCompositeDependency {
+            basis: ScrollCompositeBasis::FrameRoot,
+            source_bounds_bits: content_bounds_bits,
+            offset_bits: [scroll.offset.x.to_bits(), scroll.offset.y.to_bits()],
+            contents_clip: contents_clip.logical_scissor,
+        };
+        let clip_split = PropertyScrollClipSplitWitness {
+            local_raster_clips: local_clips.to_vec(),
+            own_contents_clip: contents_clip,
+            ancestor_composite_clips: Vec::new(),
+        };
+        let semantic = PropertyScrollSemanticFrameWitness {
+            sampled_at: semantic_frame_time,
+            sampled_alpha_bits: scroll.scrollbar_overlay.sampled_alpha.to_bits(),
+            paint_state: scroll.scrollbar_overlay.paint_state,
+        };
+        let identity = base_parts.identity();
+        let authority = Arc::new(base_parts);
+        let overlay_start = host_terminal
+            .checked_add(post_composite_delta)
+            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let parent_terminal = overlay_start
+            .checked_add(overlay_count)
+            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let steps = vec![
+            ScrollBoundaryStep::AtomicProjectionHostBefore {
+                authority: Arc::clone(&authority),
+                identity: identity.clone(),
+                parent_span: 0..host_terminal,
+            },
+            ScrollBoundaryStep::AtomicProjectionContentComposite {
+                boundary,
+                authority: Arc::clone(&authority),
+                identity: identity.clone(),
+                content: content_identity.clone(),
+                composite,
+                clip_split,
+                backing: backing.clone(),
+                post_composite: post_composite.clone(),
+                parent_before: host_terminal,
+                parent_after: overlay_start,
+            },
+            ScrollBoundaryStep::AtomicProjectionOverlayAfter {
+                authority,
+                identity,
+                parent_span: overlay_start..parent_terminal,
+            },
+        ];
+        let steps_identity = property_scroll_step_identities(&steps)
+            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let joint_transaction = PropertySceneJointTransactionPlanningWitness {
+            roots: vec![PropertySceneJointRootPlanningWitness {
+                ordinal: 0,
+                root: boundary_root,
+                stable_id: root_stable_id,
+                boundary_span: 0..1,
+            }],
+            ordered_boundaries: vec![boundary],
+            generic_full_set: Vec::new(),
+            scroll_groups: vec![PropertySceneScrollGroupPlanningWitness {
+                boundary,
+                content: content_identity,
+                backing,
+            }],
+        };
+        let seal = PropertyScrollScenePlanSeal {
+            scene_root: boundary_root,
+            scene_root_stable_id: root_stable_id,
+            boundary,
+            scroll,
+            contents_clip,
+            admission: admission.clone(),
+            text_area_subtree_admission: None,
+            interactive_text_area_subtree_admission: None,
+            atomic_projection_text_area_subtree_admission: None,
+            focused_atomic_projection_text_area_subtree_admission:
+                focused_atomic_projection_text_area_subtree_admission.clone(),
+            post_composite: post_composite.clone(),
+            interactive_resident: None,
+            atomic_projection_resident: atomic_projection_resident.clone(),
+            semantic,
+            steps_identity: steps_identity.clone(),
+            joint_transaction: joint_transaction.clone(),
+            planned_scroll: scroll,
+            planned_contents_clip: contents_clip,
+            planned_admission: planned_admission_witness,
+            planned_text_area_subtree_admission: None,
+            planned_interactive_text_area_subtree_admission: None,
+            planned_atomic_projection_text_area_subtree_admission: None,
+            planned_focused_atomic_projection_text_area_subtree_admission,
+            planned_post_composite,
+            planned_interactive_resident: None,
+            planned_atomic_projection_resident,
             planned_semantic: semantic,
             planned_steps_identity: steps_identity,
             planned_joint_transaction: joint_transaction,
@@ -5302,6 +5869,8 @@ fn property_scroll_plan_from_exact_scene(
             interactive_text_area_subtree_admission,
             atomic_projection_text_area_subtree_admission:
                 atomic_projection_text_area_subtree_admission.clone(),
+            focused_atomic_projection_text_area_subtree_admission:
+                focused_atomic_projection_text_area_subtree_admission.clone(),
             post_composite: post_composite.clone(),
             interactive_resident: None,
             atomic_projection_resident: atomic_projection_resident.clone(),
@@ -5314,6 +5883,7 @@ fn property_scroll_plan_from_exact_scene(
             planned_text_area_subtree_admission,
             planned_interactive_text_area_subtree_admission,
             planned_atomic_projection_text_area_subtree_admission,
+            planned_focused_atomic_projection_text_area_subtree_admission,
             planned_post_composite,
             planned_interactive_resident: None,
             planned_atomic_projection_resident,
@@ -5507,6 +6077,8 @@ fn property_scroll_plan_from_exact_scene(
         interactive_text_area_subtree_admission,
         atomic_projection_text_area_subtree_admission:
             atomic_projection_text_area_subtree_admission.clone(),
+        focused_atomic_projection_text_area_subtree_admission:
+            focused_atomic_projection_text_area_subtree_admission.clone(),
         post_composite: post_composite.clone(),
         interactive_resident: interactive_resident.clone(),
         atomic_projection_resident: atomic_projection_resident.clone(),
@@ -5520,6 +6092,8 @@ fn property_scroll_plan_from_exact_scene(
         planned_interactive_text_area_subtree_admission: interactive_text_area_subtree_admission,
         planned_atomic_projection_text_area_subtree_admission:
             atomic_projection_text_area_subtree_admission,
+        planned_focused_atomic_projection_text_area_subtree_admission:
+            focused_atomic_projection_text_area_subtree_admission,
         planned_post_composite: post_composite,
         planned_interactive_resident: interactive_resident,
         planned_atomic_projection_resident: atomic_projection_resident,
@@ -5885,6 +6459,10 @@ fn property_scroll_compiler_witness(
             .seal
             .atomic_projection_text_area_subtree_admission
             .clone(),
+        focused_atomic_projection_text_area_subtree_admission: plan
+            .seal
+            .focused_atomic_projection_text_area_subtree_admission
+            .clone(),
         post_composite: plan.seal.post_composite.clone(),
         interactive_resident: plan.seal.interactive_resident.clone(),
         atomic_projection_resident: plan.seal.atomic_projection_resident.clone(),
@@ -6106,6 +6684,9 @@ fn property_scroll_boundary_is_canonical(boundary: &ValidatedPropertyScrollBound
             planned_witness
                 .atomic_projection_text_area_subtree_admission
                 .as_ref(),
+            planned_witness
+                .focused_atomic_projection_text_area_subtree_admission
+                .as_ref(),
             &planned_witness.post_composite,
         )
         || !compiled_witness
@@ -6115,6 +6696,9 @@ fn property_scroll_boundary_is_canonical(boundary: &ValidatedPropertyScrollBound
                 compiled_witness.interactive_text_area_subtree_admission,
                 compiled_witness
                     .atomic_projection_text_area_subtree_admission
+                    .as_ref(),
+                compiled_witness
+                    .focused_atomic_projection_text_area_subtree_admission
                     .as_ref(),
                 &compiled_witness.post_composite,
             )
@@ -6133,6 +6717,11 @@ fn property_scroll_boundary_is_canonical(boundary: &ValidatedPropertyScrollBound
                     .planner
                     .atomic_projection_text_area_subtree_admission
                     .as_ref(),
+                boundary
+                    .seal
+                    .planner
+                    .focused_atomic_projection_text_area_subtree_admission
+                    .as_ref(),
                 &boundary.seal.planner.post_composite,
             )
         || !boundary
@@ -6149,6 +6738,11 @@ fn property_scroll_boundary_is_canonical(boundary: &ValidatedPropertyScrollBound
                     .seal
                     .compiler
                     .atomic_projection_text_area_subtree_admission
+                    .as_ref(),
+                boundary
+                    .seal
+                    .compiler
+                    .focused_atomic_projection_text_area_subtree_admission
                     .as_ref(),
                 &boundary.seal.compiler.post_composite,
             )
@@ -7394,6 +7988,10 @@ pub(crate) fn plan_and_validate_property_scroll_scene(
                         .is_some()
                     || scene
                         .admission
+                        .focused_atomic_projection_text_area_subtree_snapshot()
+                        .is_some()
+                    || scene
+                        .admission
                         .atomic_projection_selection_text_area_subtree_snapshot()
                         .is_some()
                 {
@@ -7582,6 +8180,7 @@ fn plan_exact_transform_scroll_boundary(
         text_area_subtree_admission: None,
         interactive_text_area_subtree_admission: None,
         atomic_projection_text_area_subtree_admission: None,
+        focused_atomic_projection_text_area_subtree_admission: None,
         post_composite: PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
         interactive_resident: None,
         atomic_projection_resident: None,
@@ -7591,6 +8190,7 @@ fn plan_exact_transform_scroll_boundary(
         planned_text_area_subtree_admission: None,
         planned_interactive_text_area_subtree_admission: None,
         planned_atomic_projection_text_area_subtree_admission: None,
+        planned_focused_atomic_projection_text_area_subtree_admission: None,
         planned_post_composite: PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
         planned_interactive_resident: None,
         planned_atomic_projection_resident: None,
@@ -7762,6 +8362,7 @@ fn plan_exact_effect_scroll_boundary_checkpoint(
         text_area_subtree_admission: None,
         interactive_text_area_subtree_admission: None,
         atomic_projection_text_area_subtree_admission: None,
+        focused_atomic_projection_text_area_subtree_admission: None,
         post_composite: PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
         interactive_resident: None,
         atomic_projection_resident: None,
@@ -7771,6 +8372,7 @@ fn plan_exact_effect_scroll_boundary_checkpoint(
         planned_text_area_subtree_admission: None,
         planned_interactive_text_area_subtree_admission: None,
         planned_atomic_projection_text_area_subtree_admission: None,
+        planned_focused_atomic_projection_text_area_subtree_admission: None,
         planned_post_composite: PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
         planned_interactive_resident: None,
         planned_atomic_projection_resident: None,
@@ -10851,6 +11453,9 @@ fn prepare_retained_atomic_projection_selection_text_area_scroll_boundary_parts(
             planner
                 .atomic_projection_text_area_subtree_admission
                 .as_ref(),
+            planner
+                .focused_atomic_projection_text_area_subtree_admission
+                .as_ref(),
             &planner.post_composite,
         )
         || !planner
@@ -11033,15 +11638,31 @@ fn prepare_retained_atomic_projection_text_area_scroll_boundary_parts(
         return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
     };
     let planner = &boundary.planner.seal;
-    let Some(admission) = planner
+    let atomic_admission = planner
         .admission
-        .atomic_projection_text_area_subtree_snapshot()
-    else {
-        return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
-    };
+        .atomic_projection_text_area_subtree_snapshot();
+    let focused_admission = planner
+        .admission
+        .focused_atomic_projection_text_area_subtree_snapshot();
     let Some(planner_resident) = planner.atomic_projection_resident.as_ref() else {
         return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
     };
+    let (admission_content_wrapper, admission_text_area_root, admission_source_grammar) =
+        if let Some(admission) = atomic_admission {
+            (
+                admission.content_wrapper,
+                admission.text_area_root,
+                &admission.paint_grammar,
+            )
+        } else if let Some(admission) = focused_admission {
+            (
+                admission.content_wrapper,
+                admission.text_area_root,
+                &admission.paint_grammar.atomic_source,
+            )
+        } else {
+            return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+        };
     let Some(host_terminal) = host_authority.host_before_opaque_order_count() else {
         return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
     };
@@ -11051,7 +11672,13 @@ fn prepare_retained_atomic_projection_text_area_scroll_boundary_parts(
     let Some(overlay_count) = overlay_authority.overlay_opaque_order_count() else {
         return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
     };
-    let parent_terminal = host_terminal
+    let post_composite_delta = post_composite
+        .opaque_order_delta()
+        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+    let overlay_start = host_terminal
+        .checked_add(post_composite_delta)
+        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+    let parent_terminal = overlay_start
         .checked_add(overlay_count)
         .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
     let expected_span = content_authority
@@ -11062,6 +11689,39 @@ fn prepare_retained_atomic_projection_text_area_scroll_boundary_parts(
         .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
     let content_bounds_bits = bounds_bits(content_zero_bounds(planner.scroll));
     let authority_identity = host_authority.identity();
+    let projection_sidecars_are_exact = match (atomic_admission, focused_admission) {
+        (Some(admission), None) => {
+            planner
+                .atomic_projection_text_area_subtree_admission
+                .as_ref()
+                .is_some_and(|sidecar| admission.bitwise_eq(sidecar))
+                && planner
+                    .focused_atomic_projection_text_area_subtree_admission
+                    .is_none()
+                && matches!(
+                    post_composite,
+                    PropertyScrollPostCompositeSchedule::NoneForExistingGrammar
+                )
+        }
+        (None, Some(admission)) => {
+            planner
+                .focused_atomic_projection_text_area_subtree_admission
+                .as_ref()
+                .is_some_and(|sidecar| admission.bitwise_eq(sidecar))
+                && planner
+                    .atomic_projection_text_area_subtree_admission
+                    .is_none()
+                && matches!(
+                    post_composite,
+                    PropertyScrollPostCompositeSchedule::FocusedAtomicProjectionSidecars(caret)
+                        if caret.is_canonical()
+                            && caret.caret.owner == admission.text_area_root
+                            && caret.caret.stable_id == admission.text_area_stable_id
+                            && caret.outer_clip == planner.contents_clip
+                )
+        }
+        _ => false,
+    };
     if *compiled_boundary != global_boundary
         || !Arc::ptr_eq(host_authority, content_authority)
         || !Arc::ptr_eq(host_authority, overlay_authority)
@@ -11084,18 +11744,17 @@ fn prepare_retained_atomic_projection_text_area_scroll_boundary_parts(
         || host_identity != &authority_identity
         || host_span != &(0..host_terminal)
         || *parent_before != host_terminal
-        || *parent_after != host_terminal
-        || overlay_span != &(host_terminal..parent_terminal)
-        || !matches!(
-            post_composite,
-            PropertyScrollPostCompositeSchedule::NoneForExistingGrammar
-        )
+        || *parent_after != overlay_start
+        || overlay_span != &(overlay_start..parent_terminal)
         || post_composite != &planner.post_composite
         || !planner.admission.exactly_corresponds_to_with_atomic(
             planner.text_area_subtree_admission,
             planner.interactive_text_area_subtree_admission,
             planner
                 .atomic_projection_text_area_subtree_admission
+                .as_ref(),
+            planner
+                .focused_atomic_projection_text_area_subtree_admission
                 .as_ref(),
             &planner.post_composite,
         )
@@ -11105,6 +11764,7 @@ fn prepare_retained_atomic_projection_text_area_scroll_boundary_parts(
                 planner.interactive_resident.as_ref(),
                 planner.atomic_projection_resident.as_ref(),
             )
+        || !projection_sidecars_are_exact
         || planner.text_area_subtree_admission.is_some()
         || planner.interactive_text_area_subtree_admission.is_some()
         || planner.interactive_resident.is_some()
@@ -11113,7 +11773,7 @@ fn prepare_retained_atomic_projection_text_area_scroll_boundary_parts(
         || content_authority.resident() != planner_resident
         || host_authority.boundary_root() != planner.scene_root
         || host_authority.content_root() != planner.admission.child
-        || host_authority.text_area_root() != admission.text_area_root
+        || host_authority.text_area_root() != admission_text_area_root
         || host_authority.outer_scroll() != planner.scroll
         || host_authority.outer_contents_clip() != planner.contents_clip
         || compile_stamp.content.content_root != planner.admission.child
@@ -11135,8 +11795,8 @@ fn prepare_retained_atomic_projection_text_area_scroll_boundary_parts(
                 planner.scroll.offset.y.to_bits(),
             ]
         || composite.contents_clip != planner.contents_clip.logical_scissor
-        || admission.content_wrapper != compile_stamp.content.content_root
-        || admission.paint_grammar != planner_resident.source_grammar
+        || admission_content_wrapper != compile_stamp.content.content_root
+        || admission_source_grammar != &planner_resident.source_grammar
     {
         return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
     }
@@ -14809,10 +15469,10 @@ fn plan_single_root_scroll_scene(
             reasons: vec![FramePaintPlanRejection::RootCount(roots.len())],
         });
     };
-    // The direct-leaf corpus owns one outer contents clip.  Its closed C1
-    // sibling additionally owns exactly one TextArea contents clip; the exact
-    // planner below remains final authority for both shapes.
-    if property_trees.scrolls.len() != 1 || !matches!(property_trees.clips.len(), 1 | 2) {
+    // The direct-leaf corpus owns one outer contents clip.  TextArea subtree
+    // variants add local contents/projection clips; the exact planner below
+    // remains final authority for the accepted shapes.
+    if property_trees.scrolls.len() != 1 || !(1..=3).contains(&property_trees.clips.len()) {
         return Err(FramePaintPlanError {
             reasons: vec![FramePaintPlanRejection::InvalidScrollHost(*root)],
         });
@@ -14887,6 +15547,16 @@ fn plan_exact_root_scroll_scene(
             )
         })
         .flatten();
+    let focused_atomic_projection_text_area_subtree_admission = direct_admission
+        .is_none()
+        .then(|| {
+            element.exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(
+                root,
+                arena,
+                scale_factor,
+            )
+        })
+        .flatten();
     let atomic_projection_selection_text_area_subtree_admission = direct_admission
         .is_none()
         .then(|| {
@@ -14902,21 +15572,27 @@ fn plan_exact_root_scroll_scene(
         text_area_subtree_admission,
         interactive_text_area_subtree_admission,
         atomic_projection_text_area_subtree_admission.as_ref(),
+        focused_atomic_projection_text_area_subtree_admission.as_ref(),
         atomic_projection_selection_text_area_subtree_admission.as_ref(),
     ) {
-        (Some(admission), None, None, None, None) => {
+        (Some(admission), None, None, None, None, None) => {
             PropertyScrollHostAdmission::direct_leaf(admission)
         }
-        (None, Some(admission), None, None, None) => {
+        (None, Some(admission), None, None, None, None) => {
             PropertyScrollHostAdmission::text_area_subtree(admission)
         }
-        (None, None, Some(admission), None, None) => {
+        (None, None, Some(admission), None, None, None) => {
             PropertyScrollHostAdmission::interactive_text_area_subtree(admission)
         }
-        (None, None, None, Some(admission), None) => {
+        (None, None, None, Some(admission), None, None) => {
             PropertyScrollHostAdmission::atomic_projection_text_area_subtree(admission.clone())
         }
-        (None, None, None, None, Some(admission)) => {
+        (None, None, None, None, Some(admission), None) => {
+            PropertyScrollHostAdmission::focused_atomic_projection_text_area_subtree(
+                admission.clone(),
+            )
+        }
+        (None, None, None, None, None, Some(admission)) => {
             PropertyScrollHostAdmission::atomic_projection_selection_text_area_subtree(
                 admission.clone(),
             )
@@ -14967,6 +15643,132 @@ fn plan_exact_root_scroll_scene(
     let baked_witness =
         super::PaintBakedScrollHostWitness::new(root, admission.child, scroll, clip_id)
             .ok_or_else(invalid)?;
+    if let Some(focused_admission) = focused_atomic_projection_text_area_subtree_admission.as_ref()
+    {
+        let host = super::frame_recorder::record_baked_scroll_focused_atomic_projection_text_area_subtree_host_artifact_for_plan(
+            arena,
+            &[root],
+            promoted_node_ids,
+            property_trees,
+            paint_generations,
+            focused_admission,
+            baked_witness,
+        )
+        .map_err(|fallbacks| FramePaintPlanError {
+            reasons: fallbacks
+                .into_iter()
+                .map(FramePaintPlanRejection::Coverage)
+                .collect(),
+        })?;
+        let content_witness =
+            PaintScrollContentWitness::new(root, admission.child, scroll, contents_clip)
+                .ok_or_else(invalid)?;
+        let local = super::frame_recorder::record_scroll_focused_atomic_projection_text_area_subtree_local_artifact_for_plan(
+            arena,
+            promoted_node_ids,
+            property_trees,
+            paint_generations,
+            focused_admission,
+            content_witness,
+        )
+        .map_err(|fallbacks| FramePaintPlanError {
+            reasons: fallbacks
+                .into_iter()
+                .map(FramePaintPlanRejection::Coverage)
+                .collect(),
+        })?;
+        let parts =
+            super::frame_recorder::validate_recorded_focused_atomic_projection_text_area_plan_parts(
+                host, local,
+            )
+            .ok_or_else(invalid)?;
+        let focused_geometry_matches = parts.matches_admission_geometry(
+            [
+                admission.source_bounds.x.to_bits(),
+                admission.source_bounds.y.to_bits(),
+                admission.source_bounds.width.to_bits(),
+                admission.source_bounds.height.to_bits(),
+            ],
+            scroll,
+        );
+        if parts.boundary_root() != root
+            || parts.content_root() != admission.child
+            || parts.text_area_root() != focused_admission.text_area_root
+            || parts.outer_scroll() != scroll
+            || parts.outer_contents_clip() != contents_clip
+            || !focused_geometry_matches
+        {
+            return Err(invalid());
+        }
+        let local_clip_id = ClipNodeId {
+            owner: focused_admission.text_area_root,
+            role: ClipNodeRole::ContentsClip,
+        };
+        let live_chain = property_trees
+            .clip_snapshot_for(Some(local_clip_id))
+            .ok_or_else(invalid)?;
+        let [text_area_clip, live_outer_clip] = live_chain.as_slice() else {
+            return Err(invalid());
+        };
+        if *live_outer_clip != contents_clip {
+            return Err(invalid());
+        }
+        let Some(focused_sidecars) = PropertyScrollFocusedAtomicProjectionSidecarSeal::new(
+            parts.caret(),
+            parts.preedit(),
+            *text_area_clip,
+            *live_outer_clip,
+        ) else {
+            return Err(invalid());
+        };
+        let post_composite = PropertyScrollPostCompositeSchedule::FocusedAtomicProjectionSidecars(
+            Box::new(focused_sidecars),
+        );
+        let focused_corresponds = admission.exactly_corresponds_to_with_atomic(
+            None,
+            None,
+            None,
+            Some(focused_admission),
+            &post_composite,
+        );
+        let focused_resident_corresponds =
+            admission.exactly_corresponds_to_resident_with_atomic(None, Some(parts.resident()));
+        if !focused_corresponds || !focused_resident_corresponds {
+            return Err(invalid());
+        }
+        let resident = parts.resident().clone();
+        return Ok(ScrollScenePlan {
+            boundary_root: root,
+            root_stable_id: admission.stable_id,
+            content_root: admission.child,
+            content_stable_id: admission.child_stable_id,
+            admission: admission.clone(),
+            text_area_subtree_admission: None,
+            interactive_text_area_subtree_admission: None,
+            atomic_projection_text_area_subtree_admission: None,
+            focused_atomic_projection_text_area_subtree_admission:
+                focused_atomic_projection_text_area_subtree_admission.clone(),
+            post_composite: post_composite.clone(),
+            interactive_resident: None,
+            atomic_projection_resident: Some(resident.clone()),
+            scroll,
+            contents_clip,
+            planned_admission_witness: admission,
+            planned_text_area_subtree_admission: None,
+            planned_interactive_text_area_subtree_admission: None,
+            planned_atomic_projection_text_area_subtree_admission: None,
+            planned_focused_atomic_projection_text_area_subtree_admission:
+                focused_atomic_projection_text_area_subtree_admission,
+            planned_post_composite: post_composite,
+            planned_interactive_resident: None,
+            planned_atomic_projection_resident: Some(resident),
+            planned_scroll_witness: scroll,
+            planned_clip_witness: contents_clip,
+            recorded: ScrollSceneRecordedAuthority::FocusedAtomicProjectionTextArea(Box::new(
+                parts,
+            )),
+        });
+    }
     if let Some(selection_admission) =
         atomic_projection_selection_text_area_subtree_admission.as_ref()
     {
@@ -15024,6 +15826,7 @@ fn plan_exact_root_scroll_scene(
                 None,
                 None,
                 None,
+                None,
                 &PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
             )
             || !admission.exactly_corresponds_to_resident_with_atomic(None, None)
@@ -15039,6 +15842,7 @@ fn plan_exact_root_scroll_scene(
             text_area_subtree_admission: None,
             interactive_text_area_subtree_admission: None,
             atomic_projection_text_area_subtree_admission: None,
+            focused_atomic_projection_text_area_subtree_admission: None,
             post_composite: PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
             interactive_resident: None,
             atomic_projection_resident: None,
@@ -15048,6 +15852,7 @@ fn plan_exact_root_scroll_scene(
             planned_text_area_subtree_admission: None,
             planned_interactive_text_area_subtree_admission: None,
             planned_atomic_projection_text_area_subtree_admission: None,
+            planned_focused_atomic_projection_text_area_subtree_admission: None,
             planned_post_composite: PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
             planned_interactive_resident: None,
             planned_atomic_projection_resident: None,
@@ -15103,6 +15908,7 @@ fn plan_exact_root_scroll_scene(
                 None,
                 None,
                 Some(atomic_admission),
+                None,
                 &PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
             )
             || !admission.exactly_corresponds_to_resident_with_atomic(None, Some(parts.resident()))
@@ -15120,6 +15926,7 @@ fn plan_exact_root_scroll_scene(
             interactive_text_area_subtree_admission: None,
             atomic_projection_text_area_subtree_admission:
                 atomic_projection_text_area_subtree_admission.clone(),
+            focused_atomic_projection_text_area_subtree_admission: None,
             post_composite: PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
             interactive_resident: None,
             atomic_projection_resident: Some(resident.clone()),
@@ -15130,6 +15937,7 @@ fn plan_exact_root_scroll_scene(
             planned_interactive_text_area_subtree_admission: None,
             planned_atomic_projection_text_area_subtree_admission:
                 atomic_projection_text_area_subtree_admission,
+            planned_focused_atomic_projection_text_area_subtree_admission: None,
             planned_post_composite: PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
             planned_interactive_resident: None,
             planned_atomic_projection_resident: Some(resident),
@@ -15322,6 +16130,7 @@ fn plan_exact_root_scroll_scene(
         text_area_subtree_admission,
         interactive_text_area_subtree_admission,
         atomic_projection_text_area_subtree_admission: None,
+        focused_atomic_projection_text_area_subtree_admission: None,
         post_composite: post_composite.clone(),
         interactive_resident: interactive_resident.clone(),
         atomic_projection_resident: None,
@@ -15331,6 +16140,7 @@ fn plan_exact_root_scroll_scene(
         planned_text_area_subtree_admission: text_area_subtree_admission,
         planned_interactive_text_area_subtree_admission: interactive_text_area_subtree_admission,
         planned_atomic_projection_text_area_subtree_admission: None,
+        planned_focused_atomic_projection_text_area_subtree_admission: None,
         planned_post_composite: post_composite,
         planned_interactive_resident: interactive_resident,
         planned_atomic_projection_resident: None,
@@ -15426,6 +16236,7 @@ fn prepare_planned_scroll_scene(
         text_area_subtree_admission: _,
         interactive_text_area_subtree_admission: _,
         atomic_projection_text_area_subtree_admission: _,
+        focused_atomic_projection_text_area_subtree_admission: _,
         post_composite: _,
         interactive_resident: _,
         atomic_projection_resident: _,
@@ -15435,6 +16246,7 @@ fn prepare_planned_scroll_scene(
         planned_text_area_subtree_admission: _,
         planned_interactive_text_area_subtree_admission: _,
         planned_atomic_projection_text_area_subtree_admission: _,
+        planned_focused_atomic_projection_text_area_subtree_admission: _,
         planned_post_composite: _,
         planned_interactive_resident: _,
         planned_atomic_projection_resident: _,
@@ -16078,9 +16890,9 @@ mod tests {
         SideOrCorner, Style,
     };
     use crate::view::base_component::{
-        DirtyPassMask, Element, ElementTrait, EventTarget, Image, LayoutConstraints,
+        DirtyFlags, DirtyPassMask, Element, ElementTrait, EventTarget, Image, LayoutConstraints,
         LayoutPlacement, PaintResourcePreparationContext, ScrollbarPaintStateWitness, Size, Svg,
-        Text,
+        Text, TextArea,
     };
     use crate::view::frame_graph::{FramePassTestPayload, RetainedTextureRole};
     use crate::view::node_arena::Node;
@@ -18154,6 +18966,140 @@ mod tests {
         PaintGenerationTracker,
     ) {
         fixture_with_geometry(offset, [100.0, 80.0], [300.0, 300.0])
+    }
+
+    fn focused_atomic_projection_scroll_fixture(
+        caret_visible: bool,
+    ) -> (
+        NodeArena,
+        NodeKey,
+        NodeKey,
+        PropertyTrees,
+        PaintGenerationTracker,
+    ) {
+        let width = 132.0;
+        let scroll_y = 0.0;
+        let mut text_component = TextArea::new();
+        text_component.content = "before projected after".to_string();
+        text_component.font_size = 14.0;
+        text_component.line_height = 1.25;
+        text_component.is_focused = true;
+        text_component.caret_visible = caret_visible;
+        text_component.cursor_char = 0;
+        text_component.on_render_handler = Some(crate::ui::on_text_area_render(|render| {
+            render.range(7..16, |_text_area| crate::ui::RsxNode::text("projected"));
+        }));
+
+        let mut arena = NodeArena::new();
+        let text_area = arena.insert(Node::new(Box::new(text_component)));
+        arena.with_element_taken(text_area, |element, _| {
+            element
+                .as_any_mut()
+                .downcast_mut::<TextArea>()
+                .unwrap()
+                .set_self_node_key(text_area);
+        });
+        crate::view::test_support::measure_and_place(
+            &mut arena,
+            text_area,
+            LayoutConstraints {
+                max_width: width,
+                max_height: 240.0,
+                viewport_width: 320.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(240.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: width,
+                available_height: 240.0,
+                viewport_width: 320.0,
+                viewport_height: 240.0,
+                percent_base_width: Some(320.0),
+                percent_base_height: Some(240.0),
+            },
+        );
+
+        let wrapper = arena.insert(Node::new(Box::new(Element::new_with_id(
+            0xc3a_4301, 0.0, -scroll_y, width, 300.0,
+        ))));
+        let root = arena.insert(Node::new(Box::new(Element::new_with_id(
+            0xc3a_4300, 0.0, 0.0, width, 80.0,
+        ))));
+        arena.set_parent(text_area, Some(wrapper));
+        arena.set_children(wrapper, vec![text_area]);
+        arena.set_parent(wrapper, Some(root));
+        arena.set_children(root, vec![wrapper]);
+        arena.with_element_taken(text_area, |element, arena| {
+            element.place(
+                LayoutPlacement {
+                    parent_x: 0.0,
+                    parent_y: -scroll_y,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: width,
+                    available_height: 240.0,
+                    viewport_width: 320.0,
+                    viewport_height: 240.0,
+                    percent_base_width: Some(320.0),
+                    percent_base_height: Some(240.0),
+                },
+                arena,
+            );
+        });
+
+        let mut wrapper_style = Style::new();
+        wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+        arena
+            .get_mut(wrapper)
+            .unwrap()
+            .element
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .unwrap()
+            .apply_style(wrapper_style);
+
+        let mut root_style = Style::new();
+        root_style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+        {
+            let mut root_node = arena.get_mut(root).unwrap();
+            let root_element = root_node
+                .element
+                .as_any_mut()
+                .downcast_mut::<Element>()
+                .unwrap();
+            root_element.apply_style(root_style);
+            root_element.layout_state.content_size = Size {
+                width,
+                height: 300.0,
+            };
+            root_element.set_scroll_offset((0.0, scroll_y));
+            root_element.clear_local_dirty_flags(DirtyFlags::ALL);
+        }
+        for key in [wrapper, text_area] {
+            arena
+                .get_mut(key)
+                .unwrap()
+                .element
+                .clear_local_dirty_flags(DirtyFlags::ALL);
+        }
+        arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
+        arena.refresh_subtree_dirty_cache(root);
+
+        let mut properties = PropertyTrees::default();
+        properties.sync(&arena, &[root]);
+        assert!(properties.validation_errors.is_empty());
+        let mut generations = PaintGenerationTracker::default();
+        generations.sync(&arena, &[root], &properties);
+        (arena, root, text_area, properties, generations)
     }
 
     fn transform_scroll_fixture(
@@ -23298,6 +24244,63 @@ mod tests {
         assert_eq!(second.into_parts().1.reuse_count, 1);
         assert!(second_graph.test_graphics_passes::<ClearPass>().is_empty());
         viewport.finish_retained_surface_transaction(true);
+    }
+
+    #[test]
+    fn property_scroll_b2_focused_atomic_projection_prepares_and_emits_post_composite_caret() {
+        for caret_visible in [true, false] {
+            let (arena, root, _, properties, generations) =
+                focused_atomic_projection_scroll_fixture(caret_visible);
+            let sampled_at = crate::time::Instant::now();
+            let scene = plan_and_validate_property_scroll_scene(
+                &arena,
+                &[root],
+                &FxHashSet::default(),
+                &properties,
+                &generations,
+                1.0,
+                [0.0; 2],
+                None,
+                sampled_at,
+                wgpu::TextureFormat::Bgra8UnormSrgb,
+                generous_budget(),
+            )
+            .expect("focused atomic projection scene must plan and compiler-seal");
+            let mut viewport = Viewport::new();
+            let frame_owner = viewport.begin_retained_surface_frame_stage().unwrap();
+            let mut graph = FrameGraph::new();
+            let mut preclear_ctx =
+                UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+            let parent = preclear_ctx.allocate_target(&mut graph);
+            preclear_ctx.set_current_target(parent);
+            let prepared = prepare_retained_property_scroll_forest_from_pool(
+                &mut viewport,
+                scene,
+                &mut graph,
+                preclear_ctx,
+                [0.0; 4],
+                frame_owner,
+            )
+            .expect("focused atomic projection scene must prepare");
+            assert_eq!(prepared.trace.backing, ScrollSceneBackingKind::Single);
+            assert_eq!(prepared.trace.reraster_count, 1);
+            assert_eq!(prepared.trace.reuse_count, 0);
+
+            let outcome = emit_prepared_retained_property_scroll_forest(prepared);
+            let (state, trace) = outcome.into_parts();
+            assert_eq!(state.opaque_rect_order(), u32::from(caret_visible));
+            assert_eq!(trace.tile_count, 1);
+            assert_eq!(
+                graph
+                    .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
+                    .len(),
+                1
+            );
+            assert_eq!(graph.test_graphics_passes::<ClearPass>().len(), 2);
+            assert!(
+                viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true)
+            );
+        }
     }
 
     #[test]
