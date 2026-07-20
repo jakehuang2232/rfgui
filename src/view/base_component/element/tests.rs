@@ -5400,6 +5400,33 @@ mod tests {
     }
 
     #[test]
+    fn transform_surface_bounds_ignore_finite_zero_area_child() {
+        let mut arena = new_test_arena();
+        let mut parent = Element::new(10.0, 20.0, 120.0, 80.0);
+        parent.set_resolved_transform_for_test(Some(Mat4::IDENTITY));
+        let parent_key = commit_element(&mut arena, Box::new(parent));
+        let zero_width_text = Text::new(14.0, 28.0, 0.0, 16.0, "no paint coverage");
+        commit_child(&mut arena, parent_key, Box::new(zero_width_text));
+
+        let parent = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+        let expected = [10.0_f32, 20.0, 120.0, 80.0].map(f32::to_bits);
+        let legacy = parent
+            .legacy_transform_surface_bounds(&arena, [0.0, 0.0])
+            .expect("zero-area child is an empty contribution, not a bounds failure");
+        assert_eq!(
+            [legacy.x, legacy.y, legacy.width, legacy.height].map(f32::to_bits),
+            expected
+        );
+        let retained = parent
+            .retained_transform_surface_bounds(&arena, [0.0, 0.0])
+            .expect("retained transform bounds use the same empty contribution semantics");
+        assert_eq!(
+            [retained.x, retained.y, retained.width, retained.height,].map(f32::to_bits),
+            expected
+        );
+    }
+
+    #[test]
     fn transparent_borderless_shadowless_element_does_not_paint_even_with_child() {
         let mut arena = new_test_arena();
         let parent = Element::new(0.0, 0.0, 120.0, 120.0);

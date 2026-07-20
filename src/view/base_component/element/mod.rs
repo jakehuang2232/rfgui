@@ -7722,10 +7722,12 @@ impl Element {
         require_exact: bool,
     ) -> Option<PromotionCompositeBounds> {
         let child_paint_offset = self.paint_offset_after_own_snap(paint_offset)?;
-        let mut bounds = self.untransformed_paint_bounds();
-        if !Self::is_canonical_transform_surface_bounds(bounds) {
+        let own_bounds = self.untransformed_paint_bounds();
+        if !Self::is_valid_transform_surface_bounds(own_bounds) {
             return None;
         }
+        let mut non_empty_bounds =
+            Self::is_canonical_transform_surface_bounds(own_bounds).then_some(own_bounds);
         for child_key in &self.children {
             let child_node = arena.get(*child_key)?;
             let child_bounds = if require_exact {
@@ -7737,12 +7739,23 @@ impl Element {
                     .element
                     .legacy_transform_output_bounds(arena, child_paint_offset)?
             };
-            if !Self::is_canonical_transform_surface_bounds(child_bounds) {
+            if !Self::is_valid_transform_surface_bounds(child_bounds) {
                 return None;
             }
-            bounds = Self::checked_union_transform_surface_bounds(bounds, child_bounds)?;
+            if Self::is_canonical_transform_surface_bounds(child_bounds) {
+                non_empty_bounds = Some(match non_empty_bounds {
+                    Some(bounds) => {
+                        Self::checked_union_transform_surface_bounds(bounds, child_bounds)?
+                    }
+                    None => child_bounds,
+                });
+            }
         }
-        Some(bounds)
+        // A finite zero-area box is a valid observation: it contributes no
+        // pixels to the transform surface. Preserve it only when the entire
+        // subtree is empty so callers can distinguish `Some(empty)` from an
+        // unsupported or invalid bounds calculation (`None`).
+        Some(non_empty_bounds.unwrap_or(own_bounds))
     }
 
     pub(crate) fn legacy_transform_surface_bounds(
@@ -7847,6 +7860,15 @@ impl Element {
             && bounds.height.is_finite()
             && bounds.width > 0.0
             && bounds.height > 0.0
+    }
+
+    fn is_valid_transform_surface_bounds(bounds: PromotionCompositeBounds) -> bool {
+        bounds.x.is_finite()
+            && bounds.y.is_finite()
+            && bounds.width.is_finite()
+            && bounds.height.is_finite()
+            && bounds.width >= 0.0
+            && bounds.height >= 0.0
     }
 
     pub(crate) fn checked_union_transform_surface_bounds(
@@ -8319,7 +8341,12 @@ impl ElementTrait for Element {
     }
 
     fn supports_promoted_descendants(&self) -> bool {
-        true
+        // A transform surface owns one flattened raster of its subtree. Until
+        // nested promoted layers can be composed inside that raster, allowing
+        // descendants to promote would make them cross the transform boundary:
+        // the base walk skips them and the ancestor later composites them in
+        // the wrong coordinate space (or drops them altogether).
+        self.resolved_transform.is_none()
     }
 
     fn promotion_node_info(&self) -> PromotionNodeInfo {

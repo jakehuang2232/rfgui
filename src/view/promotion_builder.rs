@@ -1972,6 +1972,36 @@ mod aware_filter_tests {
         assert!(ids.contains(&2), "Element child should be candidate");
     }
 
+    /// A transform surface is one flattened raster ownership boundary.
+    /// Descendants cannot be promoted outside it because that would skip them
+    /// while rasterizing the surface and composite them later in the parent's
+    /// coordinate space.
+    #[test]
+    fn transformed_element_filters_descendant_promotion_candidates() {
+        let mut arena = NodeArena::new();
+        let mut transformed = Element::new_with_id(1, 0.0, 0.0, 320.0, 240.0);
+        transformed.set_resolved_transform_for_test(Some(glam::Mat4::IDENTITY));
+        let root = insert_element(&mut arena, transformed);
+        let child = insert_element(&mut arena, Element::new_with_id(2, 0.0, 0.0, 200.0, 200.0));
+        append_child(&mut arena, root, child);
+
+        let candidates = collect_promotion_candidates(
+            &arena,
+            &[root],
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            (320.0, 240.0),
+            1.0,
+            wgpu::TextureFormat::Bgra8Unorm,
+        );
+        let ids: FxHashSet<u64> = candidates.iter().map(|c| c.node_id).collect();
+        assert!(ids.contains(&1), "the transform surface remains promotable");
+        assert!(
+            !ids.contains(&2),
+            "descendant must remain inside the transform surface, got candidates={ids:?}"
+        );
+    }
+
     /// Core invariant: descendants of a host whose
     /// `supports_promoted_descendants()` returns `false` are removed from
     /// the candidate list. Without this filter, the descendant would be
