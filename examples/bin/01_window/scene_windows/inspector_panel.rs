@@ -13,11 +13,13 @@ pub fn build(theme: &Theme) -> RsxNode {
     let detail_layout = use_state(|| false);
     let detail_compile = use_state(|| false);
     let detail_execute = use_state(|| false);
-    let debug_reuse_path = use_state(|| false);
-    let enable_layer_promotion = use_state(|| true);
+    let debug_retained_auto = use_state(|| false);
+    let retained_auto_authority = use_state(|| true);
+    let retained_auto_reuse_actions = use_state(|| true);
+    let retained_auto_fallback_reasons = use_state(|| true);
 
     let show_render_detail = debug_render_time.get();
-    let show_reuse_legend = debug_reuse_path.get();
+    let show_retained_auto_detail = debug_retained_auto.get();
 
     // One viewport handle captured up front; cloned into every callback.
     let viewport = use_viewport();
@@ -55,13 +57,21 @@ pub fn build(theme: &Theme) -> RsxNode {
         let vp = viewport;
         Rc::new(move |on: bool| vp.set_debug_trace_execute_detail(on)) as Rc<dyn Fn(bool)>
     };
-    let on_reuse_path = {
+    let on_retained_auto = {
         let vp = viewport;
-        Rc::new(move |on: bool| vp.set_debug_trace_reuse_path(on)) as Rc<dyn Fn(bool)>
+        Rc::new(move |on: bool| vp.set_debug_retained_auto_overlay(on)) as Rc<dyn Fn(bool)>
     };
-    let on_layer_promotion = {
+    let on_retained_auto_authority = {
         let vp = viewport;
-        Rc::new(move |on: bool| vp.set_promotion_enabled(on)) as Rc<dyn Fn(bool)>
+        Rc::new(move |on: bool| vp.set_debug_retained_auto_authority(on)) as Rc<dyn Fn(bool)>
+    };
+    let on_retained_auto_reuse_actions = {
+        let vp = viewport;
+        Rc::new(move |on: bool| vp.set_debug_retained_auto_reuse_actions(on)) as Rc<dyn Fn(bool)>
+    };
+    let on_retained_auto_fallback_reasons = {
+        let vp = viewport;
+        Rc::new(move |on: bool| vp.set_debug_retained_auto_fallback_reasons(on)) as Rc<dyn Fn(bool)>
     };
 
     rsx! {
@@ -119,73 +129,82 @@ pub fn build(theme: &Theme) -> RsxNode {
             />
             <Element style={{ layout: Layout::flow().column().no_wrap() }}>
                 <Switch
-                    label="Debug Reuse Path"
-                    binding={debug_reuse_path.binding()}
-                    on_change={on_reuse_path}
+                    label="Debug RetainedAuto"
+                    binding={debug_retained_auto.binding()}
+                    on_change={on_retained_auto}
                 />
                 <Element style={{
+                    layout: Layout::flow().column().no_wrap(),
+                    gap: theme.spacing.xs,
+                    padding: Padding::new().left(theme.spacing.md).y(theme.spacing.xs),
+                    position: Position::static_().clip(ClipMode::Parent),
+                    height: if show_retained_auto_detail { None } else { Length::Zero },
+                    transition: [
+                        Transition::new(
+                            TransitionProperty::Height,
+                            theme.motion.duration.normal,
+                        )
+                        .ease_in_out(),
+                    ],
+                }}>
+                    <Checkbox
+                        label="Authority"
+                        binding={retained_auto_authority.binding()}
+                        on_change={on_retained_auto_authority}
+                    />
+                    <Checkbox
+                        label="Reuse Actions"
+                        binding={retained_auto_reuse_actions.binding()}
+                        on_change={on_retained_auto_reuse_actions}
+                    />
+                    <Checkbox
+                        label="Fallback Reasons"
+                        binding={retained_auto_fallback_reasons.binding()}
+                        on_change={on_retained_auto_fallback_reasons}
+                    />
+                    <Element style={{
                         layout: Layout::flow().column().no_wrap(),
                         gap: theme.spacing.xs,
                         padding: Padding::uniform(theme.spacing.xs),
                         border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
                         width: Length::percent(100.0),
-                        height: if show_reuse_legend { None } else { Length::Zero },
-                        transition: [
-                            Transition::new(
-                                TransitionProperty::Height,
-                                theme.motion.duration.normal,
-                            )
-                            .ease_in_out(),
-                        ],
                     }}>
-                        <Element>"Reuse Path Colors"</Element>
+                        <Element>"RetainedAuto Overlay Colors"</Element>
                         <Element style={{ layout: Layout::flow().row().no_wrap(), gap: theme.spacing.xs, width: Length::percent(100.0) }}>
                             <Element style={{
                                 width: Length::px(12.0),
                                 height: Length::px(12.0),
-                                background: Color::hex("#26f25af2"),
+                                background: Color::hex("#2d8cff"),
                             }} />
-                            <Element>"Green: actual reuse"</Element>
+                            <Element>"Blue: selected authority"</Element>
                         </Element>
                         <Element style={{ layout: Layout::flow().row().no_wrap(), gap: theme.spacing.xs, width: Length::percent(100.0) }}>
                             <Element style={{
                                 width: Length::px(12.0),
                                 height: Length::px(12.0),
-                                background: Color::hex("#ff731af2"),
+                                background: Color::hex("#26f25a"),
                             }} />
-                            <Element>"Orange: actual reraster"</Element>
+                            <Element>"Green: reuse action"</Element>
                         </Element>
                         <Element style={{ layout: Layout::flow().row().no_wrap(), gap: theme.spacing.xs, width: Length::percent(100.0) }}>
                             <Element style={{
                                 width: Length::px(12.0),
                                 height: Length::px(12.0),
-                                background: Color::hex("#ffe526f2"),
+                                background: Color::hex("#ff731a"),
                             }} />
-                            <Element>"Yellow: child scissor clip inline"</Element>
+                            <Element>"Orange: reraster action"</Element>
                         </Element>
                         <Element style={{ layout: Layout::flow().row().no_wrap(), gap: theme.spacing.xs, width: Length::percent(100.0) }}>
                             <Element style={{
                                 width: Length::px(12.0),
                                 height: Length::px(12.0),
-                                background: Color::hex("#ff8c26f2"),
+                                background: Color::hex("#ff3333"),
                             }} />
-                            <Element>"Deep orange: child stencil clip inline"</Element>
-                        </Element>
-                        <Element style={{ layout: Layout::flow().row().no_wrap(), gap: theme.spacing.xs, width: Length::percent(100.0) }}>
-                            <Element style={{
-                                width: Length::px(12.0),
-                                height: Length::px(12.0),
-                                background: Color::hex("#ff3333f2"),
-                            }} />
-                            <Element>"Red: absolute clip inline"</Element>
+                            <Element>"Red: fallback reason"</Element>
                         </Element>
                     </Element>
+                </Element>
             </Element>
-            <Switch
-                label="Enable Layer Promotion"
-                binding={enable_layer_promotion.binding()}
-                on_change={on_layer_promotion}
-            />
         </Element>
     }
 }

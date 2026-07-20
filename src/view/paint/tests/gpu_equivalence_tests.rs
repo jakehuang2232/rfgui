@@ -609,7 +609,6 @@ fn retained_focused_atomic_projection_scroll_graph(
     let scene = plan_and_validate_property_scroll_scene(
         &arena,
         &roots,
-        &rustc_hash::FxHashSet::default(),
         &properties,
         &generations,
         1.0,
@@ -886,7 +885,6 @@ fn production_scroll_forest_graph(
     let scene = plan_and_validate_property_scroll_scene(
         &arena,
         &roots,
-        &rustc_hash::FxHashSet::default(),
         &properties,
         &generations,
         1.0,
@@ -1143,7 +1141,6 @@ fn forced_transformed_rect_graph(
     let plan = plan_single_root_transform_surface_with_context(
         &arena,
         &roots,
-        &rustc_hash::FxHashSet::default(),
         &properties,
         &generations,
         TransformSurfacePlanContext::new([0.0, 0.0], outer_scissor),
@@ -1206,7 +1203,6 @@ fn forced_nested_transformed_rect_graph_on_viewport(
     let plan = plan_single_root_transform_surface_with_context(
         &arena,
         &roots,
-        &rustc_hash::FxHashSet::default(),
         &properties,
         &generations,
         TransformSurfacePlanContext::new([0.0, 0.0], outer_scissor),
@@ -1230,7 +1226,6 @@ fn production_transformed_rect_graph(
     let plan = plan_single_root_transform_surface_with_context(
         &arena,
         &roots,
-        &rustc_hash::FxHashSet::default(),
         &properties,
         &generations,
         TransformSurfacePlanContext::new([0.0, 0.0], outer_scissor),
@@ -1255,7 +1250,6 @@ fn production_nested_transformed_rect_graph(
     let plan = plan_single_root_transform_surface_with_context(
         &arena,
         &roots,
-        &rustc_hash::FxHashSet::default(),
         &properties,
         &generations,
         TransformSurfacePlanContext::new([0.0, 0.0], outer_scissor),
@@ -1277,7 +1271,6 @@ fn production_isolation_graph(
     let plan = plan_single_root_isolation_surface(
         &arena,
         &[root],
-        &rustc_hash::FxHashSet::default(),
         &properties,
         &generations,
         WIDTH,
@@ -1618,7 +1611,6 @@ fn production_nested_scroll_leaf_graph(
     let geometry = plan_and_prepare_nested_scroll_scene(
         &arena,
         &[outer],
-        &rustc_hash::FxHashSet::default(),
         &properties,
         &generations,
         1.0,
@@ -4182,7 +4174,6 @@ fn production_direct_scroll_transform_graph(
     let scene = plan_and_validate_direct_scroll_transform_scene(
         &arena,
         &[root],
-        &rustc_hash::FxHashSet::default(),
         &properties,
         &generations,
         1.0,
@@ -4784,7 +4775,6 @@ fn production_direct_property_scroll_graph(
             let scene = plan_and_validate_transform_scroll_scene(
                 &arena,
                 &[root],
-                &rustc_hash::FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -4805,7 +4795,6 @@ fn production_direct_property_scroll_graph(
             let scene = plan_and_validate_effect_scroll_scene_checkpoint(
                 &arena,
                 &[root],
-                &rustc_hash::FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -5228,12 +5217,11 @@ fn production_transform_effect_scroll_graph(
     String,
 > {
     // The exact production grammar currently admits only scale=1, paint
-    // offset=0, no external scissor, and no pre-promoted roots.
+    // offset=0 and no external scissor.
     let (arena, root, properties, generations) = transform_effect_scroll_gpu_fixture(frame);
     let scene = plan_and_validate_transform_effect_scroll_scene(
         &arena,
         &[root],
-        &rustc_hash::FxHashSet::default(),
         &properties,
         &generations,
         1.0,
@@ -5453,7 +5441,7 @@ fn production_transform_effect_scroll_graph_builds_without_adapter() -> Result<(
 #[test]
 #[ignore = "requires native GPU adapter"]
 // Exact closure for the currently admitted production contract: scale=1,
-// paint offset=0, no external scissor, and no pre-promoted roots. Run with:
+// paint offset=0 and no external scissor. Run with:
 // cargo test -q native_production_transform_effect_scroll_matches_legacy_and_reuses_three_real_pairs -- --ignored --nocapture
 fn native_production_transform_effect_scroll_matches_legacy_and_reuses_three_real_pairs()
 -> Result<(), String> {

@@ -1,5 +1,5 @@
 use super::{
-    PendingClick, PointerButton, Viewport, build_reuse_overlay_geometry, is_valid_click_candidate,
+    PendingClick, PointerButton, Viewport, build_debug_overlay_geometry, is_valid_click_candidate,
 };
 use crate::style::{
     Length, ParsedValue, PropertyId, ScrollDirection, Style, Transform, Transition,
@@ -113,7 +113,7 @@ fn click_rejects_large_pointer_travel() {
 }
 
 #[test]
-fn reuse_overlay_geometry_adds_node_id_label_when_requested() {
+fn debug_overlay_geometry_adds_node_id_label_when_requested() {
     let snapshot = BoxModelSnapshot {
         node_id: 42,
         parent_id: None,
@@ -126,8 +126,8 @@ fn reuse_overlay_geometry_adds_node_id_label_when_requested() {
     };
 
     let (plain_vertices, plain_indices) =
-        build_reuse_overlay_geometry(&snapshot, 1.0, 200.0, 200.0, [1.0, 0.0, 0.0, 1.0], None);
-    let (label_vertices, label_indices) = build_reuse_overlay_geometry(
+        build_debug_overlay_geometry(&snapshot, 1.0, 200.0, 200.0, [1.0, 0.0, 0.0, 1.0], None);
+    let (label_vertices, label_indices) = build_debug_overlay_geometry(
         &snapshot,
         1.0,
         200.0,
@@ -171,7 +171,7 @@ fn overlay_label_geometry_generates_background_and_digits() {
 }
 
 #[test]
-fn reuse_overlay_geometry_scales_snapshot_coordinates_for_hidpi() {
+fn debug_overlay_geometry_scales_snapshot_coordinates_for_hidpi() {
     let snapshot = BoxModelSnapshot {
         node_id: 42,
         parent_id: None,
@@ -184,7 +184,7 @@ fn reuse_overlay_geometry_scales_snapshot_coordinates_for_hidpi() {
     };
 
     let (vertices, indices) =
-        build_reuse_overlay_geometry(&snapshot, 2.0, 200.0, 200.0, [1.0, 0.0, 0.0, 1.0], None);
+        build_debug_overlay_geometry(&snapshot, 2.0, 200.0, 200.0, [1.0, 0.0, 0.0, 1.0], None);
 
     assert!(!vertices.is_empty());
     assert!(!indices.is_empty());
@@ -383,5 +383,46 @@ fn viewport_registers_box_shadow_transition_channel() {
             .transitions
             .transition_channels
             .contains(&CHANNEL_STYLE_BOX_SHADOW)
+    );
+}
+
+#[test]
+fn viewport_debug_capture_exposes_last_retained_auto_attempt_only_when_requested() {
+    use crate::view::debug::{
+        DebugCaptureOptions, DebugFrameDisposition, DebugFramePaintAuthority,
+        DebugPaintRequestedMode, DebugRetainedAutoCaptureInput, DebugRetainedAutoFrameCaptureInput,
+        DebugRetainedAutoStatistics,
+    };
+
+    let mut viewport = Viewport::new();
+    viewport.frame.last_retained_auto_debug = Some(DebugRetainedAutoCaptureInput {
+        frame: DebugRetainedAutoFrameCaptureInput {
+            attempt_id: 9,
+            requested_mode: DebugPaintRequestedMode::RetainedAuto,
+            selected_authority: DebugFramePaintAuthority::Artifact,
+            disposition: DebugFrameDisposition::Presented,
+            fallback_stages: Vec::new(),
+            statistics: DebugRetainedAutoStatistics::default(),
+        },
+        nodes: Vec::new(),
+        surfaces: Vec::new(),
+    });
+
+    let ordinary = viewport.capture_debug(DebugCaptureOptions::default());
+    assert!(ordinary.document().viewport.retained_auto.is_none());
+
+    let mut options = DebugCaptureOptions::default();
+    options.include_retained_auto = true;
+    let retained = viewport.capture_debug(options);
+    let snapshot = retained
+        .document()
+        .viewport
+        .retained_auto
+        .as_ref()
+        .expect("requested debug capture should include the last retained attempt");
+    assert_eq!(snapshot.frame.attempt_id, 9);
+    assert_eq!(
+        snapshot.frame.selected_authority,
+        DebugFramePaintAuthority::Artifact,
     );
 }

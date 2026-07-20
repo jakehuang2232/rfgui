@@ -361,7 +361,7 @@ impl RetainedSurfaceRasterInputs {
             }
         }
         let expected_color = crate::view::base_component::texture_desc_for_logical_bounds(
-            crate::view::base_component::PromotionCompositeBounds {
+            crate::view::base_component::RetainedSurfaceBounds {
                 x,
                 y,
                 width,
@@ -1639,7 +1639,7 @@ pub(crate) fn retained_surface_composite_geometry_stamp(
 }
 
 pub(crate) fn retained_isolation_composite_geometry_stamp(
-    source_bounds: crate::view::base_component::PromotionCompositeBounds,
+    source_bounds: crate::view::base_component::RetainedSurfaceBounds,
     logical_size: [f32; 2],
     opacity: f32,
     outer_scissor_rect: Option<[u32; 4]>,
@@ -1678,7 +1678,7 @@ pub(crate) fn retained_isolation_composite_geometry_stamp(
 }
 
 pub(crate) fn retained_nested_isolation_composite_geometry_stamp(
-    source_bounds: crate::view::base_component::PromotionCompositeBounds,
+    source_bounds: crate::view::base_component::RetainedSurfaceBounds,
     opacity: f32,
 ) -> Option<RetainedSurfaceCompositeGeometryStamp> {
     let source_bounds_bits = [
@@ -1706,7 +1706,7 @@ pub(crate) fn retained_nested_isolation_composite_geometry_stamp(
 }
 
 pub(crate) fn retained_property_effect_composite_geometry_stamp(
-    source_bounds: crate::view::base_component::PromotionCompositeBounds,
+    source_bounds: crate::view::base_component::RetainedSurfaceBounds,
     opacity: f32,
     effect_generation: u64,
     basis: PropertyEffectCompositeBasisStamp,
@@ -3694,14 +3694,29 @@ fn compile_validated_artifact(
 ) {
     for (chunk, resolved_clip) in artifact.chunks.iter().zip(resolved_clips) {
         let _observed_identity = (&chunk.bounds, chunk.properties, chunk.content_revision);
-        let previous_scissor = match resolved_clip {
-            ResolvedClip::Unclipped => None,
-            ResolvedClip::Scissor(scissor) => Some(ctx.replace_scissor_rect(Some(scissor))),
+        let shadow_prefix_len = exact_self_clip_shadow_prefix_len(artifact, chunk).unwrap_or(0);
+        let previous_scissor = match (shadow_prefix_len, resolved_clip) {
+            (0, ResolvedClip::Unclipped) => None,
+            (0, ResolvedClip::Scissor(scissor)) => Some(ctx.replace_scissor_rect(Some(scissor))),
             // Do not enter a graphics scope for an empty clip: in particular,
             // opaque rectangles must not consume DFS depth order.
-            ResolvedClip::Empty => continue,
+            (0, ResolvedClip::Empty) => continue,
+            // Exact self-clip shadow grammar emits the outer-shadow prefix
+            // against the incoming parent scissor. The owner's Replace clip
+            // begins only at decoration/media.
+            (_, _) => None,
         };
-        for op in &artifact.ops[chunk.op_range.clone()] {
+        let mut split_previous_scissor = None;
+        for (op_index, op) in artifact.ops[chunk.op_range.clone()].iter().enumerate() {
+            if shadow_prefix_len != 0 && op_index == shadow_prefix_len {
+                match resolved_clip {
+                    ResolvedClip::Unclipped => {}
+                    ResolvedClip::Scissor(scissor) => {
+                        split_previous_scissor = Some(ctx.replace_scissor_rect(Some(scissor)));
+                    }
+                    ResolvedClip::Empty => break,
+                }
+            }
             match op {
                 PaintOp::DrawRect(op) => {
                     let mut pass = DrawRectPass::new(
@@ -3825,10 +3840,87 @@ fn compile_validated_artifact(
                 }
             }
         }
-        if let Some(previous) = previous_scissor {
+        if let Some(previous) = split_previous_scissor.or(previous_scissor) {
             ctx.restore_scissor_rect(previous);
         }
     }
+}
+
+/// Returns the length of the outer-shadow prefix for the one deliberately
+/// narrow self-clip grammar supported by the retained compiler.  Outer
+/// shadows paint against the incoming parent scissor; the owner's exact
+/// `Replace` self clip begins at decoration/media.  Keeping this proof strict
+/// prevents a fragmented or incomplete clip store from silently changing
+/// legacy paint order.
+fn exact_self_clip_shadow_prefix_len(
+    artifact: &PaintArtifact,
+    chunk: &super::PaintChunk,
+) -> Option<usize> {
+    if artifact.target != PaintArtifactTarget::CurrentTarget
+        || artifact.chunks.len() != 1
+        || artifact.chunks.first()?.id != chunk.id
+        || artifact.owner_nodes.as_slice()
+            != [PaintOwnerSnapshot {
+                owner: chunk.owner,
+                parent: None,
+            }]
+        || !artifact.effect_nodes.is_empty()
+        || chunk.id.scope != PaintPropertyScope::SelfPaint
+        || chunk.id.phase != super::PaintNodePhase::BeforeChildren
+        || chunk.id.slot != 0
+    {
+        return None;
+    }
+
+    let self_clip = ClipNodeId {
+        owner: chunk.owner,
+        role: ClipNodeRole::SelfClip,
+    };
+    let [clip] = artifact.clip_nodes.as_slice() else {
+        return None;
+    };
+    if *clip
+        != (ClipNodeSnapshot {
+            id: self_clip,
+            owner: chunk.owner,
+            parent: None,
+            logical_scissor: clip.logical_scissor,
+            behavior: ClipBehavior::Replace,
+            generation: clip.generation,
+        })
+        || clip.generation == 0
+        || chunk.properties
+            != (PropertyTreeState {
+                clip: Some(self_clip),
+                ..Default::default()
+            })
+    {
+        return None;
+    }
+
+    let shadow_count = match (&chunk.id.role, &chunk.payload_identity) {
+        (PaintChunkRole::SelfDecoration, PaintPayloadIdentity::PreparedShadows(shadows, _))
+        | (PaintChunkRole::ImageContent, PaintPayloadIdentity::ImageWithShadows(_, shadows, _))
+        | (PaintChunkRole::SvgContent, PaintPayloadIdentity::SvgWithShadows(_, shadows, _)) => {
+            shadows.len()
+        }
+        _ => return None,
+    };
+    if shadow_count == 0 {
+        return None;
+    }
+    let ops = artifact.ops.get(chunk.op_range.clone())?;
+    if ops.len() < shadow_count
+        || !ops[..shadow_count]
+            .iter()
+            .all(|op| matches!(op, PaintOp::PreparedShadow(_)))
+        || ops[shadow_count..]
+            .iter()
+            .any(|op| matches!(op, PaintOp::PreparedShadow(_)))
+    {
+        return None;
+    }
+    Some(shadow_count)
 }
 
 fn emit_prepared_scrollbar_shadow(
@@ -7247,26 +7339,54 @@ pub(super) fn exact_nested_scroll_payload_identity(
             )
         }
         PaintChunkRole::ImageContent => {
-            let (prepared, decoration) = ops.split_last()?;
+            let (prepared, prefix) = ops.split_last()?;
             let PaintOp::PreparedImage(prepared) = prepared else {
                 return None;
             };
-            PaintPayloadIdentity::image_with_decoration(
+            let shadow_count = prefix
+                .iter()
+                .take_while(|op| matches!(op, PaintOp::PreparedShadow(_)))
+                .count();
+            if prefix[shadow_count..]
+                .iter()
+                .any(|op| !matches!(op, PaintOp::DrawRect(_)))
+            {
+                return None;
+            }
+            PaintPayloadIdentity::image_with_shadows_and_decoration(
                 PreparedImageIdentity::from_op(prepared),
-                decoration.iter().filter_map(|op| match op {
+                prefix[..shadow_count].iter().filter_map(|op| match op {
+                    PaintOp::PreparedShadow(shadow) => Some(shadow),
+                    _ => None,
+                }),
+                prefix[shadow_count..].iter().filter_map(|op| match op {
                     PaintOp::DrawRect(rect) => Some(rect),
                     _ => None,
                 }),
             )
         }
         PaintChunkRole::SvgContent => {
-            let (prepared, decoration) = ops.split_last()?;
+            let (prepared, prefix) = ops.split_last()?;
             let PaintOp::PreparedSvg(prepared) = prepared else {
                 return None;
             };
-            PaintPayloadIdentity::svg_with_decoration(
+            let shadow_count = prefix
+                .iter()
+                .take_while(|op| matches!(op, PaintOp::PreparedShadow(_)))
+                .count();
+            if prefix[shadow_count..]
+                .iter()
+                .any(|op| !matches!(op, PaintOp::DrawRect(_)))
+            {
+                return None;
+            }
+            PaintPayloadIdentity::svg_with_shadows_and_decoration(
                 PreparedSvgIdentity::from_op(prepared)?,
-                decoration.iter().filter_map(|op| match op {
+                prefix[..shadow_count].iter().filter_map(|op| match op {
+                    PaintOp::PreparedShadow(shadow) => Some(shadow),
+                    _ => None,
+                }),
+                prefix[shadow_count..].iter().filter_map(|op| match op {
                     PaintOp::DrawRect(rect) => Some(rect),
                     _ => None,
                 }),
@@ -7975,6 +8095,19 @@ fn validate_artifact_store_with_policy(
         if chunk.properties.clip != expected_leaf {
             return None;
         }
+        // A chunk carrying its owner's `Replace` self clip and an outer-shadow
+        // prefix needs phase-sensitive scissoring.  Only the exact, complete
+        // single-owner grammar above is allowed to request that split; all
+        // fragmented/multi-owner variants fail closed instead of clipping the
+        // shadow or leaking unclipped decoration/media.
+        if chunk.properties.clip == Some(own_self)
+            && artifact.ops[chunk.op_range.clone()]
+                .iter()
+                .any(|op| matches!(op, PaintOp::PreparedShadow(_)))
+            && exact_self_clip_shadow_prefix_len(artifact, chunk).is_none()
+        {
+            return None;
+        }
         let Some(mut cursor) = expected_leaf else {
             resolved.push(ResolvedClip::Unclipped);
             continue;
@@ -8239,10 +8372,21 @@ fn validate_svg_content_ops(ops: &[PaintOp], payload_identity: &PaintPayloadIden
     use crate::view::render_pass::draw_rect_pass::RectRenderMode;
     use crate::view::sampled_texture::SampledTextureAlphaMode;
 
-    let (decoration, prepared) = match ops.split_last() {
-        Some((PaintOp::PreparedSvg(prepared), decoration)) => (decoration, prepared),
+    let (prefix, prepared) = match ops.split_last() {
+        Some((PaintOp::PreparedSvg(prepared), prefix)) => (prefix, prepared),
         _ => return false,
     };
+    let shadow_count = prefix
+        .iter()
+        .take_while(|op| matches!(op, PaintOp::PreparedShadow(_)))
+        .count();
+    if !prefix[..shadow_count]
+        .iter()
+        .all(|op| matches!(op, PaintOp::PreparedShadow(shadow) if shadow.has_canonical_identity()))
+    {
+        return false;
+    }
+    let decoration = &prefix[shadow_count..];
     let decoration_is_valid = match decoration {
         [] => true,
         [PaintOp::DrawRect(fill)] => fill.mode == RectRenderMode::FillOnly,
@@ -8270,8 +8414,12 @@ fn validate_svg_content_ops(ops: &[PaintOp], payload_identity: &PaintPayloadIden
     let Some(identity) = PreparedSvgIdentity::from_op(prepared) else {
         return false;
     };
-    let Some(expected) = PaintPayloadIdentity::svg_with_decoration(
+    let Some(expected) = PaintPayloadIdentity::svg_with_shadows_and_decoration(
         identity,
+        prefix[..shadow_count].iter().filter_map(|op| match op {
+            PaintOp::PreparedShadow(shadow) => Some(shadow),
+            _ => None,
+        }),
         decoration.iter().filter_map(|op| match op {
             PaintOp::DrawRect(rect) => Some(rect),
             _ => None,
@@ -8286,10 +8434,21 @@ fn validate_image_content_ops(ops: &[PaintOp], payload_identity: &PaintPayloadId
     use crate::view::render_pass::draw_rect_pass::RectRenderMode;
     use crate::view::sampled_texture::{SampledTextureAlphaMode, SampledTextureId};
 
-    let (decoration, prepared) = match ops.split_last() {
-        Some((PaintOp::PreparedImage(prepared), decoration)) => (decoration, prepared),
+    let (prefix, prepared) = match ops.split_last() {
+        Some((PaintOp::PreparedImage(prepared), prefix)) => (prefix, prepared),
         _ => return false,
     };
+    let shadow_count = prefix
+        .iter()
+        .take_while(|op| matches!(op, PaintOp::PreparedShadow(_)))
+        .count();
+    if !prefix[..shadow_count]
+        .iter()
+        .all(|op| matches!(op, PaintOp::PreparedShadow(shadow) if shadow.has_canonical_identity()))
+    {
+        return false;
+    }
+    let decoration = &prefix[shadow_count..];
     let decoration_is_valid = match decoration {
         [] => true,
         [PaintOp::DrawRect(fill)] => fill.mode == RectRenderMode::FillOnly,
@@ -8315,8 +8474,12 @@ fn validate_image_content_ops(ops: &[PaintOp], payload_identity: &PaintPayloadId
     {
         return false;
     }
-    let Some(expected) = PaintPayloadIdentity::image_with_decoration(
+    let Some(expected) = PaintPayloadIdentity::image_with_shadows_and_decoration(
         PreparedImageIdentity::from_op(prepared),
+        prefix[..shadow_count].iter().filter_map(|op| match op {
+            PaintOp::PreparedShadow(shadow) => Some(shadow),
+            _ => None,
+        }),
         decoration.iter().filter_map(|op| match op {
             PaintOp::DrawRect(rect) => Some(rect),
             _ => None,
@@ -8325,6 +8488,21 @@ fn validate_image_content_ops(ops: &[PaintOp], payload_identity: &PaintPayloadId
         return false;
     };
     payload_identity == &expected
+}
+
+#[cfg(test)]
+pub(crate) fn validate_media_content_artifact_for_test(artifact: &PaintArtifact) -> bool {
+    let [chunk] = artifact.chunks.as_slice() else {
+        return false;
+    };
+    let Some(ops) = artifact.ops.get(chunk.op_range.clone()) else {
+        return false;
+    };
+    match chunk.id.role {
+        PaintChunkRole::ImageContent => validate_image_content_ops(ops, &chunk.payload_identity),
+        PaintChunkRole::SvgContent => validate_svg_content_ops(ops, &chunk.payload_identity),
+        _ => false,
+    }
 }
 
 fn resolved_scissor([x, y, width, height]: [u32; 4]) -> ResolvedClip {
@@ -8372,7 +8550,7 @@ mod transform_scroll_boundary_stamp_tests {
     use slotmap::SlotMap;
 
     use crate::view::base_component::{
-        PromotionCompositeBounds, Rect, ScrollAxisSnapshot, ScrollContentsClipWitness,
+        Rect, RetainedSurfaceBounds, ScrollAxisSnapshot, ScrollContentsClipWitness,
         ScrollbarInteractionWitness, ScrollbarOverlayWitness, ScrollbarPaintStateWitness, Size,
         persistent_target_texture_descriptors, scroll_content_layer_stable_key,
         texture_desc_for_logical_bounds, transformed_layer_stable_key,
@@ -8386,7 +8564,7 @@ mod transform_scroll_boundary_stamp_tests {
     };
 
     fn target(
-        bounds: PromotionCompositeBounds,
+        bounds: RetainedSurfaceBounds,
         color_key: crate::view::frame_graph::PersistentTextureKey,
     ) -> RetainedSurfaceRasterInputs {
         let color =
@@ -8404,7 +8582,7 @@ mod transform_scroll_boundary_stamp_tests {
         content_root: crate::view::node_arena::NodeKey,
         stable_id: u64,
     ) -> RetainedSurfaceRasterStamp {
-        let bounds = PromotionCompositeBounds {
+        let bounds = RetainedSurfaceBounds {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -8618,7 +8796,7 @@ mod transform_scroll_boundary_stamp_tests {
             }],
         )
         .expect("canonical E authority");
-        let bounds = PromotionCompositeBounds {
+        let bounds = RetainedSurfaceBounds {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -8768,7 +8946,7 @@ mod transform_scroll_boundary_stamp_tests {
         let (outer, _transform, contract) = transform_effect_scroll_outer_fixture();
         let typed_step = outer.ordered_steps[0].clone();
         let bounds_values = outer.target.source_bounds_bits.map(f32::from_bits);
-        let bounds = PromotionCompositeBounds {
+        let bounds = RetainedSurfaceBounds {
             x: bounds_values[0],
             y: bounds_values[1],
             width: bounds_values[2],
@@ -8896,7 +9074,7 @@ mod transform_scroll_boundary_stamp_tests {
     #[test]
     fn generic_retained_surface_canonicalizers_reject_scroll_boundary_steps() {
         let dependency = canonical_dependency();
-        let bounds = PromotionCompositeBounds {
+        let bounds = RetainedSurfaceBounds {
             x: 0.0,
             y: 0.0,
             width: 16.0,
@@ -8998,7 +9176,7 @@ mod transform_scroll_boundary_stamp_tests {
         );
 
         let scroll_key = scroll_content_layer_stable_key(effect_dependency.content_stable_id);
-        let scroll_bounds = PromotionCompositeBounds {
+        let scroll_bounds = RetainedSurfaceBounds {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -9081,7 +9259,7 @@ mod property_scene_stamp_tests {
         steps: Vec<RetainedSurfaceRasterStepStamp>,
     ) -> RetainedSurfaceRasterStamp {
         let color_key = crate::view::base_component::transformed_layer_stable_key(stable_id);
-        let bounds = crate::view::base_component::PromotionCompositeBounds {
+        let bounds = crate::view::base_component::RetainedSurfaceBounds {
             x: 0.0,
             y: 0.0,
             width: 16.0,
@@ -9247,7 +9425,7 @@ mod property_effect_stamp_tests {
     }
 
     fn target(contract: &EffectPropertySurfaceArtifactContract) -> RetainedSurfaceRasterInputs {
-        let bounds = crate::view::base_component::PromotionCompositeBounds {
+        let bounds = crate::view::base_component::RetainedSurfaceBounds {
             x: 0.0,
             y: 0.0,
             width: 16.0,

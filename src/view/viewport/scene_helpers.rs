@@ -4,8 +4,7 @@ use super::dispatch::local_point_for_node;
 use super::*;
 use crate::ui::{PointerEnterEvent, PointerLeaveEvent};
 use crate::view::base_component::{
-    BoxModelSnapshot, DirtyFlags, ElementTrait, PromotionCompositeBounds, UiBuildContext,
-    round_layout_value,
+    BoxModelSnapshot, DirtyFlags, ElementTrait, RetainedSurfaceBounds, round_layout_value,
 };
 
 impl Viewport {
@@ -482,35 +481,15 @@ pub(crate) fn clear_subtree_dirty_flags_with_arena_dirty(
     true
 }
 
-pub(crate) fn can_reuse_promoted_subtree(
+pub(crate) fn paint_snapped_retained_surface_bounds(
     node: &dyn ElementTrait,
-    _ctx: &UiBuildContext,
-    arena: &crate::view::node_arena::NodeArena,
-) -> bool {
-    fn walk(node: &dyn ElementTrait, arena: &crate::view::node_arena::NodeArena) -> bool {
-        for child_key in node.children() {
-            let Some(child_node) = arena.get(*child_key) else {
-                continue;
-            };
-            if !walk(child_node.element.as_ref(), arena) {
-                return false;
-            }
-        }
-        true
-    }
-
-    walk(node, arena)
-}
-
-pub(crate) fn paint_snapped_promotion_composite_bounds(
-    node: &dyn ElementTrait,
-    bounds: PromotionCompositeBounds,
+    bounds: RetainedSurfaceBounds,
     paint_offset: [f32; 2],
-) -> PromotionCompositeBounds {
+) -> RetainedSurfaceBounds {
     let snap = node.box_model_snapshot();
     let dx = round_layout_value(snap.x + paint_offset[0]) - snap.x;
     let dy = round_layout_value(snap.y + paint_offset[1]) - snap.y;
-    PromotionCompositeBounds {
+    RetainedSurfaceBounds {
         x: bounds.x + dx,
         y: bounds.y + dy,
         ..bounds

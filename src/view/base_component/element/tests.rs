@@ -16,14 +16,12 @@ mod tests {
         expand_corner_radii_for_spread, main_axis_start_and_gap, normalize_corner_radii,
         resolve_px_with_base, resolve_signed_px_with_base,
     };
-    use super::{reset_test_promoted_build_counts, test_promoted_build_count};
     use crate::style::Layout;
     use crate::style::{
-        Align, AnchorName, Angle, Border, BorderRadius, BoxShadow, ClipMode, Collision,
+        Align, AnchorName, Border, BorderRadius, BoxShadow, ClipMode, Collision,
         CollisionBoundary, Color, ComputedStyle, CrossSize, JustifyContent, Length, Opacity,
-        Operator, Origin, Position, Rotate, ScrollDirection, Style, Transform, TransformOrigin,
-        Translate,
-        VerticalAlign,
+        Operator, Origin, Position, ScrollDirection, Style, Transform, TransformOrigin,
+        Translate, VerticalAlign,
     };
     use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Transitions};
     use crate::transition::{LayoutField, VisualField};
@@ -41,10 +39,6 @@ mod tests {
     };
     use crate::view::viewport::transitions_tick::set_style_field_by_id;
     use glam::{Mat4, Vec3};
-    use rustc_hash::{FxHashMap, FxHashSet};
-
-    use std::sync::Arc;
-
     #[test]
     fn scrollbar_fade_uses_one_frame_sample_and_stops_after_hidden() {
         let mut element = Element::new(0.0, 0.0, 100.0, 80.0);
@@ -62,36 +56,52 @@ mod tests {
         let frame = crate::time::Instant::now();
         assert!(element.set_hovered(true));
         assert!(element.wants_animation_frame());
-        assert!(element
-            .tick_post_layout_animation_frame(frame)
-            .contains(DirtyFlags::PAINT));
-        assert_eq!(element.scrollbar_visibility_alpha().to_bits(), 1.0_f32.to_bits());
+        assert!(
+            element
+                .tick_post_layout_animation_frame(frame)
+                .contains(DirtyFlags::PAINT)
+        );
+        assert_eq!(
+            element.scrollbar_visibility_alpha().to_bits(),
+            1.0_f32.to_bits()
+        );
 
         assert!(element.set_hovered(false));
         let leave_frame = frame + crate::time::Duration::from_millis(10);
-        assert!(element
-            .tick_post_layout_animation_frame(leave_frame)
-            .contains(DirtyFlags::PAINT));
+        assert!(
+            element
+                .tick_post_layout_animation_frame(leave_frame)
+                .contains(DirtyFlags::PAINT)
+        );
         assert!(element.wants_animation_frame());
 
         let fade_frame = leave_frame + crate::time::Duration::from_millis(1_000);
-        assert!(element
-            .tick_post_layout_animation_frame(fade_frame)
-            .contains(DirtyFlags::PAINT));
+        assert!(
+            element
+                .tick_post_layout_animation_frame(fade_frame)
+                .contains(DirtyFlags::PAINT)
+        );
         assert!((0.0..1.0).contains(&element.scrollbar_visibility_alpha()));
         assert!(element.wants_animation_frame());
 
         let hidden_frame = leave_frame + crate::time::Duration::from_millis(1_250);
-        assert!(element
-            .tick_post_layout_animation_frame(hidden_frame)
-            .contains(DirtyFlags::PAINT));
-        assert_eq!(element.scrollbar_visibility_alpha().to_bits(), 0.0_f32.to_bits());
+        assert!(
+            element
+                .tick_post_layout_animation_frame(hidden_frame)
+                .contains(DirtyFlags::PAINT)
+        );
+        assert_eq!(
+            element.scrollbar_visibility_alpha().to_bits(),
+            0.0_f32.to_bits()
+        );
         assert!(!element.wants_animation_frame());
-        assert!(element
-            .tick_post_layout_animation_frame(
-                hidden_frame + crate::time::Duration::from_millis(16),
-            )
-            .is_empty());
+        assert!(
+            element
+                .tick_post_layout_animation_frame(
+                    hidden_frame + crate::time::Duration::from_millis(16),
+                )
+                .is_empty()
+        );
 
         element.scrollbar_drag = Some(ScrollbarDragState {
             axis: ScrollbarAxis::Vertical,
@@ -99,15 +109,22 @@ mod tests {
             reanchor_on_first_move: false,
         });
         let drag_frame = hidden_frame + crate::time::Duration::from_millis(32);
-        assert!(element
-            .tick_post_layout_animation_frame(drag_frame)
-            .contains(DirtyFlags::PAINT));
+        assert!(
+            element
+                .tick_post_layout_animation_frame(drag_frame)
+                .contains(DirtyFlags::PAINT)
+        );
         assert!(element.cancel_pointer_interaction());
         assert!(element.wants_animation_frame());
-        assert!(element
-            .tick_post_layout_animation_frame(drag_frame)
-            .contains(DirtyFlags::PAINT));
-        assert_eq!(element.scrollbar_visibility_alpha().to_bits(), 1.0_f32.to_bits());
+        assert!(
+            element
+                .tick_post_layout_animation_frame(drag_frame)
+                .contains(DirtyFlags::PAINT)
+        );
+        assert_eq!(
+            element.scrollbar_visibility_alpha().to_bits(),
+            1.0_f32.to_bits()
+        );
     }
 
     #[test]
@@ -134,9 +151,11 @@ mod tests {
         // Simulate this frame's final layout turning the same host from
         // non-scrollable into scrollable before property observation.
         element.layout_state.content_size.height = 300.0;
-        assert!(element
-            .tick_post_layout_animation_frame(semantic_now)
-            .contains(DirtyFlags::PAINT));
+        assert!(
+            element
+                .tick_post_layout_animation_frame(semantic_now)
+                .contains(DirtyFlags::PAINT)
+        );
         assert_eq!(
             element.scrollbar_visibility_alpha().to_bits(),
             1.0_f32.to_bits()
@@ -4375,429 +4394,6 @@ mod tests {
     }
 
     #[test]
-    fn promoted_child_is_skipped_when_required_inner_clip_is_outside_ancestor_scissor() {
-        let mut arena = new_test_arena();
-        let root_key = commit_element(&mut arena, Box::new(Element::new(0.0, 0.0, 200.0, 200.0)));
-
-        let mut container = Element::new(100.0, 100.0, 50.0, 50.0);
-        let mut container_style = Style::new();
-        container_style.insert(
-            PropertyId::Position,
-            ParsedValue::Position(
-                Position::absolute()
-                    .left(Length::px(100.0))
-                    .top(Length::px(100.0)),
-            ),
-        );
-        container.apply_style(container_style);
-        let container_key = commit_child(&mut arena, root_key, Box::new(container));
-
-        let mut promoted_child = Element::new(0.0, 0.0, 80.0, 20.0);
-        let mut style = Style::new();
-        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(80.0)));
-        promoted_child.apply_style(style);
-        let promoted_child_id = promoted_child.stable_id();
-        let _ = commit_child(&mut arena, container_key, Box::new(promoted_child));
-
-        measure_and_place(
-            &mut arena,
-            root_key,
-            LayoutConstraints {
-                max_width: 200.0,
-                max_height: 200.0,
-                viewport_width: 200.0,
-                viewport_height: 200.0,
-                percent_base_width: Some(200.0),
-                percent_base_height: Some(200.0),
-            },
-            LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 200.0,
-                available_height: 200.0,
-                viewport_width: 200.0,
-                viewport_height: 200.0,
-                percent_base_width: Some(200.0),
-                percent_base_height: Some(200.0),
-            },
-        );
-
-        let mut graph = FrameGraph::new();
-        let mut ctx = UiBuildContext::new(200, 200, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let target = ctx.allocate_target(&mut graph);
-        ctx.set_current_target(target);
-        ctx.push_scissor_rect(Some([0, 0, 20, 20]));
-        ctx.set_promoted_runtime(
-            Arc::new(FxHashSet::from_iter([promoted_child_id])),
-            Arc::new(FxHashMap::default()),
-            Arc::new(FxHashMap::default()),
-        );
-        reset_test_promoted_build_counts();
-
-        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-        let next_state = arena
-            .with_element_taken(root_key, |el, a| el.build(&mut graph, a, ctx_for_build))
-            .expect("root build returns state");
-        ctx.set_state(next_state);
-
-        assert_eq!(
-            test_promoted_build_count(promoted_child_id, "promoted-child"),
-            0
-        );
-        assert_eq!(
-            test_promoted_build_count(promoted_child_id, "promoted-layer"),
-            0
-        );
-        assert_eq!(ctx.scissor_rect(), Some([0, 0, 20, 20]));
-    }
-
-    #[test]
-    fn scrollbar_renders_with_promoted_child() {
-        let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
-        let mut parent_style = Style::new();
-        parent_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::hex("#101010")),
-        );
-        parent_style.insert(
-            PropertyId::ScrollDirection,
-            ParsedValue::ScrollDirection(crate::style::ScrollDirection::Vertical),
-        );
-        parent.apply_style(parent_style);
-        let _ = parent.set_hovered(true);
-        parent.set_scrollbar_shadow_blur_radius(0.0);
-
-        let mut child = Element::new(0.0, 0.0, 120.0, 360.0);
-        let mut child_style = Style::new();
-        child_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::hex("#ff0000")),
-        );
-        child.apply_style(child_style);
-
-        let mut arena = new_test_arena();
-        let parent_key = commit_element(&mut arena, Box::new(parent));
-        let child_key_k = commit_child(&mut arena, parent_key, Box::new(child));
-        let child_id = arena.get(child_key_k).unwrap().element.stable_id();
-
-        measure_and_place(
-            &mut arena,
-            parent_key,
-            LayoutConstraints {
-                max_width: 120.0,
-                max_height: 120.0,
-                viewport_width: 120.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(120.0),
-                percent_base_height: Some(120.0),
-            },
-            LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 120.0,
-                available_height: 120.0,
-                viewport_width: 120.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(120.0),
-                percent_base_height: Some(120.0),
-            },
-        );
-
-        let mut graph = FrameGraph::new();
-        let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let target = ctx.allocate_target(&mut graph);
-        ctx.set_current_target(target);
-        ctx.set_promoted_runtime(
-            Arc::new(FxHashSet::from_iter([child_id])),
-            Arc::new(FxHashMap::default()),
-            Arc::new(FxHashMap::default()),
-        );
-
-        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-        let next_state = arena
-            .with_element_taken(parent_key, |el, a| el.build(&mut graph, a, ctx_for_build))
-            .expect("parent build returns state");
-        ctx.set_state(next_state);
-
-        let pass_names = graph
-            .pass_descriptors()
-            .into_iter()
-            .map(|descriptor| descriptor.name)
-            .collect::<Vec<_>>();
-
-        assert!(
-            pass_names
-                .iter()
-                .any(|name| name.contains("draw_rect_pass::DrawRectPass")),
-            "expected scrollbar draw rect with promoted child, passes: {pass_names:?}"
-        );
-    }
-
-    #[test]
-    fn promoted_scroll_container_without_promoted_descendants_still_renders_scrollbar() {
-        let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
-        let mut parent_style = Style::new();
-        parent_style.insert(
-            PropertyId::ScrollDirection,
-            ParsedValue::ScrollDirection(crate::style::ScrollDirection::Vertical),
-        );
-        parent.apply_style(parent_style);
-        let _ = parent.set_hovered(true);
-        parent.set_scrollbar_shadow_blur_radius(0.0);
-        let parent_id = parent.stable_id();
-
-        let child = Element::new(0.0, 0.0, 120.0, 360.0);
-
-        let mut arena = new_test_arena();
-        let parent_key = commit_element(&mut arena, Box::new(parent));
-        let _ = commit_child(&mut arena, parent_key, Box::new(child));
-
-        measure_and_place(
-            &mut arena,
-            parent_key,
-            LayoutConstraints {
-                max_width: 120.0,
-                max_height: 120.0,
-                viewport_width: 120.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(120.0),
-                percent_base_height: Some(120.0),
-            },
-            LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 120.0,
-                available_height: 120.0,
-                viewport_width: 120.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(120.0),
-                percent_base_height: Some(120.0),
-            },
-        );
-
-        let mut graph = FrameGraph::new();
-        let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let target = ctx.allocate_target(&mut graph);
-        ctx.set_current_target(target);
-        ctx.set_promoted_runtime(
-            Arc::new(FxHashSet::from_iter([parent_id])),
-            Arc::new(FxHashMap::default()),
-            Arc::new(FxHashMap::default()),
-        );
-
-        let promotion_bounds =
-            crate::view::test_support::get_element::<Element>(&arena, parent_key)
-                .promotion_composite_bounds();
-        let mut layer_ctx = UiBuildContext::from_parts(
-            ctx.viewport(),
-            ctx.layer_subtree_state_with_ancestor_clip(ctx.ancestor_clip_context()),
-        );
-        let layer_target =
-            layer_ctx.allocate_promoted_layer_target(&mut graph, parent_id, promotion_bounds);
-        layer_ctx.set_current_target(layer_target);
-        let next_state = arena
-            .with_element_taken(parent_key, |el, a| {
-                el.as_any_mut()
-                    .downcast_mut::<Element>()
-                    .unwrap()
-                    .build_promoted_layer(
-                        &mut graph,
-                        a,
-                        layer_ctx,
-                        crate::view::promotion::PromotedLayerUpdateKind::Reraster,
-                        false,
-                        crate::view::viewport::DebugReusePathContext::Root,
-                    )
-            })
-            .expect("build_promoted_layer returns state");
-        ctx.set_state(next_state);
-
-        let pass_names = graph
-            .pass_descriptors()
-            .into_iter()
-            .map(|descriptor| descriptor.name)
-            .collect::<Vec<_>>();
-
-        assert!(
-            pass_names
-                .iter()
-                .any(|name| name.contains("draw_rect_pass::DrawRectPass")),
-            "expected scrollbar draw rect in promoted root base path, passes: {pass_names:?}"
-        );
-    }
-
-    #[test]
-    fn promoted_child_opacity_is_composited_while_its_base_stays_opaque_and_reusable() {
-        let mut parent = Element::new_with_id(1, 0.0, 0.0, 120.0, 120.0);
-        let mut parent_style = Style::new();
-        parent_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::rgb(0, 0, 255)),
-        );
-        parent.apply_style(parent_style);
-        let mut child = Element::new_with_id(2, 10.0, 10.0, 60.0, 60.0);
-        let mut child_style = Style::new();
-        child_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::rgb(255, 0, 0)),
-        );
-        child.apply_style(child_style);
-        child.set_opacity(0.6);
-
-        let mut arena = new_test_arena();
-        let parent_key = commit_element(&mut arena, Box::new(parent));
-        let child_key = commit_child(&mut arena, parent_key, Box::new(child));
-        measure_and_place(
-            &mut arena,
-            parent_key,
-            LayoutConstraints {
-                max_width: 120.0,
-                max_height: 120.0,
-                viewport_width: 120.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(120.0),
-                percent_base_height: Some(120.0),
-            },
-            LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 120.0,
-                available_height: 120.0,
-                viewport_width: 120.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(120.0),
-                percent_base_height: Some(120.0),
-            },
-        );
-
-        let build_frame = |arena: &mut crate::view::node_arena::NodeArena,
-                           update_kind: crate::view::promotion::PromotedLayerUpdateKind| {
-            let mut graph = FrameGraph::new();
-            let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-            let target = ctx.allocate_target(&mut graph);
-            ctx.set_current_target(target);
-            ctx.set_promoted_runtime(
-                Arc::new(FxHashSet::from_iter([2])),
-                Arc::new(FxHashMap::from_iter([(2, update_kind)])),
-                Arc::new(FxHashMap::from_iter([(
-                    2,
-                    crate::view::promotion::PromotedLayerUpdateKind::Reraster,
-                )])),
-            );
-            let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-            arena
-                .with_element_taken(parent_key, |element, arena| {
-                    element.build(&mut graph, arena, ctx_for_build)
-                })
-                .expect("parent build should return state");
-            graph
-        };
-
-        let first_graph = build_frame(
-            &mut arena,
-            crate::view::promotion::PromotedLayerUpdateKind::Reraster,
-        );
-        let first_rect_params = first_graph
-            .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::DrawRectPass>()
-            .into_iter()
-            .map(|pass| pass.test_params())
-            .chain(
-                first_graph
-                    .test_graphics_passes::<
-                        crate::view::render_pass::draw_rect_pass::OpaqueRectPass,
-                    >()
-                    .into_iter()
-                    .map(|pass| pass.test_params()),
-            )
-            .collect::<Vec<_>>();
-        let red_base_draw_opacities = first_rect_params
-            .iter()
-            .filter(|params| {
-                params.fill_color[0] > 0.9
-                    && params.fill_color[1] < 0.1
-                    && params.fill_color[2] < 0.1
-            })
-            .map(|params| params.opacity)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            red_base_draw_opacities,
-            vec![1.0],
-            "all rect params: {:?}",
-            (
-                first_rect_params
-                    .iter()
-                    .map(|params| (params.position, params.fill_color, params.opacity))
-                    .collect::<Vec<_>>(),
-                first_graph
-                    .pass_descriptors()
-                    .iter()
-                    .map(|descriptor| descriptor.name)
-                    .collect::<Vec<_>>()
-            )
-        );
-        assert!(
-            first_graph
-                .test_graphics_passes::<
-                    crate::view::render_pass::composite_layer_pass::CompositeLayerPass,
-                >()
-                .iter()
-                .any(|pass| (pass.test_params().opacity - 0.6).abs() < f32::EPSILON),
-            "promoted child opacity must be applied by its composite pass"
-        );
-
-        arena
-            .get_mut(child_key)
-            .expect("child should remain in arena")
-            .element
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .expect("child should be Element")
-            .set_opacity(0.25);
-
-        let second_graph = build_frame(
-            &mut arena,
-            crate::view::promotion::PromotedLayerUpdateKind::Reuse,
-        );
-        assert!(
-            second_graph
-                .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::DrawRectPass>()
-                .into_iter()
-                .map(|pass| pass.test_params())
-                .chain(
-                    second_graph
-                        .test_graphics_passes::<
-                            crate::view::render_pass::draw_rect_pass::OpaqueRectPass,
-                        >()
-                        .into_iter()
-                        .map(|pass| pass.test_params()),
-                )
-                .all(|params| {
-                    !(params.fill_color[0] > 0.9
-                        && params.fill_color[1] < 0.1
-                        && params.fill_color[2] < 0.1)
-                }),
-            "opacity-only update must not rerasterize the promoted child base"
-        );
-        assert!(
-            second_graph
-                .test_graphics_passes::<
-                    crate::view::render_pass::composite_layer_pass::CompositeLayerPass,
-                >()
-                .iter()
-                .any(|pass| (pass.test_params().opacity - 0.25).abs() < f32::EPSILON),
-            "reused promoted child must composite with the new opacity"
-        );
-    }
-
-    #[test]
     fn scroll_container_build_restores_scissor_and_clip_state() {
         let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
         let mut parent_style = Style::new();
@@ -5082,7 +4678,7 @@ mod tests {
 
     #[test]
     fn texture_desc_for_logical_bounds_keeps_logical_scale_mapping() {
-        let bounds = super::PromotionCompositeBounds {
+        let bounds = super::RetainedSurfaceBounds {
             x: 10.0,
             y: 20.0,
             width: 30.0,
@@ -5149,7 +4745,7 @@ mod tests {
         assert_eq!(
             layer_ctx.graphics_pass_context().stencil_clip_id,
             None,
-            "offscreen promoted layer subtree should not inherit ancestor stencil clip id"
+            "offscreen layer subtree should not inherit ancestor stencil clip id"
         );
     }
 
@@ -5171,91 +4767,6 @@ mod tests {
             layer_ctx.graphics_pass_context().scissor_rect,
             None,
             "transformed offscreen subtree should rasterize from viewport clip, not ancestor scissor"
-        );
-    }
-
-    #[test]
-    fn non_promoted_container_with_promoted_child_is_not_built_twice_during_compose() {
-        let mut arena = new_test_arena();
-        let mut root = Element::new(0.0, 0.0, 200.0, 200.0);
-        let mut root_style = Style::new();
-        root_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::hex("#202020")),
-        );
-        root.apply_style(root_style);
-        let root_key = commit_element(&mut arena, Box::new(root));
-
-        let mut container = Element::new(0.0, 0.0, 120.0, 120.0);
-        let container_id = container.stable_id();
-        let mut container_style = Style::new();
-        container_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::hex("#101010")),
-        );
-        container_style.insert(
-            PropertyId::ScrollDirection,
-            ParsedValue::ScrollDirection(crate::style::ScrollDirection::Vertical),
-        );
-        container.apply_style(container_style);
-        let container_key = commit_child(&mut arena, root_key, Box::new(container));
-
-        let mut promoted_child = Element::new(0.0, 0.0, 120.0, 240.0);
-        let mut promoted_child_style = Style::new();
-        promoted_child_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::hex("#ff0000")),
-        );
-        promoted_child.apply_style(promoted_child_style);
-        let promoted_child_id = promoted_child.stable_id();
-        let _ = commit_child(&mut arena, container_key, Box::new(promoted_child));
-
-        measure_and_place(
-            &mut arena,
-            root_key,
-            LayoutConstraints {
-                max_width: 200.0,
-                max_height: 200.0,
-                viewport_width: 200.0,
-                viewport_height: 200.0,
-                percent_base_width: Some(200.0),
-                percent_base_height: Some(200.0),
-            },
-            LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 200.0,
-                available_height: 200.0,
-                viewport_width: 200.0,
-                viewport_height: 200.0,
-                percent_base_width: Some(200.0),
-                percent_base_height: Some(200.0),
-            },
-        );
-
-        let mut graph = FrameGraph::new();
-        let mut ctx = UiBuildContext::new(200, 200, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let target = ctx.allocate_target(&mut graph);
-        ctx.set_current_target(target);
-        ctx.set_promoted_runtime(
-            Arc::new(FxHashSet::from_iter([promoted_child_id])),
-            Arc::new(FxHashMap::default()),
-            Arc::new(FxHashMap::default()),
-        );
-        reset_test_promoted_build_counts();
-
-        let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-        let next_state = arena
-            .with_element_taken(root_key, |el, a| el.build(&mut graph, a, ctx_for_build))
-            .expect("root build returns state");
-        ctx.set_state(next_state);
-
-        assert_eq!(
-            test_promoted_build_count(container_id, "base"),
-            1,
-            "expected non-promoted container base path to run only once"
         );
     }
 
@@ -5352,51 +4863,6 @@ mod tests {
             el.layout_state.should_render,
             "translate 後的 bounding box 已進入 parent clip，不應被提前剔除"
         );
-    }
-
-    #[test]
-    fn promotion_composite_bounds_follow_transformed_bounding_box() {
-        let mut arena = new_test_arena();
-        let mut el = Element::new(40.0, 20.0, 30.0, 20.0);
-        let mut style = Style::new();
-        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(30.0)));
-        style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
-        style.set_transform(Transform::new([Rotate::z(Angle::deg(90.0))]));
-        style.set_transform_origin(TransformOrigin::center());
-        el.apply_style(style);
-        let key = commit_element(&mut arena, Box::new(el));
-
-        measure_and_place(
-            &mut arena,
-            key,
-            LayoutConstraints {
-                max_width: 120.0,
-                max_height: 120.0,
-                viewport_width: 120.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(120.0),
-                percent_base_height: Some(120.0),
-            },
-            LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 120.0,
-                available_height: 120.0,
-                viewport_width: 120.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(120.0),
-                percent_base_height: Some(120.0),
-            },
-        );
-
-        let el = crate::view::test_support::get_element::<Element>(&arena, key);
-        let bounds = el.promotion_composite_bounds();
-        assert!((bounds.x - 45.0).abs() < 0.01);
-        assert!((bounds.y - 15.0).abs() < 0.01);
-        assert!((bounds.width - 20.0).abs() < 0.01);
-        assert!((bounds.height - 30.0).abs() < 0.01);
     }
 
     #[test]
@@ -5608,42 +5074,6 @@ mod tests {
             parent.box_model_snapshot().height.max(0.0),
         ));
         assert!(parent.should_clip_children(&[false], inner_radii, &arena));
-    }
-
-    #[test]
-    fn zero_height_layout_transition_changes_promotion_clip_signature() {
-        let mut closed_arena = new_test_arena();
-        let mut closed = Element::new(0.0, 0.0, 100.0, 80.0);
-        closed.layout_state.layout_position = LayoutPosition { x: 0.0, y: 0.0 };
-        closed.layout_state.layout_size.width = 100.0;
-        closed.layout_state.layout_size.height = 80.0;
-        let closed_key = commit_element(&mut closed_arena, Box::new(closed));
-        let _ = commit_child(
-            &mut closed_arena,
-            closed_key,
-            Box::new(Element::new(0.0, 0.0, 40.0, 20.0)),
-        );
-        let closed = crate::view::test_support::get_element::<Element>(&closed_arena, closed_key);
-        let open_signature = closed.promotion_clip_intersection_signature(&closed_arena);
-
-        let mut active_arena = new_test_arena();
-        let mut active = Element::new(0.0, 0.0, 100.0, 80.0);
-        active.layout_state.layout_position = LayoutPosition { x: 0.0, y: 0.0 };
-        active.layout_state.layout_size.width = 100.0;
-        active.layout_state.layout_size.height = 80.0;
-        active.layout_transition_override_width = Some(100.0);
-        active.layout_transition_override_height = Some(0.0);
-        let active_key = commit_element(&mut active_arena, Box::new(active));
-        let _ = commit_child(
-            &mut active_arena,
-            active_key,
-            Box::new(Element::new(0.0, 0.0, 40.0, 20.0)),
-        );
-        let active = crate::view::test_support::get_element::<Element>(&active_arena, active_key);
-        assert!(!active.has_inner_render_area());
-        let active_signature = active.promotion_clip_intersection_signature(&active_arena);
-
-        assert_ne!(open_signature, active_signature);
     }
 
     #[test]
@@ -6008,11 +5438,13 @@ mod tests {
         assert!(dirty.contains(DirtyFlags::PAINT));
         assert!(dirty.contains(DirtyFlags::COMPOSITE));
         assert!(!dirty.intersects(DirtyFlags::LAYOUT));
-        assert!(!dirty.intersects(
-            DirtyFlags::PLACE
-                .union(DirtyFlags::BOX_MODEL)
-                .union(DirtyFlags::HIT_TEST),
-        ));
+        assert!(
+            !dirty.intersects(
+                DirtyFlags::PLACE
+                    .union(DirtyFlags::BOX_MODEL)
+                    .union(DirtyFlags::HIT_TEST),
+            )
+        );
     }
 
     #[test]
@@ -6927,7 +6359,7 @@ mod tests {
             .count();
 
         // Both DrawRectPass and OpaqueRectPass count as fragment rects;
-        // opacity promotion is governed by `is_opaque_candidate` and may
+        // opaque-pass selection is governed by `is_opaque_candidate` and may
         // shift between the two depending on geometry/overlap. The
         // invariant we care about is that a wrapped fragmentable inline
         // wrapper produces ≥ 2 *fill* and ≥ 2 *border* rect passes (one
@@ -7010,7 +6442,7 @@ mod tests {
             .iter()
             .position(|name| name.contains("text_pass::TextPreparedInputPass"))
             .expect("inline Text should emit its source-filtered glyph pass");
-        // Span decoration fills promote to OpaqueRectPass (opaque solid
+        // Span decoration fills use OpaqueRectPass (opaque solid
         // background); stencil clip scope passes stay DrawRectPass with
         // color writes disabled, so they are excluded here on purpose.
         let last_decoration_index = pass_names
@@ -7100,7 +6532,11 @@ mod tests {
                     .then_some(index)
             })
             .collect::<Vec<_>>();
-        assert_eq!(text_indices.len(), 2, "one glyph pass per Text: {pass_names:?}");
+        assert_eq!(
+            text_indices.len(),
+            2,
+            "one glyph pass per Text: {pass_names:?}"
+        );
         assert!(
             pass_names[text_indices[0] + 1..text_indices[1]]
                 .iter()
@@ -7217,9 +6653,8 @@ mod tests {
             }])
             .with_max_width(72.0),
         );
-        let mut draw_style = InlineIfcElementDecorationDrawRectStyle::from_fill_style(
-            &InlineIfcStyle::default(),
-        );
+        let mut draw_style =
+            InlineIfcElementDecorationDrawRectStyle::from_fill_style(&InlineIfcStyle::default());
         draw_style.border_widths = [1.0, 2.0, 3.0, 4.0];
         draw_style.border_colors = [
             [1.0, 0.0, 0.0, 1.0],
@@ -7252,7 +6687,10 @@ mod tests {
         assert!(last.fill.border_radii[1][0] > 0.0);
         let first_border = first.border.expect("first border");
         assert!(first_border.use_border_side_colors);
-        assert_eq!(first_border.border_side_colors, package.fragments[0].metadata.border_colors);
+        assert_eq!(
+            first_border.border_side_colors,
+            package.fragments[0].metadata.border_colors
+        );
     }
 
     #[test]
@@ -9043,10 +8481,10 @@ fn persistent_target_keys_are_unique_across_roles_and_full_u64_ids() {
     let mut keys = HashSet::new();
     for node_id in [0, 1, u64::MAX] {
         for color in [
-            promoted_layer_stable_key(node_id),
-            promoted_clip_mask_stable_key(node_id),
-            promoted_final_layer_stable_key(node_id),
             transformed_layer_stable_key(node_id),
+            isolation_layer_stable_key(node_id),
+            scroll_host_layer_stable_key(node_id),
+            scroll_content_layer_stable_key(node_id),
         ] {
             assert!(keys.insert(color));
             let depth = persistent_depth_stencil_stable_key(color)
@@ -9072,10 +8510,7 @@ fn root_effect_key_uses_the_full_generational_node_key() {
     assert_ne!(first_key, replacement_key);
     assert_eq!(
         first_key,
-        PersistentTextureKey::retained(
-            RetainedTextureRole::RootEffectColor,
-            first.data().as_ffi(),
-        )
+        PersistentTextureKey::retained(RetainedTextureRole::RootEffectColor, first.data().as_ffi(),)
     );
 }
 
@@ -9084,8 +8519,7 @@ fn full_viewport_persistent_target_uses_exact_physical_descriptor_and_pair() {
     let format = wgpu::TextureFormat::Rgba16Float;
     let mut ctx = UiBuildContext::new(641, 359, format, 2.75);
     let mut graph = FrameGraph::new();
-    let color_key =
-        PersistentTextureKey::retained(RetainedTextureRole::RootEffectColor, 0xC2A);
+    let color_key = PersistentTextureKey::retained(RetainedTextureRole::RootEffectColor, 0xC2A);
     let color = ctx.allocate_persistent_full_viewport_target(&mut graph, color_key);
     ctx.set_current_target(color);
 
@@ -9108,7 +8542,10 @@ fn full_viewport_persistent_target_uses_exact_physical_descriptor_and_pair() {
         .expect("root depth descriptor");
     assert_eq!((depth_desc.width(), depth_desc.height()), (641, 359));
     assert_eq!(depth_desc.origin(), (0, 0));
-    assert_eq!(depth_desc.format(), wgpu::TextureFormat::Depth24PlusStencil8);
+    assert_eq!(
+        depth_desc.format(),
+        wgpu::TextureFormat::Depth24PlusStencil8
+    );
 
     let declared = graph
         .declared_persistent_texture_keys()

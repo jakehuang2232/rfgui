@@ -1,7 +1,7 @@
 #![allow(dead_code)] // E2A0 contract scaffold; production scene dispatch lands in E2A3.
 
 use crate::view::base_component::TransformSurfaceGeometrySnapshot;
-use crate::view::base_component::{PromotionCompositeBounds, scroll_content_layer_stable_key};
+use crate::view::base_component::{RetainedSurfaceBounds, scroll_content_layer_stable_key};
 use crate::view::compositor::property_tree::{
     ClipNodeSnapshot, ScrollNodeSnapshot, TransformNodeSnapshot,
 };
@@ -25,7 +25,7 @@ pub(crate) struct PreparedScrollTransformContentCompositeGeometry {
 
 impl PreparedScrollTransformContentCompositeGeometry {
     pub(super) fn new(
-        source_bounds: PromotionCompositeBounds,
+        source_bounds: RetainedSurfaceBounds,
         transform_geometry: TransformSurfaceGeometrySnapshot,
         transform: TransformNodeSnapshot,
         scroll: ScrollNodeSnapshot,
@@ -200,7 +200,7 @@ impl PreparedScrollContentCompositeGeometry {
         // clip-free leaf grammar or C1's one compiler-sealed, parentless
         // TextArea ContentsClip.  Both are raster-local; compositor geometry
         // consumes only the outer scroll and outer contents clip here.
-        let zero_bounds = PromotionCompositeBounds {
+        let zero_bounds = RetainedSurfaceBounds {
             x: scroll.layout_content_bounds_at_zero.x,
             y: scroll.layout_content_bounds_at_zero.y,
             width: scroll.layout_content_bounds_at_zero.width,
@@ -226,7 +226,7 @@ impl PreparedScrollContentCompositeGeometry {
 
     #[cfg(test)]
     pub(crate) fn new(
-        zero_bounds: PromotionCompositeBounds,
+        zero_bounds: RetainedSurfaceBounds,
         offset: [f32; 2],
         contents_clip: [u32; 4],
     ) -> Option<Self> {
@@ -239,7 +239,7 @@ impl PreparedScrollContentCompositeGeometry {
     }
 
     fn from_parts(
-        zero_bounds: PromotionCompositeBounds,
+        zero_bounds: RetainedSurfaceBounds,
         offset: [f32; 2],
         contents_clip: [u32; 4],
         source_key: PersistentTextureKey,
@@ -423,8 +423,8 @@ mod tests {
         TextureCompositeSourceIn,
     };
 
-    fn bounds() -> PromotionCompositeBounds {
-        PromotionCompositeBounds {
+    fn bounds() -> RetainedSurfaceBounds {
+        RetainedSurfaceBounds {
             x: 10.0,
             y: 20.0,
             width: 300.0,
@@ -558,7 +558,7 @@ mod tests {
         role: crate::view::paint::PaintChunkRole,
         payload_identity: PaintPayloadIdentity,
     ) -> Option<crate::view::paint::RetainedSurfaceRasterStamp> {
-        let source_bounds = PromotionCompositeBounds {
+        let source_bounds = RetainedSurfaceBounds {
             x: 10.0,
             y: 20.0,
             width,
@@ -653,7 +653,7 @@ mod tests {
         let tile =
             ScrollContentTileRasterIdentity::new(index, content_bounds, tile_bounds, 128, 1)?;
         let [x, y, width, height] = tile_bounds.raster;
-        let raster_bounds = PromotionCompositeBounds {
+        let raster_bounds = RetainedSurfaceBounds {
             x: x as f32,
             y: y as f32,
             width: width as f32,

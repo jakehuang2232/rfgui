@@ -267,7 +267,7 @@ pub enum FiberWork {
     },
     /// 軌 1 #4: rearrange the arena's root list according to `mapping`,
     /// where `new_arena_roots[i] == old_arena_roots[mapping[i]]`.
-    /// No NodeKeys are minted or destroyed — promoted-layer / Persistent
+    /// No NodeKeys are minted or destroyed — retained-surface / Persistent
     /// GPU resources cached against existing root NodeKeys survive.
     /// Emitted when `reconcile_multi` detects that the new root set is a
     /// permutation of the old (e.g. window-manager Z-order swap on a
@@ -1733,7 +1733,7 @@ mod tests {
             Some(owner),
         ));
         arena.set_children(owner, vec![rogue]);
-        let signature_before = arena.get(owner).unwrap().element.promotion_self_signature();
+        let signature_before = arena.get(owner).unwrap().element.retained_paint_signature();
         let len_before = arena.len();
         let replacement = RsxNode::tagged(
             "Element",
@@ -1765,7 +1765,7 @@ mod tests {
         let image_node = arena.get(owner).unwrap();
         let image = image_node.element.as_any().downcast_ref::<Image>().unwrap();
         assert_eq!(image.loading_slot_len(), 1);
-        assert_eq!(image.promotion_self_signature(), signature_before);
+        assert_eq!(image.retained_paint_signature(), signature_before);
     }
 
     #[test]

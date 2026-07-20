@@ -20,9 +20,9 @@ pub(crate) use artifact::{
     ConsumedAncestorScrollContentsWitness, ConsumedAncestorTransformWitness, DrawRectOp,
     EffectPropertyContentWitness, EffectPropertySurfaceArtifactContract, PaintArtifact,
     PaintArtifactTarget, PaintBakedScrollHostWitness, PaintChunk, PaintChunkId, PaintChunkMetadata,
-    PaintChunkRole, PaintContentRevision, PaintNestedScrollContentWitness, PaintNodePhase,
-    PaintNodePlan, PaintOp, PaintOpacityAuthority, PaintOwnerSnapshot, PaintPayloadIdentity,
-    PaintPropertyScope, PaintRecordingContext,
+    PaintChunkRole, PaintContentRevision, PaintDeferredViewportSelfClipWitness,
+    PaintNestedScrollContentWitness, PaintNodePhase, PaintNodePlan, PaintOp, PaintOpacityAuthority,
+    PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope, PaintRecordingContext,
     PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
     PaintScrollAtomicProjectionTextAreaRecorderWitness,
     PaintScrollAtomicProjectionTextAreaSubtreeWitness, PaintScrollContentWitness,
@@ -39,6 +39,8 @@ pub(crate) use artifact::{
     RetainedTextAreaPreeditRasterSeal, has_canonical_paint_bounds, preedit_glyph_identity_is_exact,
     preedit_underline_identity_is_exact,
 };
+#[cfg(test)]
+pub(crate) use compiler::validate_media_content_artifact_for_test;
 #[allow(unused_imports)]
 // C3 state/lifecycle landed before the C4 producer consumes every stamp type.
 pub(crate) use compiler::{
@@ -70,8 +72,6 @@ pub(crate) use compiler::{
 };
 #[cfg(test)]
 pub(crate) use compiler::{compile_artifact, take_artifact_compile_count};
-#[cfg(test)]
-pub(crate) use coverage_manifest::nested_scroll_receiver_manifest_for_layerizer_test;
 #[allow(unused_imports)]
 pub(crate) use coverage_manifest::{
     CoverageRecordingMode, PaintCoverageItem, PaintCoverageManifest, PaintCoverageStats,
@@ -99,15 +99,20 @@ pub(crate) use frame_plan::{
 };
 #[allow(unused_imports)]
 pub(crate) use frame_recorder::{
-    ForcedFrameArtifactError, FrameArtifactEligibility, FrameArtifactFallbackReason,
-    FrameArtifactRecordOutcome, RendererMode, record_clip_enabled_frame_artifact,
-    record_frame_artifact, record_property_neutral_frame_artifact,
-    record_root_group_opacity_frame_artifact,
+    ForcedFrameArtifactError, FrameArtifactDebugBoundary, FrameArtifactDebugBoundaryKind,
+    FrameArtifactEligibility, FrameArtifactFallbackReason, FrameArtifactRecordOutcome,
+    RendererMode, record_clip_enabled_frame_artifact, record_frame_artifact,
+    record_property_neutral_frame_artifact, record_root_group_opacity_frame_artifact,
 };
+#[cfg(test)]
+pub(crate) fn canonical_manifest_matches_for_test(
+    metadata: &PaintCoverageManifest,
+    full: &PaintCoverageManifest,
+) -> bool {
+    frame_recorder::canonical_manifest_matches(metadata, full)
+}
 #[allow(unused_imports)]
 pub(crate) use recorder::{LegacyPaintReason, PaintRecordOutcome, record_root};
-#[cfg(test)]
-pub(crate) use recorder::{PaintMetadataOutcome, record_root_metadata};
 #[cfg(test)]
 pub(crate) use recorder::{note_full_artifact_record, take_full_artifact_record_count};
 #[cfg(test)]
@@ -460,6 +465,32 @@ mod tests {
         (arena, vec![clipped, sibling])
     }
 
+    fn anchor_parent_self_clip_shadow_root() -> (NodeArena, Vec<NodeKey>) {
+        let mut arena = new_test_arena();
+        let mut clipped = leaf_element(212, Color::rgb(220, 40, 30), 1.0, true);
+        let mut style = Style::new();
+        style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(10.25))
+                    .top(Length::px(12.75))
+                    .clip(ClipMode::AnchorParent),
+            ),
+        );
+        style.set_box_shadow(vec![
+            BoxShadow::new()
+                .color(Color::rgb(20, 40, 220))
+                .offset_x(-3.0)
+                .offset_y(4.5),
+        ]);
+        clipped.apply_style(style);
+        let clipped = commit_element(&mut arena, Box::new(clipped));
+        let (measure, place) = constraints();
+        measure_and_place(&mut arena, clipped, measure, place);
+        (arena, vec![clipped])
+    }
+
     fn nested_anchor_parent_mixed_siblings(
         anchor_first: bool,
     ) -> (NodeArena, Vec<NodeKey>, NodeKey) {
@@ -522,7 +553,7 @@ mod tests {
         properties: &PropertyTrees,
         generations: &PaintGenerationTracker,
     ) -> FrameGraph {
-        let outcome = record_root(arena, root, false, properties, generations);
+        let outcome = record_root(arena, root, properties, generations);
         let PaintRecordOutcome::Artifact(artifact) = outcome else {
             panic!("safe leaf should record an artifact: {outcome:?}");
         };
@@ -576,7 +607,7 @@ mod tests {
     fn paint_artifact_chunk_identity_stays_stable_and_revision_tracks_paint() {
         let (arena, root, mut properties, mut generations) =
             prepared_leaf(11, Color::rgb(10, 20, 30), 1.0, false);
-        let outcome = record_root(&arena, root, false, &properties, &generations);
+        let outcome = record_root(&arena, root, &properties, &generations);
         let PaintRecordOutcome::Artifact(first) = outcome else {
             panic!("safe leaf should record: {outcome:?}");
         };
@@ -592,7 +623,7 @@ mod tests {
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
         let PaintRecordOutcome::Artifact(second) =
-            record_root(&arena, root, false, &properties, &generations)
+            record_root(&arena, root, &properties, &generations)
         else {
             panic!("safe leaf should still record");
         };
@@ -614,7 +645,7 @@ mod tests {
         let (arena, root, mut properties, mut generations) =
             prepared_leaf(12, Color::rgb(10, 20, 30), 1.0, false);
         let PaintRecordOutcome::Artifact(first) =
-            record_root(&arena, root, false, &properties, &generations)
+            record_root(&arena, root, &properties, &generations)
         else {
             panic!("safe leaf should record");
         };
@@ -630,7 +661,7 @@ mod tests {
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
         let PaintRecordOutcome::Artifact(second) =
-            record_root(&arena, root, false, &properties, &generations)
+            record_root(&arena, root, &properties, &generations)
         else {
             panic!("safe leaf should still record");
         };
@@ -661,7 +692,7 @@ mod tests {
         measure_and_place(&mut arena, root, measure, place);
         let (mut properties, mut generations) = sync_identity(&arena, &[root]);
         let PaintRecordOutcome::Artifact(first) =
-            record_root(&arena, root, false, &properties, &generations)
+            record_root(&arena, root, &properties, &generations)
         else {
             panic!("gradient leaf should record");
         };
@@ -669,7 +700,7 @@ mod tests {
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
         let PaintRecordOutcome::Artifact(unchanged) =
-            record_root(&arena, root, false, &properties, &generations)
+            record_root(&arena, root, &properties, &generations)
         else {
             panic!("unchanged gradient leaf should record");
         };
@@ -691,7 +722,7 @@ mod tests {
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
         let PaintRecordOutcome::Artifact(background_changed) =
-            record_root(&arena, root, false, &properties, &generations)
+            record_root(&arena, root, &properties, &generations)
         else {
             panic!("background-gradient mutation should remain recordable");
         };
@@ -715,7 +746,7 @@ mod tests {
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
         let PaintRecordOutcome::Artifact(border_changed) =
-            record_root(&arena, root, false, &properties, &generations)
+            record_root(&arena, root, &properties, &generations)
         else {
             panic!("border-gradient mutation should remain recordable");
         };
@@ -739,7 +770,7 @@ mod tests {
         let root = commit_element(&mut arena, element);
         let (properties, generations) = sync_identity(&arena, &[root]);
         let PaintRecordOutcome::LegacySubtree(legacy) =
-            record_root(&arena, root, false, &properties, &generations)
+            record_root(&arena, root, &properties, &generations)
         else {
             panic!("host should remain legacy");
         };
@@ -889,8 +920,10 @@ mod tests {
             Some(self.scissor)
         }
 
-        fn promotion_node_info(&self) -> crate::view::promotion::PromotionNodeInfo {
-            crate::view::promotion::PromotionNodeInfo {
+        fn retained_paint_properties(
+            &self,
+        ) -> crate::view::base_component::RetainedPaintProperties {
+            crate::view::base_component::RetainedPaintProperties {
                 opacity: self.opacity,
                 ..Default::default()
             }
@@ -1234,29 +1267,57 @@ mod tests {
             LegacyPaintReason::MissingPreparedImage,
         );
 
-        let mut clipped = Image::new_with_id(
-            29,
-            ImageSource::Rgba {
-                width: 2,
-                height: 2,
-                pixels,
-            },
-        );
-        let mut clip_style = size;
-        clip_style.insert(
-            PropertyId::Position,
-            ParsedValue::Position(
-                Position::absolute()
-                    .left(Length::px(4.0))
-                    .top(Length::px(5.0))
-                    .clip(ClipMode::AnchorParent),
-            ),
-        );
-        clipped.apply_style(clip_style);
-        let mut clip_arena = new_test_arena();
-        let clip_root = commit_element(&mut clip_arena, Box::new(clipped));
-        measure_and_place(&mut clip_arena, clip_root, measure, place);
-        assert_image_metadata_fallback(&clip_arena, &[clip_root], LegacyPaintReason::SelfClip);
+        let clipped_fixture = || {
+            let mut clipped = Image::new_with_id(
+                29,
+                ImageSource::Rgba {
+                    width: 2,
+                    height: 2,
+                    pixels: pixels.clone(),
+                },
+            );
+            let mut clip_style = size.clone();
+            clip_style.insert(
+                PropertyId::Position,
+                ParsedValue::Position(
+                    Position::absolute()
+                        .left(Length::px(4.0))
+                        .top(Length::px(5.0))
+                        .clip(ClipMode::AnchorParent),
+                ),
+            );
+            clipped.apply_style(clip_style);
+            let mut arena = new_test_arena();
+            let root = commit_element(&mut arena, Box::new(clipped));
+            measure_and_place(&mut arena, root, measure, place);
+            (arena, vec![root])
+        };
+        let (clip_arena, clip_roots) = clipped_fixture();
+        let (properties, generations) = sync_identity(&clip_arena, &clip_roots);
+        let (artifact, eligibility) =
+            whole_frame_artifact(&clip_arena, &clip_roots, &properties, &generations);
+        assert!(eligibility.eligible, "{eligibility:?}");
+        assert_eq!(artifact.clip_nodes.len(), 1);
+        assert!(matches!(
+            artifact.ops.last(),
+            Some(PaintOp::PreparedImage(_))
+        ));
+        let mut graph = compiled_whole_frame_graph(&artifact);
+        let snapshot = graph.test_compile_snapshot().unwrap();
+        let composites = snapshot
+            .pass_payloads()
+            .iter()
+            .filter_map(|payload| match payload {
+                FramePassTestPayload::TextureComposite(composite)
+                    if composite.sampled_source.is_some() =>
+                {
+                    Some(composite)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(composites.len(), 1);
+        assert_eq!(composites[0].effective_scissor_rect, Some([0, 0, 320, 240]));
     }
 
     #[test]
@@ -1439,8 +1500,6 @@ mod tests {
         let preflight = record_coverage_manifest(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -1458,8 +1517,6 @@ mod tests {
         let full = record_coverage_manifest(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -1478,8 +1535,6 @@ mod tests {
         let preflight = record_coverage_manifest(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -1489,8 +1544,6 @@ mod tests {
         let mut full = record_coverage_manifest(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -1517,8 +1570,6 @@ mod tests {
         let preflight = record_coverage_manifest(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -1528,8 +1579,6 @@ mod tests {
         let mut full = record_coverage_manifest(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -1550,16 +1599,7 @@ mod tests {
     }
 
     #[test]
-    fn promoted_and_nested_elements_stay_legacy() {
-        let (arena, root, properties, generations) =
-            prepared_leaf(30, Color::rgb(1, 2, 3), 1.0, false);
-        let PaintRecordOutcome::LegacySubtree(promoted) =
-            record_root(&arena, root, true, &properties, &generations)
-        else {
-            panic!("promoted root should remain legacy");
-        };
-        assert_eq!(promoted.reason, LegacyPaintReason::Promoted);
-
+    fn nested_elements_stay_legacy() {
         let mut nested_arena = new_test_arena();
         let nested_root = commit_element(
             &mut nested_arena,
@@ -1572,7 +1612,7 @@ mod tests {
         );
         let (properties, generations) = sync_identity(&nested_arena, &[nested_root]);
         let PaintRecordOutcome::LegacySubtree(nested) =
-            record_root(&nested_arena, nested_root, false, &properties, &generations)
+            record_root(&nested_arena, nested_root, &properties, &generations)
         else {
             panic!("nested root should remain legacy");
         };
@@ -1600,7 +1640,7 @@ mod tests {
         expose_children: bool,
         deferred: bool,
         active_animator: bool,
-        promotion: crate::view::promotion::PromotionNodeInfo,
+        retained_properties: crate::view::base_component::RetainedPaintProperties,
     }
 
     enum CustomWrapperRecordMode {
@@ -1790,7 +1830,7 @@ mod tests {
                 expose_children: true,
                 deferred: false,
                 active_animator: false,
-                promotion: Default::default(),
+                retained_properties: Default::default(),
             }
         }
     }
@@ -1913,14 +1953,15 @@ mod tests {
             self.active_animator
         }
 
-        fn promotion_node_info(&self) -> crate::view::promotion::PromotionNodeInfo {
-            self.promotion
+        fn retained_paint_properties(
+            &self,
+        ) -> crate::view::base_component::RetainedPaintProperties {
+            self.retained_properties
         }
     }
 
     #[derive(Clone, Copy)]
     enum MalformedChunk {
-        MetadataOwner,
         MetadataNaNBounds,
         MetadataNegativeBounds,
         MetadataProperties,
@@ -1970,7 +2011,6 @@ mod tests {
             revision: PaintContentRevision,
         ) -> PaintChunkMetadata {
             let fake_owner = NodeKey::null();
-            let metadata_owner = matches!(self.malformed, MalformedChunk::MetadataOwner);
             let metadata_properties = matches!(self.malformed, MalformedChunk::MetadataProperties);
             let metadata_revision = matches!(self.malformed, MalformedChunk::MetadataRevision);
             let bounds = match self.malformed {
@@ -1995,13 +2035,13 @@ mod tests {
             };
             PaintChunkMetadata {
                 id: PaintChunkId {
-                    owner: if metadata_owner { fake_owner } else { owner },
+                    owner,
                     scope: PaintPropertyScope::SelfPaint,
                     phase: PaintNodePhase::BeforeChildren,
                     slot: 0,
                     role: PaintChunkRole::SelfDecoration,
                 },
-                owner: if metadata_owner { fake_owner } else { owner },
+                owner,
                 bounds,
                 properties: if metadata_properties {
                     PropertyTreeState {
@@ -2192,7 +2232,7 @@ mod tests {
 
         let mut ctx = UiBuildContext::new(100, 100, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         ctx.register_deferred(root, 40);
-        let outcome = record_root(&arena, root, false, &properties, &generations);
+        let outcome = record_root(&arena, root, &properties, &generations);
         assert_eq!(ctx.next_deferred().map(|node| node.key), Some(root));
         let PaintRecordOutcome::LegacySubtree(legacy) = outcome else {
             panic!("custom host should remain legacy");
@@ -2304,6 +2344,14 @@ mod tests {
                         LegacyPaintReason::UnknownHost
                     ))
             );
+            assert_eq!(
+                eligibility.debug_boundaries,
+                vec![FrameArtifactDebugBoundary {
+                    owner: root,
+                    kind: FrameArtifactDebugBoundaryKind::Legacy(LegacyPaintReason::UnknownHost,),
+                }],
+                "RetainedAuto diagnostics must preserve the exact unsupported custom host",
+            );
             assert_eq!(take_full_artifact_record_count(), 0);
         }
     }
@@ -2403,14 +2451,14 @@ mod tests {
     }
 
     #[test]
-    fn custom_leaf_promoted_deferred_animating_and_root_opacity_stay_legacy() {
+    fn custom_leaf_deferred_animating_and_root_opacity_stay_legacy() {
         for (id, configure) in [
             (
                 0x8f30,
                 (
                     true,
                     false,
-                    crate::view::promotion::PromotionNodeInfo::default(),
+                    crate::view::base_component::RetainedPaintProperties::default(),
                 ),
             ),
             (
@@ -2418,14 +2466,14 @@ mod tests {
                 (
                     false,
                     true,
-                    crate::view::promotion::PromotionNodeInfo::default(),
+                    crate::view::base_component::RetainedPaintProperties::default(),
                 ),
             ),
         ] {
             let mut host = CustomLeafPaintHost::fill(id);
             host.deferred = configure.0;
             host.active_animator = configure.1;
-            host.promotion = configure.2;
+            host.retained_properties = configure.2;
             let (arena, root, properties, generations) = custom_leaf_fixture(host);
             let _ = take_full_artifact_record_count();
             assert!(matches!(
@@ -2441,25 +2489,8 @@ mod tests {
             assert_eq!(take_full_artifact_record_count(), 0);
         }
 
-        let (promoted_arena, promoted_root, promoted_properties, promoted_generations) =
-            custom_leaf_fixture(CustomLeafPaintHost::fill(0x8f32));
-        let promoted = record_property_neutral_frame_artifact(
-            &promoted_arena,
-            &[promoted_root],
-            &rustc_hash::FxHashSet::from_iter([0x8f32]),
-            &promoted_properties,
-            &promoted_generations,
-            RendererMode::ForcedForTests,
-        )
-        .unwrap_err();
-        assert!(
-            promoted
-                .reasons
-                .contains(&FrameArtifactFallbackReason::PromotedBoundary)
-        );
-
         let mut opacity_host = CustomLeafPaintHost::fill(0x8f33);
-        opacity_host.promotion.opacity = 0.5;
+        opacity_host.retained_properties.opacity = 0.5;
         let (opacity_arena, opacity_root, opacity_properties, opacity_generations) =
             custom_leaf_fixture(opacity_host);
         let opacity_context = PaintRecordingContext {
@@ -2479,7 +2510,6 @@ mod tests {
             record_root_group_opacity_frame_artifact(
                 &opacity_arena,
                 &[opacity_root],
-                &rustc_hash::FxHashSet::default(),
                 &opacity_properties,
                 &opacity_generations,
                 RendererMode::ForcedForTests,
@@ -2824,35 +2854,6 @@ mod tests {
     }
 
     #[test]
-    fn malformed_metadata_owner_is_rejected_by_layerizer_without_full_recording() {
-        let (arena, root, full_records, properties, generations) =
-            malformed_host(MalformedChunk::MetadataOwner);
-        let result = crate::view::compositor::layerizer::layerize_shadow_tree(
-            &arena,
-            &[root],
-            &crate::view::promotion::PromotionState::default(),
-            &[],
-            &properties,
-            &generations,
-            1,
-        );
-        assert_eq!(full_records.load(Ordering::Relaxed), 0);
-        assert!(result.validation_errors.contains(
-            &crate::view::compositor::layer_tree::LayerTreeValidationError::PaintCoverage(
-                PaintCoverageValidationError::InvalidChunkIdOwner(root)
-            )
-        ));
-        assert!(matches!(
-            result.layers[0].items.as_slice(),
-            [crate::view::compositor::layer_tree::LayerItem::LegacySpan {
-                boundary_root,
-                reason: LegacyPaintReason::MissingPaintIdentity,
-                ..
-            }] if *boundary_root == root
-        ));
-    }
-
-    #[test]
     fn malformed_metadata_properties_and_revision_fail_preflight_without_full_hooks() {
         for (malformed, expected) in [
             (
@@ -2998,7 +2999,7 @@ mod tests {
         let (arena, root, properties, generations) =
             prepared_leaf(46, Color::rgb(20, 30, 40), 1.0, false);
         let PaintRecordOutcome::Artifact(mut artifact) =
-            record_root(&arena, root, false, &properties, &generations)
+            record_root(&arena, root, &properties, &generations)
         else {
             panic!("safe leaf must record")
         };
@@ -3017,7 +3018,7 @@ mod tests {
         let (arena, root, properties, generations) =
             prepared_leaf(47, Color::rgb(20, 30, 40), 1.0, false);
         let PaintRecordOutcome::Artifact(artifact) =
-            record_root(&arena, root, false, &properties, &generations)
+            record_root(&arena, root, &properties, &generations)
         else {
             panic!("safe leaf must record")
         };
@@ -4684,7 +4685,7 @@ mod tests {
         ctx.set_current_target(target);
         for root in roots {
             let child_ctx = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-            let next = match record_root(&arena, root, false, &properties, &generations) {
+            let next = match record_root(&arena, root, &properties, &generations) {
                 PaintRecordOutcome::Artifact(artifact) => {
                     compile_artifact(&artifact, &mut graph, child_ctx)
                 }
@@ -4749,7 +4750,6 @@ mod tests {
         } = record_root_group_opacity_frame_artifact(
             arena,
             roots,
-            &rustc_hash::FxHashSet::default(),
             properties,
             generations,
             RendererMode::ForcedForTests,
@@ -4899,8 +4899,6 @@ mod tests {
         let metadata = record_coverage_manifest(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -4910,8 +4908,6 @@ mod tests {
         let full = record_coverage_manifest(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -5062,8 +5058,6 @@ mod tests {
         let metadata = record_coverage_manifest(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -5090,8 +5084,6 @@ mod tests {
         let full = record_coverage_manifest(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -5108,30 +5100,20 @@ mod tests {
         #[derive(Clone, Copy)]
         enum ChildBoundary {
             Unknown,
-            Promoted,
             Deferred,
         }
 
-        for (index, boundary) in [
-            ChildBoundary::Unknown,
-            ChildBoundary::Promoted,
-            ChildBoundary::Deferred,
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, boundary) in [ChildBoundary::Unknown, ChildBoundary::Deferred]
+            .into_iter()
+            .enumerate()
         {
             let id = 0x6d40 + index as u64 * 0x10;
             let (mut arena, root, _, _) = prepared_shadow_leaf(id, 1.0, two_outer_shadows(), false);
-            let child = match boundary {
+            let _child = match boundary {
                 ChildBoundary::Unknown => commit_child(
                     &mut arena,
                     root,
                     Box::new(TextAreaTextRun::new("unknown".to_string(), 0..7)),
-                ),
-                ChildBoundary::Promoted => commit_child(
-                    &mut arena,
-                    root,
-                    Box::new(leaf_element(id + 1, Color::rgb(20, 180, 40), 1.0, false)),
                 ),
                 ChildBoundary::Deferred => {
                     let mut child = leaf_element(id + 1, Color::rgb(20, 180, 40), 1.0, false);
@@ -5147,21 +5129,10 @@ mod tests {
             let (measure, place) = constraints();
             measure_and_place(&mut arena, root, measure, place);
             let (properties, generations) = sync_identity(&arena, &[root]);
-            let promoted = match boundary {
-                ChildBoundary::Promoted => rustc_hash::FxHashSet::from_iter([arena
-                    .get(child)
-                    .unwrap()
-                    .element
-                    .stable_id()]),
-                ChildBoundary::Unknown | ChildBoundary::Deferred => {
-                    rustc_hash::FxHashSet::default()
-                }
-            };
             take_full_artifact_record_count();
             let outcome = record_clip_enabled_frame_artifact(
                 &arena,
                 &[root],
-                &promoted,
                 &properties,
                 &generations,
                 RendererMode::Auto,
@@ -5174,11 +5145,6 @@ mod tests {
                 ChildBoundary::Unknown => assert!(eligibility.reasons.contains(
                     &FrameArtifactFallbackReason::LegacyBoundary(LegacyPaintReason::UnknownHost)
                 )),
-                ChildBoundary::Promoted => assert!(
-                    eligibility
-                        .reasons
-                        .contains(&FrameArtifactFallbackReason::PromotedBoundary)
-                ),
                 ChildBoundary::Deferred => assert!(eligibility.reasons.iter().any(|reason| {
                     matches!(
                         reason,
@@ -5203,7 +5169,6 @@ mod tests {
             let error = record_property_neutral_frame_artifact(
                 &arena,
                 &[root],
-                &rustc_hash::FxHashSet::default(),
                 &properties,
                 &generations,
                 RendererMode::ForcedForTests,
@@ -5281,23 +5246,34 @@ mod tests {
         measure_and_place(&mut arena, root, measure, place);
         let (properties, generations) = sync_identity(&arena, &[root]);
         let _ = take_full_artifact_record_count();
-        let error = record_frame_artifact(
+        let outcome = record_frame_artifact(
             &arena,
             &[root],
             &properties,
             &generations,
             RendererMode::ForcedForTests,
         )
-        .unwrap_err();
+        .expect("exact single-owner self clip + canonical outer shadow records");
+        let FrameArtifactRecordOutcome::Artifact {
+            artifact,
+            eligibility,
+        } = outcome
+        else {
+            panic!("exact clipped outer shadow must not fall back")
+        };
+        assert!(eligibility.eligible);
+        assert_eq!(artifact.chunks.len(), 1);
+        assert!(matches!(
+            artifact.ops.first(),
+            Some(PaintOp::PreparedShadow(_))
+        ));
         assert!(
-            error
-                .reasons
-                .contains(&FrameArtifactFallbackReason::LegacyBoundary(
-                    LegacyPaintReason::SelfClip
-                )),
-            "{error:?}"
+            compiled_whole_frame_graph(&artifact)
+                .pass_descriptors()
+                .len()
+                > 1
         );
-        assert_eq!(take_full_artifact_record_count(), 0);
+        assert_eq!(take_full_artifact_record_count(), 1);
 
         let (mut arena, root, _, _) = prepared_shadow_leaf(0x6d24, 1.0, two_outer_shadows(), false);
         let mut rounded = Style::new();
@@ -5322,7 +5298,6 @@ mod tests {
         let error = record_property_neutral_frame_artifact(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             RendererMode::ForcedForTests,
@@ -5394,8 +5369,6 @@ mod tests {
         let metadata = record_coverage_manifest(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -5430,8 +5403,6 @@ mod tests {
         let full = record_coverage_manifest(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -5474,7 +5445,7 @@ mod tests {
     }
 
     #[test]
-    fn css_opacity_zero_does_not_bypass_metadata_capability_blockers() {
+    fn css_opacity_zero_does_not_bypass_remaining_metadata_capability_blockers() {
         fn element(id: u64, position: Option<Position>, transform: bool) -> Element {
             let mut element = Element::new_with_id(id, 10.25, 20.75, 80.0, 40.0);
             let mut style = Style::new();
@@ -5494,41 +5465,11 @@ mod tests {
             element
         }
 
-        let cases = [
-            (
-                "transform",
-                element(0x6d29, None, true),
-                LegacyPaintReason::Transform,
-            ),
-            (
-                "self-clip",
-                element(
-                    0x6d2a,
-                    Some(
-                        Position::absolute()
-                            .left(Length::px(4.0))
-                            .top(Length::px(5.0))
-                            .clip(ClipMode::AnchorParent),
-                    ),
-                    false,
-                ),
-                LegacyPaintReason::SelfClip,
-            ),
-            (
-                "deferred",
-                element(
-                    0x6d2b,
-                    Some(
-                        Position::absolute()
-                            .left(Length::px(4.0))
-                            .top(Length::px(5.0))
-                            .clip(ClipMode::Viewport),
-                    ),
-                    false,
-                ),
-                LegacyPaintReason::Deferred,
-            ),
-        ];
+        let cases = [(
+            "transform",
+            element(0x6d29, None, true),
+            LegacyPaintReason::Transform,
+        )];
         for (case, element, expected) in cases {
             let mut arena = new_test_arena();
             let root = commit_element(&mut arena, Box::new(element));
@@ -5567,7 +5508,6 @@ mod tests {
         let error = record_property_neutral_frame_artifact(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             RendererMode::ForcedForTests,
@@ -5651,8 +5591,6 @@ mod tests {
         let metadata = super::coverage_manifest::record_coverage_manifest_with_context(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -5665,8 +5603,6 @@ mod tests {
         let mut full = super::coverage_manifest::record_coverage_manifest_with_context(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -6167,7 +6103,7 @@ mod tests {
     }
 
     #[test]
-    fn root_group_preflight_rejects_nested_non_effect_promoted_and_deferred_before_full_hooks() {
+    fn root_group_preflight_rejects_nested_non_effect_and_deferred_before_full_hooks() {
         fn nested_fixture() -> (NodeArena, Vec<NodeKey>) {
             let mut arena = new_test_arena();
             let root = commit_element(
@@ -6190,7 +6126,6 @@ mod tests {
         let nested = record_root_group_opacity_frame_artifact(
             &nested_arena,
             &nested_roots,
-            &rustc_hash::FxHashSet::default(),
             &nested_properties,
             &nested_generations,
             RendererMode::ForcedForTests,
@@ -6209,7 +6144,6 @@ mod tests {
         let missing = record_root_group_opacity_frame_artifact(
             &neutral_arena,
             &[neutral_root],
-            &rustc_hash::FxHashSet::default(),
             &neutral_properties,
             &neutral_generations,
             RendererMode::ForcedForTests,
@@ -6228,7 +6162,6 @@ mod tests {
         let non_effect = record_root_group_opacity_frame_artifact(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             RendererMode::ForcedForTests,
@@ -6248,7 +6181,6 @@ mod tests {
         let scroll = record_root_group_opacity_frame_artifact(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             RendererMode::ForcedForTests,
@@ -6258,24 +6190,6 @@ mod tests {
             scroll
                 .reasons
                 .contains(&FrameArtifactFallbackReason::NonEffectProperty(root))
-        );
-
-        let (arena, root, properties, generations) =
-            prepared_leaf(0x6c23, Color::rgb(30, 200, 80), 0.5, false);
-        let stable_id = arena.get(root).unwrap().element.stable_id();
-        let promoted = record_root_group_opacity_frame_artifact(
-            &arena,
-            &[root],
-            &rustc_hash::FxHashSet::from_iter([stable_id]),
-            &properties,
-            &generations,
-            RendererMode::ForcedForTests,
-        )
-        .unwrap_err();
-        assert!(
-            promoted
-                .reasons
-                .contains(&FrameArtifactFallbackReason::PromotedBoundary)
         );
 
         let mut deferred = leaf_element(0x6c24, Color::rgb(30, 200, 80), 0.5, false);
@@ -6299,7 +6213,6 @@ mod tests {
         let deferred = record_root_group_opacity_frame_artifact(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             RendererMode::ForcedForTests,
@@ -6982,7 +6895,6 @@ mod tests {
         super::scroll_scene::plan_and_validate_property_scroll_scene(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -7026,7 +6938,6 @@ mod tests {
         super::scroll_scene::plan_and_validate_property_scroll_scene(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -7076,7 +6987,6 @@ mod tests {
         let baked = PaintBakedScrollHostWitness::new(root, wrapper, scroll, outer_clip.id)?;
         let local = super::frame_recorder::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
             &arena,
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             &admission,
@@ -7085,7 +6995,6 @@ mod tests {
         let host = super::frame_recorder::record_baked_scroll_atomic_projection_text_area_subtree_host_artifact_for_plan(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             &admission,
@@ -7102,7 +7011,7 @@ mod tests {
             .wrapper_chunk
             .bounds_bits
             .map(f32::from_bits);
-        let bounds = crate::view::base_component::PromotionCompositeBounds {
+        let bounds = crate::view::base_component::RetainedSurfaceBounds {
             x,
             y,
             width,
@@ -7179,7 +7088,6 @@ mod tests {
         let baked = PaintBakedScrollHostWitness::new(root, wrapper, scroll, outer_clip.id)?;
         let local = super::frame_recorder::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
             &arena,
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             &admission,
@@ -7188,7 +7096,6 @@ mod tests {
         let host = super::frame_recorder::record_baked_scroll_atomic_projection_selection_text_area_subtree_host_artifact_for_plan(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             &admission,
@@ -7209,7 +7116,7 @@ mod tests {
             .wrapper_chunk
             .bounds_bits
             .map(f32::from_bits);
-        let bounds = crate::view::base_component::PromotionCompositeBounds {
+        let bounds = crate::view::base_component::RetainedSurfaceBounds {
             x,
             y,
             width,
@@ -8285,7 +8192,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_empty_and_zero_opacity_text_keep_zero_op_chunks() {
+    fn hidden_empty_and_zero_opacity_text_are_transparent_without_chunks() {
         for kind in 0..3 {
             let mut arena = new_test_arena();
             let mut text = Text::new_with_id(
@@ -8304,11 +8211,32 @@ mod tests {
             measure_and_place(&mut arena, root, measure, place);
             let roots = [root];
             let (properties, generations) = sync_identity(&arena, &roots);
+            let manifest = |mode| {
+                record_coverage_manifest(
+                    &arena,
+                    &roots,
+                    false,
+                    true,
+                    mode,
+                    &properties,
+                    &generations,
+                )
+            };
+            let metadata = manifest(CoverageRecordingMode::MetadataOnly);
+            let full = manifest(CoverageRecordingMode::FullArtifact);
+            assert!(matches!(
+                metadata.items.as_slice(),
+                [PaintCoverageItem::TransparentNode { owner, .. }] if *owner == root
+            ));
+            assert!(canonical_manifest_matches_for_test(&metadata, &full));
+
             let (artifact, eligibility) =
                 whole_frame_artifact(&arena, &roots, &properties, &generations);
-            assert_eq!(eligibility.chunk_count, 1);
+            assert!(eligibility.eligible);
+            assert_eq!(eligibility.chunk_count, 0);
             assert_eq!(eligibility.op_count, 0);
-            assert_eq!(artifact.chunks[0].op_range, 0..0);
+            assert!(artifact.chunks.is_empty());
+            assert!(artifact.ops.is_empty());
         }
     }
 
@@ -8494,6 +8422,65 @@ mod tests {
     }
 
     #[test]
+    fn exact_single_owner_self_clip_keeps_outer_shadow_outside_owner_clip() {
+        let (arena, roots) = anchor_parent_self_clip_shadow_root();
+        let (properties, generations) = sync_identity(&arena, &roots);
+        let (artifact, eligibility) =
+            whole_frame_artifact(&arena, &roots, &properties, &generations);
+        assert!(eligibility.eligible);
+        assert_eq!(artifact.chunks.len(), 1);
+        assert!(matches!(
+            artifact.ops.first(),
+            Some(PaintOp::PreparedShadow(_))
+        ));
+        assert!(matches!(
+            artifact.chunks[0].payload_identity,
+            PaintPayloadIdentity::PreparedShadows(_, _)
+        ));
+
+        let incoming = [4, 6, 24, 18];
+        let mut graph = compiled_whole_frame_graph_with_config(
+            &artifact,
+            PaintParityConfig {
+                initial_scissor: Some(incoming),
+                ..PaintParityConfig::default()
+            },
+        );
+        let snapshot = graph.test_compile_snapshot().unwrap();
+        let shadow_composite = snapshot
+            .pass_payloads()
+            .iter()
+            .find_map(|payload| match payload {
+                FramePassTestPayload::TextureComposite(composite)
+                    if composite.sampled_source.is_none() =>
+                {
+                    Some(composite)
+                }
+                _ => None,
+            })
+            .expect("outer shadow must composite before decoration");
+        assert_eq!(shadow_composite.pass_context.scissor_rect, Some(incoming));
+        let rects = snapshot
+            .pass_payloads()
+            .iter()
+            .filter_map(|payload| match payload {
+                FramePassTestPayload::DrawRect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rects.len(), 2);
+        assert!(
+            rects
+                .iter()
+                .all(|rect| rect.effective_scissor_rect == Some([0, 0, 320, 240]))
+        );
+
+        let mut fragmented = artifact.clone();
+        fragmented.owner_nodes[0].parent = Some(roots[0]);
+        assert_compiler_rejects_before_emit(&fragmented, "fragmented self-clip shadow owner");
+    }
+
+    #[test]
     fn nested_anchor_parent_requires_legacy_order_and_matches_strictly_when_partitioned() {
         for anchor_first in [true, false] {
             let (arena, roots, anchor) = nested_anchor_parent_mixed_siblings(anchor_first);
@@ -8541,7 +8528,6 @@ mod tests {
                 } = record_clip_enabled_frame_artifact(
                     &production_arena,
                     &production_roots,
-                    &rustc_hash::FxHashSet::default(),
                     &production_properties,
                     &production_generations,
                     RendererMode::Auto,
@@ -8701,7 +8687,6 @@ mod tests {
         let outcome = record_clip_enabled_frame_artifact(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             RendererMode::Auto,
@@ -8736,7 +8721,6 @@ mod tests {
         let outcome = record_clip_enabled_frame_artifact(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             RendererMode::Auto,
@@ -8915,7 +8899,6 @@ mod tests {
         let outcome = record_property_neutral_frame_artifact(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             RendererMode::Auto,
@@ -8937,29 +8920,7 @@ mod tests {
     }
 
     #[test]
-    fn property_neutral_canary_rejects_actual_promotion_and_deferred_boundaries_preflight() {
-        let (arena, root, properties, generations) =
-            prepared_leaf(0x6a01, Color::rgb(30, 60, 90), 1.0, false);
-        take_full_artifact_record_count();
-        let promoted = rustc_hash::FxHashSet::from_iter([0x6a01]);
-        let promoted_outcome = record_property_neutral_frame_artifact(
-            &arena,
-            &[root],
-            &promoted,
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .expect("promotion is a whole-frame fallback");
-        assert!(matches!(
-            promoted_outcome,
-            FrameArtifactRecordOutcome::WholeFrameLegacyFallback(FrameArtifactEligibility {
-                reasons,
-                ..
-            }) if reasons.contains(&FrameArtifactFallbackReason::PromotedBoundary)
-        ));
-        assert_eq!(take_full_artifact_record_count(), 0);
-
+    fn property_neutral_canary_rejects_deferred_boundaries_preflight() {
         let mut deferred = Element::new_with_id(0x6a02, 0.0, 0.0, 20.0, 20.0);
         let mut style = Style::new();
         style.insert(
@@ -8980,7 +8941,6 @@ mod tests {
         let deferred_outcome = record_property_neutral_frame_artifact(
             &deferred_arena,
             &[deferred_root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             RendererMode::Auto,
@@ -8991,9 +8951,7 @@ mod tests {
             FrameArtifactRecordOutcome::WholeFrameLegacyFallback(FrameArtifactEligibility {
                 reasons,
                 ..
-            }) if reasons.contains(&FrameArtifactFallbackReason::LegacyBoundary(
-                LegacyPaintReason::Deferred
-            ))
+            }) if reasons.contains(&FrameArtifactFallbackReason::PropertyBoundary(deferred_root))
         ));
         assert_eq!(take_full_artifact_record_count(), 0);
     }
@@ -9243,6 +9201,57 @@ mod tests {
 
         let artifact_rects = compiled_whole_frame_graph(&artifact).test_rect_pass_snapshots();
         let (legacy_arena, legacy_roots, _, _, _) = prepared_wrapping_inline_span_tree();
+        let legacy_rects =
+            legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
+        assert_eq!(artifact_rects, legacy_rects);
+    }
+
+    #[test]
+    fn sampled_inline_span_layout_transition_keeps_metadata_full_and_legacy_parity() {
+        fn sample_transition(arena: &NodeArena, span_key: NodeKey) {
+            let mut node = arena.get_mut(span_key).unwrap();
+            let span = node.element.as_any_mut().downcast_mut::<Element>().unwrap();
+            let package_before = span
+                .inline_ifc_decoration_package_for_test()
+                .expect("layout must install the inline decoration package")
+                .clone();
+            span.set_layout_transition_width(71.0);
+            span.set_layout_transition_height(39.0);
+            assert_eq!(
+                span.inline_ifc_decoration_package_for_test()
+                    .expect("sampling must preserve the installed paint package"),
+                &package_before
+            );
+            span.clear_local_dirty_flags(DirtyFlags::ALL);
+        }
+
+        let (arena, roots, span_key, _, _) = prepared_wrapping_inline_span_tree();
+        sample_transition(&arena, span_key);
+        arena.clear_arena_dirty_subtree(span_key, DirtyFlags::ALL);
+        arena.refresh_subtree_dirty_cache(span_key);
+        let (properties, generations) = sync_identity(&arena, &roots);
+        let manifest = |mode| {
+            record_coverage_manifest(&arena, &roots, false, true, mode, &properties, &generations)
+        };
+        let metadata = manifest(CoverageRecordingMode::MetadataOnly);
+        let full = manifest(CoverageRecordingMode::FullArtifact);
+        assert!(metadata.validation_errors.is_empty());
+        assert!(full.validation_errors.is_empty());
+        assert!(
+            metadata
+                .items
+                .iter()
+                .all(|item| !matches!(item, PaintCoverageItem::LegacyBoundary { .. }))
+        );
+        assert!(canonical_manifest_matches_for_test(&metadata, &full));
+
+        let (artifact, eligibility) =
+            whole_frame_artifact(&arena, &roots, &properties, &generations);
+        assert!(eligibility.eligible);
+        let artifact_rects = compiled_whole_frame_graph(&artifact).test_rect_pass_snapshots();
+
+        let (legacy_arena, legacy_roots, legacy_span, _, _) = prepared_wrapping_inline_span_tree();
+        sample_transition(&legacy_arena, legacy_span);
         let legacy_rects =
             legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
         assert_eq!(artifact_rects, legacy_rects);
@@ -9553,7 +9562,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_text_accepts_canonical_zero_bounds_and_typed_empty_payload() {
+    fn empty_text_records_canonical_transparent_node_without_payload() {
         let mut arena = new_test_arena();
         let text_key = commit_element(
             &mut arena,
@@ -9563,20 +9572,24 @@ mod tests {
         measure_and_place(&mut arena, text_key, measure, place);
         let roots = [text_key];
         let (properties, generations) = sync_identity(&arena, &roots);
-        let (mut artifact, eligibility) =
+        let manifest = |mode| {
+            record_coverage_manifest(&arena, &roots, false, true, mode, &properties, &generations)
+        };
+        let metadata = manifest(CoverageRecordingMode::MetadataOnly);
+        let full = manifest(CoverageRecordingMode::FullArtifact);
+        assert!(matches!(
+            metadata.items.as_slice(),
+            [PaintCoverageItem::TransparentNode { owner, .. }] if *owner == text_key
+        ));
+        assert!(canonical_manifest_matches_for_test(&metadata, &full));
+
+        let (artifact, eligibility) =
             whole_frame_artifact(&arena, &roots, &properties, &generations);
         assert!(eligibility.eligible);
-        assert!(artifact.chunks[0].op_range.is_empty());
-        assert!(matches!(
-            &artifact.chunks[0].payload_identity,
-            PaintPayloadIdentity::PreparedTexts(identities) if identities.is_empty()
-        ));
-        artifact.chunks[0].bounds = Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 0.0,
-            height: 0.0,
-        };
+        assert_eq!(eligibility.chunk_count, 0);
+        assert_eq!(eligibility.op_count, 0);
+        assert!(artifact.chunks.is_empty());
+        assert!(artifact.ops.is_empty());
         take_artifact_compile_count();
         let _ = compiled_whole_frame_graph(&artifact);
         assert_eq!(take_artifact_compile_count(), 1);
@@ -11265,8 +11278,6 @@ mod tests {
         let metadata = record_coverage_manifest(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -11284,8 +11295,6 @@ mod tests {
         let full = record_coverage_manifest(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -11786,7 +11795,7 @@ mod tests {
             .as_any()
             .downcast_ref::<TextArea>()
             .unwrap();
-        assert!(!text_area.promotion_node_info().is_scroll_container);
+        assert!(!text_area.retained_paint_properties().is_scroll_container);
         assert_eq!(
             text_area.shadow_paint_recording_capability(
                 &arena,
@@ -11800,8 +11809,6 @@ mod tests {
         let metadata = record_coverage_manifest(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -11811,8 +11818,6 @@ mod tests {
         let full = record_coverage_manifest(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -12109,8 +12114,6 @@ mod tests {
         let metadata = record_coverage_manifest(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -12129,8 +12132,6 @@ mod tests {
         let full = record_coverage_manifest(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -12166,26 +12167,6 @@ mod tests {
             ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::Deferred)
         );
         drop(node);
-
-        let (arena, roots, _) =
-            prepared_plain_text_area_preedit_tree("promoted", 108.0, 2, "中", None);
-        let (properties, generations) = sync_identity(&arena, &roots);
-        take_full_artifact_record_count();
-        let promoted = rustc_hash::FxHashSet::from_iter([0x7e00]);
-        let outcome = record_clip_enabled_frame_artifact(
-            &arena,
-            &roots,
-            &promoted,
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
-        assert!(matches!(
-            outcome,
-            FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_)
-        ));
-        assert_eq!(take_full_artifact_record_count(), 0);
     }
 
     #[test]
@@ -12438,7 +12419,6 @@ mod tests {
             let outer = PaintScrollContentWitness::new(root, wrapper, scroll, outer_clip).unwrap();
             let local = super::frame_recorder::record_scroll_focused_atomic_projection_text_area_subtree_local_artifact_for_plan(
                 &arena,
-                &rustc_hash::FxHashSet::default(),
                 &properties,
                 &generations,
                 &admission,
@@ -12526,7 +12506,6 @@ mod tests {
             let host = super::frame_recorder::record_baked_scroll_focused_atomic_projection_text_area_subtree_host_artifact_for_plan(
                 &arena,
                 &[root],
-                &rustc_hash::FxHashSet::default(),
                 &properties,
                 &generations,
                 &admission,
@@ -12535,7 +12514,6 @@ mod tests {
             .expect("focused host recorder");
             let local = super::frame_recorder::record_scroll_focused_atomic_projection_text_area_subtree_local_artifact_for_plan(
                 &arena,
-                &rustc_hash::FxHashSet::default(),
                 &properties,
                 &generations,
                 &admission,
@@ -12581,7 +12559,6 @@ mod tests {
             let plan = super::scroll_scene::plan_property_scroll_scene_scaffold(
                 &arena,
                 &[root],
-                &rustc_hash::FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -12597,7 +12574,6 @@ mod tests {
             assert!(plan.matches_live_inputs(
                 &arena,
                 &[root],
-                &rustc_hash::FxHashSet::default(),
                 &properties,
                 &generations,
                 sampled_at,
@@ -12653,7 +12629,6 @@ mod tests {
 
         let local = super::frame_recorder::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
             &arena,
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             &admission,
@@ -12663,7 +12638,6 @@ mod tests {
         let host = super::frame_recorder::record_baked_scroll_atomic_projection_text_area_subtree_host_artifact_for_plan(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             &admission,
@@ -12745,7 +12719,6 @@ mod tests {
         assert!(
             super::frame_recorder::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
                 &arena,
-                &rustc_hash::FxHashSet::default(),
                 &properties,
                 &generations,
                 &drifted_admission,
@@ -12844,7 +12817,6 @@ mod tests {
         let scene = super::scroll_scene::plan_property_scroll_scene_scaffold(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -12861,7 +12833,6 @@ mod tests {
         let validated_scene = super::scroll_scene::plan_and_validate_property_scroll_scene(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -12959,7 +12930,6 @@ mod tests {
         let baked = PaintBakedScrollHostWitness::new(root, wrapper, scroll, outer_clip.id).unwrap();
         let local = super::frame_recorder::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
             &arena,
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             &admission,
@@ -12969,7 +12939,6 @@ mod tests {
         let host = super::frame_recorder::record_baked_scroll_atomic_projection_selection_text_area_subtree_host_artifact_for_plan(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             &admission,
@@ -13903,7 +13872,7 @@ mod tests {
             .source_bounds_bits
             .map(f32::from_bits);
         let rebuilt_color = crate::view::base_component::texture_desc_for_logical_bounds(
-            crate::view::base_component::PromotionCompositeBounds {
+            crate::view::base_component::RetainedSurfaceBounds {
                 x: target_x,
                 y: target_y,
                 width: target_width,
@@ -13967,7 +13936,7 @@ mod tests {
             .source_bounds_bits
             .map(f32::from_bits);
         let transform_color = crate::view::base_component::texture_desc_for_logical_bounds(
-            crate::view::base_component::PromotionCompositeBounds {
+            crate::view::base_component::RetainedSurfaceBounds {
                 x,
                 y,
                 width,
@@ -14039,7 +14008,7 @@ mod tests {
             .unwrap();
         let [tile_x, tile_y, tile_width, tile_height] =
             tile.bounds.raster.map(|value| value as f32);
-        let tile_target_bounds = crate::view::base_component::PromotionCompositeBounds {
+        let tile_target_bounds = crate::view::base_component::RetainedSurfaceBounds {
             x: tile_x,
             y: tile_y,
             width: tile_width,
@@ -14307,7 +14276,6 @@ mod tests {
             "insertion",
             "orphan",
             "dirty",
-            "selection",
             "scroll",
         ] {
             let (mut arena, roots, root, projection, _) = prepared_projection_text_area_tree();
@@ -14401,16 +14369,6 @@ mod tests {
                 }
                 "orphan" => arena.set_parent(projection, None),
                 "dirty" => arena.mark_dirty(projection, DirtyFlags::LAYOUT),
-                "selection" => {
-                    let mut node = arena.get_mut(root).unwrap();
-                    let text_area = node
-                        .element
-                        .as_any_mut()
-                        .downcast_mut::<TextArea>()
-                        .unwrap();
-                    text_area.selection_anchor_char = Some(0);
-                    text_area.selection_focus_char = Some(10);
-                }
                 "scroll" => {
                     arena
                         .get_mut(root)
@@ -14509,8 +14467,6 @@ mod tests {
             let metadata = record_coverage_manifest(
                 &arena,
                 &roots,
-                &rustc_hash::FxHashSet::default(),
-                None,
                 false,
                 true,
                 CoverageRecordingMode::MetadataOnly,
@@ -14539,8 +14495,6 @@ mod tests {
             let full = record_coverage_manifest(
                 &arena,
                 &roots,
-                &rustc_hash::FxHashSet::default(),
-                None,
                 false,
                 true,
                 CoverageRecordingMode::FullArtifact,
@@ -14555,7 +14509,7 @@ mod tests {
 
     #[test]
     fn text_area_projection_preedit_state_boundaries_fail_closed() {
-        for case in ["selection", "scroll", "pending_scroll"] {
+        for case in ["selection", "scroll"] {
             let (arena, roots, root, ..) =
                 prepared_projection_text_area_preedit_tree(8, "中", Some((0, 3)));
             {
@@ -14571,7 +14525,6 @@ mod tests {
                         text_area.selection_focus_char = Some(8);
                     }
                     "scroll" => text_area.scroll_x = 1.0,
-                    "pending_scroll" => text_area.pending_caret_scroll = true,
                     _ => unreachable!(),
                 }
             }
@@ -14593,35 +14546,6 @@ mod tests {
             ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::Deferred)
         );
         drop(projection_node);
-
-        let (arena, roots, _root, projection, projected_text) =
-            prepared_projection_text_area_preedit_tree(8, "中", Some((0, 3)));
-        let (properties, generations) = sync_identity(&arena, &roots);
-        let projection_id = {
-            let node = arena.get(projection).unwrap();
-            node.element.stable_id()
-        };
-        let projected_text_id = {
-            let node = arena.get(projected_text).unwrap();
-            node.element.stable_id()
-        };
-        for promoted_id in [projection_id, projected_text_id] {
-            take_full_artifact_record_count();
-            let outcome = record_clip_enabled_frame_artifact(
-                &arena,
-                &roots,
-                &rustc_hash::FxHashSet::from_iter([promoted_id]),
-                &properties,
-                &generations,
-                RendererMode::Auto,
-            )
-            .unwrap();
-            assert!(matches!(
-                outcome,
-                FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_)
-            ));
-            assert_eq!(take_full_artifact_record_count(), 0);
-        }
     }
 
     #[test]
@@ -14827,9 +14751,13 @@ mod tests {
             projection_context.text_area_selection, None,
             "disjoint root selection must not mint projection-owned authority",
         );
+    }
 
-        for (start, end) in [(5, 9), (6, 17)] {
-            let (arena, roots, root, ..) = prepared_projection_text_area_tree();
+    #[test]
+    fn text_area_selection_crossing_projection_is_split_between_root_and_child() {
+        let fixture = || {
+            let (arena, roots, root, projection, projected_text) =
+                prepared_projection_text_area_tree();
             {
                 let mut node = arena.get_mut(root).unwrap();
                 let text_area = node
@@ -14837,11 +14765,46 @@ mod tests {
                     .as_any_mut()
                     .downcast_mut::<TextArea>()
                     .unwrap();
-                text_area.selection_anchor_char = Some(start);
-                text_area.selection_focus_char = Some(end);
+                text_area.selection_anchor_char = Some(0);
+                text_area.selection_focus_char = Some(10);
             }
-            assert_text_area_fallback_before_full(&arena, &roots);
-        }
+            (arena, roots, root, projection, projected_text)
+        };
+        assert_whole_frame_structural_parity(
+            || {
+                let (arena, roots, ..) = fixture();
+                (arena, roots)
+            },
+            PaintParityConfig::default(),
+        );
+
+        let (arena, roots, root, projection, projected_text) = fixture();
+        let (properties, generations) = sync_identity(&arena, &roots);
+        let (artifact, eligibility) =
+            whole_frame_artifact(&arena, &roots, &properties, &generations);
+        assert!(eligibility.eligible, "{eligibility:?}");
+        assert!(artifact.chunks.iter().any(|chunk| {
+            chunk.owner == root && chunk.id.role == PaintChunkRole::SelectionUnderlay
+        }));
+        assert!(artifact.chunks.iter().any(|chunk| {
+            chunk.owner == projected_text && chunk.id.role == PaintChunkRole::SelectionUnderlay
+        }));
+
+        let root_context = arena
+            .get(root)
+            .unwrap()
+            .element
+            .shadow_paint_recording_context(PaintRecordingContext::default());
+        let projection_context = arena
+            .get(root)
+            .unwrap()
+            .element
+            .shadow_paint_recording_context_for_child(projection, &arena, root_context);
+        let witness = projection_context
+            .text_area_selection
+            .expect("crossing selection must mint projection-local authority");
+        assert_eq!(witness.local_start, 0);
+        assert_eq!(witness.local_end, 3);
     }
 
     #[test]
@@ -14889,8 +14852,6 @@ mod tests {
             let metadata = record_coverage_manifest(
                 &arena,
                 &roots,
-                &rustc_hash::FxHashSet::default(),
-                None,
                 false,
                 true,
                 CoverageRecordingMode::MetadataOnly,
@@ -14914,8 +14875,6 @@ mod tests {
             let full = record_coverage_manifest(
                 &arena,
                 &roots,
-                &rustc_hash::FxHashSet::default(),
-                None,
                 false,
                 true,
                 CoverageRecordingMode::FullArtifact,
@@ -15081,16 +15040,27 @@ mod tests {
             .downcast_mut::<Text>()
             .unwrap()
             .set_should_render_for_test(false);
+        assert_eq!(
+            arena
+                .get(standalone_text)
+                .unwrap()
+                .element
+                .shadow_paint_recording_capability(
+                    &arena,
+                    false,
+                    PaintRecordingContext::default(),
+                ),
+            ShadowPaintRecordingCapability::Transparent,
+            "standalone invisible Text must close as transparent coverage"
+        );
         let (properties, generations) = sync_identity(&arena, &roots);
         let (artifact, eligibility) =
             whole_frame_artifact(&arena, &roots, &properties, &generations);
         assert!(eligibility.eligible);
-        let [standalone_chunk] = artifact.chunks.as_slice() else {
-            panic!("standalone invisible Text must retain one typed zero-op chunk")
-        };
-        assert_eq!(standalone_chunk.owner, standalone_text);
-        assert_eq!(standalone_chunk.id.role, PaintChunkRole::TextGlyphs);
-        assert!(standalone_chunk.op_range.is_empty());
+        assert!(
+            artifact.chunks.is_empty(),
+            "standalone invisible Text must not emit a typed zero-op chunk"
+        );
 
         let (arena, roots, root, projection, projected_text) = prepared_projection_text_area_tree();
         {
@@ -15144,7 +15114,7 @@ mod tests {
     }
 
     #[test]
-    fn text_area_projection_promoted_and_deferred_boundaries_remain_fail_closed() {
+    fn text_area_projection_deferred_and_invalid_scroll_boundaries_remain_fail_closed() {
         let (arena, _roots, root, projection, _) = prepared_projection_text_area_tree();
         {
             let mut node = arena.get_mut(root).unwrap();
@@ -15169,43 +15139,6 @@ mod tests {
             ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::Deferred)
         );
         drop(node);
-
-        for promote_wrapper in [false, true] {
-            let (arena, roots, root, projection, projected_text) =
-                prepared_projection_text_area_tree();
-            {
-                let mut node = arena.get_mut(root).unwrap();
-                let text_area = node
-                    .element
-                    .as_any_mut()
-                    .downcast_mut::<TextArea>()
-                    .unwrap();
-                text_area.selection_anchor_char = Some(8);
-                text_area.selection_focus_char = Some(15);
-            }
-            let promoted_key = if promote_wrapper {
-                projection
-            } else {
-                projected_text
-            };
-            let promoted_id = arena.get(promoted_key).unwrap().element.stable_id();
-            let (properties, generations) = sync_identity(&arena, &roots);
-            take_full_artifact_record_count();
-            let outcome = record_clip_enabled_frame_artifact(
-                &arena,
-                &roots,
-                &rustc_hash::FxHashSet::from_iter([promoted_id]),
-                &properties,
-                &generations,
-                RendererMode::Auto,
-            )
-            .unwrap();
-            assert!(matches!(
-                outcome,
-                FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_)
-            ));
-            assert_eq!(take_full_artifact_record_count(), 0);
-        }
 
         let (arena, roots, root, ..) = prepared_projection_text_area_tree();
         {
@@ -15259,13 +15192,7 @@ mod tests {
 
     #[test]
     fn plain_text_area_unsafe_stateful_states_fail_before_full_hooks() {
-        for case in [
-            "selection_mixed",
-            "preedit",
-            "scroll",
-            "pending_scroll",
-            "handler",
-        ] {
+        for case in ["selection_mixed", "preedit", "scroll"] {
             let (arena, roots, root) = prepared_plain_text_area_tree("state matrix");
             {
                 let mut node = arena.get_mut(root).unwrap();
@@ -15281,16 +15208,46 @@ mod tests {
                     }
                     "preedit" => text_area.ime_preedit = "x".to_string(),
                     "scroll" => text_area.scroll_x = -0.0,
+                    _ => unreachable!(),
+                }
+            }
+            let eligibility = assert_text_area_fallback_before_full(&arena, &roots);
+            assert!(!eligibility.eligible, "{case}");
+        }
+    }
+
+    #[test]
+    fn plain_text_area_paint_neutral_transient_states_remain_recordable() {
+        for case in [
+            "pointer",
+            "pending_scroll",
+            "realized_zero_projection_handler",
+        ] {
+            let (arena, roots, root) = prepared_plain_text_area_tree("state matrix");
+            {
+                let mut node = arena.get_mut(root).unwrap();
+                let text_area = node
+                    .element
+                    .as_any_mut()
+                    .downcast_mut::<TextArea>()
+                    .unwrap();
+                match case {
+                    "pointer" => text_area.pointer_selecting = true,
                     "pending_scroll" => text_area.pending_caret_scroll = true,
-                    "handler" => {
+                    "realized_zero_projection_handler" => {
                         text_area.on_render_handler =
                             Some(crate::ui::on_text_area_render(|_render| {}));
                     }
                     _ => unreachable!(),
                 }
             }
-            let eligibility = assert_text_area_fallback_before_full(&arena, &roots);
-            assert!(!eligibility.eligible, "{case}");
+            let (properties, generations) = sync_identity(&arena, &roots);
+            let (artifact, eligibility) =
+                whole_frame_artifact(&arena, &roots, &properties, &generations);
+            assert!(eligibility.eligible, "{case}: {eligibility:?}");
+            assert!(artifact.chunks.iter().any(|chunk| {
+                chunk.owner == root && chunk.id.role == PaintChunkRole::TextGlyphs
+            }));
         }
     }
 
@@ -15412,8 +15369,8 @@ mod tests {
     }
 
     #[test]
-    fn text_area_leaf_deferred_promoted_or_wrong_context_never_turns_transparent() {
-        let (arena, roots, root) = prepared_plain_text_area_tree("boundary");
+    fn text_area_leaf_deferred_or_wrong_context_never_turns_transparent() {
+        let (arena, _roots, root) = prepared_plain_text_area_tree("boundary");
         let root_node = arena.get(root).unwrap();
         let text_area = root_node
             .element
@@ -15429,24 +15386,6 @@ mod tests {
             ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::Deferred)
         );
         drop(root_node);
-
-        let (properties, generations) = sync_identity(&arena, &roots);
-        let promoted = rustc_hash::FxHashSet::from_iter([0x7e00]);
-        take_full_artifact_record_count();
-        let promoted_outcome = record_clip_enabled_frame_artifact(
-            &arena,
-            &roots,
-            &promoted,
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
-        assert!(matches!(
-            promoted_outcome,
-            FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_)
-        ));
-        assert_eq!(take_full_artifact_record_count(), 0);
 
         let mut standalone = new_test_arena();
         let run = commit_element(
@@ -15534,8 +15473,6 @@ mod tests {
         let manifest = record_coverage_manifest(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -15571,7 +15508,6 @@ mod tests {
         } = record_clip_enabled_frame_artifact(
             &arena,
             &roots,
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             RendererMode::ForcedForTests,
@@ -15599,17 +15535,7 @@ mod tests {
         let mut generations = PaintGenerationTracker::default();
         generations.sync(&arena, &[root], &properties);
         let record = |mode, properties: &PropertyTrees, generations: &PaintGenerationTracker| {
-            record_coverage_manifest(
-                &arena,
-                &[root],
-                &rustc_hash::FxHashSet::default(),
-                None,
-                false,
-                true,
-                mode,
-                properties,
-                generations,
-            )
+            record_coverage_manifest(&arena, &[root], false, true, mode, properties, generations)
         };
         let metadata = record(
             CoverageRecordingMode::MetadataOnly,
@@ -15654,8 +15580,6 @@ mod tests {
         let child_mutated = record_coverage_manifest(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -15679,8 +15603,6 @@ mod tests {
         let topology_changed = record_coverage_manifest(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -15697,7 +15619,7 @@ mod tests {
     }
 
     #[test]
-    fn culled_subtree_keeps_root_effect_promoted_and_deferred_fail_closed() {
+    fn culled_subtree_keeps_root_effect_and_deferred_fail_closed() {
         let (arena, root, _) = hidden_element_subtree(156, 157);
         let mut transform_style = Style::new();
         transform_style.set_transform(Transform::new([Translate::x(Length::px(3.0))]));
@@ -15749,25 +15671,6 @@ mod tests {
             ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::ScrollContainer)
         );
 
-        let (arena, root, child) = hidden_element_subtree(160, 161);
-        let (properties, generations) = sync_identity(&arena, &[root]);
-        take_full_artifact_record_count();
-        let promoted = record_clip_enabled_frame_artifact(
-            &arena,
-            &[root],
-            &rustc_hash::FxHashSet::from_iter([arena.get(child).unwrap().element.stable_id()]),
-            &properties,
-            &generations,
-            RendererMode::ForcedForTests,
-        )
-        .unwrap_err();
-        assert!(
-            promoted
-                .reasons
-                .contains(&FrameArtifactFallbackReason::PromotedBoundary)
-        );
-        assert_eq!(take_full_artifact_record_count(), 0);
-
         let (arena, root, child) = hidden_element_subtree(166, 167);
         arena
             .get_mut(child)
@@ -15812,7 +15715,6 @@ mod tests {
         let deferred = record_clip_enabled_frame_artifact(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             RendererMode::ForcedForTests,
@@ -15838,7 +15740,6 @@ mod tests {
         let effect = record_root_group_opacity_frame_artifact(
             &arena,
             &[root],
-            &rustc_hash::FxHashSet::default(),
             &properties,
             &generations,
             RendererMode::ForcedForTests,

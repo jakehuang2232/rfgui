@@ -85,7 +85,7 @@ fn configured_paint_renderer_mode() -> ViewportPaintRendererMode {
         query
             .as_deref()
             .and_then(|query| query_parameter(query, PAINT_RENDERER_QUERY)),
-        ViewportPaintRendererMode::Legacy,
+        ViewportPaintRendererMode::RetainedAuto,
     )
 }
 

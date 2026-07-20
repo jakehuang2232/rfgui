@@ -659,19 +659,9 @@ impl ElementTrait for TextAreaTextRun {
         self.dirty_flags = self.dirty_flags.without(flags);
     }
 
-    fn promotion_node_info(&self) -> crate::view::promotion::PromotionNodeInfo {
-        crate::view::promotion::PromotionNodeInfo {
-            estimated_pass_count: 1,
-            opacity: 1.0,
-            ..Default::default()
-        }
-    }
-
-    /// Hash everything that affects the rendered glyph fragment so a
-    /// promoted ancestor's `base_signature` dirties on edit / style /
-    /// preedit / layout changes. Default `0` would let the ancestor reuse
-    /// a stale layer texture.
-    fn promotion_self_signature(&self) -> u64 {
+    /// Hash everything that affects the retained glyph fragment so paint
+    /// generations advance on edit, style, preedit, and layout changes.
+    fn retained_paint_signature(&self) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
@@ -720,7 +710,7 @@ impl ElementTrait for TextAreaTextRun {
         hasher.finish()
     }
 
-    fn promotion_signature_is_complete(&self) -> bool {
+    fn retained_paint_signature_is_complete(&self) -> bool {
         true
     }
 }
@@ -813,7 +803,7 @@ impl ElementTrait for TextAreaLineBreak {
         self.dirty_flags = self.dirty_flags.without(flags);
     }
 
-    fn promotion_self_signature(&self) -> u64 {
+    fn retained_paint_signature(&self) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
@@ -834,7 +824,7 @@ impl ElementTrait for TextAreaLineBreak {
         hasher.finish()
     }
 
-    fn promotion_signature_is_complete(&self) -> bool {
+    fn retained_paint_signature_is_complete(&self) -> bool {
         true
     }
 }

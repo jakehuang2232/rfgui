@@ -26,10 +26,6 @@ pub use svg::*;
 pub use text::*;
 pub use text_area::{TextArea, TextAreaImeContext, TextAreaRenderProjection, TextAreaRenderString};
 
-pub(crate) fn promoted_composite_opacity(node: &dyn ElementTrait) -> f32 {
-    node.promotion_node_info().opacity.clamp(0.0, 1.0)
-}
-
 fn next_ui_node_id() -> u64 {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
@@ -51,166 +47,12 @@ pub(crate) fn build_node_by_id(
     ctx: &mut UiBuildContext,
 ) -> bool {
     if node.stable_id() == node_id {
-        if let Some(element) = node.as_any().downcast_ref::<Element>() {
-            trace_promoted_build(
-                "deferred-build-node",
-                node_id,
-                element.box_model_snapshot().parent_id,
-                format!(
-                    "promoted={} target={:?}",
-                    ctx.is_node_promoted(node_id),
-                    ctx.current_target().and_then(|target| target.handle())
-                ),
-            );
-        }
-        if ctx.is_node_promoted(node_id) {
-            if let Some(element) = node.as_any_mut().downcast_mut::<Element>() {
-                if let Some(reason) = element.inline_promotion_rendering_reason(arena) {
-                    if reason != "child-scissor-clip-inline"
-                        && reason != "child-stencil-clip-inline"
-                    {
-                        crate::view::viewport::record_debug_reuse_path(
-                            crate::view::viewport::DebugReusePathRecord {
-                                node_id,
-                                context: crate::view::viewport::DebugReusePathContext::Deferred,
-                                requested: ctx.promoted_update_kind(node_id).unwrap_or(
-                                    crate::view::promotion::PromotedLayerUpdateKind::Reraster,
-                                ),
-                                can_reuse: false,
-                                actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
-                                reason: Some(reason),
-                                clip_rect: element.absolute_clip_scissor_rect(),
-                            },
-                        );
-                        let next_state = element.build(
-                            graph,
-                            arena,
-                            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-                        );
-                        ctx.set_state(next_state);
-                        return true;
-                    }
-                }
-            }
-            let update_kind = ctx
-                .promoted_update_kind(node_id)
-                .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster);
-            let can_reuse_subtree =
-                crate::view::viewport::scene_helpers::can_reuse_promoted_subtree(node, ctx, arena);
-            let can_reuse = matches!(
-                update_kind,
-                crate::view::promotion::PromotedLayerUpdateKind::Reuse
-            ) && can_reuse_subtree;
-            let mut node_ctx = UiBuildContext::from_parts(
-                ctx.viewport(),
-                ctx.layer_subtree_state_with_ancestor_clip(ctx.ancestor_clip_context()),
-            );
-            let layer_target = node_ctx.allocate_promoted_layer_target(
-                graph,
-                node_id,
-                node.promotion_composite_bounds(),
-            );
-            node_ctx.set_current_target(layer_target);
-            let next_state = if let Some(element) = node.as_any_mut().downcast_mut::<Element>() {
-                element.build_promoted_layer(
-                    graph,
-                    arena,
-                    node_ctx,
-                    update_kind,
-                    can_reuse,
-                    crate::view::viewport::DebugReusePathContext::Deferred,
-                )
-            } else if can_reuse {
-                crate::view::viewport::record_debug_reuse_path(
-                    crate::view::viewport::DebugReusePathRecord {
-                        node_id,
-                        context: crate::view::viewport::DebugReusePathContext::Deferred,
-                        requested: update_kind,
-                        can_reuse,
-                        actual: crate::view::promotion::PromotedLayerUpdateKind::Reuse,
-                        reason: None,
-                        clip_rect: None,
-                    },
-                );
-                node_ctx.into_state()
-            } else {
-                crate::view::viewport::record_debug_reuse_path(
-                    crate::view::viewport::DebugReusePathRecord {
-                        node_id,
-                        context: crate::view::viewport::DebugReusePathContext::Deferred,
-                        requested: update_kind,
-                        can_reuse,
-                        actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
-                        reason: if matches!(
-                            update_kind,
-                            crate::view::promotion::PromotedLayerUpdateKind::Reuse
-                        ) {
-                            Some("reuse-blocked")
-                        } else {
-                            None
-                        },
-                        clip_rect: None,
-                    },
-                );
-                graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
-                    crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-                    crate::view::render_pass::clear_pass::ClearInput {
-                        pass_context: node_ctx.graphics_pass_context(),
-                        clear_depth_stencil: true,
-                    },
-                    crate::view::render_pass::clear_pass::ClearOutput {
-                        render_target: layer_target,
-                    },
-                ));
-                node.build(graph, arena, node_ctx)
-            };
-            ctx.merge_child_render_state(&next_state);
-            let layer_target = next_state.current_target().unwrap_or(layer_target);
-            let composite_bounds =
-                crate::view::viewport::scene_helpers::paint_snapped_promotion_composite_bounds(
-                    node,
-                    node.promotion_composite_bounds(),
-                    ctx.paint_offset(),
-                );
-            let opacity = promoted_composite_opacity(node);
-            let parent_target = ctx.current_target().unwrap_or_else(|| {
-                let target = ctx.allocate_target(graph);
-                ctx.set_current_target(target);
-                target
-            });
-            ctx.set_current_target(parent_target);
-            graph.add_graphics_pass(
-                crate::view::render_pass::composite_layer_pass::CompositeLayerPass::new(
-                    crate::view::render_pass::composite_layer_pass::CompositeLayerParams {
-                        rect_pos: [composite_bounds.x, composite_bounds.y],
-                        rect_size: [composite_bounds.width, composite_bounds.height],
-                        corner_radii: composite_bounds.corner_radii,
-                        opacity,
-                        scissor_rect: None,
-                        clear_target: false,
-                    },
-                    crate::view::render_pass::composite_layer_pass::CompositeLayerInput {
-                        layer: crate::view::render_pass::composite_layer_pass::LayerIn::with_handle(
-                            layer_target
-                                .handle()
-                                .expect("promoted deferred target should exist"),
-                        ),
-                        pass_context: ctx.graphics_pass_context(),
-                    },
-                    crate::view::render_pass::composite_layer_pass::CompositeLayerOutput {
-                        render_target: parent_target,
-                    },
-                ),
-            );
-            ctx.set_current_target(parent_target);
-        } else {
-            let next_state = node.build(
-                graph,
-                arena,
-                UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-            );
-            ctx.set_state(next_state);
-        }
+        let next_state = node.build(
+            graph,
+            arena,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
+        );
+        ctx.set_state(next_state);
         return true;
     }
     // Recurse into arena-resident children. The current `node` is already

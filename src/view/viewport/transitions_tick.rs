@@ -47,16 +47,6 @@ impl TransitionHost<TrackTarget> for TransitionHostAdapter<'_> {
 }
 
 impl Viewport {
-    pub(super) fn invalidate_promoted_layer_reuse(&mut self) {
-        self.compositor.promoted_base_signatures.clear();
-        self.compositor.promoted_composition_signatures.clear();
-        self.compositor.promoted_base_generations.clear();
-        self.compositor.promoted_composition_generations.clear();
-        self.compositor.debug_previous_subtree_signatures.clear();
-        self.compositor.promoted_layer_updates.clear();
-        self.compositor.promoted_reuse_cooldown_frames = Self::PROMOTED_REUSE_COOLDOWN_FRAMES;
-    }
-
     pub(super) fn is_style_driven_transition_channel(channel: ChannelId) -> bool {
         matches!(
             channel,
@@ -192,149 +182,6 @@ impl Viewport {
             let _ = owner;
             active_keys.contains(key)
         });
-    }
-
-    fn trace_style_sample_apply(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        target: u64,
-        field: StyleField,
-        value: StyleValue,
-        applied: bool,
-        before_signatures: Option<(u64, u64)>,
-    ) {
-        if !self.debug_options.trace_reuse_path {
-            return;
-        }
-        let root_keys = &self.scene.ui_root_keys;
-        let promoted_root = root_keys.iter().find_map(|&rk| {
-            let root_node = arena.get(rk)?;
-            let root_id = root_node.element.stable_id();
-            if !self
-                .compositor
-                .promotion_state
-                .promoted_node_ids
-                .contains(&root_id)
-            {
-                return None;
-            }
-            if root_id == target
-                || self.scene.ui_root_keys.iter().any(|&inner_rk| {
-                    // Debug path: walk inner_rk subtree to find the stable_id
-                    // matching `target`. Avoids needing a NodeKey-by-stable-id
-                    // lookup on hot dispatch path.
-                    fn contains_stable(
-                        arena: &crate::view::node_arena::NodeArena,
-                        key: crate::view::node_arena::NodeKey,
-                        target_stable: u64,
-                    ) -> bool {
-                        let Some(node) = arena.get(key) else {
-                            return false;
-                        };
-                        if node.element.stable_id() == target_stable {
-                            return true;
-                        }
-                        let children: Vec<_> = node.children.clone();
-                        drop(node);
-                        children
-                            .into_iter()
-                            .any(|c| contains_stable(arena, c, target_stable))
-                    }
-                    contains_stable(arena, inner_rk, target)
-                })
-            {
-                Some(root_id)
-            } else {
-                None
-            }
-        });
-        let state = root_keys.iter().rev().find_map(|&rk| {
-            let root_node = arena.get(rk)?;
-            crate::view::viewport::debug::get_debug_element_render_state_by_id(
-                root_node.element.as_ref(),
-                target,
-                arena,
-            )
-        });
-        let ancestry = root_keys.iter().rev().find_map(|&rk| {
-            let root_node = arena.get(rk)?;
-            crate::view::viewport::debug::get_node_ancestry_ids(
-                root_node.element.as_ref(),
-                target,
-                arena,
-            )
-        });
-        let after_signatures = root_keys.iter().rev().find_map(|&rk| {
-            let root_node = arena.get(rk)?;
-            crate::view::viewport::debug::get_debug_promotion_signatures_by_id(
-                root_node.element.as_ref(),
-                target,
-                arena,
-            )
-        });
-        let state_desc = match state {
-            Some(state) => format!(
-                "bg=rgba({},{},{},{}) fg=rgba({},{},{},{}) opacity={:.3} border_radius={:.3}",
-                state.background_rgba[0],
-                state.background_rgba[1],
-                state.background_rgba[2],
-                state.background_rgba[3],
-                state.foreground_rgba[0],
-                state.foreground_rgba[1],
-                state.foreground_rgba[2],
-                state.foreground_rgba[3],
-                state.opacity,
-                state.border_radius,
-            ),
-            None => "state=missing".to_string(),
-        };
-        let promoted_root_desc = promoted_root
-            .map(|node_id| format!("promoted_root={node_id}"))
-            .unwrap_or_else(|| "promoted_root=none".to_string());
-        let signature_desc = match (before_signatures, after_signatures) {
-            (Some((before_self, before_clip)), Some((after_self, after_clip))) => format!(
-                "sig_self={}=>{} sig_clip={}=>{}",
-                before_self, after_self, before_clip, after_clip
-            ),
-            (None, Some((after_self, after_clip))) => {
-                format!(
-                    "sig_self=missing=>{} sig_clip=missing=>{}",
-                    after_self, after_clip
-                )
-            }
-            (Some((before_self, before_clip)), None) => {
-                format!(
-                    "sig_self={}=>missing sig_clip={}=>missing",
-                    before_self, before_clip
-                )
-            }
-            (None, None) => "sig=missing".to_string(),
-        };
-        let ancestry_desc = ancestry
-            .map(|path| {
-                let joined = path
-                    .into_iter()
-                    .map(|id| id.to_string())
-                    .collect::<Vec<_>>()
-                    .join("->");
-                format!("ancestry={joined}")
-            })
-            .unwrap_or_else(|| "ancestry=missing".to_string());
-        record_debug_style_sample_record(DebugStyleSampleRecord {
-            target,
-            promoted_root,
-        });
-        record_debug_style_sample(format!(
-            "node={} field={} sample={} applied={} {} {} {} {}",
-            target,
-            format_style_field(field),
-            format_style_value(&value),
-            applied,
-            promoted_root_desc,
-            ancestry_desc,
-            signature_desc,
-            state_desc,
-        ));
     }
 
     pub(super) fn start_scroll_track(
@@ -555,17 +402,6 @@ impl Viewport {
                 claims: &mut self.transitions.transition_claims,
             };
             for request in style_requests {
-                if self.debug_options.trace_reuse_path {
-                    record_debug_style_request(format!(
-                        "target={} field={} from={} to={} duration_ms={} delay_ms={}",
-                        request.target,
-                        format_style_field(request.field),
-                        format_style_value(&request.from),
-                        format_style_value(&request.to),
-                        request.transition.duration_ms,
-                        request.transition.delay_ms,
-                    ));
-                }
                 let _ = self.transitions.style_transition_plugin.start_style_track(
                     &mut host,
                     request.target,
@@ -689,15 +525,6 @@ impl Viewport {
         }
         let style_samples = self.transitions.style_transition_plugin.take_samples();
         for sample in style_samples {
-            let before_signatures = root_keys.iter().rev().find_map(|&rk| {
-                let root_node = arena.get(rk)?;
-                crate::view::viewport::debug::get_debug_promotion_signatures_by_id(
-                    root_node.element.as_ref(),
-                    sample.target,
-                    &arena,
-                )
-            });
-            let mut applied = false;
             for &root_key in root_keys.iter().rev() {
                 if crate::view::viewport::transitions_tick::set_style_field_by_id(
                     &mut arena,
@@ -710,18 +537,9 @@ impl Viewport {
                     if style_field_requires_relayout(sample.field) {
                         relayout_required = true;
                     }
-                    applied = true;
                     break;
                 }
             }
-            self.trace_style_sample_apply(
-                &arena,
-                sample.target,
-                sample.field,
-                sample.value,
-                applied,
-                before_signatures,
-            );
         }
         let animation_style_samples = self.transitions.animation_plugin.take_style_samples();
         for sample in animation_style_samples {
@@ -881,15 +699,6 @@ impl Viewport {
             );
         }
         for sample in self.transitions.style_transition_plugin.take_samples() {
-            let before_signatures = root_keys.iter().rev().find_map(|&rk| {
-                let root_node = arena.get(rk)?;
-                crate::view::viewport::debug::get_debug_promotion_signatures_by_id(
-                    root_node.element.as_ref(),
-                    sample.target,
-                    &arena,
-                )
-            });
-            let mut applied = false;
             for &root_key in root_keys.iter().rev() {
                 if crate::view::viewport::transitions_tick::set_style_field_by_id(
                     &mut arena,
@@ -899,18 +708,9 @@ impl Viewport {
                     sample.value.clone(),
                 ) {
                     changed = true;
-                    applied = true;
                     break;
                 }
             }
-            self.trace_style_sample_apply(
-                &arena,
-                sample.target,
-                sample.field,
-                sample.value,
-                applied,
-                before_signatures,
-            );
         }
         for sample in self.transitions.animation_plugin.take_style_samples() {
             for &root_key in root_keys.iter().rev() {
@@ -1250,6 +1050,16 @@ pub(crate) fn reconcile_transition_runtime_state(
         changed |= walk(arena, root_key, active_channels_by_node);
     }
     changed
+}
+
+pub(super) fn active_channels_by_node(
+    claims: &FxHashMap<TrackKey<TrackTarget>, TransitionPluginId>,
+) -> FxHashMap<u64, FxHashSet<ChannelId>> {
+    let mut active = FxHashMap::<u64, FxHashSet<ChannelId>>::default();
+    for key in claims.keys() {
+        active.entry(key.target).or_default().insert(key.channel);
+    }
+    active
 }
 
 pub(crate) fn set_style_field_by_id(

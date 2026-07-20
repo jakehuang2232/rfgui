@@ -11,16 +11,6 @@ pub(crate) enum CostConfidence {
 }
 
 impl CostConfidence {
-    pub(crate) fn combine(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
-            (Self::ConservativeUpperBound, _) | (_, Self::ConservativeUpperBound) => {
-                Self::ConservativeUpperBound
-            }
-            _ => Self::Exact,
-        }
-    }
-
     pub(crate) fn budget_usable(self) -> bool {
         !matches!(self, Self::Unknown)
     }

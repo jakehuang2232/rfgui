@@ -775,8 +775,8 @@ impl ElementTrait for ParticleCanvas {
         self
     }
 
-    fn promotion_self_signature(&self) -> u64 {
-        // Always changing → prevents promotion from caching stale frames.
+    fn retained_paint_signature(&self) -> u64 {
+        // Always changing → prevents retained paint from caching stale frames.
         use std::sync::atomic::{AtomicU64, Ordering};
         static CTR: AtomicU64 = AtomicU64::new(1);
         CTR.fetch_add(1, Ordering::Relaxed)

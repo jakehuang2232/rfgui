@@ -12,7 +12,6 @@ use super::{PaintArtifact, PaintOwnerSnapshot};
 pub(crate) enum LegacyPaintReason {
     UnknownHost,
     HasChildren,
-    Promoted,
     Transform,
     BoxShadow,
     InlineIfc,
@@ -60,7 +59,6 @@ thread_local! {
 pub(crate) fn record_root(
     arena: &NodeArena,
     root: NodeKey,
-    promoted: bool,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
 ) -> PaintRecordOutcome {
@@ -68,9 +66,6 @@ pub(crate) fn record_root(
         return legacy(root, 0, LegacyPaintReason::MissingPaintIdentity);
     };
     let stable_id = node.element.stable_id();
-    if promoted {
-        return legacy(root, stable_id, LegacyPaintReason::Promoted);
-    }
     let Some(properties) = property_trees.paint_state_for(root) else {
         return legacy(root, stable_id, LegacyPaintReason::MissingPaintIdentity);
     };
@@ -111,7 +106,6 @@ pub(crate) fn record_root(
 pub(crate) fn record_root_metadata(
     arena: &NodeArena,
     root: NodeKey,
-    promoted: bool,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
 ) -> PaintMetadataOutcome {
@@ -119,9 +113,6 @@ pub(crate) fn record_root_metadata(
         return metadata_legacy(root, 0, LegacyPaintReason::MissingPaintIdentity);
     };
     let stable_id = node.element.stable_id();
-    if promoted {
-        return metadata_legacy(root, stable_id, LegacyPaintReason::Promoted);
-    }
     let Some(properties) = property_trees.paint_state_for(root) else {
         return metadata_legacy(root, stable_id, LegacyPaintReason::MissingPaintIdentity);
     };

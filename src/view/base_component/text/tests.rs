@@ -988,32 +988,6 @@ fn text_build_skips_non_renderable_text() {
 }
 
 #[test]
-fn text_build_promoted_visibility_uses_neutral_opacity_authority() {
-    let stable_id = 0x7a11;
-    let mut text = Text::new_with_id(stable_id, 0.0, 0.0, 92.0, 80.0, "promoted transparent text");
-    text.set_opacity(0.0);
-    place_text_for_read_only_ifc_test(&mut text, 92.0, 120.0);
-
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(200, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    ctx.set_promoted_runtime(
-        std::sync::Arc::new(rustc_hash::FxHashSet::from_iter([stable_id])),
-        Default::default(),
-        Default::default(),
-    );
-    let mut arena = arena();
-    text.build(&mut graph, &mut arena, ctx);
-
-    assert!(graph.pass_descriptors().iter().any(|descriptor| {
-        descriptor
-            .name
-            .ends_with("render_pass::text_pass::TextPreparedInputPass")
-    }));
-}
-
-#[test]
 fn text_opacity_marks_paint_and_composite_without_layout() {
     let mut text = Text::new(0.0, 0.0, 92.0, 80.0, "opacity");
     text.clear_local_dirty_flags(DirtyFlags::ALL);

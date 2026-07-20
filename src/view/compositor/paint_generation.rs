@@ -1,9 +1,7 @@
-//! Shadow paint-generation observations.
+//! Renderer-neutral retained paint-generation observations.
 //!
-//! Stable, `NodeKey`-scoped revisions participate in promotion reuse as an
-//! additional veto. A layer reuses only when both its legacy signature and
-//! generation match; generations never authorize reuse that the signature
-//! rejects, so the existing signature path remains the correctness authority.
+//! Stable, `NodeKey`-scoped revisions let retained planning validate paint,
+//! composite, and topology identity against one coherent live snapshot.
 
 #![allow(dead_code)]
 
@@ -15,9 +13,8 @@ use crate::view::node_arena::{NodeArena, NodeKey};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PaintGenerationCoverage {
-    /// A built-in host whose current promotion signature is observed as the
-    /// temporary correctness oracle. This is not mutation-complete coverage.
-    SignatureObserved,
+    /// A host whose complete retained paint signature is observed.
+    RetainedSignatureObserved,
     /// An external-resource or custom host without a complete paint identity.
     /// Its local paint revision advances every observed frame.
     Untracked,
@@ -114,7 +111,7 @@ impl PaintGenerationTracker {
                 || record.observed_parent != node.parent()
                 || record.observed_children.as_slice() != children
                 || record.coverage != coverage_for(node.element.as_ref())
-                || record.observed_self_signature != node.element.promotion_self_signature()
+                || record.observed_self_signature != node.element.retained_paint_signature()
                 || record.observed_transform_generation
                     != property_trees.transform_generation_for_owner(key)
                 || record.observed_effect_generation
@@ -146,9 +143,9 @@ impl PaintGenerationTracker {
         parent: Option<NodeKey>,
         children: &[NodeKey],
         element: &dyn ElementTrait,
-        self_signature: u64,
         property_trees: &PropertyTrees,
     ) -> LocalPaintGenerations {
+        let self_signature = element.retained_paint_signature();
         let coverage = coverage_for(element);
         let transform_generation = property_trees.transform_generation_for_owner(key);
         let effect_generation = property_trees.effect_generation_for_owner(key);
@@ -306,13 +303,11 @@ impl PaintGenerationTracker {
 
         let parent = node.parent();
         let children = node.children().to_vec();
-        let self_signature = node.element.promotion_self_signature();
         self.observe_node(
             key,
             parent,
             &children,
             node.element.as_ref(),
-            self_signature,
             property_trees,
         );
         drop(node);
@@ -373,8 +368,8 @@ impl PaintGenerationTracker {
 }
 
 fn coverage_for(element: &dyn ElementTrait) -> PaintGenerationCoverage {
-    if element.promotion_signature_is_complete() {
-        PaintGenerationCoverage::SignatureObserved
+    if element.retained_paint_signature_is_complete() {
+        PaintGenerationCoverage::RetainedSignatureObserved
     } else {
         PaintGenerationCoverage::Untracked
     }
@@ -433,6 +428,10 @@ mod tests {
 
         sync(&mut tracker, &mut trees, &arena, &[root]);
         let first = tracker.snapshot(root).unwrap();
+        assert_eq!(
+            first.coverage,
+            PaintGenerationCoverage::RetainedSignatureObserved
+        );
         sync(&mut tracker, &mut trees, &arena, &[root]);
 
         assert_eq!(tracker.snapshot(root).unwrap(), first);
@@ -665,6 +664,7 @@ mod tests {
         );
     }
 
+    #[derive(Default)]
     struct CustomHost;
 
     impl Layoutable for CustomHost {
@@ -718,9 +718,9 @@ mod tests {
     }
 
     #[test]
-    fn custom_default_is_untracked_and_never_looks_stable() {
+    fn generic_tracker_tracks_untracked_custom_hosts() {
         let mut arena = NodeArena::new();
-        let root = arena.insert(Node::new(Box::new(CustomHost)));
+        let root = arena.insert(Node::new(Box::new(CustomHost::default())));
         let mut trees = PropertyTrees::default();
         let mut tracker = PaintGenerationTracker::default();
         sync(&mut tracker, &mut trees, &arena, &[root]);
@@ -732,5 +732,6 @@ mod tests {
         assert_ne!(first.self_paint_revision, second.self_paint_revision);
         assert_eq!(first.composite_revision, second.composite_revision);
         assert_eq!(first.topology_revision, second.topology_revision);
+        assert!(tracker.matches_live_snapshot(&arena, &[root], &trees));
     }
 }

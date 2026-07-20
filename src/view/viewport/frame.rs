@@ -157,7 +157,6 @@ pub(super) struct FrameTimings {
     pub relayout_traversal_profile: LayoutTraversalProfile,
     pub relayout_place_profile: crate::view::base_component::LayoutPlaceProfile,
 
-    pub update_promotion_ms: f64,
     pub build_graph_ms: f64,
 
     pub compile_ms: f64,

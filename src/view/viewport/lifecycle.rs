@@ -36,7 +36,6 @@ impl Viewport {
         }
         self.pending_size = Some((width, height));
         self.needs_reconfigure = true;
-        self.invalidate_promoted_layer_reuse();
     }
 
     pub fn set_style(&mut self, style: Style) {
@@ -91,7 +90,6 @@ impl Viewport {
             self.gpu.surface_config.width,
             self.gpu.surface_config.height,
         );
-        self.invalidate_promoted_layer_reuse();
     }
 
     pub fn scale_factor(&self) -> f32 {
@@ -256,7 +254,6 @@ impl Viewport {
             self.gpu.device = Some(device);
             self.gpu.queue = Some(queue);
             self.release_render_resource_caches();
-            self.invalidate_promoted_layer_reuse();
             self.create_frame_attachments();
             self.needs_reconfigure = false;
             if let Some(device) = self.gpu.device.as_ref() {
@@ -325,7 +322,6 @@ impl Viewport {
         surface.configure(device, &self.gpu.surface_config);
         let device_for_prewarm = device.clone();
         self.release_render_resource_caches();
-        self.invalidate_promoted_layer_reuse();
         self.create_frame_attachments();
         if let Some(queue) = self.gpu.queue.as_ref() {
             crate::view::render_pass::prewarm_text_pipeline(

@@ -33,9 +33,11 @@ pub enum ViewportAction {
     SetDebugTraceLayoutDetail(bool),
     SetDebugTraceCompileDetail(bool),
     SetDebugTraceExecuteDetail(bool),
-    SetDebugTraceReusePath(bool),
     SetDebugGeometryOverlay(bool),
-    SetPromotionEnabled(bool),
+    SetDebugRetainedAutoOverlay(bool),
+    SetDebugRetainedAutoAuthority(bool),
+    SetDebugRetainedAutoReuseActions(bool),
+    SetDebugRetainedAutoFallbackReasons(bool),
     SetClearColor(Color),
     SetCursor(Option<Cursor>),
     RequestRedraw,
@@ -72,16 +74,24 @@ impl ViewportHandle {
         Self::push(ViewportAction::SetDebugTraceExecuteDetail(enabled));
     }
 
-    pub fn set_debug_trace_reuse_path(&self, enabled: bool) {
-        Self::push(ViewportAction::SetDebugTraceReusePath(enabled));
-    }
-
     pub fn set_debug_geometry_overlay(&self, enabled: bool) {
         Self::push(ViewportAction::SetDebugGeometryOverlay(enabled));
     }
 
-    pub fn set_promotion_enabled(&self, enabled: bool) {
-        Self::push(ViewportAction::SetPromotionEnabled(enabled));
+    pub fn set_debug_retained_auto_overlay(&self, enabled: bool) {
+        Self::push(ViewportAction::SetDebugRetainedAutoOverlay(enabled));
+    }
+
+    pub fn set_debug_retained_auto_authority(&self, enabled: bool) {
+        Self::push(ViewportAction::SetDebugRetainedAutoAuthority(enabled));
+    }
+
+    pub fn set_debug_retained_auto_reuse_actions(&self, enabled: bool) {
+        Self::push(ViewportAction::SetDebugRetainedAutoReuseActions(enabled));
+    }
+
+    pub fn set_debug_retained_auto_fallback_reasons(&self, enabled: bool) {
+        Self::push(ViewportAction::SetDebugRetainedAutoFallbackReasons(enabled));
     }
 
     pub fn set_clear_color(&self, color: Color) {
@@ -142,5 +152,24 @@ mod tests {
         assert_eq!(first.len(), 1);
         let second = drain_viewport_actions();
         assert!(second.is_empty());
+    }
+
+    #[test]
+    fn retained_auto_debug_setters_enqueue_explicit_actions() {
+        let _ = drain_viewport_actions();
+        let h = use_viewport();
+        h.set_debug_retained_auto_overlay(true);
+        h.set_debug_retained_auto_authority(false);
+        h.set_debug_retained_auto_reuse_actions(true);
+        h.set_debug_retained_auto_fallback_reasons(false);
+        assert_eq!(
+            drain_viewport_actions(),
+            vec![
+                ViewportAction::SetDebugRetainedAutoOverlay(true),
+                ViewportAction::SetDebugRetainedAutoAuthority(false),
+                ViewportAction::SetDebugRetainedAutoReuseActions(true),
+                ViewportAction::SetDebugRetainedAutoFallbackReasons(false),
+            ]
+        );
     }
 }

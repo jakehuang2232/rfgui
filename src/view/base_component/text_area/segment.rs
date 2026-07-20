@@ -497,13 +497,9 @@ impl ElementTrait for TextAreaProjectionSegment {
         self.dirty_flags = self.dirty_flags.without(flags);
     }
 
-    fn promotion_node_info(&self) -> crate::view::promotion::PromotionNodeInfo {
-        crate::view::promotion::PromotionNodeInfo::default()
-    }
-
     // Projection segments paint no pixels of their own; ordered descendants
     // and topology are tracked by the arena walker.
-    fn promotion_signature_is_complete(&self) -> bool {
+    fn retained_paint_signature_is_complete(&self) -> bool {
         true
     }
 

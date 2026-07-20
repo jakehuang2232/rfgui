@@ -15,9 +15,6 @@ pub(crate) mod layout;
 pub mod node_arena;
 pub(crate) mod paint;
 pub mod popup_stack;
-/// Layer promotion analysis and configuration APIs.
-pub mod promotion;
-mod promotion_builder;
 pub(crate) mod raster_cost;
 pub mod render_pass;
 mod renderer_adapter;

@@ -1,8 +1,8 @@
-//! Shadow transform / clip / effect / scroll property trees.
+//! Retained transform / clip / effect / scroll property trees.
 //!
 //! These trees are not yet render truth.  They retain stable `NodeKey` based
-//! identity and classify resolved property changes while the existing render,
-//! dirty, and promotion-signature paths remain authoritative.
+//! identity and classify resolved property changes while the existing render
+//! and dirty paths remain authoritative.
 
 #![allow(dead_code)]
 
@@ -608,8 +608,8 @@ impl PropertyTrees {
             inherited.transform
         };
 
-        let info = node.element.promotion_node_info();
-        let scroll_snapshot = if info.is_scroll_container {
+        let properties = node.element.retained_paint_properties();
+        let scroll_snapshot = if properties.is_scroll_container {
             match node.element.scroll_geometry_observation(key, arena) {
                 ScrollGeometryObservation::Exact(snapshot)
                     if scroll_geometry_snapshot_is_valid(snapshot) =>
@@ -632,7 +632,7 @@ impl PropertyTrees {
         } else {
             None
         };
-        let opacity = info.opacity.clamp(0.0, 1.0);
+        let opacity = properties.opacity.clamp(0.0, 1.0);
         let effect = if opacity.to_bits() == 1.0_f32.to_bits() {
             if self.effects.remove(&EffectNodeId(key)).is_some() {
                 self.bump_effect_generation(EffectNodeId(key));
@@ -677,11 +677,7 @@ impl PropertyTrees {
 
         let clip = node
             .element
-            .as_any()
-            .downcast_ref::<crate::view::base_component::Element>()
-            .and_then(|element| {
-                element.exact_anchor_parent_leaf_self_clip_scissor_rect(key, arena, is_frame_root)
-            });
+            .exact_retained_self_clip_scissor_rect(key, arena, is_frame_root);
         let clip = if let Some(logical_scissor) = clip {
             let id = ClipNodeId {
                 owner: key,
@@ -746,7 +742,7 @@ impl PropertyTrees {
         // A declared scroll container is atomic: its clip comes only from the
         // same validated owning snapshot as its scroll node. Never combine a
         // malformed/missing scroll snapshot with the generic clip hook.
-        let contents_clip = if info.is_scroll_container {
+        let contents_clip = if properties.is_scroll_container {
             scroll_snapshot.map(|snapshot| match snapshot.contents_clip {
                 ScrollContentsClipWitness::ExactRect(scissor) => scissor,
             })
@@ -1274,8 +1270,10 @@ mod tests {
             self.scissor
         }
 
-        fn promotion_node_info(&self) -> crate::view::promotion::PromotionNodeInfo {
-            crate::view::promotion::PromotionNodeInfo {
+        fn retained_paint_properties(
+            &self,
+        ) -> crate::view::base_component::RetainedPaintProperties {
+            crate::view::base_component::RetainedPaintProperties {
                 is_scroll_container: self.declares_scroll,
                 ..Default::default()
             }
@@ -2870,49 +2868,6 @@ mod tests {
             trees
                 .changes_for(key)
                 .contains(PropertyChangeFlags::TOPOLOGY)
-        );
-    }
-
-    #[test]
-    fn opacity_shadow_change_coexists_with_legacy_promotion_signatures() {
-        use crate::view::promotion::PromotedLayerUpdateKind;
-        use crate::view::promotion_builder::collect_promoted_layer_updates;
-
-        let mut arena = NodeArena::new();
-        let root = insert_element(&mut arena, 1);
-        set_opacity(&arena, root, 0.6);
-        let promoted = FxHashSet::from_iter([1]);
-        let (_, base_signatures, composition_signatures) = collect_promoted_layer_updates(
-            &arena,
-            &[root],
-            &promoted,
-            &FxHashMap::default(),
-            &FxHashMap::default(),
-        );
-        let mut trees = PropertyTrees::default();
-        trees.sync(&arena, &[root]);
-        trees.sync(&arena, &[root]);
-
-        set_opacity(&arena, root, 0.3);
-        trees.sync(&arena, &[root]);
-        let (updates, _, _) = collect_promoted_layer_updates(
-            &arena,
-            &[root],
-            &promoted,
-            &base_signatures,
-            &composition_signatures,
-        );
-
-        assert!(
-            trees
-                .changes_for(root)
-                .contains(PropertyChangeFlags::EFFECT)
-        );
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].kind, PromotedLayerUpdateKind::Reuse);
-        assert_eq!(
-            updates[0].composition_kind,
-            PromotedLayerUpdateKind::Reraster
         );
     }
 }

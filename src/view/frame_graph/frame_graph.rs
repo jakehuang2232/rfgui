@@ -50,12 +50,6 @@ pub enum ResourceLifetime {
 pub enum RetainedTextureRole {
     RootEffectColor,
     RootEffectDepthStencil,
-    PromotedBaseColor,
-    PromotedBaseDepthStencil,
-    PromotedClipMaskColor,
-    PromotedClipMaskDepthStencil,
-    PromotedFinalColor,
-    PromotedFinalDepthStencil,
     TransformedColor,
     TransformedDepthStencil,
     IsolationColor,
@@ -122,13 +116,6 @@ impl PersistentTextureKey {
         };
         let role = match role {
             RetainedTextureRole::RootEffectColor => RetainedTextureRole::RootEffectDepthStencil,
-            RetainedTextureRole::PromotedBaseColor => RetainedTextureRole::PromotedBaseDepthStencil,
-            RetainedTextureRole::PromotedClipMaskColor => {
-                RetainedTextureRole::PromotedClipMaskDepthStencil
-            }
-            RetainedTextureRole::PromotedFinalColor => {
-                RetainedTextureRole::PromotedFinalDepthStencil
-            }
             RetainedTextureRole::TransformedColor => RetainedTextureRole::TransformedDepthStencil,
             RetainedTextureRole::IsolationColor => RetainedTextureRole::IsolationDepthStencil,
             RetainedTextureRole::ScrollHostColor => RetainedTextureRole::ScrollHostDepthStencil,
@@ -1127,6 +1114,7 @@ impl FrameGraph {
             .filter_map(|metadata| metadata.stable_key)
     }
 
+    #[cfg(test)]
     pub(crate) fn declared_persistent_textures(
         &self,
     ) -> impl Iterator<Item = (PersistentTextureKey, &TextureDesc)> + '_ {
@@ -1626,9 +1614,8 @@ impl FrameGraph {
 
         // Persistent resources remain semantically live while they are
         // declared, even when pass culling removes every current-frame use.
-        // A promoted base layer is one such resource while its final composed
-        // layer is reused; keep its pool binding alive for a later
-        // composition-only reraster.
+        // Keep every declared persistent pool binding alive even when the
+        // current compiled pass chain culls its users.
         viewport.touch_persistent_render_targets(self.declared_persistent_texture_keys());
 
         // Capture every canonical input that affects CompiledGraph reuse after
@@ -6227,12 +6214,12 @@ mod tests {
         let mut cached_graph = FrameGraph::new();
         let _ = cached_graph.declare_persistent_texture_internal::<()>(
             desc.clone(),
-            PersistentTextureKey::retained(RetainedTextureRole::PromotedBaseColor, u64::MAX),
+            PersistentTextureKey::retained(RetainedTextureRole::TransformedColor, u64::MAX),
         );
         let mut current_graph = FrameGraph::new();
         let _ = current_graph.declare_persistent_texture_internal::<()>(
             desc,
-            PersistentTextureKey::retained(RetainedTextureRole::PromotedFinalColor, u64::MAX),
+            PersistentTextureKey::retained(RetainedTextureRole::IsolationColor, u64::MAX),
         );
 
         // Inject the same fast hash to model an actual hash collision. Full
@@ -6253,7 +6240,7 @@ mod tests {
         let mut graph = FrameGraph::new();
         let _ = graph.declare_persistent_texture_internal::<()>(
             test_texture_desc(),
-            PersistentTextureKey::retained(RetainedTextureRole::PromotedBaseColor, u64::MAX),
+            PersistentTextureKey::retained(RetainedTextureRole::TransformedColor, u64::MAX),
         );
         let cached = TopologyCacheKey {
             hash: 11,

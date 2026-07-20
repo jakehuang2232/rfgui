@@ -3,6 +3,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 #[cfg(test)]
 mod clipboard_tests;
+mod compositor_sync;
 mod debug;
 pub(crate) mod dispatch;
 mod frame;
@@ -11,7 +12,6 @@ mod gpu_resources;
 mod incremental_tests;
 mod input;
 mod lifecycle;
-mod promotion_runtime;
 mod render;
 pub(crate) mod scene_helpers;
 #[cfg(any())]
@@ -38,16 +38,8 @@ use crate::ui::{
     TextInputEvent, peek_state_dirty, reconcile, take_state_dirty,
 };
 use crate::view::ElementStylePropSchema;
-use crate::view::base_component::Renderable;
 use crate::view::frame_graph::texture_resource::TextureDesc;
 use crate::view::frame_graph::{AllocationId, BufferDesc, FrameGraph};
-use crate::view::promotion::{
-    PromotedLayerUpdate, PromotedLayerUpdateKind, PromotionDecision, PromotionState,
-    ViewportPromotionConfig, active_channels_by_node, evaluate_promotion,
-};
-use crate::view::promotion_builder::{
-    collect_promoted_layer_updates_with_generations, collect_promotion_candidates,
-};
 use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderTargetBundle};
 
 use std::ops::Sub;
@@ -59,19 +51,10 @@ use wgpu::{
     rwh::{HasDisplayHandle, HasWindowHandle},
 };
 
-pub(crate) use self::debug::{
-    DebugReusePathContext, DebugReusePathRecord, begin_debug_reuse_path_frame,
-    record_debug_reuse_path, set_debug_trace_enabled,
-};
 use self::debug::{
-    DebugStyleSampleRecord, PostLayoutTransitionResult, TraceRenderNode, build_compile_trace_nodes,
-    build_execute_detail_trace_nodes, build_layout_place_trace_nodes, build_reuse_overlay_geometry,
-    build_text_measure_trace_nodes, format_promotion_trace, format_reuse_path_trace,
-    format_style_field, format_style_promotion_trace, format_style_request_trace,
-    format_style_sample_trace, format_style_value, format_trace_render_tree,
-    record_debug_style_promotion, record_debug_style_request, record_debug_style_sample,
-    record_debug_style_sample_record, reuse_overlay_color, style_field_requires_relayout,
-    take_debug_reuse_path, take_debug_style_sample_records, trace_promoted_build_frame_marker,
+    PostLayoutTransitionResult, TraceRenderNode, build_compile_trace_nodes,
+    build_debug_overlay_geometry, build_execute_detail_trace_nodes, build_layout_place_trace_nodes,
+    build_text_measure_trace_nodes, format_trace_render_tree, style_field_requires_relayout,
 };
 pub use self::dispatch::{
     dispatch_click_from_hit_test, dispatch_pointer_down_from_hit_test,
@@ -86,7 +69,7 @@ use self::frame::{
 };
 use self::input::{DragState, InputState, PendingClick, is_valid_click_candidate};
 pub use self::input::{PointerButton, ViewportDebugOptions};
-use self::transitions_tick::TransitionHostAdapter;
+use self::transitions_tick::{TransitionHostAdapter, active_channels_by_node};
 use crate::app::App;
 use crate::platform::{
     Modifiers, PlatformImePreedit, PlatformKeyEvent, PlatformPointerEvent,
@@ -118,7 +101,7 @@ impl Default for SurfaceFormatPreference {
 /// artifact-renderer rollout.
 ///
 /// `ArtifactCanary` is intentionally fail-closed: only an entirely
-/// property-neutral, promotion-free, deferred-free frame uses the artifact
+/// property-neutral, deferred-free frame uses the artifact
 /// compiler. Every other frame stays wholly on the legacy renderer.
 /// `RetainedTransformCanary` is a separate opt-in authority for the exact
 /// single-root transform-surface contract; it never falls through to the
@@ -131,14 +114,13 @@ impl Default for SurfaceFormatPreference {
 /// `RetainedScrollSceneCanary` is the independent detached-content authority;
 /// it retains only the offset-zero content raster and paints host/overlay into
 /// the parent target every frame.
-/// `RetainedAuto` is the bounded M11A opt-in router. It selects exactly one of
+/// `RetainedAuto` is the bounded M11A default router. It selects exactly one of
 /// the existing retained/artifact authorities before the common clear and
 /// falls back to the whole-frame legacy renderer when that selected authority
 /// cannot be prepared or compiled.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ViewportPaintRendererMode {
     /// Keep the established immediate legacy build path authoritative.
-    #[default]
     Legacy,
     /// Opt into the M6A whole-frame property-neutral artifact canary.
     ArtifactCanary,
@@ -154,7 +136,8 @@ pub enum ViewportPaintRendererMode {
     RetainedScrollHostCanary,
     /// Opt into the M10E2A3 exact detached scroll-scene canary.
     RetainedScrollSceneCanary,
-    /// Opt into the M11A whole-frame automatic retained authority router.
+    /// Use the M11A whole-frame automatic retained authority router.
+    #[default]
     RetainedAuto,
 }
 
@@ -374,6 +357,7 @@ struct FrameRuntime {
     compile_cache: Option<CachedCompiledGraph>,
     debug_overlay_vertices: Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
     debug_overlay_indices: Vec<u32>,
+    last_retained_auto_debug: Option<crate::view::debug::DebugRetainedAutoCaptureInput>,
     /// Stash for `App::build()` elapsed time (ms) so the render trace tree
     /// can include RSX build cost.  Set in `render_frame`, consumed in
     /// `render_render_tree`.
@@ -410,6 +394,7 @@ impl FrameRuntime {
             compile_cache: None,
             debug_overlay_vertices: Vec::new(),
             debug_overlay_indices: Vec::new(),
+            last_retained_auto_debug: None,
             rsx_build_ms: 0.0,
             frame_number: 0,
         }
@@ -547,11 +532,8 @@ mod render_resource_scope_id_tests {
     }
 }
 
-/// Phase-7 extraction. Groups everything the layer-promotion / compositor
-/// pipeline owns — promotion state, cached signatures for reuse, and the
-/// box-model snapshots produced each frame. Pure internal refactor; the
-/// viewport public API is unchanged and nothing outside the viewport names
-/// this type.
+/// Compositor-owned retained scene state and the box-model snapshots produced
+/// each frame. Nothing outside the viewport names this type.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 enum RootEffectRetainedState {
     #[default]
@@ -766,24 +748,6 @@ pub(crate) struct RetainedSurfaceFrameStageOwner {
 struct CompositorState {
     property_trees: crate::view::compositor::PropertyTrees,
     paint_generations: crate::view::compositor::PaintGenerationTracker,
-    shadow_layer_tree: crate::view::compositor::LayerTree,
-    raster_cache: crate::view::compositor::RasterCache,
-    raster_budget_readiness: crate::view::compositor::raster_cache::ShadowRasterBudgetReadiness,
-    prospective_raster_plan: Option<crate::view::compositor::raster_cache::ProspectiveRasterPlan>,
-    raster_plan_parity: crate::view::compositor::raster_cache::RasterPlanParity,
-    shadow_promotion_evaluation: crate::view::compositor::raster_cache::ShadowPromotionEvaluation,
-    shadow_promotion_policy_state: crate::view::promotion::ShadowPromotionPolicyState,
-    shadow_policy_config: crate::view::promotion::ShadowPolicyConfig,
-    shadow_rollout_safety: crate::view::compositor::raster_cache::ShadowRolloutSafetyState,
-    promotion_state: PromotionState,
-    promotion_config: ViewportPromotionConfig,
-    promoted_layer_updates: Vec<PromotedLayerUpdate>,
-    promoted_base_signatures: FxHashMap<u64, u64>,
-    promoted_composition_signatures: FxHashMap<u64, u64>,
-    promoted_base_generations: FxHashMap<crate::view::node_arena::NodeKey, u64>,
-    promoted_composition_generations: FxHashMap<crate::view::node_arena::NodeKey, u64>,
-    debug_previous_subtree_signatures: FxHashMap<u64, (u64, u64, u64, bool)>,
-    promoted_reuse_cooldown_frames: u8,
     frame_box_models: Vec<super::base_component::BoxModelSnapshot>,
     frame_box_model_cache:
         FxHashMap<crate::view::node_arena::NodeKey, Vec<super::base_component::BoxModelSnapshot>>,
@@ -821,28 +785,6 @@ impl CompositorState {
         Self {
             property_trees: crate::view::compositor::PropertyTrees::default(),
             paint_generations: crate::view::compositor::PaintGenerationTracker::default(),
-            shadow_layer_tree: crate::view::compositor::LayerTree::default(),
-            raster_cache: crate::view::compositor::RasterCache::default(),
-            raster_budget_readiness:
-                crate::view::compositor::raster_cache::ShadowRasterBudgetReadiness::default(),
-            prospective_raster_plan: None,
-            raster_plan_parity: crate::view::compositor::raster_cache::RasterPlanParity::default(),
-            shadow_promotion_evaluation:
-                crate::view::compositor::raster_cache::ShadowPromotionEvaluation::default(),
-            shadow_promotion_policy_state:
-                crate::view::promotion::ShadowPromotionPolicyState::default(),
-            shadow_policy_config: crate::view::promotion::ShadowPolicyConfig::default(),
-            shadow_rollout_safety:
-                crate::view::compositor::raster_cache::ShadowRolloutSafetyState::default(),
-            promotion_state: PromotionState::default(),
-            promotion_config: ViewportPromotionConfig::default(),
-            promoted_layer_updates: Vec::new(),
-            promoted_base_signatures: FxHashMap::default(),
-            promoted_composition_signatures: FxHashMap::default(),
-            promoted_base_generations: FxHashMap::default(),
-            promoted_composition_generations: FxHashMap::default(),
-            debug_previous_subtree_signatures: FxHashMap::default(),
-            promoted_reuse_cooldown_frames: 0,
             frame_box_models: Vec::new(),
             frame_box_model_cache: FxHashMap::default(),
             root_effect_retained: RootEffectRetainedState::Invalid,
@@ -942,7 +884,7 @@ mod root_effect_retained_tests {
                 .unwrap();
                 let [x, y, width, height] = bounds.raster;
                 let color = crate::view::base_component::texture_desc_for_logical_bounds(
-                    crate::view::base_component::PromotionCompositeBounds {
+                    crate::view::base_component::RetainedSurfaceBounds {
                         x: x as f32,
                         y: y as f32,
                         width: width as f32,
@@ -2814,7 +2756,6 @@ pub(super) struct SampledTextureEntry {
 
 impl Viewport {
     const DEFAULT_MSAA_SAMPLE_COUNT: u32 = 4;
-    const PROMOTED_REUSE_COOLDOWN_FRAMES: u8 = 2;
     /// Skia GrResourceCache default: 96 MB.
     const SAMPLED_TEXTURE_PRESSURE_BYTES: u64 = 96 * 1024 * 1024;
     const SAMPLED_TEXTURE_EVICT_TO_BYTES: u64 = 72 * 1024 * 1024;
@@ -2920,11 +2861,13 @@ impl Viewport {
         self.paint_renderer_mode
     }
 
-    /// Selects the production paint rollout mode. The default remains
-    /// [`ViewportPaintRendererMode::Legacy`]; enabling the canary never
-    /// permits per-root mixing with the legacy renderer. Calling this with the
-    /// already-requested `RetainedAuto` mode manually resets an open terminal
-    /// circuit breaker; ordinary same-mode calls remain no-ops.
+    /// Selects the production paint renderer mode. The default is
+    /// [`ViewportPaintRendererMode::RetainedAuto`], while explicit Legacy mode
+    /// remains available as a diagnostic and compatibility override. Automatic
+    /// retained authority never permits per-root mixing with the legacy
+    /// renderer. Calling this with the already-requested `RetainedAuto` mode
+    /// manually resets an open terminal circuit breaker; ordinary same-mode
+    /// calls remain no-ops.
     pub fn set_paint_renderer_mode(&mut self, mode: ViewportPaintRendererMode) {
         if self.paint_renderer_mode == mode && self.retained_auto_terminal_failure.is_none() {
             return;
@@ -2932,6 +2875,7 @@ impl Viewport {
         self.invalidate_root_effect_retained();
         self.invalidate_retained_surfaces();
         self.frame.compile_cache = None;
+        self.frame.last_retained_auto_debug = None;
         self.paint_renderer_mode = mode;
         self.retained_auto_terminal_failure = None;
         self.request_redraw();
@@ -2955,7 +2899,11 @@ impl Viewport {
         &self,
         options: crate::view::debug::DebugCaptureOptions,
     ) -> crate::view::debug::DebugCapture {
-        crate::view::debug::DebugCapture::from_arena(
+        let retained_auto = options
+            .include_retained_auto
+            .then(|| self.frame.last_retained_auto_debug.clone())
+            .flatten();
+        crate::view::debug::DebugCapture::from_arena_with_retained_auto(
             options,
             &self.scene.node_arena,
             &self.scene.ui_root_keys,
@@ -2969,6 +2917,7 @@ impl Viewport {
                 pointer_position: self.pointer_position_viewport(),
                 pressed_pointer_buttons: self.pressed_pointer_buttons().collect(),
             },
+            retained_auto,
         )
     }
 
@@ -2982,7 +2931,6 @@ impl Viewport {
             return;
         }
         self.gpu.msaa_sample_count = normalized;
-        self.invalidate_promoted_layer_reuse();
         self.needs_reconfigure = true;
         if self.gpu.surface.is_some() && self.gpu.device.is_some() {
             self.create_frame_attachments();
@@ -2996,7 +2944,7 @@ impl Viewport {
     }
 
     pub(crate) fn debug_overlay_enabled(&self) -> bool {
-        self.debug_options.geometry_overlay || self.debug_options.trace_reuse_path
+        self.debug_options.geometry_overlay || self.debug_options.retained_auto_overlay
     }
 
     pub(crate) fn clear_debug_overlay_geometry(&mut self) {
@@ -3090,10 +3038,6 @@ impl Viewport {
     #[cfg(test)]
     fn box_model_refresh_stats(&self) -> BoxModelRefreshStats {
         self.compositor.box_model_refresh_stats
-    }
-
-    pub(crate) fn set_promotion_config(&mut self, config: ViewportPromotionConfig) {
-        self.compositor.promotion_config = config;
     }
 
     pub fn set_focused_node_id(&mut self, node_id: Option<crate::view::node_arena::NodeKey>) {

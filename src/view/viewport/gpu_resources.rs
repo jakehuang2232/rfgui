@@ -664,12 +664,10 @@ impl Viewport {
     ) -> (
         &crate::view::compositor::PropertyTrees,
         &crate::view::compositor::PaintGenerationTracker,
-        &FxHashSet<u64>,
     ) {
         (
             &self.compositor.property_trees,
             &self.compositor.paint_generations,
-            &self.compositor.promotion_state.promoted_node_ids,
         )
     }
 
@@ -681,7 +679,6 @@ impl Viewport {
     ) {
         self.compositor.property_trees = property_trees;
         self.compositor.paint_generations = paint_generations;
-        self.compositor.promotion_state.promoted_node_ids.clear();
     }
 
     #[cfg(test)]

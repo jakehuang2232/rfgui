@@ -4,15 +4,15 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::Key;
 
 use crate::view::base_component::{
-    AncestorClipContext, BuildState, PromotionCompositeBounds,
+    AncestorClipContext, BuildState,
     RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollHostAdmissionSnapshot, RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollTextAreaSubtreeAdmissionSnapshot, RetainedScrollTransformHostAdmissionSnapshot,
-    UiBuildContext, persistent_target_texture_descriptors, scroll_content_layer_stable_key,
-    text_area::FocusedAtomicCaretSourcePaintSeal, texture_desc_for_logical_bounds,
-    transient_target_texture_descriptors,
+    RetainedSurfaceBounds, UiBuildContext, persistent_target_texture_descriptors,
+    scroll_content_layer_stable_key, text_area::FocusedAtomicCaretSourcePaintSeal,
+    texture_desc_for_logical_bounds, transient_target_texture_descriptors,
 };
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeSnapshot,
@@ -373,7 +373,7 @@ struct PropertyScrollHostAdmission {
     stable_id: u64,
     child: NodeKey,
     child_stable_id: u64,
-    source_bounds: PromotionCompositeBounds,
+    source_bounds: RetainedSurfaceBounds,
     kind: PropertyScrollHostAdmissionKind,
 }
 
@@ -1013,7 +1013,7 @@ struct DirectScrollTransformSingleBackingPlan {
 #[derive(Clone, Debug)]
 pub(crate) struct DirectScrollTransformGeometryPlan {
     scaffold: DirectScrollTransformSceneScaffold,
-    raster_bounds: PromotionCompositeBounds,
+    raster_bounds: RetainedSurfaceBounds,
     geometry: super::PreparedScrollTransformContentCompositeGeometry,
     backing: DirectScrollTransformSingleBackingPlan,
     planned_raster_bounds_bits: [u32; 4],
@@ -1046,7 +1046,7 @@ impl DirectScrollTransformGeometryPlan {
     }
 
     #[cfg(test)]
-    pub(crate) fn raster_bounds(&self) -> PromotionCompositeBounds {
+    pub(crate) fn raster_bounds(&self) -> RetainedSurfaceBounds {
         self.raster_bounds
     }
 
@@ -2288,7 +2288,7 @@ impl NestedScrollCompilerContract {
         };
         let [inner_x, inner_y, inner_width, inner_height] =
             inner.source_bounds_bits.map(f32::from_bits);
-        let inner_source = PromotionCompositeBounds {
+        let inner_source = RetainedSurfaceBounds {
             x: inner_x,
             y: inner_y,
             width: inner_width,
@@ -3938,7 +3938,7 @@ impl FrozenPreparedScrollScene {
     }
 }
 
-fn bounds_bits(bounds: PromotionCompositeBounds) -> [u32; 4] {
+fn bounds_bits(bounds: RetainedSurfaceBounds) -> [u32; 4] {
     [
         bounds.x.to_bits(),
         bounds.y.to_bits(),
@@ -3947,8 +3947,8 @@ fn bounds_bits(bounds: PromotionCompositeBounds) -> [u32; 4] {
     ]
 }
 
-fn content_zero_bounds(scroll: ScrollNodeSnapshot) -> PromotionCompositeBounds {
-    PromotionCompositeBounds {
+fn content_zero_bounds(scroll: ScrollNodeSnapshot) -> RetainedSurfaceBounds {
+    RetainedSurfaceBounds {
         x: scroll.layout_content_bounds_at_zero.x,
         y: scroll.layout_content_bounds_at_zero.y,
         width: scroll.layout_content_bounds_at_zero.width,
@@ -3958,11 +3958,11 @@ fn content_zero_bounds(scroll: ScrollNodeSnapshot) -> PromotionCompositeBounds {
 }
 
 fn nested_receiver_local_content_bounds(
-    inner_source: PromotionCompositeBounds,
+    inner_source: RetainedSurfaceBounds,
     inner_scroll: ScrollNodeSnapshot,
-) -> Option<PromotionCompositeBounds> {
+) -> Option<RetainedSurfaceBounds> {
     let world = content_zero_bounds(inner_scroll);
-    let local = PromotionCompositeBounds {
+    let local = RetainedSurfaceBounds {
         x: world.x - inner_source.x,
         y: world.y - inner_source.y,
         width: world.width,
@@ -3976,7 +3976,7 @@ const SCROLL_CONTENT_TILE_EDGE: u32 = 1024;
 const SCROLL_CONTENT_TILE_GUTTER: u32 = 1;
 const SCROLL_CONTENT_TILE_OVERSCAN: u32 = 256;
 
-fn exact_dpr1_u32_bounds(bounds: PromotionCompositeBounds) -> Option<[u32; 4]> {
+fn exact_dpr1_u32_bounds(bounds: RetainedSurfaceBounds) -> Option<[u32; 4]> {
     let values = [bounds.x, bounds.y, bounds.width, bounds.height];
     if values.iter().any(|value| {
         !value.is_finite()
@@ -4084,7 +4084,7 @@ fn plan_property_scroll_backing(
         }
         let [x, y, width, height] = bounds.raster;
         let color = texture_desc_for_logical_bounds(
-            PromotionCompositeBounds {
+            RetainedSurfaceBounds {
                 x: x as f32,
                 y: y as f32,
                 width: width as f32,
@@ -4859,7 +4859,6 @@ fn property_scroll_plan_matches_exact_live_inputs(
     plan: &PropertyScrollScenePlan,
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     semantic_frame_time: crate::time::Instant,
@@ -4867,7 +4866,6 @@ fn property_scroll_plan_matches_exact_live_inputs(
     if !plan.is_canonical()
         || semantic_frame_time != plan.seal.semantic.sampled_at
         || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || !property_trees.transforms.is_empty()
         || !property_trees.effects.is_empty()
@@ -5067,7 +5065,6 @@ impl PropertyScrollScenePlan {
         &self,
         arena: &NodeArena,
         roots: &[NodeKey],
-        promoted_node_ids: &FxHashSet<u64>,
         property_trees: &PropertyTrees,
         paint_generations: &PaintGenerationTracker,
         semantic_frame_time: crate::time::Instant,
@@ -5076,7 +5073,6 @@ impl PropertyScrollScenePlan {
             self,
             arena,
             roots,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             semantic_frame_time,
@@ -5265,7 +5261,6 @@ impl PropertyScrollScenePlan {
 pub(crate) fn plan_property_scroll_scene_scaffold(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -5279,7 +5274,6 @@ pub(crate) fn plan_property_scroll_scene_scaffold(
         || incoming_paint_offset.map(f32::to_bits) != [0.0_f32.to_bits(); 2]
         || outer_scissor_rect.is_some()
         || roots.len() != 1
-        || !promoted_node_ids.is_empty()
     {
         return Err(PropertyScrollScenePlanError::InvalidContract);
     }
@@ -5289,7 +5283,6 @@ pub(crate) fn plan_property_scroll_scene_scaffold(
     let scene = plan_single_root_scroll_scene(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         scale_factor,
@@ -7117,7 +7110,6 @@ impl ValidatedPropertyScrollBoundary {
         &self,
         arena: &NodeArena,
         roots: &[NodeKey],
-        promoted_node_ids: &FxHashSet<u64>,
         property_trees: &PropertyTrees,
         paint_generations: &PaintGenerationTracker,
         semantic_frame_time: crate::time::Instant,
@@ -7126,7 +7118,6 @@ impl ValidatedPropertyScrollBoundary {
             && self.planner.matches_live_inputs(
                 arena,
                 roots,
-                promoted_node_ids,
                 property_trees,
                 paint_generations,
                 semantic_frame_time,
@@ -7141,7 +7132,6 @@ fn validate_property_scroll_boundary(
     plan: PropertyScrollScenePlan,
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     semantic_frame_time: crate::time::Instant,
@@ -7152,7 +7142,6 @@ fn validate_property_scroll_boundary(
     if !plan.matches_live_inputs(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         semantic_frame_time,
@@ -7163,7 +7152,6 @@ fn validate_property_scroll_boundary(
     if !boundary.matches_live_inputs(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         semantic_frame_time,
@@ -7927,7 +7915,6 @@ fn collect_exact_property_scroll_reachable_owners(
 pub(crate) fn plan_and_validate_property_scroll_scene(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -7941,7 +7928,6 @@ pub(crate) fn plan_and_validate_property_scroll_scene(
         || scale_factor.to_bits() != 1.0_f32.to_bits()
         || incoming_paint_offset.map(f32::to_bits) != [0.0_f32.to_bits(); 2]
         || outer_scissor_rect.is_some()
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || !property_trees.transforms.is_empty()
         || !property_trees.effects.is_empty()
@@ -7967,7 +7953,6 @@ pub(crate) fn plan_and_validate_property_scroll_scene(
         let scene = plan_exact_root_scroll_scene(
             arena,
             root,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             scale_factor,
@@ -8046,7 +8031,6 @@ fn plan_exact_transform_scroll_boundary(
     arena: &NodeArena,
     receiver: TransformNodeSnapshot,
     boundary: &super::frame_plan::PropertyScrollBoundaryContract,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -8105,7 +8089,6 @@ fn plan_exact_transform_scroll_boundary(
         super::frame_recorder::record_baked_scroll_host_artifact_with_stack_for_plan(
             arena,
             &[boundary_root],
-            promoted_node_ids,
             property_trees,
             paint_generations,
             baked_witness,
@@ -8153,7 +8136,6 @@ fn plan_exact_transform_scroll_boundary(
     let content_local =
         super::frame_recorder::record_scroll_content_local_artifact_with_stack_for_plan(
             arena,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             content_witness,
@@ -8213,7 +8195,6 @@ fn plan_exact_effect_scroll_boundary_checkpoint(
     arena: &NodeArena,
     receiver: EffectNodeSnapshot,
     boundary: &super::frame_plan::PropertyScrollBoundaryContract,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -8280,7 +8261,6 @@ fn plan_exact_effect_scroll_boundary_checkpoint(
         super::frame_recorder::record_effect_baked_scroll_host_artifact_with_stack_for_plan(
             arena,
             &[boundary_root],
-            promoted_node_ids,
             property_trees,
             paint_generations,
             baked_witness,
@@ -8334,7 +8314,6 @@ fn plan_exact_effect_scroll_boundary_checkpoint(
     let content_local =
         super::frame_recorder::record_effect_scroll_content_local_artifact_with_stack_for_plan(
             arena,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             content_witness,
@@ -8391,8 +8370,8 @@ fn plan_exact_effect_scroll_boundary_checkpoint(
 
 fn transform_scroll_receiver_raster_bounds(
     receiver_steps: &[super::frame_recorder::RecordedTransformSurfaceStep],
-    scroll_host_bounds: PromotionCompositeBounds,
-) -> Option<PromotionCompositeBounds> {
+    scroll_host_bounds: RetainedSurfaceBounds,
+) -> Option<RetainedSurfaceBounds> {
     let mut min_x = scroll_host_bounds.x;
     let mut min_y = scroll_host_bounds.y;
     let mut max_x = scroll_host_bounds.x + scroll_host_bounds.width;
@@ -8419,7 +8398,7 @@ fn transform_scroll_receiver_raster_bounds(
             max_y = max_y.max(bottom);
         }
     }
-    let bounds = PromotionCompositeBounds {
+    let bounds = RetainedSurfaceBounds {
         x: min_x,
         y: min_y,
         width: max_x - min_x,
@@ -8444,7 +8423,6 @@ fn transform_scroll_receiver_raster_bounds(
 pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -8457,7 +8435,6 @@ pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
     if scale_factor.to_bits() != 1.0_f32.to_bits()
         || incoming_paint_offset.map(f32::to_bits) != [0.0_f32.to_bits(); 2]
         || outer_scissor_rect.is_some()
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || !property_trees.effects.is_empty()
         || property_trees.transforms.len() != 1
@@ -8541,7 +8518,6 @@ pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
     let host_steps = super::frame_recorder::record_scroll_transform_host_steps_for_plan(
         arena,
         *root,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         host_witness,
@@ -8561,7 +8537,6 @@ pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
     let content_steps = super::frame_recorder::record_scroll_transform_content_steps_for_plan(
         arena,
         child,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         super::PaintTransformSurfaceWitness::canonical_root(child),
@@ -8637,7 +8612,7 @@ pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
 fn direct_scroll_transform_artifact_raster_bounds(
     artifact: &PaintArtifact,
     transform: TransformNodeId,
-) -> Option<PromotionCompositeBounds> {
+) -> Option<RetainedSurfaceBounds> {
     let first = artifact.chunks.first()?;
     if artifact.chunks.iter().any(|chunk| {
         chunk.properties.transform != Some(transform)
@@ -8667,7 +8642,7 @@ fn direct_scroll_transform_artifact_raster_bounds(
         max_x = max_x.max(right);
         max_y = max_y.max(bottom);
     }
-    let bounds = PromotionCompositeBounds {
+    let bounds = RetainedSurfaceBounds {
         x: min_x,
         y: min_y,
         width: max_x - min_x,
@@ -9323,7 +9298,7 @@ fn nested_scroll_receiver_geometry_witness(
     let visible_world = intersect_continuous_rect_with_scissor(receiver_world, c0)?;
     let visible_world_bits = visible_world.map(f32::to_bits);
     let assembly_color = texture_desc_for_logical_bounds(
-        PromotionCompositeBounds {
+        RetainedSurfaceBounds {
             x: visible_world[0],
             y: visible_world[1],
             width: visible_world[2],
@@ -9463,7 +9438,6 @@ fn prepare_nested_scroll_receiver_geometry(
 pub(crate) fn plan_and_prepare_nested_scroll_scene(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -9475,7 +9449,6 @@ pub(crate) fn plan_and_prepare_nested_scroll_scene(
     let plan = super::frame_plan::plan_nested_scroll_scene_scaffold_with_context(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         scale_factor,
@@ -10214,7 +10187,6 @@ fn compile_nested_scroll_transaction(
 pub(crate) fn plan_and_validate_direct_scroll_transform_scene(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -10226,7 +10198,6 @@ pub(crate) fn plan_and_validate_direct_scroll_transform_scene(
     let scaffold = plan_direct_scroll_transform_scene_scaffold(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         scale_factor,
@@ -10587,7 +10558,6 @@ pub(crate) fn emit_prepared_direct_scroll_transform_scene(
 pub(crate) fn plan_and_validate_transform_scroll_scene(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -10601,7 +10571,6 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
         || scale_factor.to_bits() != 1.0_f32.to_bits()
         || incoming_paint_offset.map(f32::to_bits) != [0.0_f32.to_bits(); 2]
         || outer_scissor_rect.is_some()
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
     {
@@ -10611,7 +10580,6 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
     let frame_plan = super::frame_plan::plan_property_scroll_interleave_scaffold_with_context(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         context,
@@ -10674,7 +10642,6 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
         let receiver_steps = super::frame_recorder::record_property_scroll_receiver_steps_for_plan(
             arena,
             receiver.owner,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             super::PaintTransformSurfaceWitness::canonical_root(receiver.owner),
@@ -10712,7 +10679,6 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
             arena,
             *receiver,
             boundary,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             scale_factor,
@@ -10778,7 +10744,6 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
 pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -10792,7 +10757,6 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
         || scale_factor.to_bits() != 1.0_f32.to_bits()
         || incoming_paint_offset.map(f32::to_bits) != [0.0_f32.to_bits(); 2]
         || outer_scissor_rect.is_some()
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
     {
@@ -10802,7 +10766,6 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
     let frame_plan = super::frame_plan::plan_property_scroll_interleave_scaffold_with_context(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         context,
@@ -10858,7 +10821,6 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
             super::frame_recorder::record_property_effect_scroll_receiver_steps_for_plan(
                 arena,
                 receiver.owner,
-                promoted_node_ids,
                 property_trees,
                 paint_generations,
                 &insertion.artifact_contract,
@@ -10894,7 +10856,6 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
             arena,
             *receiver,
             boundary,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             scale_factor,
@@ -10950,7 +10911,6 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
 pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -10964,7 +10924,6 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
         || scale_factor.to_bits() != 1.0_f32.to_bits()
         || incoming_paint_offset.map(f32::to_bits) != [0.0_f32.to_bits(); 2]
         || outer_scissor_rect.is_some()
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
     {
@@ -10974,7 +10933,6 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
     let frame_plan = super::frame_plan::plan_property_scroll_interleave_scaffold_with_context(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         context,
@@ -11047,7 +11005,6 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
         let outer_steps = super::frame_recorder::record_transform_property_surface_steps_for_plan(
             arena,
             outer.owner,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             super::PaintTransformSurfaceWitness::canonical_root(outer.owner),
@@ -11062,7 +11019,6 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
             super::frame_recorder::record_property_effect_scroll_receiver_steps_for_plan(
                 arena,
                 inner.owner,
-                promoted_node_ids,
                 property_trees,
                 paint_generations,
                 &insertion.inner.artifact_contract,
@@ -11080,7 +11036,6 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
             arena,
             *inner,
             boundary_contract,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             scale_factor,
@@ -13145,7 +13100,7 @@ pub(crate) fn prepare_retained_effect_scroll_scene_from_pool<'a>(
                 ),
             );
         }
-        let source_bounds = PromotionCompositeBounds {
+        let source_bounds = RetainedSurfaceBounds {
             x: f32::from_bits(root.composite.source_bounds_bits[0]),
             y: f32::from_bits(root.composite.source_bounds_bits[1]),
             width: f32::from_bits(root.composite.source_bounds_bits[2]),
@@ -13522,7 +13477,7 @@ pub(crate) fn prepare_retained_transform_effect_scroll_scene_from_pool<'a>(
             }
         }
         let inner_bounds_values = root.composite.source_bounds_bits.map(f32::from_bits);
-        let inner_bounds = PromotionCompositeBounds {
+        let inner_bounds = RetainedSurfaceBounds {
             x: inner_bounds_values[0],
             y: inner_bounds_values[1],
             width: inner_bounds_values[2],
@@ -15294,7 +15249,7 @@ pub(crate) fn emit_prepared_retained_property_scroll_scene_with_root_clear(
 fn prepare_tiled_content_backing(
     content_root: NodeKey,
     content_stable_id: u64,
-    content_bounds: PromotionCompositeBounds,
+    content_bounds: RetainedSurfaceBounds,
     scroll: ScrollNodeSnapshot,
     contents_clip: ClipNodeSnapshot,
     span: super::RetainedSurfaceArtifactSpanStamp,
@@ -15340,7 +15295,7 @@ fn prepare_tiled_content_backing(
         .ok_or(ScrollScenePrepareError::DescriptorPair)?;
         let [x, y, width, height] = bounds.raster;
         let color = texture_desc_for_logical_bounds(
-            PromotionCompositeBounds {
+            RetainedSurfaceBounds {
                 x: x as f32,
                 y: y as f32,
                 width: width as f32,
@@ -15457,7 +15412,6 @@ fn extract_root_scene_chunk(
 fn plan_single_root_scroll_scene(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -15480,7 +15434,6 @@ fn plan_single_root_scroll_scene(
     plan_exact_root_scroll_scene(
         arena,
         *root,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         scale_factor,
@@ -15493,7 +15446,6 @@ fn plan_single_root_scroll_scene(
 fn plan_exact_root_scroll_scene(
     arena: &NodeArena,
     root: NodeKey,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -15506,7 +15458,6 @@ fn plan_exact_root_scroll_scene(
     if scale_factor.to_bits() != 1.0_f32.to_bits()
         || incoming_paint_offset.map(f32::to_bits) != [0.0_f32.to_bits(); 2]
         || outer_scissor_rect.is_some()
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || !property_trees.transforms.is_empty()
         || !property_trees.effects.is_empty()
@@ -15648,7 +15599,6 @@ fn plan_exact_root_scroll_scene(
         let host = super::frame_recorder::record_baked_scroll_focused_atomic_projection_text_area_subtree_host_artifact_for_plan(
             arena,
             &[root],
-            promoted_node_ids,
             property_trees,
             paint_generations,
             focused_admission,
@@ -15665,7 +15615,6 @@ fn plan_exact_root_scroll_scene(
                 .ok_or_else(invalid)?;
         let local = super::frame_recorder::record_scroll_focused_atomic_projection_text_area_subtree_local_artifact_for_plan(
             arena,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             focused_admission,
@@ -15775,7 +15724,6 @@ fn plan_exact_root_scroll_scene(
         let host = super::frame_recorder::record_baked_scroll_atomic_projection_selection_text_area_subtree_host_artifact_for_plan(
             arena,
             &[root],
-            promoted_node_ids,
             property_trees,
             paint_generations,
             selection_admission,
@@ -15792,7 +15740,6 @@ fn plan_exact_root_scroll_scene(
                 .ok_or_else(invalid)?;
         let local = super::frame_recorder::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
             arena,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             selection_admission,
@@ -15865,7 +15812,6 @@ fn plan_exact_root_scroll_scene(
         let host = super::frame_recorder::record_baked_scroll_atomic_projection_text_area_subtree_host_artifact_for_plan(
             arena,
             &[root],
-            promoted_node_ids,
             property_trees,
             paint_generations,
             atomic_admission,
@@ -15882,7 +15828,6 @@ fn plan_exact_root_scroll_scene(
                 .ok_or_else(invalid)?;
         let local = super::frame_recorder::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
             arena,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             atomic_admission,
@@ -15950,7 +15895,6 @@ fn plan_exact_root_scroll_scene(
         super::frame_recorder::record_baked_scroll_text_area_subtree_host_artifact_for_plan(
             arena,
             &[root],
-            promoted_node_ids,
             property_trees,
             paint_generations,
             text_area_admission,
@@ -15960,7 +15904,6 @@ fn plan_exact_root_scroll_scene(
         super::frame_recorder::record_baked_scroll_interactive_text_area_subtree_host_artifact_for_plan(
             arena,
             &[root],
-            promoted_node_ids,
             property_trees,
             paint_generations,
             text_area_admission,
@@ -15970,7 +15913,6 @@ fn plan_exact_root_scroll_scene(
         super::frame_recorder::record_baked_scroll_host_artifact_for_plan(
             arena,
             &[root],
-            promoted_node_ids,
             property_trees,
             paint_generations,
             baked_witness,
@@ -16025,7 +15967,6 @@ fn plan_exact_root_scroll_scene(
         let artifact =
             super::frame_recorder::record_scroll_text_area_subtree_local_artifact_for_plan(
                 arena,
-                promoted_node_ids,
                 property_trees,
                 paint_generations,
                 text_area_admission,
@@ -16045,7 +15986,6 @@ fn plan_exact_root_scroll_scene(
     } else if let Some(text_area_admission) = interactive_text_area_subtree_admission {
         let recorded = super::frame_recorder::record_scroll_interactive_text_area_subtree_local_artifact_for_plan(
             arena,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             text_area_admission,
@@ -16085,7 +16025,6 @@ fn plan_exact_root_scroll_scene(
     } else {
         let artifact = super::frame_recorder::record_scroll_content_local_artifact_for_plan(
             arena,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             content_witness,
@@ -16416,7 +16355,6 @@ fn prepare_planned_scroll_scene(
 fn prepare_scroll_scene_from_live(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     graph: &FrameGraph,
@@ -16429,7 +16367,6 @@ fn prepare_scroll_scene_from_live(
     let plan = plan_single_root_scroll_scene(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         ctx.viewport().scale_factor(),
@@ -16757,12 +16694,10 @@ fn build_scroll_scene_from_pool_with_budget(
     action_policy: ScrollScenePoolActionPolicy,
 ) -> Result<ScrollSceneBuildOutcome, ScrollSceneFromLiveError> {
     let prepared = {
-        let (property_trees, paint_generations, promoted_node_ids) =
-            viewport.scroll_scene_live_authorities();
+        let (property_trees, paint_generations) = viewport.scroll_scene_live_authorities();
         prepare_scroll_scene_from_live(
             arena,
             roots,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             graph,
@@ -16907,7 +16842,6 @@ mod tests {
         let plan = super::super::frame_plan::plan_nested_scroll_scene_scaffold_with_context(
             arena,
             &[outer],
-            &FxHashSet::default(),
             properties,
             generations,
             1.0,
@@ -16976,6 +16910,94 @@ mod tests {
                 now: crate::time::Instant::now(),
             });
         });
+    }
+
+    fn sync_nested_media_scene(
+        arena: &mut NodeArena,
+        outer: NodeKey,
+        leaf: NodeKey,
+        frame_number: u64,
+    ) -> ValidatedNestedScrollScene {
+        layout_nested_media_leaf(arena, leaf);
+        prepare_nested_media_leaf(arena, leaf, frame_number);
+        arena.refresh_subtree_dirty_cache(outer);
+        let mut properties = PropertyTrees::default();
+        properties.sync(arena, &[outer]);
+        let mut generations = PaintGenerationTracker::default();
+        generations.sync(arena, &[outer], &properties);
+        compile_nested_scroll_fixture_parts(arena, outer, &properties, &generations)
+    }
+
+    fn nested_media_payload_identity(
+        scene: &ValidatedNestedScrollScene,
+    ) -> (
+        crate::view::sampled_texture::SampledTextureId,
+        u64,
+        usize,
+        super::super::PaintPayloadIdentity,
+    ) {
+        let scaffold = scene.plan.nested_scroll_planning_scaffold().unwrap();
+        let super::super::frame_plan::NestedScrollSceneScheduledStep::ContentReceiver(receiver) =
+            &scaffold.schedule.steps[2]
+        else {
+            panic!("nested media fixture must retain one content receiver")
+        };
+        let artifact = receiver.artifact.artifact();
+        let (id, generation, pixel_ptr) = match artifact.ops.last().unwrap() {
+            super::super::PaintOp::PreparedImage(op) => (
+                op.upload.id,
+                op.upload.generation,
+                op.upload.pixels.as_ptr() as usize,
+            ),
+            super::super::PaintOp::PreparedSvg(op) => (
+                op.upload.id,
+                op.upload.generation,
+                op.upload.pixels.as_ptr() as usize,
+            ),
+            other => panic!("expected frozen media payload, got {other:?}"),
+        };
+        (
+            id,
+            generation,
+            pixel_ptr,
+            artifact.chunks[0].payload_identity.clone(),
+        )
+    }
+
+    fn execute_nested_media_frame(
+        viewport: &mut Viewport,
+        geometry: PreparedNestedScrollReceiverGeometry,
+        expected: RetainedSurfaceCompileAction,
+    ) {
+        let owner = viewport.begin_retained_surface_frame_stage().unwrap();
+        let mut graph = FrameGraph::new();
+        let mut prepared = prepare_nested_scroll_scene_from_pool(
+            viewport,
+            geometry,
+            &mut graph,
+            UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
+            [0.0, 0.0, 0.0, 1.0],
+            owner,
+        )
+        .unwrap();
+        prepared.refresh_action_from_committed_test_pool();
+        assert_eq!(prepared.action_for_test(), expected);
+        let outcome = emit_prepared_nested_scroll_scene(prepared);
+        match expected {
+            RetainedSurfaceCompileAction::Reraster => {
+                assert_eq!(
+                    (outcome.trace.reraster_count, outcome.trace.reuse_count),
+                    (1, 0)
+                );
+            }
+            RetainedSurfaceCompileAction::Reuse => {
+                assert_eq!(
+                    (outcome.trace.reraster_count, outcome.trace.reuse_count),
+                    (0, 1)
+                );
+            }
+        }
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
     }
 
     fn nested_scroll_media_fixture(
@@ -17510,6 +17532,7 @@ mod tests {
                 nested_scroll_media_fixture(kind);
             let baseline =
                 compile_nested_scroll_fixture_parts(&arena, outer, &properties, &generations);
+            let baseline_payload = nested_media_payload_identity(&baseline);
 
             let host_origin = [35.0, 51.0];
             let outer_offset_y = 37.0;
@@ -17546,8 +17569,14 @@ mod tests {
             generations.sync(&arena, &[outer], &properties);
             let moved =
                 compile_nested_scroll_fixture_parts(&arena, outer, &properties, &generations);
+            let moved_payload = nested_media_payload_identity(&moved);
 
             assert_eq!(moved.leaf_stamp, baseline.leaf_stamp, "{kind:?}");
+            assert_eq!(
+                (moved_payload.0, moved_payload.1, moved_payload.2),
+                (baseline_payload.0, baseline_payload.1, baseline_payload.2),
+                "{kind:?}: inherited clips and scroll offsets must not enter frozen upload identity"
+            );
             assert_eq!(
                 moved.leaf_stamp.identity.resident_key(),
                 baseline.leaf_stamp.identity.resident_key(),
@@ -18543,6 +18572,131 @@ mod tests {
     }
 
     #[test]
+    fn nested_scroll_media_two_frame_reuse_and_targeted_invalidation_matrix() {
+        for (index, kind) in [NestedMediaLeafKind::Image, NestedMediaLeafKind::Svg]
+            .into_iter()
+            .enumerate()
+        {
+            let (mut arena, outer, _inner, leaf, _, _) = nested_scroll_media_fixture(kind);
+            let baseline_scene = sync_nested_media_scene(&mut arena, outer, leaf, 3);
+            let baseline_payload = nested_media_payload_identity(&baseline_scene);
+            let baseline_stamp = baseline_scene.leaf_stamp.clone();
+            let baseline_geometry = prepare_nested_scroll_receiver_geometry(
+                baseline_scene,
+                wgpu::TextureFormat::Bgra8UnormSrgb,
+                generous_budget(),
+            )
+            .expect("shadow media baseline geometry");
+            let mut viewport = Viewport::new();
+            execute_nested_media_frame(
+                &mut viewport,
+                baseline_geometry.clone(),
+                RetainedSurfaceCompileAction::Reraster,
+            );
+            execute_nested_media_frame(
+                &mut viewport,
+                baseline_geometry,
+                RetainedSurfaceCompileAction::Reuse,
+            );
+
+            match kind {
+                NestedMediaLeafKind::Image => {
+                    let crate::view::sampled_texture::SampledTextureId::Image(asset_id) =
+                        baseline_payload.0
+                    else {
+                        panic!("Image fixture must retain Image texture namespace")
+                    };
+                    crate::view::image_resource::replace_ready_image_for_test(
+                        asset_id,
+                        2,
+                        2,
+                        std::sync::Arc::from([0x31_u8; 16]),
+                    );
+                }
+                NestedMediaLeafKind::Svg => {
+                    arena
+                        .get_mut(leaf)
+                        .unwrap()
+                        .element
+                        .as_any_mut()
+                        .downcast_mut::<Svg>()
+                        .unwrap()
+                        .replace_active_raster_generation_for_test(0x42);
+                }
+            }
+            let generation_scene = sync_nested_media_scene(&mut arena, outer, leaf, 4);
+            let generation_payload = nested_media_payload_identity(&generation_scene);
+            assert_eq!(generation_payload.0, baseline_payload.0, "{kind:?}");
+            assert_ne!(generation_payload.1, baseline_payload.1, "{kind:?}");
+            assert_ne!(generation_payload.3, baseline_payload.3, "{kind:?}");
+            assert_ne!(generation_scene.leaf_stamp, baseline_stamp, "{kind:?}");
+            assert_eq!(
+                generation_scene.leaf_stamp.identity.resident_key(),
+                baseline_stamp.identity.resident_key(),
+                "{kind:?}: generation drift invalidates the existing media resident"
+            );
+            execute_nested_media_frame(
+                &mut viewport,
+                prepare_nested_scroll_receiver_geometry(
+                    generation_scene,
+                    wgpu::TextureFormat::Bgra8UnormSrgb,
+                    generous_budget(),
+                )
+                .expect("generation-mutated media geometry"),
+                RetainedSurfaceCompileAction::Reraster,
+            );
+
+            match kind {
+                NestedMediaLeafKind::Image => {
+                    let crate::view::sampled_texture::SampledTextureId::Image(asset_id) =
+                        generation_payload.0
+                    else {
+                        unreachable!()
+                    };
+                    crate::view::image_resource::set_image_loading_for_test(asset_id);
+                }
+                NestedMediaLeafKind::Svg => {
+                    arena
+                        .get_mut(leaf)
+                        .unwrap()
+                        .element
+                        .as_any_mut()
+                        .downcast_mut::<Svg>()
+                        .unwrap()
+                        .set_source(crate::view::SvgSource::Content(format!(
+                            r##"<svg width="100" height="600" xmlns="http://www.w3.org/2000/svg"><desc>retained-slot-switch-{index}</desc></svg>"##
+                        )));
+                }
+            }
+            let loading_scene = sync_nested_media_scene(&mut arena, outer, leaf, 5);
+            let scaffold = loading_scene
+                .plan
+                .nested_scroll_planning_scaffold()
+                .unwrap();
+            let super::super::frame_plan::NestedScrollSceneScheduledStep::ContentReceiver(receiver) =
+                &scaffold.schedule.steps[2]
+            else {
+                unreachable!()
+            };
+            assert_eq!(
+                receiver.artifact.artifact().chunks[0].id.role,
+                PaintChunkRole::SelfDecoration,
+                "{kind:?}: loading slot switches to the retained wrapper payload"
+            );
+            execute_nested_media_frame(
+                &mut viewport,
+                prepare_nested_scroll_receiver_geometry(
+                    loading_scene,
+                    wgpu::TextureFormat::Bgra8UnormSrgb,
+                    generous_budget(),
+                )
+                .expect("loading-wrapper media geometry"),
+                RetainedSurfaceCompileAction::Reraster,
+            );
+        }
+    }
+
+    #[test]
     fn nested_scroll_text_executor_cold_raster_and_warm_reuse_gate_the_text_pass() {
         let ctx = || UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
         let (arena, outer, _inner, leaf, mut properties, mut generations) =
@@ -19191,7 +19345,6 @@ mod tests {
         plan_and_validate_transform_scroll_scene(
             arena,
             &[root],
-            &FxHashSet::default(),
             properties,
             generations,
             1.0,
@@ -19242,7 +19395,6 @@ mod tests {
         plan_and_validate_transform_effect_scroll_scene(
             arena,
             &[root],
-            &FxHashSet::default(),
             properties,
             generations,
             1.0,
@@ -19261,7 +19413,6 @@ mod tests {
         let scene = plan_and_validate_transform_effect_scroll_scene(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -19344,7 +19495,6 @@ mod tests {
                 plan_and_validate_transform_effect_scroll_scene(
                     &arena,
                     &[root],
-                    &FxHashSet::default(),
                     &properties,
                     &generations,
                     1.0,
@@ -19512,22 +19662,15 @@ mod tests {
         });
 
         let (arena, root, properties, generations) = transform_effect_scroll_fixture();
-        for (name, scale, offset, scissor, promoted) in [
-            ("scale factor", 2.0, [0.0; 2], None, false),
-            ("paint offset", 1.0, [0.25, 0.0], None, false),
-            ("outer scissor", 1.0, [0.0; 2], Some([0, 0, 120, 90]), false),
-            ("promotion", 1.0, [0.0; 2], None, true),
+        for (name, scale, offset, scissor) in [
+            ("scale factor", 2.0, [0.0; 2], None),
+            ("paint offset", 1.0, [0.25, 0.0], None),
+            ("outer scissor", 1.0, [0.0; 2], Some([0, 0, 120, 90])),
         ] {
-            let promoted = if promoted {
-                FxHashSet::from_iter([0xb4_2001])
-            } else {
-                FxHashSet::default()
-            };
             assert!(
                 plan_and_validate_transform_effect_scroll_scene(
                     &arena,
                     &[root],
-                    &promoted,
                     &properties,
                     &generations,
                     scale,
@@ -19549,7 +19692,6 @@ mod tests {
         let scene = plan_and_validate_transform_effect_scroll_scene(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -19681,7 +19823,6 @@ mod tests {
         let scene = plan_and_validate_transform_effect_scroll_scene(
             &arena,
             &roots,
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -19723,7 +19864,6 @@ mod tests {
             plan_and_validate_transform_effect_scroll_scene(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -19750,7 +19890,7 @@ mod tests {
             baseline.roots[0].insertion.inner.receiver_stable_id,
         );
         let inner_color = texture_desc_for_logical_bounds(
-            PromotionCompositeBounds {
+            RetainedSurfaceBounds {
                 x: inner_values[0],
                 y: inner_values[1],
                 width: inner_values[2],
@@ -19802,7 +19942,6 @@ mod tests {
         let dimension_scene = plan_and_validate_transform_effect_scroll_scene(
             &dimension_arena,
             &[dimension_root],
-            &FxHashSet::default(),
             &dimension_properties,
             &dimension_generations,
             1.0,
@@ -19989,7 +20128,6 @@ mod tests {
         let scene = plan_and_validate_transform_effect_scroll_scene(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -20351,7 +20489,6 @@ mod tests {
             plan_and_validate_effect_scroll_scene_checkpoint(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -20433,7 +20570,6 @@ mod tests {
             plan_and_validate_effect_scroll_scene_checkpoint(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -20585,7 +20721,6 @@ mod tests {
             plan_and_validate_effect_scroll_scene_checkpoint(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -20610,7 +20745,7 @@ mod tests {
             .raster_bounds_bits
             .map(f32::from_bits);
         let receiver_color = texture_desc_for_logical_bounds(
-            PromotionCompositeBounds {
+            RetainedSurfaceBounds {
                 x: bits[0],
                 y: bits[1],
                 width: bits[2],
@@ -20705,7 +20840,6 @@ mod tests {
             plan_and_validate_effect_scroll_scene_checkpoint(
                 arena,
                 &[root],
-                &FxHashSet::default(),
                 properties,
                 generations,
                 1.0,
@@ -21192,17 +21326,8 @@ mod tests {
         properties: &PropertyTrees,
         generations: &PaintGenerationTracker,
     ) -> ScrollScenePlan {
-        plan_single_root_scroll_scene(
-            arena,
-            &[root],
-            &FxHashSet::default(),
-            properties,
-            generations,
-            1.0,
-            [0.0; 2],
-            None,
-        )
-        .unwrap()
+        plan_single_root_scroll_scene(arena, &[root], properties, generations, 1.0, [0.0; 2], None)
+            .unwrap()
     }
 
     fn generous_budget() -> ScrollSceneSingleTextureBudget {
@@ -21230,7 +21355,6 @@ mod tests {
         plan_property_scroll_scene_scaffold(
             arena,
             &[root],
-            &FxHashSet::default(),
             properties,
             generations,
             1.0,
@@ -21322,7 +21446,6 @@ mod tests {
             plan,
             arena,
             &[root],
-            &FxHashSet::default(),
             properties,
             generations,
             semantic_frame_time,
@@ -21926,7 +22049,6 @@ mod tests {
                 plan.clone(),
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 sampled_at + crate::time::Duration::from_millis(1),
@@ -21950,7 +22072,6 @@ mod tests {
                 plan,
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 sampled_at,
@@ -21975,14 +22096,7 @@ mod tests {
         .unwrap();
 
         assert!(plan.is_canonical());
-        assert!(plan.matches_live_inputs(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-            sampled_at,
-        ));
+        assert!(plan.matches_live_inputs(&arena, &[root], &properties, &generations, sampled_at,));
         let [
             ScrollBoundaryStep::HostBefore {
                 artifact: host,
@@ -22380,7 +22494,6 @@ mod tests {
         assert!(!plan.matches_live_inputs(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             sampled_at + crate::time::Duration::from_millis(1),
@@ -22391,14 +22504,7 @@ mod tests {
             .get_mut(&crate::view::compositor::property_tree::ScrollNodeId(root))
             .unwrap();
         live_scroll.generation += 1;
-        assert!(!plan.matches_live_inputs(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-            sampled_at,
-        ));
+        assert!(!plan.matches_live_inputs(&arena, &[root], &properties, &generations, sampled_at,));
         properties
             .scrolls
             .get_mut(&crate::view::compositor::property_tree::ScrollNodeId(root))
@@ -22414,27 +22520,18 @@ mod tests {
             .unwrap()
             .set_background_color_value(Color::rgb(72, 48, 24));
         arena.refresh_subtree_dirty_cache(root);
-        assert!(!plan.matches_live_inputs(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-            sampled_at,
-        ));
+        assert!(!plan.matches_live_inputs(&arena, &[root], &properties, &generations, sampled_at,));
     }
 
     #[test]
     fn property_scroll_b0_rejects_unsupported_scene_contracts() {
-        let (arena, root, child, properties, generations) = fixture_at_offset([0.0, 20.0]);
+        let (arena, root, _child, properties, generations) = fixture_at_offset([0.0, 20.0]);
         let sampled_at = crate::time::Instant::now();
         let budget = generous_budget();
-        let promoted = FxHashSet::from_iter([arena.get(child).unwrap().element.stable_id()]);
         for result in [
             plan_property_scroll_scene_scaffold(
                 &arena,
                 &[root, root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -22447,20 +22544,6 @@ mod tests {
             plan_property_scroll_scene_scaffold(
                 &arena,
                 &[root],
-                &promoted,
-                &properties,
-                &generations,
-                1.0,
-                [0.0; 2],
-                None,
-                sampled_at,
-                wgpu::TextureFormat::Bgra8UnormSrgb,
-                budget,
-            ),
-            plan_property_scroll_scene_scaffold(
-                &arena,
-                &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 2.0,
@@ -22473,7 +22556,6 @@ mod tests {
             plan_property_scroll_scene_scaffold(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -22486,7 +22568,6 @@ mod tests {
             plan_property_scroll_scene_scaffold(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -23439,7 +23520,6 @@ mod tests {
     fn prepare_live(
         arena: &NodeArena,
         root: NodeKey,
-        promoted_node_ids: &FxHashSet<u64>,
         properties: &PropertyTrees,
         generations: &PaintGenerationTracker,
         graph: &FrameGraph,
@@ -23448,7 +23528,6 @@ mod tests {
         prepare_scroll_scene_from_live(
             arena,
             &[root],
-            promoted_node_ids,
             properties,
             generations,
             graph,
@@ -23463,15 +23542,7 @@ mod tests {
         let graph = FrameGraph::new();
         let before = graph.build_state_snapshot_for_test();
 
-        let prepared = prepare_live(
-            &arena,
-            root,
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-            &graph,
-        )
-        .unwrap();
+        let prepared = prepare_live(&arena, root, &properties, &generations, &graph).unwrap();
 
         assert_eq!(prepared.content_stamp().identity.boundary_root, child);
         assert_eq!(graph.build_state_snapshot_for_test(), before);
@@ -23649,7 +23720,6 @@ mod tests {
         let baked_plan = super::super::plan_single_root_scroll_host_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -23703,7 +23773,6 @@ mod tests {
         let baked_plan = super::super::plan_single_root_scroll_host_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -23755,14 +23824,7 @@ mod tests {
         let before = graph.build_state_snapshot_for_test();
 
         assert!(matches!(
-            prepare_live(
-                &arena,
-                root,
-                &FxHashSet::default(),
-                &properties,
-                &generations,
-                &graph,
-            ),
+            prepare_live(&arena, root, &properties, &generations, &graph,),
             Err(ScrollSceneFromLiveError::LiveSnapshotDrift)
         ));
         assert_eq!(graph.build_state_snapshot_for_test(), before);
@@ -23781,29 +23843,8 @@ mod tests {
         let before = graph.build_state_snapshot_for_test();
 
         assert!(matches!(
-            prepare_live(
-                &arena,
-                root,
-                &FxHashSet::default(),
-                &properties,
-                &generations,
-                &graph,
-            ),
+            prepare_live(&arena, root, &properties, &generations, &graph,),
             Err(ScrollSceneFromLiveError::LiveSnapshotDrift)
-        ));
-        assert_eq!(graph.build_state_snapshot_for_test(), before);
-    }
-
-    #[test]
-    fn fused_live_prepare_rejects_promotion_drift_without_graph_mutation() {
-        let (arena, root, child, properties, generations) = fixture_at_offset([0.0, 20.0]);
-        let promoted = FxHashSet::from_iter([arena.get(child).unwrap().element.stable_id()]);
-        let graph = FrameGraph::new();
-        let before = graph.build_state_snapshot_for_test();
-
-        assert!(matches!(
-            prepare_live(&arena, root, &promoted, &properties, &generations, &graph,),
-            Err(ScrollSceneFromLiveError::Plan(_))
         ));
         assert_eq!(graph.build_state_snapshot_for_test(), before);
     }
@@ -24156,7 +24197,6 @@ mod tests {
             plan_single_root_scroll_scene(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -24169,7 +24209,6 @@ mod tests {
             plan_property_scroll_scene_scaffold(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -24255,7 +24294,6 @@ mod tests {
             let scene = plan_and_validate_property_scroll_scene(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -24538,7 +24576,6 @@ mod tests {
         let scene = plan_and_validate_property_scroll_scene(
             &arena,
             &roots,
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -24603,7 +24640,6 @@ mod tests {
             plan_and_validate_property_scroll_scene(
                 &arena,
                 &roots,
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -24637,7 +24673,6 @@ mod tests {
             plan_and_validate_property_scroll_scene(
                 &arena,
                 &roots,
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -24671,7 +24706,6 @@ mod tests {
         let scene = plan_and_validate_property_scroll_scene(
             &arena,
             &roots,
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -24732,7 +24766,6 @@ mod tests {
         let scene = plan_and_validate_property_scroll_scene(
             &arena,
             &roots,
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -24810,7 +24843,6 @@ mod tests {
             plan_and_validate_property_scroll_scene(
                 &arena,
                 &roots,
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -24900,7 +24932,6 @@ mod tests {
             plan_and_validate_property_scroll_scene(
                 &arena,
                 &roots,
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -24947,7 +24978,6 @@ mod tests {
         let scene = plan_and_validate_property_scroll_scene(
             &arena,
             &roots,
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -25298,7 +25328,6 @@ mod tests {
             plan_and_validate_transform_scroll_scene(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -25374,7 +25403,6 @@ mod tests {
         let second_scene = plan_and_validate_transform_scroll_scene(
             &second_arena,
             &[second_root],
-            &FxHashSet::default(),
             &second_properties,
             &second_generations,
             1.0,
@@ -25536,7 +25564,6 @@ mod tests {
             let offset_scene = plan_and_validate_transform_scroll_scene(
                 &offset_arena,
                 &[offset_root],
-                &FxHashSet::default(),
                 &offset_properties,
                 &offset_generations,
                 1.0,
@@ -25615,7 +25642,6 @@ mod tests {
             let second_scene = plan_and_validate_transform_scroll_scene(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -25673,7 +25699,6 @@ mod tests {
                 plan_and_validate_transform_scroll_scene(
                     &arena,
                     &[root],
-                    &FxHashSet::default(),
                     &properties,
                     &generations,
                     1.0,
@@ -25719,7 +25744,6 @@ mod tests {
         let baseline = plan_and_validate_transform_scroll_scene(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -25758,7 +25782,6 @@ mod tests {
         let scene = plan_and_validate_transform_scroll_scene(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,

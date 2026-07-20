@@ -2,15 +2,35 @@ use super::*;
 
 pub use crate::platform::input::PlatformPointerButton as PointerButton;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewportDebugOptions {
     pub trace_fps: bool,
     pub trace_render_time: bool,
     pub trace_layout_detail: bool,
     pub trace_compile_detail: bool,
     pub trace_execute_detail: bool,
-    pub trace_reuse_path: bool,
     pub geometry_overlay: bool,
+    pub retained_auto_overlay: bool,
+    pub retained_auto_authority: bool,
+    pub retained_auto_reuse_actions: bool,
+    pub retained_auto_fallback_reasons: bool,
+}
+
+impl Default for ViewportDebugOptions {
+    fn default() -> Self {
+        Self {
+            trace_fps: false,
+            trace_render_time: false,
+            trace_layout_detail: false,
+            trace_compile_detail: false,
+            trace_execute_detail: false,
+            geometry_overlay: false,
+            retained_auto_overlay: false,
+            retained_auto_authority: true,
+            retained_auto_reuse_actions: true,
+            retained_auto_fallback_reasons: true,
+        }
+    }
 }
 
 impl ViewportDebugOptions {
@@ -21,8 +41,9 @@ impl ViewportDebugOptions {
             trace_layout_detail: std::env::var("RFGUI_TRACE_LAYOUT_DETAIL").is_ok(),
             trace_compile_detail: std::env::var("RFGUI_TRACE_COMPILE_DETAIL").is_ok(),
             trace_execute_detail: std::env::var("RFGUI_TRACE_EXECUTE_DETAIL").is_ok(),
-            trace_reuse_path: std::env::var("RFGUI_TRACE_REUSE_PATH").is_ok(),
             geometry_overlay: std::env::var("RFGUI_DEBUG_GEOMETRY_OVERLAY").is_ok(),
+            retained_auto_overlay: std::env::var("RFGUI_DEBUG_RETAINED_AUTO").is_ok(),
+            ..Self::default()
         }
     }
 }

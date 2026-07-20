@@ -129,6 +129,30 @@ impl Element {
         self.absolute_clip_scissor_rect()
     }
 
+    /// Exact first retained slice for a viewport-clipped absolute leaf that
+    /// is itself a frame root. The DOM walk omits this node from its authored
+    /// position and records it once in the deferred root phase, so admitting
+    /// descendants or an inherited frame-root relationship here would lose
+    /// the legacy ordering/clip proof.
+    pub(crate) fn exact_deferred_viewport_root_self_clip_scissor_rect(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+        is_frame_root: bool,
+    ) -> Option<[u32; 4]> {
+        if !is_frame_root
+            || arena.parent_of(owner).is_some()
+            || !arena.children_of(owner).is_empty()
+            || !self.children.is_empty()
+            || self.computed_style.position.mode() != PositionMode::Absolute
+            || self.computed_style.position.clip_mode() != ClipMode::Viewport
+            || !self.should_append_to_root_viewport_render()
+        {
+            return None;
+        }
+        self.absolute_clip_scissor_rect()
+    }
+
     /// Exact `AnchorParent` self clip that the artifact walk may own.
     ///
     /// Nested `AnchorParent` children are painted by legacy Element parents in

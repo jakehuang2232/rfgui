@@ -83,7 +83,7 @@ pub struct Image {
     sampling: ImageSampling,
     source_handle: ImageHandle,
     /// Pending loading-slot wrapper keys (detached from `Element.children`
-    /// until `sync_active_slot` promotes them). Live in the same arena as
+    /// until `sync_active_slot` activates them). Live in the same arena as
     /// the owning Image but not traversed while inactive.
     loading_slot: Vec<NodeKey>,
     error_slot: Vec<NodeKey>,
@@ -311,7 +311,7 @@ impl Image {
         arena: &NodeArena,
         expected_owner: Option<NodeKey>,
         properties: Option<crate::view::compositor::property_tree::PropertyTreeState>,
-        _deferred_phase_root: bool,
+        deferred_phase_root: bool,
         recording_context: crate::view::paint::PaintRecordingContext,
     ) -> Result<ImageShadowPaintClass, super::ShadowPaintBlocker> {
         let indexed_owner = arena
@@ -327,10 +327,15 @@ impl Image {
 
         match (&self.frozen_snapshot, self.active_slot) {
             (Some(ImageSnapshot::Ready(_)), ActiveSlot::None) => {
-                if let Some(blocker) =
-                    self.element
-                        .shadow_paint_blocker(arena, false, false, false, recording_context)
-                {
+                if let Some(blocker) = self.element.shadow_paint_blocker(
+                    arena,
+                    deferred_phase_root,
+                    recording_context.authorizes_self_clip_for(self.stable_id())
+                        || recording_context
+                            .authorizes_deferred_viewport_self_clip_for(self.stable_id()),
+                    true,
+                    recording_context,
+                ) {
                     return Err(blocker);
                 }
                 if let Some(properties) = properties {
@@ -362,7 +367,8 @@ impl Image {
                 let prepared = self
                     .prepared_image_op(
                         recording_context.paint_offset,
-                        recording_context.paint_opacity(self.element.promotion_node_info().opacity),
+                        recording_context
+                            .paint_opacity(self.element.retained_paint_properties().opacity),
                     )
                     .ok_or(super::ShadowPaintBlocker::MissingPreparedImage)?;
                 Ok(ImageShadowPaintClass::ReadyExact(prepared))
@@ -371,10 +377,12 @@ impl Image {
             | (Some(ImageSnapshot::Error(_)), ActiveSlot::Error) => {
                 if let Some(blocker) = self.element.shadow_paint_blocker(
                     arena,
-                    // M9E2 authorizes only the wrapper's canonical zero-blur
-                    // outer-shadow payload. Deferred emission remains out.
-                    false,
-                    false,
+                    // Authorize only the wrapper's canonical zero-blur
+                    // outer-shadow payload under an exact recorder-owned clip.
+                    deferred_phase_root,
+                    recording_context.authorizes_self_clip_for(self.stable_id())
+                        || recording_context
+                            .authorizes_deferred_viewport_self_clip_for(self.stable_id()),
                     true,
                     recording_context,
                 ) {
@@ -387,7 +395,10 @@ impl Image {
                     {
                         return Err(super::ShadowPaintBlocker::Transform);
                     }
-                    if properties.scroll.is_some() {
+                    if properties.scroll.is_some()
+                        && !recording_context
+                            .authorizes_nested_scroll_content_properties(owner, properties)
+                    {
                         return Err(super::ShadowPaintBlocker::ScrollContainer);
                     }
                 }
@@ -549,8 +560,30 @@ impl ElementTrait for Image {
         self.element.stable_id()
     }
 
+    fn exact_retained_self_clip_scissor_rect(
+        &self,
+        owner: NodeKey,
+        arena: &NodeArena,
+        is_frame_root: bool,
+    ) -> Option<[u32; 4]> {
+        self.element
+            .exact_anchor_parent_leaf_self_clip_scissor_rect(owner, arena, is_frame_root)
+            .or_else(|| {
+                self.element
+                    .exact_deferred_viewport_root_self_clip_scissor_rect(
+                        owner,
+                        arena,
+                        is_frame_root,
+                    )
+            })
+    }
+
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
         self.element.box_model_snapshot()
+    }
+
+    fn retained_paint_properties(&self) -> super::RetainedPaintProperties {
+        self.element.retained_paint_properties()
     }
 
     fn tick_post_layout_animation_frame(&mut self, now: crate::time::Instant) -> super::DirtyFlags {
@@ -656,9 +689,11 @@ impl ElementTrait for Image {
                     )
                     .into_iter()
                     .collect::<Vec<_>>();
+                let shadows = self.element.prepared_outer_shadow_ops(recording_context)?;
                 metadata.payload_identity =
-                    crate::view::paint::PaintPayloadIdentity::image_with_decoration(
+                    crate::view::paint::PaintPayloadIdentity::image_with_shadows_and_decoration(
                         crate::view::paint::PreparedImageIdentity::from_op(&prepared),
+                        shadows.iter(),
                         decoration.iter(),
                     )?;
                 Some(metadata)
@@ -709,17 +744,31 @@ impl ElementTrait for Image {
                 metadata.id.role = crate::view::paint::PaintChunkRole::ImageContent;
                 let mut ops = self
                     .element
-                    .self_decoration_paint_ops(
-                        prepared.params.opacity,
-                        recording_context.paint_offset,
-                    )
+                    .prepared_outer_shadow_ops(recording_context)?
                     .into_iter()
-                    .map(crate::view::paint::PaintOp::DrawRect)
+                    .map(crate::view::paint::PaintOp::PreparedShadow)
                     .collect::<Vec<_>>();
+                ops.extend(
+                    self.element
+                        .self_decoration_paint_ops(
+                            prepared.params.opacity,
+                            recording_context.paint_offset,
+                        )
+                        .into_iter()
+                        .map(crate::view::paint::PaintOp::DrawRect),
+                );
+                let shadow_count = ops
+                    .iter()
+                    .take_while(|op| matches!(op, crate::view::paint::PaintOp::PreparedShadow(_)))
+                    .count();
                 metadata.payload_identity =
-                    crate::view::paint::PaintPayloadIdentity::image_with_decoration(
+                    crate::view::paint::PaintPayloadIdentity::image_with_shadows_and_decoration(
                         crate::view::paint::PreparedImageIdentity::from_op(&prepared),
-                        ops.iter().filter_map(|op| match op {
+                        ops[..shadow_count].iter().filter_map(|op| match op {
+                            crate::view::paint::PaintOp::PreparedShadow(shadow) => Some(shadow),
+                            _ => None,
+                        }),
+                        ops[shadow_count..].iter().filter_map(|op| match op {
                             crate::view::paint::PaintOp::DrawRect(rect) => Some(rect),
                             _ => None,
                         }),
@@ -777,17 +826,13 @@ impl ElementTrait for Image {
         self.element.hit_test_visible_at(viewport_x, viewport_y)
     }
 
-    fn promotion_node_info(&self) -> crate::view::promotion::PromotionNodeInfo {
-        self.element.promotion_node_info()
-    }
-
     fn has_active_animator(&self) -> bool {
         self.element.has_active_animator()
     }
 
-    fn promotion_self_signature(&self) -> u64 {
+    fn retained_paint_signature(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
-        self.element.promotion_self_signature().hash(&mut hasher);
+        self.element.retained_paint_signature().hash(&mut hasher);
         self.source_handle.asset_id().hash(&mut hasher);
         match self.fit {
             ImageFit::Contain => 0_u8,
@@ -810,26 +855,15 @@ impl ElementTrait for Image {
         hasher.finish()
     }
 
-    fn promotion_signature_is_complete(&self) -> bool {
+    fn retained_paint_signature_is_complete(&self) -> bool {
         true
-    }
-
-    fn promotion_clip_intersection_signature(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-    ) -> u64 {
-        self.element.promotion_clip_intersection_signature(arena)
-    }
-
-    fn promotion_composite_bounds(&self) -> super::PromotionCompositeBounds {
-        self.element.promotion_composite_bounds()
     }
 
     fn retained_transform_surface_bounds(
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
-    ) -> Option<super::PromotionCompositeBounds> {
+    ) -> Option<super::RetainedSurfaceBounds> {
         self.element
             .retained_transform_surface_bounds(arena, paint_offset)
     }
@@ -838,7 +872,7 @@ impl ElementTrait for Image {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
-    ) -> Option<super::PromotionCompositeBounds> {
+    ) -> Option<super::RetainedSurfaceBounds> {
         let wrapper = self
             .element
             .retained_transform_render_output_bounds(arena, paint_offset)?;
@@ -850,7 +884,7 @@ impl ElementTrait for Image {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
-    ) -> Option<super::PromotionCompositeBounds> {
+    ) -> Option<super::RetainedSurfaceBounds> {
         let wrapper = self
             .element
             .legacy_transform_render_output_bounds(arena, paint_offset)?;
@@ -858,7 +892,7 @@ impl ElementTrait for Image {
         Element::checked_union_transform_surface_bounds(wrapper, media)
     }
 
-    fn retained_transform_raster_seed_bounds(&self) -> Option<super::PromotionCompositeBounds> {
+    fn retained_transform_raster_seed_bounds(&self) -> Option<super::RetainedSurfaceBounds> {
         self.element.retained_transform_raster_seed_bounds()
     }
 
@@ -1100,10 +1134,10 @@ pub(crate) fn paint_adjusted_offset(element: &Element, parent_paint_offset: [f32
 pub(crate) fn paint_adjusted_media_bounds(
     element: &Element,
     parent_paint_offset: [f32; 2],
-) -> super::PromotionCompositeBounds {
+) -> super::RetainedSurfaceBounds {
     let snapshot = element.box_model_snapshot();
     let paint_offset = paint_adjusted_offset(element, parent_paint_offset);
-    super::PromotionCompositeBounds {
+    super::RetainedSurfaceBounds {
         x: snapshot.x + paint_offset[0],
         y: snapshot.y + paint_offset[1],
         width: snapshot.width,
@@ -1123,11 +1157,7 @@ impl Renderable for Image {
         let viewport = ctx.viewport();
         let base_state = self.element.build_base_only(graph, arena, ctx);
         let mut ctx = UiBuildContext::from_parts(viewport, base_state);
-        let opacity = if ctx.is_node_promoted(self.stable_id()) {
-            1.0
-        } else {
-            self.element.promotion_node_info().opacity
-        };
+        let opacity = self.element.retained_paint_properties().opacity;
         let Some(prepared) = self.prepared_image_op_with_upload(
             match self.frozen_upload() {
                 Some(upload) => upload,
@@ -1208,7 +1238,7 @@ pub(crate) fn compute_image_mapping(
 #[cfg(test)]
 mod tests {
     use super::{ActiveSlot, Image};
-    use crate::style::{BoxShadow, Color};
+    use crate::style::{BoxShadow, ClipMode, Color, Position};
     use crate::style::{ComputedStyle, EdgeInsets, Length, ParsedValue, PropertyId, Style};
     use crate::style::{Layout, ScrollDirection};
     use crate::view::ImageSource;
@@ -1226,7 +1256,6 @@ mod tests {
         commit_child, commit_element, measure_and_place, new_test_arena,
     };
     use glam::{Mat4, Vec3};
-    use rustc_hash::FxHashSet;
 
     fn rgba_source(width: u32, height: u32) -> ImageSource {
         ImageSource::Rgba {
@@ -1234,6 +1263,34 @@ mod tests {
             height,
             pixels: std::sync::Arc::<[u8]>::from(vec![255; (width * height * 4) as usize]),
         }
+    }
+
+    #[test]
+    fn image_delegates_retained_paint_properties_to_its_element() {
+        let mut image = Image::new_with_id(0x90ef, rgba_source(1, 1));
+        let mut style = Style::new();
+        style.set_border(crate::style::Border::uniform(
+            Length::px(1.0),
+            &Color::hex("#ffffff"),
+        ));
+        style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        image.element.apply_style(style);
+        image.element.set_opacity(0.4);
+        image.element.set_border_radius(3.0);
+        image
+            .element
+            .set_box_shadows(vec![BoxShadow::new().offset(1.0)]);
+
+        let properties = image.retained_paint_properties();
+        assert_eq!(properties, image.element.retained_paint_properties());
+        assert_eq!(properties.opacity.to_bits(), 0.4_f32.to_bits());
+        assert!(properties.has_rounded_clip);
+        assert!(properties.has_box_shadow);
+        assert!(properties.has_border);
+        assert!(properties.is_scroll_container);
     }
 
     #[test]
@@ -1500,23 +1557,23 @@ mod tests {
     }
 
     #[test]
-    fn promotion_signature_covers_source_fit_sampling_and_resource_generation() {
+    fn retained_paint_signature_covers_source_fit_sampling_and_resource_generation() {
         use std::hash::Hasher;
 
         let mut image = Image::new_with_id(1, rgba_source(8, 4));
-        assert!(image.promotion_signature_is_complete());
-        let initial = image.promotion_self_signature();
+        assert!(image.retained_paint_signature_is_complete());
+        let initial = image.retained_paint_signature();
 
         image.set_fit(crate::view::ImageFit::Cover);
-        let fit = image.promotion_self_signature();
+        let fit = image.retained_paint_signature();
         assert_ne!(fit, initial);
 
         image.set_sampling(crate::view::ImageSampling::Nearest);
-        let sampling = image.promotion_self_signature();
+        let sampling = image.retained_paint_signature();
         assert_ne!(sampling, fit);
 
         image.set_source(rgba_source(9, 4));
-        assert_ne!(image.promotion_self_signature(), sampling);
+        assert_ne!(image.retained_paint_signature(), sampling);
 
         let pixels = std::sync::Arc::<[u8]>::from(vec![255; 16]);
         let first = ImageSnapshot::Ready(ReadyImage {
@@ -1573,10 +1630,10 @@ mod tests {
     }
 
     #[test]
-    fn arena_sync_freezes_one_resource_generation_across_repeated_measure_and_promotion() {
+    fn arena_sync_freezes_one_resource_generation_across_repeated_measure_and_identity_reads() {
         let mut image = Image::new_with_id(31, rgba_source(1, 1));
         let asset_id = image.source_handle.asset_id();
-        let initial_signature = image.promotion_self_signature();
+        let initial_signature = image.retained_paint_signature();
         crate::view::image_resource::replace_ready_image_for_test(
             asset_id,
             2,
@@ -1584,15 +1641,15 @@ mod tests {
             std::sync::Arc::from([1_u8; 8]),
         );
         assert_eq!(
-            image.promotion_self_signature(),
+            image.retained_paint_signature(),
             initial_signature,
-            "promotion must not observe registry state ahead of the frame freeze"
+            "retained identity must not observe registry state ahead of the frame freeze"
         );
 
         let mut arena = new_test_arena();
         image.clear_local_dirty_flags(DirtyFlags::ALL);
         image.sync_arena(&mut arena);
-        let frozen_signature = image.promotion_self_signature();
+        let frozen_signature = image.retained_paint_signature();
         assert_ne!(frozen_signature, initial_signature);
         assert!(image.local_dirty_flags().contains(DirtyFlags::LAYOUT));
 
@@ -1614,7 +1671,7 @@ mod tests {
             &mut arena,
         );
         assert_eq!(image.measured_size(), (2.0, 1.0));
-        assert_eq!(image.promotion_self_signature(), frozen_signature);
+        assert_eq!(image.retained_paint_signature(), frozen_signature);
 
         image.measure(
             LayoutConstraints {
@@ -1628,7 +1685,7 @@ mod tests {
             &mut arena,
         );
         assert_eq!(image.measured_size(), (2.0, 1.0));
-        assert_eq!(image.promotion_self_signature(), frozen_signature);
+        assert_eq!(image.retained_paint_signature(), frozen_signature);
 
         image.sync_arena(&mut arena);
         image.measure(
@@ -1643,7 +1700,7 @@ mod tests {
             &mut arena,
         );
         assert_eq!(image.measured_size(), (5.0, 1.0));
-        assert_ne!(image.promotion_self_signature(), frozen_signature);
+        assert_ne!(image.retained_paint_signature(), frozen_signature);
     }
 
     #[test]
@@ -1726,8 +1783,6 @@ mod tests {
         let metadata = record_coverage_manifest(
             &arena,
             &roots,
-            &FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -1737,8 +1792,6 @@ mod tests {
         let full = record_coverage_manifest(
             &arena,
             &roots,
-            &FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -2396,18 +2449,8 @@ mod tests {
         properties.sync(&arena, &roots);
         let mut generations = PaintGenerationTracker::default();
         generations.sync(&arena, &roots, &properties);
-        let record = |mode| {
-            record_coverage_manifest(
-                &arena,
-                &roots,
-                &FxHashSet::default(),
-                None,
-                false,
-                true,
-                mode,
-                &properties,
-                &generations,
-            )
+        let record = |mode: CoverageRecordingMode| {
+            record_coverage_manifest(&arena, &roots, false, true, mode, &properties, &generations)
         };
         let metadata = record(CoverageRecordingMode::MetadataOnly);
         let full = record(CoverageRecordingMode::FullArtifact);
@@ -2535,18 +2578,8 @@ mod tests {
         properties.sync(&arena, &roots);
         let mut generations = PaintGenerationTracker::default();
         generations.sync(&arena, &roots, &properties);
-        let record = |mode| {
-            record_coverage_manifest(
-                &arena,
-                &roots,
-                &FxHashSet::default(),
-                None,
-                false,
-                true,
-                mode,
-                &properties,
-                &generations,
-            )
+        let record = |mode: CoverageRecordingMode| {
+            record_coverage_manifest(&arena, &roots, false, true, mode, &properties, &generations)
         };
         let metadata = record(CoverageRecordingMode::MetadataOnly);
         let full = record(CoverageRecordingMode::FullArtifact);
@@ -2600,8 +2633,8 @@ mod tests {
     }
 
     #[test]
-    fn ready_image_media_with_outer_shadow_remains_legacy() {
-        let (arena, owner, ..) = prepared_ready_image(
+    fn ready_image_media_with_outer_shadow_records_typed_shadow_prefix() {
+        let (mut arena, owner, ..) = prepared_ready_image(
             0x9190,
             path_source("ready-shadow-fallback"),
             2,
@@ -2612,31 +2645,279 @@ mod tests {
             let mut node = arena.get_mut(owner).unwrap();
             let image = node.element.as_any_mut().downcast_mut::<Image>().unwrap();
             let mut style = Style::new();
+            style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
             style.set_box_shadow(vec![BoxShadow::new().offset_x(1.0)]);
             image.apply_style(style);
         }
+        measure_and_place(
+            &mut arena,
+            owner,
+            LayoutConstraints {
+                max_width: 100.0,
+                max_height: 100.0,
+                viewport_width: 100.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+            },
+            LayoutPlacement {
+                parent_x: 1.25,
+                parent_y: 2.75,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 100.0,
+                available_height: 100.0,
+                viewport_width: 100.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+            },
+        );
         let node = arena.get(owner).unwrap();
         let context = image_recording_context(&arena, owner);
         assert_eq!(
             node.element
                 .shadow_paint_recording_capability(&arena, false, context),
-            ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::BoxShadow)
+            ShadowPaintRecordingCapability::Recordable
         );
         let revision = crate::view::paint::PaintContentRevision {
             self_paint_revision: 1,
             composite_revision: 1,
             topology_revision: 1,
         };
-        assert!(
-            node.element
-                .record_shadow_paint_metadata(owner, Default::default(), revision, &arena, context,)
-                .is_none()
+        let metadata = node
+            .element
+            .record_shadow_paint_metadata(owner, Default::default(), revision, &arena, context)
+            .expect("ready shadow Image metadata");
+        let artifact = node
+            .element
+            .record_shadow_paint_artifact(owner, Default::default(), revision, &arena, context)
+            .expect("ready shadow Image artifact");
+        assert_eq!(
+            artifact.chunks[0].payload_identity,
+            metadata.payload_identity
         );
         assert!(
-            node.element
-                .record_shadow_paint_artifact(owner, Default::default(), revision, &arena, context,)
-                .is_none()
+            matches!(
+                &metadata.payload_identity,
+                crate::view::paint::PaintPayloadIdentity::ImageWithShadows(_, shadows, _)
+                    if shadows.len() == 1
+            ),
+            "{:?}",
+            metadata.payload_identity
         );
+        assert!(matches!(
+            artifact.ops.as_slice(),
+            [
+                crate::view::paint::PaintOp::PreparedShadow(_),
+                ..,
+                crate::view::paint::PaintOp::PreparedImage(_)
+            ]
+        ));
+        assert!(
+            crate::view::paint::validate_media_content_artifact_for_test(&artifact),
+            "compiler must accept the exact typed shadow prefix"
+        );
+        let mut reordered = artifact.clone();
+        assert!(matches!(
+            reordered.ops.get(1),
+            Some(crate::view::paint::PaintOp::DrawRect(_))
+        ));
+        reordered.ops.swap(0, 1);
+        assert!(
+            !crate::view::paint::validate_media_content_artifact_for_test(&reordered),
+            "a shadow after decoration must fail closed"
+        );
+        let (baseline_media, baseline_shadows, baseline_decoration) =
+            match &metadata.payload_identity {
+                crate::view::paint::PaintPayloadIdentity::ImageWithShadows(
+                    media,
+                    shadows,
+                    decoration,
+                ) => (media.clone(), shadows.clone(), decoration.clone()),
+                _ => unreachable!(),
+            };
+        drop(node);
+        {
+            let mut node = arena.get_mut(owner).unwrap();
+            let image = node.element.as_any_mut().downcast_mut::<Image>().unwrap();
+            let mut style = Style::new();
+            style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+            style.set_box_shadow(vec![BoxShadow::new().offset_x(9.0).offset_y(-4.0)]);
+            image.apply_style(style);
+        }
+        measure_and_place(
+            &mut arena,
+            owner,
+            LayoutConstraints {
+                max_width: 100.0,
+                max_height: 100.0,
+                viewport_width: 100.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+            },
+            LayoutPlacement {
+                parent_x: 1.25,
+                parent_y: 2.75,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 100.0,
+                available_height: 100.0,
+                viewport_width: 100.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+            },
+        );
+        let node = arena.get(owner).unwrap();
+        let changed_context = image_recording_context(&arena, owner);
+        let changed = node
+            .element
+            .record_shadow_paint_metadata(
+                owner,
+                Default::default(),
+                revision,
+                &arena,
+                changed_context,
+            )
+            .expect("shadow-mutated Image metadata");
+        let crate::view::paint::PaintPayloadIdentity::ImageWithShadows(
+            changed_media,
+            changed_shadows,
+            changed_decoration,
+        ) = changed.payload_identity
+        else {
+            panic!("shadow-mutated Image must retain typed media identity")
+        };
+        assert_eq!(changed_media, baseline_media);
+        assert_ne!(changed_shadows, baseline_shadows);
+        assert_eq!(changed_decoration, baseline_decoration);
+    }
+
+    #[test]
+    fn ready_image_exact_self_clip_shadow_metadata_and_full_are_canonical() {
+        use crate::view::paint::{
+            CoverageRecordingMode, PaintCoverageItem, PaintPayloadIdentity,
+            record_coverage_manifest,
+        };
+
+        let (mut arena, owner, ..) = prepared_ready_image(
+            0x9191,
+            path_source("ready-exact-self-clip-shadow"),
+            2,
+            2,
+            std::sync::Arc::from([0x5a_u8; 16]),
+        );
+        {
+            let mut node = arena.get_mut(owner).unwrap();
+            let image = node.element.as_any_mut().downcast_mut::<Image>().unwrap();
+            let mut style = Style::new();
+            style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+            style.insert(
+                PropertyId::Position,
+                ParsedValue::Position(
+                    Position::absolute()
+                        .left(Length::px(1.25))
+                        .top(Length::px(2.75))
+                        .clip(ClipMode::AnchorParent),
+                ),
+            );
+            style.set_box_shadow(vec![BoxShadow::new().offset_x(-3.0).offset_y(4.5)]);
+            image.apply_style(style);
+        }
+        measure_and_place(
+            &mut arena,
+            owner,
+            LayoutConstraints {
+                max_width: 100.0,
+                max_height: 100.0,
+                viewport_width: 100.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 100.0,
+                available_height: 100.0,
+                viewport_width: 100.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+            },
+        );
+        let roots = [owner];
+        let mut properties = PropertyTrees::default();
+        properties.sync(&arena, &roots);
+        let mut generations = PaintGenerationTracker::default();
+        generations.sync(&arena, &roots, &properties);
+        let state = properties.paint_state_for(owner).unwrap();
+        let node = arena.get(owner).unwrap();
+        let mut direct_context = node
+            .element
+            .shadow_paint_recording_context(Default::default());
+        direct_context.is_frame_root = true;
+        direct_context.recording_owner = Some(owner);
+        direct_context.recording_owner_stable_id = Some(node.element.stable_id());
+        direct_context.authoritative_self_clip =
+            properties.authoritative_self_clip_for_owner(owner, state);
+        assert_eq!(
+            node.element
+                .shadow_paint_recording_capability(&arena, false, direct_context),
+            ShadowPaintRecordingCapability::Recordable,
+            "state={state:?} context={direct_context:?}"
+        );
+        drop(node);
+        let record = |mode: CoverageRecordingMode| {
+            record_coverage_manifest(&arena, &roots, false, true, mode, &properties, &generations)
+        };
+        let metadata_manifest = record(CoverageRecordingMode::MetadataOnly);
+        let full = record(CoverageRecordingMode::FullArtifact);
+        assert!(metadata_manifest.validation_errors.is_empty());
+        assert!(full.validation_errors.is_empty());
+        let [
+            PaintCoverageItem::ArtifactChunk {
+                chunk: metadata, ..
+            },
+        ] = metadata_manifest.items.as_slice()
+        else {
+            panic!(
+                "exact clipped Image metadata must remain one native chunk: {:?}",
+                metadata_manifest.items
+            )
+        };
+        let [
+            PaintCoverageItem::ArtifactChunk {
+                chunk: full_chunk,
+                ops: Some(ops),
+                clip_snapshot,
+                ..
+            },
+        ] = full.items.as_slice()
+        else {
+            panic!("exact clipped Image full recording must carry its clip snapshot")
+        };
+        assert_eq!(metadata.payload_identity, full_chunk.payload_identity);
+        assert!(matches!(
+            &metadata.payload_identity,
+            PaintPayloadIdentity::ImageWithShadows(_, shadows, _) if shadows.len() == 1
+        ));
+        assert!(matches!(
+            ops.first(),
+            Some(crate::view::paint::PaintOp::PreparedShadow(_))
+        ));
+        assert!(matches!(
+            ops.last(),
+            Some(crate::view::paint::PaintOp::PreparedImage(_))
+        ));
+        let [clip] = clip_snapshot.as_slice() else {
+            panic!("exact clipped Image must carry one complete self-clip snapshot")
+        };
+        assert_eq!(clip.id, full_chunk.properties.clip.unwrap());
     }
 
     #[test]
@@ -2691,7 +2972,6 @@ mod tests {
         let outcome = crate::view::paint::record_root_group_opacity_frame_artifact(
             &arena,
             &[owner],
-            &FxHashSet::default(),
             &properties,
             &generations,
             crate::view::paint::RendererMode::ForcedForTests,

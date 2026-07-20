@@ -23,6 +23,53 @@ use crate::view::sampled_texture::{
     SampledTextureAlphaMode, SampledTextureId, SampledTextureUpload, SvgRasterAssetId,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PaintDeferredViewportSelfClipWitness {
+    target_owner: NodeKey,
+    stable_id: u64,
+    clip: ClipNodeSnapshot,
+}
+
+impl PaintDeferredViewportSelfClipWitness {
+    pub(crate) fn new(
+        target_owner: NodeKey,
+        stable_id: u64,
+        clip: ClipNodeSnapshot,
+        logical_scissor: [u32; 4],
+    ) -> Option<Self> {
+        (stable_id != 0
+            && clip.id.owner == target_owner
+            && clip.id.role == ClipNodeRole::SelfClip
+            && clip.owner == target_owner
+            && clip.parent.is_none()
+            && clip.logical_scissor == logical_scissor
+            && clip.behavior == ClipBehavior::Replace
+            && clip.generation != 0)
+            .then_some(Self {
+                target_owner,
+                stable_id,
+                clip,
+            })
+    }
+
+    fn is_canonical_for(
+        self,
+        owner: NodeKey,
+        stable_id: u64,
+        authoritative_self_clip: Option<ClipNodeId>,
+    ) -> bool {
+        self.target_owner == owner
+            && self.stable_id == stable_id
+            && authoritative_self_clip == Some(self.clip.id)
+            && self.clip.id.owner == owner
+            && self.clip.owner == owner
+            && self.clip.id.role == ClipNodeRole::SelfClip
+            && self.clip.parent.is_none()
+            && self.clip.behavior == ClipBehavior::Replace
+            && self.clip.generation != 0
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PaintRecordingContext {
     pub(crate) paint_offset: [f32; 2],
@@ -47,6 +94,10 @@ pub(crate) struct PaintRecordingContext {
     /// exact logical `SelfClip / Replace` boundary. It is cleared before every
     /// node and cannot act as ambient custom-host authority.
     pub(crate) authoritative_self_clip: Option<ClipNodeId>,
+    /// Recorder-minted proof for the one exact deferred viewport-clipped
+    /// native root. Coverage clears and rebinds this frozen replace-scissor
+    /// witness after every component context hook.
+    pub(crate) deferred_viewport_self_clip: Option<PaintDeferredViewportSelfClipWitness>,
     /// Owner-scoped proof that this coverage invocation belongs to one
     /// canonically planned transform surface. The normal frame recorder never
     /// installs this witness; the surface recorder clears and rebinds it for
@@ -111,6 +162,23 @@ impl PaintRecordingContext {
                 if recording_stable_id == stable_id
                     && clip.owner == owner
                     && clip.role == ClipNodeRole::SelfClip
+        )
+    }
+
+    pub(crate) fn authorizes_deferred_viewport_self_clip_for(self, stable_id: u64) -> bool {
+        matches!(
+            (
+                self.recording_owner,
+                self.recording_owner_stable_id,
+                self.deferred_viewport_self_clip,
+            ),
+            (Some(owner), Some(recording_stable_id), Some(witness))
+                if recording_stable_id == stable_id
+                    && witness.is_canonical_for(
+                        owner,
+                        stable_id,
+                        self.authoritative_self_clip,
+                    )
         )
     }
 
@@ -2778,7 +2846,17 @@ pub(crate) enum PaintPayloadIdentity {
     #[default]
     None,
     Image(PreparedImageIdentity, Arc<[PreparedDrawRectIdentity]>),
+    ImageWithShadows(
+        PreparedImageIdentity,
+        Arc<[PreparedShadowIdentity]>,
+        Arc<[PreparedDrawRectIdentity]>,
+    ),
     Svg(PreparedSvgIdentity, Arc<[PreparedDrawRectIdentity]>),
+    SvgWithShadows(
+        PreparedSvgIdentity,
+        Arc<[PreparedShadowIdentity]>,
+        Arc<[PreparedDrawRectIdentity]>,
+    ),
     PreparedShadows(
         Arc<[PreparedShadowIdentity]>,
         Arc<[PreparedDrawRectIdentity]>,
@@ -3475,11 +3553,45 @@ impl PaintPayloadIdentity {
         Some(Self::Image(image, Self::draw_rect_identities(decoration)?))
     }
 
+    pub(crate) fn image_with_shadows_and_decoration<'a, 'b>(
+        image: PreparedImageIdentity,
+        shadows: impl IntoIterator<Item = &'a PreparedShadowOp>,
+        decoration: impl IntoIterator<Item = &'b DrawRectOp>,
+    ) -> Option<Self> {
+        let shadows = shadows
+            .into_iter()
+            .map(PreparedShadowOp::frozen_identity)
+            .collect::<Vec<_>>();
+        let decoration = Self::draw_rect_identities(decoration)?;
+        if shadows.is_empty() {
+            Some(Self::Image(image, decoration))
+        } else {
+            Some(Self::ImageWithShadows(image, shadows.into(), decoration))
+        }
+    }
+
     pub(crate) fn svg_with_decoration<'a>(
         svg: PreparedSvgIdentity,
         decoration: impl IntoIterator<Item = &'a DrawRectOp>,
     ) -> Option<Self> {
         Some(Self::Svg(svg, Self::draw_rect_identities(decoration)?))
+    }
+
+    pub(crate) fn svg_with_shadows_and_decoration<'a, 'b>(
+        svg: PreparedSvgIdentity,
+        shadows: impl IntoIterator<Item = &'a PreparedShadowOp>,
+        decoration: impl IntoIterator<Item = &'b DrawRectOp>,
+    ) -> Option<Self> {
+        let shadows = shadows
+            .into_iter()
+            .map(PreparedShadowOp::frozen_identity)
+            .collect::<Vec<_>>();
+        let decoration = Self::draw_rect_identities(decoration)?;
+        if shadows.is_empty() {
+            Some(Self::Svg(svg, decoration))
+        } else {
+            Some(Self::SvgWithShadows(svg, shadows.into(), decoration))
+        }
     }
 
     fn draw_rect_identities<'a>(

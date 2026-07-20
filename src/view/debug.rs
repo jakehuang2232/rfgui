@@ -48,6 +48,10 @@ pub struct DebugCaptureOptions {
     pub include_interaction: bool,
     pub include_dirty: bool,
     pub include_render: bool,
+    /// Captures the last RetainedAuto authority attempt supplied by the
+    /// viewport. Callers should avoid constructing the integration input when
+    /// this is false; debug capture performs no RetainedAuto-only traversal.
+    pub include_retained_auto: bool,
     pub include_component: bool,
 }
 
@@ -60,6 +64,7 @@ impl Default for DebugCaptureOptions {
             include_interaction: true,
             include_dirty: true,
             include_render: true,
+            include_retained_auto: false,
             include_component: false,
         }
     }
@@ -120,6 +125,202 @@ pub struct DebugViewportSnapshot {
     pub keyboard_capture_node: Option<DebugNodeId>,
     pub pointer_position: Option<(f32, f32)>,
     pub pressed_pointer_buttons: Vec<PointerButton>,
+    /// Last completed or rejected RetainedAuto attempt known to the viewport.
+    /// This is independent from the frame currently visible on screen.
+    pub retained_auto: Option<DebugRetainedAutoSnapshot>,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugPaintRequestedMode {
+    Legacy,
+    ArtifactCanary,
+    RetainedTransformCanary,
+    RetainedSurfaceTreeCanary,
+    RetainedIsolationCanary,
+    RetainedEffectTreeCanary,
+    RetainedScrollHostCanary,
+    RetainedScrollSceneCanary,
+    RetainedAuto,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugFramePaintAuthority {
+    /// Selection failed before any paint authority was committed.
+    Unselected,
+    Legacy,
+    Artifact,
+    PropertyScene,
+    RetainedTransformSurface,
+    RetainedEffectSurface,
+    RetainedScrollHost,
+    RetainedScrollScene,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugFrameDisposition {
+    Presented,
+    FellBackToLegacy,
+    Rejected,
+    Aborted,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugFallbackStage {
+    Selection,
+    Planning,
+    Recording,
+    Preparation,
+    Compilation,
+    Execution,
+    Terminal,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugFallbackCategory {
+    UnsupportedHost,
+    PropertyTopology,
+    DeferredPaint,
+    LayoutTransition,
+    Coverage,
+    Validation,
+    Resource,
+    Capacity,
+    Compiler,
+    Runtime,
+    ForcedFailure,
+    Unknown,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DebugFallbackDetail {
+    None,
+    Code {
+        code: &'static str,
+    },
+    Boundary {
+        reason: &'static str,
+    },
+    Validation {
+        invariant: &'static str,
+    },
+    Resource {
+        resource: &'static str,
+    },
+    Capacity {
+        resource: &'static str,
+        requested: u64,
+        limit: u64,
+    },
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugCoverageKind {
+    ArtifactChunk,
+    PropertySurface,
+    RetainedSurface,
+    LegacyBoundary,
+    Transparent,
+    Culled,
+    Uncovered,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugSurfaceKind {
+    Transform,
+    Effect,
+    Isolation,
+    ScrollHost,
+    ScrollContent,
+    RootOpacityGroup,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugResidentAction {
+    None,
+    Commit,
+    Reuse,
+    Reraster,
+    Clear,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DebugRetainedAutoFallbackSnapshot {
+    pub stage: DebugFallbackStage,
+    pub category: DebugFallbackCategory,
+    pub detail: DebugFallbackDetail,
+    pub node: Option<DebugNodeId>,
+    pub stable_id: Option<u64>,
+    pub element_type: Option<&'static str>,
+    pub bounds: Option<DebugRect>,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DebugRetainedAutoStatistics {
+    pub reachable_nodes: u64,
+    pub covered_nodes: u64,
+    pub artifact_chunks: u64,
+    pub property_surfaces: u64,
+    pub retained_surfaces: u64,
+    pub legacy_nodes: u64,
+    pub culled_nodes: u64,
+    pub fallback_count: u64,
+    pub resident_commits: u64,
+    pub resident_reuses: u64,
+    pub resident_rerasterizations: u64,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DebugRetainedAutoNodeSnapshot {
+    pub node: Option<DebugNodeId>,
+    pub stable_id: Option<u64>,
+    pub element_type: &'static str,
+    pub bounds: Option<DebugRect>,
+    pub coverage: Vec<DebugCoverageKind>,
+    pub resident_action: Option<DebugResidentAction>,
+    pub fallbacks: Vec<DebugRetainedAutoFallbackSnapshot>,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DebugRetainedAutoSurfaceSnapshot {
+    pub owner: Option<DebugNodeId>,
+    pub stable_id: Option<u64>,
+    pub element_type: &'static str,
+    pub bounds: Option<DebugRect>,
+    pub kind: DebugSurfaceKind,
+    pub coverage: DebugCoverageKind,
+    pub resident_action: DebugResidentAction,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DebugRetainedAutoFrameSnapshot {
+    pub attempt_id: u64,
+    pub requested_mode: DebugPaintRequestedMode,
+    pub selected_authority: DebugFramePaintAuthority,
+    pub disposition: DebugFrameDisposition,
+    pub fallback_stages: Vec<DebugRetainedAutoFallbackSnapshot>,
+    pub statistics: DebugRetainedAutoStatistics,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DebugRetainedAutoSnapshot {
+    pub frame: DebugRetainedAutoFrameSnapshot,
+    pub nodes: Vec<DebugRetainedAutoNodeSnapshot>,
+    pub surfaces: Vec<DebugRetainedAutoSurfaceSnapshot>,
 }
 
 #[derive(Clone, Debug)]
@@ -254,6 +455,7 @@ impl DebugDirtyFlags {
 #[derive(Clone, Debug)]
 pub struct DebugRenderState {
     pub should_render: bool,
+    pub retained_auto: Option<DebugRetainedAutoNodeSnapshot>,
 }
 
 #[derive(Clone, Debug)]
@@ -349,6 +551,59 @@ pub(crate) struct DebugViewportCaptureInput {
     pub pressed_pointer_buttons: Vec<PointerButton>,
 }
 
+/// Single handoff object produced by the viewport's retained paint telemetry.
+/// The viewport should construct this only when
+/// [`DebugCaptureOptions::include_retained_auto`] is enabled.
+#[derive(Clone, Debug)]
+pub(crate) struct DebugRetainedAutoCaptureInput {
+    pub frame: DebugRetainedAutoFrameCaptureInput,
+    pub nodes: Vec<DebugRetainedAutoNodeCaptureInput>,
+    pub surfaces: Vec<DebugRetainedAutoSurfaceCaptureInput>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DebugRetainedAutoFrameCaptureInput {
+    pub attempt_id: u64,
+    pub requested_mode: DebugPaintRequestedMode,
+    pub selected_authority: DebugFramePaintAuthority,
+    pub disposition: DebugFrameDisposition,
+    pub fallback_stages: Vec<DebugRetainedAutoFallbackCaptureInput>,
+    pub statistics: DebugRetainedAutoStatistics,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DebugRetainedAutoFallbackCaptureInput {
+    pub stage: DebugFallbackStage,
+    pub category: DebugFallbackCategory,
+    pub detail: DebugFallbackDetail,
+    pub owner: Option<NodeKey>,
+    pub stable_id: Option<u64>,
+    pub element_type: Option<&'static str>,
+    pub bounds: Option<DebugRect>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DebugRetainedAutoNodeCaptureInput {
+    pub owner: Option<NodeKey>,
+    pub stable_id: Option<u64>,
+    pub element_type: &'static str,
+    pub bounds: Option<DebugRect>,
+    pub coverage: Vec<DebugCoverageKind>,
+    pub resident_action: Option<DebugResidentAction>,
+    pub fallbacks: Vec<DebugRetainedAutoFallbackCaptureInput>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DebugRetainedAutoSurfaceCaptureInput {
+    pub owner: Option<NodeKey>,
+    pub stable_id: Option<u64>,
+    pub element_type: &'static str,
+    pub bounds: Option<DebugRect>,
+    pub kind: DebugSurfaceKind,
+    pub coverage: DebugCoverageKind,
+    pub resident_action: DebugResidentAction,
+}
+
 #[derive(Clone, Debug)]
 struct CapturedNode {
     summary: DebugNodeSummary,
@@ -368,13 +623,31 @@ struct DebugCaptureIndex {
 }
 
 impl DebugCapture {
+    #[allow(dead_code)] // Compatibility entry point for callers without retained paint telemetry.
     pub(crate) fn from_arena(
         options: DebugCaptureOptions,
         arena: &NodeArena,
         roots: &[NodeKey],
         viewport: DebugViewportCaptureInput,
     ) -> Self {
-        let mut builder = DebugCaptureBuilder::new(options, viewport);
+        Self::from_arena_with_retained_auto(options, arena, roots, viewport, None)
+    }
+
+    /// Integration entry point for the viewport. Passing `None`, or disabling
+    /// `include_retained_auto`, preserves the ordinary capture cost and does
+    /// not perform a RetainedAuto-specific arena traversal.
+    pub(crate) fn from_arena_with_retained_auto(
+        options: DebugCaptureOptions,
+        arena: &NodeArena,
+        roots: &[NodeKey],
+        viewport: DebugViewportCaptureInput,
+        retained_auto: Option<DebugRetainedAutoCaptureInput>,
+    ) -> Self {
+        let retained_auto = options
+            .include_retained_auto
+            .then_some(retained_auto)
+            .flatten();
+        let mut builder = DebugCaptureBuilder::new(options, viewport, retained_auto);
         for root in roots {
             builder.capture_node(arena, *root, None, None, 0, *root);
         }
@@ -546,10 +819,15 @@ struct DebugCaptureBuilder {
     arena_nodes: Vec<DebugArenaNodeSnapshot>,
     key_to_node: HashMap<NodeKey, DebugNodeId>,
     key_to_arena: HashMap<NodeKey, DebugArenaNodeId>,
+    retained_auto: Option<DebugRetainedAutoCaptureInput>,
 }
 
 impl DebugCaptureBuilder {
-    fn new(options: DebugCaptureOptions, viewport: DebugViewportCaptureInput) -> Self {
+    fn new(
+        options: DebugCaptureOptions,
+        viewport: DebugViewportCaptureInput,
+        retained_auto: Option<DebugRetainedAutoCaptureInput>,
+    ) -> Self {
         Self {
             options,
             viewport,
@@ -557,10 +835,73 @@ impl DebugCaptureBuilder {
             arena_nodes: Vec::new(),
             key_to_node: HashMap::new(),
             key_to_arena: HashMap::new(),
+            retained_auto,
         }
     }
 
-    fn finish(self) -> DebugCapture {
+    fn finish(mut self) -> DebugCapture {
+        let retained_auto = self.retained_auto.take().map(|input| {
+            let frame = DebugRetainedAutoFrameSnapshot {
+                attempt_id: input.frame.attempt_id,
+                requested_mode: input.frame.requested_mode,
+                selected_authority: input.frame.selected_authority,
+                disposition: input.frame.disposition,
+                fallback_stages: input
+                    .frame
+                    .fallback_stages
+                    .into_iter()
+                    .map(|fallback| self.resolve_retained_auto_fallback(fallback))
+                    .collect(),
+                statistics: input.frame.statistics,
+            };
+            let mut nodes = Vec::with_capacity(input.nodes.len());
+            for node in input.nodes {
+                let owner = node.owner;
+                let snapshot = DebugRetainedAutoNodeSnapshot {
+                    node: owner.and_then(|owner| self.key_to_node.get(&owner).cloned()),
+                    stable_id: node.stable_id,
+                    element_type: node.element_type,
+                    bounds: node.bounds,
+                    coverage: node.coverage,
+                    resident_action: node.resident_action,
+                    fallbacks: node
+                        .fallbacks
+                        .into_iter()
+                        .map(|fallback| self.resolve_retained_auto_fallback(fallback))
+                        .collect(),
+                };
+                if let Some(id) = snapshot.node.as_ref()
+                    && let Some(render) = self
+                        .index
+                        .nodes
+                        .get_mut(id)
+                        .and_then(|captured| captured.render.as_mut())
+                {
+                    render.retained_auto = Some(snapshot.clone());
+                }
+                nodes.push(snapshot);
+            }
+            let surfaces = input
+                .surfaces
+                .into_iter()
+                .map(|surface| DebugRetainedAutoSurfaceSnapshot {
+                    owner: surface
+                        .owner
+                        .and_then(|owner| self.key_to_node.get(&owner).cloned()),
+                    stable_id: surface.stable_id,
+                    element_type: surface.element_type,
+                    bounds: surface.bounds,
+                    kind: surface.kind,
+                    coverage: surface.coverage,
+                    resident_action: surface.resident_action,
+                })
+                .collect();
+            DebugRetainedAutoSnapshot {
+                frame,
+                nodes,
+                surfaces,
+            }
+        });
         let viewport = DebugViewportSnapshot {
             logical_width: self.viewport.logical_size.0,
             logical_height: self.viewport.logical_size.1,
@@ -571,6 +912,7 @@ impl DebugCaptureBuilder {
             keyboard_capture_node: self.resolve_node(self.viewport.keyboard_capture_node),
             pointer_position: self.viewport.pointer_position,
             pressed_pointer_buttons: self.viewport.pressed_pointer_buttons,
+            retained_auto,
         };
         let document = DebugDocumentCapture {
             roots: self.index.roots.clone(),
@@ -584,6 +926,23 @@ impl DebugCaptureBuilder {
                 nodes: self.arena_nodes,
             }),
             index: self.index,
+        }
+    }
+
+    fn resolve_retained_auto_fallback(
+        &self,
+        input: DebugRetainedAutoFallbackCaptureInput,
+    ) -> DebugRetainedAutoFallbackSnapshot {
+        DebugRetainedAutoFallbackSnapshot {
+            stage: input.stage,
+            category: input.category,
+            detail: input.detail,
+            node: input
+                .owner
+                .and_then(|owner| self.key_to_node.get(&owner).cloned()),
+            stable_id: input.stable_id,
+            element_type: input.element_type,
+            bounds: input.bounds,
         }
     }
 
@@ -638,6 +997,7 @@ impl DebugCaptureBuilder {
         });
         let render = self.options.include_render.then_some(DebugRenderState {
             should_render: snapshot.should_render,
+            retained_auto: None,
         });
 
         let summary = DebugNodeSummary {
@@ -870,5 +1230,159 @@ mod tests {
                 .unwrap_err(),
             DebugError::UnknownNode(missing)
         );
+    }
+
+    fn retained_auto_input(root: NodeKey, child: NodeKey) -> DebugRetainedAutoCaptureInput {
+        let child_bounds = DebugRect {
+            x: 10.0,
+            y: 12.0,
+            width: 20.0,
+            height: 16.0,
+        };
+        let fallback = DebugRetainedAutoFallbackCaptureInput {
+            stage: DebugFallbackStage::Planning,
+            category: DebugFallbackCategory::PropertyTopology,
+            detail: DebugFallbackDetail::Boundary {
+                reason: "nested-effect",
+            },
+            owner: Some(child),
+            stable_id: Some(20),
+            element_type: Some("Element"),
+            bounds: Some(child_bounds),
+        };
+        DebugRetainedAutoCaptureInput {
+            frame: DebugRetainedAutoFrameCaptureInput {
+                attempt_id: 42,
+                requested_mode: DebugPaintRequestedMode::RetainedAuto,
+                selected_authority: DebugFramePaintAuthority::Legacy,
+                disposition: DebugFrameDisposition::FellBackToLegacy,
+                fallback_stages: vec![fallback.clone()],
+                statistics: DebugRetainedAutoStatistics {
+                    reachable_nodes: 2,
+                    covered_nodes: 1,
+                    legacy_nodes: 1,
+                    fallback_count: 1,
+                    ..Default::default()
+                },
+            },
+            nodes: vec![DebugRetainedAutoNodeCaptureInput {
+                owner: Some(child),
+                stable_id: Some(20),
+                element_type: "Element",
+                bounds: Some(child_bounds),
+                coverage: vec![DebugCoverageKind::LegacyBoundary],
+                resident_action: Some(DebugResidentAction::None),
+                fallbacks: vec![fallback],
+            }],
+            surfaces: vec![DebugRetainedAutoSurfaceCaptureInput {
+                owner: Some(root),
+                stable_id: Some(10),
+                element_type: "Element",
+                bounds: Some(DebugRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 100.0,
+                    height: 80.0,
+                }),
+                kind: DebugSurfaceKind::Effect,
+                coverage: DebugCoverageKind::PropertySurface,
+                resident_action: DebugResidentAction::Reuse,
+            }],
+        }
+    }
+
+    #[test]
+    fn retained_auto_capture_maps_existing_node_ids_and_structured_reasons() {
+        let mut arena = NodeArena::new();
+        let root = arena.insert(Node::new(Box::new(Element::new_with_id(
+            10, 0.0, 0.0, 100.0, 80.0,
+        ))));
+        let child = arena.insert(Node::with_parent(
+            Box::new(Element::new_with_id(20, 10.0, 12.0, 20.0, 16.0)),
+            Some(root),
+        ));
+        arena.push_child(root, child);
+        arena.set_roots(vec![root]);
+        let mut options = DebugCaptureOptions::default();
+        options.include_retained_auto = true;
+        let capture = DebugCapture::from_arena_with_retained_auto(
+            options,
+            &arena,
+            &[root],
+            DebugViewportCaptureInput {
+                logical_size: (320.0, 240.0),
+                scale_factor: 2.0,
+                focused_node: None,
+                hovered_node: None,
+                pointer_capture_node: None,
+                keyboard_capture_node: None,
+                pointer_position: None,
+                pressed_pointer_buttons: Vec::new(),
+            },
+            Some(retained_auto_input(root, child)),
+        );
+
+        let retained = capture
+            .document()
+            .viewport
+            .retained_auto
+            .as_ref()
+            .expect("last attempt is captured");
+        assert_eq!(retained.frame.attempt_id, 42);
+        assert_eq!(retained.frame.fallback_stages.len(), 1);
+        assert!(matches!(
+            retained.frame.fallback_stages[0].detail,
+            DebugFallbackDetail::Boundary {
+                reason: "nested-effect"
+            }
+        ));
+        assert_eq!(retained.nodes[0].stable_id, Some(20));
+        assert!(retained.nodes[0].node.is_some());
+        assert_eq!(
+            retained.surfaces[0].resident_action,
+            DebugResidentAction::Reuse
+        );
+
+        let child_id = retained.nodes[0].node.clone().unwrap();
+        let DebugResponse::RenderState(Some(render)) = capture
+            .query(DebugQuery::GetRenderState { node: child_id })
+            .unwrap()
+        else {
+            panic!("node render state must exist")
+        };
+        assert_eq!(
+            render.retained_auto.unwrap().coverage,
+            vec![DebugCoverageKind::LegacyBoundary]
+        );
+    }
+
+    #[test]
+    fn retained_auto_input_is_ignored_when_capture_option_is_off() {
+        let mut arena = NodeArena::new();
+        let root = arena.insert(Node::new(Box::new(Element::new_with_id(
+            10, 0.0, 0.0, 100.0, 80.0,
+        ))));
+        let child = arena.insert(Node::with_parent(
+            Box::new(Element::new_with_id(20, 10.0, 12.0, 20.0, 16.0)),
+            Some(root),
+        ));
+        arena.push_child(root, child);
+        let capture = DebugCapture::from_arena_with_retained_auto(
+            DebugCaptureOptions::default(),
+            &arena,
+            &[root],
+            DebugViewportCaptureInput {
+                logical_size: (320.0, 240.0),
+                scale_factor: 1.0,
+                focused_node: None,
+                hovered_node: None,
+                pointer_capture_node: None,
+                keyboard_capture_node: None,
+                pointer_position: None,
+                pressed_pointer_buttons: Vec::new(),
+            },
+            Some(retained_auto_input(root, child)),
+        );
+        assert!(capture.document().viewport.retained_auto.is_none());
     }
 }

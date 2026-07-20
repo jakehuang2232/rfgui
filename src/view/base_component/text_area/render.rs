@@ -46,7 +46,6 @@ pub(super) enum PlainTextAreaPaintFailure {
 
 #[derive(Clone, Copy)]
 struct ProjectionSelectionAuthority {
-    projection_owner: NodeKey,
     witness: crate::view::paint::PaintTextSelectionWitness,
 }
 
@@ -96,11 +95,13 @@ impl TextArea {
                 ShadowPaintBlocker::Deferred,
             ));
         }
-        if self.pointer_selecting || self.pending_caret_scroll {
-            return Err(PlainTextAreaPaintFailure::Legacy(
-                ShadowPaintBlocker::StatefulPaint,
-            ));
-        }
+        // `pointer_selecting` and `pending_caret_scroll` are interaction /
+        // layout scheduling state, not paint inputs.  The realized unified
+        // package, selection range, scroll offset and caret payload below are
+        // the paint authority until a later layout pass installs new
+        // geometry.  Rejecting these transient flags made an otherwise exact
+        // native TextArea subtree force the whole RetainedAuto frame back to
+        // Legacy while dragging or between an edit and caret-follow layout.
         self.exact_plain_selection_range()?;
         if self.ime_preedit.is_empty() {
             if self.ime_preedit_cursor.is_some() {
@@ -154,8 +155,9 @@ impl TextArea {
         Ok(Some(start..end))
     }
 
-    fn projection_selection_authority_from_package(
+    fn projection_selection_authority_for_child_from_package(
         &self,
+        projection_owner: NodeKey,
         arena: &NodeArena,
         package: &super::inline_ifc::TextAreaUnifiedIfcRootPackage,
     ) -> Result<Option<ProjectionSelectionAuthority>, PlainTextAreaPaintFailure> {
@@ -164,8 +166,9 @@ impl TextArea {
         };
         let mut selected_segment = package.source_segments.iter().filter(|segment| {
             segment.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox
-                && selection.start >= segment.char_range.start
-                && selection.end <= segment.char_range.end
+                && segment.child_key == projection_owner
+                && selection.end > segment.char_range.start
+                && selection.start < segment.char_range.end
         });
         let Some(segment) = selected_segment.next() else {
             return Ok(None);
@@ -173,8 +176,6 @@ impl TextArea {
         if selected_segment.next().is_some() {
             return Ok(None);
         }
-
-        let projection_owner = segment.child_key;
         let projection_children = arena.children_of(projection_owner);
         let [target_owner] = projection_children.as_slice() else {
             return Ok(None);
@@ -221,8 +222,11 @@ impl TextArea {
             return Ok(None);
         }
 
-        let local_start = selection.start - segment.char_range.start;
-        let local_end = selection.end - segment.char_range.start;
+        let local_start = selection.start.saturating_sub(segment.char_range.start);
+        let local_end = selection
+            .end
+            .min(segment.char_range.end)
+            .saturating_sub(segment.char_range.start);
         let fill = self.selection_background_color.to_rgba_f32();
         let witness = crate::view::paint::PaintTextSelectionWitness {
             target_owner,
@@ -235,10 +239,7 @@ impl TextArea {
         {
             return Ok(None);
         }
-        Ok(Some(ProjectionSelectionAuthority {
-            projection_owner,
-            witness,
-        }))
+        Ok(Some(ProjectionSelectionAuthority { witness }))
     }
 
     fn projection_preedit_authority_from_package(
@@ -303,7 +304,7 @@ impl TextArea {
         };
         let target_stable_id = target.element.stable_id();
         let snapshot = target.element.box_model_snapshot();
-        let opacity = target.element.promotion_node_info().opacity;
+        let opacity = target.element.retained_paint_properties().opacity;
         let projection_span = segment
             .char_range
             .end
@@ -569,13 +570,11 @@ impl TextArea {
             return Err(PlainTextAreaPaintFailure::Unsupported);
         }
         let projection_count = package.projection_segment_count();
-        if projection_count == 0 {
-            if self.on_render_handler.is_some() {
-                return Err(PlainTextAreaPaintFailure::Legacy(
-                    ShadowPaintBlocker::StatefulPaint,
-                ));
-            }
-        } else if self.on_render_handler.is_none() {
+        // Paint consumes the already-realized package and never invokes the
+        // stateful `on_render` callback. A handler that currently realizes no
+        // projections therefore has the same exact paint grammar as a plain
+        // generated-run TextArea.
+        if projection_count > 0 && self.on_render_handler.is_none() {
             return Err(PlainTextAreaPaintFailure::Legacy(
                 ShadowPaintBlocker::TextAreaSelection,
             ));
@@ -887,18 +886,23 @@ impl TextArea {
         }
         if projection_count > 0 {
             if let Some(selection) = self.exact_plain_selection_range()? {
-                let projection_owned = self
-                    .projection_selection_authority_from_package(arena, &package)?
-                    .is_some();
-                let root_owned = package.source_segments.iter().all(|segment| {
-                    segment.kind != TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox
-                        || selection.end <= segment.char_range.start
-                        || selection.start >= segment.char_range.end
-                });
-                if !projection_owned && !root_owned {
-                    return Err(PlainTextAreaPaintFailure::Legacy(
-                        ShadowPaintBlocker::TextAreaSelection,
-                    ));
+                for segment in package.source_segments.iter().filter(|segment| {
+                    segment.kind == TextAreaUnifiedIfcSourceKind::ProjectionAtomicBox
+                        && selection.end > segment.char_range.start
+                        && selection.start < segment.char_range.end
+                }) {
+                    if self
+                        .projection_selection_authority_for_child_from_package(
+                            segment.child_key,
+                            arena,
+                            &package,
+                        )?
+                        .is_none()
+                    {
+                        return Err(PlainTextAreaPaintFailure::Legacy(
+                            ShadowPaintBlocker::TextAreaSelection,
+                        ));
+                    }
                 }
             }
         }
@@ -915,9 +919,9 @@ impl TextArea {
             .exact_plain_unified_package(owner, arena, false)
             .ok()??;
         let authority = self
-            .projection_selection_authority_from_package(arena, &package)
+            .projection_selection_authority_for_child_from_package(child, arena, &package)
             .ok()??;
-        (authority.projection_owner == child).then_some(authority.witness)
+        Some(authority.witness)
     }
 
     pub(super) fn projection_preedit_witness_for_child(
@@ -1243,14 +1247,11 @@ impl TextArea {
                 caret,
             });
         };
-        let projection_owns_selection = self
-            .projection_selection_authority_from_package(arena, &package)?
-            .is_some();
-        let selection = if projection_owns_selection {
-            None
-        } else {
-            self.selection_payload(&package, origin)?
-        };
+        // Root-owned selection rects cover generated text runs. Projection
+        // intersections are delegated independently to each realized child
+        // through `PaintTextSelectionWitness`, so a selection may cross any
+        // number of exact projection boundaries without double painting.
+        let selection = self.selection_payload(&package, origin)?;
         let projection_preedit = self.projection_preedit_authority_from_package(arena, &package)?;
         let decoration = if let Some(authority) = projection_preedit {
             self.projection_preedit_decoration_payload(arena, authority, effective_offset)?
@@ -1975,12 +1976,6 @@ impl Renderable for TextArea {
         }
 
         // Layer 1 — walk arena children (Run / projection self-render).
-        //
-        // TextArea is promotion-aware (Phase 2): a child that ends up in
-        // the promoted set goes through `Element::build_promoted_child`,
-        // which allocates its own layer target, runs the build into it,
-        // and composites the layer back onto TextArea's current target.
-        // Non-promoted children render inline directly.
         let child_keys: Vec<NodeKey> = self.children.clone();
         for (idx, child_key) in child_keys.into_iter().enumerate() {
             if unified_render_package.is_some()
@@ -1994,18 +1989,6 @@ impl Renderable for TextArea {
             }
             let selection_context =
                 self.projection_selection_context_for_child(idx, child_key, arena);
-            let child_promoted = arena
-                .get(child_key)
-                .map(|n| ctx.is_node_promoted(n.element.stable_id()))
-                .unwrap_or(false);
-            if child_promoted {
-                with_text_area_selection_render_context(selection_context, || {
-                    crate::view::base_component::Element::build_promoted_child(
-                        graph, arena, &mut ctx, child_key, None,
-                    );
-                });
-                continue;
-            }
             let viewport = ctx.viewport();
             let taken_state = ctx.state_clone();
             let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
@@ -2150,7 +2133,11 @@ impl TextArea {
             .exact_plain_unified_package(owner, arena, false)
             .ok()??;
         if self
-            .projection_selection_authority_from_package(arena, &package)
+            .projection_selection_authority_for_child_from_package(
+                atomic_source.projection_owner,
+                arena,
+                &package,
+            )
             .ok()?
             .is_some()
         {
@@ -2175,8 +2162,6 @@ impl TextArea {
             || self.on_render_handler.is_none()
             || self.is_focused
             || self.caret_visible
-            || self.pointer_selecting
-            || self.pending_caret_scroll
             || !self.ime_preedit.is_empty()
             || self.ime_preedit_cursor.is_some()
             || self.scroll_x.to_bits() != 0.0_f32.to_bits()
@@ -2246,8 +2231,6 @@ impl TextArea {
             || !self.layout_state.should_render
             || self.selection_anchor_char.is_some()
             || self.selection_focus_char.is_some()
-            || self.pointer_selecting
-            || self.pending_caret_scroll
             || self.scroll_x.to_bits() != 0.0_f32.to_bits()
             || self.scroll_y.to_bits() != 0.0_f32.to_bits()
             || self.has_active_animator()
@@ -2640,7 +2623,6 @@ impl TextArea {
             || self.on_render_handler.is_some()
             || self.is_focused
             || self.caret_visible
-            || self.pointer_selecting
             || self.selection_anchor_char.is_some()
             || self.selection_focus_char.is_some()
             || !self.ime_preedit.is_empty()
@@ -2699,8 +2681,6 @@ impl TextArea {
             || self.on_render_handler.is_some()
             || self.is_focused
             || self.caret_visible
-            || self.pointer_selecting
-            || self.pending_caret_scroll
             || !self.ime_preedit.is_empty()
             || self.ime_preedit_cursor.is_some()
             || self.has_active_animator()
@@ -2769,9 +2749,9 @@ impl TextArea {
     }
 
     /// Closed C2b/C2c sibling oracle. It admits focused generated-run content
-    /// while keeping the caret outside the resident base. Projection,
-    /// stateful hooks, in-progress pointer selection and pending caret-follow
-    /// remain fail-closed.
+    /// while keeping the caret outside the resident base. Projection and
+    /// stateful hooks remain fail-closed; transient pointer-selection and
+    /// caret-follow scheduling flags do not alter the frozen paint grammar.
     pub(crate) fn exact_retained_property_scroll_interactive_subtree(
         &self,
         owner: NodeKey,
@@ -2782,8 +2762,6 @@ impl TextArea {
             || self.on_render_handler.is_some()
             || !self.is_focused
             || !self.layout_state.should_render
-            || self.pointer_selecting
-            || self.pending_caret_scroll
             || self.has_active_animator()
             || self.is_deferred_to_root_viewport_render()
             || self.children.is_empty()
@@ -3869,8 +3847,6 @@ mod tests {
             "collapsed_selection",
             "preedit",
             "ime_cursor",
-            "pointer",
-            "pending",
             "scroll_x",
             "scroll_y",
             "animator",
@@ -3904,8 +3880,6 @@ mod tests {
                     }
                     "preedit" => text_area.ime_preedit = "x".to_string(),
                     "ime_cursor" => text_area.ime_preedit_cursor = Some((0, 0)),
-                    "pointer" => text_area.pointer_selecting = true,
-                    "pending" => text_area.pending_caret_scroll = true,
                     "scroll_x" => text_area.scroll_x = 1.0,
                     "scroll_y" => text_area.scroll_y = 1.0,
                     "animator" => text_area.retained_source_test_active_animator = true,
@@ -4102,8 +4076,6 @@ mod tests {
             "focused",
             "caret",
             "preedit",
-            "pointer",
-            "pending",
             "inner_scroll",
             "duplicate_atomic",
         ] {
@@ -4130,8 +4102,6 @@ mod tests {
                     "focused" => text_area.is_focused = true,
                     "caret" => text_area.caret_visible = true,
                     "preedit" => text_area.ime_preedit = "x".to_string(),
-                    "pointer" => text_area.pointer_selecting = true,
-                    "pending" => text_area.pending_caret_scroll = true,
                     "inner_scroll" => text_area.scroll_y = 1.0,
                     "duplicate_atomic" => {
                         text_area.tamper_cached_unified_atomic_sources_for_test(true)
@@ -4159,8 +4129,6 @@ mod tests {
         for case in [
             "focused",
             "caret",
-            "pointer",
-            "pending",
             "selection",
             "preedit",
             "scroll_x",
@@ -4178,8 +4146,6 @@ mod tests {
                 match case {
                     "focused" => text_area.is_focused = true,
                     "caret" => text_area.caret_visible = true,
-                    "pointer" => text_area.pointer_selecting = true,
-                    "pending" => text_area.pending_caret_scroll = true,
                     "selection" => {
                         text_area.selection_anchor_char = Some(0);
                         text_area.selection_focus_char = Some(1);
@@ -4202,6 +4168,104 @@ mod tests {
                     )
                     .is_none(),
                 "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn retained_atomic_projection_sources_ignore_paint_neutral_interaction_flags() {
+        for flag in ["pointer", "pending"] {
+            let (arena, root, ..) = retained_atomic_projection_fixture();
+            {
+                let mut node = arena.get_mut(root).unwrap();
+                let text_area = node
+                    .element
+                    .as_any_mut()
+                    .downcast_mut::<TextArea>()
+                    .unwrap();
+                match flag {
+                    "pointer" => text_area.pointer_selecting = true,
+                    "pending" => text_area.pending_caret_scroll = true,
+                    _ => unreachable!(),
+                }
+            }
+            let node = arena.get(root).unwrap();
+            let text_area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
+            assert!(
+                text_area
+                    .exact_retained_property_scroll_atomic_projection_subtree(
+                        root,
+                        &arena,
+                        [0.0, 0.0],
+                    )
+                    .is_some(),
+                "{flag} must not change the realized atomic paint source",
+            );
+        }
+
+        for flag in ["pointer", "pending"] {
+            let (arena, root, ..) = retained_atomic_projection_fixture_with_selection(
+                "before projected after",
+                7..16,
+                "projected",
+                Some((0, 6)),
+            );
+            {
+                let mut node = arena.get_mut(root).unwrap();
+                let text_area = node
+                    .element
+                    .as_any_mut()
+                    .downcast_mut::<TextArea>()
+                    .unwrap();
+                match flag {
+                    "pointer" => text_area.pointer_selecting = true,
+                    "pending" => text_area.pending_caret_scroll = true,
+                    _ => unreachable!(),
+                }
+            }
+            let node = arena.get(root).unwrap();
+            let text_area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
+            assert!(
+                text_area
+                    .exact_retained_property_scroll_atomic_projection_selection_subtree(
+                        root,
+                        &arena,
+                        [0.0, 0.0],
+                    )
+                    .is_some(),
+                "{flag} must preserve the root-owned selection source",
+            );
+        }
+
+        for flag in ["pointer", "pending"] {
+            let (arena, root, ..) = retained_atomic_projection_fixture();
+            {
+                let mut node = arena.get_mut(root).unwrap();
+                let text_area = node
+                    .element
+                    .as_any_mut()
+                    .downcast_mut::<TextArea>()
+                    .unwrap();
+                text_area.is_focused = true;
+                text_area.caret_visible = true;
+                text_area.cursor_char = 7;
+                match flag {
+                    "pointer" => text_area.pointer_selecting = true,
+                    "pending" => text_area.pending_caret_scroll = true,
+                    _ => unreachable!(),
+                }
+            }
+            let node = arena.get(root).unwrap();
+            let text_area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
+            assert!(
+                text_area
+                    .exact_retained_property_scroll_focused_atomic_projection_glyph_subtree(
+                        root,
+                        &arena,
+                        [0.0, 0.0],
+                    )
+                    .is_some(),
+                "{flag} must preserve the focused atomic paint source",
             );
         }
     }

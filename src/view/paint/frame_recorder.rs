@@ -16,9 +16,10 @@ use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::coverage_manifest::{
-    NestedScrollContentReceiverCutout, record_coverage_manifest_with_context,
-    record_coverage_manifest_with_nested_scroll_receiver,
-    record_coverage_manifest_with_property_authorities,
+    NestedScrollContentReceiverCutout, exact_deferred_viewport_self_clip_witness,
+    record_retained_coverage_manifest_with_context,
+    record_retained_coverage_manifest_with_nested_scroll_receiver,
+    record_retained_coverage_manifest_with_property_authorities,
 };
 
 use super::{
@@ -47,7 +48,6 @@ pub(crate) enum RendererMode {
 pub(crate) enum FrameArtifactFallbackReason {
     RendererLegacy,
     LegacyBoundary(LegacyPaintReason),
-    PromotedBoundary,
     /// M6A production authority accepts only chunks whose property-tree
     /// identity is completely neutral. Later milestones will make each
     /// property family authoritative one at a time.
@@ -1062,6 +1062,21 @@ pub(crate) struct FrameArtifactEligibility {
     pub(crate) reasons: Vec<FrameArtifactFallbackReason>,
     pub(crate) chunk_count: usize,
     pub(crate) op_count: usize,
+    /// Exact coverage boundaries retained for diagnostics. Authority selection
+    /// continues to use `reasons`; this witness only preserves the owner that
+    /// would otherwise be lost when a `LegacyBoundary` is collapsed by kind.
+    pub(crate) debug_boundaries: Vec<FrameArtifactDebugBoundary>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FrameArtifactDebugBoundary {
+    pub(crate) owner: NodeKey,
+    pub(crate) kind: FrameArtifactDebugBoundaryKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FrameArtifactDebugBoundaryKind {
+    Legacy(LegacyPaintReason),
 }
 
 #[derive(Clone, Debug)]
@@ -1088,7 +1103,6 @@ pub(crate) fn record_frame_artifact(
     record_frame_artifact_with_policy(
         arena,
         roots,
-        &FxHashSet::default(),
         property_trees,
         paint_generations,
         mode,
@@ -1099,12 +1113,11 @@ pub(crate) fn record_frame_artifact(
 }
 
 /// M6A production entry point. This is intentionally stricter than the
-/// compatibility recorder above: the whole frame must be promotion-free,
-/// deferred-free, and property-neutral before full artifact hooks run.
+/// compatibility recorder above: the whole frame must be deferred-free and
+/// property-neutral before full artifact hooks run.
 pub(crate) fn record_property_neutral_frame_artifact(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     mode: RendererMode,
@@ -1112,7 +1125,6 @@ pub(crate) fn record_property_neutral_frame_artifact(
     record_frame_artifact_with_policy(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         mode,
@@ -1123,13 +1135,10 @@ pub(crate) fn record_property_neutral_frame_artifact(
 }
 
 /// Production baked-opacity authority that admits validated property-tree
-/// clips while keeping every other property family on legacy. Unlike the
-/// compatibility recorder, callers must supply the live promotion set so a
-/// frame cannot mix promoted and artifact authority.
+/// clips while keeping every other property family on legacy.
 pub(crate) fn record_clip_enabled_frame_artifact(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     mode: RendererMode,
@@ -1137,7 +1146,6 @@ pub(crate) fn record_clip_enabled_frame_artifact(
     record_frame_artifact_with_policy(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         mode,
@@ -1153,7 +1161,6 @@ pub(crate) fn record_clip_enabled_frame_artifact(
 pub(crate) fn record_root_group_opacity_frame_artifact(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     mode: RendererMode,
@@ -1182,7 +1189,6 @@ pub(crate) fn record_root_group_opacity_frame_artifact(
     record_frame_artifact_with_policy(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         mode,
@@ -1198,7 +1204,6 @@ pub(crate) fn record_root_group_opacity_frame_artifact(
 pub(super) fn record_transform_surface_artifact_for_plan(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintTransformSurfaceWitness,
@@ -1206,7 +1211,6 @@ pub(super) fn record_transform_surface_artifact_for_plan(
     match record_frame_artifact_with_policy(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -1225,7 +1229,6 @@ pub(super) fn record_transform_surface_artifact_for_plan(
 pub(super) fn record_baked_scroll_host_artifact_for_plan(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintBakedScrollHostWitness,
@@ -1233,7 +1236,6 @@ pub(super) fn record_baked_scroll_host_artifact_for_plan(
     match record_frame_artifact_with_policy(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -1289,7 +1291,6 @@ fn text_area_matches_admitted_interactive_paint_grammar(
 pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_for_plan(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     admission: RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
@@ -1374,7 +1375,6 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
     let mut artifact = match record_frame_artifact_with_policy(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -1718,7 +1718,6 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
 pub(super) fn record_baked_scroll_text_area_subtree_host_artifact_for_plan(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     admission: RetainedScrollTextAreaSubtreeAdmissionSnapshot,
@@ -1842,7 +1841,6 @@ pub(super) fn record_baked_scroll_text_area_subtree_host_artifact_for_plan(
     let artifact = match record_frame_artifact_with_policy(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -1899,7 +1897,6 @@ pub(super) fn record_baked_scroll_text_area_subtree_host_artifact_for_plan(
 pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artifact_for_plan(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     admission: &RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
@@ -1925,7 +1922,6 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
         || baked.boundary_root() != admission.boundary_root
         || baked.child() != admission.content_wrapper
         || !admission.matches_scroll_node(outer.scroll_snapshot())
-        || !promoted_node_ids.is_empty()
     {
         return Err(invalid(admission.boundary_root));
     }
@@ -2029,7 +2025,6 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
     let raster_before = record_atomic_projection_live_raster_oracle(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         policy,
@@ -2042,7 +2037,6 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
     let mut artifact = match record_frame_artifact_with_policy(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -2078,7 +2072,6 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
     let raster_after = record_atomic_projection_live_raster_oracle(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         policy,
@@ -2198,7 +2191,6 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
 pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_host_artifact_for_plan(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     admission: &RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
@@ -2224,7 +2216,6 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
         || baked.boundary_root() != admission.boundary_root
         || baked.child() != admission.content_wrapper
         || !admission.matches_scroll_node(outer.scroll_snapshot())
-        || !promoted_node_ids.is_empty()
     {
         return Err(invalid(admission.boundary_root));
     }
@@ -2328,7 +2319,6 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
     let raster_before = record_atomic_projection_live_raster_oracle(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         policy,
@@ -2341,7 +2331,6 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
     let mut artifact = match record_frame_artifact_with_policy(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -2375,7 +2364,6 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
     let raster_after = record_atomic_projection_live_raster_oracle(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         policy,
@@ -2413,7 +2401,6 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
 pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_host_artifact_for_plan(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     admission: &RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
@@ -2440,7 +2427,6 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
         || baked.boundary_root() != admission.boundary_root
         || baked.child() != admission.content_wrapper
         || !admission.matches_scroll_node(outer.scroll_snapshot())
-        || !promoted_node_ids.is_empty()
     {
         return Err(invalid(admission.boundary_root));
     }
@@ -2544,7 +2530,6 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
     let mut raster_before = record_atomic_projection_selection_live_raster_oracle(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         policy,
@@ -2557,7 +2542,6 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
     let mut artifact = match record_frame_artifact_with_policy(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -2598,7 +2582,6 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
     let mut raster_after = record_atomic_projection_selection_live_raster_oracle(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         policy,
@@ -2707,7 +2690,6 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
 pub(super) fn record_baked_scroll_host_artifact_with_stack_for_plan(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintBakedScrollHostWitness,
@@ -2716,7 +2698,6 @@ pub(super) fn record_baked_scroll_host_artifact_with_stack_for_plan(
     match record_frame_artifact_with_policy_and_stack(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -2741,7 +2722,6 @@ pub(super) fn record_baked_scroll_host_artifact_with_stack_for_plan(
 pub(super) fn record_effect_baked_scroll_host_artifact_with_stack_for_plan(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintBakedScrollHostWitness,
@@ -2761,7 +2741,6 @@ pub(super) fn record_effect_baked_scroll_host_artifact_with_stack_for_plan(
     match record_frame_artifact_with_policy_and_stack(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -2784,7 +2763,6 @@ pub(super) fn record_effect_baked_scroll_host_artifact_with_stack_for_plan(
 /// scene artifacts and never enter this recorder.
 pub(super) fn record_scroll_content_local_artifact_for_plan(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintScrollContentWitness,
@@ -2835,7 +2813,6 @@ pub(super) fn record_scroll_content_local_artifact_for_plan(
             != scroll.layout_content_bounds_at_zero.y.to_bits()
         || content_bounds.width.to_bits() != scroll.content_size.width.to_bits()
         || content_bounds.height.to_bits() != scroll.content_size.height.to_bits()
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || property_trees.transforms.len() != 0
         || property_trees.effects.len() != 0
@@ -2892,7 +2869,6 @@ pub(super) fn record_scroll_content_local_artifact_for_plan(
     let artifact = match record_frame_artifact_with_policy(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -2951,7 +2927,6 @@ pub(super) fn record_scroll_content_local_artifact_for_plan(
 /// retained as one localized, parentless artifact clip.
 pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     admission: RetainedScrollTextAreaSubtreeAdmissionSnapshot,
@@ -2964,7 +2939,6 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
         || outer.content_root() != content_root
         || outer.scroll_snapshot().owner != admission.boundary_root
         || !admission.matches_scroll_node(outer.scroll_snapshot())
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || !property_trees.transforms.is_empty()
         || !property_trees.effects.is_empty()
@@ -3097,7 +3071,6 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
     let mut artifact = match record_frame_artifact_with_policy(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -3111,8 +3084,8 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
         }
         Err(error) => return Err(error.reasons),
     };
-    // Generic paint generations include TextArea promotion signatures, whose
-    // screen-space layout origin changes when only the outer scroll moves.
+    // Generic paint generations include screen-space TextArea paint identity,
+    // whose layout origin changes when only the outer scroll moves.
     // C1's detached raster identity instead freezes one local topology token;
     // chunk payload/bounds/clip identities continue to own all visible text,
     // style and internal-scroll changes.
@@ -3314,7 +3287,6 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
 fn record_atomic_projection_live_raster_oracle(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     policy: FrameArtifactAuthorityPolicy,
@@ -3324,11 +3296,9 @@ fn record_atomic_projection_live_raster_oracle(
     source_grammar: &crate::view::base_component::text_area::RetainedAtomicProjectionTextAreaPaintGrammar,
     owner_nodes: Vec<super::PaintOwnerSnapshot>,
 ) -> Result<RetainedAtomicProjectionTextAreaLiveRasterOracle, Vec<FrameArtifactFallbackReason>> {
-    let manifest = record_coverage_manifest_with_context(
+    let manifest = record_retained_coverage_manifest_with_context(
         arena,
         roots,
-        promoted_node_ids,
-        None,
         false,
         true,
         CoverageRecordingMode::MetadataOnly,
@@ -3393,7 +3363,6 @@ fn record_atomic_projection_live_raster_oracle(
 fn record_atomic_projection_selection_live_raster_oracle(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     policy: FrameArtifactAuthorityPolicy,
@@ -3406,11 +3375,9 @@ fn record_atomic_projection_selection_live_raster_oracle(
     RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     Vec<FrameArtifactFallbackReason>,
 > {
-    let manifest = record_coverage_manifest_with_context(
+    let manifest = record_retained_coverage_manifest_with_context(
         arena,
         roots,
-        promoted_node_ids,
-        None,
         false,
         true,
         CoverageRecordingMode::MetadataOnly,
@@ -3473,7 +3440,6 @@ fn record_atomic_projection_selection_live_raster_oracle(
 
 pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     admission: &RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
@@ -3491,7 +3457,6 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         || outer.scroll_snapshot().owner != admission.boundary_root
         || !admission.matches_scroll_node(outer.scroll_snapshot())
         || !admission.paint_grammar.is_canonical()
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || !property_trees.transforms.is_empty()
         || !property_trees.effects.is_empty()
@@ -3669,7 +3634,6 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
     let raster_before = record_atomic_projection_live_raster_oracle(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         policy,
@@ -3683,7 +3647,6 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
     let mut artifact = match record_frame_artifact_with_policy(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -3717,7 +3680,6 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
     let raster_after = record_atomic_projection_live_raster_oracle(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         policy,
@@ -3783,7 +3745,6 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
 
 pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_artifact_for_plan(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     admission: &RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
@@ -3802,7 +3763,6 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
         || outer.scroll_snapshot().owner != admission.boundary_root
         || !admission.matches_scroll_node(outer.scroll_snapshot())
         || !admission.paint_grammar.is_canonical()
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || !property_trees.transforms.is_empty()
         || !property_trees.effects.is_empty()
@@ -3981,7 +3941,6 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
     let raster_before = record_atomic_projection_live_raster_oracle(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         policy,
@@ -3995,7 +3954,6 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
     let mut artifact = match record_frame_artifact_with_policy(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -4029,7 +3987,6 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
     let raster_after = record_atomic_projection_live_raster_oracle(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         policy,
@@ -4140,7 +4097,6 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
 
 pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     admission: &RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
@@ -4156,7 +4112,6 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         || outer.content_root() != content_root
         || outer.scroll_snapshot().owner != admission.boundary_root
         || !admission.matches_scroll_node(outer.scroll_snapshot())
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || !property_trees.transforms.is_empty()
         || !property_trees.effects.is_empty()
@@ -4313,7 +4268,6 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
     let mut raster_before = record_atomic_projection_selection_live_raster_oracle(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         policy,
@@ -4326,7 +4280,6 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
     let mut artifact = match record_frame_artifact_with_policy(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -4367,7 +4320,6 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
     let mut raster_after = record_atomic_projection_selection_live_raster_oracle(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         policy,
@@ -4460,7 +4412,6 @@ pub(super) struct RecordedRetainedInteractiveTextAreaSubtree {
 
 pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_plan(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     admission: RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
@@ -4473,7 +4424,6 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
         || outer.content_root() != content_root
         || outer.scroll_snapshot().owner != admission.boundary_root
         || !admission.matches_scroll_node(outer.scroll_snapshot())
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || !property_trees.transforms.is_empty()
         || !property_trees.effects.is_empty()
@@ -4632,7 +4582,6 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
     let mut artifact = match record_frame_artifact_with_policy(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -4883,7 +4832,6 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
 /// already-owned receiver properties before the exact ScrollContents pair.
 pub(super) fn record_scroll_content_local_artifact_with_stack_for_plan(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintScrollContentWitness,
@@ -4914,7 +4862,6 @@ pub(super) fn record_scroll_content_local_artifact_with_stack_for_plan(
     let artifact = match record_frame_artifact_with_policy_and_stack(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -4950,7 +4897,6 @@ pub(super) fn record_scroll_content_local_artifact_with_stack_for_plan(
 /// ScrollContents; the neutral authority must match the exact effect witness.
 pub(super) fn record_effect_scroll_content_local_artifact_with_stack_for_plan(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintScrollContentWitness,
@@ -4982,7 +4928,6 @@ pub(super) fn record_effect_scroll_content_local_artifact_with_stack_for_plan(
     let artifact = match record_frame_artifact_with_policy_and_stack(
         arena,
         &[content_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -5023,7 +4968,6 @@ pub(super) fn record_transform_child_isolation_artifact_for_plan(
     arena: &NodeArena,
     parent_root: NodeKey,
     child_root: NodeKey,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
 ) -> Result<PaintArtifact, Vec<FrameArtifactFallbackReason>> {
@@ -5112,7 +5056,6 @@ pub(super) fn record_transform_child_isolation_artifact_for_plan(
     match record_frame_artifact_with_policy(
         arena,
         &[child_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
@@ -5141,7 +5084,6 @@ pub(super) enum RecordedTransformSurfaceStep {
 pub(super) fn record_transform_surface_steps_for_plan(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintTransformSurfaceWitness,
@@ -5151,7 +5093,6 @@ pub(super) fn record_transform_surface_steps_for_plan(
     record_ordered_property_steps_for_plan(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         paint_offset,
@@ -5168,7 +5109,6 @@ pub(super) fn record_transform_surface_steps_for_plan(
 pub(super) fn record_property_scene_steps_for_plan(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     paint_offset: [f32; 2],
@@ -5177,7 +5117,6 @@ pub(super) fn record_property_scene_steps_for_plan(
     record_ordered_property_steps_for_plan(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         paint_offset,
@@ -5194,7 +5133,6 @@ pub(super) fn record_property_scene_steps_for_plan(
 pub(super) fn record_transform_property_surface_steps_for_plan(
     arena: &NodeArena,
     root: NodeKey,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintTransformSurfaceWitness,
@@ -5204,7 +5142,6 @@ pub(super) fn record_transform_property_surface_steps_for_plan(
     record_ordered_property_steps_for_plan(
         arena,
         &[root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         paint_offset,
@@ -5225,7 +5162,6 @@ pub(super) fn record_transform_property_surface_steps_for_plan(
 pub(super) fn record_scroll_transform_host_steps_for_plan(
     arena: &NodeArena,
     scroll_root: NodeKey,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintBakedScrollHostWitness,
@@ -5249,7 +5185,6 @@ pub(super) fn record_scroll_transform_host_steps_for_plan(
     let steps = record_ordered_property_steps_for_plan(
         arena,
         &[scroll_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         paint_offset,
@@ -5289,7 +5224,6 @@ pub(super) fn record_scroll_transform_host_steps_for_plan(
 pub(super) fn record_nested_scroll_outer_host_steps_for_plan(
     arena: &NodeArena,
     outer_root: NodeKey,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintBakedScrollHostWitness,
@@ -5310,7 +5244,6 @@ pub(super) fn record_nested_scroll_outer_host_steps_for_plan(
     let steps = record_ordered_property_steps_for_plan(
         arena,
         &[outer_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         [0.0, 0.0],
@@ -5394,7 +5327,6 @@ fn nested_scroll_witness_matches_live_properties(
 pub(super) fn record_nested_scroll_inner_host_steps_for_plan(
     arena: &NodeArena,
     inner_root: NodeKey,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     inner_host: PaintBakedScrollHostWitness,
@@ -5426,10 +5358,9 @@ pub(super) fn record_nested_scroll_inner_host_steps_for_plan(
         ..PaintRecordingContext::default()
     };
     let record = |mode| {
-        record_coverage_manifest_with_nested_scroll_receiver(
+        record_retained_coverage_manifest_with_nested_scroll_receiver(
             arena,
             &[inner_root],
-            promoted_node_ids,
             mode,
             property_trees,
             paint_generations,
@@ -5504,7 +5435,6 @@ pub(super) fn record_nested_scroll_inner_host_steps_for_plan(
 /// resulting artifact intentionally retains S0/C0 for the outer receiver.
 pub(super) fn record_nested_scroll_content_artifact_for_plan(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintNestedScrollContentWitness,
@@ -5526,11 +5456,9 @@ pub(super) fn record_nested_scroll_content_artifact_for_plan(
         ..PaintRecordingContext::default()
     };
     let record = |mode| {
-        record_coverage_manifest_with_context(
+        record_retained_coverage_manifest_with_context(
             arena,
             &[root],
-            promoted_node_ids,
-            None,
             false,
             true,
             mode,
@@ -5579,7 +5507,6 @@ pub(super) fn record_nested_scroll_content_artifact_for_plan(
 pub(super) fn record_scroll_transform_content_steps_for_plan(
     arena: &NodeArena,
     transform_content: NodeKey,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     transform_witness: PaintTransformSurfaceWitness,
@@ -5619,7 +5546,6 @@ pub(super) fn record_scroll_transform_content_steps_for_plan(
     let steps = record_ordered_property_steps_for_plan(
         arena,
         &[transform_content],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         normalization,
@@ -5655,7 +5581,6 @@ pub(super) fn record_scroll_transform_content_steps_for_plan(
 pub(super) fn record_property_scroll_receiver_steps_for_plan(
     arena: &NodeArena,
     receiver_root: NodeKey,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintTransformSurfaceWitness,
@@ -5673,7 +5598,6 @@ pub(super) fn record_property_scroll_receiver_steps_for_plan(
     let steps = record_ordered_property_steps_for_plan(
         arena,
         &[receiver_root],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         paint_offset,
@@ -5707,7 +5631,6 @@ pub(super) fn record_property_scroll_receiver_steps_for_plan(
 pub(super) fn record_property_effect_scroll_receiver_steps_for_plan(
     arena: &NodeArena,
     receiver_root: NodeKey,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     contract: &EffectPropertySurfaceArtifactContract,
@@ -5726,7 +5649,6 @@ pub(super) fn record_property_effect_scroll_receiver_steps_for_plan(
     let cutouts = super::PlannedBoundaryCutoutSet::from_iter([(scroll_cutout.root, scroll_cutout)]);
     let steps = record_effect_property_surface_steps_for_plan(
         arena,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         contract,
@@ -5754,7 +5676,6 @@ pub(super) fn record_property_effect_scroll_receiver_steps_for_plan(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn record_effect_property_surface_steps_for_plan(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     contract: &EffectPropertySurfaceArtifactContract,
@@ -5779,7 +5700,6 @@ pub(super) fn record_effect_property_surface_steps_for_plan(
     record_ordered_property_steps_for_plan(
         arena,
         &[contract.boundary_root()],
-        promoted_node_ids,
         property_trees,
         paint_generations,
         paint_offset,
@@ -5797,7 +5717,6 @@ pub(super) fn record_effect_property_surface_steps_for_plan(
 fn record_ordered_property_steps_for_plan(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     paint_offset: [f32; 2],
@@ -5817,11 +5736,9 @@ fn record_ordered_property_steps_for_plan(
         baked_scroll_host: baked_scroll_host_witness(policy),
         ..PaintRecordingContext::default()
     };
-    let metadata = record_coverage_manifest_with_property_authorities(
+    let metadata = record_retained_coverage_manifest_with_property_authorities(
         arena,
         roots,
-        promoted_node_ids,
-        None,
         false,
         true,
         CoverageRecordingMode::MetadataOnly,
@@ -5836,11 +5753,9 @@ fn record_ordered_property_steps_for_plan(
     if !metadata_eligibility.eligible {
         return Err(metadata_eligibility.reasons);
     }
-    let full = record_coverage_manifest_with_property_authorities(
+    let full = record_retained_coverage_manifest_with_property_authorities(
         arena,
         roots,
-        promoted_node_ids,
-        None,
         false,
         true,
         CoverageRecordingMode::FullArtifact,
@@ -6053,7 +5968,6 @@ fn materialize_transform_surface_steps(
             }
             PaintCoverageItem::ArtifactChunk { ops: None, .. }
             | PaintCoverageItem::LegacyBoundary { .. }
-            | PaintCoverageItem::PromotedBoundary { .. }
             | PaintCoverageItem::NestedScrollContentReceiver { .. } => unreachable!(
                 "eligible full transform-surface manifest has only chunks, transparent nodes, culled nodes, and planned boundaries"
             ),
@@ -6066,7 +5980,6 @@ fn materialize_transform_surface_steps(
 fn record_frame_artifact_with_policy(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     mode: RendererMode,
@@ -6077,7 +5990,6 @@ fn record_frame_artifact_with_policy(
     record_frame_artifact_with_policy_and_stack(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         mode,
@@ -6093,7 +6005,6 @@ fn record_frame_artifact_with_policy(
 fn record_frame_artifact_with_policy_and_stack(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     mode: RendererMode,
@@ -6215,11 +6126,9 @@ fn record_frame_artifact_with_policy_and_stack(
             ..PaintRecordingContext::default()
         };
     let planned_boundary_cutouts = super::PlannedBoundaryCutoutSet::default();
-    let preflight = record_coverage_manifest_with_context(
+    let preflight = record_retained_coverage_manifest_with_context(
         arena,
         roots,
-        promoted_node_ids,
-        None,
         false,
         true,
         CoverageRecordingMode::MetadataOnly,
@@ -6249,11 +6158,9 @@ fn record_frame_artifact_with_policy_and_stack(
         return fallback_or_forced(mode, preflight_eligibility);
     }
 
-    let manifest = record_coverage_manifest_with_context(
+    let manifest = record_retained_coverage_manifest_with_context(
         arena,
         roots,
-        promoted_node_ids,
-        None,
         false,
         true,
         CoverageRecordingMode::FullArtifact,
@@ -6434,6 +6341,7 @@ fn assess_manifest(
         .collect::<Vec<_>>();
     let mut chunk_count = 0usize;
     let mut op_count = 0usize;
+    let mut debug_boundaries = Vec::new();
     for item in &manifest.items {
         match item {
             PaintCoverageItem::ArtifactChunk { chunk, ops, .. } => {
@@ -6830,15 +6738,17 @@ fn assess_manifest(
                     }
                 }
             }
-            PaintCoverageItem::LegacyBoundary { reason, .. } => {
+            PaintCoverageItem::LegacyBoundary { root, reason, .. } => {
+                let boundary = FrameArtifactDebugBoundary {
+                    owner: *root,
+                    kind: FrameArtifactDebugBoundaryKind::Legacy(*reason),
+                };
+                if !debug_boundaries.contains(&boundary) {
+                    debug_boundaries.push(boundary);
+                }
                 let reason = FrameArtifactFallbackReason::LegacyBoundary(*reason);
                 if !reasons.contains(&reason) {
                     reasons.push(reason);
-                }
-            }
-            PaintCoverageItem::PromotedBoundary { .. } => {
-                if !reasons.contains(&FrameArtifactFallbackReason::PromotedBoundary) {
-                    reasons.push(FrameArtifactFallbackReason::PromotedBoundary);
                 }
             }
             PaintCoverageItem::PlannedBoundary { boundary, .. } => {
@@ -6876,6 +6786,7 @@ fn assess_manifest(
         reasons: reasons.clone(),
         chunk_count,
         op_count,
+        debug_boundaries,
     }
 }
 
@@ -7141,7 +7052,9 @@ fn production_property_boundary_reasons(
         let Some(node) = arena.get(key) else {
             continue;
         };
-        if node.element.is_deferred_to_root_viewport_render() {
+        let exact_deferred_viewport_root = roots == [key]
+            && exact_deferred_viewport_self_clip_witness(arena, key, property_trees).is_some();
+        if node.element.is_deferred_to_root_viewport_render() && !exact_deferred_viewport_root {
             let reason = FrameArtifactFallbackReason::LegacyBoundary(LegacyPaintReason::Deferred);
             if !reasons.contains(&reason) {
                 reasons.push(reason);
@@ -7307,40 +7220,14 @@ pub(super) fn canonical_manifest_matches(
                     root: lr,
                     stable_id: ls,
                     reason: lreason,
-                    span_index: lspan,
-                    before_promoted: lb,
-                    after_promoted: la,
                 },
                 PaintCoverageItem::LegacyBoundary {
                     order: ro,
                     root: rr,
                     stable_id: rs,
                     reason: rreason,
-                    span_index: rspan,
-                    before_promoted: rb,
-                    after_promoted: ra,
                 },
-            ) => {
-                lo == ro
-                    && lr == rr
-                    && ls == rs
-                    && lreason == rreason
-                    && lspan == rspan
-                    && lb == rb
-                    && la == ra
-            }
-            (
-                PaintCoverageItem::PromotedBoundary {
-                    order: lo,
-                    root: lr,
-                    stable_id: ls,
-                },
-                PaintCoverageItem::PromotedBoundary {
-                    order: ro,
-                    root: rr,
-                    stable_id: rs,
-                },
-            ) => lo == ro && lr == rr && ls == rs,
+            ) => lo == ro && lr == rr && ls == rs && lreason == rreason,
             (
                 PaintCoverageItem::PlannedBoundary {
                     order: left_order,
@@ -7538,7 +7425,6 @@ mod nested_scroll_tests {
         let outer_steps = record_nested_scroll_outer_host_steps_for_plan(
             &arena,
             outer,
-            &FxHashSet::default(),
             &properties,
             &generations,
             outer_host,
@@ -7584,7 +7470,6 @@ mod nested_scroll_tests {
         let inner_steps = record_nested_scroll_inner_host_steps_for_plan(
             &arena,
             inner,
-            &FxHashSet::default(),
             &properties,
             &generations,
             inner_host,
@@ -7604,7 +7489,6 @@ mod nested_scroll_tests {
 
         let artifact = record_nested_scroll_content_artifact_for_plan(
             &arena,
-            &FxHashSet::default(),
             &properties,
             &generations,
             content,
@@ -7653,7 +7537,6 @@ mod nested_scroll_tests {
             record_nested_scroll_inner_host_steps_for_plan(
                 &arena,
                 inner,
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 inner_host,
@@ -7669,7 +7552,6 @@ mod nested_scroll_tests {
             record_nested_scroll_inner_host_steps_for_plan(
                 &arena,
                 inner,
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 inner_host,
@@ -7689,7 +7571,6 @@ mod nested_scroll_tests {
         assert!(
             record_nested_scroll_content_artifact_for_plan(
                 &arena,
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 content,
@@ -7744,7 +7625,6 @@ mod nested_scroll_tests {
             assert!(
                 record_nested_scroll_content_artifact_for_plan(
                     &arena,
-                    &FxHashSet::default(),
                     &properties,
                     &generations,
                     content,
@@ -7967,7 +7847,6 @@ mod scroll_host_tests {
         let (arena, root, child, properties, generations) = fixture();
         let artifact = record_scroll_content_local_artifact_for_plan(
             &arena,
-            &Default::default(),
             &properties,
             &generations,
             content_witness(root, child, &properties),
@@ -8103,7 +7982,6 @@ mod scroll_host_tests {
             fixture_at_offset([0.0, 0.0]);
         let zero = record_scroll_content_local_artifact_for_plan(
             &zero_arena,
-            &Default::default(),
             &zero_properties,
             &zero_generations,
             content_witness(zero_root, zero_child, &zero_properties),
@@ -8113,7 +7991,6 @@ mod scroll_host_tests {
             fixture_at_offset([3.5, 47.25]);
         let moved = record_scroll_content_local_artifact_for_plan(
             &moved_arena,
-            &Default::default(),
             &moved_properties,
             &moved_generations,
             content_witness(moved_root, moved_child, &moved_properties),
@@ -8128,7 +8005,6 @@ mod scroll_host_tests {
         ) = fixture_at_offset([-0.0, -0.0]);
         let negative_zero = record_scroll_content_local_artifact_for_plan(
             &negative_zero_arena,
-            &Default::default(),
             &negative_zero_properties,
             &negative_zero_generations,
             content_witness(
@@ -8180,7 +8056,6 @@ mod scroll_host_tests {
         assert!(
             record_scroll_content_local_artifact_for_plan(
                 &arena,
-                &Default::default(),
                 &properties,
                 &generations,
                 witness,
@@ -8209,7 +8084,6 @@ mod scroll_host_tests {
         assert!(
             record_scroll_content_local_artifact_for_plan(
                 &arena,
-                &Default::default(),
                 &properties,
                 &generations,
                 witness,
@@ -8226,7 +8100,6 @@ mod scroll_host_tests {
         assert!(
             record_scroll_content_local_artifact_for_plan(
                 &arena,
-                &Default::default(),
                 &properties,
                 &generations,
                 witness,
@@ -8240,7 +8113,6 @@ mod scroll_host_tests {
         assert!(
             record_scroll_content_local_artifact_for_plan(
                 &arena,
-                &Default::default(),
                 &properties,
                 &generations,
                 witness,
@@ -8278,7 +8150,6 @@ mod scroll_host_tests {
         let artifact = record_baked_scroll_host_artifact_for_plan(
             &arena,
             &[root],
-            &Default::default(),
             &properties,
             &generations,
             witness,
@@ -8329,7 +8200,6 @@ mod scroll_host_tests {
         let artifact = record_baked_scroll_host_artifact_for_plan(
             &arena,
             &[root],
-            &Default::default(),
             &properties,
             &generations,
             witness,
@@ -8467,7 +8337,6 @@ mod scroll_host_tests {
             let plan = super::super::plan_single_root_scroll_host_surface(
                 &arena,
                 &[root],
-                &Default::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -8554,7 +8423,6 @@ mod scroll_host_tests {
         let artifact = record_baked_scroll_host_artifact_for_plan(
             &arena,
             &[root],
-            &Default::default(),
             &properties,
             &generations,
             witness,
@@ -8615,7 +8483,6 @@ mod scroll_host_tests {
         let plan = super::super::plan_single_root_scroll_host_surface(
             &arena,
             &[root],
-            &Default::default(),
             &properties,
             &generations,
             1.0,
@@ -8683,7 +8550,6 @@ mod scroll_host_tests {
             super::super::plan_single_root_scroll_host_surface(
                 &arena,
                 &[root],
-                &Default::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -8704,7 +8570,6 @@ mod scroll_host_tests {
             super::super::plan_single_root_scroll_host_surface(
                 &arena,
                 &[root],
-                &Default::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -8730,7 +8595,6 @@ mod scroll_host_tests {
             super::super::plan_single_root_scroll_host_surface(
                 &arena,
                 &[root],
-                &Default::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -8747,7 +8611,6 @@ mod scroll_host_tests {
         let plan = super::super::plan_single_root_scroll_host_surface(
             &arena,
             &[root],
-            &Default::default(),
             &properties,
             &generations,
             1.0,
@@ -8799,11 +8662,10 @@ mod scroll_host_tests {
     #[test]
     fn scroll_host_planner_rejects_non_identity_frame_context() {
         let (arena, root, _child, properties, generations) = fixture();
-        let plan = |promoted: &FxHashSet<u64>, scale, offset, scissor| {
+        let plan = |scale, offset, scissor| {
             super::super::plan_single_root_scroll_host_surface(
                 &arena,
                 &[root],
-                promoted,
                 &properties,
                 &generations,
                 scale,
@@ -8811,12 +8673,9 @@ mod scroll_host_tests {
                 scissor,
             )
         };
-        assert!(plan(&Default::default(), 2.0, [0.0; 2], None).is_err());
-        assert!(plan(&Default::default(), 1.0, [1.0, 0.0], None).is_err());
-        assert!(plan(&Default::default(), 1.0, [0.0; 2], Some([0, 0, 100, 80]),).is_err());
-        let mut promoted = FxHashSet::default();
-        promoted.insert(81_001);
-        assert!(plan(&promoted, 1.0, [0.0; 2], None).is_err());
+        assert!(plan(2.0, [0.0; 2], None).is_err());
+        assert!(plan(1.0, [1.0, 0.0], None).is_err());
+        assert!(plan(1.0, [0.0; 2], Some([0, 0, 100, 80])).is_err());
     }
 
     #[test]
@@ -8838,7 +8697,6 @@ mod scroll_host_tests {
         let artifact = record_baked_scroll_host_artifact_for_plan(
             &arena,
             &[root],
-            &Default::default(),
             &properties,
             &generations,
             witness,
@@ -9013,7 +8871,6 @@ mod property_effect_artifact_tests {
         )]);
         let root_steps = record_effect_property_surface_steps_for_plan(
             &arena,
-            &FxHashSet::default(),
             &properties,
             &generations,
             &root_contract,
@@ -9030,7 +8887,6 @@ mod property_effect_artifact_tests {
 
         let child_steps = record_effect_property_surface_steps_for_plan(
             &arena,
-            &FxHashSet::default(),
             &properties,
             &generations,
             &child_contract,

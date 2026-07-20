@@ -9,7 +9,6 @@ use std::hash::{Hash, Hasher};
 
 use super::{BoxModelSnapshot, ElementTrait, Position, Size};
 use crate::view::layout::LayoutState;
-use crate::view::promotion::PromotionNodeInfo;
 
 mod cache;
 mod events;
@@ -599,7 +598,11 @@ impl ElementTrait for Text {
                 super::ShadowPaintBlocker::TextAreaSelection,
             );
         }
-        if recording_context.inside_text_area && !self.is_paint_visible(effective_opacity) {
+        // Empty, culled and fully transparent Text has no paint in either
+        // renderer. Treat it as a transparent retained leaf in every host
+        // context; reporting Recordable with no glyph plan later becomes a
+        // spurious MissingPaintIdentity Legacy boundary.
+        if !self.is_paint_visible(effective_opacity) {
             return super::ShadowPaintRecordingCapability::Transparent;
         }
         if let Some(witness) = recording_context.text_area_selection
@@ -942,15 +945,18 @@ impl ElementTrait for Text {
 
     // Phase B: snapshot_state / restore_state removed (see ElementTrait def).
 
-    fn promotion_node_info(&self) -> PromotionNodeInfo {
-        PromotionNodeInfo {
-            estimated_pass_count: 1,
+    fn retained_paint_properties(&self) -> super::RetainedPaintProperties {
+        super::RetainedPaintProperties {
             opacity: self.opacity,
             ..Default::default()
         }
     }
 
-    fn promotion_composite_bounds(&self) -> super::PromotionCompositeBounds {
+    fn retained_transform_output_bounds(
+        &self,
+        _arena: &crate::view::node_arena::NodeArena,
+        paint_offset: [f32; 2],
+    ) -> Option<super::RetainedSurfaceBounds> {
         let bounds = self
             .inline_ifc_owned_paint_bounds()
             .unwrap_or(crate::ui::Rect {
@@ -959,21 +965,13 @@ impl ElementTrait for Text {
                 width: self.layout_state.layout_size.width,
                 height: self.layout_state.layout_size.height,
             });
-        super::PromotionCompositeBounds {
+        let mut bounds = super::RetainedSurfaceBounds {
             x: bounds.x,
             y: bounds.y,
             width: bounds.width.max(0.0),
             height: bounds.height.max(0.0),
             corner_radii: [0.0; 4],
-        }
-    }
-
-    fn retained_transform_output_bounds(
-        &self,
-        _arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-    ) -> Option<super::PromotionCompositeBounds> {
-        let mut bounds = self.promotion_composite_bounds();
+        };
         bounds.x += paint_offset[0];
         bounds.y += paint_offset[1];
         Some(bounds)
@@ -983,7 +981,7 @@ impl ElementTrait for Text {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
-    ) -> Option<super::PromotionCompositeBounds> {
+    ) -> Option<super::RetainedSurfaceBounds> {
         self.retained_transform_output_bounds(arena, paint_offset)
     }
 
@@ -991,7 +989,7 @@ impl ElementTrait for Text {
         false
     }
 
-    fn promotion_self_signature(&self) -> u64 {
+    fn retained_paint_signature(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.layout_state.should_render.hash(&mut hasher);
         self.layout_state
@@ -1042,7 +1040,7 @@ impl ElementTrait for Text {
         hasher.finish()
     }
 
-    fn promotion_signature_is_complete(&self) -> bool {
+    fn retained_paint_signature_is_complete(&self) -> bool {
         true
     }
 

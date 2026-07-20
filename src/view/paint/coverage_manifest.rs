@@ -108,14 +108,6 @@ pub(crate) enum PaintCoverageItem {
         root: NodeKey,
         stable_id: u64,
         reason: LegacyPaintReason,
-        span_index: usize,
-        before_promoted: Option<NodeKey>,
-        after_promoted: Option<NodeKey>,
-    },
-    PromotedBoundary {
-        order: CoverageOrder,
-        root: NodeKey,
-        stable_id: u64,
     },
     PlannedBoundary {
         order: CoverageOrder,
@@ -132,7 +124,6 @@ pub(crate) enum PaintCoverageValidationError {
     MissingNode(NodeKey),
     DuplicateNodeKey(NodeKey),
     DuplicateStableId(u64),
-    MissingPromotedStableId(u64),
     InvalidChunkIdOwner(NodeKey),
     InvalidChunkOwner(NodeKey),
     InvalidChunkBounds(NodeKey),
@@ -204,7 +195,6 @@ pub(crate) struct PaintCoverageStats {
     pub(crate) legacy_boundaries: usize,
     pub(crate) legacy_covered_nodes: usize,
     pub(crate) legacy_by_reason: Vec<(LegacyPaintReason, usize)>,
-    pub(crate) promoted_boundaries: usize,
     pub(crate) validation_errors: usize,
     pub(crate) authority_eligible: bool,
     pub(crate) authority_ineligible_reasons: Vec<&'static str>,
@@ -212,7 +202,6 @@ pub(crate) struct PaintCoverageStats {
     artifact_node_keys: FxHashSet<NodeKey>,
     culled_node_keys: FxHashSet<NodeKey>,
     legacy_node_keys: FxHashSet<NodeKey>,
-    promoted_node_keys: FxHashSet<NodeKey>,
 }
 
 impl PaintCoverageManifest {
@@ -220,7 +209,6 @@ impl PaintCoverageManifest {
         let mut nodes = FxHashSet::default();
         let mut artifact_nodes = FxHashSet::default();
         let mut legacy = FxHashSet::default();
-        let mut promoted = FxHashSet::default();
         let mut culled = FxHashSet::default();
         let mut by_reason = FxHashMap::<LegacyPaintReason, usize>::default();
         let mut artifact_chunks = 0usize;
@@ -240,17 +228,9 @@ impl PaintCoverageManifest {
                     artifact_nodes.insert(*owner);
                     culled.insert(*owner);
                 }
-                PaintCoverageItem::LegacyBoundary {
-                    root, span_index, ..
-                } => {
+                PaintCoverageItem::LegacyBoundary { root, .. } => {
                     nodes.insert(*root);
-                    if *span_index == 0 {
-                        legacy.insert(*root);
-                    }
-                }
-                PaintCoverageItem::PromotedBoundary { root, .. } => {
-                    nodes.insert(*root);
-                    promoted.insert(*root);
+                    legacy.insert(*root);
                 }
                 PaintCoverageItem::PlannedBoundary { boundary, .. } => {
                     nodes.insert(boundary.root);
@@ -286,7 +266,6 @@ impl PaintCoverageManifest {
             legacy_boundaries: legacy.len(),
             legacy_covered_nodes: legacy_nodes.len(),
             legacy_by_reason,
-            promoted_boundaries: promoted.len(),
             validation_errors: self.validation_errors.len(),
             authority_eligible: false,
             authority_ineligible_reasons,
@@ -294,7 +273,6 @@ impl PaintCoverageManifest {
             artifact_node_keys: artifact_nodes,
             culled_node_keys: culled,
             legacy_node_keys: legacy_nodes,
-            promoted_node_keys: promoted,
         }
     }
 }
@@ -305,12 +283,10 @@ impl PaintCoverageStats {
         self.artifact_node_keys.extend(other.artifact_node_keys);
         self.culled_node_keys.extend(other.culled_node_keys);
         self.legacy_node_keys.extend(other.legacy_node_keys);
-        self.promoted_node_keys.extend(other.promoted_node_keys);
         self.total_nodes = self.covered_node_keys.len();
         self.artifact_nodes = self.artifact_node_keys.len();
         self.culled_subtrees = self.culled_node_keys.len();
         self.legacy_covered_nodes = self.legacy_node_keys.len();
-        self.promoted_boundaries = self.promoted_node_keys.len();
         self.artifact_chunks = self.artifact_chunks.saturating_add(other.artifact_chunks);
         self.legacy_boundaries = self
             .legacy_boundaries
@@ -338,11 +314,63 @@ impl PaintCoverageStats {
     }
 }
 
+pub(super) fn exact_deferred_viewport_self_clip_witness(
+    arena: &NodeArena,
+    owner: NodeKey,
+    property_trees: &PropertyTrees,
+) -> Option<super::PaintDeferredViewportSelfClipWitness> {
+    let node = arena.get(owner)?;
+    let stable_id = node.element.stable_id();
+    let element = node
+        .element
+        .as_any()
+        .downcast_ref::<crate::view::base_component::Element>()?;
+    let logical_scissor = element.exact_deferred_viewport_root_self_clip_scissor_rect(
+        owner,
+        arena,
+        arena.parent_of(owner).is_none(),
+    )?;
+    let id = ClipNodeId {
+        owner,
+        role: crate::view::compositor::property_tree::ClipNodeRole::SelfClip,
+    };
+    let state = property_trees.node_state_for(owner)?;
+    let exact_clip_state = crate::view::compositor::property_tree::PropertyTreeState {
+        clip: Some(id),
+        ..Default::default()
+    };
+    let effect_id = crate::view::compositor::property_tree::EffectNodeId(owner);
+    let exact_clip_effect_state = crate::view::compositor::property_tree::PropertyTreeState {
+        clip: Some(id),
+        effect: Some(effect_id),
+        ..Default::default()
+    };
+    let exact_root_transparency = property_trees
+        .effects
+        .get(&effect_id)
+        .is_some_and(|effect| {
+            effect.owner == owner
+                && effect.parent.is_none()
+                && effect.opacity.to_bits() == 0.0_f32.to_bits()
+                && effect.generation != 0
+        });
+    let state_is_exact = (state.paint == exact_clip_state && state.descendants == exact_clip_state)
+        || (exact_root_transparency
+            && state.paint == exact_clip_effect_state
+            && state.descendants == exact_clip_effect_state);
+    if !state_is_exact {
+        return None;
+    }
+    let clip_chain = property_trees.clip_snapshot_for(Some(id))?;
+    let [clip] = clip_chain.as_slice() else {
+        return None;
+    };
+    super::PaintDeferredViewportSelfClipWitness::new(owner, stable_id, *clip, logical_scissor)
+}
+
 pub(crate) fn record_coverage_manifest(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
-    promoted_root_exemption: Option<NodeKey>,
     force_legacy_roots: bool,
     emit_deferred_late: bool,
     recording_mode: CoverageRecordingMode,
@@ -353,8 +381,6 @@ pub(crate) fn record_coverage_manifest(
     record_coverage_manifest_with_context(
         arena,
         roots,
-        promoted_node_ids,
-        promoted_root_exemption,
         force_legacy_roots,
         emit_deferred_late,
         recording_mode,
@@ -369,8 +395,6 @@ pub(crate) fn record_coverage_manifest(
 pub(super) fn record_coverage_manifest_with_context(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
-    promoted_root_exemption: Option<NodeKey>,
     force_legacy_roots: bool,
     emit_deferred_late: bool,
     recording_mode: CoverageRecordingMode,
@@ -383,8 +407,6 @@ pub(super) fn record_coverage_manifest_with_context(
     record_coverage_manifest_with_property_authorities(
         arena,
         roots,
-        promoted_node_ids,
-        promoted_root_exemption,
         force_legacy_roots,
         emit_deferred_late,
         recording_mode,
@@ -397,12 +419,38 @@ pub(super) fn record_coverage_manifest_with_context(
     )
 }
 
+/// Retained-authority recorder.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn record_retained_coverage_manifest_with_context(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    force_legacy_roots: bool,
+    emit_deferred_late: bool,
+    recording_mode: CoverageRecordingMode,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    initial_recording_context: PaintRecordingContext,
+    transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
+    planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
+) -> PaintCoverageManifest {
+    record_coverage_manifest_with_context(
+        arena,
+        roots,
+        force_legacy_roots,
+        emit_deferred_late,
+        recording_mode,
+        property_trees,
+        paint_generations,
+        initial_recording_context,
+        transform_surface_authority,
+        planned_boundary_cutouts,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn record_coverage_manifest_with_property_authorities(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
-    promoted_root_exemption: Option<NodeKey>,
     force_legacy_roots: bool,
     emit_deferred_late: bool,
     recording_mode: CoverageRecordingMode,
@@ -416,8 +464,6 @@ pub(super) fn record_coverage_manifest_with_property_authorities(
     record_coverage_manifest_with_property_authorities_impl(
         arena,
         roots,
-        promoted_node_ids,
-        promoted_root_exemption,
         force_legacy_roots,
         emit_deferred_late,
         recording_mode,
@@ -432,10 +478,38 @@ pub(super) fn record_coverage_manifest_with_property_authorities(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) fn record_retained_coverage_manifest_with_property_authorities(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    force_legacy_roots: bool,
+    emit_deferred_late: bool,
+    recording_mode: CoverageRecordingMode,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    initial_recording_context: PaintRecordingContext,
+    transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
+    effect_surface_authority: Option<&super::EffectPropertySurfaceArtifactContract>,
+    planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
+) -> PaintCoverageManifest {
+    record_coverage_manifest_with_property_authorities(
+        arena,
+        roots,
+        force_legacy_roots,
+        emit_deferred_late,
+        recording_mode,
+        property_trees,
+        paint_generations,
+        initial_recording_context,
+        transform_surface_authority,
+        effect_surface_authority,
+        planned_boundary_cutouts,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn record_coverage_manifest_with_nested_scroll_receiver(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     recording_mode: CoverageRecordingMode,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
@@ -445,8 +519,6 @@ pub(super) fn record_coverage_manifest_with_nested_scroll_receiver(
     record_coverage_manifest_with_property_authorities_impl(
         arena,
         roots,
-        promoted_node_ids,
-        None,
         false,
         true,
         recording_mode,
@@ -461,11 +533,30 @@ pub(super) fn record_coverage_manifest_with_nested_scroll_receiver(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) fn record_retained_coverage_manifest_with_nested_scroll_receiver(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    recording_mode: CoverageRecordingMode,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    initial_recording_context: PaintRecordingContext,
+    receiver: NestedScrollContentReceiverCutout,
+) -> PaintCoverageManifest {
+    record_coverage_manifest_with_nested_scroll_receiver(
+        arena,
+        roots,
+        recording_mode,
+        property_trees,
+        paint_generations,
+        initial_recording_context,
+        receiver,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn record_coverage_manifest_with_property_authorities_impl(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
-    promoted_root_exemption: Option<NodeKey>,
     force_legacy_roots: bool,
     emit_deferred_late: bool,
     recording_mode: CoverageRecordingMode,
@@ -516,15 +607,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 .map(|child| (child, Some(key))),
         );
     }
-    for &stable_id in promoted_node_ids {
-        if !stable_keys.contains_key(&stable_id) {
-            manifest
-                .validation_errors
-                .push(PaintCoverageValidationError::MissingPromotedStableId(
-                    stable_id,
-                ));
-        }
-    }
     manifest.covered_nodes = resolved_nodes;
     fn collect_deferred(
         arena: &NodeArena,
@@ -554,8 +636,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
 
     struct Recorder<'a> {
         arena: &'a NodeArena,
-        promoted: &'a FxHashSet<u64>,
-        exemption: Option<NodeKey>,
         force_legacy_roots: bool,
         deferred_roots: &'a FxHashSet<NodeKey>,
         properties: &'a PropertyTrees,
@@ -591,7 +671,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
         ops: Option<Vec<super::PaintOp>>,
     }
     enum CulledSubtreeBoundary {
-        Promoted { root: NodeKey, stable_id: u64 },
         Deferred,
         Property(LegacyPaintReason),
     }
@@ -635,13 +714,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
                         }
                     }
                 }
-                let stable_id = node.element.stable_id();
-                if self.promoted.contains(&stable_id) {
-                    return Some(CulledSubtreeBoundary::Promoted {
-                        root: key,
-                        stable_id,
-                    });
-                }
                 stack.extend(node.element.children().iter().copied());
             }
             None
@@ -658,8 +730,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
             let Some(node) = self.arena.get(key) else {
                 return;
             };
-            let invocation_exemption = self.exemption == Some(key);
-            if self.deferred_roots.contains(&key) && !deferred_phase_root && !invocation_exemption {
+            if self.deferred_roots.contains(&key) && !deferred_phase_root {
                 return;
             }
             let stable_id = node.element.stable_id();
@@ -725,24 +796,12 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 });
                 return;
             }
-            if invocation_exemption {
-                self.push_legacy_spans(key, stable_id, LegacyPaintReason::Promoted, order);
-                return;
-            }
-            if self.exemption != Some(key) && self.promoted.contains(&stable_id) {
-                self.items.push(PaintCoverageItem::PromotedBoundary {
-                    order,
-                    root: key,
-                    stable_id,
-                });
-                return;
-            }
             if self.force_legacy_roots && path.is_empty() && !node.element.children().is_empty() {
-                self.push_legacy_spans(key, stable_id, LegacyPaintReason::HasChildren, order);
+                self.push_legacy_boundary(key, stable_id, LegacyPaintReason::HasChildren, order);
                 return;
             }
             let Some(property_states) = self.properties.node_state_for(key) else {
-                self.push_legacy_spans(
+                self.push_legacy_boundary(
                     key,
                     stable_id,
                     LegacyPaintReason::MissingPaintIdentity,
@@ -753,7 +812,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
             let live_properties = property_states.paint;
             let live_contents_properties = property_states.descendants;
             let Some(generations) = self.generations.local_generations_for(key) else {
-                self.push_legacy_spans(
+                self.push_legacy_boundary(
                     key,
                     stable_id,
                     LegacyPaintReason::MissingPaintIdentity,
@@ -777,7 +836,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     recording_context.paint_offset.map(f32::to_bits) != required
                 })
             {
-                self.push_legacy_spans(
+                self.push_legacy_boundary(
                     key,
                     stable_id,
                     LegacyPaintReason::MissingPaintIdentity,
@@ -841,7 +900,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
             let Some(mut properties) =
                 recording_context.project_consumed_ancestor_property(live_properties)
             else {
-                self.push_legacy_spans(
+                self.push_legacy_boundary(
                     key,
                     stable_id,
                     LegacyPaintReason::MissingPaintIdentity,
@@ -852,7 +911,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
             let Some(mut contents_properties) =
                 recording_context.project_consumed_ancestor_property(live_contents_properties)
             else {
-                self.push_legacy_spans(
+                self.push_legacy_boundary(
                     key,
                     stable_id,
                     LegacyPaintReason::MissingPaintIdentity,
@@ -862,7 +921,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
             };
             if let Some(authority) = self.effect_surface_authority {
                 let Some(paint_chain) = self.properties.clip_snapshot_for(properties.clip) else {
-                    self.push_legacy_spans(
+                    self.push_legacy_boundary(
                         key,
                         stable_id,
                         LegacyPaintReason::MissingPaintIdentity,
@@ -872,7 +931,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 };
                 let Some(projected) = authority.project_clip_leaf(properties.clip, &paint_chain)
                 else {
-                    self.push_legacy_spans(
+                    self.push_legacy_boundary(
                         key,
                         stable_id,
                         LegacyPaintReason::MissingPaintIdentity,
@@ -885,7 +944,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 let Some(contents_chain) =
                     self.properties.clip_snapshot_for(contents_properties.clip)
                 else {
-                    self.push_legacy_spans(
+                    self.push_legacy_boundary(
                         key,
                         stable_id,
                         LegacyPaintReason::MissingPaintIdentity,
@@ -896,7 +955,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 let Some(projected) =
                     authority.project_clip_leaf(contents_properties.clip, &contents_chain)
                 else {
-                    self.push_legacy_spans(
+                    self.push_legacy_boundary(
                         key,
                         stable_id,
                         LegacyPaintReason::MissingPaintIdentity,
@@ -909,34 +968,32 @@ fn record_coverage_manifest_with_property_authorities_impl(
             recording_context.authoritative_self_clip = self
                 .properties
                 .authoritative_self_clip_for_owner(key, live_properties);
+            recording_context.deferred_viewport_self_clip = None;
+            if deferred_phase_root {
+                recording_context.deferred_viewport_self_clip =
+                    exact_deferred_viewport_self_clip_witness(self.arena, key, self.properties);
+            }
             match node.element.shadow_paint_recording_capability(
                 self.arena,
                 deferred_phase_root,
                 recording_context,
             ) {
                 ShadowPaintRecordingCapability::Unsupported => {
-                    self.push_legacy_spans(key, stable_id, LegacyPaintReason::UnknownHost, order)
+                    self.push_legacy_boundary(key, stable_id, LegacyPaintReason::UnknownHost, order)
                 }
                 ShadowPaintRecordingCapability::Legacy(blocker) => {
-                    self.push_legacy_spans(key, stable_id, legacy_reason(blocker), order)
+                    self.push_legacy_boundary(key, stable_id, legacy_reason(blocker), order)
                 }
                 ShadowPaintRecordingCapability::CulledSubtree => {
                     match self.culled_subtree_boundary(key) {
-                        Some(CulledSubtreeBoundary::Promoted { root, stable_id }) => {
-                            self.items.push(PaintCoverageItem::PromotedBoundary {
-                                order,
-                                root,
-                                stable_id,
-                            })
-                        }
-                        Some(CulledSubtreeBoundary::Deferred) => self.push_legacy_spans(
+                        Some(CulledSubtreeBoundary::Deferred) => self.push_legacy_boundary(
                             key,
                             stable_id,
                             LegacyPaintReason::Deferred,
                             order,
                         ),
                         Some(CulledSubtreeBoundary::Property(reason)) => {
-                            self.push_legacy_spans(key, stable_id, reason, order)
+                            self.push_legacy_boundary(key, stable_id, reason, order)
                         }
                         None => self.items.push(PaintCoverageItem::CulledSubtree {
                             order,
@@ -979,7 +1036,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                                 self.arena,
                                 recording_context,
                             ) else {
-                                self.push_legacy_spans(
+                                self.push_legacy_boundary(
                                     key,
                                     stable_id,
                                     LegacyPaintReason::MissingPaintIdentity,
@@ -1009,7 +1066,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                                 self.arena,
                                 recording_context,
                             ) else {
-                                self.push_legacy_spans(
+                                self.push_legacy_boundary(
                                     key,
                                     stable_id,
                                     LegacyPaintReason::MissingPaintIdentity,
@@ -1044,7 +1101,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                         }
                     };
                     if plan.is_empty() {
-                        self.push_legacy_spans(
+                        self.push_legacy_boundary(
                             key,
                             stable_id,
                             LegacyPaintReason::MissingPaintIdentity,
@@ -1363,7 +1420,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
             error: PaintCoverageValidationError,
         ) {
             self.validation_errors.push(error);
-            self.push_legacy_spans(
+            self.push_legacy_boundary(
                 key,
                 stable_id,
                 LegacyPaintReason::MissingPaintIdentity,
@@ -1371,68 +1428,24 @@ fn record_coverage_manifest_with_property_authorities_impl(
             );
         }
 
-        fn push_legacy_spans(
+        fn push_legacy_boundary(
             &mut self,
             root: NodeKey,
             stable_id: u64,
             reason: LegacyPaintReason,
             order: CoverageOrder,
         ) {
-            let mut cutouts = Vec::new();
-            self.collect_promoted_cutouts(root, &mut cutouts);
-            for span_index in 0..=cutouts.len() {
-                let before_promoted = span_index
-                    .checked_sub(1)
-                    .and_then(|index| cutouts.get(index).copied());
-                let after_promoted = cutouts.get(span_index).copied();
-                self.items.push(PaintCoverageItem::LegacyBoundary {
-                    order: order.clone(),
-                    root,
-                    stable_id,
-                    reason,
-                    span_index,
-                    before_promoted,
-                    after_promoted,
-                });
-                if let Some(promoted_root) = after_promoted {
-                    let promoted_id = self
-                        .arena
-                        .get(promoted_root)
-                        .map(|node| node.element.stable_id())
-                        .unwrap_or_default();
-                    self.items.push(PaintCoverageItem::PromotedBoundary {
-                        order: order.clone(),
-                        root: promoted_root,
-                        stable_id: promoted_id,
-                    });
-                }
-            }
-        }
-
-        fn collect_promoted_cutouts(&self, root: NodeKey, out: &mut Vec<NodeKey>) {
-            let Some(node) = self.arena.get(root) else {
-                return;
-            };
-            for &child in node.element.children() {
-                let Some(child_node) = self.arena.get(child) else {
-                    continue;
-                };
-                if self.deferred_roots.contains(&child) {
-                    continue;
-                }
-                if self.promoted.contains(&child_node.element.stable_id()) {
-                    out.push(child);
-                } else {
-                    self.collect_promoted_cutouts(child, out);
-                }
-            }
+            self.items.push(PaintCoverageItem::LegacyBoundary {
+                order,
+                root,
+                stable_id,
+                reason,
+            });
         }
     }
 
     let mut recorder = Recorder {
         arena,
-        promoted: promoted_node_ids,
-        exemption: promoted_root_exemption,
         force_legacy_roots,
         deferred_roots: &deferred_set,
         properties: property_trees,
@@ -1501,7 +1514,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
         arena: &NodeArena,
         key: NodeKey,
         root: NodeKey,
-        promoted: &FxHashSet<u64>,
         deferred: &FxHashSet<NodeKey>,
         out: &mut FxHashSet<NodeKey>,
     ) {
@@ -1511,33 +1523,17 @@ fn record_coverage_manifest_with_property_authorities_impl(
         let Some(node) = arena.get(key) else {
             return;
         };
-        if key != root && promoted.contains(&node.element.stable_id()) {
-            return;
-        }
         if !out.insert(key) {
             return;
         }
         for &child in node.element.children() {
-            mark_legacy_coverage(arena, child, root, promoted, deferred, out);
+            mark_legacy_coverage(arena, child, root, deferred, out);
         }
     }
     for item in &manifest.items {
-        if let PaintCoverageItem::LegacyBoundary {
-            root,
-            reason,
-            span_index: 0,
-            ..
-        } = item
-        {
+        if let PaintCoverageItem::LegacyBoundary { root, reason, .. } = item {
             let coverage = manifest.legacy_coverage.entry(*reason).or_default();
-            mark_legacy_coverage(
-                arena,
-                *root,
-                *root,
-                promoted_node_ids,
-                &deferred_set,
-                coverage,
-            );
+            mark_legacy_coverage(arena, *root, *root, &deferred_set, coverage);
         }
     }
     manifest
@@ -1974,15 +1970,12 @@ mod tests {
     fn record(
         arena: &NodeArena,
         roots: &[NodeKey],
-        promoted: &FxHashSet<u64>,
         force_legacy_roots: bool,
     ) -> PaintCoverageManifest {
         let (properties, generations) = identity(arena, roots);
         record_coverage_manifest(
             arena,
             roots,
-            promoted,
-            None,
             force_legacy_roots,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -2002,7 +1995,7 @@ mod tests {
         let child = insert_plan(&mut arena, PlanHost::recordable(0x8f01, &[0], &[]));
         append(&mut arena, root, child);
 
-        let manifest = record(&arena, &[root], &FxHashSet::default(), false);
+        let manifest = record(&arena, &[root], false);
         let sequence = manifest
             .items
             .iter()
@@ -2086,8 +2079,6 @@ mod tests {
             record_coverage_manifest_with_context(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
-                None,
                 false,
                 true,
                 mode,
@@ -2153,8 +2144,6 @@ mod tests {
         let invalid = record_coverage_manifest_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -2183,8 +2172,6 @@ mod tests {
         let missing_isolation_snapshot = record_coverage_manifest_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -2217,8 +2204,6 @@ mod tests {
             let manifest = record_coverage_manifest_with_context(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
-                None,
                 false,
                 true,
                 mode,
@@ -2257,8 +2242,6 @@ mod tests {
         let invalid = record_coverage_manifest_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -2281,8 +2264,6 @@ mod tests {
         let missing_transform_snapshot = record_coverage_manifest_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -2352,8 +2333,6 @@ mod tests {
                 record_coverage_manifest_with_context(
                     &arena,
                     &[child],
-                    &FxHashSet::default(),
-                    None,
                     false,
                     false,
                     mode,
@@ -2436,8 +2415,6 @@ mod tests {
                 record_coverage_manifest_with_context(
                     &arena,
                     &[child],
-                    &FxHashSet::default(),
-                    None,
                     false,
                     false,
                     mode,
@@ -2499,8 +2476,6 @@ mod tests {
             let manifest = record_coverage_manifest_with_context(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
-                None,
                 false,
                 false,
                 mode,
@@ -2566,8 +2541,6 @@ mod tests {
             record_coverage_manifest_with_context(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
-                None,
                 false,
                 false,
                 mode,
@@ -2609,8 +2582,6 @@ mod tests {
         let metadata = record_coverage_manifest(
             &arena,
             &roots,
-            &FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -2620,8 +2591,6 @@ mod tests {
         let full = record_coverage_manifest(
             &arena,
             &roots,
-            &FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -2692,8 +2661,6 @@ mod tests {
             let metadata = record_coverage_manifest(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
-                None,
                 false,
                 true,
                 CoverageRecordingMode::MetadataOnly,
@@ -2703,8 +2670,6 @@ mod tests {
             let full = record_coverage_manifest(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
-                None,
                 false,
                 true,
                 CoverageRecordingMode::FullArtifact,
@@ -2765,25 +2730,7 @@ mod tests {
     }
 
     #[test]
-    fn promoted_cutout_stays_between_host_phases_and_deferred_stays_late() {
-        let mut arena = NodeArena::new();
-        let root = insert_plan(&mut arena, PlanHost::recordable(0x8f30, &[0], &[0]));
-        let promoted = insert_plan(&mut arena, PlanHost::recordable(0x8f31, &[0], &[]));
-        append(&mut arena, root, promoted);
-        let promoted_manifest = record(&arena, &[root], &FxHashSet::from_iter([0x8f31]), false);
-        assert!(matches!(
-            promoted_manifest.items.as_slice(),
-            [
-                PaintCoverageItem::ArtifactChunk { chunk: before, .. },
-                PaintCoverageItem::PromotedBoundary { root: cutout, .. },
-                PaintCoverageItem::ArtifactChunk { chunk: after, .. },
-            ] if before.owner == root
-                && before.id.phase == PaintNodePhase::BeforeChildren
-                && *cutout == promoted
-                && after.owner == root
-                && after.id.phase == PaintNodePhase::AfterChildren
-        ));
-
+    fn deferred_nodes_stay_in_the_late_phase() {
         let mut arena = NodeArena::new();
         let root = insert_plan(&mut arena, PlanHost::recordable(0x8f40, &[0], &[0]));
         let mut deferred_host = PlanHost::recordable(0x8f41, &[0], &[0]);
@@ -2791,7 +2738,7 @@ mod tests {
         let deferred = insert_plan(&mut arena, deferred_host);
         append(&mut arena, root, deferred);
         let normal_root = insert_plan(&mut arena, PlanHost::recordable(0x8f42, &[0], &[]));
-        let manifest = record(&arena, &[root, normal_root], &FxHashSet::default(), false);
+        let manifest = record(&arena, &[root, normal_root], false);
         let sequence = manifest
             .items
             .iter()
@@ -2821,7 +2768,7 @@ mod tests {
         let child = insert(&mut arena, 2);
         append(&mut arena, a, child);
         let b = insert(&mut arena, 3);
-        let manifest = record(&arena, &[a, b], &FxHashSet::default(), false);
+        let manifest = record(&arena, &[a, b], false);
         let owners = manifest
             .items
             .iter()
@@ -2854,8 +2801,6 @@ mod tests {
         let metadata = record_coverage_manifest(
             &arena,
             &[root],
-            &FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -2871,8 +2816,6 @@ mod tests {
         let full = record_coverage_manifest(
             &arena,
             &[root],
-            &FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -2887,33 +2830,6 @@ mod tests {
     }
 
     #[test]
-    fn artifact_promoted_artifact_and_legacy_span_cutouts_keep_order() {
-        let mut arena = NodeArena::new();
-        let root = insert(&mut arena, 10);
-        let left = insert(&mut arena, 11);
-        let promoted = insert(&mut arena, 12);
-        let right = insert(&mut arena, 13);
-        append(&mut arena, root, left);
-        append(&mut arena, root, promoted);
-        append(&mut arena, root, right);
-        let promoted_ids = FxHashSet::from_iter([12]);
-        let manifest = record(&arena, &[root], &promoted_ids, false);
-        assert!(matches!(manifest.items.as_slice(), [
-            PaintCoverageItem::ArtifactChunk { chunk: root_chunk, .. },
-            PaintCoverageItem::ArtifactChunk { chunk: left_chunk, .. },
-            PaintCoverageItem::PromotedBoundary { root: promoted_root, .. },
-            PaintCoverageItem::ArtifactChunk { chunk: right_chunk, .. },
-        ] if root_chunk.owner == root && left_chunk.owner == left && *promoted_root == promoted && right_chunk.owner == right));
-
-        let spans = record(&arena, &[root], &promoted_ids, true);
-        assert!(matches!(spans.items.as_slice(), [
-            PaintCoverageItem::LegacyBoundary { span_index: 0, after_promoted: Some(a), .. },
-            PaintCoverageItem::PromotedBoundary { root: b, .. },
-            PaintCoverageItem::LegacyBoundary { span_index: 1, before_promoted: Some(c), after_promoted: None, .. },
-        ] if *a == promoted && *b == promoted && *c == promoted));
-    }
-
-    #[test]
     fn artifact_legacy_artifact_sequence_reports_unprepared_text_boundary() {
         let mut arena = NodeArena::new();
         let root = insert(&mut arena, 14);
@@ -2923,7 +2839,7 @@ mod tests {
         append(&mut arena, root, left);
         append(&mut arena, root, unknown);
         append(&mut arena, root, right);
-        let manifest = record(&arena, &[root], &FxHashSet::default(), false);
+        let manifest = record(&arena, &[root], false);
         assert!(matches!(manifest.items.as_slice(), [
             PaintCoverageItem::ArtifactChunk { chunk: root_chunk, .. },
             PaintCoverageItem::ArtifactChunk { chunk: left_chunk, .. },
@@ -2949,75 +2865,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_promoted_descendant_is_after_normal_sibling_and_nested_deferred_is_unique() {
-        let mut arena = NodeArena::new();
-        let root = insert(&mut arena, 60);
-        let deferred = arena.insert(Node::new(Box::new(deferred_element(61))));
-        let promoted = insert(&mut arena, 62);
-        append(&mut arena, deferred, promoted);
-        let normal_q = insert(&mut arena, 63);
-        append(&mut arena, root, deferred);
-        append(&mut arena, root, normal_q);
-        let nested_deferred = arena.insert(Node::new(Box::new(deferred_element(64))));
-        append(&mut arena, deferred, nested_deferred);
-
-        let manifest = record(&arena, &[root], &FxHashSet::from_iter([62]), false);
-        let q_index = manifest
-            .items
-            .iter()
-            .position(|item| matches!(item, PaintCoverageItem::ArtifactChunk { chunk, .. } if chunk.owner == normal_q))
-            .expect("normal sibling Q");
-        let p_index = manifest
-            .items
-            .iter()
-            .position(|item| matches!(item, PaintCoverageItem::PromotedBoundary { root, .. } if *root == promoted))
-            .expect("late promoted P");
-        assert!(q_index < p_index, "normal Q must precede deferred P");
-        assert_eq!(
-            manifest
-                .items
-                .iter()
-                .filter(|item| matches!(item, PaintCoverageItem::LegacyBoundary { root, span_index: 0, .. } if *root == deferred))
-                .count(),
-            1
-        );
-        assert_eq!(
-            manifest
-                .items
-                .iter()
-                .filter(|item| matches!(item, PaintCoverageItem::LegacyBoundary { root, span_index: 0, .. } if *root == nested_deferred))
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn deferred_promoted_invocation_root_uses_identity_exemption_without_late_phase() {
-        let mut arena = NodeArena::new();
-        let root = arena.insert(Node::new(Box::new(deferred_element(65))));
-        let (properties, generations) = identity(&arena, &[root]);
-        let manifest = record_coverage_manifest(
-            &arena,
-            &[root],
-            &FxHashSet::from_iter([65]),
-            Some(root),
-            true,
-            false,
-            CoverageRecordingMode::MetadataOnly,
-            &properties,
-            &generations,
-        );
-        assert!(matches!(manifest.items.as_slice(), [
-            PaintCoverageItem::LegacyBoundary {
-                root: boundary,
-                reason: LegacyPaintReason::Promoted,
-                ..
-            }
-        ] if *boundary == root));
-    }
-
-    #[test]
-    fn coverage_stats_count_entire_legacy_subtree_and_promoted_leaf_once() {
+    fn coverage_stats_count_entire_legacy_subtree_once() {
         let mut arena = NodeArena::new();
         let mut transformed = Element::new_with_id(70, 0.0, 0.0, 10.0, 10.0);
         let mut style = Style::new();
@@ -3030,17 +2878,16 @@ mod tests {
             append(&mut arena, parent, child);
             parent = child;
         }
-        let promoted = insert(&mut arena, 80);
-        append(&mut arena, parent, promoted);
-        let manifest = record(&arena, &[root], &FxHashSet::from_iter([80]), false);
+        let leaf = insert(&mut arena, 80);
+        append(&mut arena, parent, leaf);
+        let manifest = record(&arena, &[root], false);
         let stats = manifest.stats();
         assert_eq!(stats.total_nodes, 11);
-        assert_eq!(stats.legacy_covered_nodes, 10);
-        assert_eq!(stats.promoted_boundaries, 1);
+        assert_eq!(stats.legacy_covered_nodes, 11);
     }
 
     #[test]
-    fn fallback_boundary_does_not_record_descendant_and_deferred_is_single_late_boundary() {
+    fn fallback_boundary_does_not_record_descendant_and_exact_deferred_root_records_late() {
         let mut arena = NodeArena::new();
         let mut transformed = Element::new_with_id(20, 0.0, 0.0, 10.0, 10.0);
         let mut style = Style::new();
@@ -3049,7 +2896,7 @@ mod tests {
         let root = arena.insert(Node::new(Box::new(transformed)));
         let child = insert(&mut arena, 21);
         append(&mut arena, root, child);
-        let manifest = record(&arena, &[root], &FxHashSet::default(), false);
+        let manifest = record(&arena, &[root], false);
         assert_eq!(manifest.items.len(), 1);
         assert!(
             matches!(manifest.items[0], PaintCoverageItem::LegacyBoundary { root: boundary, reason: LegacyPaintReason::Transform, .. } if boundary == root)
@@ -3067,14 +2914,18 @@ mod tests {
         );
         deferred.apply_style(deferred_style);
         let deferred_root = arena.insert(Node::new(Box::new(deferred)));
-        let deferred_manifest = record(&arena, &[deferred_root], &FxHashSet::default(), false);
+        let deferred_manifest = record(&arena, &[deferred_root], false);
         assert!(
             matches!(
                 deferred_manifest.items.as_slice(),
-                [PaintCoverageItem::LegacyBoundary {
-                    reason: LegacyPaintReason::SelfClip,
-                    ..
-                }]
+                [PaintCoverageItem::ArtifactChunk { order, chunk, clip_snapshot, .. }]
+                    if order.root_index == 1
+                        && order.child_path == [0]
+                        && chunk.owner == deferred_root
+                        && clip_snapshot.len() == 1
+                        && clip_snapshot[0].owner == deferred_root
+                        && clip_snapshot[0].behavior
+                            == crate::view::compositor::property_tree::ClipBehavior::Replace
             ),
             "{:#?}",
             deferred_manifest.items
@@ -3089,8 +2940,6 @@ mod tests {
         let manifest = record_coverage_manifest(
             &arena,
             &[a, a, b, NodeKey::null()],
-            &FxHashSet::from_iter([999]),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -3110,11 +2959,6 @@ mod tests {
         assert!(
             manifest
                 .validation_errors
-                .contains(&PaintCoverageValidationError::MissingPromotedStableId(999))
-        );
-        assert!(
-            manifest
-                .validation_errors
                 .contains(&PaintCoverageValidationError::MissingNode(NodeKey::null()))
         );
         assert_eq!(manifest.stats().total_nodes, 2);
@@ -3124,8 +2968,8 @@ mod tests {
     fn recording_is_side_effect_free_and_deterministic() {
         let mut arena = NodeArena::new();
         let root = insert(&mut arena, 50);
-        let first = record(&arena, &[root], &FxHashSet::default(), false);
-        let second = record(&arena, &[root], &FxHashSet::default(), false);
+        let first = record(&arena, &[root], false);
+        let second = record(&arena, &[root], false);
         assert_eq!(format!("{:?}", first.items), format!("{:?}", second.items));
         assert_eq!(first.validation_errors, second.validation_errors);
     }

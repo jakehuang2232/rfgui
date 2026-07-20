@@ -801,7 +801,7 @@ pub(crate) struct ScrollHostSurfacePlan {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IsolationSurfaceGeometrySnapshot {
-    pub(super) source_bounds: crate::view::base_component::PromotionCompositeBounds,
+    pub(super) source_bounds: crate::view::base_component::RetainedSurfaceBounds,
     pub(super) logical_size: [f32; 2],
     pub(super) outer_scissor_rect: Option<[u32; 4]>,
 }
@@ -811,7 +811,7 @@ pub(crate) struct IsolationSurfaceGeometrySnapshot {
 /// it owns the direct child's exact retained render output verbatim.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct NestedIsolationSurfaceGeometrySnapshot {
-    pub(super) source_bounds: crate::view::base_component::PromotionCompositeBounds,
+    pub(super) source_bounds: crate::view::base_component::RetainedSurfaceBounds,
 }
 
 impl FramePaintPlan {
@@ -1113,7 +1113,7 @@ impl RetainedSurfacePlan {
         }
     }
 
-    pub(super) fn source_bounds(&self) -> crate::view::base_component::PromotionCompositeBounds {
+    pub(super) fn source_bounds(&self) -> crate::view::base_component::RetainedSurfaceBounds {
         match &self.kind {
             SurfaceKind::Transform(plan) => plan.geometry.source_bounds,
             SurfaceKind::Isolation(plan) => plan.geometry.source_bounds,
@@ -1184,7 +1184,7 @@ impl RetainedSurfacePlan {
 
 impl NestedIsolationSurfaceGeometrySnapshot {
     fn from_exact_retained_output(
-        source_bounds: crate::view::base_component::PromotionCompositeBounds,
+        source_bounds: crate::view::base_component::RetainedSurfaceBounds,
     ) -> Option<Self> {
         if source_bounds.x < 0.0
             || source_bounds.y < 0.0
@@ -1249,7 +1249,7 @@ impl IsolationSurfaceGeometrySnapshot {
             return None;
         }
         Some(Self {
-            source_bounds: crate::view::base_component::PromotionCompositeBounds {
+            source_bounds: crate::view::base_component::RetainedSurfaceBounds {
                 x: 0.0,
                 y: 0.0,
                 width: logical_size[0],
@@ -1336,7 +1336,6 @@ pub(crate) enum FramePaintPlanRejection {
     DuplicateNodeKey(NodeKey),
     InvalidStableId(NodeKey),
     DuplicateStableId(u64),
-    PromotionPresent(u64),
     DeferredBoundary(NodeKey),
     LayoutTransition(NodeKey),
     PropertyTree(PropertyTreeValidationError),
@@ -1386,7 +1385,6 @@ struct PropertyScenePlanningIndex {
 pub(crate) fn plan_transform_property_scene_with_context(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     context: TransformSurfacePlanContext,
@@ -1394,7 +1392,6 @@ pub(crate) fn plan_transform_property_scene_with_context(
     let (reachable, index) = validate_transform_property_scene_inputs(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         context.paint_offset(),
     )?;
@@ -1434,7 +1431,6 @@ pub(crate) fn plan_transform_property_scene_with_context(
         let recorded = super::frame_recorder::record_property_scene_steps_for_plan(
             arena,
             &[root],
-            promoted_node_ids,
             property_trees,
             paint_generations,
             context.paint_offset(),
@@ -1490,7 +1486,6 @@ pub(crate) fn plan_transform_property_scene_with_context(
                         id,
                         None,
                         root,
-                        promoted_node_ids,
                         property_trees,
                         paint_generations,
                         &index,
@@ -1557,7 +1552,6 @@ pub(crate) fn plan_transform_property_scene_with_context(
 pub(crate) fn plan_property_effect_scene_scaffold_with_context(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     context: TransformSurfacePlanContext,
@@ -1576,12 +1570,6 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
         .copied()
         .map(FramePaintPlanRejection::PropertyTree)
         .collect::<Vec<_>>();
-    for &stable_id in promoted_node_ids {
-        push_unique(
-            &mut reasons,
-            FramePaintPlanRejection::PromotionPresent(stable_id),
-        );
-    }
     if !property_trees.scrolls.is_empty() {
         for scroll in property_trees.scrolls.values() {
             push_unique(
@@ -1633,7 +1621,44 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
                 FramePaintPlanRejection::DuplicateStableId(stable_id),
             );
         }
-        if node.element.is_deferred_to_root_viewport_render() {
+        let exact_deferred_root_effect = node
+            .element
+            .as_any()
+            .downcast_ref::<Element>()
+            .and_then(|element| {
+                let logical_scissor = element
+                    .exact_deferred_viewport_root_self_clip_scissor_rect(key, arena, true)?;
+                let clip_id = ClipNodeId {
+                    owner: key,
+                    role: ClipNodeRole::SelfClip,
+                };
+                let effect_id = EffectNodeId(key);
+                let exact_state = PropertyTreeState {
+                    clip: Some(clip_id),
+                    effect: Some(effect_id),
+                    ..Default::default()
+                };
+                let state = property_trees.node_state_for(key)?;
+                let clip = property_trees.clips.get(&clip_id)?;
+                let effect = property_trees.effects.get(&effect_id)?;
+                (state.paint == exact_state
+                    && state.descendants == exact_state
+                    && clip.owner == key
+                    && clip.parent.is_none()
+                    && clip.behavior == ClipBehavior::Replace
+                    && matches!(
+                        clip.geometry,
+                        ClipGeometry::LogicalScissor(scissor) if scissor == logical_scissor
+                    )
+                    && clip.generation != 0
+                    && effect.owner == key
+                    && effect.parent.is_none()
+                    && effect.opacity.to_bits() == 0.0_f32.to_bits()
+                    && effect.generation != 0)
+                    .then_some(())
+            })
+            .is_some();
+        if node.element.is_deferred_to_root_viewport_render() && !exact_deferred_root_effect {
             push_unique(reasons, FramePaintPlanRejection::DeferredBoundary(key));
         }
         if node
@@ -2084,7 +2109,6 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
 pub(crate) fn plan_nested_scroll_scene_scaffold_with_context(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -2103,7 +2127,6 @@ pub(crate) fn plan_nested_scroll_scene_scaffold_with_context(
     if scale_factor.to_bits() != 1.0_f32.to_bits()
         || context.paint_offset_bits != [0.0_f32.to_bits(); 2]
         || context.outer_scissor_rect().is_some()
-        || !promoted_node_ids.is_empty()
         || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
         || !property_trees.validation_errors.is_empty()
         || arena.parent_of(root).is_some()
@@ -2243,7 +2266,6 @@ pub(crate) fn plan_nested_scroll_scene_scaffold_with_context(
     let outer_recorded = super::frame_recorder::record_nested_scroll_outer_host_steps_for_plan(
         arena,
         root,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         outer_host,
@@ -2286,7 +2308,6 @@ pub(crate) fn plan_nested_scroll_scene_scaffold_with_context(
     let inner_recorded = super::frame_recorder::record_nested_scroll_inner_host_steps_for_plan(
         arena,
         inner,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         inner_host,
@@ -2313,7 +2334,6 @@ pub(crate) fn plan_nested_scroll_scene_scaffold_with_context(
     }
     let content = super::frame_recorder::record_nested_scroll_content_artifact_for_plan(
         arena,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         witness,
@@ -2427,7 +2447,6 @@ pub(crate) fn plan_nested_scroll_scene_scaffold_with_context(
 pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     context: TransformSurfacePlanContext,
@@ -2446,12 +2465,6 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
         .copied()
         .map(FramePaintPlanRejection::PropertyTree)
         .collect::<Vec<_>>();
-    for &stable_id in promoted_node_ids {
-        push_unique(
-            &mut reasons,
-            FramePaintPlanRejection::PromotionPresent(stable_id),
-        );
-    }
 
     #[derive(Clone, Copy)]
     enum PathBoundary {
@@ -2852,7 +2865,6 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
     };
     let receiver_insertions = plan_property_scroll_receiver_insertions(
         arena,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         context,
@@ -2862,7 +2874,6 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
     )?;
     let effect_receiver_insertions = plan_property_effect_scroll_receiver_insertions(
         arena,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         context,
@@ -2873,7 +2884,6 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
     let transform_effect_receiver_insertions =
         plan_property_transform_effect_scroll_receiver_insertions(
             arena,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             context,
@@ -3017,7 +3027,6 @@ fn property_effect_scroll_receiver_raster_artifact_identity(
 #[allow(clippy::too_many_arguments)]
 fn plan_property_scroll_receiver_insertions(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     context: TransformSurfacePlanContext,
@@ -3074,7 +3083,6 @@ fn plan_property_scroll_receiver_insertions(
         let Ok(recorded) = super::frame_recorder::record_property_scroll_receiver_steps_for_plan(
             arena,
             receiver.owner,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             PaintTransformSurfaceWitness::canonical_root(receiver.owner),
@@ -3211,7 +3219,6 @@ where
 #[allow(clippy::too_many_arguments)]
 fn plan_property_effect_scroll_receiver_insertions(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     context: TransformSurfacePlanContext,
@@ -3308,7 +3315,6 @@ fn plan_property_effect_scroll_receiver_insertions(
             super::frame_recorder::record_property_effect_scroll_receiver_steps_for_plan(
                 arena,
                 receiver.owner,
-                promoted_node_ids,
                 property_trees,
                 paint_generations,
                 &artifact_contract,
@@ -3411,7 +3417,6 @@ fn plan_property_effect_scroll_receiver_insertions(
 #[allow(clippy::too_many_arguments)]
 fn plan_property_transform_effect_scroll_receiver_insertions(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     context: TransformSurfacePlanContext,
@@ -3548,7 +3553,6 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
             super::frame_recorder::record_transform_property_surface_steps_for_plan(
                 arena,
                 outer.owner,
-                promoted_node_ids,
                 property_trees,
                 paint_generations,
                 PaintTransformSurfaceWitness::canonical_root(outer.owner),
@@ -3563,7 +3567,6 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
             super::frame_recorder::record_property_effect_scroll_receiver_steps_for_plan(
                 arena,
                 inner.owner,
-                promoted_node_ids,
                 property_trees,
                 paint_generations,
                 &artifact_contract,
@@ -3650,7 +3653,7 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
         let outer_raster_bounds = outer_raster_bounds_bits.map(f32::from_bits);
         let outer_geometry = outer_element
             .exact_transform_receiver_geometry_snapshot_for_raster_bounds(
-                crate::view::base_component::PromotionCompositeBounds {
+                crate::view::base_component::RetainedSurfaceBounds {
                     x: outer_raster_bounds[0],
                     y: outer_raster_bounds[1],
                     width: outer_raster_bounds[2],
@@ -3732,7 +3735,6 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
 pub(crate) fn plan_property_effect_scene_with_context(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     context: TransformSurfacePlanContext,
@@ -3740,7 +3742,6 @@ pub(crate) fn plan_property_effect_scene_with_context(
     let mut plan = plan_property_effect_scene_scaffold_with_context(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         context,
@@ -3773,7 +3774,6 @@ pub(crate) fn plan_property_effect_scene_with_context(
         let recorded = super::frame_recorder::record_property_scene_steps_for_plan(
             arena,
             &[root],
-            promoted_node_ids,
             property_trees,
             paint_generations,
             context.paint_offset(),
@@ -3813,7 +3813,6 @@ pub(crate) fn plan_property_effect_scene_with_context(
                     }
                     let surface = materialize_property_effect_surface(
                         arena,
-                        promoted_node_ids,
                         property_trees,
                         paint_generations,
                         &scaffold,
@@ -3885,7 +3884,6 @@ fn property_effect_direct_cutouts(
 #[allow(clippy::too_many_arguments)]
 fn materialize_property_effect_surface(
     arena: &NodeArena,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scaffold: &PropertyEffectSceneScaffold,
@@ -3928,7 +3926,6 @@ fn materialize_property_effect_surface(
             let recorded = super::frame_recorder::record_transform_property_surface_steps_for_plan(
                 arena,
                 owner,
-                promoted_node_ids,
                 property_trees,
                 paint_generations,
                 witness,
@@ -3988,7 +3985,6 @@ fn materialize_property_effect_surface(
             let paint_offset = isolation.raster_space.paint_offset_bits.map(f32::from_bits);
             let recorded = super::frame_recorder::record_effect_property_surface_steps_for_plan(
                 arena,
-                promoted_node_ids,
                 property_trees,
                 paint_generations,
                 &artifact_contract,
@@ -4002,7 +3998,7 @@ fn materialize_property_effect_surface(
                 .source_bounds_bits
                 .map(f32::from_bits);
             let geometry = NestedIsolationSurfaceGeometrySnapshot::from_exact_retained_output(
-                crate::view::base_component::PromotionCompositeBounds {
+                crate::view::base_component::RetainedSurfaceBounds {
                     x,
                     y,
                     width,
@@ -4079,7 +4075,6 @@ fn materialize_property_effect_surface(
                 }
                 let child = materialize_property_effect_surface(
                     arena,
-                    promoted_node_ids,
                     property_trees,
                     paint_generations,
                     scaffold,
@@ -4118,7 +4113,6 @@ fn materialize_property_effect_surface(
 fn validate_transform_property_scene_inputs(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_offset: [f32; 2],
 ) -> Result<(Vec<NodeKey>, PropertyScenePlanningIndex), FramePaintPlanError> {
@@ -4133,12 +4127,6 @@ fn validate_transform_property_scene_inputs(
         .copied()
         .map(FramePaintPlanRejection::PropertyTree)
         .collect::<Vec<_>>();
-    for &stable_id in promoted_node_ids {
-        push_unique(
-            &mut reasons,
-            FramePaintPlanRejection::PromotionPresent(stable_id),
-        );
-    }
     let mut root_seen = FxHashSet::default();
     for &root in roots {
         if !root_seen.insert(root) {
@@ -4409,7 +4397,6 @@ fn plan_transform_property_surface(
     id: PropertySurfaceId,
     parent: Option<PropertySurfaceId>,
     scene_root: NodeKey,
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     index: &PropertyScenePlanningIndex,
@@ -4461,7 +4448,6 @@ fn plan_transform_property_surface(
     let recorded = super::frame_recorder::record_transform_property_surface_steps_for_plan(
         arena,
         id.owner,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         PaintTransformSurfaceWitness::canonical_root(id.owner),
@@ -4520,7 +4506,6 @@ fn plan_transform_property_surface(
                     child_id,
                     Some(id),
                     scene_root,
-                    promoted_node_ids,
                     property_trees,
                     paint_generations,
                     index,
@@ -6686,14 +6671,12 @@ fn nested_scroll_scene_scaffold_is_canonical(
 pub(crate) fn plan_single_root_transform_surface(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
 ) -> Result<FramePaintPlan, FramePaintPlanError> {
     plan_single_root_transform_surface_with_context(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         TransformSurfacePlanContext::default(),
@@ -6703,7 +6686,6 @@ pub(crate) fn plan_single_root_transform_surface(
 pub(crate) fn plan_single_root_transform_surface_with_context(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     context: TransformSurfacePlanContext,
@@ -6727,12 +6709,6 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
     let mut reasons = Vec::new();
     if arena.parent_of(*root).is_some() {
         push_unique(&mut reasons, FramePaintPlanRejection::RootHasParent(*root));
-    }
-    for &stable_id in promoted_node_ids {
-        push_unique(
-            &mut reasons,
-            FramePaintPlanRejection::PromotionPresent(stable_id),
-        );
     }
     for &error in &property_trees.validation_errors {
         push_unique(&mut reasons, FramePaintPlanRejection::PropertyTree(error));
@@ -6987,7 +6963,6 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
         let parent_recorded = super::frame_recorder::record_transform_surface_steps_for_plan(
             arena,
             roots,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             PaintTransformSurfaceWitness::canonical_root(*root),
@@ -6998,7 +6973,6 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
         let child_recorded = super::frame_recorder::record_transform_surface_steps_for_plan(
             arena,
             &[child_root],
-            promoted_node_ids,
             property_trees,
             paint_generations,
             PaintTransformSurfaceWitness::canonical_root(child_root),
@@ -7109,7 +7083,6 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
         let raster_artifact = super::frame_recorder::record_transform_surface_artifact_for_plan(
             arena,
             roots,
-            promoted_node_ids,
             property_trees,
             paint_generations,
             PaintTransformSurfaceWitness::canonical_root(*root),
@@ -7167,14 +7140,12 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
 pub(crate) fn plan_single_root_transform_child_isolation_surface(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
 ) -> Result<FramePaintPlan, FramePaintPlanError> {
     plan_single_root_transform_child_isolation_surface_with_context(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         TransformSurfacePlanContext::default(),
@@ -7184,7 +7155,6 @@ pub(crate) fn plan_single_root_transform_child_isolation_surface(
 pub(crate) fn plan_single_root_transform_child_isolation_surface_with_context(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     context: TransformSurfacePlanContext,
@@ -7213,12 +7183,6 @@ pub(crate) fn plan_single_root_transform_child_isolation_surface_with_context(
     }
     if context.outer_scissor_rect().is_some() {
         push_unique(&mut reasons, FramePaintPlanRejection::IsolationOuterScissor);
-    }
-    for &stable_id in promoted_node_ids {
-        push_unique(
-            &mut reasons,
-            FramePaintPlanRejection::PromotionPresent(stable_id),
-        );
     }
     for &error in &property_trees.validation_errors {
         push_unique(&mut reasons, FramePaintPlanRejection::PropertyTree(error));
@@ -7454,7 +7418,6 @@ pub(crate) fn plan_single_root_transform_child_isolation_surface_with_context(
     let parent_recorded = super::frame_recorder::record_transform_surface_steps_for_plan(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         PaintTransformSurfaceWitness::canonical_root(*root),
@@ -7466,7 +7429,6 @@ pub(crate) fn plan_single_root_transform_child_isolation_surface_with_context(
         arena,
         *root,
         child_root,
-        promoted_node_ids,
         property_trees,
         paint_generations,
     )
@@ -7578,7 +7540,6 @@ pub(crate) fn plan_single_root_transform_child_isolation_surface_with_context(
 pub(crate) fn plan_single_root_isolation_surface(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     viewport_width: u32,
@@ -7613,8 +7574,7 @@ pub(crate) fn plan_single_root_isolation_surface(
     if outer_scissor_rect.is_some() {
         reasons.push(FramePaintPlanRejection::IsolationOuterScissor);
     }
-    if !promoted_node_ids.is_empty()
-        || !property_trees.transforms.is_empty()
+    if !property_trees.transforms.is_empty()
         || !property_trees.clips.is_empty()
         || !property_trees.scrolls.is_empty()
         || property_trees.effects.len() != 1
@@ -7683,7 +7643,6 @@ pub(crate) fn plan_single_root_isolation_surface(
     let outcome = super::frame_recorder::record_root_group_opacity_frame_artifact(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         super::RendererMode::StrictPlan,
@@ -7740,7 +7699,6 @@ pub(crate) fn plan_single_root_isolation_surface(
 pub(crate) fn plan_single_root_scroll_host_surface(
     arena: &NodeArena,
     roots: &[NodeKey],
-    promoted_node_ids: &FxHashSet<u64>,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     scale_factor: f32,
@@ -7792,7 +7750,6 @@ pub(crate) fn plan_single_root_scroll_host_surface(
     let child_state = property_trees.states.get(&admission.child).copied();
     let invalid = incoming_paint_offset.map(f32::to_bits) != [0.0_f32.to_bits(); 2]
         || outer_scissor_rect.is_some()
-        || !promoted_node_ids.is_empty()
         || !property_trees.validation_errors.is_empty()
         || !property_trees.transforms.is_empty()
         || !property_trees.effects.is_empty()
@@ -7843,7 +7800,6 @@ pub(crate) fn plan_single_root_scroll_host_surface(
     let artifact = super::frame_recorder::record_baked_scroll_host_artifact_for_plan(
         arena,
         roots,
-        promoted_node_ids,
         property_trees,
         paint_generations,
         witness,
@@ -8583,7 +8539,6 @@ pub(super) mod tests {
         let plan = plan_nested_scroll_scene_scaffold_with_context(
             &arena,
             &[outer],
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -8646,18 +8601,17 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn nested_scroll_planner_rejects_context_promotion_and_property_expansion() {
+    fn nested_scroll_planner_accepts_retained_baseline_baseline_and_rejects_context_or_property_expansion()
+     {
         let (arena, outer, _inner, _leaf, properties, generations) = nested_scroll_plan_fixture();
         let plan = |arena: &NodeArena,
                     properties: &PropertyTrees,
                     generations: &PaintGenerationTracker,
-                    promoted: &FxHashSet<u64>,
                     scale_factor: f32,
                     context: TransformSurfacePlanContext| {
             plan_nested_scroll_scene_scaffold_with_context(
                 arena,
                 &[outer],
-                promoted,
                 properties,
                 generations,
                 scale_factor,
@@ -8669,7 +8623,6 @@ pub(super) mod tests {
                 &arena,
                 &properties,
                 &generations,
-                &FxHashSet::default(),
                 2.0,
                 TransformSurfacePlanContext::default(),
             )
@@ -8680,7 +8633,6 @@ pub(super) mod tests {
                 &arena,
                 &properties,
                 &generations,
-                &FxHashSet::default(),
                 1.0,
                 TransformSurfacePlanContext::new([1.0, 0.0], None),
             )
@@ -8691,23 +8643,20 @@ pub(super) mod tests {
                 &arena,
                 &properties,
                 &generations,
-                &FxHashSet::default(),
                 1.0,
                 TransformSurfacePlanContext::new([0.0, 0.0], Some([0, 0, 10, 10])),
             )
             .is_err()
         );
-        assert!(
-            plan(
-                &arena,
-                &properties,
-                &generations,
-                &FxHashSet::from_iter([0x1251_00]),
-                1.0,
-                TransformSurfacePlanContext::default(),
-            )
-            .is_err()
-        );
+        let baseline = plan(
+            &arena,
+            &properties,
+            &generations,
+            1.0,
+            TransformSurfacePlanContext::default(),
+        )
+        .expect("retained-compatible retained nested-scroll baseline");
+        assert!(property_scene_plan_is_sealed(&baseline));
 
         for expansion in 0..4 {
             let (mut arena, outer, inner, leaf, mut properties, mut generations) =
@@ -8747,7 +8696,6 @@ pub(super) mod tests {
                 plan_nested_scroll_scene_scaffold_with_context(
                     &arena,
                     &[outer],
-                    &FxHashSet::default(),
                     &properties,
                     &generations,
                     1.0,
@@ -8766,7 +8714,6 @@ pub(super) mod tests {
             plan_nested_scroll_scene_scaffold_with_context(
                 &arena,
                 &[outer],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -8843,7 +8790,6 @@ pub(super) mod tests {
             plan_nested_scroll_scene_scaffold_with_context(
                 &arena,
                 &[outer],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 1.0,
@@ -9076,7 +9022,6 @@ pub(super) mod tests {
         let host_steps = super::super::frame_recorder::record_scroll_transform_host_steps_for_plan(
             &arena,
             root,
-            &FxHashSet::default(),
             &properties,
             &generations,
             host_witness,
@@ -9099,7 +9044,6 @@ pub(super) mod tests {
             super::super::frame_recorder::record_scroll_transform_content_steps_for_plan(
                 &arena,
                 child,
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 PaintTransformSurfaceWitness::canonical_root(child),
@@ -9125,7 +9069,6 @@ pub(super) mod tests {
         let plan = super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -9139,7 +9082,6 @@ pub(super) mod tests {
             super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 2.0,
@@ -9155,7 +9097,6 @@ pub(super) mod tests {
             super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
                 &plain_arena,
                 &[plain_root],
-                &FxHashSet::default(),
                 &plain_properties,
                 &plain_generations,
                 1.0,
@@ -9216,7 +9157,6 @@ pub(super) mod tests {
         let scaffold = super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -9290,7 +9230,6 @@ pub(super) mod tests {
         let scaffold = super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -9320,7 +9259,6 @@ pub(super) mod tests {
             super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &rotated_properties,
                 &rotated_generations,
                 1.0,
@@ -9338,7 +9276,6 @@ pub(super) mod tests {
         let scaffold = super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -9406,7 +9343,6 @@ pub(super) mod tests {
         let scaffold = super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             1.0,
@@ -9506,7 +9442,6 @@ pub(super) mod tests {
             super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
                 &moved_arena,
                 &[moved_root],
-                &FxHashSet::default(),
                 &moved_properties,
                 &moved_generations,
                 1.0,
@@ -9541,7 +9476,6 @@ pub(super) mod tests {
         let scaffold = super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
             arena,
             &[root],
-            &FxHashSet::default(),
             properties,
             generations,
             1.0,
@@ -10127,7 +10061,6 @@ pub(super) mod tests {
             let plan = plan_property_scroll_interleave_scaffold_with_context(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 TransformSurfacePlanContext::default(),
@@ -10169,7 +10102,6 @@ pub(super) mod tests {
         let plan = plan_property_scroll_interleave_scaffold_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::default(),
@@ -10202,7 +10134,6 @@ pub(super) mod tests {
             plan_property_scroll_interleave_scaffold_with_context(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 TransformSurfacePlanContext::default(),
@@ -10228,7 +10159,6 @@ pub(super) mod tests {
         let plan = plan_property_scroll_interleave_scaffold_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::default(),
@@ -10295,7 +10225,6 @@ pub(super) mod tests {
             let error = plan_property_scroll_interleave_scaffold_with_context(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 TransformSurfacePlanContext::default(),
@@ -10317,7 +10246,6 @@ pub(super) mod tests {
             plan_property_scroll_interleave_scaffold_with_context(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 TransformSurfacePlanContext::default(),
@@ -10426,7 +10354,6 @@ pub(super) mod tests {
             let mut plan = plan_property_scroll_interleave_scaffold_with_context(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 TransformSurfacePlanContext::default(),
@@ -10627,7 +10554,6 @@ pub(super) mod tests {
         let plan = plan_transform_property_scene_with_context(
             &fixture.arena,
             &fixture.roots,
-            &FxHashSet::default(),
             &fixture.properties,
             &fixture.generations,
             TransformSurfacePlanContext::default(),
@@ -10711,7 +10637,6 @@ pub(super) mod tests {
         let base = plan_transform_property_scene_with_context(
             &fixture.arena,
             &fixture.roots,
-            &FxHashSet::default(),
             &fixture.properties,
             &fixture.generations,
             TransformSurfacePlanContext::default(),
@@ -10857,7 +10782,6 @@ pub(super) mod tests {
         let mut scissor = plan_transform_property_scene_with_context(
             &fixture.arena,
             &fixture.roots,
-            &FxHashSet::default(),
             &fixture.properties,
             &fixture.generations,
             TransformSurfacePlanContext::new([0.0; 2], Some([3, 4, 80, 60])),
@@ -10940,7 +10864,6 @@ pub(super) mod tests {
         let base = plan_transform_property_scene_with_context(
             &fixture.arena,
             &fixture.roots,
-            &FxHashSet::default(),
             &fixture.properties,
             &fixture.generations,
             TransformSurfacePlanContext::default(),
@@ -10972,7 +10895,6 @@ pub(super) mod tests {
         let duplicate_input = plan_transform_property_scene_with_context(
             &fixture.arena,
             &[painted_a, painted_a],
-            &FxHashSet::default(),
             &fixture.properties,
             &fixture.generations,
             TransformSurfacePlanContext::default(),
@@ -10989,7 +10911,6 @@ pub(super) mod tests {
         let reordered = plan_transform_property_scene_with_context(
             &fixture.arena,
             &reordered_input,
-            &FxHashSet::default(),
             &fixture.properties,
             &fixture.generations,
             TransformSurfacePlanContext::default(),
@@ -11030,28 +10951,18 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn property_scene_rejects_effect_scroll_promotion_deferred_and_legacy_boundaries() {
+    fn property_scene_accepts_retained_baseline_baseline_and_rejects_effect_scroll_deferred_or_legacy_boundaries()
+     {
         let fixture = general_property_scene_fixture();
-        let promoted_id = fixture
-            .arena
-            .get(fixture.inner_a)
-            .unwrap()
-            .element
-            .stable_id();
-        let promoted = plan_transform_property_scene_with_context(
+        let baseline = plan_transform_property_scene_with_context(
             &fixture.arena,
             &fixture.roots,
-            &FxHashSet::from_iter([promoted_id]),
             &fixture.properties,
             &fixture.generations,
             TransformSurfacePlanContext::default(),
         )
-        .expect_err("promotion authority cannot overlap the property scene");
-        assert!(
-            promoted
-                .reasons
-                .contains(&FramePaintPlanRejection::PromotionPresent(promoted_id))
-        );
+        .expect("retained-compatible retained property scene");
+        assert!(property_scene_plan_is_sealed(&baseline));
 
         for property in ["effect", "scroll"] {
             let property_fixture = general_property_scene_fixture();
@@ -11068,7 +10979,6 @@ pub(super) mod tests {
             let error = plan_transform_property_scene_with_context(
                 &property_fixture.arena,
                 &property_fixture.roots,
-                &FxHashSet::default(),
                 &properties,
                 &property_fixture.generations,
                 TransformSurfacePlanContext::default(),
@@ -11103,7 +11013,6 @@ pub(super) mod tests {
         let deferred = plan_transform_property_scene_with_context(
             &deferred_fixture.arena,
             &deferred_fixture.roots,
-            &FxHashSet::default(),
             &deferred_fixture.properties,
             &deferred_fixture.generations,
             TransformSurfacePlanContext::default(),
@@ -11168,7 +11077,6 @@ pub(super) mod tests {
         let legacy = plan_transform_property_scene_with_context(
             &legacy_fixture.arena,
             &legacy_fixture.roots,
-            &FxHashSet::default(),
             &legacy_fixture.properties,
             &legacy_fixture.generations,
             TransformSurfacePlanContext::default(),
@@ -11229,7 +11137,6 @@ pub(super) mod tests {
         let base = plan_transform_property_scene_with_context(
             &fixture.arena,
             &fixture.roots,
-            &FxHashSet::default(),
             &fixture.properties,
             &fixture.generations,
             TransformSurfacePlanContext::default(),
@@ -11278,7 +11185,6 @@ pub(super) mod tests {
         let plan = plan_transform_property_scene_with_context(
             &fixture.arena,
             &fixture.roots,
-            &FxHashSet::default(),
             &fixture.properties,
             &fixture.generations,
             TransformSurfacePlanContext::default(),
@@ -11353,7 +11259,6 @@ pub(super) mod tests {
         let plan = plan_transform_property_scene_with_context(
             &fixture.arena,
             &fixture.roots,
-            &FxHashSet::default(),
             &fixture.properties,
             &fixture.generations,
             TransformSurfacePlanContext::default(),
@@ -11453,7 +11358,6 @@ pub(super) mod tests {
         let plan = plan_property_effect_scene_scaffold_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -11501,7 +11405,6 @@ pub(super) mod tests {
         let plan = plan_property_effect_scene_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -11631,7 +11534,6 @@ pub(super) mod tests {
         let plan = plan_property_effect_scene_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -11785,7 +11687,6 @@ pub(super) mod tests {
         let plan = plan_property_effect_scene_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -11849,7 +11750,6 @@ pub(super) mod tests {
             plan_property_effect_scene_with_context(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 properties,
                 generations,
                 TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -11950,7 +11850,6 @@ pub(super) mod tests {
             plan_property_effect_scene_with_context(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 properties,
                 generations,
                 TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12050,7 +11949,6 @@ pub(super) mod tests {
         let plan = plan_property_effect_scene_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12127,7 +12025,6 @@ pub(super) mod tests {
         let error = plan_property_effect_scene_scaffold_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12150,7 +12047,6 @@ pub(super) mod tests {
         let error = plan_property_effect_scene_scaffold_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12170,7 +12066,6 @@ pub(super) mod tests {
         let plan = plan_property_effect_scene_scaffold_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12224,7 +12119,6 @@ pub(super) mod tests {
         let error = plan_property_effect_scene_scaffold_with_context(
             &arena,
             &[wrapper],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12247,7 +12141,6 @@ pub(super) mod tests {
         let error = plan_property_effect_scene_scaffold_with_context(
             &arena,
             &roots,
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12270,7 +12163,6 @@ pub(super) mod tests {
         let error = plan_property_effect_scene_scaffold_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12310,7 +12202,6 @@ pub(super) mod tests {
         let plan = plan_property_effect_scene_scaffold_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12339,7 +12230,6 @@ pub(super) mod tests {
         let production = plan_property_effect_scene_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12484,7 +12374,6 @@ pub(super) mod tests {
             let error = plan_property_effect_scene_scaffold_with_context(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12511,7 +12400,6 @@ pub(super) mod tests {
         let error = plan_property_effect_scene_scaffold_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12530,7 +12418,6 @@ pub(super) mod tests {
             plan_property_effect_scene_scaffold_with_context(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
                 TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12703,7 +12590,6 @@ pub(super) mod tests {
         let plan = plan_property_effect_scene_scaffold_with_context(
             &arena,
             &roots,
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -12731,7 +12617,6 @@ pub(super) mod tests {
         let production = plan_property_effect_scene_with_context(
             &arena,
             &roots,
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], None),
@@ -13057,14 +12942,9 @@ pub(super) mod tests {
                 expected_source.map(f32::to_bits)
             );
 
-            let error = plan_single_root_transform_surface(
-                &arena,
-                &[root],
-                &FxHashSet::default(),
-                &properties,
-                &generations,
-            )
-            .expect_err("known legacy crop must not reach C2 target declaration");
+            let error =
+                plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                    .expect_err("known legacy crop must not reach C2 target declaration");
             assert_eq!(
                 error.reasons,
                 vec![FramePaintPlanRejection::NegativeSurfaceOrigin(root)]
@@ -13075,14 +12955,8 @@ pub(super) mod tests {
     #[test]
     fn exact_single_root_transform_builds_one_planning_only_surface_step() {
         let (arena, root, properties, generations) = exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("exact single-root transform subtree must be plan-eligible");
+        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("exact single-root transform subtree must be plan-eligible");
 
         let [PaintPlanStep::RetainedSurface(surface)] = plan.steps.as_slice() else {
             panic!("M10C1 must produce exactly one retained surface step")
@@ -13123,7 +12997,6 @@ pub(super) mod tests {
         let parent_steps = super::super::frame_recorder::record_transform_surface_steps_for_plan(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             PaintTransformSurfaceWitness::canonical_root(root),
@@ -13146,7 +13019,6 @@ pub(super) mod tests {
                 &arena,
                 root,
                 child,
-                &FxHashSet::default(),
                 &properties,
                 &generations,
             )
@@ -13233,7 +13105,6 @@ pub(super) mod tests {
                 &arena,
                 before,
                 child,
-                &FxHashSet::default(),
                 &properties,
                 &generations,
             )
@@ -13247,7 +13118,6 @@ pub(super) mod tests {
                 &arena,
                 root,
                 child,
-                &FxHashSet::default(),
                 &properties,
                 &generations,
             )
@@ -13274,7 +13144,6 @@ pub(super) mod tests {
                 &arena,
                 root,
                 child,
-                &FxHashSet::default(),
                 &properties,
                 &generations,
             )
@@ -13323,7 +13192,6 @@ pub(super) mod tests {
         let plan = plan_single_root_transform_child_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -13391,21 +13259,16 @@ pub(super) mod tests {
 
     #[test]
     fn transform_child_isolation_planner_hard_gates_shape_and_extra_properties() {
-        let (arena, root, _, child, _, _, properties, generations) =
+        let (arena, root, _, _, _, _, properties, generations) =
             exact_transform_child_isolation_fixture();
-        let promoted = FxHashSet::from_iter([arena.get(child).unwrap().element.stable_id()]);
-        let error = plan_single_root_transform_child_isolation_surface(
+        let baseline = plan_single_root_transform_child_isolation_surface(
             &arena,
             &[root],
-            &promoted,
             &properties,
             &generations,
         )
-        .expect_err("promotion is outside the mixed exact slice");
-        assert!(matches!(
-            error.reasons.as_slice(),
-            [FramePaintPlanRejection::PromotionPresent(_)]
-        ));
+        .expect("retained-compatible transform child isolation baseline");
+        let _ = only_surface(&baseline);
 
         let (arena, root, _, child, _, _, mut properties, generations) =
             exact_transform_child_isolation_fixture();
@@ -13421,7 +13284,6 @@ pub(super) mod tests {
         let error = plan_single_root_transform_child_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -13442,7 +13304,6 @@ pub(super) mod tests {
         let error = plan_single_root_transform_child_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -13459,7 +13320,6 @@ pub(super) mod tests {
         let error = plan_single_root_transform_child_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -13480,7 +13340,6 @@ pub(super) mod tests {
         let error = plan_single_root_transform_child_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -13501,7 +13360,6 @@ pub(super) mod tests {
         let plan = plan_single_root_transform_child_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -13640,7 +13498,6 @@ pub(super) mod tests {
         let plan = plan_single_root_transform_child_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -13722,7 +13579,6 @@ pub(super) mod tests {
         let baseline = plan_single_root_transform_child_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -13741,7 +13597,6 @@ pub(super) mod tests {
         let changed = plan_single_root_transform_child_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -13865,7 +13720,6 @@ pub(super) mod tests {
             let baseline = plan_single_root_transform_child_isolation_surface(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
             )
@@ -13885,7 +13739,6 @@ pub(super) mod tests {
             let changed = plan_single_root_transform_child_isolation_surface(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
             )
@@ -13917,7 +13770,6 @@ pub(super) mod tests {
             let baseline = plan_single_root_transform_child_isolation_surface(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
             )
@@ -13937,7 +13789,6 @@ pub(super) mod tests {
             let changed = plan_single_root_transform_child_isolation_surface(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
             )
@@ -13968,7 +13819,6 @@ pub(super) mod tests {
             let baseline = plan_single_root_transform_child_isolation_surface(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
             )
@@ -13983,7 +13833,6 @@ pub(super) mod tests {
             let changed = plan_single_root_transform_child_isolation_surface(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
             )
@@ -14006,7 +13855,6 @@ pub(super) mod tests {
             let baseline = plan_single_root_transform_child_isolation_surface(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
             )
@@ -14021,7 +13869,6 @@ pub(super) mod tests {
             let changed = plan_single_root_transform_child_isolation_surface(
                 &arena,
                 &[root],
-                &FxHashSet::default(),
                 &properties,
                 &generations,
             )
@@ -14051,7 +13898,6 @@ pub(super) mod tests {
         let mixed = plan_single_root_transform_child_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -14061,7 +13907,6 @@ pub(super) mod tests {
         let transform_tree = plan_single_root_transform_surface(
             &arena,
             &[transform_root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -14070,7 +13915,6 @@ pub(super) mod tests {
         let root_isolation = plan_single_root_isolation_surface(
             &arena,
             &[isolation_root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             160,
@@ -14149,14 +13993,8 @@ pub(super) mod tests {
     fn nested_exact_transform_builds_ordered_owning_stream_and_absolute_matrix_golden() {
         let (mut arena, root, before, child, descendant, after, properties, generations) =
             nested_exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("one direct transformed Element child must produce a nested owning plan");
+        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("one direct transformed Element child must produce a nested owning plan");
 
         let [PaintPlanStep::RetainedSurface(parent)] = plan.steps.as_slice() else {
             panic!("one top-level retained surface")
@@ -14360,7 +14198,6 @@ pub(super) mod tests {
         let plan = plan_single_root_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             160,
@@ -14474,7 +14311,6 @@ pub(super) mod tests {
         let baseline = plan_single_root_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             160,
@@ -14498,7 +14334,6 @@ pub(super) mod tests {
         let changed = plan_single_root_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             160,
@@ -14576,13 +14411,12 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn isolation_planner_and_executor_reject_unsupported_or_tampered_state_atomically() {
+    fn isolation_planner_accepts_retained_baseline_baseline_and_rejects_unsupported_or_tampered_state_atomically()
+     {
         let (arena, root, properties, generations) = exact_isolation_fixture(0.5);
-        let promoted = FxHashSet::from_iter([0x9f_3001]);
-        let promoted_error = plan_single_root_isolation_surface(
+        let baseline = plan_single_root_isolation_surface(
             &arena,
             &[root],
-            &promoted,
             &properties,
             &generations,
             160,
@@ -14590,16 +14424,11 @@ pub(super) mod tests {
             1.0,
             None,
         )
-        .expect_err("promotion cannot mix with typed isolation");
-        assert!(
-            promoted_error
-                .reasons
-                .contains(&FramePaintPlanRejection::InvalidIsolationEffect(root))
-        );
+        .expect("retained-compatible retained isolation baseline");
+        let _ = only_surface(&baseline);
         let scissor_error = plan_single_root_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             160,
@@ -14617,7 +14446,6 @@ pub(super) mod tests {
         let mut plan = plan_single_root_isolation_surface(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             160,
@@ -14660,7 +14488,6 @@ pub(super) mod tests {
         let plan = plan_single_root_transform_surface_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], outer_scissor),
@@ -14764,14 +14591,8 @@ pub(super) mod tests {
     fn production_singleton_and_tree_executors_reject_each_others_shape_before_mutation() {
         let (arena, root, _before, _child, _descendant, _after, properties, generations) =
             nested_exact_transform_fixture();
-        let nested = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("nested plan");
+        let nested = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("nested plan");
         let mut graph = FrameGraph::new();
         let (ctx, _) = parent_context_with_clear(&mut graph, 160, 120, 1.0);
         let graph_before = graph.build_state_snapshot_for_test();
@@ -14797,14 +14618,9 @@ pub(super) mod tests {
         );
 
         let (arena, root, properties, generations) = exact_transform_fixture();
-        let singleton = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("singleton plan");
+        let singleton =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("singleton plan");
         let mut graph = FrameGraph::new();
         let (ctx, _) = parent_context_with_clear(&mut graph, 160, 120, 1.0);
         let graph_before = graph.build_state_snapshot_for_test();
@@ -14833,7 +14649,6 @@ pub(super) mod tests {
         let plan = plan_single_root_transform_surface_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], outer_scissor),
@@ -14893,14 +14708,9 @@ pub(super) mod tests {
     fn forced_nested_child_transform_only_freezes_parent_reraster_child_reuse() {
         let (arena, root, _before, child, _descendant, _after, mut properties, mut generations) =
             nested_exact_transform_fixture();
-        let baseline = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("baseline nested plan");
+        let baseline =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("baseline nested plan");
         let mut viewport = Viewport::new();
         let mut first_graph = FrameGraph::new();
         let mut first_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -14922,14 +14732,9 @@ pub(super) mod tests {
             .set_resolved_transform_for_test(Some(child_matrix));
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
-        let child_transform_only = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("child transform-only nested plan");
+        let child_transform_only =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("child transform-only nested plan");
 
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -14999,14 +14804,9 @@ pub(super) mod tests {
     fn forced_nested_parent_transform_only_reuses_whole_tree_without_child_composite() {
         let (arena, root, _before, _child, _descendant, _after, mut properties, mut generations) =
             nested_exact_transform_fixture();
-        let baseline = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("baseline nested plan");
+        let baseline =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("baseline nested plan");
         let mut viewport = Viewport::new();
         commit_forced_nested_plan(&mut viewport, &baseline);
 
@@ -15016,14 +14816,9 @@ pub(super) mod tests {
             ))));
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
-        let parent_transform_only = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("parent transform-only nested plan");
+        let parent_transform_only =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("parent transform-only nested plan");
 
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -15106,14 +14901,8 @@ pub(super) mod tests {
     fn forced_nested_child_pool_miss_reraster_materializes_without_touching_cached_parent() {
         let (arena, root, _before, child, _descendant, _after, properties, generations) =
             nested_exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("baseline nested plan");
+        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("baseline nested plan");
         let mut viewport = Viewport::new();
         commit_forced_nested_plan(&mut viewport, &plan);
         let child_key = crate::view::base_component::transformed_layer_stable_key(
@@ -15225,28 +15014,18 @@ pub(super) mod tests {
     fn forced_nested_parent_and_child_paint_changes_freeze_r_u_and_r_r() {
         let (arena, root, _before, _child, _descendant, _after, mut properties, mut generations) =
             nested_exact_transform_fixture();
-        let baseline = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("parent-paint baseline");
+        let baseline =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("parent-paint baseline");
         let mut viewport = Viewport::new();
         commit_forced_nested_plan(&mut viewport, &baseline);
         crate::view::test_support::get_element_mut::<Element>(&arena, root)
             .set_background_color_value(Color::rgb(90, 20, 140));
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
-        let parent_paint = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("parent own-paint plan");
+        let parent_paint =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("parent own-paint plan");
         let mut parent_graph = FrameGraph::new();
         let mut parent_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         let parent_outer = parent_ctx.allocate_target(&mut parent_graph);
@@ -15277,28 +15056,18 @@ pub(super) mod tests {
 
         let (arena, root, _before, child, _descendant, _after, mut properties, mut generations) =
             nested_exact_transform_fixture();
-        let baseline = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("child-paint baseline");
+        let baseline =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("child-paint baseline");
         let mut viewport = Viewport::new();
         commit_forced_nested_plan(&mut viewport, &baseline);
         crate::view::test_support::get_element_mut::<Element>(&arena, child)
             .set_background_color_value(Color::rgb(12, 220, 44));
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
-        let child_paint = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("child paint plan");
+        let child_paint =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("child paint plan");
         let mut child_graph = FrameGraph::new();
         let mut child_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         let child_outer = child_ctx.allocate_target(&mut child_graph);
@@ -15340,14 +15109,9 @@ pub(super) mod tests {
         properties.sync(&arena, &[root]);
         let mut generations = PaintGenerationTracker::default();
         generations.sync(&arena, &[root], &properties);
-        let multiple = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("two direct transformed children exceed the C5A1 exact shape");
+        let multiple =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect_err("two direct transformed children exceed the C5A1 exact shape");
         assert!(
             multiple
                 .reasons
@@ -15366,14 +15130,9 @@ pub(super) mod tests {
         properties.sync(&arena, &[root]);
         let mut generations = PaintGenerationTracker::default();
         generations.sync(&arena, &[root], &properties);
-        let depth_three = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("a transformed grandchild is outside the direct-child C5A1 shape");
+        let depth_three =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect_err("a transformed grandchild is outside the direct-child C5A1 shape");
         assert!(
             depth_three
                 .reasons
@@ -15389,14 +15148,9 @@ pub(super) mod tests {
         let mut perspective = child_transform.viewport_matrix.to_cols_array();
         perspective[3] = 0.25;
         child_transform.viewport_matrix = glam::Mat4::from_cols_array(&perspective);
-        let non_affine = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("perspective child matrix is outside C5A1");
+        let non_affine =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect_err("perspective child matrix is outside C5A1");
         assert!(
             non_affine
                 .reasons
@@ -15410,14 +15164,11 @@ pub(super) mod tests {
             .get_mut(&TransformNodeId(child))
             .expect("child transform")
             .viewport_matrix = glam::Mat4::from_translation(glam::Vec3::new(31.0, 0.0, 0.0));
-        let mismatched = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("planned C must match the Element canonical geometry matrix bit-for-bit");
+        let mismatched =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect_err(
+                    "planned C must match the Element canonical geometry matrix bit-for-bit",
+                );
         assert_eq!(
             mismatched.reasons,
             vec![FramePaintPlanRejection::InvalidRootTransform(child)]
@@ -15427,14 +15178,8 @@ pub(super) mod tests {
     #[test]
     fn nested_opaque_spans_use_surface_local_cursor_and_max_child_terminal() {
         let (arena, root, child, properties, generations) = nested_opaque_cursor_fixture(3, 1, 1);
-        let plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("parent-before dominant cursor fixture");
+        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("parent-before dominant cursor fixture");
         let [PaintPlanStep::RetainedSurface(parent)] = plan.steps.as_slice() else {
             panic!("one parent surface")
         };
@@ -15460,14 +15205,8 @@ pub(super) mod tests {
         assert_eq!(parent.aggregate_opaque_order_span, 0..4);
 
         let (arena, root, child, properties, generations) = nested_opaque_cursor_fixture(0, 2, 1);
-        let plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("child-dominant cursor fixture");
+        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("child-dominant cursor fixture");
         let [PaintPlanStep::RetainedSurface(parent)] = plan.steps.as_slice() else {
             panic!("one parent surface")
         };
@@ -15497,14 +15236,8 @@ pub(super) mod tests {
     fn nested_stamp_tracks_child_raster_and_composite_geometry_but_not_parent_transform_only() {
         let (arena, root, _before, child, _descendant, _after, mut properties, mut generations) =
             nested_exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("baseline nested plan");
+        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("baseline nested plan");
         let ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         let baseline = super::super::prepare_forced_retained_surface_stamp_for_test(
             &plan,
@@ -15527,14 +15260,9 @@ pub(super) mod tests {
             ))));
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
-        let parent_transform_plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("parent transform-only nested plan");
+        let parent_transform_plan =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("parent transform-only nested plan");
         let parent_transform_stamp = super::super::prepare_forced_retained_surface_stamp_for_test(
             &parent_transform_plan,
             &FrameGraph::new(),
@@ -15553,14 +15281,9 @@ pub(super) mod tests {
             .set_resolved_transform_for_test(Some(child_matrix));
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
-        let child_transform_plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("child transform-only nested plan");
+        let child_transform_plan =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("child transform-only nested plan");
         let child_transform_stamp = super::super::prepare_forced_retained_surface_stamp_for_test(
             &child_transform_plan,
             &FrameGraph::new(),
@@ -15581,14 +15304,9 @@ pub(super) mod tests {
             .set_background_color_value(Color::rgb(12, 220, 44));
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
-        let child_paint_plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("child paint nested plan");
+        let child_paint_plan =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("child paint nested plan");
         let child_paint_stamp = super::super::prepare_forced_retained_surface_stamp_for_test(
             &child_paint_plan,
             &FrameGraph::new(),
@@ -15602,14 +15320,8 @@ pub(super) mod tests {
     #[test]
     fn forced_rect_executor_emits_clear_raster_composite_to_distinct_targets() {
         let (arena, root, properties, generations) = exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("exact rect surface plan");
+        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("exact rect surface plan");
 
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -15686,14 +15398,9 @@ pub(super) mod tests {
     #[test]
     fn retained_surface_stamp_excludes_transform_only_drift_and_tracks_raster_drift() {
         let (arena, root, mut properties, mut generations) = exact_transform_fixture();
-        let first_plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("exact retained surface plan");
+        let first_plan =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("exact retained surface plan");
         let [PaintPlanStep::RetainedSurface(first_surface)] = first_plan.steps.as_slice() else {
             panic!("one retained surface")
         };
@@ -15733,14 +15440,9 @@ pub(super) mod tests {
             .apply_style(transform_style);
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
-        let transform_plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("transform-only retained surface replan");
+        let transform_plan =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("transform-only retained surface replan");
         let [PaintPlanStep::RetainedSurface(transform_surface)] = transform_plan.steps.as_slice()
         else {
             panic!("one retained surface")
@@ -15806,14 +15508,9 @@ pub(super) mod tests {
             .set_background_color_value(Color::rgb(90, 110, 130));
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
-        let repaint_plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("root-fill retained surface replan");
+        let repaint_plan =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("root-fill retained surface replan");
         let [PaintPlanStep::RetainedSurface(repaint_surface)] = repaint_plan.steps.as_slice()
         else {
             panic!("one retained surface")
@@ -15832,14 +15529,9 @@ pub(super) mod tests {
     #[test]
     fn forced_retained_surface_reuses_only_after_success_and_composites_latest_transform() {
         let (arena, root, mut properties, mut generations) = exact_transform_fixture();
-        let first_plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("first retained surface plan");
+        let first_plan =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("first retained surface plan");
         let mut viewport = Viewport::new();
         let mut first_graph = FrameGraph::new();
         let first_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -15889,7 +15581,6 @@ pub(super) mod tests {
         let second_plan = plan_single_root_transform_surface_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], latest_scissor),
@@ -15961,7 +15652,6 @@ pub(super) mod tests {
         let repaint_plan = plan_single_root_transform_surface_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             TransformSurfacePlanContext::new([0.0, 0.0], latest_scissor),
@@ -15989,14 +15679,8 @@ pub(super) mod tests {
     #[test]
     fn forced_retained_surface_failed_frame_cannot_become_reusable() {
         let (arena, root, properties, generations) = exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("retained surface plan");
+        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("retained surface plan");
         for (compiled, executed, failure) in [
             (false, false, "compile failure"),
             (true, false, "execute failure"),
@@ -16043,7 +15727,6 @@ pub(super) mod tests {
         let plan = plan_single_root_transform_surface_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             frozen,
@@ -16177,14 +15860,9 @@ pub(super) mod tests {
         use super::super::ForcedTransformSurfaceError as Error;
 
         let (arena, root, properties, generations) = exact_transform_fixture();
-        let baseline = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("baseline forced plan");
+        let baseline =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("baseline forced plan");
         let default_ctx = || UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
 
         let mut plan = baseline.clone();
@@ -16423,14 +16101,9 @@ pub(super) mod tests {
 
         let (arena, root, _before, child, _descendant, _after, properties, generations) =
             nested_exact_transform_fixture();
-        let baseline = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("baseline nested plan");
+        let baseline =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("baseline nested plan");
         let default_ctx = || UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
 
         let mut plan = baseline.clone();
@@ -16541,7 +16214,6 @@ pub(super) mod tests {
         let forced_plan = plan_single_root_transform_surface(
             &forced_arena,
             &[forced_root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -16598,7 +16270,6 @@ pub(super) mod tests {
         let forced_plan = plan_single_root_transform_surface_with_context(
             &forced_arena,
             &[forced_root],
-            &FxHashSet::default(),
             &properties,
             &generations,
             frozen,
@@ -16678,14 +16349,8 @@ pub(super) mod tests {
         properties.sync(&arena, &[root]);
         let mut generations = PaintGenerationTracker::default();
         generations.sync(&arena, &[root], &properties);
-        let plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("zero-blur outer shadow surface plan");
+        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("zero-blur outer shadow surface plan");
         let [PaintPlanStep::RetainedSurface(surface)] = plan.steps.as_slice() else {
             panic!("one shadow surface")
         };
@@ -16762,14 +16427,8 @@ pub(super) mod tests {
             )
         ));
 
-        let plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("surface-only planner owns the positive path");
+        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("surface-only planner owns the positive path");
         let PaintPlanStep::RetainedSurface(surface) = &plan.steps[0] else {
             panic!("one retained surface")
         };
@@ -16804,8 +16463,6 @@ pub(super) mod tests {
         let manifest = super::super::coverage_manifest::record_coverage_manifest_with_context(
             &arena,
             &[root],
-            &FxHashSet::default(),
-            None,
             false,
             true,
             super::super::CoverageRecordingMode::MetadataOnly,
@@ -16854,14 +16511,9 @@ pub(super) mod tests {
             .first()
             .copied()
             .expect("child");
-        let nested = plan_single_root_transform_surface(
-            &arena,
-            &[child],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("an arena child cannot masquerade as a frame root");
+        let nested =
+            plan_single_root_transform_surface(&arena, &[child], &properties, &generations)
+                .expect_err("an arena child cannot masquerade as a frame root");
         assert!(
             nested
                 .reasons
@@ -16879,7 +16531,6 @@ pub(super) mod tests {
         let parent_drift = plan_single_root_transform_surface(
             &parent_drift_arena,
             &[parent_drift_root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -16897,7 +16548,6 @@ pub(super) mod tests {
         let mirror = plan_single_root_transform_surface(
             &mirror_arena,
             &[mirror_root],
-            &FxHashSet::default(),
             &properties,
             &generations,
         )
@@ -16914,14 +16564,9 @@ pub(super) mod tests {
         let (arena, root, properties, generations) = exact_transform_fixture();
         crate::view::test_support::get_element_mut::<Element>(&arena, root)
             .set_stable_id_for_test(0);
-        let root_error = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("stable id zero cannot own a persistent transform surface");
+        let root_error =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect_err("stable id zero cannot own a persistent transform surface");
         assert!(
             root_error
                 .reasons
@@ -16932,14 +16577,9 @@ pub(super) mod tests {
         let child = arena.get(root).expect("root").element.children()[0];
         crate::view::test_support::get_element_mut::<Element>(&arena, child)
             .set_stable_id_for_test(0);
-        let child_error = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("every reachable owner requires a nonzero paint identity");
+        let child_error =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect_err("every reachable owner requires a nonzero paint identity");
         assert!(
             child_error
                 .reasons
@@ -16948,50 +16588,31 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn planner_rejects_property_promotion_identity_and_root_shape_boundaries() {
+    fn planner_accepts_retained_baseline_baseline_and_rejects_property_identity_or_root_shape_boundaries()
+     {
         let (arena, root, properties, generations) = exact_transform_fixture();
         let child = arena.get(root).expect("root").element.children()[0];
-        let multi_root = plan_single_root_transform_surface(
-            &arena,
-            &[root, child],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("M10C1 is exact single-root only");
+        let multi_root =
+            plan_single_root_transform_surface(&arena, &[root, child], &properties, &generations)
+                .expect_err("M10C1 is exact single-root only");
         assert_eq!(
             multi_root.reasons,
             vec![FramePaintPlanRejection::RootCount(2)]
         );
 
-        let promoted = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::from_iter([arena.get(child).expect("child").element.stable_id()]),
-            &properties,
-            &generations,
-        )
-        .expect_err("surface planning cannot mix promotion authority");
-        assert!(
-            promoted
-                .reasons
-                .iter()
-                .any(|reason| { matches!(reason, FramePaintPlanRejection::PromotionPresent(_)) })
-        );
+        let baseline =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect("retained-compatible retained transform baseline");
+        let _ = only_surface(&baseline);
 
         let (arena, root, properties, generations) = exact_transform_fixture();
         let child = arena.get(root).expect("root").element.children()[0];
         let root_id = arena.get(root).expect("root").element.stable_id();
         crate::view::test_support::get_element_mut::<Element>(&arena, child)
             .set_stable_id_for_test(root_id);
-        let duplicate = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("duplicate nonzero stable ids cannot prove owning identity");
+        let duplicate =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect_err("duplicate nonzero stable ids cannot prove owning identity");
         assert!(
             duplicate
                 .reasons
@@ -17019,14 +16640,9 @@ pub(super) mod tests {
                 }
                 _ => unreachable!(),
             }
-            let error = plan_single_root_transform_surface(
-                &arena,
-                &[root],
-                &FxHashSet::default(),
-                &properties,
-                &generations,
-            )
-            .expect_err("non-transform property authority must stay out of M10C1");
+            let error =
+                plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                    .expect_err("non-transform property authority must stay out of M10C1");
             assert!(error.reasons.iter().any(|reason| match (property, reason) {
                 ("clip", FramePaintPlanRejection::ClipBoundary(owner))
                 | ("effect", FramePaintPlanRejection::EffectBoundary(owner))
@@ -17056,14 +16672,8 @@ pub(super) mod tests {
             .expect("child state")
             .paint
             .transform = Some(TransformNodeId(child));
-        let nested = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("a second transform boundary requires recursive planning in a later slice");
+        let nested = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect_err("a second transform boundary requires recursive planning in a later slice");
         assert!(
             nested
                 .reasons
@@ -17101,14 +16711,9 @@ pub(super) mod tests {
             0.0,
             1.0,
         ]);
-        let nonfinite = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("nonfinite transform evidence must fail before recording");
+        let nonfinite =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect_err("nonfinite transform evidence must fail before recording");
         assert!(
             nonfinite
                 .reasons
@@ -17122,14 +16727,9 @@ pub(super) mod tests {
             .get_mut(&TransformNodeId(root))
             .expect("root transform")
             .parent = Some(TransformNodeId(child));
-        let parented = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("frame-root transform must be parentless");
+        let parented =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect_err("frame-root transform must be parentless");
         assert!(
             parented
                 .reasons
@@ -17142,15 +16742,9 @@ pub(super) mod tests {
         let (arena, _root, properties, generations) = exact_transform_fixture();
         let missing = NodeKey::null();
         assert_eq!(
-            plan_single_root_transform_surface(
-                &arena,
-                &[missing],
-                &FxHashSet::default(),
-                &properties,
-                &generations,
-            )
-            .expect_err("missing root must fail closed")
-            .reasons,
+            plan_single_root_transform_surface(&arena, &[missing], &properties, &generations,)
+                .expect_err("missing root must fail closed")
+                .reasons,
             vec![FramePaintPlanRejection::MissingRoot(missing)]
         );
 
@@ -17167,7 +16761,6 @@ pub(super) mod tests {
             plan_single_root_transform_surface(
                 &unknown_arena,
                 &[unknown],
-                &FxHashSet::default(),
                 &PropertyTrees::default(),
                 &PaintGenerationTracker::default(),
             )
@@ -17189,14 +16782,9 @@ pub(super) mod tests {
         );
         crate::view::test_support::get_element_mut::<Element>(&arena, child)
             .apply_style(deferred_style);
-        let deferred = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("deferred subtree changes frame ordering");
+        let deferred =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect_err("deferred subtree changes frame ordering");
         assert!(
             deferred
                 .reasons
@@ -17205,14 +16793,9 @@ pub(super) mod tests {
 
         let (arena, root, mut properties, generations) = exact_transform_fixture();
         properties.transforms.remove(&TransformNodeId(root));
-        let missing_transform = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("root transform identity is mandatory");
+        let missing_transform =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect_err("root transform identity is mandatory");
         assert!(
             missing_transform
                 .reasons
@@ -17222,14 +16805,9 @@ pub(super) mod tests {
         let (arena, root, mut properties, generations) = exact_transform_fixture();
         let child = arena.get(root).expect("root").element.children()[0];
         properties.states.remove(&child);
-        let missing_state = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("every reachable owner requires a property snapshot");
+        let missing_state =
+            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+                .expect_err("every reachable owner requires a property snapshot");
         assert!(
             missing_state
                 .reasons
@@ -17240,14 +16818,8 @@ pub(super) mod tests {
         let child = arena.get(root).expect("root").element.children()[0];
         arena.push_child(child, root);
         arena.set_parent(root, Some(child));
-        let cycle = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("cycle cannot prove canonical owner topology");
+        let cycle = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect_err("cycle cannot prove canonical owner topology");
         assert!(
             cycle
                 .reasons
@@ -17306,14 +16878,8 @@ pub(super) mod tests {
         properties.sync(&arena, &[root]);
         let mut generations = PaintGenerationTracker::default();
         generations.sync(&arena, &[root], &properties);
-        let error = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("one unknown descendant makes the whole surface ineligible");
+        let error = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect_err("one unknown descendant makes the whole surface ineligible");
         assert!(error.reasons.contains(&FramePaintPlanRejection::Coverage(
             super::super::FrameArtifactFallbackReason::LegacyBoundary(
                 super::super::LegacyPaintReason::UnknownHost,
@@ -17353,14 +16919,8 @@ pub(super) mod tests {
         );
 
         let (arena, root, properties, generations) = exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("baseline surface plan");
+        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("baseline surface plan");
         let PaintPlanStep::RetainedSurface(surface) = &plan.steps[0] else {
             panic!("one retained surface")
         };
@@ -17404,14 +16964,8 @@ pub(super) mod tests {
         let _ = super::super::take_artifact_compile_count();
         let _ = super::super::take_full_artifact_record_count();
 
-        let plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("pure planning succeeds");
+        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("pure planning succeeds");
         assert_eq!(plan.steps.len(), 1);
         assert_eq!(super::super::take_artifact_compile_count(), 0);
         assert!(super::super::take_full_artifact_record_count() > 0);
@@ -17532,14 +17086,8 @@ pub(super) mod tests {
             );
         }
 
-        let plan = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect("surface planner must own Image/SVG inherited transform");
+        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect("surface planner must own Image/SVG inherited transform");
         let PaintPlanStep::RetainedSurface(surface) = &plan.steps[0] else {
             panic!("one retained surface")
         };
@@ -17620,14 +17168,8 @@ pub(super) mod tests {
             .downcast_mut::<Svg>()
             .expect("Svg host")
             .set_layout_transition_width_for_test(17.0);
-        let error = plan_single_root_transform_surface(
-            &arena,
-            &[root],
-            &FxHashSet::default(),
-            &properties,
-            &generations,
-        )
-        .expect_err("wrapper-forwarded runtime layout state must fail closed");
+        let error = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect_err("wrapper-forwarded runtime layout state must fail closed");
         assert!(
             error
                 .reasons

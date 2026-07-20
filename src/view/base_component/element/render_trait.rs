@@ -24,10 +24,6 @@ impl Renderable for Element {
 
         let viewport = ctx.viewport();
         let base_state = self.build_base_only(graph, arena, ctx);
-        self.compose_promoted_descendants_only(
-            graph,
-            arena,
-            UiBuildContext::from_parts(viewport, base_state),
-        )
+        self.render_scrollbars(graph, UiBuildContext::from_parts(viewport, base_state))
     }
 }

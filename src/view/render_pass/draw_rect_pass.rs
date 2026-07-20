@@ -115,10 +115,6 @@ pub struct DrawRectPass {
 
 #[cfg(test)]
 impl DrawRectPass {
-    pub(crate) fn test_params(&self) -> &RectPassParams {
-        &self.params
-    }
-
     pub(crate) fn test_snapshot(&self) -> RectPassTestSnapshot {
         RectPassTestSnapshot::from_pass(self, false, None)
     }
@@ -651,11 +647,6 @@ impl DrawRectPass {
 }
 
 impl OpaqueRectPass {
-    #[cfg(test)]
-    pub(crate) fn test_params(&self) -> &RectPassParams {
-        self.inner.test_params()
-    }
-
     #[cfg(test)]
     pub(crate) fn test_snapshot(&self) -> RectPassTestSnapshot {
         RectPassTestSnapshot::from_pass(&self.inner, true, Some(self.depth_order))

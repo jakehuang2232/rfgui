@@ -156,6 +156,26 @@ impl Svg {
         self.element.set_layout_transition_width(width);
     }
 
+    #[cfg(test)]
+    pub(crate) fn replace_active_raster_generation_for_test(&self, fill: u8) -> u64 {
+        let key = self
+            .active_raster_key
+            .expect("ready SVG test fixture must own an active raster");
+        let request = self
+            .active_raster_request
+            .expect("ready SVG test fixture must own an active request");
+        crate::view::svg_resource::replace_svg_raster_ready_for_test(
+            key,
+            request.physical_width,
+            request.physical_height,
+            std::sync::Arc::from(vec![
+                fill;
+                (request.physical_width * request.physical_height * 4)
+                    as usize
+            ]),
+        )
+    }
+
     pub fn new_with_id(id: u64, source: SvgSource) -> Self {
         let mut element = Element::new_with_id(id, 0.0, 0.0, PLACEHOLDER_SIZE, PLACEHOLDER_SIZE);
         let mut base_style = Style::new();
@@ -730,7 +750,11 @@ impl Svg {
             plan: active_plan,
             inner_origin: [inner_x, inner_y],
             upload,
-            opacity: self.element.promotion_node_info().opacity.clamp(0.0, 1.0),
+            opacity: self
+                .element
+                .retained_paint_properties()
+                .opacity
+                .clamp(0.0, 1.0),
         });
         self.frozen_request_is_exact = self.active_raster_request == Some(desired_plan.request)
             && self.active_device_scale_bits == Some(device_scale_bits)
@@ -742,7 +766,7 @@ impl Svg {
         arena: &crate::view::node_arena::NodeArena,
         expected_owner: Option<crate::view::node_arena::NodeKey>,
         properties: Option<crate::view::compositor::property_tree::PropertyTreeState>,
-        _deferred_phase_root: bool,
+        deferred_phase_root: bool,
         recording_context: crate::view::paint::PaintRecordingContext,
     ) -> Result<SvgShadowPaintClass, super::ShadowPaintBlocker> {
         let indexed_owner = arena
@@ -758,10 +782,15 @@ impl Svg {
 
         match (&self.frozen_document, self.active_slot) {
             (Some(SvgDocumentSnapshot::Ready { .. }), ActiveSlot::None) => {
-                if let Some(blocker) =
-                    self.element
-                        .shadow_paint_blocker(arena, false, false, false, recording_context)
-                {
+                if let Some(blocker) = self.element.shadow_paint_blocker(
+                    arena,
+                    deferred_phase_root,
+                    recording_context.authorizes_self_clip_for(self.stable_id())
+                        || recording_context
+                            .authorizes_deferred_viewport_self_clip_for(self.stable_id()),
+                    true,
+                    recording_context,
+                ) {
                     return Err(blocker);
                 }
                 if let Some(properties) = properties {
@@ -831,10 +860,12 @@ impl Svg {
             (Some(document), ActiveSlot::Loading | ActiveSlot::Error) => {
                 if let Some(blocker) = self.element.shadow_paint_blocker(
                     arena,
-                    // M9E2 authorizes only the wrapper's canonical zero-blur
-                    // outer-shadow payload. Deferred emission remains out.
-                    false,
-                    false,
+                    // Authorize only the wrapper's canonical zero-blur
+                    // outer-shadow payload under an exact recorder-owned clip.
+                    deferred_phase_root,
+                    recording_context.authorizes_self_clip_for(self.stable_id())
+                        || recording_context
+                            .authorizes_deferred_viewport_self_clip_for(self.stable_id()),
                     true,
                     recording_context,
                 ) {
@@ -847,10 +878,10 @@ impl Svg {
                     {
                         return Err(super::ShadowPaintBlocker::Transform);
                     }
-                    if properties.clip.is_some() {
-                        return Err(super::ShadowPaintBlocker::SelfClip);
-                    }
-                    if properties.scroll.is_some() {
+                    if properties.scroll.is_some()
+                        && !recording_context
+                            .authorizes_nested_scroll_content_properties(owner, properties)
+                    {
                         return Err(super::ShadowPaintBlocker::ScrollContainer);
                     }
                     if let Some(effect) = properties.effect
@@ -1018,7 +1049,11 @@ impl Svg {
             plan,
             inner_origin: [inner_x, inner_y],
             upload,
-            opacity: self.element.promotion_node_info().opacity.clamp(0.0, 1.0),
+            opacity: self
+                .element
+                .retained_paint_properties()
+                .opacity
+                .clamp(0.0, 1.0),
         });
         self.active_slot = ActiveSlot::None;
         self.loading_slot.clear();
@@ -1101,8 +1136,30 @@ impl ElementTrait for Svg {
         self.element.stable_id()
     }
 
+    fn exact_retained_self_clip_scissor_rect(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+        is_frame_root: bool,
+    ) -> Option<[u32; 4]> {
+        self.element
+            .exact_anchor_parent_leaf_self_clip_scissor_rect(owner, arena, is_frame_root)
+            .or_else(|| {
+                self.element
+                    .exact_deferred_viewport_root_self_clip_scissor_rect(
+                        owner,
+                        arena,
+                        is_frame_root,
+                    )
+            })
+    }
+
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
         self.element.box_model_snapshot()
+    }
+
+    fn retained_paint_properties(&self) -> super::RetainedPaintProperties {
+        self.element.retained_paint_properties()
     }
 
     fn tick_post_layout_animation_frame(&mut self, now: crate::time::Instant) -> super::DirtyFlags {
@@ -1209,9 +1266,11 @@ impl ElementTrait for Svg {
                     )
                     .into_iter()
                     .collect::<Vec<_>>();
+                let shadows = self.element.prepared_outer_shadow_ops(recording_context)?;
                 metadata.payload_identity =
-                    crate::view::paint::PaintPayloadIdentity::svg_with_decoration(
+                    crate::view::paint::PaintPayloadIdentity::svg_with_shadows_and_decoration(
                         identity,
+                        shadows.iter(),
                         decoration.iter(),
                     )?;
                 Some(metadata)
@@ -1263,17 +1322,31 @@ impl ElementTrait for Svg {
                 metadata.id.role = crate::view::paint::PaintChunkRole::SvgContent;
                 let mut ops = self
                     .element
-                    .self_decoration_paint_ops(
-                        prepared.params.opacity,
-                        recording_context.paint_offset,
-                    )
+                    .prepared_outer_shadow_ops(recording_context)?
                     .into_iter()
-                    .map(crate::view::paint::PaintOp::DrawRect)
+                    .map(crate::view::paint::PaintOp::PreparedShadow)
                     .collect::<Vec<_>>();
+                ops.extend(
+                    self.element
+                        .self_decoration_paint_ops(
+                            prepared.params.opacity,
+                            recording_context.paint_offset,
+                        )
+                        .into_iter()
+                        .map(crate::view::paint::PaintOp::DrawRect),
+                );
+                let shadow_count = ops
+                    .iter()
+                    .take_while(|op| matches!(op, crate::view::paint::PaintOp::PreparedShadow(_)))
+                    .count();
                 metadata.payload_identity =
-                    crate::view::paint::PaintPayloadIdentity::svg_with_decoration(
+                    crate::view::paint::PaintPayloadIdentity::svg_with_shadows_and_decoration(
                         identity,
-                        ops.iter().filter_map(|op| match op {
+                        ops[..shadow_count].iter().filter_map(|op| match op {
+                            crate::view::paint::PaintOp::PreparedShadow(shadow) => Some(shadow),
+                            _ => None,
+                        }),
+                        ops[shadow_count..].iter().filter_map(|op| match op {
                             crate::view::paint::PaintOp::DrawRect(rect) => Some(rect),
                             _ => None,
                         }),
@@ -1331,17 +1404,13 @@ impl ElementTrait for Svg {
         self.element.hit_test_visible_at(viewport_x, viewport_y)
     }
 
-    fn promotion_node_info(&self) -> crate::view::promotion::PromotionNodeInfo {
-        self.element.promotion_node_info()
-    }
-
     fn has_active_animator(&self) -> bool {
         self.element.has_active_animator()
     }
 
-    fn promotion_self_signature(&self) -> u64 {
+    fn retained_paint_signature(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
-        self.element.promotion_self_signature().hash(&mut hasher);
+        self.element.retained_paint_signature().hash(&mut hasher);
         self.source_key.hash(&mut hasher);
         self.source_kind.hash(&mut hasher);
         match self.fit {
@@ -1400,26 +1469,15 @@ impl ElementTrait for Svg {
         hasher.finish()
     }
 
-    fn promotion_signature_is_complete(&self) -> bool {
+    fn retained_paint_signature_is_complete(&self) -> bool {
         true
-    }
-
-    fn promotion_clip_intersection_signature(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-    ) -> u64 {
-        self.element.promotion_clip_intersection_signature(arena)
-    }
-
-    fn promotion_composite_bounds(&self) -> super::PromotionCompositeBounds {
-        self.element.promotion_composite_bounds()
     }
 
     fn retained_transform_surface_bounds(
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
-    ) -> Option<super::PromotionCompositeBounds> {
+    ) -> Option<super::RetainedSurfaceBounds> {
         self.element
             .retained_transform_surface_bounds(arena, paint_offset)
     }
@@ -1428,7 +1486,7 @@ impl ElementTrait for Svg {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
-    ) -> Option<super::PromotionCompositeBounds> {
+    ) -> Option<super::RetainedSurfaceBounds> {
         let wrapper = self
             .element
             .retained_transform_render_output_bounds(arena, paint_offset)?;
@@ -1440,7 +1498,7 @@ impl ElementTrait for Svg {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
-    ) -> Option<super::PromotionCompositeBounds> {
+    ) -> Option<super::RetainedSurfaceBounds> {
         let wrapper = self
             .element
             .legacy_transform_render_output_bounds(arena, paint_offset)?;
@@ -1448,7 +1506,7 @@ impl ElementTrait for Svg {
         Element::checked_union_transform_surface_bounds(wrapper, media)
     }
 
-    fn retained_transform_raster_seed_bounds(&self) -> Option<super::PromotionCompositeBounds> {
+    fn retained_transform_raster_seed_bounds(&self) -> Option<super::RetainedSurfaceBounds> {
         self.element.retained_transform_raster_seed_bounds()
     }
 
@@ -1700,13 +1758,10 @@ impl Renderable for Svg {
         let Some(parent_target) = ctx.current_target() else {
             return ctx.into_state();
         };
-        let opacity = if ctx.is_node_promoted(self.stable_id()) {
-            1.0
-        } else {
-            self.frozen_paint
-                .as_ref()
-                .map_or(0.0, |paint| paint.opacity)
-        };
+        let opacity = self
+            .frozen_paint
+            .as_ref()
+            .map_or(0.0, |paint| paint.opacity);
         let Some(prepared) = self.prepared_svg_op(
             super::image::paint_adjusted_offset(&self.element, parent_paint_offset),
             opacity,
@@ -1734,8 +1789,8 @@ impl Renderable for Svg {
 mod tests {
     use super::{ActiveSlot, FrozenSvgPaint, Svg};
     use crate::style::{
-        BoxShadow, Color, ComputedStyle, EdgeInsets, Layout, ParsedValue, PropertyId,
-        ScrollDirection, Style,
+        BoxShadow, ClipMode, Color, ComputedStyle, EdgeInsets, Layout, ParsedValue, Position,
+        PropertyId, ScrollDirection, Style,
     };
     use crate::time::{Duration, Instant};
     use crate::view::SvgSource;
@@ -1761,12 +1816,38 @@ mod tests {
         commit_child, commit_element, measure_and_place, new_test_arena,
     };
     use glam::{Mat4, Vec3};
-    use rustc_hash::FxHashSet;
 
     fn simple_svg() -> SvgSource {
         SvgSource::Content(
             r##"<svg width="80" height="40" viewBox="0 0 80 40" xmlns="http://www.w3.org/2000/svg"><rect width="80" height="40" fill="#ff0000"/></svg>"##.to_string(),
         )
+    }
+
+    #[test]
+    fn svg_delegates_retained_paint_properties_to_its_element() {
+        let mut svg = Svg::new_with_id(0xa0ef, simple_svg());
+        let mut style = Style::new();
+        style.set_border(crate::style::Border::uniform(
+            crate::style::Length::px(1.0),
+            &Color::hex("#ffffff"),
+        ));
+        style.insert(
+            PropertyId::ScrollDirection,
+            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+        );
+        svg.element.apply_style(style);
+        svg.element.set_opacity(0.6);
+        svg.element.set_border_radius(4.0);
+        svg.element
+            .set_box_shadows(vec![BoxShadow::new().offset(1.0)]);
+
+        let properties = svg.retained_paint_properties();
+        assert_eq!(properties, svg.element.retained_paint_properties());
+        assert_eq!(properties.opacity.to_bits(), 0.6_f32.to_bits());
+        assert!(properties.has_rounded_clip);
+        assert!(properties.has_box_shadow);
+        assert!(properties.has_border);
+        assert!(properties.is_scroll_container);
     }
 
     #[test]
@@ -2049,12 +2130,10 @@ mod tests {
             properties.sync(&arena, &roots);
             let mut generations = PaintGenerationTracker::default();
             generations.sync(&arena, &roots, &properties);
-            let record = |mode| {
+            let record = |mode: CoverageRecordingMode| {
                 record_coverage_manifest(
                     &arena,
                     &roots,
-                    &FxHashSet::default(),
-                    None,
                     false,
                     true,
                     mode,
@@ -2196,7 +2275,7 @@ mod tests {
     }
 
     #[test]
-    fn active_wrapper_rejects_property_boundaries_except_matching_root_opacity() {
+    fn active_wrapper_accepts_inherited_clip_and_rejects_unproven_property_boundaries() {
         use crate::view::compositor::property_tree::{
             ClipNodeId, ClipNodeRole, EffectNodeId, PropertyTreeState, ScrollNodeId,
             TransformNodeId,
@@ -2222,13 +2301,6 @@ mod tests {
                 ..Default::default()
             },
             PropertyTreeState {
-                clip: Some(ClipNodeId {
-                    owner,
-                    role: ClipNodeRole::ContentsClip,
-                }),
-                ..Default::default()
-            },
-            PropertyTreeState {
                 effect: Some(EffectNodeId(owner)),
                 ..Default::default()
             },
@@ -2248,6 +2320,28 @@ mod tests {
                     .is_none()
             );
         }
+
+        let clip = ClipNodeId {
+            owner,
+            role: ClipNodeRole::ContentsClip,
+        };
+        let clipped_properties = PropertyTreeState {
+            clip: Some(clip),
+            ..Default::default()
+        };
+        let clipped_metadata = node
+            .element
+            .record_shadow_paint_metadata(owner, clipped_properties, revision, &arena, context)
+            .expect("active wrapper may inherit a canonical clip property");
+        let clipped_artifact = node
+            .element
+            .record_shadow_paint_artifact(owner, clipped_properties, revision, &arena, context)
+            .expect("clipped active-wrapper artifact");
+        assert_eq!(clipped_metadata.properties.clip, Some(clip));
+        assert_eq!(
+            clipped_artifact.chunks[0].payload_identity,
+            clipped_metadata.payload_identity
+        );
 
         let effect = EffectNodeId(owner);
         let properties = PropertyTreeState {
@@ -2307,8 +2401,6 @@ mod tests {
         let metadata = record_coverage_manifest(
             &arena,
             &roots,
-            &FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::MetadataOnly,
@@ -2318,8 +2410,6 @@ mod tests {
         let full = record_coverage_manifest(
             &arena,
             &roots,
-            &FxHashSet::default(),
-            None,
             false,
             true,
             CoverageRecordingMode::FullArtifact,
@@ -2376,13 +2466,38 @@ mod tests {
     }
 
     #[test]
-    fn ready_svg_media_with_outer_shadow_remains_legacy() {
+    fn ready_svg_media_with_outer_shadow_records_typed_shadow_prefix() {
         let mut svg = freeze_ready_svg(0x93b0, unique_svg("ready-shadow-fallback"), 1.0);
         let mut style = Style::new();
+        style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
         style.set_box_shadow(vec![BoxShadow::new().offset_x(1.0)]);
         svg.apply_style(style);
         let mut arena = new_test_arena();
         let owner = commit_element(&mut arena, Box::new(svg));
+        measure_and_place(
+            &mut arena,
+            owner,
+            LayoutConstraints {
+                max_width: 100.0,
+                max_height: 100.0,
+                viewport_width: 100.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 100.0,
+                available_height: 100.0,
+                viewport_width: 100.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+            },
+        );
         let node = arena.get(owner).unwrap();
         let context = node
             .element
@@ -2390,23 +2505,223 @@ mod tests {
         assert_eq!(
             node.element
                 .shadow_paint_recording_capability(&arena, false, context),
-            ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::BoxShadow)
+            ShadowPaintRecordingCapability::Recordable
         );
         let revision = crate::view::paint::PaintContentRevision {
             self_paint_revision: 1,
             composite_revision: 1,
             topology_revision: 1,
         };
-        assert!(
-            node.element
-                .record_shadow_paint_metadata(owner, Default::default(), revision, &arena, context,)
-                .is_none()
+        let metadata = node
+            .element
+            .record_shadow_paint_metadata(owner, Default::default(), revision, &arena, context)
+            .expect("ready shadow SVG metadata");
+        let artifact = node
+            .element
+            .record_shadow_paint_artifact(owner, Default::default(), revision, &arena, context)
+            .expect("ready shadow SVG artifact");
+        assert_eq!(
+            artifact.chunks[0].payload_identity,
+            metadata.payload_identity
         );
         assert!(
-            node.element
-                .record_shadow_paint_artifact(owner, Default::default(), revision, &arena, context,)
-                .is_none()
+            matches!(
+                &metadata.payload_identity,
+                crate::view::paint::PaintPayloadIdentity::SvgWithShadows(_, shadows, _)
+                    if shadows.len() == 1
+            ),
+            "{:?}",
+            metadata.payload_identity
         );
+        assert!(matches!(
+            artifact.ops.as_slice(),
+            [
+                crate::view::paint::PaintOp::PreparedShadow(_),
+                ..,
+                crate::view::paint::PaintOp::PreparedSvg(_)
+            ]
+        ));
+        assert!(
+            crate::view::paint::validate_media_content_artifact_for_test(&artifact),
+            "compiler must accept the exact typed shadow prefix"
+        );
+        let mut reordered = artifact.clone();
+        assert!(matches!(
+            reordered.ops.get(1),
+            Some(crate::view::paint::PaintOp::DrawRect(_))
+        ));
+        reordered.ops.swap(0, 1);
+        assert!(
+            !crate::view::paint::validate_media_content_artifact_for_test(&reordered),
+            "a shadow after decoration must fail closed"
+        );
+        let (baseline_media, baseline_shadows, baseline_decoration) =
+            match &metadata.payload_identity {
+                crate::view::paint::PaintPayloadIdentity::SvgWithShadows(
+                    media,
+                    shadows,
+                    decoration,
+                ) => (media.clone(), shadows.clone(), decoration.clone()),
+                _ => unreachable!(),
+            };
+        drop(node);
+        {
+            let mut node = arena.get_mut(owner).unwrap();
+            let svg = node.element.as_any_mut().downcast_mut::<Svg>().unwrap();
+            let mut style = Style::new();
+            style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+            style.set_box_shadow(vec![BoxShadow::new().offset_x(9.0).offset_y(-4.0)]);
+            svg.apply_style(style);
+        }
+        measure_and_place(
+            &mut arena,
+            owner,
+            LayoutConstraints {
+                max_width: 100.0,
+                max_height: 100.0,
+                viewport_width: 100.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 100.0,
+                available_height: 100.0,
+                viewport_width: 100.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+            },
+        );
+        let node = arena.get(owner).unwrap();
+        let changed_context = node
+            .element
+            .shadow_paint_recording_context(Default::default());
+        let changed = node
+            .element
+            .record_shadow_paint_metadata(
+                owner,
+                Default::default(),
+                revision,
+                &arena,
+                changed_context,
+            )
+            .expect("shadow-mutated SVG metadata");
+        let crate::view::paint::PaintPayloadIdentity::SvgWithShadows(
+            changed_media,
+            changed_shadows,
+            changed_decoration,
+        ) = changed.payload_identity
+        else {
+            panic!("shadow-mutated SVG must retain typed media identity")
+        };
+        assert_eq!(changed_media, baseline_media);
+        assert_ne!(changed_shadows, baseline_shadows);
+        assert_eq!(changed_decoration, baseline_decoration);
+    }
+
+    #[test]
+    fn ready_svg_exact_self_clip_shadow_metadata_and_full_are_canonical() {
+        use crate::view::paint::{
+            CoverageRecordingMode, PaintCoverageItem, PaintPayloadIdentity,
+            record_coverage_manifest,
+        };
+
+        let mut svg = freeze_ready_svg(0x93b1, unique_svg("ready-exact-self-clip-shadow"), 1.0);
+        let mut style = Style::new();
+        style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+        style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(crate::style::Length::px(1.25))
+                    .top(crate::style::Length::px(2.75))
+                    .clip(ClipMode::AnchorParent),
+            ),
+        );
+        style.set_box_shadow(vec![BoxShadow::new().offset_x(-3.0).offset_y(4.5)]);
+        svg.apply_style(style);
+        let mut arena = new_test_arena();
+        let owner = commit_element(&mut arena, Box::new(svg));
+        measure_and_place(
+            &mut arena,
+            owner,
+            LayoutConstraints {
+                max_width: 100.0,
+                max_height: 100.0,
+                viewport_width: 100.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 100.0,
+                available_height: 100.0,
+                viewport_width: 100.0,
+                viewport_height: 100.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(100.0),
+            },
+        );
+        let roots = [owner];
+        let mut properties = PropertyTrees::default();
+        properties.sync(&arena, &roots);
+        let mut generations = PaintGenerationTracker::default();
+        generations.sync(&arena, &roots, &properties);
+        let record = |mode: CoverageRecordingMode| {
+            record_coverage_manifest(&arena, &roots, false, true, mode, &properties, &generations)
+        };
+        let metadata_manifest = record(CoverageRecordingMode::MetadataOnly);
+        let full = record(CoverageRecordingMode::FullArtifact);
+        assert!(metadata_manifest.validation_errors.is_empty());
+        assert!(full.validation_errors.is_empty());
+        let [
+            PaintCoverageItem::ArtifactChunk {
+                chunk: metadata, ..
+            },
+        ] = metadata_manifest.items.as_slice()
+        else {
+            panic!(
+                "exact clipped Svg metadata must remain one native chunk: {:?}",
+                metadata_manifest.items
+            )
+        };
+        let [
+            PaintCoverageItem::ArtifactChunk {
+                chunk: full_chunk,
+                ops: Some(ops),
+                clip_snapshot,
+                ..
+            },
+        ] = full.items.as_slice()
+        else {
+            panic!("exact clipped Svg full recording must carry its clip snapshot")
+        };
+        assert_eq!(metadata.payload_identity, full_chunk.payload_identity);
+        assert!(matches!(
+            &metadata.payload_identity,
+            PaintPayloadIdentity::SvgWithShadows(_, shadows, _) if shadows.len() == 1
+        ));
+        assert!(matches!(
+            ops.first(),
+            Some(crate::view::paint::PaintOp::PreparedShadow(_))
+        ));
+        assert!(matches!(
+            ops.last(),
+            Some(crate::view::paint::PaintOp::PreparedSvg(_))
+        ));
+        let [clip] = clip_snapshot.as_slice() else {
+            panic!("exact clipped Svg must carry one complete self-clip snapshot")
+        };
+        assert_eq!(clip.id, full_chunk.properties.clip.unwrap());
     }
 
     #[test]
@@ -2435,7 +2750,6 @@ mod tests {
         let outcome = crate::view::paint::record_root_group_opacity_frame_artifact(
             &arena,
             &[owner],
-            &FxHashSet::default(),
             &properties,
             &generations,
             crate::view::paint::RendererMode::ForcedForTests,
@@ -2716,26 +3030,26 @@ mod tests {
     }
 
     #[test]
-    fn promotion_signature_covers_source_fit_sampling_and_raster_generation() {
+    fn retained_paint_signature_covers_source_fit_sampling_and_raster_generation() {
         use std::hash::Hasher;
 
         let mut svg = Svg::new_with_id(1, simple_svg());
-        assert!(svg.promotion_signature_is_complete());
-        let initial = svg.promotion_self_signature();
+        assert!(svg.retained_paint_signature_is_complete());
+        let initial = svg.retained_paint_signature();
 
         svg.set_fit(crate::view::ImageFit::Cover);
-        let fit = svg.promotion_self_signature();
+        let fit = svg.retained_paint_signature();
         assert_ne!(fit, initial);
 
         svg.set_sampling(crate::view::ImageSampling::Nearest);
-        let sampling = svg.promotion_self_signature();
+        let sampling = svg.retained_paint_signature();
         assert_ne!(sampling, fit);
 
         svg.set_source(SvgSource::Content(
             r##"<svg width="40" height="20" xmlns="http://www.w3.org/2000/svg"><rect width="40" height="20" fill="#00ff00"/></svg>"##
                 .to_string(),
         ));
-        assert_ne!(svg.promotion_self_signature(), sampling);
+        assert_ne!(svg.retained_paint_signature(), sampling);
 
         let pixels = std::sync::Arc::<[u8]>::from(vec![255; 16]);
         let first = ImageSnapshot::Ready(ReadyImage {
@@ -3600,8 +3914,6 @@ mod tests {
             let preflight = crate::view::paint::record_coverage_manifest(
                 arena,
                 &[root],
-                &rustc_hash::FxHashSet::default(),
-                None,
                 false,
                 true,
                 crate::view::paint::CoverageRecordingMode::MetadataOnly,
@@ -3624,8 +3936,6 @@ mod tests {
             let full = crate::view::paint::record_coverage_manifest(
                 arena,
                 &[root],
-                &rustc_hash::FxHashSet::default(),
-                None,
                 false,
                 true,
                 crate::view::paint::CoverageRecordingMode::FullArtifact,
@@ -3777,7 +4087,7 @@ mod tests {
 
     #[test]
     fn pending_readiness_is_invisible_until_next_prelayout_freeze_then_swaps() {
-        let mut svg = Svg::new_with_id(11, unique_svg("promotion-pending"));
+        let mut svg = Svg::new_with_id(11, unique_svg("raster-pending"));
         wait_until_document_ready(svg.source_key);
         let active_request = SvgRasterRequest::new(96, 48, SvgRasterMode::Uniform);
         let pending_request = SvgRasterRequest::new(128, 64, SvgRasterMode::Uniform);
@@ -3795,17 +4105,17 @@ mod tests {
 
         let mut arena = new_test_arena();
         svg.sync_arena(&mut arena);
-        let loading = svg.promotion_self_signature();
-        assert_eq!(loading, svg.promotion_self_signature());
+        let loading = svg.retained_paint_signature();
+        assert_eq!(loading, svg.retained_paint_signature());
         set_svg_raster_ready_for_test(
             pending_key,
             pending_request.physical_width,
             pending_request.physical_height,
         );
-        let ready = svg.promotion_self_signature();
+        let ready = svg.retained_paint_signature();
         assert_eq!(ready, loading);
         svg.sync_arena(&mut arena);
-        let next_frame_ready = svg.promotion_self_signature();
+        let next_frame_ready = svg.retained_paint_signature();
         assert_ne!(next_frame_ready, loading);
         assert_eq!(
             svg.sync_raster_key(pending_request, 1.0, Instant::now()),

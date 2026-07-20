@@ -25,9 +25,10 @@ struct PreparedSelfPaintRecord {
 /// quad, UV, paint-snap, or outer-scissor semantics.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TransformSurfaceGeometrySnapshot {
-    pub(crate) source_bounds: crate::view::base_component::PromotionCompositeBounds,
-    pub(crate) visual_bounds: crate::view::base_component::PromotionCompositeBounds,
-    #[allow(dead_code)] // Frozen for the retained transform executor; legacy consumes the derived quad.
+    pub(crate) source_bounds: crate::view::base_component::RetainedSurfaceBounds,
+    pub(crate) visual_bounds: crate::view::base_component::RetainedSurfaceBounds,
+    #[allow(dead_code)]
+    // Frozen for the retained transform executor; legacy consumes the derived quad.
     pub(crate) viewport_transform: Mat4,
     pub(crate) quad_positions: [[f32; 2]; 4],
     pub(crate) uv_bounds: [f32; 4],
@@ -36,12 +37,12 @@ pub(crate) struct TransformSurfaceGeometrySnapshot {
 
 impl TransformSurfaceGeometrySnapshot {
     fn new(
-        source_bounds: crate::view::base_component::PromotionCompositeBounds,
-        visual_bounds: crate::view::base_component::PromotionCompositeBounds,
+        source_bounds: crate::view::base_component::RetainedSurfaceBounds,
+        visual_bounds: crate::view::base_component::RetainedSurfaceBounds,
         viewport_transform: Mat4,
         outer_scissor_rect: Option<[u32; 4]>,
     ) -> Option<Self> {
-        let canonical_bounds = |bounds: crate::view::base_component::PromotionCompositeBounds| {
+        let canonical_bounds = |bounds: crate::view::base_component::RetainedSurfaceBounds| {
             bounds.x.is_finite()
                 && bounds.y.is_finite()
                 && bounds.width.is_finite()
@@ -76,7 +77,10 @@ impl TransformSurfaceGeometrySnapshot {
             if !transformed.is_finite() || transformed.w.abs() <= 0.000_001 {
                 return None;
             }
-            let point = [transformed.x / transformed.w + dx, transformed.y / transformed.w + dy];
+            let point = [
+                transformed.x / transformed.w + dx,
+                transformed.y / transformed.w + dy,
+            ];
             if point.iter().any(|value| !value.is_finite()) {
                 return None;
             }
@@ -117,7 +121,7 @@ impl TransformSurfaceGeometrySnapshot {
         }
     }
 
-    pub(crate) fn quad_aabb(self) -> Option<crate::view::base_component::PromotionCompositeBounds> {
+    pub(crate) fn quad_aabb(self) -> Option<crate::view::base_component::RetainedSurfaceBounds> {
         let mut min_x = f32::INFINITY;
         let mut min_y = f32::INFINITY;
         let mut max_x = f32::NEG_INFINITY;
@@ -131,7 +135,7 @@ impl TransformSurfaceGeometrySnapshot {
             max_x = max_x.max(x);
             max_y = max_y.max(y);
         }
-        let bounds = crate::view::base_component::PromotionCompositeBounds {
+        let bounds = crate::view::base_component::RetainedSurfaceBounds {
             x: min_x,
             y: min_y,
             width: max_x - min_x,
@@ -161,7 +165,7 @@ impl TransformSurfaceGeometrySnapshot {
     }
 
     pub(crate) fn bitwise_eq(self, other: Self) -> bool {
-        let bounds_bits = |bounds: crate::view::base_component::PromotionCompositeBounds| {
+        let bounds_bits = |bounds: crate::view::base_component::RetainedSurfaceBounds| {
             (
                 [bounds.x, bounds.y, bounds.width, bounds.height].map(f32::to_bits),
                 bounds.corner_radii.map(f32::to_bits),
@@ -170,14 +174,9 @@ impl TransformSurfaceGeometrySnapshot {
         bounds_bits(self.source_bounds) == bounds_bits(other.source_bounds)
             && bounds_bits(self.visual_bounds) == bounds_bits(other.visual_bounds)
             && self.viewport_transform.to_cols_array().map(f32::to_bits)
-                == other
-                    .viewport_transform
-                    .to_cols_array()
-                    .map(f32::to_bits)
+                == other.viewport_transform.to_cols_array().map(f32::to_bits)
             && self.quad_positions.map(|point| point.map(f32::to_bits))
-                == other
-                    .quad_positions
-                    .map(|point| point.map(f32::to_bits))
+                == other.quad_positions.map(|point| point.map(f32::to_bits))
             && self.uv_bounds.map(f32::to_bits) == other.uv_bounds.map(f32::to_bits)
             && self.outer_scissor_rect == other.outer_scissor_rect
     }
@@ -259,18 +258,9 @@ impl Element {
         );
     }
 
-    pub(crate) fn inline_promotion_rendering_reason(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-    ) -> Option<&'static str> {
+    fn requires_child_mask_surface(&self, arena: &crate::view::node_arena::NodeArena) -> bool {
         if self.children.is_empty() {
-            return None;
-        }
-        if !self.has_active_layout_transition()
-            && (self.layout_state.layout_inner_size.width <= 0.0
-                || self.layout_state.layout_inner_size.height <= 0.0)
-        {
-            return None;
+            return false;
         }
         let overflow_child_indices: Vec<bool> = (0..self.children.len())
             .map(|idx| self.child_renders_outside_inner_clip(idx, arena))
@@ -281,15 +271,8 @@ impl Element {
             self.layout_state.layout_size.height.max(0.0),
         );
         let inner_radii = self.inner_clip_radii(outer_radii);
-        if self.should_clip_children(&overflow_child_indices, inner_radii, arena) {
-            Some(if inner_radii.has_any_rounding() {
-                "child-stencil-clip-inline"
-            } else {
-                "child-scissor-clip-inline"
-            })
-        } else {
-            None
-        }
+        inner_radii.has_any_rounding()
+            && self.should_clip_children(&overflow_child_indices, inner_radii, arena)
     }
 
     fn build_base_descendants_only(
@@ -317,18 +300,6 @@ impl Element {
                     None => transform,
                 });
         ctx.set_current_render_transform(accumulated_render_transform);
-        trace_promoted_build(
-            "base",
-            self.stable_id(),
-            self.box_model_snapshot().parent_id,
-            format!(
-                "promoted={} force_opaque={} children={} target={:?}",
-                ctx.is_node_promoted(self.stable_id()),
-                force_self_opaque,
-                self.children.len(),
-                ctx.current_target().and_then(|target| target.handle())
-            ),
-        );
         if !self.layout_state.should_render {
             // Viewport-clip descendants were already collected once at
             // frame start via `NodeArena::refresh_defer_render_nodes`.
@@ -387,9 +358,6 @@ impl Element {
         let render_children_passes = should_render_children && inner_visible;
 
         let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
-        // Element is promotion-aware: its `compose_promoted_descendants_only`
-        // pass will handle promoted direct children. Skipping them in the
-        // base walk is the right contract here.
         if render_children_passes {
             for (idx, child_key) in child_keys.iter().copied().enumerate() {
                 if overflow_child_indices.get(idx).copied().unwrap_or(false) {
@@ -400,9 +368,6 @@ impl Element {
                 let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
                 let next_ctx = arena.with_element_taken(child_key, |child, arena| {
                     let ctx_local = ctx_in;
-                    if ctx_local.is_node_promoted(child.stable_id()) {
-                        return ctx_local;
-                    }
                     if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
                         let vp = ctx_local.viewport();
                         let next_state =
@@ -446,9 +411,6 @@ impl Element {
                         .is_some_and(Element::should_append_to_root_viewport_render)
                     {
                         ctx_local.register_deferred(child_key, child.stable_id());
-                        return ctx_local;
-                    }
-                    if ctx_local.is_node_promoted(child.stable_id()) {
                         return ctx_local;
                     }
                     if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
@@ -782,12 +744,7 @@ impl Element {
             .into_iter()
             .map(PaintOp::PreparedShadow)
             .collect::<Vec<_>>();
-        ops.extend(
-            prepared
-                .decoration
-            .into_iter()
-            .map(PaintOp::DrawRect),
-        );
+        ops.extend(prepared.decoration.into_iter().map(PaintOp::DrawRect));
         metadata.bounds = prepared.geometry.bounds;
         metadata.payload_identity = prepared.payload_identity;
         Ok(PaintArtifact {
@@ -835,6 +792,15 @@ impl Element {
         )
     }
 
+    fn recording_context_authorizes_exact_self_clip(
+        &self,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> bool {
+        (self.anchor_parent_leaf_self_clip_scissor_rect().is_some()
+            && recording_context.authorizes_self_clip_for(self.stable_id()))
+            || recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id())
+    }
+
     pub(super) fn record_shadow_node_paint_metadata(
         &self,
         owner: crate::view::node_arena::NodeKey,
@@ -865,22 +831,22 @@ impl Element {
             return Err(LegacyPaintReason::ScrollContainer);
         }
         if self.absolute_clip_scissor_rect().is_some() {
-            if !recording_context.authorizes_self_clip_for(self.stable_id())
-                || self.anchor_parent_leaf_self_clip_scissor_rect().is_none()
-            {
+            if !self.recording_context_authorizes_exact_self_clip(recording_context) {
                 return Err(LegacyPaintReason::SelfClip);
             }
         }
-        if self.should_append_to_root_viewport_render() {
+        if self.should_append_to_root_viewport_render()
+            && !recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id())
+        {
             return Err(LegacyPaintReason::Deferred);
         }
-        if self.has_active_layout_transition() {
-            return Err(LegacyPaintReason::LayoutTransition);
-        }
-        if arena.is_some_and(|arena| self.promotion_requires_mask_surface(arena))
+        // Layout-transition tracks install their sampled position and size in
+        // `layout_state` before paint. The retained payload below consumes
+        // that same frozen frame geometry; any clip topology still passes
+        // through the ordinary SelfClip / ChildClip authority gates.
+        if arena.is_some_and(|arena| self.requires_child_mask_surface(arena))
             && !recording_context.authorizes_baked_scroll_host_root(self.stable_id())
-            && !recording_context
-                .authorizes_scroll_text_area_content_wrapper(self.stable_id())
+            && !recording_context.authorizes_scroll_text_area_content_wrapper(self.stable_id())
         {
             return Err(LegacyPaintReason::ChildClip);
         }
@@ -983,12 +949,9 @@ impl Element {
         }
         if self.should_append_to_root_viewport_render()
             && (!deferred_phase_root
-                || (allow_outer_shadow_artifact && !self.box_shadows.is_empty()))
+                || !recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id()))
         {
             return Some(ShadowPaintBlocker::Deferred);
-        }
-        if !self.box_shadows.is_empty() && self.absolute_clip_scissor_rect().is_some() {
-            return Some(ShadowPaintBlocker::SelfClip);
         }
         if !self.box_shadows.is_empty()
             && (!allow_outer_shadow_artifact
@@ -1011,14 +974,13 @@ impl Element {
         }
         if self.absolute_clip_scissor_rect().is_some()
             && (!authoritative_self_clip
-                || !recording_context.authorizes_self_clip_for(self.stable_id())
-                || self.anchor_parent_leaf_self_clip_scissor_rect().is_none())
+                || !self.recording_context_authorizes_exact_self_clip(recording_context))
         {
             return Some(ShadowPaintBlocker::SelfClip);
         }
-        if self.has_active_layout_transition() {
-            return Some(ShadowPaintBlocker::LayoutTransition);
-        }
+        // Active layout transitions are paintable once their sampled frame is
+        // installed in `layout_state`. Retained recording reads exactly that
+        // geometry; clip-dependent cases remain guarded below.
         if !self.children.is_empty() {
             let overflow_child_indices = (0..self.children.len())
                 .map(|index| self.child_renders_outside_inner_clip(index, arena))
@@ -1031,8 +993,7 @@ impl Element {
             let inner_radii = self.inner_clip_radii(outer_radii);
             if self.should_clip_children(&overflow_child_indices, inner_radii, arena)
                 && !recording_context.authorizes_baked_scroll_host_root(self.stable_id())
-                && !recording_context
-                    .authorizes_scroll_text_area_content_wrapper(self.stable_id())
+                && !recording_context.authorizes_scroll_text_area_content_wrapper(self.stable_id())
             {
                 return Some(ShadowPaintBlocker::ChildClip);
             }
@@ -1453,10 +1414,12 @@ impl Element {
         if self.absolute_clip_scissor_rect().is_some() {
             return Some(ShadowPaintBlocker::SelfClip);
         }
-        if self.has_active_layout_transition() {
-            return Some(ShadowPaintBlocker::LayoutTransition);
-        }
-        if self.promotion_requires_mask_surface(arena) {
+        // Inline layout installs the sampled fragment rectangles and the
+        // matching decoration package before paint. Retained recording
+        // validates those two frozen inputs against each other below, so an
+        // active size track is not itself a paint blocker. A stale or partial
+        // package still fails closed as MissingPreparedInlineDecoration.
+        if self.requires_child_mask_surface(arena) {
             return Some(ShadowPaintBlocker::ChildClip);
         }
         self.prepared_inline_ifc_decoration_payload(recording_context)
@@ -1504,15 +1467,6 @@ impl Element {
             self.push_rect_pass_auto(graph, &mut ctx, border_pass);
         }
         ctx.into_state()
-    }
-
-    fn push_pass<P: GraphicsPass + DrawRectIoPass + 'static>(
-        &mut self,
-        graph: &mut FrameGraph,
-        ctx: &mut UiBuildContext,
-        pass: P,
-    ) {
-        emit_draw_rect_io_pass(graph, ctx, pass);
     }
 
     fn push_stencil_pass<P: GraphicsPass + DrawRectIoPass + 'static>(
@@ -1801,10 +1755,10 @@ impl Element {
 
     fn paint_snapped_own_composite_bounds(
         &self,
-        bounds: crate::view::base_component::PromotionCompositeBounds,
+        bounds: crate::view::base_component::RetainedSurfaceBounds,
         paint_offset: [f32; 2],
-    ) -> crate::view::base_component::PromotionCompositeBounds {
-        crate::view::viewport::scene_helpers::paint_snapped_promotion_composite_bounds(
+    ) -> crate::view::base_component::RetainedSurfaceBounds {
+        crate::view::viewport::scene_helpers::paint_snapped_retained_surface_bounds(
             self,
             bounds,
             paint_offset,
@@ -1851,7 +1805,7 @@ impl Element {
     /// descendant bounds walk.
     pub(crate) fn exact_transform_receiver_geometry_snapshot_for_raster_bounds(
         &self,
-        raster_bounds: crate::view::base_component::PromotionCompositeBounds,
+        raster_bounds: crate::view::base_component::RetainedSurfaceBounds,
         paint_offset: [f32; 2],
         outer_scissor_rect: Option<[u32; 4]>,
     ) -> Option<TransformSurfaceGeometrySnapshot> {
@@ -1870,7 +1824,7 @@ impl Element {
     /// Element snap again would cancel a later scroll projection for S->T.
     pub(crate) fn exact_transform_receiver_geometry_snapshot_for_presnapped_raster_bounds(
         &self,
-        raster_bounds: crate::view::base_component::PromotionCompositeBounds,
+        raster_bounds: crate::view::base_component::RetainedSurfaceBounds,
         outer_scissor_rect: Option<[u32; 4]>,
     ) -> Option<TransformSurfaceGeometrySnapshot> {
         let viewport_transform = self.resolved_transform?;
@@ -1879,18 +1833,6 @@ impl Element {
             raster_bounds,
             viewport_transform,
             outer_scissor_rect,
-        )
-    }
-
-    fn paint_snapped_child_composite_bounds(
-        child: &dyn ElementTrait,
-        bounds: crate::view::base_component::PromotionCompositeBounds,
-        paint_offset: [f32; 2],
-    ) -> crate::view::base_component::PromotionCompositeBounds {
-        crate::view::viewport::scene_helpers::paint_snapped_promotion_composite_bounds(
-            child,
-            bounds,
-            paint_offset,
         )
     }
 
@@ -1974,715 +1916,6 @@ impl Element {
         ctx: UiBuildContext,
     ) -> BuildState {
         self.build_base_descendants_only(graph, arena, ctx, false)
-    }
-
-    fn build_promoted_base_only(
-        &mut self,
-        graph: &mut FrameGraph,
-        arena: &mut crate::view::node_arena::NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState {
-        // Element opacity belongs to the promoted composite. Rasterize the
-        // base opaque so opacity-only animation can reuse it safely.
-        self.build_base_descendants_only(graph, arena, ctx, true)
-    }
-
-    pub(crate) fn compose_promoted_descendants_only(
-        &mut self,
-        graph: &mut FrameGraph,
-        arena: &mut crate::view::node_arena::NodeArena,
-        mut ctx: UiBuildContext,
-    ) -> BuildState {
-        trace_promoted_build(
-            "compose-descendants",
-            self.stable_id(),
-            self.box_model_snapshot().parent_id,
-            format!(
-                "promoted={} children={} target={:?}",
-                ctx.is_node_promoted(self.stable_id()),
-                self.children.len(),
-                ctx.current_target().and_then(|target| target.handle())
-            ),
-        );
-        let has_deferred_descendants = self.children.iter().any(|child_key| {
-            arena
-                .get(*child_key)
-                .map(|node| {
-                    node.element
-                        .as_any()
-                        .downcast_ref::<Element>()
-                        .is_some_and(Element::should_append_to_root_viewport_render)
-                })
-                .unwrap_or(false)
-        });
-        let has_promoted_descendants = self.has_composited_promoted_descendants(arena, &ctx);
-
-        let previous_scissor_rect = self.apply_self_clip_scissor(&mut ctx);
-
-        if has_promoted_descendants || has_deferred_descendants {
-            let overflow_child_indices: Vec<bool> = (0..self.children.len())
-                .map(|idx| self.child_renders_outside_inner_clip(idx, arena))
-                .collect();
-            let outer_radii = normalize_corner_radii(
-                self.border_radii,
-                self.layout_state.layout_size.width.max(0.0),
-                self.layout_state.layout_size.height.max(0.0),
-            );
-            let inner_radii = self.inner_clip_radii(outer_radii);
-            let should_clip_promoted_descendants =
-                self.should_clip_children(&overflow_child_indices, inner_radii, arena);
-            let use_mask_clip = should_clip_promoted_descendants && inner_radii.has_any_rounding();
-            let previous_inner_scissor = if use_mask_clip {
-                Some(ctx.push_scissor_rect(self.inner_clip_scissor_rect()))
-            } else {
-                None
-            };
-            let mask_target = if use_mask_clip {
-                Some(self.render_promoted_child_clip_mask(graph, &ctx, inner_radii))
-            } else {
-                None
-            };
-            let child_clip_scope = if should_clip_promoted_descendants {
-                self.begin_child_clip_scope(graph, &mut ctx, inner_radii)
-            } else {
-                None
-            };
-            let should_render_children =
-                !should_clip_promoted_descendants || child_clip_scope.is_some();
-
-            // Defer list seeded once per frame from
-            // `NodeArena::defer_render_nodes`; skipping the loops below
-            // no longer drops viewport-anchored descendants.
-            let inner_visible = self.has_visible_inner_render_area(&ctx);
-            let render_promoted_passes = should_render_children && inner_visible;
-
-            let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
-            if render_promoted_passes {
-                for (idx, child_key) in child_keys.iter().copied().enumerate() {
-                    if overflow_child_indices.get(idx).copied().unwrap_or(false) {
-                        continue;
-                    }
-                    let child_id = arena
-                        .get(child_key)
-                        .map(|n| n.element.stable_id())
-                        .unwrap_or(0);
-                    if ctx.is_node_promoted(child_id) {
-                        Self::build_promoted_child(graph, arena, &mut ctx, child_key, mask_target);
-                        continue;
-                    }
-                    let viewport = ctx.viewport();
-                    let taken_state = ctx.state_clone();
-                    let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
-                    let next_ctx = arena.with_element_taken(child_key, |child, arena| {
-                        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                            let vp = ctx_in.viewport();
-                            let next_state =
-                                element.compose_promoted_descendants_only(graph, arena, ctx_in);
-                            UiBuildContext::from_parts(vp, next_state)
-                        } else {
-                            ctx_in
-                        }
-                    });
-                    if let Some(c) = next_ctx {
-                        ctx = c;
-                    }
-                }
-            }
-
-            // End the parent's child clip scope before rendering overflow
-            // descendants — see the matching note in the non-promoted path.
-            self.end_child_clip_scope(graph, &mut ctx, child_clip_scope);
-            if let Some(previous) = previous_inner_scissor {
-                ctx.restore_scissor_rect(previous);
-            }
-
-            if render_promoted_passes {
-                for (idx, is_overflow) in overflow_child_indices.into_iter().enumerate() {
-                    if !is_overflow {
-                        continue;
-                    }
-                    let Some(child_key) = child_keys.get(idx).copied() else {
-                        continue;
-                    };
-                    let (child_id, is_defer) = arena
-                        .get(child_key)
-                        .map(|n| {
-                            (
-                                n.element.stable_id(),
-                                n.element
-                                    .as_any()
-                                    .downcast_ref::<Element>()
-                                    .is_some_and(Element::should_append_to_root_viewport_render),
-                            )
-                        })
-                        .unwrap_or((0, false));
-                    if is_defer {
-                        ctx.register_deferred(child_key, child_id);
-                        continue;
-                    }
-                    if ctx.is_node_promoted(child_id) {
-                        Self::build_promoted_child(graph, arena, &mut ctx, child_key, mask_target);
-                        continue;
-                    }
-                    let viewport = ctx.viewport();
-                    let taken_state = ctx.state_clone();
-                    let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
-                    let next_ctx = arena.with_element_taken(child_key, |child, arena| {
-                        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                            let vp = ctx_in.viewport();
-                            let next_state =
-                                element.compose_promoted_descendants_only(graph, arena, ctx_in);
-                            UiBuildContext::from_parts(vp, next_state)
-                        } else {
-                            ctx_in
-                        }
-                    });
-                    if let Some(c) = next_ctx {
-                        ctx = c;
-                    }
-                }
-            }
-        }
-        let scrollbar_state = self.render_scrollbars(
-            graph,
-            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-        );
-        ctx.set_state(scrollbar_state);
-
-        if let Some(previous) = previous_scissor_rect {
-            ctx.restore_scissor_rect(previous);
-        }
-
-        ctx.into_state()
-    }
-
-    fn composite_promoted_child_target(
-        graph: &mut FrameGraph,
-        ctx: &mut UiBuildContext,
-        child: &dyn ElementTrait,
-        layer_target: RenderTargetOut,
-    ) {
-        let raw_composite_bounds = child.promotion_composite_bounds();
-        let composite_bounds = Self::paint_snapped_child_composite_bounds(
-            child,
-            raw_composite_bounds,
-            ctx.paint_offset(),
-        );
-        let opacity = crate::view::base_component::promoted_composite_opacity(child);
-        Self::composite_layer_target_into_current(
-            graph,
-            ctx,
-            layer_target,
-            composite_bounds,
-            opacity,
-            ctx.state.scissor_rect,
-        );
-    }
-
-    fn composite_layer_target_into_current(
-        graph: &mut FrameGraph,
-        ctx: &mut UiBuildContext,
-        layer_target: RenderTargetOut,
-        composite_bounds: crate::view::base_component::PromotionCompositeBounds,
-        opacity: f32,
-        scissor_rect: Option<[u32; 4]>,
-    ) {
-        let parent_target = ctx.current_target().unwrap_or_else(|| {
-            let target = ctx.allocate_target(graph);
-            ctx.set_current_target(target);
-            target
-        });
-        ctx.set_current_target(parent_target);
-        let pass = crate::view::render_pass::composite_layer_pass::CompositeLayerPass::new(
-            crate::view::render_pass::composite_layer_pass::CompositeLayerParams {
-                rect_pos: [composite_bounds.x, composite_bounds.y],
-                rect_size: [composite_bounds.width, composite_bounds.height],
-                corner_radii: composite_bounds.corner_radii,
-                opacity,
-                scissor_rect,
-                clear_target: false,
-            },
-            crate::view::render_pass::composite_layer_pass::CompositeLayerInput {
-                layer: crate::view::render_pass::composite_layer_pass::LayerIn::with_handle(
-                    layer_target
-                        .handle()
-                        .expect("promoted layer target should exist"),
-                ),
-                pass_context: ctx.graphics_pass_context(),
-            },
-            crate::view::render_pass::composite_layer_pass::CompositeLayerOutput {
-                render_target: parent_target,
-            },
-        );
-        graph.add_graphics_pass(pass);
-        ctx.set_current_target(parent_target);
-    }
-
-    fn render_promoted_child_clip_mask(
-        &mut self,
-        graph: &mut FrameGraph,
-        ctx: &UiBuildContext,
-        inner_radii: CornerRadii,
-    ) -> RenderTargetOut {
-        let inner = self.inner_clip_rect();
-        let mut mask_ctx = UiBuildContext::from_parts(
-            ctx.viewport(),
-            ctx.layer_subtree_state_with_ancestor_clip(ctx.ancestor_clip_context()),
-        );
-        let mask_target = mask_ctx.allocate_persistent_target_with_key(
-            graph,
-            crate::view::base_component::promoted_clip_mask_stable_key(self.stable_id()),
-            self.promotion_composite_bounds(),
-        );
-        mask_ctx.set_current_target(mask_target);
-        let mut pass = DrawRectPass::new(
-            RectPassParams {
-                position: [inner.x, inner.y],
-                size: [inner.width, inner.height],
-                fill_color: [1.0, 1.0, 1.0, 1.0],
-                opacity: 1.0,
-                ..Default::default()
-            },
-            DrawRectInput::default(),
-            DrawRectOutput::default(),
-        );
-        pass.set_render_mode(RectRenderMode::FillOnly);
-        pass.set_border_width(0.0);
-        pass.set_border_radii(inner_radii.to_array());
-        pass.set_clear_target(true);
-        let mut mask_ctx = mask_ctx;
-        self.push_pass(graph, &mut mask_ctx, pass);
-        mask_target
-    }
-
-    fn composite_promoted_child_target_with_mask(
-        graph: &mut FrameGraph,
-        ctx: &mut UiBuildContext,
-        child: &dyn ElementTrait,
-        layer_target: RenderTargetOut,
-        mask_target: RenderTargetOut,
-    ) {
-        let parent_target = ctx.current_target().unwrap_or_else(|| {
-            let target = ctx.allocate_target(graph);
-            ctx.set_current_target(target);
-            target
-        });
-        ctx.set_current_target(parent_target);
-        let raw_composite_bounds = child.promotion_composite_bounds();
-        let composite_bounds = Self::paint_snapped_child_composite_bounds(
-            child,
-            raw_composite_bounds,
-            ctx.paint_offset(),
-        );
-        let pass = crate::view::render_pass::TextureCompositePass::new(
-            crate::view::render_pass::TextureCompositeParams {
-                bounds: [
-                    composite_bounds.x,
-                    composite_bounds.y,
-                    composite_bounds.width,
-                    composite_bounds.height,
-                ],
-                quad_positions: None,
-                uv_bounds: Some([
-                    raw_composite_bounds.x,
-                    raw_composite_bounds.y,
-                    raw_composite_bounds.width,
-                    raw_composite_bounds.height,
-                ]),
-                mask_uv_bounds: Some([
-                    raw_composite_bounds.x,
-                    raw_composite_bounds.y,
-                    raw_composite_bounds.width,
-                    raw_composite_bounds.height,
-                ]),
-                use_mask: true,
-                source_is_premultiplied: true,
-                opacity: crate::view::base_component::promoted_composite_opacity(child),
-                scissor_rect: ctx.state.scissor_rect,
-            },
-            crate::view::render_pass::TextureCompositeInput::from_render_target(
-                crate::view::render_pass::TextureCompositeSourceIn::with_handle(
-                    layer_target
-                        .handle()
-                        .expect("promoted layer target should exist"),
-                ),
-                crate::view::render_pass::TextureCompositeMaskIn::with_handle(
-                    mask_target
-                        .handle()
-                        .expect("promoted clip mask target should exist"),
-                ),
-                ctx.graphics_pass_context(),
-            ),
-            crate::view::render_pass::TextureCompositeOutput {
-                render_target: parent_target,
-            },
-        );
-        graph.add_graphics_pass(pass);
-        ctx.set_current_target(parent_target);
-    }
-
-    // `has_composited_promoted_descendants` lives on `ElementTrait` as a
-    // default method (recurses through any host's `children()`), so a
-    // promotion-aware non-Element host (e.g. TextArea) participates in
-    // the ancestor's "do I need to enter the compose loop?" check
-    // automatically. Element no longer carries an inherent override —
-    // the viewport-clip skip the trait default applies is enough.
-
-    pub(crate) fn build_promoted_layer(
-        &mut self,
-        graph: &mut FrameGraph,
-        arena: &mut crate::view::node_arena::NodeArena,
-        ctx: UiBuildContext,
-        requested_update_kind: crate::view::promotion::PromotedLayerUpdateKind,
-        can_reuse_base: bool,
-        context: crate::view::viewport::DebugReusePathContext,
-    ) -> BuildState {
-        trace_promoted_build(
-            "promoted-layer",
-            self.stable_id(),
-            self.box_model_snapshot().parent_id,
-            format!(
-                "context={context:?} requested={requested_update_kind:?} can_reuse_base={} target={:?}",
-                can_reuse_base,
-                ctx.current_target().and_then(|target| target.handle())
-            ),
-        );
-        let viewport = ctx.viewport();
-        // Defer list pre-seeded from `NodeArena::defer_render_nodes` at
-        // frame start, so reused promoted layers no longer need to walk
-        // their subtree to surface viewport-clip descendants.
-        let base_target = ctx
-            .current_target()
-            .expect("promoted layer target should exist");
-        let base_state = if can_reuse_base {
-            ctx.into_state()
-        } else {
-            graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
-                crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-                crate::view::render_pass::clear_pass::ClearInput {
-                    pass_context: ctx.graphics_pass_context(),
-                    clear_depth_stencil: true,
-                },
-                crate::view::render_pass::clear_pass::ClearOutput {
-                    render_target: base_target,
-                },
-            ));
-            self.build_promoted_base_only(graph, arena, ctx)
-        };
-
-        let probe_ctx = UiBuildContext::from_parts(viewport.clone(), base_state.clone());
-        let has_composited_descendants =
-            self.has_composited_promoted_descendants(arena, &probe_ctx);
-        let requested_composition_update_kind = probe_ctx
-            .promoted_composition_update_kind(self.stable_id())
-            .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster);
-        let can_reuse_final = can_reuse_base
-            && matches!(
-                requested_composition_update_kind,
-                crate::view::promotion::PromotedLayerUpdateKind::Reuse
-            );
-        crate::view::viewport::record_debug_reuse_path(
-            crate::view::viewport::DebugReusePathRecord {
-                node_id: self.stable_id(),
-                context,
-                requested: requested_update_kind,
-                can_reuse: if has_composited_descendants {
-                    can_reuse_final
-                } else {
-                    can_reuse_base
-                },
-                actual: if has_composited_descendants {
-                    if can_reuse_final {
-                        crate::view::promotion::PromotedLayerUpdateKind::Reuse
-                    } else {
-                        crate::view::promotion::PromotedLayerUpdateKind::Reraster
-                    }
-                } else if can_reuse_base {
-                    crate::view::promotion::PromotedLayerUpdateKind::Reuse
-                } else {
-                    crate::view::promotion::PromotedLayerUpdateKind::Reraster
-                },
-                reason: if matches!(
-                    requested_update_kind,
-                    crate::view::promotion::PromotedLayerUpdateKind::Reuse
-                ) && !can_reuse_base
-                {
-                    Some("reuse-blocked")
-                } else if has_composited_descendants
-                    && can_reuse_base
-                    && matches!(
-                        requested_composition_update_kind,
-                        crate::view::promotion::PromotedLayerUpdateKind::Reraster
-                    )
-                {
-                    Some("composition-reraster")
-                } else {
-                    None
-                },
-                clip_rect: self.absolute_clip_scissor_rect(),
-            },
-        );
-        if !has_composited_descendants {
-            if can_reuse_base {
-                return base_state;
-            }
-            return self.render_scrollbars(graph, UiBuildContext::from_parts(viewport, base_state));
-        }
-
-        let mut compose_ctx = UiBuildContext::from_parts(viewport, base_state);
-        let final_target = compose_ctx.allocate_persistent_target_with_key(
-            graph,
-            crate::view::base_component::promoted_final_layer_stable_key(self.stable_id()),
-            self.promotion_composite_bounds(),
-        );
-        if can_reuse_final {
-            let mut reused_state = compose_ctx.into_state();
-            reused_state.target = Some(final_target);
-            return reused_state;
-        }
-        compose_ctx.set_current_target(final_target);
-        let compose_pass_context = compose_ctx.graphics_pass_context();
-        let parent_target = compose_ctx
-            .current_target()
-            .expect("promoted final target should exist");
-        graph.add_graphics_pass(
-            crate::view::render_pass::composite_layer_pass::CompositeLayerPass::new(
-                crate::view::render_pass::composite_layer_pass::CompositeLayerParams {
-                    rect_pos: [
-                        self.promotion_composite_bounds().x,
-                        self.promotion_composite_bounds().y,
-                    ],
-                    rect_size: [
-                        self.promotion_composite_bounds().width,
-                        self.promotion_composite_bounds().height,
-                    ],
-                    corner_radii: self.promotion_composite_bounds().corner_radii,
-                    opacity: 1.0,
-                    scissor_rect: None,
-                    clear_target: true,
-                },
-                crate::view::render_pass::composite_layer_pass::CompositeLayerInput {
-                    layer: crate::view::render_pass::composite_layer_pass::LayerIn::with_handle(
-                        base_target
-                            .handle()
-                            .expect("promoted base target should exist"),
-                    ),
-                    pass_context: compose_pass_context,
-                },
-                crate::view::render_pass::composite_layer_pass::CompositeLayerOutput {
-                    render_target: parent_target,
-                },
-            ),
-        );
-        self.compose_promoted_descendants_only(graph, arena, compose_ctx)
-    }
-
-    /// Promotion compose entry point. Allocates the child's promoted layer
-    /// target, dispatches its build (Reuse / Reraster / inline-fallback),
-    /// and composites the result back into `ctx`'s current target.
-    ///
-    /// `pub(crate)` so promotion-aware non-Element hosts (e.g. TextArea)
-    /// can drive the same compose path their Element peers use, instead of
-    /// silently dropping promoted descendants. See
-    /// [`ElementTrait::supports_promoted_descendants`] for the contract.
-    pub(crate) fn build_promoted_child(
-        graph: &mut FrameGraph,
-        arena: &mut crate::view::node_arena::NodeArena,
-        ctx: &mut UiBuildContext,
-        child_key: crate::view::node_arena::NodeKey,
-        mask_target: Option<RenderTargetOut>,
-    ) {
-        arena.with_element_taken(child_key, |child, arena| {
-            Self::build_promoted_child_inner(graph, arena, ctx, child, mask_target);
-        });
-    }
-
-    fn build_promoted_child_inner(
-        graph: &mut FrameGraph,
-        arena: &mut crate::view::node_arena::NodeArena,
-        ctx: &mut UiBuildContext,
-        child: &mut Box<dyn ElementTrait>,
-        mask_target: Option<RenderTargetOut>,
-    ) {
-        let child_id = child.stable_id();
-        trace_promoted_build(
-            "promoted-child",
-            child_id,
-            child.box_model_snapshot().parent_id,
-            format!(
-                "mask={} ancestor_scissor={} ancestor_stencil={} requested={:?}",
-                mask_target.is_some(),
-                ctx.scissor_rect().is_some(),
-                ctx.current_clip_id() != 0,
-                ctx.promoted_update_kind(child_id)
-                    .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster)
-            ),
-        );
-        let requested_update = ctx
-            .promoted_update_kind(child_id)
-            .unwrap_or(crate::view::promotion::PromotedLayerUpdateKind::Reraster);
-        let has_ancestor_scissor = ctx.scissor_rect().is_some();
-        let has_ancestor_stencil = ctx.current_clip_id() != 0;
-        if has_ancestor_stencil {
-            crate::view::viewport::record_debug_reuse_path(
-                crate::view::viewport::DebugReusePathRecord {
-                    node_id: child_id,
-                    context: crate::view::viewport::DebugReusePathContext::Child,
-                    requested: requested_update,
-                    can_reuse: false,
-                    actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
-                    reason: Some("ancestor-stencil-inline"),
-                    clip_rect: None,
-                },
-            );
-            let viewport = ctx.viewport();
-            let next_state = child.build(
-                graph,
-                arena,
-                UiBuildContext::from_parts(viewport, ctx.state_clone()),
-            );
-            ctx.set_state(next_state);
-            let _ = mask_target;
-            return;
-        }
-        if has_ancestor_scissor && !has_ancestor_stencil {
-            crate::view::viewport::record_debug_reuse_path(
-                crate::view::viewport::DebugReusePathRecord {
-                    node_id: child_id,
-                    context: crate::view::viewport::DebugReusePathContext::Child,
-                    requested: requested_update,
-                    can_reuse: false,
-                    actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
-                    reason: Some("ancestor-scissor-inline"),
-                    clip_rect: None,
-                },
-            );
-            let viewport = ctx.viewport();
-            let next_state = child.build(
-                graph,
-                arena,
-                UiBuildContext::from_parts(viewport, ctx.state_clone()),
-            );
-            ctx.set_state(next_state);
-            let _ = mask_target;
-            return;
-        }
-        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-            if let Some(reason) = element.inline_promotion_rendering_reason(arena) {
-                if reason == "child-scissor-clip-inline" || reason == "child-stencil-clip-inline" {
-                    // Child clip geometry is tracked in promotion signatures; do not block
-                    // promoted child reuse solely because the container clips its children.
-                } else {
-                    crate::view::viewport::record_debug_reuse_path(
-                        crate::view::viewport::DebugReusePathRecord {
-                            node_id: child_id,
-                            context: crate::view::viewport::DebugReusePathContext::Child,
-                            requested: requested_update,
-                            can_reuse: false,
-                            actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
-                            reason: Some(reason),
-                            clip_rect: element.absolute_clip_scissor_rect(),
-                        },
-                    );
-                    let viewport = ctx.viewport();
-                    let next_state = element.build(
-                        graph,
-                        arena,
-                        UiBuildContext::from_parts(viewport, ctx.state_clone()),
-                    );
-                    ctx.set_state(next_state);
-                    let _ = mask_target;
-                    return;
-                }
-            }
-        }
-
-        let update_kind = requested_update;
-        let reuse_result = crate::view::viewport::scene_helpers::can_reuse_promoted_subtree(
-            child.as_ref(),
-            ctx,
-            arena,
-        );
-        let can_reuse = matches!(
-            update_kind,
-            crate::view::promotion::PromotedLayerUpdateKind::Reuse
-        ) && reuse_result;
-        let mut child_ctx = UiBuildContext::from_parts(
-            ctx.viewport(),
-            ctx.layer_subtree_state_with_ancestor_clip(ctx.ancestor_clip_context()),
-        );
-        let layer_target = child_ctx.allocate_promoted_layer_target(
-            graph,
-            child.stable_id(),
-            child.promotion_composite_bounds(),
-        );
-        child_ctx.set_current_target(layer_target);
-        let child_state = if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-            element.build_promoted_layer(
-                graph,
-                arena,
-                child_ctx,
-                update_kind,
-                can_reuse,
-                crate::view::viewport::DebugReusePathContext::Child,
-            )
-        } else if can_reuse {
-            crate::view::viewport::record_debug_reuse_path(
-                crate::view::viewport::DebugReusePathRecord {
-                    node_id: child.stable_id(),
-                    context: crate::view::viewport::DebugReusePathContext::Child,
-                    requested: update_kind,
-                    can_reuse,
-                    actual: crate::view::promotion::PromotedLayerUpdateKind::Reuse,
-                    reason: None,
-                    clip_rect: None,
-                },
-            );
-            child_ctx.into_state()
-        } else {
-            crate::view::viewport::record_debug_reuse_path(
-                crate::view::viewport::DebugReusePathRecord {
-                    node_id: child.stable_id(),
-                    context: crate::view::viewport::DebugReusePathContext::Child,
-                    requested: update_kind,
-                    can_reuse,
-                    actual: crate::view::promotion::PromotedLayerUpdateKind::Reraster,
-                    reason: if matches!(
-                        update_kind,
-                        crate::view::promotion::PromotedLayerUpdateKind::Reuse
-                    ) {
-                        Some("reuse-blocked")
-                    } else {
-                        None
-                    },
-                    clip_rect: None,
-                },
-            );
-            graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
-                crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-                crate::view::render_pass::clear_pass::ClearInput {
-                    pass_context: child_ctx.graphics_pass_context(),
-                    clear_depth_stencil: true,
-                },
-                crate::view::render_pass::clear_pass::ClearOutput {
-                    render_target: layer_target,
-                },
-            ));
-            child.build(graph, arena, child_ctx)
-        };
-        ctx.merge_child_render_state(&child_state);
-        let layer_target = child_state.target.unwrap_or(layer_target);
-        if let Some(mask_target) = mask_target {
-            Self::composite_promoted_child_target_with_mask(
-                graph,
-                ctx,
-                child.as_ref(),
-                layer_target,
-                mask_target,
-            );
-        } else {
-            Self::composite_promoted_child_target(graph, ctx, child.as_ref(), layer_target);
-        }
     }
 }
 
@@ -2779,53 +2012,9 @@ mod paint_snap_tests {
     }
 
     #[test]
-    fn promoted_composite_bounds_snap_origin_without_changing_coverage() {
-        let element = Element::new(10.25, 20.75, 30.0, 10.0);
-        let bounds = crate::view::base_component::PromotionCompositeBounds {
-            x: 8.5,
-            y: 18.25,
-            width: 40.25,
-            height: 20.5,
-            corner_radii: [0.0; 4],
-        };
-        let snapped =
-            crate::view::viewport::scene_helpers::paint_snapped_promotion_composite_bounds(
-                &element,
-                bounds,
-                [0.2, -0.3],
-            );
-
-        assert!((snapped.x - 8.25).abs() < 0.001);
-        assert!((snapped.y - 17.5).abs() < 0.001);
-        assert_eq!(snapped.width, bounds.width);
-        assert_eq!(snapped.height, bounds.height);
-        assert_eq!(snapped.corner_radii, bounds.corner_radii);
-    }
-
-    #[test]
-    fn promoted_composite_bounds_snap_fractional_host_and_inherited_offset_only_translates() {
-        let element = Element::new(10.25, 20.75, 30.0, 10.0);
-        let bounds = crate::view::base_component::PromotionCompositeBounds {
-            x: 8.5,
-            y: 18.25,
-            width: 40.25,
-            height: 20.5,
-            corner_radii: [1.0, 2.0, 3.0, 4.0],
-        };
-
-        let snapped = Element::paint_snapped_child_composite_bounds(&element, bounds, [0.2, -0.3]);
-
-        assert!((snapped.x - 8.25).abs() < 0.001);
-        assert!((snapped.y - 17.5).abs() < 0.001);
-        assert_eq!(snapped.width, bounds.width);
-        assert_eq!(snapped.height, bounds.height);
-        assert_eq!(snapped.corner_radii, bounds.corner_radii);
-    }
-
-    #[test]
     fn transformed_quad_positions_use_snapped_destination_without_changing_source_bounds() {
         let element = Element::new(10.25, 20.75, 30.0, 10.0);
-        let source_bounds = crate::view::base_component::PromotionCompositeBounds {
+        let source_bounds = crate::view::base_component::RetainedSurfaceBounds {
             x: 10.25,
             y: 20.75,
             width: 30.5,
@@ -2857,7 +2046,7 @@ mod paint_snap_tests {
     fn transformed_quad_applies_paint_snap_after_transforming_raw_bounds() {
         let element = Element::new(10.25, 20.75, 30.0, 10.0);
         let transform = Mat4::from_scale(Vec3::new(2.0, 3.0, 1.0));
-        let source_bounds = crate::view::base_component::PromotionCompositeBounds {
+        let source_bounds = crate::view::base_component::RetainedSurfaceBounds {
             x: 8.5,
             y: 18.25,
             width: 40.25,
@@ -2866,22 +2055,14 @@ mod paint_snap_tests {
         };
         let visual_bounds = element.paint_snapped_own_composite_bounds(source_bounds, [0.2, -0.3]);
 
-        let raw_transformed = TransformSurfaceGeometrySnapshot::new(
-            source_bounds,
-            source_bounds,
-            transform,
-            None,
-        )
-        .expect("finite scale transform is canonical")
-        .quad_positions;
-        let snapped = TransformSurfaceGeometrySnapshot::new(
-            source_bounds,
-            visual_bounds,
-            transform,
-            None,
-        )
-        .expect("finite scale transform is canonical")
-        .quad_positions;
+        let raw_transformed =
+            TransformSurfaceGeometrySnapshot::new(source_bounds, source_bounds, transform, None)
+                .expect("finite scale transform is canonical")
+                .quad_positions;
+        let snapped =
+            TransformSurfaceGeometrySnapshot::new(source_bounds, visual_bounds, transform, None)
+                .expect("finite scale transform is canonical")
+                .quad_positions;
         let dx = visual_bounds.x - source_bounds.x;
         let dy = visual_bounds.y - source_bounds.y;
 
@@ -2890,14 +2071,10 @@ mod paint_snap_tests {
             assert!((snapped_y - (raw_y + dy)).abs() < 0.001);
         }
 
-        let wrongly_scaled = TransformSurfaceGeometrySnapshot::new(
-            visual_bounds,
-            visual_bounds,
-            transform,
-            None,
-        )
-        .expect("finite scale transform is canonical")
-        .quad_positions;
+        let wrongly_scaled =
+            TransformSurfaceGeometrySnapshot::new(visual_bounds, visual_bounds, transform, None)
+                .expect("finite scale transform is canonical")
+                .quad_positions;
         assert!(
             (wrongly_scaled[0][0] - snapped[0][0]).abs() > 0.001,
             "paint snap delta must not be multiplied by transform scale"
@@ -2910,7 +2087,7 @@ mod paint_snap_tests {
 
     #[test]
     fn transform_surface_snapshot_rejects_nonfinite_degenerate_and_invalid_projective_w() {
-        let bounds = crate::view::base_component::PromotionCompositeBounds {
+        let bounds = crate::view::base_component::RetainedSurfaceBounds {
             x: -4.0,
             y: 3.0,
             width: 20.0,
@@ -2919,19 +2096,19 @@ mod paint_snap_tests {
         };
 
         for invalid in [
-            crate::view::base_component::PromotionCompositeBounds {
+            crate::view::base_component::RetainedSurfaceBounds {
                 x: f32::NAN,
                 ..bounds
             },
-            crate::view::base_component::PromotionCompositeBounds {
+            crate::view::base_component::RetainedSurfaceBounds {
                 width: f32::INFINITY,
                 ..bounds
             },
-            crate::view::base_component::PromotionCompositeBounds {
+            crate::view::base_component::RetainedSurfaceBounds {
                 width: 0.0,
                 ..bounds
             },
-            crate::view::base_component::PromotionCompositeBounds {
+            crate::view::base_component::RetainedSurfaceBounds {
                 height: -1.0,
                 ..bounds
             },
@@ -2987,7 +2164,7 @@ mod paint_snap_tests {
 
     #[test]
     fn transform_surface_snapshot_matches_independent_projective_golden_contract() {
-        let source = crate::view::base_component::PromotionCompositeBounds {
+        let source = crate::view::base_component::RetainedSurfaceBounds {
             x: 0.0,
             y: 0.0,
             width: 2.0,
@@ -2996,7 +2173,7 @@ mod paint_snap_tests {
         };
         // Independent paint-snap oracle: destination is translated by
         // (+0.25, -0.5) without changing source coverage or UV coordinates.
-        let visual = crate::view::base_component::PromotionCompositeBounds {
+        let visual = crate::view::base_component::RetainedSurfaceBounds {
             x: 0.25,
             y: -0.5,
             width: 2.0,
@@ -3011,13 +2188,9 @@ mod paint_snap_tests {
             4.0, -2.0, 0.0, 1.0, // translation / homogeneous column
         ]);
         let outer_scissor = [7, 11, 13, 17];
-        let snapshot = TransformSurfaceGeometrySnapshot::new(
-            source,
-            visual,
-            matrix,
-            Some(outer_scissor),
-        )
-        .expect("hand-authored finite projective fixture");
+        let snapshot =
+            TransformSurfaceGeometrySnapshot::new(source, visual, matrix, Some(outer_scissor))
+                .expect("hand-authored finite projective fixture");
 
         assert_eq!(
             [
@@ -3026,7 +2199,12 @@ mod paint_snap_tests {
                 snapshot.source_bounds.width.to_bits(),
                 snapshot.source_bounds.height.to_bits(),
             ],
-            [0.0_f32.to_bits(), 0.0_f32.to_bits(), 2.0_f32.to_bits(), 2.0_f32.to_bits()]
+            [
+                0.0_f32.to_bits(),
+                0.0_f32.to_bits(),
+                2.0_f32.to_bits(),
+                2.0_f32.to_bits()
+            ]
         );
         assert_eq!(
             [
@@ -3035,10 +2213,18 @@ mod paint_snap_tests {
                 snapshot.visual_bounds.width.to_bits(),
                 snapshot.visual_bounds.height.to_bits(),
             ],
-            [0.25_f32.to_bits(), (-0.5_f32).to_bits(), 2.0_f32.to_bits(), 2.0_f32.to_bits()]
+            [
+                0.25_f32.to_bits(),
+                (-0.5_f32).to_bits(),
+                2.0_f32.to_bits(),
+                2.0_f32.to_bits()
+            ]
         );
         assert_eq!(
-            snapshot.viewport_transform.to_cols_array().map(f32::to_bits),
+            snapshot
+                .viewport_transform
+                .to_cols_array()
+                .map(f32::to_bits),
             [
                 2.0_f32.to_bits(),
                 0.0_f32.to_bits(),
@@ -3072,17 +2258,29 @@ mod paint_snap_tests {
         );
         assert_eq!(
             snapshot.uv_bounds.map(f32::to_bits),
-            [0.0_f32.to_bits(), 0.0_f32.to_bits(), 2.0_f32.to_bits(), 2.0_f32.to_bits()]
+            [
+                0.0_f32.to_bits(),
+                0.0_f32.to_bits(),
+                2.0_f32.to_bits(),
+                2.0_f32.to_bits()
+            ]
         );
         assert_eq!(snapshot.outer_scissor_rect, Some(outer_scissor));
 
         let composite = snapshot.texture_composite_params();
         assert_eq!(
             composite.bounds.map(f32::to_bits),
-            [0.25_f32.to_bits(), (-0.5_f32).to_bits(), 2.0_f32.to_bits(), 2.0_f32.to_bits()]
+            [
+                0.25_f32.to_bits(),
+                (-0.5_f32).to_bits(),
+                2.0_f32.to_bits(),
+                2.0_f32.to_bits()
+            ]
         );
         assert_eq!(
-            composite.quad_positions.map(|quad| quad.map(|point| point.map(f32::to_bits))),
+            composite
+                .quad_positions
+                .map(|quad| quad.map(|point| point.map(f32::to_bits))),
             Some([
                 [4.25_f32.to_bits(), 3.5_f32.to_bits()],
                 [4.25_f32.to_bits(), 1.5_f32.to_bits()],
@@ -3100,8 +2298,7 @@ mod paint_snap_tests {
         let parent = Element::new_with_id(71_000, 0.25, 0.25, 10.0, 10.0);
         let child = Element::new_with_id(71_001, 12.25, 1.5, 4.0, 2.0);
         let mut arena = crate::view::test_support::new_test_arena();
-        let parent_key =
-            crate::view::test_support::commit_element(&mut arena, Box::new(parent));
+        let parent_key = crate::view::test_support::commit_element(&mut arena, Box::new(parent));
         let child_key =
             crate::view::test_support::commit_child(&mut arena, parent_key, Box::new(child));
 
@@ -3144,7 +2341,9 @@ mod paint_snap_tests {
             "parent source must union the transformed child C0 quad AABB, including child visual snap"
         );
         assert_eq!(
-            parent_geometry.quad_positions.map(|point| point.map(f32::to_bits)),
+            parent_geometry
+                .quad_positions
+                .map(|point| point.map(f32::to_bits)),
             [
                 [100.0_f32.to_bits(), 15.5_f32.to_bits()],
                 [128.0_f32.to_bits(), 15.5_f32.to_bits()],
@@ -3202,8 +2401,7 @@ mod paint_snap_tests {
         let wrapper = Element::new_with_id(71_011, 5.8, 2.8, 2.0, 2.0);
         let child = Element::new_with_id(71_012, 12.6, 1.6, 4.0, 2.0);
         let mut arena = crate::view::test_support::new_test_arena();
-        let parent_key =
-            crate::view::test_support::commit_element(&mut arena, Box::new(parent));
+        let parent_key = crate::view::test_support::commit_element(&mut arena, Box::new(parent));
         let wrapper_key =
             crate::view::test_support::commit_child(&mut arena, parent_key, Box::new(wrapper));
         let child_key =
@@ -3241,7 +2439,9 @@ mod paint_snap_tests {
             .transform_surface_geometry_snapshot(&arena, [0.2, 0.2], None)
             .expect("nested child geometry");
         assert_eq!(
-            child_geometry.quad_positions.map(|point| point.map(f32::to_bits)),
+            child_geometry
+                .quad_positions
+                .map(|point| point.map(f32::to_bits)),
             [
                 [43.0_f32.to_bits(), 4.0_f32.to_bits()],
                 [47.0_f32.to_bits(), 4.0_f32.to_bits()],
@@ -3254,7 +2454,9 @@ mod paint_snap_tests {
                 .transform_surface_geometry_snapshot(&arena, [-0.25, -0.25], None)
                 .expect("finite wrong-offset comparison fixture");
         assert_ne!(
-            child_geometry.quad_positions.map(|point| point.map(f32::to_bits)),
+            child_geometry
+                .quad_positions
+                .map(|point| point.map(f32::to_bits)),
             wrong_parent_only
                 .quad_positions
                 .map(|point| point.map(f32::to_bits))
@@ -3266,17 +2468,15 @@ mod paint_snap_tests {
         let parent = Element::new_with_id(71_100, 0.25, 0.25, 10.0, 10.0);
         let child = Element::new_with_id(71_101, 12.25, 1.5, 4.0, 2.0);
         let mut arena = crate::view::test_support::new_test_arena();
-        let parent_key =
-            crate::view::test_support::commit_element(&mut arena, Box::new(parent));
+        let parent_key = crate::view::test_support::commit_element(&mut arena, Box::new(parent));
         let child_key =
             crate::view::test_support::commit_child(&mut arena, parent_key, Box::new(child));
         crate::view::test_support::get_element_mut::<Element>(&arena, parent_key)
             .resolved_transform = Some(Mat4::from_translation(Vec3::new(100.0, 0.0, 0.0)));
         crate::view::test_support::get_element_mut::<Element>(&arena, child_key)
             .resolved_transform = Some(Mat4::from_cols_array(&[
-                0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 30.0, 0.0,
-                0.0, 1.0,
-            ]));
+            0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 30.0, 0.0, 0.0, 1.0,
+        ]));
 
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(100, 80, wgpu::TextureFormat::Bgra8Unorm, 2.0);
@@ -3325,10 +2525,14 @@ mod paint_snap_tests {
             .collect::<std::collections::HashMap<_, _>>();
         assert_eq!(declared.len(), 4, "two color/depth surface pairs");
         let parent_color = declared
-            .get(&crate::view::base_component::transformed_layer_stable_key(71_100))
+            .get(&crate::view::base_component::transformed_layer_stable_key(
+                71_100,
+            ))
             .expect("parent transformed color surface");
         let child_color = declared
-            .get(&crate::view::base_component::transformed_layer_stable_key(71_101))
+            .get(&crate::view::base_component::transformed_layer_stable_key(
+                71_101,
+            ))
             .expect("child transformed color surface");
         assert_eq!((parent_color.width(), parent_color.height()), (57, 32));
         assert_eq!(parent_color.origin(), (0, 0));
@@ -3341,17 +2545,15 @@ mod paint_snap_tests {
         let parent = Element::new_with_id(71_200, 0.0, 0.0, 10.0, 10.0);
         let child = Element::new_with_id(71_201, 12.0, 1.0, 4.0, 2.0);
         let mut arena = crate::view::test_support::new_test_arena();
-        let parent_key =
-            crate::view::test_support::commit_element(&mut arena, Box::new(parent));
+        let parent_key = crate::view::test_support::commit_element(&mut arena, Box::new(parent));
         let child_key =
             crate::view::test_support::commit_child(&mut arena, parent_key, Box::new(child));
         crate::view::test_support::get_element_mut::<Element>(&arena, parent_key)
             .resolved_transform = Some(Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0)));
         crate::view::test_support::get_element_mut::<Element>(&arena, child_key)
             .resolved_transform = Some(Mat4::from_cols_array(&[
-                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
-                0.0, 0.0,
-            ]));
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ]));
 
         assert!(
             crate::view::test_support::get_element::<Element>(&arena, parent_key)
@@ -3423,9 +2625,7 @@ mod paint_snap_tests {
         let mut graph = FrameGraph::new();
         let ctx = UiBuildContext::new(100, 80, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         arena
-            .with_element_taken(root, |element, arena| {
-                element.build(&mut graph, arena, ctx)
-            })
+            .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
             .expect("invalid transform build must fail closed without panicking");
 
         assert!(
@@ -3448,9 +2648,9 @@ mod paint_snap_tests {
             crate::style::PropertyId::BackgroundColor,
             crate::style::ParsedValue::color_like(crate::style::Color::hex("#336699")),
         );
-        style.set_transform(crate::style::Transform::new([
-            crate::style::Translate::x(crate::style::Length::px(1.0)),
-        ]));
+        style.set_transform(crate::style::Transform::new([crate::style::Translate::x(
+            crate::style::Length::px(1.0),
+        )]));
         element.apply_style(style);
         let mut arena = crate::view::test_support::new_test_arena();
         let root = crate::view::test_support::commit_element(&mut arena, Box::new(element));
@@ -3488,16 +2688,19 @@ mod paint_snap_tests {
                 geometry.source_bounds.width.to_bits(),
                 geometry.source_bounds.height.to_bits(),
             ],
-            [6.5_f32.to_bits(), 5.0_f32.to_bits(), 4.0_f32.to_bits(), 2.0_f32.to_bits()],
+            [
+                6.5_f32.to_bits(),
+                5.0_f32.to_bits(),
+                4.0_f32.to_bits(),
+                2.0_f32.to_bits()
+            ],
             "source bounds are a hard-coded legacy oracle, not descriptor-helper output"
         );
 
         let mut graph = FrameGraph::new();
         let ctx = UiBuildContext::new(40, 30, wgpu::TextureFormat::Bgra8Unorm, 2.0);
         arena
-            .with_element_taken(root, |element, arena| {
-                element.build(&mut graph, arena, ctx)
-            })
+            .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
             .expect("transformed build");
 
         let color_key = crate::view::frame_graph::PersistentTextureKey::retained(
@@ -3513,8 +2716,12 @@ mod paint_snap_tests {
             .declared_persistent_textures()
             .collect::<std::collections::HashMap<_, _>>();
         assert_eq!(declared.len(), 2);
-        let color = declared.get(&color_key).expect("transformed color role/key");
-        let depth = declared.get(&depth_key).expect("transformed depth role/key");
+        let color = declared
+            .get(&color_key)
+            .expect("transformed color role/key");
+        let depth = declared
+            .get(&depth_key)
+            .expect("transformed depth role/key");
 
         assert_eq!((color.width(), color.height()), (8, 4));
         assert_eq!(color.origin(), (13, 10));
@@ -3663,8 +2870,8 @@ mod paint_snap_tests {
             "subtree raster paint must stay between clear and composite"
         );
 
-        let composites = graph
-            .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
+        let composites =
+            graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
         assert_eq!(composites.len(), 1);
         let composite = composites[0].test_snapshot();
         assert_eq!(
@@ -3688,8 +2895,7 @@ mod paint_snap_tests {
         assert!(composite.source_is_premultiplied);
         assert_eq!(composite.opacity_bits, 1.0_f32.to_bits());
 
-        let transformed_key =
-            crate::view::base_component::transformed_layer_stable_key(70_001);
+        let transformed_key = crate::view::base_component::transformed_layer_stable_key(70_001);
         let (_, transformed_desc) = graph
             .declared_persistent_textures()
             .find(|(key, _)| *key == transformed_key)
@@ -3709,7 +2915,10 @@ mod paint_snap_tests {
             ],
             "negative-origin source coverage is a hard-coded legacy oracle"
         );
-        assert_eq!((transformed_desc.width(), transformed_desc.height()), (79, 60));
+        assert_eq!(
+            (transformed_desc.width(), transformed_desc.height()),
+            (79, 60)
+        );
         assert_eq!(transformed_desc.origin(), (0, 22));
         assert_eq!(
             composite.uv_bounds_bits,
@@ -3740,9 +2949,9 @@ mod paint_snap_tests {
                 .offset_y(3.0)
                 .spread(2.0),
         ]);
-        style.set_transform(crate::style::Transform::new([
-            crate::style::Translate::x(crate::style::Length::px(5.0)),
-        ]));
+        style.set_transform(crate::style::Transform::new([crate::style::Translate::x(
+            crate::style::Length::px(5.0),
+        )]));
         element.apply_style(style);
         element.sync_props_from_computed_style();
 
@@ -3781,7 +2990,13 @@ mod paint_snap_tests {
         assert!(geometry.source_bounds.x < own.x);
         assert!(geometry.source_bounds.y <= own.y);
         assert!(geometry.source_bounds.x < 0.0);
-        assert_eq!(geometry.uv_bounds[0].to_bits(), geometry.source_bounds.x.to_bits());
-        assert_eq!(geometry.uv_bounds[1].to_bits(), geometry.source_bounds.y.to_bits());
+        assert_eq!(
+            geometry.uv_bounds[0].to_bits(),
+            geometry.source_bounds.x.to_bits()
+        );
+        assert_eq!(
+            geometry.uv_bounds[1].to_bits(),
+            geometry.source_bounds.y.to_bits()
+        );
     }
 }

@@ -4,7 +4,7 @@
 //! subtree rooted at `anchor` and applies the smallest set of arena
 //! ops that brings the live tree into shape with `new_rsx`. Preserves
 //! `NodeKey` identity for matched (same-identity) elements so any
-//! component state, promoted layer, or `use_state` slot keyed on that
+//! component state or `use_state` slot keyed on that
 //! NodeKey survives a projection rebuild — the win P5's full teardown
 //! gave up.
 //!

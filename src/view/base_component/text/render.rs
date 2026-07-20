@@ -1,7 +1,7 @@
 //! `Renderable` impl for Text: emits the prepared glyph pass + selection
 //! rects, consuming the same shaped context measure produced.
 
-use crate::view::base_component::{BuildState, ElementTrait, Renderable, UiBuildContext};
+use crate::view::base_component::{BuildState, Renderable, UiBuildContext};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::NodeArena;
 use crate::view::render_pass::DrawRectPass;
@@ -28,11 +28,7 @@ impl Renderable for Text {
         _arena: &mut NodeArena,
         mut ctx: UiBuildContext,
     ) -> BuildState {
-        let opacity = if ctx.is_node_promoted(self.stable_id()) {
-            1.0
-        } else {
-            self.opacity.clamp(0.0, 1.0)
-        };
+        let opacity = self.opacity.clamp(0.0, 1.0);
         if !self.is_paint_visible(opacity) {
             return ctx.into_state();
         }
@@ -115,9 +111,8 @@ impl Text {
     }
 
     /// Exact visibility gate shared by legacy build and retained recording.
-    /// Callers supply the authority-adjusted opacity: promoted legacy and a
-    /// neutral root-effect recording use 1.0, while baked paths use the
-    /// clamped local opacity.
+    /// Callers supply the effective opacity. Neutral root-effect recording
+    /// uses 1.0, while baked paths use the clamped local opacity.
     pub(super) fn is_paint_visible(&self, effective_opacity: f32) -> bool {
         self.layout_state.should_render
             && !self.content.is_empty()

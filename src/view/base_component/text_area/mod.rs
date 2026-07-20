@@ -780,7 +780,7 @@ pub struct TextArea {
     pub(crate) ime_preedit: String,
     pub(crate) ime_preedit_cursor: Option<(usize, usize)>,
     pub(crate) vertical_cursor_x: Option<f32>,
-    /// Retained caret phase consumed by paint, metadata, and promotion.
+    /// Retained caret phase consumed by paint and metadata.
     pub(crate) caret_visible: bool,
     /// Viewport-owned monotonic anchor. Only the generic animation tick may
     /// install or read it; paint paths are pure retained-state readers.
@@ -1416,32 +1416,9 @@ impl ElementTrait for TextArea {
         self.dirty_flags = self.dirty_flags.without(flags);
     }
 
-    fn promotion_node_info(&self) -> crate::view::promotion::PromotionNodeInfo {
-        // Selection / glyphs / caret = three render passes on a fully-
-        // populated frame. Opacity 1.0 since v2 has no opacity field
-        // (decision A1: opacity lives on the wrapping `<Element>`).
-        crate::view::promotion::PromotionNodeInfo {
-            estimated_pass_count: 3,
-            opacity: 1.0,
-            ..Default::default()
-        }
-    }
-
-    /// Phase 2: TextArea's children loop dispatches promoted children
-    /// through `Element::build_promoted_child` (allocates a layer target,
-    /// runs the build, and composites the layer back onto TextArea's
-    /// current target). Projection `<Element>` children can therefore
-    /// promote independently and benefit from layer reuse.
-    fn supports_promoted_descendants(&self) -> bool {
-        true
-    }
-
-    /// Hash every visible-state field so a promoted ancestor's
-    /// `base_signature` dirties on edit / cursor / selection / IME / focus
-    /// / blink. Without this the default `0` lets the ancestor reuse a
-    /// stale layer texture (text edits invisible until the ancestor is
-    /// independently dirtied).
-    fn promotion_self_signature(&self) -> u64 {
+    /// Hash every visible-state field so retained paint generations advance
+    /// on edit, cursor, selection, IME, focus, and blink changes.
+    fn retained_paint_signature(&self) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
@@ -1497,7 +1474,7 @@ impl ElementTrait for TextArea {
         hasher.finish()
     }
 
-    fn promotion_signature_is_complete(&self) -> bool {
+    fn retained_paint_signature_is_complete(&self) -> bool {
         true
     }
 

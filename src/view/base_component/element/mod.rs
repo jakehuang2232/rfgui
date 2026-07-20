@@ -49,7 +49,6 @@ use crate::view::inline_formatting_context::{
 #[cfg(test)]
 use crate::view::inline_text_pass_adapter::inline_ifc_paint_input_to_text_pass_staging_input;
 use crate::view::node_arena::{NodeArena, NodeKey};
-use crate::view::promotion::{PromotedLayerUpdateKind, PromotionNodeInfo};
 use crate::view::render_pass::draw_rect_pass::DrawRectInput;
 use crate::view::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
@@ -385,7 +384,7 @@ pub(crate) struct RetainedScrollHostAdmissionSnapshot {
     pub(crate) stable_id: u64,
     pub(crate) child: NodeKey,
     pub(crate) child_stable_id: u64,
-    pub(crate) source_bounds: PromotionCompositeBounds,
+    pub(crate) source_bounds: RetainedSurfaceBounds,
     /// Complete live layout/paint observation frozen by admission. Planning
     /// must prove it matches the independently synchronized property-tree
     /// snapshot before recording an empty scrollbar phase.
@@ -408,7 +407,7 @@ pub(crate) struct RetainedScrollTextAreaSubtreeAdmissionSnapshot {
     pub(crate) text_area_root: NodeKey,
     pub(crate) text_area_stable_id: u64,
     pub(crate) paint_grammar: super::text_area::RetainedTextAreaPaintGrammar,
-    pub(crate) source_bounds: PromotionCompositeBounds,
+    pub(crate) source_bounds: RetainedSurfaceBounds,
     pub(crate) scroll: ScrollGeometrySnapshot,
 }
 
@@ -428,7 +427,7 @@ pub(crate) struct RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot
     pub(crate) text_area_root: NodeKey,
     pub(crate) text_area_stable_id: u64,
     pub(crate) paint_grammar: super::text_area::RetainedAtomicProjectionTextAreaPaintGrammar,
-    pub(crate) source_bounds: PromotionCompositeBounds,
+    pub(crate) source_bounds: RetainedSurfaceBounds,
     pub(crate) scroll: ScrollGeometrySnapshot,
 }
 
@@ -445,7 +444,7 @@ pub(crate) struct RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissio
     pub(crate) text_area_stable_id: u64,
     pub(crate) paint_grammar:
         super::text_area::RetainedAtomicProjectionSelectionTextAreaPaintGrammar,
-    pub(crate) source_bounds: PromotionCompositeBounds,
+    pub(crate) source_bounds: RetainedSurfaceBounds,
     pub(crate) scroll: ScrollGeometrySnapshot,
 }
 
@@ -461,7 +460,7 @@ pub(crate) struct RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionS
     pub(crate) text_area_root: NodeKey,
     pub(crate) text_area_stable_id: u64,
     pub(crate) paint_grammar: super::text_area::RetainedFocusedAtomicProjectionTextAreaPaintGrammar,
-    pub(crate) source_bounds: PromotionCompositeBounds,
+    pub(crate) source_bounds: RetainedSurfaceBounds,
     pub(crate) scroll: ScrollGeometrySnapshot,
 }
 
@@ -480,7 +479,7 @@ pub(crate) struct RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot {
     /// Independent source-oracle geometry. `None` is the exact hidden-caret
     /// result; `Some` is the caret-map-derived live bounds before clipping.
     pub(crate) caret_oracle_bounds_bits: Option<[u32; 4]>,
-    pub(crate) source_bounds: PromotionCompositeBounds,
+    pub(crate) source_bounds: RetainedSurfaceBounds,
     pub(crate) scroll: ScrollGeometrySnapshot,
 }
 
@@ -494,7 +493,7 @@ pub(crate) struct RetainedScrollTransformHostAdmissionSnapshot {
     pub(crate) stable_id: u64,
     pub(crate) transform_content: NodeKey,
     pub(crate) transform_content_stable_id: u64,
-    pub(crate) source_bounds: PromotionCompositeBounds,
+    pub(crate) source_bounds: RetainedSurfaceBounds,
     pub(crate) scroll: ScrollGeometrySnapshot,
 }
 
@@ -510,8 +509,8 @@ pub(crate) struct RetainedNestedScrollSceneAdmissionSnapshot {
     pub(crate) inner_stable_id: u64,
     pub(crate) content_leaf: NodeKey,
     pub(crate) content_leaf_stable_id: u64,
-    pub(crate) outer_source_bounds: PromotionCompositeBounds,
-    pub(crate) inner_source_bounds: PromotionCompositeBounds,
+    pub(crate) outer_source_bounds: RetainedSurfaceBounds,
+    pub(crate) inner_source_bounds: RetainedSurfaceBounds,
     pub(crate) outer_scroll: ScrollGeometrySnapshot,
     pub(crate) inner_scroll: ScrollGeometrySnapshot,
 }
@@ -526,14 +525,8 @@ impl RetainedNestedScrollSceneAdmissionSnapshot {
             && self.content_leaf_stable_id == other.content_leaf_stable_id
             && scroll_geometry_snapshots_bitwise_equal(self.outer_scroll, other.outer_scroll)
             && scroll_geometry_snapshots_bitwise_equal(self.inner_scroll, other.inner_scroll)
-            && promotion_composite_bounds_bitwise_equal(
-                self.outer_source_bounds,
-                other.outer_source_bounds,
-            )
-            && promotion_composite_bounds_bitwise_equal(
-                self.inner_source_bounds,
-                other.inner_source_bounds,
-            )
+            && composite_bounds_bitwise_equal(self.outer_source_bounds, other.outer_source_bounds)
+            && composite_bounds_bitwise_equal(self.inner_source_bounds, other.inner_source_bounds)
     }
 
     pub(crate) fn matches_scroll_nodes(
@@ -550,9 +543,9 @@ impl RetainedNestedScrollSceneAdmissionSnapshot {
     }
 }
 
-fn promotion_composite_bounds_bitwise_equal(
-    left: PromotionCompositeBounds,
-    right: PromotionCompositeBounds,
+fn composite_bounds_bitwise_equal(
+    left: RetainedSurfaceBounds,
+    right: RetainedSurfaceBounds,
 ) -> bool {
     [left.x, left.y, left.width, left.height].map(f32::to_bits)
         == [right.x, right.y, right.width, right.height].map(f32::to_bits)
@@ -637,7 +630,7 @@ impl RetainedScrollTextAreaSubtreeAdmissionSnapshot {
             && other.paint_grammar.is_canonical()
             && self.paint_grammar == other.paint_grammar
             && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
-            && promotion_composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
+            && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
     }
 
     pub(crate) fn matches_scroll_node(
@@ -660,7 +653,7 @@ impl RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
             && other.paint_grammar.is_canonical()
             && self.paint_grammar == other.paint_grammar
             && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
-            && promotion_composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
+            && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
     }
 
     #[allow(dead_code)] // Graph-inert until a reviewed scene selector consumes this sibling.
@@ -686,7 +679,7 @@ impl RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot {
             && other.paint_grammar.is_canonical()
             && self.paint_grammar == other.paint_grammar
             && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
-            && promotion_composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
+            && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
     }
 
     pub(crate) fn matches_scroll_node(
@@ -711,7 +704,7 @@ impl RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
             && other.paint_grammar.is_canonical()
             && self.paint_grammar == other.paint_grammar
             && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
-            && promotion_composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
+            && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
     }
 
     #[allow(dead_code)] // Graph-inert until a reviewed scene selector consumes this sibling.
@@ -737,7 +730,7 @@ impl RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot {
             && self.paint_grammar == other.paint_grammar
             && self.caret_oracle_bounds_bits == other.caret_oracle_bounds_bits
             && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
-            && promotion_composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
+            && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
     }
 
     pub(crate) fn matches_scroll_node(
@@ -846,7 +839,7 @@ fn is_exact_retained_nested_scroll_content_leaf(
     }
 
     let bounds = element.box_model_snapshot();
-    let promotion = element.promotion_node_info();
+    let paint_properties = element.retained_paint_properties();
     element.children().is_empty()
         && bounds.should_render
         && [bounds.x, bounds.y, bounds.width, bounds.height]
@@ -854,10 +847,10 @@ fn is_exact_retained_nested_scroll_content_leaf(
             .all(f32::is_finite)
         && bounds.width > 0.0
         && bounds.height > 0.0
-        && promotion.opacity.to_bits() == 1.0_f32.to_bits()
-        && !promotion.has_rounded_clip
-        && !promotion.has_box_shadow
-        && !promotion.is_scroll_container
+        && paint_properties.opacity.to_bits() == 1.0_f32.to_bits()
+        && !paint_properties.has_rounded_clip
+        && !paint_properties.has_box_shadow
+        && !paint_properties.is_scroll_container
         && !element.has_active_animator()
         && !element.is_deferred_to_root_viewport_render()
         && !element
@@ -972,20 +965,8 @@ fn round_layout_size(width: f32, height: f32) -> Size {
     }
 }
 
-pub(crate) fn promoted_layer_stable_key(node_id: u64) -> PersistentTextureKey {
-    PersistentTextureKey::retained(RetainedTextureRole::PromotedBaseColor, node_id)
-}
-
 pub(crate) fn root_effect_stable_key(root: NodeKey) -> PersistentTextureKey {
     PersistentTextureKey::retained(RetainedTextureRole::RootEffectColor, root.data().as_ffi())
-}
-
-pub(crate) fn promoted_clip_mask_stable_key(node_id: u64) -> PersistentTextureKey {
-    PersistentTextureKey::retained(RetainedTextureRole::PromotedClipMaskColor, node_id)
-}
-
-pub(crate) fn promoted_final_layer_stable_key(node_id: u64) -> PersistentTextureKey {
-    PersistentTextureKey::retained(RetainedTextureRole::PromotedFinalColor, node_id)
 }
 
 pub(crate) fn transformed_layer_stable_key(node_id: u64) -> PersistentTextureKey {
@@ -1469,9 +1450,6 @@ pub struct ViewportContext {
     scale_factor: f32,
     render_transform: Option<Mat4>,
     paint_offset: [f32; 2],
-    promoted_node_ids: Arc<FxHashSet<u64>>,
-    promoted_update_kinds: Arc<FxHashMap<u64, PromotedLayerUpdateKind>>,
-    promoted_composition_update_kinds: Arc<FxHashMap<u64, PromotedLayerUpdateKind>>,
 }
 
 /// Mutable build state threaded through low-level render graph construction.
@@ -1622,7 +1600,7 @@ pub struct UiBuildContext {
 }
 
 pub(crate) fn texture_desc_for_logical_bounds(
-    bounds: PromotionCompositeBounds,
+    bounds: RetainedSurfaceBounds,
     scale_factor: f32,
     _render_transform: Option<Mat4>,
     target_format: wgpu::TextureFormat,
@@ -1640,36 +1618,12 @@ pub(crate) fn texture_desc_for_logical_bounds(
         .with_origin(origin_x, origin_y)
 }
 
-fn promoted_layer_label(node_id: u64) -> String {
-    format!("Promoted Layer [{node_id}]")
-}
-
-fn promoted_clip_mask_label(node_id: u64) -> String {
-    format!("Promoted Clip Mask [{node_id}]")
-}
-
-fn promoted_final_layer_label(node_id: u64) -> String {
-    format!("Promoted Final Layer [{node_id}]")
-}
-
 pub(crate) fn label_for_persistent_target(stable_key: PersistentTextureKey) -> String {
     match stable_key {
         PersistentTextureKey::Retained {
             role: RetainedTextureRole::RootEffectColor,
             stable_id,
         } => format!("Root Effect [{stable_id}]"),
-        PersistentTextureKey::Retained {
-            role: RetainedTextureRole::PromotedClipMaskColor,
-            stable_id,
-        } => promoted_clip_mask_label(stable_id),
-        PersistentTextureKey::Retained {
-            role: RetainedTextureRole::PromotedFinalColor,
-            stable_id,
-        } => promoted_final_layer_label(stable_id),
-        PersistentTextureKey::Retained {
-            role: RetainedTextureRole::PromotedBaseColor,
-            stable_id,
-        } => promoted_layer_label(stable_id),
         _ => format!("Persistent Render Target [{stable_key:?}]"),
     }
 }
@@ -1745,9 +1699,6 @@ impl UiBuildContext {
                 scale_factor: scale_factor.max(0.0001),
                 render_transform: None,
                 paint_offset: [0.0, 0.0],
-                promoted_node_ids: Arc::new(FxHashSet::default()),
-                promoted_update_kinds: Arc::new(FxHashMap::default()),
-                promoted_composition_update_kinds: Arc::new(FxHashMap::default()),
             },
             state: BuildState {
                 frame_build_token,
@@ -1799,27 +1750,11 @@ impl UiBuildContext {
         self.next_target(graph)
     }
 
-    pub(crate) fn allocate_promoted_layer_target(
-        &mut self,
-        graph: &mut FrameGraph,
-        node_id: u64,
-        bounds: PromotionCompositeBounds,
-    ) -> RenderTargetOut {
-        let desc = texture_desc_for_logical_bounds(
-            bounds,
-            self.viewport.scale_factor,
-            self.viewport.render_transform,
-            self.viewport.target_format,
-        )
-        .with_label(promoted_layer_label(node_id));
-        self.next_persistent_target_with_desc(graph, desc, promoted_layer_stable_key(node_id))
-    }
-
     pub(crate) fn allocate_persistent_target_with_key(
         &mut self,
         graph: &mut FrameGraph,
         stable_key: PersistentTextureKey,
-        bounds: PromotionCompositeBounds,
+        bounds: RetainedSurfaceBounds,
     ) -> RenderTargetOut {
         let desc = texture_desc_for_logical_bounds(
             bounds,
@@ -1993,6 +1928,7 @@ impl UiBuildContext {
         self.state.scissor_rect
     }
 
+    #[cfg(test)]
     pub(crate) fn ancestor_clip_context(&self) -> AncestorClipContext {
         AncestorClipContext {
             scissor_rect: self.scissor_rect(),
@@ -2086,35 +2022,6 @@ impl UiBuildContext {
             stencil_clip_id: self.active_clip_id(),
             uses_depth_stencil: self.depth_stencil_target().is_some(),
         }
-    }
-
-    pub(crate) fn set_promoted_runtime(
-        &mut self,
-        promoted_node_ids: Arc<FxHashSet<u64>>,
-        promoted_update_kinds: Arc<FxHashMap<u64, PromotedLayerUpdateKind>>,
-        promoted_composition_update_kinds: Arc<FxHashMap<u64, PromotedLayerUpdateKind>>,
-    ) {
-        self.viewport.promoted_node_ids = promoted_node_ids;
-        self.viewport.promoted_update_kinds = promoted_update_kinds;
-        self.viewport.promoted_composition_update_kinds = promoted_composition_update_kinds;
-    }
-
-    pub(crate) fn is_node_promoted(&self, node_id: u64) -> bool {
-        self.viewport.promoted_node_ids.contains(&node_id)
-    }
-
-    pub(crate) fn promoted_update_kind(&self, node_id: u64) -> Option<PromotedLayerUpdateKind> {
-        self.viewport.promoted_update_kinds.get(&node_id).copied()
-    }
-
-    pub(crate) fn promoted_composition_update_kind(
-        &self,
-        node_id: u64,
-    ) -> Option<PromotedLayerUpdateKind> {
-        self.viewport
-            .promoted_composition_update_kinds
-            .get(&node_id)
-            .copied()
     }
 
     pub(crate) fn merge_child_render_state(&mut self, child: &BuildState) {
@@ -2865,7 +2772,10 @@ pub enum ShadowPaintRecordingCapability {
 /// The bounds are already resolved into the same paint space used by the
 /// retained artifact recorder. Custom hosts must record that exact rectangle;
 /// transforms, clips, scrolling, effects, and child traversal remain engine
-/// responsibilities and are deliberately absent from this API.
+/// responsibilities and are deliberately absent from this API. A fresh
+/// context may be supplied during capability probing, metadata preflight, and
+/// full recording; it is an immutable observation of one semantic frame and
+/// must not be retained or used to advance component state.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
 pub struct CustomLeafPaintContext {
@@ -2905,11 +2815,21 @@ pub struct CustomLeafPaintRecorder {
 }
 
 impl CustomLeafPaintRecorder {
+    /// Creates an empty recorder.
+    ///
+    /// A conforming v1 leaf must append exactly one canonical fill before the
+    /// hook returns. Leaving it empty or appending more than one command makes
+    /// the retained candidate fail closed to whole-frame Legacy.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Records one linear-RGBA fill for the exact engine-provided bounds.
+    ///
+    /// `rect` must match [`CustomLeafPaintContext::bounds`] bit-for-bit. Color
+    /// channels and `opacity` must be finite and in `0..=1`; values are
+    /// validated, never clamped. Calling this more than once is unsupported by
+    /// the v1 leaf grammar.
     pub fn fill_rect(&mut self, rect: Rect, rgba: [f32; 4], opacity: f32) {
         self.commands.push(CustomLeafPaintCommand::FillRect {
             rect,
@@ -2923,7 +2843,8 @@ impl CustomLeafPaintRecorder {
 ///
 /// The wrapper may paint the exact engine-provided bounds before and/or after
 /// its canonical arena children. Child traversal and paint identity remain
-/// engine-owned and are deliberately absent from this API.
+/// engine-owned and are deliberately absent from this API. The context is an
+/// immutable observation of one semantic frame and must not be retained.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
 pub struct CustomWrapperPaintContext {
@@ -2958,11 +2879,19 @@ pub struct CustomWrapperPaintRecorder {
 }
 
 impl CustomWrapperPaintRecorder {
+    /// Creates an empty before/after recorder.
+    ///
+    /// A conforming wrapper appends at least one command in either phase.
+    /// Empty or malformed output rejects the retained candidate before paint.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Records one linear-RGBA fill before canonical child traversal.
+    ///
+    /// The rectangle must match [`CustomWrapperPaintContext::bounds`]
+    /// bit-for-bit. Append order is the engine-derived slot order; callers do
+    /// not own chunk phases, slots, property state, or child traversal.
     pub fn fill_rect_before_children(&mut self, rect: Rect, rgba: [f32; 4], opacity: f32) {
         self.before_children.push(CustomWrapperFillRect {
             rect,
@@ -2972,6 +2901,9 @@ impl CustomWrapperPaintRecorder {
     }
 
     /// Records one linear-RGBA fill after canonical child traversal.
+    ///
+    /// The same validation and ordering contract as
+    /// [`Self::fill_rect_before_children`] applies.
     pub fn fill_rect_after_children(&mut self, rect: Rect, rgba: [f32; 4], opacity: f32) {
         self.after_children.push(CustomWrapperFillRect {
             rect,
@@ -2988,11 +2920,151 @@ impl<T: 'static + ?Sized> ElementTypeName for T {
     }
 }
 
+/// Property-neutral paint properties observed by retained recording and
+/// property-tree eligibility.
+///
+/// The default describes a property-neutral host. Native wrappers that own an
+/// embedded [`Element`] must delegate this observation so retained recording
+/// sees the wrapper's actual paint semantics.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RetainedPaintProperties {
+    pub opacity: f32,
+    pub has_rounded_clip: bool,
+    pub has_box_shadow: bool,
+    pub has_border: bool,
+    pub is_scroll_container: bool,
+}
+
+impl Default for RetainedPaintProperties {
+    fn default() -> Self {
+        Self {
+            opacity: 1.0,
+            has_rounded_clip: false,
+            has_box_shadow: false,
+            has_border: false,
+            is_scroll_container: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod retained_paint_properties_tests {
+    use super::{Element, ElementTrait, RetainedPaintProperties, Text};
+    use crate::style::{BoxShadow, ScrollDirection};
+    use crate::view::base_component::TextArea;
+
+    #[test]
+    fn default_contract_is_property_neutral() {
+        let text_area = TextArea::new();
+        assert_eq!(
+            text_area.retained_paint_properties(),
+            RetainedPaintProperties::default()
+        );
+    }
+
+    #[test]
+    fn element_contract_observes_retained_paint_semantics() {
+        let mut element = Element::new(0.0, 0.0, 100.0, 50.0);
+        element.set_opacity(0.4);
+        element.set_border_radius(6.0);
+        element.set_box_shadows(vec![BoxShadow::new().offset(2.0)]);
+        element.border_widths.left = 1.0;
+        element.scroll_direction = ScrollDirection::Vertical;
+
+        assert_eq!(
+            element.retained_paint_properties(),
+            RetainedPaintProperties {
+                opacity: 0.4,
+                has_rounded_clip: true,
+                has_box_shadow: true,
+                has_border: true,
+                is_scroll_container: true,
+            }
+        );
+    }
+
+    #[test]
+    fn text_contract_preserves_native_opacity() {
+        let mut text = Text::from_content("retained");
+        text.set_opacity(0.35);
+
+        assert_eq!(
+            text.retained_paint_properties(),
+            RetainedPaintProperties {
+                opacity: 0.35,
+                ..Default::default()
+            }
+        );
+    }
+}
+
+/// Common contract implemented by every arena-backed UI component.
+///
+/// `ElementTrait` participates in layout, input, Legacy rendering, retained
+/// observation, dirty tracking, resource preparation, and engine-owned child
+/// traversal. Implementations must keep [`Self::stable_id`],
+/// [`Self::box_model_snapshot`], and [`Self::children`] coherent with the
+/// current arena node. `stable_id` is immutable cross-frame identity; the
+/// arena's `NodeKey` and child order remain authoritative for the current
+/// frame.
+///
+/// Under `RetainedAuto`, one authority owns the whole frame. A host may opt
+/// into the narrow property-neutral custom grammar through
+/// [`Self::record_custom_leaf_paint`] or
+/// [`Self::record_custom_wrapper_paint`]. Unsupported or malformed output
+/// selects whole-frame Legacy before artifact emission. Arbitrary GPU hosts
+/// should keep a complete [`Renderable::build`] implementation and leave both
+/// retained hooks at their defaults.
+///
+/// Retained hooks may be invoked repeatedly for capability, metadata, and full
+/// recording. They must be observationally pure and deterministic: do not
+/// mutate state, consume queues, poll newer resources, read wall-clock time,
+/// traverse children, or vary output with debug/inspector state. Animation
+/// uses the engine-supplied tick time; paint resources are frozen after final
+/// layout by [`Layoutable::prepare_paint_resources`]. Every visible mutation
+/// must invalidate all dependent dirty/property/topology state.
+///
+/// See `docs/design/retained-auto-mode-contract.md` and
+/// `docs/guides/custom-retained-components.md` for the complete v1 contract
+/// and integration guide.
 pub trait ElementTrait:
     Layoutable + EventTarget + Renderable + ElementTypeName + std::any::Any
 {
+    /// Returns immutable cross-frame identity for this live component.
+    ///
+    /// The value must be unique among live components and must equal
+    /// [`BoxModelSnapshot::node_id`] for the current snapshot. It must not be
+    /// used to reconstruct current-frame ownership when an arena `NodeKey` is
+    /// available.
     fn stable_id(&self) -> u64;
+
+    /// Returns the final placed box-model observation for the current frame.
+    ///
+    /// Recording calls may read this more than once; the result must remain
+    /// stable until a correctly-invalidated layout/placement change installs a
+    /// new frame state.
     fn box_model_snapshot(&self) -> BoxModelSnapshot;
+
+    /// Returns the property-neutral paint properties used by RetainedAuto.
+    ///
+    /// The default is intentionally property-neutral so custom hosts remain
+    /// eligible only for the narrow grammar they explicitly implement.
+    fn retained_paint_properties(&self) -> RetainedPaintProperties {
+        RetainedPaintProperties::default()
+    }
+
+    /// Returns the exact native self-clip admitted by the retained property
+    /// tree. Native wrappers must forward this to their embedded `Element`;
+    /// custom hosts remain unsupported unless they can provide an equivalent
+    /// closed proof.
+    fn exact_retained_self_clip_scissor_rect(
+        &self,
+        _owner: crate::view::node_arena::NodeKey,
+        _arena: &crate::view::node_arena::NodeArena,
+        _is_frame_root: bool,
+    ) -> Option<[u32; 4]> {
+        None
+    }
 
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
@@ -3001,7 +3073,7 @@ pub trait ElementTrait:
     ///
     /// Implementations must not read the wall clock themselves. The viewport
     /// supplies one engine-time sample to the whole tree so metadata, full
-    /// paint recording, and promotion observation remain pure reads of the
+    /// paint recording, and retained observation remain pure reads of the
     /// retained result.
     fn tick_animation_frame(&mut self, _now: crate::time::Instant) -> DirtyFlags {
         DirtyFlags::NONE
@@ -3022,6 +3094,11 @@ pub trait ElementTrait:
     /// `UnknownHost` fallback. Implementations must be pure reads: metadata
     /// preflight and full artifact recording call this hook independently and
     /// compare their canonical identities before the artifact may compile.
+    ///
+    /// Contract v1 accepts exactly one fill of
+    /// [`CustomLeafPaintContext::bounds`]. The engine owns properties, chunk
+    /// identity, and traversal; arbitrary GPU work remains in Legacy
+    /// [`Renderable::build`].
     fn record_custom_leaf_paint(
         &self,
         _context: CustomLeafPaintContext,
@@ -3035,6 +3112,9 @@ pub trait ElementTrait:
     /// This hook is considered only when `children()` is non-empty. It must be
     /// a pure read because capability, metadata preflight, and full artifact
     /// recording invoke it independently and compare canonical identities.
+    /// Before/after commands describe only wrapper self-paint. The engine
+    /// traverses [`Self::children`] exactly once in canonical arena order and
+    /// owns all transform/clip/effect/scroll state.
     fn record_custom_wrapper_paint(
         &self,
         _context: CustomWrapperPaintContext,
@@ -3336,69 +3416,6 @@ pub trait ElementTrait:
         true
     }
 
-    fn promotion_node_info(&self) -> PromotionNodeInfo {
-        PromotionNodeInfo::default()
-    }
-
-    /// Promotion contract: this host's render path walks promoted
-    /// descendants and composites their layer textures back into its own
-    /// render target. When `false`, the promotion runtime must NOT place
-    /// any descendant of `self` into the promoted set — otherwise the
-    /// promoted layer is allocated but never composited (orphan), and the
-    /// orphan's `is_node_promoted` flag also makes ancestor base-walks
-    /// skip the node, dropping the subtree.
-    ///
-    /// `Element` overrides to `true` (it implements
-    /// `compose_promoted_descendants_only`). All other hosts default to
-    /// `false` until they implement an equivalent compose path.
-    fn supports_promoted_descendants(&self) -> bool {
-        false
-    }
-
-    /// Does this host's subtree contain any node currently in the
-    /// promoted set, OR any nested descendant whose subtree does? Used by
-    /// promotion-aware ancestors to decide whether to enter the compose
-    /// loop at all (skipping the loop is a hot-path optimization for
-    /// subtrees with no promoted layer work to do).
-    ///
-    /// Default recursion walks `children()` and recurses via this same
-    /// trait method — which is what lets a promotion-aware non-Element
-    /// host (TextArea) expose its promoted descendants to its Element
-    /// ancestor. Viewport-clip absolute Elements are skipped because
-    /// they take the deferred path, not the ancestor's compose.
-    fn has_composited_promoted_descendants(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        ctx: &UiBuildContext,
-    ) -> bool {
-        self.has_composited_descendants_matching(arena, &|stable_id| {
-            ctx.is_node_promoted(stable_id)
-        })
-    }
-
-    fn has_composited_descendants_matching(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        is_promoted: &dyn Fn(u64) -> bool,
-    ) -> bool {
-        for child_key in self.children() {
-            let Some(node) = arena.get(*child_key) else {
-                continue;
-            };
-            let child = node.element.as_ref();
-            if child.is_deferred_to_root_viewport_render() {
-                continue;
-            }
-            if is_promoted(child.stable_id()) {
-                return true;
-            }
-            if child.has_composited_descendants_matching(arena, is_promoted) {
-                return true;
-            }
-        }
-        false
-    }
-
     fn is_deferred_to_root_viewport_render(&self) -> bool {
         false
     }
@@ -3407,58 +3424,32 @@ pub trait ElementTrait:
         false
     }
 
-    fn promotion_self_signature(&self) -> u64 {
+    /// Stable identity for every raster-affecting state owned by this host.
+    ///
+    /// Retained paint generations use this value together with compositor
+    /// property generations. Transform and clip property trees remain
+    /// separate observations; hosts must include any paint state not covered
+    /// by those trees here.
+    fn retained_paint_signature(&self) -> u64 {
         0
     }
 
-    /// Whether this host supplies a complete promotion paint identity.
-    /// Opting in requires [`Self::promotion_self_signature`] to identify every
-    /// raster-affecting state owned by the host, including transforms, scroll
-    /// state, pixel resources, and their generations. Group opacity is the
-    /// only property currently split out through the compositor effect
-    /// generation. Scroll remains conservatively base-affecting.
+    /// Whether [`Self::retained_paint_signature`] completely identifies the
+    /// host's raster-affecting state.
     ///
-    /// Clip intersection may live in
-    /// [`Self::promotion_clip_intersection_signature`]; a custom host that
-    /// does not override that method must include its raster-affecting clip
-    /// state in [`Self::promotion_self_signature`]. Transform and clip property
-    /// trees are still observational/neutral and are not substitutes for this
-    /// contract.
-    ///
-    /// The safe default is `false`: unknown hosts reraster while promoted,
-    /// or force their flattened promoted ancestor to reraster. Custom hosts
-    /// may opt in only when these requirements are satisfied.
-    fn promotion_signature_is_complete(&self) -> bool {
+    /// The safe default is `false`: generic retained generation tracking treats
+    /// unknown hosts as changing every observed frame. Custom hosts may opt in
+    /// only when their signature covers every owned pixel resource and payload
+    /// generation not represented by compositor property generations.
+    fn retained_paint_signature_is_complete(&self) -> bool {
         false
-    }
-
-    fn promotion_clip_intersection_signature(
-        &self,
-        _arena: &crate::view::node_arena::NodeArena,
-    ) -> u64 {
-        0
-    }
-
-    fn promotion_requires_mask_surface(&self, _arena: &crate::view::node_arena::NodeArena) -> bool {
-        false
-    }
-
-    fn promotion_composite_bounds(&self) -> PromotionCompositeBounds {
-        let snapshot = self.box_model_snapshot();
-        PromotionCompositeBounds {
-            x: snapshot.x,
-            y: snapshot.y,
-            width: snapshot.width.max(0.0),
-            height: snapshot.height.max(0.0),
-            corner_radii: [0.0; 4],
-        }
     }
 
     fn retained_transform_surface_bounds(
         &self,
         _arena: &crate::view::node_arena::NodeArena,
         _paint_offset: [f32; 2],
-    ) -> Option<PromotionCompositeBounds> {
+    ) -> Option<RetainedSurfaceBounds> {
         None
     }
 
@@ -3469,7 +3460,7 @@ pub trait ElementTrait:
         &self,
         _arena: &crate::view::node_arena::NodeArena,
         _paint_offset: [f32; 2],
-    ) -> Option<PromotionCompositeBounds> {
+    ) -> Option<RetainedSurfaceBounds> {
         None
     }
 
@@ -3481,14 +3472,21 @@ pub trait ElementTrait:
         &self,
         _arena: &crate::view::node_arena::NodeArena,
         _paint_offset: [f32; 2],
-    ) -> Option<PromotionCompositeBounds> {
-        Some(self.promotion_composite_bounds())
+    ) -> Option<RetainedSurfaceBounds> {
+        let snapshot = self.box_model_snapshot();
+        Some(RetainedSurfaceBounds {
+            x: snapshot.x,
+            y: snapshot.y,
+            width: snapshot.width.max(0.0),
+            height: snapshot.height.max(0.0),
+            corner_radii: [0.0; 4],
+        })
     }
 
     /// Seed used by the prospective planner's postorder transform-bounds DP.
     /// Non-Element hosts are opaque leaves to Element's authoritative bounds
     /// walk and therefore return `None`.
-    fn retained_transform_raster_seed_bounds(&self) -> Option<PromotionCompositeBounds> {
+    fn retained_transform_raster_seed_bounds(&self) -> Option<RetainedSurfaceBounds> {
         None
     }
 
@@ -3796,17 +3794,17 @@ fn prepare_custom_leaf_paint<T: ElementTrait + ?Sized>(
     }
 
     let snapshot = element.box_model_snapshot();
-    let promotion = element.promotion_node_info();
+    let paint_properties = element.retained_paint_properties();
     if !snapshot.should_render
         || snapshot.node_id != element.stable_id()
         || !snapshot.border_radius.is_finite()
         || snapshot.border_radius.to_bits() != 0.0_f32.to_bits()
-        || !promotion.opacity.is_finite()
-        || promotion.opacity.to_bits() != 1.0_f32.to_bits()
-        || promotion.has_rounded_clip
-        || promotion.has_box_shadow
-        || promotion.has_border
-        || promotion.is_scroll_container
+        || !paint_properties.opacity.is_finite()
+        || paint_properties.opacity.to_bits() != 1.0_f32.to_bits()
+        || paint_properties.has_rounded_clip
+        || paint_properties.has_box_shadow
+        || paint_properties.has_border
+        || paint_properties.is_scroll_container
     {
         return None;
     }
@@ -4159,17 +4157,17 @@ fn prepare_custom_wrapper_paint<T: ElementTrait + ?Sized>(
     }
 
     let snapshot = element.box_model_snapshot();
-    let promotion = element.promotion_node_info();
+    let paint_properties = element.retained_paint_properties();
     if !snapshot.should_render
         || snapshot.node_id != element.stable_id()
         || !snapshot.border_radius.is_finite()
         || snapshot.border_radius.to_bits() != 0.0_f32.to_bits()
-        || !promotion.opacity.is_finite()
-        || promotion.opacity.to_bits() != 1.0_f32.to_bits()
-        || promotion.has_rounded_clip
-        || promotion.has_box_shadow
-        || promotion.has_border
-        || promotion.is_scroll_container
+        || !paint_properties.opacity.is_finite()
+        || paint_properties.opacity.to_bits() != 1.0_f32.to_bits()
+        || paint_properties.has_rounded_clip
+        || paint_properties.has_box_shadow
+        || paint_properties.has_border
+        || paint_properties.is_scroll_container
     {
         return None;
     }
@@ -4241,7 +4239,7 @@ pub struct BoxModelSnapshot {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct PromotionCompositeBounds {
+pub struct RetainedSurfaceBounds {
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -4277,6 +4275,7 @@ impl ViewportTransformSnapshot {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DebugElementRenderState {
     pub background_rgba: [u8; 4],
@@ -4290,7 +4289,6 @@ pub(crate) struct DebugElementRenderState {
     #[allow(dead_code)]
     pub border_left_rgba: [u8; 4],
     pub opacity: f32,
-    pub border_radius: f32,
 }
 
 type PointerDownHandler = Box<dyn FnMut(&mut PointerDownEvent, &mut ViewportControl<'_>)>;
@@ -4896,7 +4894,7 @@ fn inline_ifc_root_geometry(
         let package = context.atomic_box_placement_package(source);
         let placement = exact_inline_ifc_atomic_placement(&package, source)?;
         // Opaque hosts retain the legacy baseline layout default. Paint
-        // promotion does not trust this fallback: the owning-root witness
+        // retained paint does not trust this fallback: the owning-root witness
         // separately requires the generic accessor to return `Some`.
         let vertical_align = node
             .element
@@ -5393,7 +5391,7 @@ impl ElementInlineIfcMetadataCollectorState<'_> {
 
     /// Layout-only compatibility for opaque atomic hosts. Their measured size
     /// must still participate in the IFC so legacy layout remains correct;
-    /// paint promotion separately requires the exact generic snapshot and
+    /// retained paint separately requires the exact generic snapshot and
     /// therefore rejects these hosts in the owning-root witness.
     fn legacy_atomic_measurement(&self, measured_size: (f32, f32)) -> InlineIfcMeasuredAtomicBox {
         InlineIfcMeasuredAtomicBox::new(
@@ -5592,7 +5590,7 @@ impl Element {
             && !self.is_fragmentable_inline_element()
             && !self.should_append_to_root_viewport_render()
             && self.absolute_clip_scissor_rect().is_none()
-            && !self.promotion_node_info().has_rounded_clip
+            && !self.retained_paint_properties().has_rounded_clip
             && self.computed_style.position.mode() != PositionMode::Absolute
     }
 
@@ -5637,7 +5635,7 @@ impl Element {
     }
 
     /// Strict private-style and layout gate for M10E1A. Property topology,
-    /// promotion, and frame target checks remain planner/viewport authority.
+    /// retained property and frame-target checks remain planner/viewport authority.
     pub(crate) fn exact_retained_scroll_host_admission(
         &self,
         owner: NodeKey,
@@ -6071,7 +6069,7 @@ impl Element {
             || self.is_fragmentable_inline_element()
             || self.should_append_to_root_viewport_render()
             || self.absolute_clip_scissor_rect().is_some()
-            || self.promotion_node_info().has_rounded_clip
+            || self.retained_paint_properties().has_rounded_clip
             || self.computed_style.position.mode() == PositionMode::Absolute
             || parent_offset.iter().any(|value| !value.is_finite())
         {
@@ -6091,7 +6089,7 @@ impl Element {
         arena: &NodeArena,
         scale_factor: f32,
         expected_parent: Option<NodeKey>,
-    ) -> Option<(PromotionCompositeBounds, ScrollGeometrySnapshot, NodeKey)> {
+    ) -> Option<(RetainedSurfaceBounds, ScrollGeometrySnapshot, NodeKey)> {
         if scale_factor.to_bits() != 1.0_f32.to_bits()
             || arena.parent_of(owner) != expected_parent
             || self.children.len() != 1
@@ -6119,7 +6117,7 @@ impl Element {
         if outer_radii.has_any_rounding() || self.inner_clip_radii(outer_radii).has_any_rounding() {
             return None;
         }
-        let source_bounds = PromotionCompositeBounds {
+        let source_bounds = RetainedSurfaceBounds {
             x: self.layout_state.layout_position.x,
             y: self.layout_state.layout_position.y,
             width: self.layout_state.layout_size.width,
@@ -7668,7 +7666,7 @@ impl Element {
         })
     }
 
-    fn untransformed_paint_bounds(&self) -> PromotionCompositeBounds {
+    fn untransformed_paint_bounds(&self) -> RetainedSurfaceBounds {
         let snapshot = self.box_model_snapshot();
         let mut min_x = snapshot.x;
         let mut min_y = snapshot.y;
@@ -7689,24 +7687,7 @@ impl Element {
                 snapshot.y + snapshot.height.max(0.0) + shadow.offset_y + spread + blur_padding,
             );
         }
-        PromotionCompositeBounds {
-            x: min_x,
-            y: min_y,
-            width: (max_x - min_x).max(0.0),
-            height: (max_y - min_y).max(0.0),
-            corner_radii: [0.0; 4],
-        }
-    }
-
-    pub(crate) fn union_promotion_bounds(
-        current: PromotionCompositeBounds,
-        next: PromotionCompositeBounds,
-    ) -> PromotionCompositeBounds {
-        let min_x = current.x.min(next.x);
-        let min_y = current.y.min(next.y);
-        let max_x = (current.x + current.width.max(0.0)).max(next.x + next.width.max(0.0));
-        let max_y = (current.y + current.height.max(0.0)).max(next.y + next.height.max(0.0));
-        PromotionCompositeBounds {
+        RetainedSurfaceBounds {
             x: min_x,
             y: min_y,
             width: (max_x - min_x).max(0.0),
@@ -7720,7 +7701,7 @@ impl Element {
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
         require_exact: bool,
-    ) -> Option<PromotionCompositeBounds> {
+    ) -> Option<RetainedSurfaceBounds> {
         let child_paint_offset = self.paint_offset_after_own_snap(paint_offset)?;
         let own_bounds = self.untransformed_paint_bounds();
         if !Self::is_valid_transform_surface_bounds(own_bounds) {
@@ -7762,7 +7743,7 @@ impl Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
-    ) -> Option<PromotionCompositeBounds> {
+    ) -> Option<RetainedSurfaceBounds> {
         self.resolved_transform
             .and_then(|_| self.transform_subtree_raster_bounds(arena, paint_offset, false))
     }
@@ -7771,7 +7752,7 @@ impl Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
-    ) -> Option<PromotionCompositeBounds> {
+    ) -> Option<RetainedSurfaceBounds> {
         if self.resolved_transform.is_some() {
             self.exact_transform_surface_geometry_snapshot(arena, paint_offset, None)?
                 .quad_aabb()
@@ -7791,7 +7772,7 @@ impl Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         parent_snapped_paint_offset: [f32; 2],
-    ) -> Option<PromotionCompositeBounds> {
+    ) -> Option<RetainedSurfaceBounds> {
         if self.resolved_transform.is_some() {
             return None;
         }
@@ -7820,7 +7801,7 @@ impl Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
-    ) -> Option<PromotionCompositeBounds> {
+    ) -> Option<RetainedSurfaceBounds> {
         if self.resolved_transform.is_some() {
             self.transform_surface_geometry_snapshot(arena, paint_offset, None)?
                 .quad_aabb()
@@ -7853,7 +7834,7 @@ impl Element {
         self.paint_offset_after_own_snap(parent)
     }
 
-    fn is_canonical_transform_surface_bounds(bounds: PromotionCompositeBounds) -> bool {
+    fn is_canonical_transform_surface_bounds(bounds: RetainedSurfaceBounds) -> bool {
         bounds.x.is_finite()
             && bounds.y.is_finite()
             && bounds.width.is_finite()
@@ -7862,7 +7843,7 @@ impl Element {
             && bounds.height > 0.0
     }
 
-    fn is_valid_transform_surface_bounds(bounds: PromotionCompositeBounds) -> bool {
+    fn is_valid_transform_surface_bounds(bounds: RetainedSurfaceBounds) -> bool {
         bounds.x.is_finite()
             && bounds.y.is_finite()
             && bounds.width.is_finite()
@@ -7872,9 +7853,9 @@ impl Element {
     }
 
     pub(crate) fn checked_union_transform_surface_bounds(
-        current: PromotionCompositeBounds,
-        next: PromotionCompositeBounds,
-    ) -> Option<PromotionCompositeBounds> {
+        current: RetainedSurfaceBounds,
+        next: RetainedSurfaceBounds,
+    ) -> Option<RetainedSurfaceBounds> {
         if !Self::is_canonical_transform_surface_bounds(current)
             || !Self::is_canonical_transform_surface_bounds(next)
         {
@@ -7894,7 +7875,7 @@ impl Element {
         let min_y = current.y.min(next.y);
         let max_x = current_max_x.max(next_max_x);
         let max_y = current_max_y.max(next_max_y);
-        let union = PromotionCompositeBounds {
+        let union = RetainedSurfaceBounds {
             x: min_x,
             y: min_y,
             width: max_x - min_x,
@@ -7990,6 +7971,22 @@ impl ElementStyleSnapshot {
 impl ElementTrait for Element {
     fn stable_id(&self) -> u64 {
         self.core.id
+    }
+
+    fn exact_retained_self_clip_scissor_rect(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+        is_frame_root: bool,
+    ) -> Option<[u32; 4]> {
+        self.exact_anchor_parent_leaf_self_clip_scissor_rect(owner, arena, is_frame_root)
+            .or_else(|| {
+                self.exact_deferred_viewport_root_self_clip_scissor_rect(
+                    owner,
+                    arena,
+                    is_frame_root,
+                )
+            })
     }
 
     fn tick_post_layout_animation_frame(&mut self, now: crate::time::Instant) -> DirtyFlags {
@@ -8131,8 +8128,6 @@ impl ElementTrait for Element {
                 )
             {
                 Some(ShadowPaintBlocker::StatefulPaint)
-            } else if self.has_active_layout_transition() {
-                Some(ShadowPaintBlocker::LayoutTransition)
             } else {
                 None
             };
@@ -8154,7 +8149,7 @@ impl ElementTrait for Element {
         match self.shadow_paint_blocker(
             arena,
             deferred_phase_root,
-            recording_context.authorizes_self_clip_for(self.stable_id()),
+            self.recording_context_authorizes_exact_self_clip(recording_context),
             true,
             recording_context,
         ) {
@@ -8340,31 +8335,17 @@ impl ElementTrait for Element {
             .map_or(true, |rect| rect.contains(viewport_x, viewport_y))
     }
 
-    fn supports_promoted_descendants(&self) -> bool {
-        // A transform surface owns one flattened raster of its subtree. Until
-        // nested promoted layers can be composed inside that raster, allowing
-        // descendants to promote would make them cross the transform boundary:
-        // the base walk skips them and the ancestor later composites them in
-        // the wrong coordinate space (or drops them altogether).
-        self.resolved_transform.is_none()
-    }
-
-    fn promotion_node_info(&self) -> PromotionNodeInfo {
+    fn retained_paint_properties(&self) -> RetainedPaintProperties {
         let border_width_sum = self.border_widths.left
             + self.border_widths.right
             + self.border_widths.top
             + self.border_widths.bottom;
-        PromotionNodeInfo {
-            estimated_pass_count: (1
-                + usize::from(border_width_sum > 0.0)
-                + (self.box_shadows.len() * 3))
-                .min(u16::MAX as usize) as u16,
+        RetainedPaintProperties {
             opacity: self.opacity,
             has_rounded_clip: self.border_radius > 0.0,
             has_box_shadow: !self.box_shadows.is_empty(),
             has_border: border_width_sum > 0.0,
             is_scroll_container: self.scroll_direction != ScrollDirection::None,
-            is_hovered: self.is_hovered,
         }
     }
 
@@ -8372,7 +8353,7 @@ impl ElementTrait for Element {
         self.last_started_animator.is_some()
     }
 
-    fn promotion_self_signature(&self) -> u64 {
+    fn retained_paint_signature(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.layout_state.should_render.hash(&mut hasher);
         self.core.should_paint.hash(&mut hasher);
@@ -8504,105 +8485,15 @@ impl ElementTrait for Element {
         hasher.finish()
     }
 
-    fn promotion_signature_is_complete(&self) -> bool {
+    fn retained_paint_signature_is_complete(&self) -> bool {
         true
-    }
-
-    fn promotion_clip_intersection_signature(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-    ) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.absolute_clip_scissor_rect()
-            .is_some()
-            .hash(&mut hasher);
-        if let Some([x, y, width, height]) = self.absolute_clip_scissor_rect() {
-            let clip = Rect {
-                x: x as f32,
-                y: y as f32,
-                width: width as f32,
-                height: height as f32,
-            };
-            let bounds = self.promotion_composite_bounds();
-            let element_rect = Rect {
-                x: bounds.x,
-                y: bounds.y,
-                width: bounds.width.max(0.0),
-                height: bounds.height.max(0.0),
-            };
-            let intersection = intersect_rect(clip, element_rect);
-            hash_f32(&mut hasher, intersection.x);
-            hash_f32(&mut hasher, intersection.y);
-            hash_f32(&mut hasher, intersection.width);
-            hash_f32(&mut hasher, intersection.height);
-        }
-        if !self.children.is_empty() {
-            let overflow_child_indices: Vec<bool> = (0..self.children.len())
-                .map(|idx| self.child_renders_outside_inner_clip(idx, arena))
-                .collect();
-            let outer_radii = normalize_corner_radii(
-                self.border_radii,
-                self.layout_state.layout_size.width.max(0.0),
-                self.layout_state.layout_size.height.max(0.0),
-            );
-            let inner_radii = self.inner_clip_radii(outer_radii);
-            let should_clip_children =
-                self.should_clip_children(&overflow_child_indices, inner_radii, arena);
-            should_clip_children.hash(&mut hasher);
-            if should_clip_children {
-                let inner = self.inner_clip_rect();
-                hash_f32(&mut hasher, inner.x);
-                hash_f32(&mut hasher, inner.y);
-                hash_f32(&mut hasher, inner.width);
-                hash_f32(&mut hasher, inner.height);
-                hash_f32(&mut hasher, inner_radii.top_left);
-                hash_f32(&mut hasher, inner_radii.top_right);
-                hash_f32(&mut hasher, inner_radii.bottom_right);
-                hash_f32(&mut hasher, inner_radii.bottom_left);
-            }
-        }
-        hasher.finish()
-    }
-
-    fn promotion_requires_mask_surface(&self, arena: &crate::view::node_arena::NodeArena) -> bool {
-        if self.children.is_empty() {
-            return false;
-        }
-        let overflow_child_indices: Vec<bool> = (0..self.children.len())
-            .map(|idx| self.child_renders_outside_inner_clip(idx, arena))
-            .collect();
-        let outer_radii = normalize_corner_radii(
-            self.border_radii,
-            self.layout_state.layout_size.width.max(0.0),
-            self.layout_state.layout_size.height.max(0.0),
-        );
-        let inner_radii = self.inner_clip_radii(outer_radii);
-        inner_radii.has_any_rounding()
-            && self.should_clip_children(&overflow_child_indices, inner_radii, arena)
-    }
-
-    fn promotion_composite_bounds(&self) -> PromotionCompositeBounds {
-        let paint_bounds = self.untransformed_paint_bounds();
-        let transformed = self.transformed_bounding_rect_for_rect(Rect {
-            x: paint_bounds.x,
-            y: paint_bounds.y,
-            width: paint_bounds.width,
-            height: paint_bounds.height,
-        });
-        PromotionCompositeBounds {
-            x: transformed.x,
-            y: transformed.y,
-            width: transformed.width,
-            height: transformed.height,
-            corner_radii: [0.0; 4],
-        }
     }
 
     fn retained_transform_surface_bounds(
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
-    ) -> Option<PromotionCompositeBounds> {
+    ) -> Option<RetainedSurfaceBounds> {
         self.resolved_transform
             .and_then(|_| self.transform_subtree_raster_bounds(arena, paint_offset, true))
     }
@@ -8611,7 +8502,7 @@ impl ElementTrait for Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
-    ) -> Option<PromotionCompositeBounds> {
+    ) -> Option<RetainedSurfaceBounds> {
         self.retained_transform_render_output_bounds(arena, paint_offset)
     }
 
@@ -8619,11 +8510,11 @@ impl ElementTrait for Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
-    ) -> Option<PromotionCompositeBounds> {
+    ) -> Option<RetainedSurfaceBounds> {
         self.legacy_transform_render_output_bounds(arena, paint_offset)
     }
 
-    fn retained_transform_raster_seed_bounds(&self) -> Option<PromotionCompositeBounds> {
+    fn retained_transform_raster_seed_bounds(&self) -> Option<RetainedSurfaceBounds> {
         Some(self.untransformed_paint_bounds())
     }
 
@@ -8889,6 +8780,7 @@ impl ElementTrait for Element {
 }
 
 impl Element {
+    #[cfg(test)]
     pub(crate) fn debug_render_state(&self) -> DebugElementRenderState {
         DebugElementRenderState {
             background_rgba: self.background_color.as_ref().to_rgba_u8(),
@@ -8898,7 +8790,6 @@ impl Element {
             border_bottom_rgba: self.border_colors.bottom.as_ref().to_rgba_u8(),
             border_left_rgba: self.border_colors.left.as_ref().to_rgba_u8(),
             opacity: self.opacity,
-            border_radius: self.border_radius,
         }
     }
 
