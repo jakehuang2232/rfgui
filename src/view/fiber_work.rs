@@ -236,14 +236,27 @@ pub enum FiberWork {
         parent: Option<NodeKey>,
         key: NodeKey,
     },
-    /// Wholesale replace the arena roots with a freshly-built
-    /// descriptor list. Emitted when the reconciler's root-level
-    /// identity or tag changes (`Patch::ReplaceRoot`). The
-    /// descriptor list has N >= 1 entries — Fragment roots produce
-    /// multiple. All old root subtrees are dropped and the new
-    /// descriptors committed as roots in order; `ui_root_keys` is
-    /// refreshed by the apply caller from `arena.roots()` after.
-    ReplaceRoot { descriptors: Vec<ElementDescriptor> },
+    /// Wholesale replace the arena root *set* with a freshly-built
+    /// descriptor list. Emitted for `Patch::ReplaceAllRoots` only —
+    /// every old root subtree is dropped and the new descriptors
+    /// committed as roots in order; `ui_root_keys` is refreshed by the
+    /// apply caller from `arena.roots()` after. The descriptor list has
+    /// N >= 1 entries — Fragment roots produce multiple.
+    ReplaceAllRoots { descriptors: Vec<ElementDescriptor> },
+    /// Replace exactly one root — the subtree currently rooted at
+    /// `key` — with N freshly-built descriptors (N >= 1; a Fragment
+    /// root node yields multiple). Emitted when the reconciler's
+    /// root-level identity or tag changes for a single root
+    /// (`Patch::ReplaceRoot`). Sibling roots keep their NodeKeys and
+    /// any GPU resources cached against them.
+    ///
+    /// Targeted by NodeKey rather than root index: a `ReorderRoots`
+    /// leading the same batch permutes `arena.roots()` before this
+    /// work applies, so a translate-time index would be stale.
+    ReplaceRootAt {
+        key: NodeKey,
+        descriptors: Vec<ElementDescriptor>,
+    },
     /// Wholesale replace the `index`-th child of `parent` with N
     /// freshly-built descriptors (N >= 1; Fragment new-node yields
     /// multiple). Emitted when the reconciler's mid-tree identity
@@ -324,6 +337,28 @@ pub fn patch_to_fiber_work_with_rsx(
     per_root_old_rsx: Option<&RsxNode>,
     per_root_new_rsx: Option<&RsxNode>,
 ) -> Option<FiberWork> {
+    patch_to_fiber_work_with_rsx_at_root(
+        patch,
+        _id_to_key,
+        arena,
+        root,
+        ctx,
+        per_root_old_rsx,
+        per_root_new_rsx,
+        None,
+    )
+}
+
+fn patch_to_fiber_work_with_rsx_at_root(
+    patch: Patch,
+    _id_to_key: &FxHashMap<u64, NodeKey>,
+    arena: &NodeArena,
+    root: NodeKey,
+    ctx: Option<&DescriptorContext<'_>>,
+    per_root_old_rsx: Option<&RsxNode>,
+    per_root_new_rsx: Option<&RsxNode>,
+    new_root_index: Option<usize>,
+) -> Option<FiberWork> {
     // When per-root rsx is available, map rsx paths → arena paths for
     // the `resolve_path` calls below. rsx-path is still passed to
     // `walk_rsx_by_index_path*` which needs rsx-space indices.
@@ -334,6 +369,23 @@ pub fn patch_to_fiber_work_with_rsx(
                 ArenaPathResolution::Arena(p) => Some(p),
                 ArenaPathResolution::Invalid => None,
             },
+        }
+    };
+    let full_new_path_for = |relative_path: &[usize]| -> Option<Vec<usize>> {
+        let ctx = ctx?;
+        match new_root_index {
+            Some(root_index) => match ctx.new_rsx_root {
+                RsxNode::Fragment(fragment) => {
+                    fragment.children.get(root_index)?;
+                    let mut full_path = Vec::with_capacity(relative_path.len() + 1);
+                    full_path.push(root_index);
+                    full_path.extend_from_slice(relative_path);
+                    Some(full_path)
+                }
+                _ if root_index == 0 => Some(relative_path.to_vec()),
+                _ => None,
+            },
+            None => Some(relative_path.to_vec()),
         }
     };
     match patch {
@@ -347,12 +399,18 @@ pub fn patch_to_fiber_work_with_rsx(
                 ctx.viewport_width,
                 ctx.viewport_height,
             );
-            let descriptors = crate::view::renderer_adapter::rsx_to_descriptors_with_inherited(
-                &new_node,
-                &[],
-                &inherited,
-            )
-            .ok()?;
+            let full_path = full_new_path_for(&[])?;
+            let target = walk_rsx_by_index_path(ctx.new_rsx_root, &full_path)?;
+            if target.identity() != new_node.identity() {
+                return None;
+            }
+            let descriptors =
+                crate::view::renderer_adapter::rsx_subtree_to_descriptors_with_inherited(
+                    ctx.new_rsx_root,
+                    &full_path,
+                    &inherited,
+                )
+                .ok()?;
             // 軌 1 #5: Fragment root → N descriptors. Empty result
             // (e.g. an empty Fragment) is rejected — apply would
             // leave the arena root-less which the dispatch loop
@@ -360,7 +418,15 @@ pub fn patch_to_fiber_work_with_rsx(
             if descriptors.is_empty() {
                 return None;
             }
-            Some(FiberWork::ReplaceRoot { descriptors })
+            // Single-root replacement: `root` is the currently-live
+            // NodeKey for this patch's root (the caller already
+            // resolved it through any pending root permutation).
+            // Sibling roots must survive, so never route this through
+            // the root-set wipe.
+            Some(FiberWork::ReplaceRootAt {
+                key: root,
+                descriptors,
+            })
         }
         Patch::ReorderRoots(mapping) => {
             // 軌 1 #4: pure index permutation of arena.roots. No GPU
@@ -371,7 +437,7 @@ pub fn patch_to_fiber_work_with_rsx(
             // 軌 1 #4 Fragment-at-root: wholesale root-set swap. Convert
             // each new root RsxNode into descriptors (each one may itself
             // expand to N via nested Fragment), flatten, feed to the
-            // existing multi-descriptor ReplaceRoot apply path which
+            // multi-descriptor ReplaceAllRoots apply path which
             // clears + pushes N.
             let ctx = ctx?;
             let inherited = crate::view::renderer_adapter::StyleCascadeContext::from_viewport_style(
@@ -379,20 +445,33 @@ pub fn patch_to_fiber_work_with_rsx(
                 ctx.viewport_width,
                 ctx.viewport_height,
             );
-            let mut all = Vec::new();
-            for n in &new_nodes {
-                let part = crate::view::renderer_adapter::rsx_to_descriptors_with_inherited(
-                    n,
-                    &[],
-                    &inherited,
-                )
-                .ok()?;
-                all.extend(part);
+            // Conversion runs over `ctx.new_rsx_root` (so sibling
+            // ordinals and global paths match the cold path), but the
+            // patch carries its own root list. Verify the two describe
+            // the same root set before trusting the walk — same
+            // identity gate the single-subtree arms apply.
+            let authored_roots: &[RsxNode] = match ctx.new_rsx_root {
+                RsxNode::Fragment(fragment) => fragment.children.as_slice(),
+                other => std::slice::from_ref(other),
+            };
+            if authored_roots.len() != new_nodes.len()
+                || authored_roots
+                    .iter()
+                    .zip(new_nodes.iter())
+                    .any(|(authored, patched)| authored.identity() != patched.identity())
+            {
+                return None;
             }
+            let all = crate::view::renderer_adapter::rsx_subtree_to_descriptors_with_inherited(
+                ctx.new_rsx_root,
+                &[],
+                &inherited,
+            )
+            .ok()?;
             if all.is_empty() {
                 return None;
             }
-            Some(FiberWork::ReplaceRoot { descriptors: all })
+            Some(FiberWork::ReplaceAllRoots { descriptors: all })
         }
         Patch::ReplaceNode {
             path,
@@ -416,12 +495,18 @@ pub fn patch_to_fiber_work_with_rsx(
                 ctx.viewport_width,
                 ctx.viewport_height,
             );
-            let descriptors = crate::view::renderer_adapter::rsx_to_descriptors_with_inherited(
-                &new_node,
-                &[],
-                &inherited,
-            )
-            .ok()?;
+            let full_path = full_new_path_for(&path)?;
+            let target = walk_rsx_by_index_path(ctx.new_rsx_root, &full_path)?;
+            if target.identity() != new_node.identity() {
+                return None;
+            }
+            let descriptors =
+                crate::view::renderer_adapter::rsx_subtree_to_descriptors_with_inherited(
+                    ctx.new_rsx_root,
+                    &full_path,
+                    &inherited,
+                )
+                .ok()?;
             // 軌 1 #5: Fragment new-node → N descriptors at the
             // replaced slot. Empty result rejected (same rationale
             // as ReplaceRoot).
@@ -536,12 +621,20 @@ pub fn patch_to_fiber_work_with_rsx(
                 ctx.viewport_width,
                 ctx.viewport_height,
             );
-            let mut descriptors = crate::view::renderer_adapter::rsx_to_descriptors_with_inherited(
-                child_rsx,
-                &[],
-                &inherited,
-            )
-            .ok()?;
+            let mut child_path = parent_path.clone();
+            child_path.push(index);
+            let full_path = full_new_path_for(&child_path)?;
+            let target = walk_rsx_by_index_path(ctx.new_rsx_root, &full_path)?;
+            if target.identity() != child_rsx.identity() {
+                return None;
+            }
+            let mut descriptors =
+                crate::view::renderer_adapter::rsx_subtree_to_descriptors_with_inherited(
+                    ctx.new_rsx_root,
+                    &full_path,
+                    &inherited,
+                )
+                .ok()?;
 
             // 5) Single-descriptor case → Create. Multi-descriptor
             //    (Fragment expansion) → 軌 1 #5 CreateMany, inserted
@@ -699,7 +792,7 @@ pub fn translate_rooted_patches_all_or_nothing(
         let translated_patch = rp.patch;
         // Keep a copy for the per-patch ReplaceNode fallback path below.
         let patch_snapshot = translated_patch.clone();
-        match patch_to_fiber_work_with_rsx(
+        match patch_to_fiber_work_with_rsx_at_root(
             translated_patch,
             id_to_key,
             arena,
@@ -707,6 +800,7 @@ pub fn translate_rooted_patches_all_or_nothing(
             ctx,
             per_root_old_rsx,
             per_root_new_rsx,
+            Some(rp.root_index),
         ) {
             Some(work) => out.push(work),
             None => {
@@ -715,7 +809,7 @@ pub fn translate_rooted_patches_all_or_nothing(
                 // incremental path; only the one subtree rebuilds.
                 if let Some(fallback) =
                     fallback_replace_node_patch(&patch_snapshot, per_root_old_rsx, per_root_new_rsx)
-                    && let Some(work) = patch_to_fiber_work_with_rsx(
+                    && let Some(work) = patch_to_fiber_work_with_rsx_at_root(
                         fallback,
                         id_to_key,
                         arena,
@@ -723,6 +817,7 @@ pub fn translate_rooted_patches_all_or_nothing(
                         ctx,
                         per_root_old_rsx,
                         per_root_new_rsx,
+                        Some(rp.root_index),
                     )
                 {
                     out.push(work);
@@ -817,8 +912,11 @@ impl FiberWork {
     /// per-variant checks can consult the target element type.
     ///
     /// Rules:
-    /// - `Delete` / `Move` / `Create` / `CreateMany` / `ReplaceRoot`
-    ///   / `ReplaceNode` / `ReorderRoots`: always committable.
+    /// - `Delete` / `Move` / `Create` / `CreateMany` /
+    ///   `ReplaceAllRoots` / `ReplaceNode` / `ReorderRoots`: always
+    ///   committable.
+    /// - `ReplaceRootAt`: committable iff the target key is still a
+    ///   live arena root.
     /// - `SetText`: committable iff the target (after the
     ///   text-child-to-host remap done in `patch_to_fiber_work`) is
     ///   an arena node whose element downcasts to `Text` or
@@ -838,7 +936,13 @@ impl FiberWork {
             // the descriptor has been built. The descriptor carries the
             // full fresh element/children tree; the apply side drops
             // the old subtree and commits the new.
-            FiberWork::ReplaceRoot { .. } | FiberWork::ReplaceNode { .. } => true,
+            FiberWork::ReplaceAllRoots { .. } | FiberWork::ReplaceNode { .. } => true,
+            // Single-root replacement splices `key` out of `roots()`,
+            // so the target must still be a live root. Root membership
+            // is invariant under a preceding `ReorderRoots` (which
+            // permutes but never adds or drops keys), so a gate-time
+            // check stays valid through the batch.
+            FiberWork::ReplaceRootAt { key, .. } => arena.roots().contains(key),
             FiberWork::ReorderRoots { .. } => true,
             // 軌 1 #5: fragment expansion. Apply does N successive
             // arena_insert_child calls — each is the same shape as
@@ -1084,7 +1188,7 @@ pub fn apply_fiber_works(
             } => {
                 arena_move_child(arena, parent, key, from, to);
             }
-            FiberWork::ReplaceRoot { descriptors } => {
+            FiberWork::ReplaceAllRoots { descriptors } => {
                 // Drop every existing root subtree (Fragment-root
                 // case may have N>1 old roots).
                 let old_roots: Vec<NodeKey> = arena.roots().to_vec();
@@ -1096,6 +1200,25 @@ pub fn apply_fiber_works(
                     let new_key = commit_descriptor_tree(arena, None, desc);
                     arena.push_root(new_key);
                 }
+            }
+            FiberWork::ReplaceRootAt { key, descriptors } => {
+                // Splice the replacement in at the old root's slot so
+                // sibling roots keep both their NodeKeys and their
+                // relative order. The gate guarantees `key` is a live
+                // root; a vanished target means the batch is stale.
+                let position = arena
+                    .roots()
+                    .iter()
+                    .position(|&root_key| root_key == key)
+                    .ok_or(UpdateFailure::MissingTarget)?;
+                let new_keys: Vec<NodeKey> = descriptors
+                    .into_iter()
+                    .map(|desc| commit_descriptor_tree(arena, None, desc))
+                    .collect();
+                let mut roots = arena.roots().to_vec();
+                roots.splice(position..position + 1, new_keys);
+                arena.set_roots(roots);
+                arena.remove_subtree(key);
             }
             FiberWork::ReplaceNode {
                 parent,
@@ -1374,491 +1497,4 @@ fn element_tag_hint(_el: &RsxElementNode) -> u64 {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::view::base_component::ElementTrait;
-    use crate::view::node_arena::{Node, NodeArena};
-
-    /// Minimal test-only element that lets us drive stable_id_index
-    /// assertions without building a real RSX tree (which would pull
-    /// in the whole renderer pipeline).
-    struct TestElement {
-        sid: u64,
-    }
-
-    impl crate::view::base_component::Layoutable for TestElement {
-        fn measure(
-            &mut self,
-            _c: crate::view::base_component::LayoutConstraints,
-            _a: &mut NodeArena,
-        ) {
-        }
-        fn place(&mut self, _p: crate::view::base_component::LayoutPlacement, _a: &mut NodeArena) {}
-        fn measured_size(&self) -> (f32, f32) {
-            (0.0, 0.0)
-        }
-        fn set_layout_width(&mut self, _w: f32) {}
-        fn set_layout_height(&mut self, _h: f32) {}
-    }
-    impl crate::view::base_component::EventTarget for TestElement {}
-    impl crate::view::base_component::Renderable for TestElement {
-        fn build(
-            &mut self,
-            _g: &mut crate::view::frame_graph::FrameGraph,
-            _a: &mut NodeArena,
-            ctx: crate::view::base_component::UiBuildContext,
-        ) -> crate::view::base_component::BuildState {
-            ctx.into_state()
-        }
-    }
-    impl ElementTrait for TestElement {
-        fn stable_id(&self) -> u64 {
-            self.sid
-        }
-        fn box_model_snapshot(&self) -> crate::view::base_component::BoxModelSnapshot {
-            crate::view::base_component::BoxModelSnapshot {
-                node_id: self.sid,
-                parent_id: None,
-                x: 0.0,
-                y: 0.0,
-                width: 0.0,
-                height: 0.0,
-                border_radius: 0.0,
-                should_render: false,
-            }
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-            self
-        }
-    }
-
-    fn make(sid: u64) -> Box<dyn ElementTrait> {
-        Box::new(TestElement { sid })
-    }
-
-    fn test_apply_ctx() -> ApplyContext<'static> {
-        use std::sync::OnceLock;
-        static STYLE: OnceLock<Style> = OnceLock::new();
-        ApplyContext {
-            viewport_style: STYLE.get_or_init(Style::new),
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-        }
-    }
-
-    #[test]
-    fn stable_id_index_populated_on_insert() {
-        let mut arena = NodeArena::new();
-        let k = arena.insert(Node::new(make(42)));
-        assert_eq!(arena.find_by_stable_id(42), Some(k));
-    }
-
-    #[test]
-    fn stable_id_index_skips_zero() {
-        let mut arena = NodeArena::new();
-        let _ = arena.insert(Node::new(make(0)));
-        assert_eq!(arena.find_by_stable_id(0), None);
-    }
-
-    #[test]
-    fn stable_id_index_cleaned_on_remove() {
-        let mut arena = NodeArena::new();
-        let k = arena.insert(Node::new(make(7)));
-        assert_eq!(arena.find_by_stable_id(7), Some(k));
-        arena.remove(k);
-        assert_eq!(arena.find_by_stable_id(7), None);
-    }
-
-    #[test]
-    fn stable_id_index_cleaned_on_remove_subtree() {
-        let mut arena = NodeArena::new();
-        let parent = arena.insert(Node::new(make(1)));
-        let child = arena.insert(Node::new(make(2)));
-        arena.set_parent(child, Some(parent));
-        arena.push_child(parent, child);
-
-        assert_eq!(arena.find_by_stable_id(1), Some(parent));
-        assert_eq!(arena.find_by_stable_id(2), Some(child));
-
-        arena.remove_subtree(parent);
-        assert_eq!(arena.find_by_stable_id(1), None);
-        assert_eq!(arena.find_by_stable_id(2), None);
-    }
-
-    #[test]
-    fn refresh_stable_id_index_rebuilds_from_scratch() {
-        let mut arena = NodeArena::new();
-        let k = arena.insert(Node::new(make(99)));
-        // Simulate a caller that bypassed the indexed path: wipe the
-        // index by hand then rebuild.
-        arena.refresh_stable_id_index(); // still correct after a no-op refresh
-        assert_eq!(arena.find_by_stable_id(99), Some(k));
-    }
-
-    #[test]
-    fn fiber_work_delete_removes_subtree_under_root() {
-        let mut arena = NodeArena::new();
-        let root = arena.insert(Node::new(make(10)));
-        arena.push_root(root);
-
-        apply_fiber_works(
-            &mut arena,
-            test_apply_ctx(),
-            vec![FiberWork::Delete {
-                parent: None,
-                key: root,
-            }],
-        )
-        .expect("delete root work applies");
-
-        assert!(arena.is_empty());
-        assert!(arena.roots().is_empty());
-        assert_eq!(arena.find_by_stable_id(10), None);
-    }
-
-    #[test]
-    fn fiber_work_delete_removes_child_via_parent() {
-        let mut arena = NodeArena::new();
-        let parent = arena.insert(Node::new(make(1)));
-        let child = arena.insert(Node::new(make(2)));
-        arena.set_parent(child, Some(parent));
-        arena.set_children(parent, vec![child]);
-
-        apply_fiber_works(
-            &mut arena,
-            test_apply_ctx(),
-            vec![FiberWork::Delete {
-                parent: Some(parent),
-                key: child,
-            }],
-        )
-        .expect("delete child work applies");
-
-        assert_eq!(arena.children_of(parent).len(), 0);
-        assert!(arena.find_by_stable_id(2).is_none());
-        assert_eq!(arena.find_by_stable_id(1), Some(parent));
-    }
-
-    #[test]
-    fn fiber_work_move_reorders_children() {
-        let mut arena = NodeArena::new();
-        let parent = arena.insert(Node::new(make(1)));
-        let a = arena.insert(Node::new(make(10)));
-        let b = arena.insert(Node::new(make(20)));
-        let c = arena.insert(Node::new(make(30)));
-        for &ch in &[a, b, c] {
-            arena.set_parent(ch, Some(parent));
-        }
-        arena.set_children(parent, vec![a, b, c]);
-
-        // Move `a` (index 0) to the end (index 2).
-        apply_fiber_works(
-            &mut arena,
-            test_apply_ctx(),
-            vec![FiberWork::Move {
-                parent,
-                key: a,
-                from: 0,
-                to: 2,
-            }],
-        )
-        .expect("move work applies");
-
-        assert_eq!(arena.children_of(parent), vec![b, c, a]);
-    }
-
-    #[test]
-    fn fiber_work_update_and_set_text_are_safe_on_unknown_host() {
-        // M3: Update / SetText now dispatch through the setter layer,
-        // but on an unknown host type (here: the TestElement harness,
-        // which is neither Text / TextArea / Element) both paths must
-        // bail cleanly. The assertion guards against a future refactor
-        // accidentally panicking on unrecognised downcast targets.
-        let mut arena = NodeArena::new();
-        let k = arena.insert(Node::new(make(5)));
-
-        apply_fiber_works(
-            &mut arena,
-            test_apply_ctx(),
-            vec![
-                FiberWork::Update {
-                    key: k,
-                    changed: vec![],
-                    removed: vec![],
-                },
-                FiberWork::SetText {
-                    key: k,
-                    text: "ignored".into(),
-                },
-            ],
-        )
-        .expect_err("SetText on an unknown host must surface failure");
-
-        assert_eq!(arena.len(), 1);
-        assert_eq!(arena.find_by_stable_id(5), Some(k));
-    }
-
-    /// M4 #3: a FiberWork::Update with `changed = [("loading", ...)]`
-    /// on an Image host installs the new loading slot subtree via
-    /// `Image::replace_loading_slot_incremental`, replacing any
-    /// prior slot. Exercises the apply dispatcher end-to-end through
-    /// `apply_fiber_works` (the HostImage rsx route `Rc`-wraps
-    /// `ImageSource` which forces full-rebuild on second render — see
-    /// the commit log for why the integration test was demoted to a
-    /// unit test).
-    #[test]
-    fn fiber_work_installs_image_loading_slot_incrementally() {
-        use crate::ui::{IntoPropValue, RsxNode, RsxTagDescriptor};
-        use crate::view::ImageSource;
-        use crate::view::base_component::Image;
-        use crate::view::node_arena::Node;
-        use std::sync::Arc;
-
-        let src = ImageSource::Rgba {
-            width: 1,
-            height: 1,
-            pixels: Arc::<[u8]>::from(vec![0u8, 0, 0, 255]),
-        };
-        let image = Image::new_with_id(7, src);
-        let mut arena = NodeArena::new();
-        let image_key = arena.insert(Node::new(Box::new(image)));
-
-        let loading_a = RsxNode::tagged(
-            "Element",
-            RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
-        );
-        apply_fiber_works(
-            &mut arena,
-            test_apply_ctx(),
-            vec![FiberWork::Update {
-                key: image_key,
-                changed: vec![("loading", loading_a.into_prop_value())],
-                removed: vec![],
-            }],
-        )
-        .expect("first image loading slot applies");
-        {
-            let node = arena.get(image_key).expect("image survived");
-            let image = node
-                .element
-                .as_any()
-                .downcast_ref::<Image>()
-                .expect("Image host");
-            assert_eq!(
-                image.loading_slot_len(),
-                1,
-                "first loading slot install should leave exactly one wrapper",
-            );
-        }
-        let arena_len_after_first = arena.len();
-
-        // Install a taller slot; the old wrapper subtree must be
-        // removed and the new one committed, keeping the Vec length
-        // at 1.
-        let loading_b = RsxNode::tagged(
-            "Element",
-            RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
-        )
-        .with_child(RsxNode::tagged(
-            "Element",
-            RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
-        ));
-        apply_fiber_works(
-            &mut arena,
-            test_apply_ctx(),
-            vec![FiberWork::Update {
-                key: image_key,
-                changed: vec![("loading", loading_b.into_prop_value())],
-                removed: vec![],
-            }],
-        )
-        .expect("second image loading slot applies");
-        {
-            let node = arena.get(image_key).expect("image survived second update");
-            let image = node
-                .element
-                .as_any()
-                .downcast_ref::<Image>()
-                .expect("Image host");
-            assert_eq!(
-                image.loading_slot_len(),
-                1,
-                "second loading slot install must replace the first (not stack)",
-            );
-        }
-        // Arena net growth from first→second install should be
-        // exactly +1 (new slot has 2 nodes vs. old 1, minus old's 1
-        // removed = +1). If `replace_loading_slot_incremental` skipped
-        // the `remove_subtree` loop the delta would be +2.
-        let delta = arena.len() as isize - arena_len_after_first as isize;
-        assert_eq!(
-            delta, 1,
-            "arena net growth must be +1 (old slot removed, new 2-node slot committed)",
-        );
-    }
-
-    #[test]
-    fn image_slot_structural_failure_surfaces_and_stops_later_props() {
-        use crate::ui::{IntoPropValue, RsxNode, RsxTagDescriptor};
-        use crate::view::base_component::{Element, Image};
-        use crate::view::{ImageFit, ImageSource};
-        use std::sync::Arc;
-
-        let source = ImageSource::Rgba {
-            width: 1,
-            height: 1,
-            pixels: Arc::<[u8]>::from(vec![0, 0, 0, 255]),
-        };
-        let mut arena = NodeArena::new();
-        let owner = arena.insert(Node::new(Box::new(Image::new_with_id(70, source))));
-        let old_slot = arena.insert(Node::with_parent(
-            Box::new(Element::new_with_id(71, 0.0, 0.0, 1.0, 1.0)),
-            Some(owner),
-        ));
-        arena.with_element_taken(owner, |element, _| {
-            element
-                .as_any_mut()
-                .downcast_mut::<Image>()
-                .unwrap()
-                .attach_loading_slot_cold(vec![old_slot]);
-        });
-
-        // Deliberately corrupt the active mirror. The slot replacement must
-        // fail before deleting old_slot, and the later fit prop must not run.
-        let rogue = arena.insert(Node::with_parent(
-            Box::new(Element::new_with_id(72, 0.0, 0.0, 1.0, 1.0)),
-            Some(owner),
-        ));
-        arena.set_children(owner, vec![rogue]);
-        let signature_before = arena.get(owner).unwrap().element.retained_paint_signature();
-        let len_before = arena.len();
-        let replacement = RsxNode::tagged(
-            "Element",
-            RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
-        );
-
-        let result = apply_fiber_works(
-            &mut arena,
-            test_apply_ctx(),
-            vec![FiberWork::Update {
-                key: owner,
-                changed: vec![
-                    ("loading", replacement.into_prop_value()),
-                    ("fit", ImageFit::Cover.into_prop_value()),
-                ],
-                removed: vec![],
-            }],
-        );
-
-        assert_eq!(
-            result,
-            Err(UpdateFailure::StructuralPropApplyFailed("loading"))
-        );
-        assert_eq!(arena.len(), len_before, "new slot subtree must be cleaned");
-        assert!(
-            arena.contains_key(old_slot),
-            "old slot must remain authoritative"
-        );
-        let image_node = arena.get(owner).unwrap();
-        let image = image_node.element.as_any().downcast_ref::<Image>().unwrap();
-        assert_eq!(image.loading_slot_len(), 1);
-        assert_eq!(image.retained_paint_signature(), signature_before);
-    }
-
-    #[test]
-    fn svg_slot_structural_failure_surfaces_as_update_failure() {
-        use crate::ui::{IntoPropValue, RsxNode, RsxTagDescriptor};
-        use crate::view::SvgSource;
-        use crate::view::base_component::{Element, Svg};
-
-        let mut arena = NodeArena::new();
-        let owner = arena.insert(Node::new(Box::new(Svg::new_with_id(
-            80,
-            SvgSource::Content(
-                r#"<svg width="1" height="1" xmlns="http://www.w3.org/2000/svg"/>"#.into(),
-            ),
-        ))));
-        let old_slot = arena.insert(Node::with_parent(
-            Box::new(Element::new_with_id(81, 0.0, 0.0, 1.0, 1.0)),
-            Some(owner),
-        ));
-        arena.with_element_taken(owner, |element, _| {
-            element
-                .as_any_mut()
-                .downcast_mut::<Svg>()
-                .unwrap()
-                .attach_error_slot_cold(vec![old_slot]);
-        });
-        let rogue = arena.insert(Node::with_parent(
-            Box::new(Element::new_with_id(82, 0.0, 0.0, 1.0, 1.0)),
-            Some(owner),
-        ));
-        arena.set_children(owner, vec![rogue]);
-        let len_before = arena.len();
-        let replacement = RsxNode::tagged(
-            "Element",
-            RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
-        );
-
-        assert_eq!(
-            apply_fiber_works(
-                &mut arena,
-                test_apply_ctx(),
-                vec![FiberWork::Update {
-                    key: owner,
-                    changed: vec![("error", replacement.into_prop_value())],
-                    removed: vec![],
-                }],
-            ),
-            Err(UpdateFailure::StructuralPropApplyFailed("error"))
-        );
-        assert_eq!(arena.len(), len_before);
-        assert!(arena.contains_key(old_slot));
-        let svg_node = arena.get(owner).unwrap();
-        let svg = svg_node.element.as_any().downcast_ref::<Svg>().unwrap();
-        assert_eq!(svg.loading_slot_len(), 0);
-    }
-
-    /// A FiberWork::Update with `removed = ["opacity"]` on a Text host
-    /// resets opacity to the default 1.0. Element's schema folds opacity
-    /// into the `style` map (no top-level reset arm); Text still exposes
-    /// `opacity` as a named prop with its own reset arm, so it's the
-    /// smallest case that exercises the named-prop reset branch.
-    #[test]
-    fn fiber_work_removes_opacity_resets_to_default_on_text() {
-        use crate::view::base_component::Text;
-        use crate::view::node_arena::Node;
-
-        let mut arena = NodeArena::new();
-        let mut text = Text::new(0.0, 0.0, 100.0, 20.0, "hello");
-        text.set_opacity(0.3);
-        assert!((text.opacity() - 0.3).abs() < 1e-4);
-        let k = arena.insert(Node::new(Box::new(text)));
-
-        apply_fiber_works(
-            &mut arena,
-            test_apply_ctx(),
-            vec![FiberWork::Update {
-                key: k,
-                changed: vec![],
-                removed: vec!["opacity"],
-            }],
-        )
-        .expect("text opacity reset applies");
-
-        let node = arena.get(k).expect("node survived");
-        let text = node
-            .element
-            .as_any()
-            .downcast_ref::<Text>()
-            .expect("Text host");
-        assert!(
-            (text.opacity() - 1.0).abs() < 1e-4,
-            "removed opacity must reset to default 1.0, got {}",
-            text.opacity()
-        );
-    }
-}
+mod tests;

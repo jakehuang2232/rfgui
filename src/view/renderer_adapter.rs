@@ -919,21 +919,19 @@ pub(crate) fn rsx_to_descriptors_scoped_with_context(
     Ok(out)
 }
 
-/// M6 cascade: build descriptors for `root` using an already-computed
-/// `StyleCascadeContext`. Sibling of
-/// `rsx_to_descriptors_scoped_with_context` for callers that don't
-/// start from the viewport root — the incremental-commit path in
-/// `fiber_work` uses this after reconstructing the cascade at the
-/// arena parent of a newly-authored child.
-pub(crate) fn rsx_to_descriptors_with_inherited(
-    root: &RsxNode,
-    scope: &[u64],
+/// Convert one subtree while preserving the identity context it has in
+/// `full_root`. Incremental Fiber patches carry index paths relative to
+/// the authored RSX tree; restarting conversion from the detached subtree
+/// would restart sibling ordinals and mint duplicate stable ids.
+pub(crate) fn rsx_subtree_to_descriptors_with_inherited(
+    full_root: &RsxNode,
+    index_path: &[usize],
     inherited: &StyleCascadeContext,
 ) -> Result<Vec<ElementDescriptor>, String> {
+    let (root, mut path, global_path) =
+        crate::ui::node_with_identity_context_by_index_path(full_root, index_path)?;
     let mut out = Vec::new();
     let mut errors = Vec::new();
-    let mut path: Vec<u64> = scope.to_vec();
-    let global_path = current_global_node_path(root, None);
     append_nodes_with_path_desc(
         root,
         &mut out,
