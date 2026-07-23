@@ -190,6 +190,8 @@ pub struct TextStylePropSchema {
     pub cursor: Option<Cursor>,
     pub hover: Option<HoverTextStylePropSchema>,
     pub opacity: Option<Opacity>,
+    pub transform: Option<Transform>,
+    pub transform_origin: Option<TransformOrigin>,
     pub transition: Option<Transitions>,
 }
 
@@ -205,6 +207,8 @@ pub struct HoverTextStylePropSchema {
     pub text_wrap: Option<TextWrap>,
     pub cursor: Option<Cursor>,
     pub opacity: Option<Opacity>,
+    pub transform: Option<Transform>,
+    pub transform_origin: Option<TransformOrigin>,
     pub transition: Option<Transitions>,
 }
 
@@ -1549,6 +1553,12 @@ impl HoverTextStylePropSchema {
     pub fn to_style(&self) -> Style {
         let mut style = Style::new();
         apply_shared_style_fields(&mut style, &self.shared_style_fields());
+        if let Some(transform) = &self.transform {
+            style.set_transform(transform.clone());
+        }
+        if let Some(transform_origin) = self.transform_origin {
+            style.set_transform_origin(transform_origin);
+        }
         style
     }
 }
@@ -1557,6 +1567,12 @@ impl TextStylePropSchema {
     pub fn to_style(&self) -> Style {
         let mut style = Style::new();
         apply_shared_style_fields(&mut style, &self.shared_style_fields());
+        if let Some(transform) = &self.transform {
+            style.set_transform(transform.clone());
+        }
+        if let Some(transform_origin) = self.transform_origin {
+            style.set_transform_origin(transform_origin);
+        }
         if let Some(hover) = &self.hover {
             style.set_hover(hover.to_style());
         }
@@ -1614,6 +1630,10 @@ mod style_lowering_tests {
             text_wrap: Some(TextWrap::NoWrap),
             cursor: Some(Cursor::Text),
             opacity: Some(Opacity::new(0.75)),
+            transform: Some(Transform::new([crate::style::Translate::x(Length::px(
+                6.0,
+            ))])),
+            transform_origin: Some(TransformOrigin::px(3.0, 4.0)),
             transition: Some(transition()),
         }
     }
@@ -1706,6 +1726,8 @@ mod style_lowering_tests {
             cursor: hover.cursor,
             hover: None,
             opacity: hover.opacity,
+            transform: hover.transform.clone(),
+            transform_origin: hover.transform_origin,
             transition: hover.transition.clone(),
         }
     }
@@ -1722,6 +1744,8 @@ mod style_lowering_tests {
             text_wrap: text.text_wrap,
             cursor: text.cursor,
             opacity: text.opacity,
+            transform: text.transform.clone(),
+            transform_origin: text.transform_origin,
             transition: text.transition.clone(),
             background_color: Some(color("#abcdef")),
             layout: Some(Layout::Inline),
@@ -1765,6 +1789,14 @@ mod style_lowering_tests {
         assert_eq!(
             style.get(PropertyId::Opacity),
             Some(&ParsedValue::Opacity(Opacity::new(0.75)))
+        );
+        assert!(matches!(
+            style.get(PropertyId::Transform),
+            Some(ParsedValue::Transform(_))
+        ));
+        assert_eq!(
+            style.get(PropertyId::TransformOrigin),
+            Some(&ParsedValue::TransformOrigin(TransformOrigin::px(3.0, 4.0)))
         );
         assert!(matches!(
             style.get(PropertyId::Transition),

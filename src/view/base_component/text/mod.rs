@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
-use crate::style::{ColorLike, Cursor, HexColor, TextWrap};
+use crate::style::{
+    ColorLike, Cursor, HexColor, TextWrap, Transform, TransformKind, TransformOrigin,
+};
 use crate::view::inline_formatting_context::{
     InlineFormattingContext, InlineIfcAlignment, InlineIfcTextPassPaintInput,
 };
+use glam::{Mat4, Vec3, Vec4};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -101,6 +104,9 @@ pub struct Text {
     pub(super) font_weight: u16,
     pub(super) align: InlineIfcAlignment,
     pub(super) opacity: f32,
+    pub(super) transform: Transform,
+    pub(super) transform_origin: TransformOrigin,
+    pub(super) resolved_transform: Option<Mat4>,
     pub(super) auto_width: bool,
     pub(super) auto_height: bool,
     pub(super) text_wrap: TextWrap,
@@ -184,6 +190,9 @@ impl Text {
             font_weight: 400,
             align: InlineIfcAlignment::Left,
             opacity: 1.0,
+            transform: Transform::default(),
+            transform_origin: TransformOrigin::center(),
+            resolved_transform: None,
             auto_width: false,
             auto_height: false,
             text_wrap: TextWrap::Wrap,
@@ -197,6 +206,79 @@ impl Text {
             last_layout_placement: None,
             layout_state: LayoutState::new(x, y, width, height),
             explicit_props: TextExplicitProps::default(),
+        }
+    }
+
+    fn update_resolved_transform(&mut self) {
+        self.resolved_transform = self.compute_transform_matrix();
+    }
+
+    fn compute_transform_matrix(&self) -> Option<Mat4> {
+        if self.transform.as_slice().is_empty() {
+            return None;
+        }
+        let size = self.layout_state.layout_size;
+        let origin = Vec3::new(
+            self.transform_origin
+                .x()
+                .resolve_with_base(Some(size.width.max(0.0)), 0.0, 0.0)
+                .unwrap_or(0.0),
+            self.transform_origin
+                .y()
+                .resolve_with_base(Some(size.height.max(0.0)), 0.0, 0.0)
+                .unwrap_or(0.0),
+            self.transform_origin.z(),
+        );
+        let mut transform = Mat4::IDENTITY;
+        for entry in self.transform.as_slice() {
+            let next = match entry.kind() {
+                TransformKind::Translate { x, y, z } => Mat4::from_translation(Vec3::new(
+                    x.resolve_with_base(Some(size.width.max(0.0)), 0.0, 0.0)
+                        .unwrap_or(0.0),
+                    y.resolve_with_base(Some(size.height.max(0.0)), 0.0, 0.0)
+                        .unwrap_or(0.0),
+                    z,
+                )),
+                TransformKind::Scale { x, y, z } => Mat4::from_scale(Vec3::new(x, y, z)),
+                TransformKind::Rotate { x, y, z } => {
+                    Mat4::from_rotation_x(x.to_radians())
+                        * Mat4::from_rotation_y(y.to_radians())
+                        * Mat4::from_rotation_z(z.to_radians())
+                }
+                TransformKind::Perspective { depth } => {
+                    text_css_perspective_matrix(depth.max(0.0001))
+                }
+                TransformKind::Matrix { matrix } => Mat4::from_cols_array(&matrix),
+            };
+            transform *= next;
+        }
+        let origin_world = Vec3::new(
+            self.layout_state.layout_position.x + origin.x,
+            self.layout_state.layout_position.y + origin.y,
+            origin.z,
+        );
+        Some(
+            Mat4::from_translation(origin_world)
+                * transform
+                * Mat4::from_translation(-origin_world),
+        )
+    }
+
+    fn untransformed_retained_paint_bounds(&self) -> super::RetainedSurfaceBounds {
+        let bounds = self
+            .inline_ifc_owned_paint_bounds()
+            .unwrap_or(crate::ui::Rect {
+                x: self.layout_state.layout_position.x,
+                y: self.layout_state.layout_position.y,
+                width: self.layout_state.layout_size.width,
+                height: self.layout_state.layout_size.height,
+            });
+        super::RetainedSurfaceBounds {
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width.max(0.0),
+            height: bounds.height.max(0.0),
+            corner_radii: [0.0; 4],
         }
     }
 
@@ -216,6 +298,7 @@ impl Text {
         };
         self.layout_state.layout_inner_size = self.layout_state.layout_size;
         self.layout_state.should_render = bounds.width > 0.0 && bounds.height > 0.0;
+        self.update_resolved_transform();
         // Mirrors Element::place_as_inline_ifc_owned_box: the install is
         // this node's placement pass, so clear local PLACEMENT dirt here
         // or the subtree aggregate stays dirty every frame.
@@ -270,6 +353,7 @@ impl Text {
         self.layout_state.layout_position.y += dy;
         self.layout_state.layout_flow_position = self.layout_state.layout_position;
         self.layout_state.layout_inner_position = self.layout_state.layout_position;
+        self.update_resolved_transform();
     }
 
     pub(crate) fn clear_inline_ifc_owned_geometry(&mut self) {
@@ -420,6 +504,18 @@ impl Text {
         self.layout_state.layout_position.x += dx;
         self.layout_state.layout_position.y += dy;
     }
+}
+
+fn text_css_perspective_matrix(depth: f32) -> Mat4 {
+    if depth.abs() <= 0.000_001 {
+        return Mat4::IDENTITY;
+    }
+    Mat4::from_cols(
+        Vec4::new(1.0, 0.0, 0.0, 0.0),
+        Vec4::new(0.0, 1.0, 0.0, 0.0),
+        Vec4::new(0.0, 0.0, 1.0, -1.0 / depth),
+        Vec4::new(0.0, 0.0, 0.0, 1.0),
+    )
 }
 
 #[cfg(test)]
@@ -576,6 +672,14 @@ impl Text {
 impl ElementTrait for Text {
     fn stable_id(&self) -> u64 {
         self.node_id
+    }
+
+    fn retained_scroll_normalized_paint_capability(
+        &self,
+    ) -> Option<super::RetainedScrollNormalizedPaintCapability> {
+        Some(super::RetainedScrollNormalizedPaintCapability::native(
+            super::RetainedScrollNormalizedPaintKind::Text,
+        ))
     }
 
     #[allow(private_interfaces)]
@@ -925,6 +1029,7 @@ impl ElementTrait for Text {
             placement.parent_x += dx;
             placement.parent_y += dy;
         }
+        self.update_resolved_transform();
     }
 
     fn parent_id(&self) -> Option<u64> {
@@ -952,29 +1057,56 @@ impl ElementTrait for Text {
         }
     }
 
+    fn admits_exact_retained_root_opacity_artifact(&self) -> bool {
+        true
+    }
+
     fn retained_transform_output_bounds(
         &self,
-        _arena: &crate::view::node_arena::NodeArena,
+        arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
     ) -> Option<super::RetainedSurfaceBounds> {
-        let bounds = self
-            .inline_ifc_owned_paint_bounds()
-            .unwrap_or(crate::ui::Rect {
-                x: self.layout_state.layout_position.x,
-                y: self.layout_state.layout_position.y,
-                width: self.layout_state.layout_size.width,
-                height: self.layout_state.layout_size.height,
-            });
-        let mut bounds = super::RetainedSurfaceBounds {
-            x: bounds.x,
-            y: bounds.y,
-            width: bounds.width.max(0.0),
-            height: bounds.height.max(0.0),
-            corner_radii: [0.0; 4],
-        };
+        if let Some(matrix) = self.resolved_transform {
+            let source_bounds = self.retained_transform_surface_bounds(arena, paint_offset)?;
+            let visual_bounds =
+                crate::view::viewport::scene_helpers::paint_snapped_retained_surface_bounds(
+                    self,
+                    source_bounds,
+                    paint_offset,
+                );
+            return super::TransformSurfaceGeometrySnapshot::new(
+                source_bounds,
+                visual_bounds,
+                matrix,
+                None,
+            )?
+            .quad_aabb();
+        }
+        let mut bounds = self.untransformed_retained_paint_bounds();
+        if paint_offset.iter().any(|value| !value.is_finite()) {
+            return None;
+        }
         bounds.x += paint_offset[0];
         bounds.y += paint_offset[1];
-        Some(bounds)
+        (bounds.x.is_finite()
+            && bounds.y.is_finite()
+            && bounds.width.is_finite()
+            && bounds.height.is_finite())
+        .then_some(bounds)
+    }
+
+    fn exact_nested_isolation_render_output_bounds(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+        parent_snapped_paint_offset: [f32; 2],
+    ) -> Option<super::RetainedSurfaceBounds> {
+        super::exact_native_nested_isolation_render_output_bounds(
+            self,
+            owner,
+            arena,
+            parent_snapped_paint_offset,
+        )
     }
 
     fn legacy_transform_output_bounds(
@@ -1009,6 +1141,12 @@ impl ElementTrait for Text {
         self.line_height.to_bits().hash(&mut hasher);
         self.font_weight.hash(&mut hasher);
         self.align.hash(&mut hasher);
+        self.resolved_transform.is_some().hash(&mut hasher);
+        if let Some(matrix) = self.resolved_transform {
+            for value in matrix.to_cols_array() {
+                value.to_bits().hash(&mut hasher);
+            }
+        }
         (self.text_wrap == TextWrap::Wrap).hash(&mut hasher);
         self.layout_state
             .layout_size
@@ -1042,6 +1180,28 @@ impl ElementTrait for Text {
 
     fn retained_paint_signature_is_complete(&self) -> bool {
         true
+    }
+
+    fn retained_transform_surface_bounds(
+        &self,
+        _arena: &crate::view::node_arena::NodeArena,
+        _paint_offset: [f32; 2],
+    ) -> Option<super::RetainedSurfaceBounds> {
+        self.resolved_transform
+            .map(|_| self.untransformed_retained_paint_bounds())
+    }
+
+    fn retained_transform_raster_seed_bounds(&self) -> Option<super::RetainedSurfaceBounds> {
+        Some(self.untransformed_retained_paint_bounds())
+    }
+
+    fn has_retained_transform_surface(&self) -> bool {
+        self.resolved_transform.is_some()
+    }
+
+    fn compositor_viewport_transform_snapshot(&self) -> Option<super::ViewportTransformSnapshot> {
+        self.resolved_transform
+            .map(super::ViewportTransformSnapshot::from_matrix)
     }
 
     fn local_dirty_flags(&self) -> super::DirtyFlags {

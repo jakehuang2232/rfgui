@@ -23,6 +23,8 @@ pub(crate) struct TextComputedStyleBridge {
     has_text_wrap: bool,
     has_line_height: bool,
     has_vertical_align: bool,
+    has_transform: bool,
+    has_transform_origin: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +77,8 @@ impl TextComputedStyleBridge {
             has_text_wrap: style.get(PropertyId::TextWrap).is_some(),
             has_line_height: style.get(PropertyId::LineHeight).is_some(),
             has_vertical_align: style.get(PropertyId::VerticalAlign).is_some(),
+            has_transform: style.get(PropertyId::Transform).is_some(),
+            has_transform_origin: style.get(PropertyId::TransformOrigin).is_some(),
             computed,
         }
     }
@@ -279,6 +283,32 @@ impl Text {
         self.opacity
     }
 
+    pub fn set_transform(&mut self, transform: crate::style::Transform) {
+        if self.transform == transform {
+            return;
+        }
+        self.transform = transform;
+        self.update_resolved_transform();
+        self.dirty_flags = self.dirty_flags.union(DirtyFlags::RUNTIME);
+    }
+
+    pub fn set_transform_origin(&mut self, transform_origin: crate::style::TransformOrigin) {
+        if self.transform_origin == transform_origin {
+            return;
+        }
+        self.transform_origin = transform_origin;
+        self.update_resolved_transform();
+        self.dirty_flags = self.dirty_flags.union(DirtyFlags::RUNTIME);
+    }
+
+    pub fn transform(&self) -> &crate::style::Transform {
+        &self.transform
+    }
+
+    pub fn transform_origin(&self) -> crate::style::TransformOrigin {
+        self.transform_origin
+    }
+
     pub fn set_text_wrap(&mut self, text_wrap: TextWrap) {
         if self.text_wrap != text_wrap {
             self.text_wrap = text_wrap;
@@ -372,6 +402,9 @@ impl Text {
 
         if let Some(bridge) = &bridge {
             self.apply_computed_text_bridge(bridge);
+        } else if mode == TextStyleApplyMode::Incremental {
+            self.set_transform(crate::style::Transform::default());
+            self.set_transform_origin(crate::style::TransformOrigin::center());
         }
 
         self.apply_inherited(inherited);
@@ -402,6 +435,16 @@ impl Text {
     }
 
     fn apply_computed_text_bridge(&mut self, bridge: &TextComputedStyleBridge) {
+        if bridge.has_transform {
+            self.set_transform(bridge.computed.transform.clone());
+        } else {
+            self.set_transform(crate::style::Transform::default());
+        }
+        if bridge.has_transform_origin {
+            self.set_transform_origin(bridge.computed.transform_origin);
+        } else {
+            self.set_transform_origin(crate::style::TransformOrigin::center());
+        }
         if bridge.has_font_family {
             self.set_fonts(bridge.computed.font_families.iter().cloned());
         }

@@ -572,6 +572,16 @@ impl EventTarget for TextAreaTextRun {
 impl EventTarget for TextAreaLineBreak {}
 
 impl ElementTrait for TextAreaTextRun {
+    fn retained_scroll_normalized_paint_capability(
+        &self,
+    ) -> Option<crate::view::base_component::RetainedScrollNormalizedPaintCapability> {
+        Some(
+            crate::view::base_component::RetainedScrollNormalizedPaintCapability::native(
+                crate::view::base_component::RetainedScrollNormalizedPaintKind::TextAreaTextRun,
+            ),
+        )
+    }
+
     #[allow(private_interfaces)]
     fn shadow_paint_recording_capability(
         &self,
@@ -716,6 +726,16 @@ impl ElementTrait for TextAreaTextRun {
 }
 
 impl ElementTrait for TextAreaLineBreak {
+    fn retained_scroll_normalized_paint_capability(
+        &self,
+    ) -> Option<crate::view::base_component::RetainedScrollNormalizedPaintCapability> {
+        Some(
+            crate::view::base_component::RetainedScrollNormalizedPaintCapability::native(
+                crate::view::base_component::RetainedScrollNormalizedPaintKind::TextAreaLineBreak,
+            ),
+        )
+    }
+
     #[allow(private_interfaces)]
     fn shadow_paint_recording_capability(
         &self,

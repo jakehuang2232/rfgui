@@ -629,22 +629,17 @@ impl NodeArena {
             return;
         };
         let child_count = node.children.len();
-        if let Some(element) = node
-            .element
-            .borrow()
-            .as_any()
-            .downcast_ref::<crate::view::base_component::Element>()
-        {
-            if element.should_append_to_root_viewport_render() {
-                let sid = element.stable_id();
-                if sid != 0 {
-                    out.push(crate::view::base_component::DeferredRenderNode {
-                        key,
-                        stable_id: sid,
-                    });
-                }
+        let element = node.element.borrow();
+        if element.is_deferred_to_root_viewport_render() {
+            let sid = element.stable_id();
+            if sid != 0 {
+                out.push(crate::view::base_component::DeferredRenderNode {
+                    key,
+                    stable_id: sid,
+                });
             }
         }
+        drop(element);
         for index in 0..child_count {
             if let Some(child_key) = self.child_key_at(key, index) {
                 self.collect_viewport_clip_nodes_subtree(child_key, out);
@@ -1384,6 +1379,7 @@ mod tests {
     struct RecordingElement {
         stable_id: u64,
         label: &'static str,
+        deferred: bool,
     }
 
     impl TestElement {
@@ -1397,7 +1393,16 @@ mod tests {
 
     impl RecordingElement {
         fn new(stable_id: u64, label: &'static str) -> Self {
-            Self { stable_id, label }
+            Self {
+                stable_id,
+                label,
+                deferred: false,
+            }
+        }
+
+        fn deferred(mut self) -> Self {
+            self.deferred = true;
+            self
         }
     }
 
@@ -1512,6 +1517,10 @@ mod tests {
         }
 
         fn clear_local_dirty_flags(&mut self, _flags: DirtyFlags) {}
+
+        fn is_deferred_to_root_viewport_render(&self) -> bool {
+            self.deferred
+        }
 
         fn as_any(&self) -> &dyn std::any::Any {
             self
@@ -1712,6 +1721,39 @@ mod tests {
         RECORDED_BUILDS.with(|builds| {
             assert_eq!(&*builds.borrow(), &["second"]);
         });
+    }
+
+    #[test]
+    fn viewport_deferred_collection_uses_trait_and_preserves_nested_dfs_order() {
+        let mut arena = NodeArena::new();
+        let root = arena.insert(Node::new(Box::new(RecordingElement::new(1, "root"))));
+        let first = arena.insert(Node::new(Box::new(
+            RecordingElement::new(2, "first").deferred(),
+        )));
+        let nested_normal = arena.insert(Node::new(Box::new(RecordingElement::new(
+            3,
+            "nested-normal",
+        ))));
+        let nested_deferred = arena.insert(Node::new(Box::new(
+            RecordingElement::new(4, "nested-deferred").deferred(),
+        )));
+        let second = arena.insert(Node::new(Box::new(
+            RecordingElement::new(5, "second").deferred(),
+        )));
+        arena.push_root(root);
+        link_child(&mut arena, root, first);
+        link_child(&mut arena, first, nested_normal);
+        link_child(&mut arena, first, nested_deferred);
+        link_child(&mut arena, root, second);
+
+        assert_eq!(
+            arena
+                .collect_viewport_clip_nodes()
+                .into_iter()
+                .map(|node| (node.key, node.stable_id))
+                .collect::<Vec<_>>(),
+            vec![(first, 2), (nested_deferred, 4), (second, 5)]
+        );
     }
 
     #[test]

@@ -86,6 +86,8 @@ impl StylePropSet for TextStyleSet {
                 | PropertyId::TextWrap
                 | PropertyId::Cursor
                 | PropertyId::Opacity
+                | PropertyId::Transform
+                | PropertyId::TransformOrigin
                 | PropertyId::Transition
         )
     }

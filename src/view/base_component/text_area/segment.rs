@@ -363,6 +363,14 @@ impl EventTarget for TextAreaProjectionSegment {
 }
 
 impl ElementTrait for TextAreaProjectionSegment {
+    fn retained_scroll_normalized_paint_capability(
+        &self,
+    ) -> Option<crate::view::base_component::RetainedScrollNormalizedPaintCapability> {
+        Some(crate::view::base_component::RetainedScrollNormalizedPaintCapability::native(
+            crate::view::base_component::RetainedScrollNormalizedPaintKind::TextAreaProjectionSegment,
+        ))
+    }
+
     #[allow(private_interfaces)]
     fn shadow_paint_recording_capability(
         &self,

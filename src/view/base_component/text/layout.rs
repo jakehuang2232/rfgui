@@ -170,6 +170,7 @@ impl Layoutable for Text {
             && self_left < parent_right
             && self_bottom > parent_top
             && self_top < parent_bottom;
+        self.update_resolved_transform();
         self.last_layout_placement = Some(placement);
         self.dirty_flags = self.dirty_flags.without(
             DirtyFlags::PLACE

@@ -88,12 +88,6 @@ impl Element {
             ScrollDirection::Vertical | ScrollDirection::Both
         ) && max_scroll_y > 0.0;
 
-        let reserve_v = if can_scroll_y {
-            SCROLLBAR_THICKNESS + SCROLLBAR_MARGIN
-        } else {
-            0.0
-        };
-
         if can_scroll_y {
             if let Some((track, thumb)) = canonical_vertical_scrollbar_geometry(
                 Rect {
@@ -112,38 +106,19 @@ impl Element {
         }
 
         if can_scroll_x {
-            let track_x = inner_x + SCROLLBAR_MARGIN;
-            let track_y = inner_y + self.layout_state.layout_inner_size.height
-                - SCROLLBAR_THICKNESS
-                - SCROLLBAR_MARGIN;
-            let track_w = (self.layout_state.layout_inner_size.width
-                - SCROLLBAR_MARGIN * 2.0
-                - reserve_v)
-                .max(0.0);
-            if track_w > 0.0 {
-                let track = Rect {
-                    x: track_x,
-                    y: track_y,
-                    width: track_w,
-                    height: SCROLLBAR_THICKNESS,
-                };
-                let ratio = (self.layout_state.layout_inner_size.width / self.layout_state.content_size.width.max(1.0))
-                    .clamp(0.0, 1.0);
-                let thumb_w = (track_w * ratio)
-                    .clamp(SCROLLBAR_MIN_THUMB.min(track_w), track_w);
-                let travel = (track_w - thumb_w).max(0.0);
-                let thumb_offset = if max_scroll_x > 0.0 {
-                    (self.scroll_offset.x / max_scroll_x).clamp(0.0, 1.0) * travel
-                } else {
-                    0.0
-                };
+            if let Some((track, thumb)) = canonical_horizontal_scrollbar_geometry(
+                Rect {
+                    x: inner_x,
+                    y: inner_y,
+                    width: self.layout_state.layout_inner_size.width,
+                    height: self.layout_state.layout_inner_size.height,
+                },
+                self.layout_state.content_size.width,
+                self.scroll_offset.x,
+                can_scroll_y,
+            ) {
                 geometry.horizontal_track = Some(track);
-                geometry.horizontal_thumb = Some(Rect {
-                    x: track.x + thumb_offset,
-                    y: track.y,
-                    width: thumb_w,
-                    height: track.height,
-                });
+                geometry.horizontal_thumb = Some(thumb);
             }
         }
 

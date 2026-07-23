@@ -547,7 +547,7 @@ fn prepare_property_scene<'a>(
         }
     }
     if transaction_witness.aggregate_opaque_order_span != (0..cursor)
-        || seen_roots.len() != transaction_witness.surfaces.len()
+        || seen_persistent_keys.len() != transaction_witness.surfaces.len() * 2
     {
         return Err(RetainedSurfacePrepareError::PlanShape);
     }
@@ -828,8 +828,24 @@ fn prepare_surface<'a>(
     let depth_key = color_key
         .depth_stencil()
         .ok_or(RetainedSurfacePrepareError::DescriptorPair)?;
-    if !seen_roots.insert(surface.boundary_root())
-        || !seen_stable_ids.insert(surface.stable_id())
+    let same_owner_effect_half = policy == RetainedSurfaceTreePolicy::PropertyScene
+        && depth > 0
+        && expected_parent == Some(surface.boundary_root())
+        && matches!(
+            surface.kind(),
+            SurfaceKind::NestedIsolation(plan)
+                if plan.property_scene.as_ref().is_some_and(|contract| matches!(
+                    contract.composite.basis,
+                    super::frame_plan::PropertyIsolationCompositeBasis::ParentTransform {
+                        transform,
+                        ..
+                    } if transform.0 == surface.boundary_root()
+                ))
+        );
+    let root_is_new = seen_roots.insert(surface.boundary_root());
+    let stable_id_is_new = seen_stable_ids.insert(surface.stable_id());
+    if (!root_is_new && !same_owner_effect_half)
+        || (!stable_id_is_new && !same_owner_effect_half)
         || !seen_persistent_keys.insert(color_key)
         || !seen_persistent_keys.insert(depth_key)
     {
@@ -1887,7 +1903,9 @@ fn property_effect_scene_surface_stamp_is_canonical(
                     }
                     cursor = expected_after;
                 }
-                RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+                RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+                | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+                | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
                 | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
                 | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return false,
             }
@@ -1916,6 +1934,13 @@ pub(crate) fn legacy_property_executor_rejects_effect_scroll_boundary_for_test(
 
 #[cfg(test)]
 pub(crate) fn legacy_property_executor_rejects_transform_effect_scroll_child_for_test(
+    stamp: &RetainedSurfaceRasterStamp,
+) -> bool {
+    !property_effect_scene_surface_stamp_is_canonical(stamp, 0)
+}
+
+#[cfg(test)]
+pub(crate) fn legacy_property_executor_rejects_effect_transform_scroll_child_for_test(
     stamp: &RetainedSurfaceRasterStamp,
 ) -> bool {
     !property_effect_scene_surface_stamp_is_canonical(stamp, 0)
@@ -1981,7 +2006,9 @@ fn validated_mixed_property_transform_raster_stamp(
                     return None;
                 }
             }
-            RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+            | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
             | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
             | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return None,
         }
@@ -2003,6 +2030,7 @@ fn validated_mixed_property_transform_raster_stamp(
         atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect: None,
+        native_scroll_children: Vec::new(),
     };
     property_effect_scene_surface_stamp_is_canonical(&stamp, depth).then_some(stamp)
 }
@@ -2061,17 +2089,30 @@ fn property_effect_scene_transaction_is_canonical(
         )
         && witness.surfaces[0].parent_surface.is_none()
         && witness.surfaces[0].scene_root == witness.roots[0].root
-        && witness.surfaces[0].boundary_root == witness.roots[0].root
         && witness.surfaces[1].parent_surface == Some(witness.surfaces[0].boundary_root)
         && witness.surfaces[1].scene_root == witness.roots[0].root;
     if !pure_effect_forest && !exact_mixed_scene {
         return false;
     }
-    let mut surface_by_owner = FxHashMap::default();
+    let mut surface_by_owner: FxHashMap<crate::view::node_arena::NodeKey, usize> =
+        FxHashMap::default();
     let mut stable_ids = FxHashSet::default();
     let mut resident_keys = FxHashSet::default();
     let mut depths = Vec::with_capacity(witness.surfaces.len());
     for (ordinal, (surface, stamp)) in witness.surfaces.iter().zip(ordered_stamps).enumerate() {
+        let prior_owner_ordinal = surface_by_owner.get(&surface.boundary_root).copied();
+        let same_owner_effect_half = prior_owner_ordinal.is_some_and(|parent_ordinal| {
+            let parent = &witness.surfaces[parent_ordinal];
+            parent_ordinal + 1 == ordinal
+                && matches!(
+                    parent.kind,
+                    PropertySceneTransactionSurfaceKind::Transform(_)
+                )
+                && matches!(surface.kind, PropertySceneTransactionSurfaceKind::Effect(_))
+                && surface.parent_surface == Some(parent.boundary_root)
+                && surface.boundary_root == parent.boundary_root
+                && surface.stable_id == parent.stable_id
+        });
         let kind_matches = match surface.kind {
             PropertySceneTransactionSurfaceKind::Transform(id) => {
                 id.0 == surface.boundary_root
@@ -2102,10 +2143,8 @@ fn property_effect_scene_transaction_is_canonical(
             || stamp.identity.stable_id != surface.stable_id
             || stamp.identity.color_key != surface.persistent_color_key
             || !roots.contains_key(&surface.scene_root)
-            || surface_by_owner
-                .insert(surface.boundary_root, ordinal)
-                .is_some()
-            || !stable_ids.insert(surface.stable_id)
+            || (prior_owner_ordinal.is_some() && !same_owner_effect_half)
+            || (!stable_ids.insert(surface.stable_id) && !same_owner_effect_half)
             || !resident_keys.insert(stamp.identity.resident_key())
         {
             return false;
@@ -2113,7 +2152,12 @@ fn property_effect_scene_transaction_is_canonical(
         let depth = match surface.parent_surface {
             None => 0,
             Some(parent) => {
-                let Some(&parent_ordinal) = surface_by_owner.get(&parent) else {
+                let parent_ordinal = if same_owner_effect_half && parent == surface.boundary_root {
+                    prior_owner_ordinal
+                } else {
+                    surface_by_owner.get(&parent).copied()
+                };
+                let Some(parent_ordinal) = parent_ordinal else {
                     return false;
                 };
                 if witness.surfaces[parent_ordinal].scene_root != surface.scene_root {
@@ -2129,7 +2173,13 @@ fn property_effect_scene_transaction_is_canonical(
             let expected_basis = match surface.parent_surface {
                 None => super::frame_plan::PropertyIsolationCompositeBasis::FrameRoot,
                 Some(parent) => {
-                    let Some(&parent_ordinal) = surface_by_owner.get(&parent) else {
+                    let parent_ordinal =
+                        if same_owner_effect_half && parent == surface.boundary_root {
+                            prior_owner_ordinal
+                        } else {
+                            surface_by_owner.get(&parent).copied()
+                        };
+                    let Some(parent_ordinal) = parent_ordinal else {
                         return false;
                     };
                     match witness.surfaces[parent_ordinal].kind {
@@ -2167,6 +2217,7 @@ fn property_effect_scene_transaction_is_canonical(
         if !property_effect_scene_surface_stamp_is_canonical(stamp, depth) {
             return false;
         }
+        surface_by_owner.insert(surface.boundary_root, ordinal);
         depths.push(depth);
     }
     let mut nested_children = FxHashSet::default();

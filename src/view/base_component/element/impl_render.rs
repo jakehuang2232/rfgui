@@ -36,7 +36,7 @@ pub(crate) struct TransformSurfaceGeometrySnapshot {
 }
 
 impl TransformSurfaceGeometrySnapshot {
-    fn new(
+    pub(crate) fn new(
         source_bounds: crate::view::base_component::RetainedSurfaceBounds,
         visual_bounds: crate::view::base_component::RetainedSurfaceBounds,
         viewport_transform: Mat4,
@@ -227,6 +227,11 @@ impl Element {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_scroll_direction_for_retained_test(&mut self, direction: ScrollDirection) {
+        self.scroll_direction = direction;
+    }
+
+    #[cfg(test)]
     pub(crate) fn inline_ifc_decoration_package_for_test(
         &mut self,
     ) -> Option<
@@ -271,8 +276,71 @@ impl Element {
             self.layout_state.layout_size.height.max(0.0),
         );
         let inner_radii = self.inner_clip_radii(outer_radii);
-        inner_radii.has_any_rounding()
-            && self.should_clip_children(&overflow_child_indices, inner_radii, arena)
+        self.should_clip_children(&overflow_child_indices, inner_radii, arena)
+    }
+
+    pub(super) fn prepared_retained_child_mask_plan(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> Option<crate::view::paint::RetainedChildMaskPlan> {
+        if (self.scroll_direction != ScrollDirection::None
+            && !recording_context
+                .authorizes_frame_root_scroll_host_child_mask(self.stable_id()))
+            || self.inline_ifc_owned_by_root
+            || (self.is_fragmentable_inline_element() && self.inline_paint_fragments.len() > 1)
+            || !self.requires_child_mask_surface(arena)
+            || recording_context
+                .paint_offset
+                .iter()
+                .any(|value| !value.is_finite())
+        {
+            return None;
+        }
+        let outer_radii = normalize_corner_radii(
+            self.border_radii,
+            self.layout_state.layout_size.width.max(0.0),
+            self.layout_state.layout_size.height.max(0.0),
+        );
+        let inner_radii = self.inner_clip_radii(outer_radii);
+        let inner = self.inner_clip_rect();
+        let bounds = Rect {
+            x: inner.x + recording_context.paint_offset[0],
+            y: inner.y + recording_context.paint_offset[1],
+            width: inner.width,
+            height: inner.height,
+        };
+        let logical_scissor = exact_logical_scissor_for_rect(bounds)?;
+        let mut params = RectPassParams {
+            position: [bounds.x, bounds.y],
+            size: [bounds.width, bounds.height],
+            fill_color: [0.0; 4],
+            opacity: 1.0,
+            ..Default::default()
+        };
+        params.set_border_width(0.0);
+        params.set_border_radii(inner_radii.to_array());
+        let op = crate::view::paint::DrawRectOp {
+            params,
+            mode: crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
+        };
+        let mut in_scope_children = Vec::new();
+        let mut overflow_children = Vec::new();
+        for (index, &child) in self.children.iter().enumerate() {
+            if self.child_renders_outside_inner_clip(index, arena) {
+                overflow_children.push(child);
+            } else {
+                in_scope_children.push(child);
+            }
+        }
+        crate::view::paint::RetainedChildMaskPlan::new(
+            bounds,
+            logical_scissor,
+            op,
+            &self.children,
+            in_scope_children,
+            overflow_children,
+        )
     }
 
     fn build_base_descendants_only(
@@ -405,11 +473,7 @@ impl Element {
                 let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
                 let next_ctx = arena.with_element_taken(child_key, |child, arena| {
                     let mut ctx_local = ctx_in;
-                    if child
-                        .as_any()
-                        .downcast_ref::<Element>()
-                        .is_some_and(Element::should_append_to_root_viewport_render)
-                    {
+                    if child.is_deferred_to_root_viewport_render() {
                         ctx_local.register_deferred(child_key, child.stable_id());
                         return ctx_local;
                     }
@@ -847,6 +911,10 @@ impl Element {
         if arena.is_some_and(|arena| self.requires_child_mask_surface(arena))
             && !recording_context.authorizes_baked_scroll_host_root(self.stable_id())
             && !recording_context.authorizes_scroll_text_area_content_wrapper(self.stable_id())
+            && arena.is_none_or(|arena| {
+                self.prepared_retained_child_mask_plan(arena, recording_context)
+                    .is_none()
+            })
         {
             return Err(LegacyPaintReason::ChildClip);
         }
@@ -947,9 +1015,16 @@ impl Element {
         {
             return Some(ShadowPaintBlocker::Transform);
         }
+        let deferred_authorized = match recording_context.opacity_authority {
+            crate::view::paint::PaintOpacityAuthority::NeutralRootEffect(effect) => {
+                recording_context.authorizes_deferred_viewport_effect_for(self.stable_id(), effect)
+            }
+            crate::view::paint::PaintOpacityAuthority::Baked => {
+                recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id())
+            }
+        };
         if self.should_append_to_root_viewport_render()
-            && (!deferred_phase_root
-                || !recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id()))
+            && (!deferred_phase_root || !deferred_authorized)
         {
             return Some(ShadowPaintBlocker::Deferred);
         }
@@ -994,6 +1069,9 @@ impl Element {
             if self.should_clip_children(&overflow_child_indices, inner_radii, arena)
                 && !recording_context.authorizes_baked_scroll_host_root(self.stable_id())
                 && !recording_context.authorizes_scroll_text_area_content_wrapper(self.stable_id())
+                && self
+                    .prepared_retained_child_mask_plan(arena, recording_context)
+                    .is_none()
             {
                 return Some(ShadowPaintBlocker::ChildClip);
             }
@@ -1008,72 +1086,78 @@ impl Element {
         if !self.core.should_paint || self.box_shadows.is_empty() {
             return Some(Vec::new());
         }
-        // Legacy paints one shadow sequence per inline fragment. The staged
-        // owner-level artifact owns a single box mesh, so fragmented IFC
-        // geometry must remain on legacy until it has a fragment-aware
-        // shadow identity and compiler grammar.
-        if self.is_fragmentable_inline_element() && !self.inline_paint_fragments.is_empty() {
-            return None;
-        }
+        let fragment_rects =
+            if self.is_fragmentable_inline_element() && !self.inline_paint_fragments.is_empty() {
+                self.inline_paint_fragments.clone()
+            } else {
+                vec![Rect {
+                    x: self.layout_state.layout_position.x,
+                    y: self.layout_state.layout_position.y,
+                    width: self.layout_state.layout_size.width,
+                    height: self.layout_state.layout_size.height,
+                }]
+            };
         if !recording_context
             .paint_offset
             .iter()
             .all(|value| value.is_finite())
-            || !self.layout_state.layout_position.x.is_finite()
-            || !self.layout_state.layout_position.y.is_finite()
-            || !self.layout_state.layout_size.width.is_finite()
-            || !self.layout_state.layout_size.height.is_finite()
-            || self.layout_state.layout_size.width <= 0.0
-            || self.layout_state.layout_size.height <= 0.0
+            || fragment_rects.iter().any(|fragment| {
+                [fragment.x, fragment.y, fragment.width, fragment.height]
+                    .iter()
+                    .any(|value| !value.is_finite())
+                    || fragment.width <= 0.0
+                    || fragment.height <= 0.0
+            })
         {
             return None;
         }
-        let width = self.layout_state.layout_size.width;
-        let height = self.layout_state.layout_size.height;
-        let outer_radii = normalize_corner_radii(self.border_radii, width, height);
         let opacity = recording_context.paint_opacity(self.opacity);
-        let mut prepared = Vec::with_capacity(self.box_shadows.len());
-        for shadow in &self.box_shadows {
-            if shadow.inset
-                || !shadow.offset_x.is_finite()
-                || !shadow.offset_y.is_finite()
-                || !shadow.blur.is_finite()
-                || shadow.blur.max(0.0).to_bits() != 0.0_f32.to_bits()
-                || !shadow.spread.is_finite()
-            {
-                return None;
+        let mut prepared = Vec::with_capacity(fragment_rects.len() * self.box_shadows.len());
+        for fragment in fragment_rects {
+            let outer_radii =
+                normalize_corner_radii(self.border_radii, fragment.width, fragment.height);
+            for shadow in &self.box_shadows {
+                if !shadow.offset_x.is_finite()
+                    || !shadow.offset_y.is_finite()
+                    || !shadow.blur.is_finite()
+                    || !shadow.spread.is_finite()
+                {
+                    return None;
+                }
+                let color = shadow.color.to_rgba_f32();
+                if color
+                    .iter()
+                    .any(|channel| !channel.is_finite() || !(0.0..=1.0).contains(channel))
+                {
+                    return None;
+                }
+                let spread = shadow.spread;
+                let shadow_radii = expand_corner_radii_for_spread(
+                    outer_radii,
+                    spread,
+                    fragment.width,
+                    fragment.height,
+                );
+                let mesh = ShadowMesh::rounded_rect_with_radii(
+                    fragment.x - spread + recording_context.paint_offset[0],
+                    fragment.y - spread + recording_context.paint_offset[1],
+                    fragment.width + spread * 2.0,
+                    fragment.height + spread * 2.0,
+                    shadow_radii.to_array(),
+                );
+                prepared.push(crate::view::paint::PreparedShadowOp::new(
+                    mesh,
+                    ShadowParams {
+                        offset_x: shadow.offset_x,
+                        offset_y: shadow.offset_y,
+                        blur_radius: shadow.blur.max(0.0),
+                        color,
+                        opacity,
+                        spread: 0.0,
+                        clip_to_geometry: shadow.inset,
+                    },
+                )?);
             }
-            let color = shadow.color.to_rgba_f32();
-            if color
-                .iter()
-                .any(|channel| !channel.is_finite() || !(0.0..=1.0).contains(channel))
-            {
-                return None;
-            }
-            let spread = shadow.spread;
-            let shadow_radii = expand_corner_radii_for_spread(outer_radii, spread, width, height);
-            let mesh = ShadowMesh::rounded_rect_with_radii(
-                self.layout_state.layout_position.x - spread + recording_context.paint_offset[0],
-                self.layout_state.layout_position.y - spread + recording_context.paint_offset[1],
-                width + spread * 2.0,
-                height + spread * 2.0,
-                shadow_radii.to_array(),
-            );
-            prepared.push(crate::view::paint::PreparedShadowOp::new(
-                mesh,
-                ShadowParams {
-                    offset_x: shadow.offset_x,
-                    offset_y: shadow.offset_y,
-                    // Only exact normalized zero is admitted: a tiny positive
-                    // logical blur can cross the module threshold after DPR
-                    // scaling and would require the out-of-scope blur passes.
-                    blur_radius: 0.0,
-                    color,
-                    opacity,
-                    spread: 0.0,
-                    clip_to_geometry: false,
-                },
-            )?);
         }
         Some(prepared)
     }
@@ -1186,9 +1270,6 @@ impl Element {
         {
             return Err(ShadowPaintBlocker::InlineIfc);
         }
-        if !self.box_shadows.is_empty() {
-            return Err(ShadowPaintBlocker::BoxShadow);
-        }
         if !recording_context
             .paint_offset
             .iter()
@@ -1217,9 +1298,14 @@ impl Element {
             }
             return Ok(PreparedElementInlineIfcDecorationPayload {
                 bounds: shell_bounds,
+                shadows: Vec::new(),
                 ops: Vec::new(),
             });
         }
+
+        let shadows = self
+            .prepared_outer_shadow_ops(recording_context)
+            .ok_or(ShadowPaintBlocker::BoxShadow)?;
 
         let package = self
             .inline_ifc_rollout_packages
@@ -1389,6 +1475,7 @@ impl Element {
                 width,
                 height,
             },
+            shadows,
             ops,
         })
     }
@@ -1972,7 +2059,7 @@ mod paint_snap_tests {
     }
 
     #[test]
-    fn fragmented_inline_outer_shadow_stays_out_of_single_owner_artifact() {
+    fn fragmented_inline_outer_shadow_prepares_one_op_per_fragment_in_order() {
         let mut element = Element::new(0.0, 0.0, 80.0, 20.0);
         let mut style = crate::style::Style::new();
         style.insert(
@@ -2004,11 +2091,22 @@ mod paint_snap_tests {
             },
         ];
 
-        assert!(
-            element
-                .prepared_outer_shadow_ops(crate::view::paint::PaintRecordingContext::default())
-                .is_none()
-        );
+        let prepared = element
+            .prepared_outer_shadow_ops(crate::view::paint::PaintRecordingContext::default())
+            .expect("finite inline fragments use the typed shadow grammar");
+        assert_eq!(prepared.len(), 2);
+        let min_y = prepared
+            .iter()
+            .map(|shadow| {
+                shadow
+                    .mesh
+                    .vertices
+                    .iter()
+                    .map(|vertex| vertex[1])
+                    .fold(f32::INFINITY, f32::min)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(min_y, vec![0.0, 10.0]);
     }
 
     #[test]

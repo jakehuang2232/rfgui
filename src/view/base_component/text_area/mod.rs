@@ -1011,6 +1011,14 @@ impl TextArea {
 }
 
 impl ElementTrait for TextArea {
+    fn retained_scroll_normalized_paint_capability(
+        &self,
+    ) -> Option<super::RetainedScrollNormalizedPaintCapability> {
+        Some(super::RetainedScrollNormalizedPaintCapability::native(
+            super::RetainedScrollNormalizedPaintKind::TextArea,
+        ))
+    }
+
     fn has_active_animator(&self) -> bool {
         #[cfg(test)]
         {

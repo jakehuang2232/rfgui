@@ -177,6 +177,71 @@ pub(crate) struct PreparedScrollContentCompositeGeometry {
 }
 
 impl PreparedScrollContentCompositeGeometry {
+    pub(crate) fn from_validated_native_scroll_forest_content_stamp(
+        stamp: &super::RetainedSurfaceRasterStamp,
+        scroll: ScrollNodeSnapshot,
+        contents_clip: ClipNodeSnapshot,
+    ) -> Option<Self> {
+        if !super::compiler::native_scroll_forest_content_raster_stamp_is_canonical(stamp)
+            || stamp.identity.role != super::RetainedSurfaceRasterRole::ScrollContent
+            || stamp.identity.stable_id == 0
+            || stamp.identity.color_key != scroll_content_layer_stable_key(stamp.identity.stable_id)
+            || !scroll.has_canonical_geometry_with_contents_clip_parent_ids(
+                contents_clip,
+                scroll.parent,
+                contents_clip.parent,
+            )
+        {
+            return None;
+        }
+        let zero_bounds = RetainedSurfaceBounds {
+            x: scroll.layout_content_bounds_at_zero.x,
+            y: scroll.layout_content_bounds_at_zero.y,
+            width: scroll.layout_content_bounds_at_zero.width,
+            height: scroll.layout_content_bounds_at_zero.height,
+            corner_radii: [0.0; 4],
+        };
+        if stamp.target.source_bounds_bits
+            != [
+                zero_bounds.x.to_bits(),
+                zero_bounds.y.to_bits(),
+                zero_bounds.width.to_bits(),
+                zero_bounds.height.to_bits(),
+            ]
+        {
+            return None;
+        }
+        Self::from_parts(
+            zero_bounds,
+            [scroll.offset.x, scroll.offset.y],
+            contents_clip.logical_scissor,
+            stamp.identity.color_key,
+        )
+    }
+
+    pub(crate) fn from_exact_transient_scroll(
+        content_stable_id: u64,
+        scroll: ScrollNodeSnapshot,
+        contents_clip: ClipNodeSnapshot,
+    ) -> Option<Self> {
+        if content_stable_id == 0 || !scroll.is_canonical_with_ancestor_contents_clip(contents_clip)
+        {
+            return None;
+        }
+        Self::from_parts(
+            RetainedSurfaceBounds {
+                x: scroll.layout_content_bounds_at_zero.x,
+                y: scroll.layout_content_bounds_at_zero.y,
+                width: scroll.layout_content_bounds_at_zero.width,
+                height: scroll.layout_content_bounds_at_zero.height,
+                corner_radii: [0.0; 4],
+            },
+            [scroll.offset.x, scroll.offset.y],
+            contents_clip.logical_scissor,
+            scroll_content_layer_stable_key(content_stable_id),
+        )
+    }
+
     /// Builds compositor geometry only from the already validated content
     /// raster identity.  This atomically freezes the exact source key/bounds,
     /// current full 2D offset, and authoritative contents clip.
@@ -200,6 +265,47 @@ impl PreparedScrollContentCompositeGeometry {
         // clip-free leaf grammar or C1's one compiler-sealed, parentless
         // TextArea ContentsClip.  Both are raster-local; compositor geometry
         // consumes only the outer scroll and outer contents clip here.
+        let zero_bounds = RetainedSurfaceBounds {
+            x: scroll.layout_content_bounds_at_zero.x,
+            y: scroll.layout_content_bounds_at_zero.y,
+            width: scroll.layout_content_bounds_at_zero.width,
+            height: scroll.layout_content_bounds_at_zero.height,
+            corner_radii: [0.0; 4],
+        };
+        let expected_bounds_bits = [
+            zero_bounds.x.to_bits(),
+            zero_bounds.y.to_bits(),
+            zero_bounds.width.to_bits(),
+            zero_bounds.height.to_bits(),
+        ];
+        if stamp.target.source_bounds_bits != expected_bounds_bits {
+            return None;
+        }
+        Self::from_parts(
+            zero_bounds,
+            [scroll.offset.x, scroll.offset.y],
+            contents_clip.logical_scissor,
+            stamp.identity.color_key,
+        )
+    }
+
+    pub(super) fn from_validated_scroll_content_effect_stamp(
+        stamp: &super::RetainedSurfaceRasterStamp,
+        scroll: ScrollNodeSnapshot,
+        contents_clip: ClipNodeSnapshot,
+        effect_contract: &super::EffectPropertySurfaceArtifactContract,
+    ) -> Option<Self> {
+        if !super::compiler::scroll_content_effect_receiver_raster_stamp_validates_contract(
+            stamp,
+            stamp.identity.boundary_root,
+            stamp.identity.stable_id,
+            effect_contract,
+        ) || stamp.identity.boundary_root == scroll.owner
+            || !scroll.has_canonical_vertical_geometry_with_contents_clip(contents_clip)
+            || scroll.owner != scroll.id.0
+        {
+            return None;
+        }
         let zero_bounds = RetainedSurfaceBounds {
             x: scroll.layout_content_bounds_at_zero.x,
             y: scroll.layout_content_bounds_at_zero.y,
@@ -615,6 +721,7 @@ mod tests {
                 chunks: vec![chunk],
                 op_count: 1,
                 opaque_order_span: 0..1,
+                scroll_placement_normalized_owners: Vec::new(),
             },
             0..1,
         )

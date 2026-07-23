@@ -4,6 +4,61 @@ use std::collections::hash_map::Entry;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+fn chunk_bounds_bits(chunk: &super::PaintChunk) -> [u32; 4] {
+    [
+        chunk.bounds.x,
+        chunk.bounds.y,
+        chunk.bounds.width,
+        chunk.bounds.height,
+    ]
+    .map(f32::to_bits)
+}
+
+fn classify_optional_child_mask_semantics<'a>(
+    artifact: &super::PaintArtifact,
+    chunks: &'a [super::PaintChunk],
+    content_root: NodeKey,
+    mask_properties: crate::view::compositor::property_tree::PropertyTreeState,
+) -> Option<(&'a super::PaintChunk, &'a [super::PaintChunk])> {
+    let (wrapper, tail) = chunks.split_first()?;
+    let is_mask = |chunk: &super::PaintChunk| chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT;
+    let has_boundary_mask = tail.first().is_some_and(|chunk| is_mask(chunk))
+        || tail.last().is_some_and(|chunk| is_mask(chunk));
+    if !has_boundary_mask {
+        return tail
+            .iter()
+            .all(|chunk| !is_mask(chunk))
+            .then_some((wrapper, tail));
+    }
+    let (mask_end, with_begin) = tail.split_last()?;
+    let (mask_begin, semantic) = with_begin.split_first()?;
+    let mask_exact = |chunk: &super::PaintChunk, phase: super::PaintNodePhase| {
+        let [super::PaintOp::DrawRect(mask)] = &artifact.ops[chunk.op_range.clone()] else {
+            return false;
+        };
+        chunk.owner == content_root
+            && chunk.id.owner == content_root
+            && chunk.id.scope == super::PaintPropertyScope::Contents
+            && chunk.id.phase == phase
+            && chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT
+            && chunk.id.role == super::PaintChunkRole::SelfDecoration
+            && chunk.properties == mask_properties
+            && mask.mode == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
+            && mask.params.position == [chunk.bounds.x, chunk.bounds.y]
+            && mask.params.size == [chunk.bounds.width, chunk.bounds.height]
+            && mask.params.fill_color == [0.0; 4]
+            && mask.params.opacity.to_bits() == 1.0_f32.to_bits()
+            && super::PaintPayloadIdentity::prepared_rects([mask]).as_ref()
+                == Some(&chunk.payload_identity)
+    };
+    (semantic.iter().all(|chunk| !is_mask(chunk))
+        && mask_exact(mask_begin, super::PaintNodePhase::BeforeChildren)
+        && mask_exact(mask_end, super::PaintNodePhase::AfterChildren)
+        && chunk_bounds_bits(mask_begin) == chunk_bounds_bits(mask_end)
+        && mask_begin.payload_identity == mask_end.payload_identity)
+        .then_some((wrapper, semantic))
+}
+
 use crate::view::base_component::{
     RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
@@ -11,13 +66,17 @@ use crate::view::base_component::{
     RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollTextAreaSubtreeAdmissionSnapshot,
 };
-use crate::view::compositor::property_tree::{EffectNodeId, EffectNodeSnapshot};
+use crate::view::compositor::property_tree::{
+    ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot, ScrollNodeSnapshot,
+    TransformNodeSnapshot,
+};
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::coverage_manifest::{
-    NestedScrollContentReceiverCutout, exact_deferred_viewport_self_clip_witness,
-    record_retained_coverage_manifest_with_context,
+    NativeScrollContentReceiverCutout, NestedScrollContentReceiverCutout,
+    exact_deferred_viewport_self_clip_witness, record_retained_coverage_manifest_with_context,
+    record_retained_coverage_manifest_with_native_scroll_receiver,
     record_retained_coverage_manifest_with_nested_scroll_receiver,
     record_retained_coverage_manifest_with_property_authorities,
 };
@@ -420,9 +479,22 @@ impl RecordedRetainedAtomicProjectionSelectionTextAreaHost {
     }
 
     pub(crate) fn tamper_selection_payload_for_test(mut self) -> Self {
-        let replacement = self.artifact.chunks[3].payload_identity.clone();
-        self.artifact.chunks[2].payload_identity = replacement.clone();
-        self.raster_oracle.chunks[2].payload_identity = replacement;
+        let selection = self
+            .artifact
+            .chunks
+            .iter()
+            .position(|chunk| chunk.id.role == super::PaintChunkRole::SelectionUnderlay)
+            .unwrap();
+        let replacement = self
+            .artifact
+            .chunks
+            .iter()
+            .find(|chunk| chunk.id.role == super::PaintChunkRole::TextGlyphs)
+            .unwrap()
+            .payload_identity
+            .clone();
+        self.artifact.chunks[selection].payload_identity = replacement.clone();
+        self.raster_oracle.chunks[selection].payload_identity = replacement;
         self
     }
 
@@ -452,9 +524,22 @@ impl RecordedRetainedAtomicProjectionSelectionTextAreaSubtree {
     }
 
     pub(crate) fn tamper_selection_payload_for_test(mut self) -> Self {
-        let replacement = self.artifact.chunks[2].payload_identity.clone();
-        self.artifact.chunks[1].payload_identity = replacement.clone();
-        self.raster_oracle.chunks[1].payload_identity = replacement;
+        let selection = self
+            .artifact
+            .chunks
+            .iter()
+            .position(|chunk| chunk.id.role == super::PaintChunkRole::SelectionUnderlay)
+            .unwrap();
+        let replacement = self
+            .artifact
+            .chunks
+            .iter()
+            .find(|chunk| chunk.id.role == super::PaintChunkRole::TextGlyphs)
+            .unwrap()
+            .payload_identity
+            .clone();
+        self.artifact.chunks[selection].payload_identity = replacement.clone();
+        self.raster_oracle.chunks[selection].payload_identity = replacement;
         self
     }
 
@@ -487,10 +572,16 @@ impl RecordedRetainedAtomicProjectionSelectionTextAreaSubtree {
 
 impl ValidatedRecordedAtomicProjectionSelectionTextAreaAuthority {
     fn is_canonical(&self) -> bool {
-        let [_, _, host_selection, _, _, _] = self.host.artifact.chunks.as_slice() else {
+        fn unique_selection(chunks: &[super::PaintChunk]) -> Option<&super::PaintChunk> {
+            let mut matches = chunks
+                .iter()
+                .filter(|chunk| chunk.id.role == super::PaintChunkRole::SelectionUnderlay);
+            matches.next().filter(|_| matches.next().is_none())
+        }
+        let Some(host_selection) = unique_selection(&self.host.artifact.chunks) else {
             return false;
         };
-        let [_, local_selection, _, _] = self.local.artifact.chunks.as_slice() else {
+        let Some(local_selection) = unique_selection(&self.local.artifact.chunks) else {
             return false;
         };
         self.host
@@ -533,10 +624,22 @@ impl ValidatedRecordedAtomicProjectionSelectionTextAreaAuthority {
 
     #[cfg(test)]
     pub(crate) fn localized_selection_changed_for_test(&self) -> bool {
-        let host = self.host.artifact.chunks[2]
+        let host = self
+            .host
+            .artifact
+            .chunks
+            .iter()
+            .find(|chunk| chunk.id.role == super::PaintChunkRole::SelectionUnderlay)
+            .unwrap()
             .payload_identity
             .retained_text_area_selection_seal();
-        let local = self.local.artifact.chunks[1]
+        let local = self
+            .local
+            .artifact
+            .chunks
+            .iter()
+            .find(|chunk| chunk.id.role == super::PaintChunkRole::SelectionUnderlay)
+            .unwrap()
             .payload_identity
             .retained_text_area_selection_seal();
         host.is_some() && local.is_some() && host != local
@@ -765,8 +868,13 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
 ) -> Option<ValidatedRecordedAtomicProjectionSelectionTextAreaAuthority> {
     if !host.raster_oracle.matches_artifact(&host.artifact)
         || !local.raster_oracle.matches_artifact(&local.artifact)
-        || host.raster_oracle.chunks.len() != 6
-        || local.raster_oracle.chunks.len() != 4
+        || !matches!(
+            (
+                host.raster_oracle.chunks.len(),
+                local.raster_oracle.chunks.len()
+            ),
+            (6, 4) | (8, 6)
+        )
         || host.raster_oracle.content_root != local.raster_oracle.content_root
         || host.raster_oracle.text_area_root != local.raster_oracle.text_area_root
         || host.raster_oracle.source_grammar != local.raster_oracle.source_grammar
@@ -831,23 +939,30 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
     {
         return None;
     }
-    let [
-        root_before,
-        host_wrapper,
-        host_selection,
-        host_root_glyph,
-        host_projection_glyph,
-        overlay,
-    ] = host.artifact.chunks.as_slice()
+    let outer_state = crate::view::compositor::property_tree::PropertyTreeState {
+        clip: Some(host.outer_contents_clip.id),
+        scroll: Some(host.outer_scroll.id),
+        ..Default::default()
+    };
+    let (root_before, host_tail) = host.artifact.chunks.split_first()?;
+    let (overlay, host_content_chunks) = host_tail.split_last()?;
+    let Some((host_wrapper, [host_selection, host_root_glyph, host_projection_glyph])) =
+        classify_optional_child_mask_semantics(
+            &host.artifact,
+            host_content_chunks,
+            content_root,
+            outer_state,
+        )
     else {
         return None;
     };
-    let [
-        local_wrapper,
-        local_selection,
-        local_root_glyph,
-        local_projection_glyph,
-    ] = local.artifact.chunks.as_slice()
+    let Some((local_wrapper, [local_selection, local_root_glyph, local_projection_glyph])) =
+        classify_optional_child_mask_semantics(
+            &local.artifact,
+            local.artifact.chunks.as_slice(),
+            content_root,
+            Default::default(),
+        )
     else {
         return None;
     };
@@ -868,11 +983,6 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
     {
         return None;
     }
-    let outer_state = crate::view::compositor::property_tree::PropertyTreeState {
-        clip: Some(host.outer_contents_clip.id),
-        scroll: Some(host.outer_scroll.id),
-        ..Default::default()
-    };
     let host_local_state = crate::view::compositor::property_tree::PropertyTreeState {
         clip: Some(local_clip.id),
         scroll: Some(host.outer_scroll.id),
@@ -894,7 +1004,14 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
             .iter()
             .map(|op| super::compiler::localize_exact_nested_scroll_leaf_op(op, delta))
             .collect::<Option<Vec<_>>>()?;
-        let payload = if host_chunk.id.role == super::PaintChunkRole::SelectionUnderlay {
+        let payload = if host_chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT {
+            super::PaintPayloadIdentity::prepared_rects(localized.iter().filter_map(
+                |op| match op {
+                    super::PaintOp::DrawRect(rect) => Some(rect),
+                    _ => None,
+                },
+            ))?
+        } else if host_chunk.id.role == super::PaintChunkRole::SelectionUnderlay {
             super::PaintPayloadIdentity::prepared_text_area_selection(
                 grammar.selection,
                 localized.iter().filter_map(|op| match op {
@@ -928,6 +1045,14 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
             ))
         .then_some(())
     };
+    let mask_variant_parity = match (host.artifact.chunks.len(), local.artifact.chunks.len()) {
+        (6, 4) => true,
+        (8, 6) => {
+            pair_exact(&host.artifact.chunks[2], &local.artifact.chunks[1]).is_some()
+                && pair_exact(&host.artifact.chunks[6], &local.artifact.chunks[5]).is_some()
+        }
+        _ => false,
+    };
     let content_zero_bounds = [
         host.outer_scroll.layout_content_bounds_at_zero.x.to_bits(),
         host.outer_scroll.layout_content_bounds_at_zero.y.to_bits(),
@@ -946,6 +1071,7 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
         .map(f32::from_bits)
         .all(f32::is_finite);
     if !source_bounds_are_finite
+        || !mask_variant_parity
         || root_before.owner != boundary_root
         || root_before.id.owner != boundary_root
         || root_before.id.scope != super::PaintPropertyScope::SelfPaint
@@ -1410,7 +1536,7 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
         color_rgba_bits,
     } = admission.paint_grammar
     {
-        let Some(selection) = artifact.chunks.get_mut(2) else {
+        let Some(selection) = artifact.chunks.get_mut(3) else {
             return Err(invalid(admission.text_area_root));
         };
         let rects = artifact.ops[selection.op_range.clone()]
@@ -1521,6 +1647,25 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
             super::PaintChunkRole::SelfDecoration,
             outer_state,
         ) && exact_self_decoration(chunk)
+    };
+    let child_mask = |chunk: &super::PaintChunk, phase: super::PaintNodePhase| {
+        let [super::PaintOp::DrawRect(mask)] = &artifact.ops[chunk.op_range.clone()] else {
+            return false;
+        };
+        chunk.owner == admission.content_wrapper
+            && chunk.id.owner == admission.content_wrapper
+            && chunk.id.scope == super::PaintPropertyScope::Contents
+            && chunk.id.phase == phase
+            && chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT
+            && chunk.id.role == super::PaintChunkRole::SelfDecoration
+            && chunk.properties == outer_state
+            && mask.mode == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
+            && mask.params.position == [chunk.bounds.x, chunk.bounds.y]
+            && mask.params.size == [chunk.bounds.width, chunk.bounds.height]
+            && mask.params.fill_color == [0.0; 4]
+            && mask.params.opacity.to_bits() == 1.0_f32.to_bits()
+            && super::PaintPayloadIdentity::prepared_rects([mask]).as_ref()
+                == Some(&chunk.payload_identity)
     };
     let glyph = |chunk: &super::PaintChunk| {
         exact_chunk(
@@ -1664,16 +1809,39 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
     };
     let chunks_match = match admission.paint_grammar {
         crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedGlyphs => {
-            matches!(artifact.chunks.as_slice(), [a, b, c, d]
-                if root_before(a) && wrapper(b) && glyph(c) && overlay(d))
+            matches!(artifact.chunks.as_slice(), [a, b, mask_begin, c, mask_end, d]
+                if root_before(a)
+                    && wrapper(b)
+                    && child_mask(mask_begin, super::PaintNodePhase::BeforeChildren)
+                    && glyph(c)
+                    && child_mask(mask_end, super::PaintNodePhase::AfterChildren)
+                    && chunk_bounds_bits(mask_begin) == chunk_bounds_bits(mask_end)
+                    && mask_begin.payload_identity == mask_end.payload_identity
+                    && overlay(d))
         }
         crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs { .. } => {
-            matches!(artifact.chunks.as_slice(), [a, b, c, d, e]
-                if root_before(a) && wrapper(b) && selection(c) && glyph(d) && overlay(e))
+            matches!(artifact.chunks.as_slice(), [a, b, mask_begin, c, d, mask_end, e]
+                if root_before(a)
+                    && wrapper(b)
+                    && child_mask(mask_begin, super::PaintNodePhase::BeforeChildren)
+                    && selection(c)
+                    && glyph(d)
+                    && child_mask(mask_end, super::PaintNodePhase::AfterChildren)
+                    && chunk_bounds_bits(mask_begin) == chunk_bounds_bits(mask_end)
+                    && mask_begin.payload_identity == mask_end.payload_identity
+                    && overlay(e))
         }
         crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedPreeditGlyphs => {
-            matches!(artifact.chunks.as_slice(), [a, b, c, d, e]
-                if root_before(a) && wrapper(b) && glyph(c) && underline(d) && overlay(e))
+            matches!(artifact.chunks.as_slice(), [a, b, mask_begin, c, d, mask_end, e]
+                if root_before(a)
+                    && wrapper(b)
+                    && child_mask(mask_begin, super::PaintNodePhase::BeforeChildren)
+                    && glyph(c)
+                    && underline(d)
+                    && child_mask(mask_end, super::PaintNodePhase::AfterChildren)
+                    && chunk_bounds_bits(mask_begin) == chunk_bounds_bits(mask_end)
+                    && mask_begin.payload_identity == mask_end.payload_identity
+                    && overlay(e))
         }
     };
     let op_ranges_are_closed = artifact.chunks.iter().try_fold(0usize, |cursor, chunk| {
@@ -2086,14 +2254,10 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
     }
-    let [
-        root_before,
-        wrapper_chunk,
-        root_glyph,
-        projection_glyph,
-        overlay,
-    ] = artifact.chunks.as_slice()
-    else {
+    let Some((root_before, tail)) = artifact.chunks.split_first() else {
+        return Err(invalid(admission.boundary_root));
+    };
+    let Some((overlay, content_chunks)) = tail.split_last() else {
         return Err(invalid(admission.boundary_root));
     };
     let clips = artifact
@@ -2110,6 +2274,16 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
         clip: Some(recorder_authority.live_contents_clip().id),
         scroll: Some(baked.scroll()),
         ..Default::default()
+    };
+    let Some((wrapper_chunk, [root_glyph, projection_glyph])) =
+        classify_optional_child_mask_semantics(
+            &artifact,
+            content_chunks,
+            admission.content_wrapper,
+            outer_state,
+        )
+    else {
+        return Err(invalid(admission.boundary_root));
     };
     let glyph_exact = |chunk: &super::PaintChunk, owner: NodeKey, scope| {
         matches!(&artifact.ops[chunk.op_range.clone()], [super::PaintOp::PreparedText(prepared)]
@@ -2572,10 +2746,23 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
         )]);
     }
     artifact.owner_nodes = owners.clone();
+    let mut selection_indices = artifact
+        .chunks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, chunk)| {
+            (chunk.owner == admission.text_area_root
+                && chunk.id.role == super::PaintChunkRole::SelectionUnderlay)
+                .then_some(index)
+        });
+    let selection_index = selection_indices
+        .next()
+        .filter(|_| selection_indices.next().is_none())
+        .ok_or_else(|| invalid(admission.text_area_root))?;
     normalize_atomic_projection_selection_chunk(
         &mut artifact,
         &mut raster_before,
-        2,
+        selection_index,
         recorder_witness.selection,
     )
     .ok_or_else(|| invalid(admission.text_area_root))?;
@@ -2594,7 +2781,7 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
     normalize_atomic_projection_selection_chunk(
         &mut artifact,
         &mut raster_after,
-        2,
+        selection_index,
         recorder_witness.selection,
     )
     .ok_or_else(|| invalid(admission.text_area_root))?;
@@ -2603,14 +2790,24 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
     }
-    let [
-        root_before,
-        wrapper_chunk,
-        selection,
-        root_glyph,
-        projection_glyph,
-        overlay,
-    ] = artifact.chunks.as_slice()
+    let Some((root_before, tail)) = artifact.chunks.split_first() else {
+        return Err(invalid(admission.boundary_root));
+    };
+    let Some((overlay, content_chunks)) = tail.split_last() else {
+        return Err(invalid(admission.boundary_root));
+    };
+    let outer_state = crate::view::compositor::property_tree::PropertyTreeState {
+        clip: Some(baked.contents_clip()),
+        scroll: Some(baked.scroll()),
+        ..Default::default()
+    };
+    let Some((wrapper_chunk, [selection, root_glyph, projection_glyph])) =
+        classify_optional_child_mask_semantics(
+            &artifact,
+            content_chunks,
+            admission.content_wrapper,
+            outer_state,
+        )
     else {
         return Err(invalid(admission.boundary_root));
     };
@@ -2713,6 +2910,98 @@ pub(super) fn record_baked_scroll_host_artifact_with_stack_for_plan(
         }
         Err(error) => Err(error.reasons),
     }
+}
+
+/// Same-owner T+S host recorder. The dedicated witness projects only the
+/// owner's transform while `BakedScrollHost` keeps the established H/O vs C
+/// split. No generic ancestor transform capability accepts this shape.
+pub(super) fn record_same_owner_transform_scroll_host_artifact_for_plan(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    witness: PaintBakedScrollHostWitness,
+    consumed_transform: super::ConsumedSameOwnerTransformBoundaryWitness,
+) -> Result<PaintArtifact, Vec<FrameArtifactFallbackReason>> {
+    if roots != [consumed_transform.owner]
+        || witness.boundary_root() != consumed_transform.owner
+        || consumed_transform.transform.0 != consumed_transform.owner
+    {
+        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+            consumed_transform.owner,
+        )]);
+    }
+    let steps = record_ordered_property_steps_for_plan(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        [0.0; 2],
+        &super::PlannedBoundaryCutoutSet::default(),
+        Some(PaintTransformSurfaceWitness::canonical_root(
+            consumed_transform.owner,
+        )),
+        None,
+        Some(super::ConsumedAncestorProperty::SameOwnerTransformBoundary(
+            consumed_transform,
+        )),
+        PaintOpacityAuthority::Baked,
+        FrameArtifactAuthorityPolicy::BakedScrollHost(witness),
+        None,
+    )?;
+    let [RecordedTransformSurfaceStep::Artifact(artifact)] = steps.as_slice() else {
+        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+            consumed_transform.owner,
+        )]);
+    };
+    Ok(artifact.clone())
+}
+
+/// Same-owner E+S host recorder. The dedicated effect witness projects the
+/// owner's effect while the effect-surface contract detaches its chain and
+/// `BakedScrollHost` preserves the H/O vs C split. The final E composite is
+/// therefore the only opacity authority.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn record_same_owner_effect_scroll_host_artifact_for_plan(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    witness: PaintBakedScrollHostWitness,
+    contract: &EffectPropertySurfaceArtifactContract,
+    consumed_effect: super::ConsumedSameOwnerEffectBoundaryWitness,
+) -> Result<PaintArtifact, Vec<FrameArtifactFallbackReason>> {
+    if roots != [consumed_effect.owner]
+        || witness.boundary_root() != consumed_effect.owner
+        || contract.boundary_root() != consumed_effect.owner
+        || contract.isolated_leaf() != consumed_effect.effect
+    {
+        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+            consumed_effect.owner,
+        )]);
+    }
+    let steps = record_ordered_property_steps_for_plan(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        [0.0; 2],
+        &super::PlannedBoundaryCutoutSet::default(),
+        None,
+        None,
+        Some(super::ConsumedAncestorProperty::SameOwnerEffectBoundary(
+            consumed_effect,
+        )),
+        PaintOpacityAuthority::NeutralRootEffect(consumed_effect.effect.id),
+        FrameArtifactAuthorityPolicy::BakedScrollHost(witness),
+        None,
+    )?;
+    let [RecordedTransformSurfaceStep::Artifact(artifact)] = steps.as_slice() else {
+        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+            consumed_effect.owner,
+        )]);
+    };
+    Ok(artifact.clone())
 }
 
 /// Strict E->S checkpoint recorder. H/O keep the baked-scroll structural
@@ -2872,7 +3161,7 @@ pub(super) fn record_scroll_content_local_artifact_for_plan(
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
-        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness),
+        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness, None),
         None,
         Some(required_paint_offset.map(f32::to_bits)),
     ) {
@@ -2920,6 +3209,47 @@ pub(super) fn record_scroll_content_local_artifact_for_plan(
         )]);
     }
     Ok(artifact)
+}
+
+/// Generalized descendant-scroll content recorder. The frame-plan witness
+/// owns the surrounding receiver and exact clip partition; this function
+/// consumes only the scroll pair and records the complete native content
+/// subtree at the supplied, planner-verified offset-zero basis.
+pub(super) fn record_generalized_scroll_content_artifact_for_plan(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    witness: PaintScrollContentWitness,
+    text_area_witness: Option<PaintScrollTextAreaSubtreeWitness>,
+    required_paint_offset: [f32; 2],
+) -> Result<PaintArtifact, Vec<FrameArtifactFallbackReason>> {
+    let content_root = witness.content_root();
+    if required_paint_offset.iter().any(|value| !value.is_finite())
+        || arena.parent_of(content_root) != Some(witness.boundary_root())
+    {
+        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+            content_root,
+        )]);
+    }
+    let artifact = match record_frame_artifact_with_policy(
+        arena,
+        &[content_root],
+        property_trees,
+        paint_generations,
+        RendererMode::StrictPlan,
+        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness, text_area_witness),
+        None,
+        Some(required_paint_offset.map(f32::to_bits)),
+    ) {
+        Ok(FrameArtifactRecordOutcome::Artifact { artifact, .. }) => artifact,
+        Ok(FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility)) => {
+            return Err(eligibility.reasons);
+        }
+        Err(error) => return Err(error.reasons),
+    };
+    (!artifact.chunks.is_empty() && matches!(artifact.target, PaintArtifactTarget::CurrentTarget))
+        .then_some(artifact)
+        .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(content_root)])
 }
 
 /// Records the closed C1/C2a `Element wrapper -> plain TextArea` content subtree.
@@ -3129,9 +3459,21 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
         admission.paint_grammar,
         crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs { .. }
     ) {
-        let Some(selection) = artifact.chunks.get(1) else {
-            return Err(invalid(text_area_root));
-        };
+        let mut selection_indices =
+            artifact
+                .chunks
+                .iter()
+                .enumerate()
+                .filter_map(|(index, chunk)| {
+                    (chunk.owner == text_area_root
+                        && chunk.id.role == super::PaintChunkRole::SelectionUnderlay)
+                        .then_some(index)
+                });
+        let selection_index = selection_indices
+            .next()
+            .filter(|_| selection_indices.next().is_none())
+            .ok_or_else(|| invalid(text_area_root))?;
+        let selection = &artifact.chunks[selection_index];
         let selection_range = selection.op_range.clone();
         let rects = artifact.ops[selection_range]
             .iter()
@@ -3151,7 +3493,7 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
             rects.iter().copied(),
         )
         .ok_or_else(|| invalid(text_area_root))?;
-        artifact.chunks[1].payload_identity = sealed_identity;
+        artifact.chunks[selection_index].payload_identity = sealed_identity;
     }
     let local_state = crate::view::compositor::property_tree::PropertyTreeState {
         clip: Some(local_clip_id),
@@ -3240,23 +3582,23 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
             .as_ref()
                 == Some(&chunk.payload_identity)
     };
-    let chunks_match_grammar = match admission.paint_grammar {
+    let Some((wrapper, semantic)) = classify_optional_child_mask_semantics(
+        &artifact,
+        artifact.chunks.as_slice(),
+        content_root,
+        Default::default(),
+    ) else {
+        return Err(invalid(content_root));
+    };
+    let chunks_match_grammar = wrapper_matches(wrapper) && match admission.paint_grammar {
         crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::GlyphOnly => {
-            matches!(
-                artifact.chunks.as_slice(),
-                [wrapper, glyph] if wrapper_matches(wrapper) && glyph_matches(glyph)
-            )
+            matches!(semantic, [glyph] if glyph_matches(glyph))
         }
         crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
             ..
         } => {
-            matches!(
-                artifact.chunks.as_slice(),
-                [wrapper, selection, glyph]
-                    if wrapper_matches(wrapper)
-                        && selection_matches(selection)
-                        && glyph_matches(glyph)
-            )
+            matches!(semantic, [selection, glyph]
+                if selection_matches(selection) && glyph_matches(glyph))
         }
     };
     if !matches!(artifact.target, PaintArtifactTarget::CurrentTarget)
@@ -3698,7 +4040,12 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         clip: Some(local_clip_id),
         ..Default::default()
     };
-    let [wrapper, root_glyph, projection_glyph] = artifact.chunks.as_slice() else {
+    let Some((wrapper, [root_glyph, projection_glyph])) = classify_optional_child_mask_semantics(
+        &artifact,
+        artifact.chunks.as_slice(),
+        content_root,
+        Default::default(),
+    ) else {
         return Err(invalid(content_root));
     };
     let glyph_exact = |chunk: &super::PaintChunk, owner, scope| {
@@ -4005,15 +4352,20 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
         clip: Some(local_clip_id),
         ..Default::default()
     };
-    let (wrapper, root_glyph, preedit_underline, projection_glyph) = match artifact
-        .chunks
-        .as_slice()
-    {
-        [wrapper, root_glyph, projection_glyph] if source_after.preedit.is_none() => {
-            (wrapper, root_glyph, None, projection_glyph)
+    let Some((wrapper, semantic)) = classify_optional_child_mask_semantics(
+        &artifact,
+        artifact.chunks.as_slice(),
+        content_root,
+        Default::default(),
+    ) else {
+        return Err(invalid(content_root));
+    };
+    let (root_glyph, preedit_underline, projection_glyph) = match semantic {
+        [root_glyph, projection_glyph] if source_after.preedit.is_none() => {
+            (root_glyph, None, projection_glyph)
         }
-        [wrapper, root_glyph, projection_glyph, underline] if source_after.preedit.is_some() => {
-            (wrapper, root_glyph, Some(underline), projection_glyph)
+        [root_glyph, projection_glyph, underline] if source_after.preedit.is_some() => {
+            (root_glyph, Some(underline), projection_glyph)
         }
         _ => return Err(invalid(content_root)),
     };
@@ -4310,10 +4662,23 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         )]);
     }
     artifact.owner_nodes = expected_owners.clone();
+    let mut selection_indices = artifact
+        .chunks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, chunk)| {
+            (chunk.owner == text_area_root
+                && chunk.id.role == super::PaintChunkRole::SelectionUnderlay)
+                .then_some(index)
+        });
+    let selection_index = selection_indices
+        .next()
+        .filter(|_| selection_indices.next().is_none())
+        .ok_or_else(|| invalid(text_area_root))?;
     let selection_seal = normalize_atomic_projection_selection_chunk(
         &mut artifact,
         &mut raster_before,
-        1,
+        selection_index,
         recorder_witness.selection,
     )
     .ok_or_else(|| invalid(text_area_root))?;
@@ -4332,7 +4697,7 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
     let after_selection_seal = normalize_atomic_projection_selection_chunk(
         &mut artifact,
         &mut raster_after,
-        1,
+        selection_index,
         recorder_witness.selection,
     )
     .ok_or_else(|| invalid(text_area_root))?;
@@ -4348,7 +4713,14 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         clip: Some(local_clip_id),
         ..Default::default()
     };
-    let [wrapper, selection, root_glyph, projection_glyph] = artifact.chunks.as_slice() else {
+    let Some((wrapper, [selection, root_glyph, projection_glyph])) =
+        classify_optional_child_mask_semantics(
+            &artifact,
+            artifact.chunks.as_slice(),
+            content_root,
+            Default::default(),
+        )
+    else {
         return Err(invalid(content_root));
     };
     let glyph_exact = |chunk: &super::PaintChunk, owner, scope| {
@@ -4727,25 +5099,32 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
             && super::PaintPayloadIdentity::prepared_rects(rects.into_iter()).as_ref()
                 == Some(&chunk.payload_identity)
     };
-    let (glyph_index, underline_index) = match admission.paint_grammar {
+    let Some((wrapper, semantic)) = classify_optional_child_mask_semantics(
+        &artifact,
+        artifact.chunks.as_slice(),
+        content_root,
+        Default::default(),
+    ) else {
+        return Err(invalid(content_root));
+    };
+    if !wrapper_matches(wrapper) {
+        return Err(invalid(content_root));
+    }
+    let preedit_seal = match admission.paint_grammar {
         crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedGlyphs => {
-            if !matches!(artifact.chunks.as_slice(), [wrapper, glyph]
-                if wrapper_matches(wrapper) && glyph_matches(glyph))
-            {
-                return Err(invalid(content_root));
-            }
-            (1, None)
-        }
-        crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs {
-            start_char,
-            end_char,
-            color_rgba_bits,
-        } => {
-            let [wrapper, selection, glyph] = artifact.chunks.as_mut_slice() else {
+            let [glyph] = semantic else {
                 return Err(invalid(content_root));
             };
-            if !wrapper_matches(wrapper)
-                || !rect_chunk_matches(
+            if !glyph_matches(glyph) {
+                return Err(invalid(content_root));
+            }
+            None
+        }
+        crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs { .. } => {
+            let [selection, glyph] = semantic else {
+                return Err(invalid(content_root));
+            };
+            if !rect_chunk_matches(
                     selection,
                     super::PaintNodePhase::BeforeChildren,
                     0,
@@ -4755,54 +5134,71 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
             {
                 return Err(invalid(content_root));
             }
-            let rects = artifact.ops[selection.op_range.clone()]
-                .iter()
-                .map(|op| match op {
-                    super::PaintOp::DrawRect(rect) => Some(rect),
-                    _ => None,
-                })
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| invalid(text_area_root))?;
-            let selection_grammar =
-                crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-                    start_char,
-                    end_char,
-                    color_rgba_bits,
-                };
-            selection.payload_identity = super::PaintPayloadIdentity::prepared_text_area_selection(
-                selection_grammar,
-                rects.into_iter(),
-            )
-            .ok_or_else(|| invalid(text_area_root))?;
-            (2, None)
+            None
         }
         crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedPreeditGlyphs => {
-            if !matches!(artifact.chunks.as_slice(), [wrapper, glyph, underline]
-                if wrapper_matches(wrapper)
-                    && glyph_matches(glyph)
-                    && rect_chunk_matches(
+            let [glyph, underline] = semantic else {
+                return Err(invalid(content_root));
+            };
+            if !glyph_matches(glyph)
+                || !rect_chunk_matches(
                         underline,
                         super::PaintNodePhase::AfterChildren,
                         0,
                         super::PaintChunkRole::TextDecoration,
-                    ))
+                    )
             {
                 return Err(invalid(content_root));
             }
-            (1, Some(2))
+            let seal = preedit_after.ok_or_else(|| invalid(text_area_root))?;
+            if seal.glyph_identity != glyph.payload_identity
+                || seal.underline_identity != underline.payload_identity
+            {
+                return Err(invalid(text_area_root));
+            }
+            Some(seal)
         }
     };
-    let preedit_seal = if let Some(underline_index) = underline_index {
-        let seal = preedit_after.ok_or_else(|| invalid(text_area_root))?;
-        if seal.glyph_identity != artifact.chunks[glyph_index].payload_identity
-            || seal.underline_identity != artifact.chunks[underline_index].payload_identity
-        {
-            return Err(invalid(text_area_root));
-        }
-        Some(seal)
-    } else {
-        None
-    };
+    if let crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs {
+        start_char,
+        end_char,
+        color_rgba_bits,
+    } = admission.paint_grammar
+    {
+        let mut selection_indices = artifact
+            .chunks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, chunk)| {
+                (chunk.owner == text_area_root
+                    && chunk.id.role == super::PaintChunkRole::SelectionUnderlay)
+                    .then_some(index)
+            });
+        let selection_index = selection_indices
+            .next()
+            .filter(|_| selection_indices.next().is_none())
+            .ok_or_else(|| invalid(text_area_root))?;
+        let rects = artifact.ops[artifact.chunks[selection_index].op_range.clone()]
+            .iter()
+            .map(|op| match op {
+                super::PaintOp::DrawRect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| invalid(text_area_root))?;
+        let selection_grammar =
+            crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+                start_char,
+                end_char,
+                color_rgba_bits,
+            };
+        artifact.chunks[selection_index].payload_identity =
+            super::PaintPayloadIdentity::prepared_text_area_selection(
+                selection_grammar,
+                rects.into_iter(),
+            )
+            .ok_or_else(|| invalid(text_area_root))?;
+    }
     if !matches!(artifact.target, PaintArtifactTarget::CurrentTarget)
         || !artifact.effect_nodes.is_empty()
         || artifact.clip_nodes.as_slice() != [witness.local_contents_clip()]
@@ -4865,7 +5261,7 @@ pub(super) fn record_scroll_content_local_artifact_with_stack_for_plan(
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
-        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness),
+        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness, None),
         None,
         Some(consumed_stack),
         None,
@@ -4931,7 +5327,7 @@ pub(super) fn record_effect_scroll_content_local_artifact_with_stack_for_plan(
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
-        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness),
+        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness, None),
         None,
         Some(consumed_stack),
         Some(effect.id),
@@ -5026,11 +5422,7 @@ pub(super) fn record_transform_child_isolation_artifact_for_plan(
         if node.element.is_deferred_to_root_viewport_render() {
             return Err(vec![FrameArtifactFallbackReason::DeferredBoundary(key)]);
         }
-        if node
-            .element
-            .placement_eligibility_metadata()
-            .contains_runtime_layout_state
-        {
+        if !super::frame_plan::sampled_layout_transition_is_exact(node.element.as_ref()) {
             return Err(vec![FrameArtifactFallbackReason::NonEffectProperty(key)]);
         }
         let exact_state = property_trees.states.get(&key).is_some_and(|state| {
@@ -5130,6 +5522,201 @@ pub(super) fn record_property_scene_steps_for_plan(
     )
 }
 
+/// Records only the native scroll host phases around a detached content
+/// marker. The child subtree is intentionally never visited: its resident is
+/// recorded by the paired scroll-content authority. Rounded child-mask begin
+/// and end chunks therefore remain in this sequence and span the marker.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn record_frame_root_scroll_host_steps_for_plan(
+    arena: &NodeArena,
+    boundary_root: NodeKey,
+    content_root: NodeKey,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    scroll: crate::view::compositor::property_tree::ScrollNodeSnapshot,
+    contents_clip: crate::view::compositor::property_tree::ClipNodeSnapshot,
+    paint_offset: [f32; 2],
+    content_marker: super::PlannedBoundary,
+    consumed_transform: Option<super::ConsumedAncestorTransformWitness>,
+) -> Result<Vec<RecordedTransformSurfaceStep>, Vec<FrameArtifactFallbackReason>> {
+    let invalid = || vec![FrameArtifactFallbackReason::PropertyBoundary(boundary_root)];
+    let node = arena.get(boundary_root).ok_or_else(invalid)?;
+    if arena.parent_of(content_root) != Some(boundary_root)
+        || node.element.children() != [content_root]
+        || scroll.owner != boundary_root
+        || scroll.id.0 != boundary_root
+        || contents_clip.owner != boundary_root
+        || contents_clip.id.owner != boundary_root
+        || contents_clip.id.role
+            != crate::view::compositor::property_tree::ClipNodeRole::ContentsClip
+        || scroll.contents_clip
+            != crate::view::base_component::ScrollContentsClipWitness::ExactRect(
+                contents_clip.logical_scissor,
+            )
+        || content_marker.root != boundary_root
+        || content_marker.stable_id != node.element.stable_id()
+        || content_marker.kind != super::PlannedBoundaryKind::Scroll(scroll.id)
+    {
+        return Err(invalid());
+    }
+    let state = property_trees
+        .node_state_for(boundary_root)
+        .ok_or_else(invalid)?;
+    let expected_contents = crate::view::compositor::property_tree::PropertyTreeState {
+        clip: Some(contents_clip.id),
+        scroll: Some(scroll.id),
+        ..Default::default()
+    };
+    let expected_paint = consumed_transform
+        .map(
+            |transform| crate::view::compositor::property_tree::PropertyTreeState {
+                transform: Some(transform.transform),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_default();
+    let expected_live_contents = crate::view::compositor::property_tree::PropertyTreeState {
+        transform: expected_paint.transform,
+        ..expected_contents
+    };
+    if consumed_transform.is_some_and(|transform| {
+        transform.parent_boundary != transform.transform.0
+            || transform.child_boundary != boundary_root
+    }) || state.paint != expected_paint
+        || state.descendants != expected_live_contents
+    {
+        return Err(invalid());
+    }
+    let generation = paint_generations
+        .local_generations_for(boundary_root)
+        .ok_or_else(invalid)?;
+    let revision = super::PaintContentRevision {
+        self_paint_revision: generation.self_paint_revision,
+        composite_revision: generation.composite_revision,
+        topology_revision: generation.topology_revision,
+    };
+    let baked = super::PaintBakedScrollHostWitness::new(
+        boundary_root,
+        content_root,
+        scroll,
+        contents_clip.id,
+    )
+    .ok_or_else(invalid)?;
+    let mut recording_context =
+        node.element
+            .shadow_paint_recording_context(super::PaintRecordingContext {
+                paint_offset,
+                opacity_authority: super::PaintOpacityAuthority::Baked,
+                ..Default::default()
+            });
+    recording_context.recording_owner = Some(boundary_root);
+    recording_context.recording_owner_stable_id = Some(node.element.stable_id());
+    recording_context.baked_scroll_host = Some(baked.for_target(boundary_root));
+    recording_context.consumed_ancestor_property = consumed_transform.map(|transform| {
+        super::ConsumedAncestorProperty::Transform(transform.for_target(boundary_root))
+    });
+    recording_context.frame_root_scroll_host_child_mask = true;
+    recording_context.opacity_authority = super::PaintOpacityAuthority::Baked;
+
+    let metadata = node
+        .element
+        .record_shadow_paint_metadata_plan(
+            boundary_root,
+            Default::default(),
+            Default::default(),
+            revision,
+            arena,
+            recording_context,
+        )
+        .ok_or_else(invalid)?;
+    let artifacts = node
+        .element
+        .record_shadow_paint_artifact_plan(
+            boundary_root,
+            Default::default(),
+            Default::default(),
+            revision,
+            arena,
+            recording_context,
+        )
+        .ok_or_else(invalid)?;
+    let metadata_matches = |metadata: &super::PaintChunkMetadata,
+                            artifact: &super::PaintArtifact| {
+        let [chunk] = artifact.chunks.as_slice() else {
+            return false;
+        };
+        artifact.target == super::PaintArtifactTarget::CurrentTarget
+            && artifact.clip_nodes.is_empty()
+            && artifact.effect_nodes.is_empty()
+            && artifact.owner_nodes.as_slice()
+                == [super::PaintOwnerSnapshot {
+                    owner: boundary_root,
+                    parent: None,
+                }]
+            && chunk.id == metadata.id
+            && chunk.owner == metadata.owner
+            && [
+                chunk.bounds.x,
+                chunk.bounds.y,
+                chunk.bounds.width,
+                chunk.bounds.height,
+            ]
+            .map(f32::to_bits)
+                == [
+                    metadata.bounds.x,
+                    metadata.bounds.y,
+                    metadata.bounds.width,
+                    metadata.bounds.height,
+                ]
+                .map(f32::to_bits)
+            && chunk.properties == metadata.properties
+            && chunk.content_revision == metadata.content_revision
+            && chunk.payload_identity == metadata.payload_identity
+            && chunk.op_range == (0..artifact.ops.len())
+    };
+    if metadata.before_children.len() != artifacts.before_children.len()
+        || metadata.after_children.len() != artifacts.after_children.len()
+        || !metadata
+            .before_children
+            .iter()
+            .zip(&artifacts.before_children)
+            .all(|(metadata, artifact)| metadata_matches(metadata, artifact))
+        || !metadata
+            .after_children
+            .iter()
+            .zip(&artifacts.after_children)
+            .all(|(metadata, artifact)| metadata_matches(metadata, artifact))
+    {
+        return Err(vec![FrameArtifactFallbackReason::Validation(
+            super::PaintCoverageValidationError::RecordingPassMismatch,
+        )]);
+    }
+    if artifacts.before_children.is_empty()
+        || artifacts.after_children.last().is_none_or(|artifact| {
+            artifact.chunks.first().is_none_or(|chunk| {
+                chunk.owner != boundary_root
+                    || chunk.id.phase != super::PaintNodePhase::AfterChildren
+                    || chunk.id.role != super::PaintChunkRole::ScrollbarOverlay
+            })
+        })
+    {
+        return Err(invalid());
+    }
+    let mut steps = artifacts
+        .before_children
+        .into_iter()
+        .map(RecordedTransformSurfaceStep::Artifact)
+        .collect::<Vec<_>>();
+    steps.push(RecordedTransformSurfaceStep::Boundary(content_marker));
+    steps.extend(
+        artifacts
+            .after_children
+            .into_iter()
+            .map(RecordedTransformSurfaceStep::Artifact),
+    );
+    Ok(steps)
+}
+
 pub(super) fn record_transform_property_surface_steps_for_plan(
     arena: &NodeArena,
     root: NodeKey,
@@ -5150,6 +5737,36 @@ pub(super) fn record_transform_property_surface_steps_for_plan(
         None,
         None,
         PaintOpacityAuthority::Baked,
+        FrameArtifactAuthorityPolicy::TransformPropertySurface(witness),
+        None,
+    )
+}
+
+/// Records a transform surface nested below one already-separated effect.
+/// The transform remains the raster owner while the exact ancestor effect is
+/// projected out, so opacity can be applied once by the outer E composite.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn record_effect_transform_property_surface_steps_for_plan(
+    arena: &NodeArena,
+    root: NodeKey,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    witness: PaintTransformSurfaceWitness,
+    paint_offset: [f32; 2],
+    planned_boundary_cutouts: &super::PlannedBoundaryCutoutSet,
+    consumed_effect: super::ConsumedAncestorEffectWitness,
+) -> Result<Vec<RecordedTransformSurfaceStep>, Vec<FrameArtifactFallbackReason>> {
+    record_ordered_property_steps_for_plan(
+        arena,
+        &[root],
+        property_trees,
+        paint_generations,
+        paint_offset,
+        planned_boundary_cutouts,
+        Some(witness),
+        None,
+        Some(super::ConsumedAncestorProperty::Effect(consumed_effect)),
+        PaintOpacityAuthority::NeutralRootEffect(consumed_effect.effect.id),
         FrameArtifactAuthorityPolicy::TransformPropertySurface(witness),
         None,
     )
@@ -5500,6 +6117,174 @@ pub(super) fn record_nested_scroll_content_artifact_for_plan(
         .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(root)])
 }
 
+#[derive(Clone, Debug)]
+pub(super) enum RecordedNativeScrollHostStep {
+    Artifact(PaintArtifact),
+    ContentReceiver(NativeScrollContentReceiverCutout),
+}
+
+/// Records one forest boundary's host around a typed, non-leaf-limited
+/// content receiver. A nested boundary consumes only its parent scroll edge;
+/// the boundary's own S/C pair remains the receiver's authority.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn record_native_scroll_forest_host_steps_for_plan(
+    arena: &NodeArena,
+    boundary_root: NodeKey,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    host: PaintBakedScrollHostWitness,
+    edge: super::PaintScrollForestEdgeWitness,
+    consumed_parent: Option<super::ConsumedAncestorScrollContentsWitness>,
+    content_stable_id: u64,
+) -> Result<Vec<RecordedNativeScrollHostStep>, Vec<FrameArtifactFallbackReason>> {
+    if host.boundary_root() != boundary_root
+        || host.child() != edge.content_root()
+        || host.scroll() != edge.scroll_snapshot().id
+        || host.contents_clip() != edge.contents_clip_snapshot().id
+        || edge.boundary_root() != boundary_root
+        || content_stable_id == 0
+        || consumed_parent.is_some_and(|parent| parent.target_owner != boundary_root)
+    {
+        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+            boundary_root,
+        )]);
+    }
+    let receiver = NativeScrollContentReceiverCutout {
+        stable_id: content_stable_id,
+        witness: edge,
+    };
+    let context = PaintRecordingContext {
+        baked_scroll_host: Some(host),
+        scroll_forest_host: Some(edge),
+        frame_root_scroll_host_child_mask: true,
+        ..PaintRecordingContext::default()
+    };
+    let record = |mode| {
+        record_retained_coverage_manifest_with_native_scroll_receiver(
+            arena,
+            &[boundary_root],
+            mode,
+            property_trees,
+            paint_generations,
+            context,
+            receiver,
+        )
+    };
+    let metadata = record(CoverageRecordingMode::MetadataOnly);
+    let full = record(CoverageRecordingMode::FullArtifact);
+    if !metadata.validation_errors.is_empty()
+        || !full.validation_errors.is_empty()
+        || !canonical_manifest_matches(&metadata, &full)
+    {
+        return Err(vec![FrameArtifactFallbackReason::Validation(
+            PaintCoverageValidationError::RecordingPassMismatch,
+        )]);
+    }
+    let exact = |manifest: &super::PaintCoverageManifest| {
+        let mut receiver_count = 0usize;
+        manifest.items.iter().all(|item| match item {
+            PaintCoverageItem::ArtifactChunk { chunk, .. } => {
+                chunk.owner == boundary_root && chunk.properties == Default::default()
+            }
+            PaintCoverageItem::TransparentNode {
+                owner, properties, ..
+            }
+            | PaintCoverageItem::CulledSubtree {
+                owner, properties, ..
+            } => *owner == boundary_root && *properties == Default::default(),
+            PaintCoverageItem::NativeScrollContentReceiver { cutout, .. } => {
+                receiver_count += 1;
+                *cutout == receiver
+            }
+            _ => false,
+        }) && receiver_count == 1
+    };
+    if !exact(&metadata) || !exact(&full) {
+        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+            boundary_root,
+        )]);
+    }
+    let receiver_index = full
+        .items
+        .iter()
+        .position(|item| matches!(item, PaintCoverageItem::NativeScrollContentReceiver { .. }))
+        .expect("exact native scroll host has one receiver");
+    let mut before = full.clone();
+    before.items.truncate(receiver_index);
+    let mut after = full;
+    after.items.drain(..=receiver_index);
+    let before_steps = materialize_transform_surface_steps(before)?;
+    let [RecordedTransformSurfaceStep::Artifact(host_before)] = before_steps.as_slice() else {
+        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+            boundary_root,
+        )]);
+    };
+    let after_steps = materialize_transform_surface_steps(after)?;
+    let [RecordedTransformSurfaceStep::Artifact(overlay_after)] = after_steps.as_slice() else {
+        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+            boundary_root,
+        )]);
+    };
+    Ok(vec![
+        RecordedNativeScrollHostStep::Artifact(host_before.clone()),
+        RecordedNativeScrollHostStep::ContentReceiver(receiver),
+        RecordedNativeScrollHostStep::Artifact(overlay_after.clone()),
+    ])
+}
+
+/// Records the detached content program for one forest edge. Immediate child
+/// scroll boundaries become exact ordered markers; neutral wrapper artifacts
+/// before, between, and after sibling markers remain in the same program.
+pub(super) fn record_native_scroll_forest_content_steps_for_plan(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    edge: super::PaintScrollForestEdgeWitness,
+    child_cutouts: &[super::PlannedBoundary],
+) -> Result<Vec<RecordedTransformSurfaceStep>, Vec<FrameArtifactFallbackReason>> {
+    let cutouts = super::PlannedBoundaryCutoutSet::from_iter(
+        child_cutouts
+            .iter()
+            .copied()
+            .map(|cutout| (cutout.root, cutout)),
+    );
+    if cutouts.len() != child_cutouts.len()
+        || child_cutouts.iter().any(|cutout| {
+            !matches!(cutout.kind, super::PlannedBoundaryKind::Scroll(scroll) if scroll.0 == cutout.root)
+        })
+    {
+        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+            edge.content_root(),
+        )]);
+    }
+    let steps = record_ordered_property_steps_for_plan(
+        arena,
+        &[edge.content_root()],
+        property_trees,
+        paint_generations,
+        edge.normalization_paint_offset(),
+        &cutouts,
+        None,
+        None,
+        Some(edge.consumed_property()),
+        PaintOpacityAuthority::Baked,
+        FrameArtifactAuthorityPolicy::NativeScrollForestContent(edge),
+        Some(edge.normalization_paint_offset().map(f32::to_bits)),
+    )?;
+    let actual = steps
+        .iter()
+        .filter_map(|step| match step {
+            RecordedTransformSurfaceStep::Boundary(boundary) => Some(*boundary),
+            RecordedTransformSurfaceStep::Artifact(_) => None,
+        })
+        .collect::<Vec<_>>();
+    (actual == child_cutouts).then_some(steps).ok_or_else(|| {
+        vec![FrameArtifactFallbackReason::PropertyBoundary(
+            edge.content_root(),
+        )]
+    })
+}
+
 /// S1 offset-zero recorder for the direct transformed scroll content.  The
 /// transform remains the surface authority while the inherited scroll and
 /// contents clip are consumed atomically by the typed ancestor witness.
@@ -5622,6 +6407,67 @@ pub(super) fn record_property_scroll_receiver_steps_for_plan(
     })
 }
 
+/// Seals the receiver program for a native node that owns both T and S.
+///
+/// This recorder intentionally emits no artifact span: owner self paint is
+/// delegated to the scroll H/O recorder, descendants to the offset-zero C
+/// recorder, and the outer T target contains exactly one typed S insertion.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn record_same_owner_transform_scroll_receiver_steps_for_plan(
+    arena: &NodeArena,
+    receiver_root: NodeKey,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    transform: TransformNodeSnapshot,
+    scroll: ScrollNodeSnapshot,
+    contents_clip: ClipNodeSnapshot,
+    scroll_cutout: super::PlannedBoundary,
+) -> Result<Vec<RecordedTransformSurfaceStep>, Vec<FrameArtifactFallbackReason>> {
+    let invalid = || vec![FrameArtifactFallbackReason::PropertyBoundary(receiver_root)];
+    let node = arena.get(receiver_root).ok_or_else(invalid)?;
+    let [content_root] = node.element.children() else {
+        return Err(invalid());
+    };
+    let state = property_trees
+        .node_state_for(receiver_root)
+        .ok_or_else(invalid)?;
+    let generations = paint_generations
+        .local_generations_for(receiver_root)
+        .ok_or_else(invalid)?;
+    if transform.owner != receiver_root
+        || transform.id.0 != receiver_root
+        || transform.parent.is_some()
+        || transform.generation == 0
+        || scroll.owner != receiver_root
+        || scroll.id.0 != receiver_root
+        || scroll.parent.is_some()
+        || scroll.generation == 0
+        || contents_clip.owner != receiver_root
+        || contents_clip.id.owner != receiver_root
+        || contents_clip.id.role != ClipNodeRole::ContentsClip
+        || contents_clip.generation == 0
+        || scroll_cutout.root != receiver_root
+        || scroll_cutout.stable_id != node.element.stable_id()
+        || scroll_cutout.kind != super::PlannedBoundaryKind::Scroll(scroll.id)
+        || state.paint.transform != Some(transform.id)
+        || state.paint.effect.is_some()
+        || state.paint.scroll.is_some()
+        || state.descendants.transform != Some(transform.id)
+        || state.descendants.scroll != Some(scroll.id)
+        || state.descendants.clip != Some(contents_clip.id)
+        || generations.topology_revision == 0
+        || node.element.is_deferred_to_root_viewport_render()
+        || node
+            .element
+            .retained_scroll_normalized_paint_capability()
+            .is_none()
+        || arena.parent_of(*content_root) != Some(receiver_root)
+    {
+        return Err(invalid());
+    }
+    Ok(vec![RecordedTransformSurfaceStep::Boundary(scroll_cutout)])
+}
+
 /// B4-2C checkpoint recorder for one direct `Effect -> ScrollContents`
 /// receiver. The owning effect is neutralized by the supplied effect
 /// contract, while the scroll host is emitted as one typed insertion marker.
@@ -5669,6 +6515,74 @@ pub(super) fn record_property_effect_scroll_receiver_steps_for_plan(
     })
 }
 
+/// Seals the receiver program for a native node that owns both E and S.
+/// H/C/O owns all self and descendant paint; this effect-neutral receiver
+/// therefore contains exactly one typed S insertion and applies opacity only
+/// when the assembled target is composited.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn record_same_owner_effect_scroll_receiver_steps_for_plan(
+    arena: &NodeArena,
+    receiver_root: NodeKey,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    contract: &EffectPropertySurfaceArtifactContract,
+    effect: EffectNodeSnapshot,
+    scroll: ScrollNodeSnapshot,
+    contents_clip: ClipNodeSnapshot,
+    scroll_cutout: super::PlannedBoundary,
+) -> Result<Vec<RecordedTransformSurfaceStep>, Vec<FrameArtifactFallbackReason>> {
+    let invalid = || vec![FrameArtifactFallbackReason::PropertyBoundary(receiver_root)];
+    let node = arena.get(receiver_root).ok_or_else(invalid)?;
+    let [content_root] = node.element.children() else {
+        return Err(invalid());
+    };
+    let state = property_trees
+        .node_state_for(receiver_root)
+        .ok_or_else(invalid)?;
+    let generations = paint_generations
+        .local_generations_for(receiver_root)
+        .ok_or_else(invalid)?;
+    if !contract.is_canonical()
+        || contract.boundary_root() != receiver_root
+        || contract.stable_id() != node.element.stable_id()
+        || contract.isolated_leaf() != effect
+        || effect.owner != receiver_root
+        || effect.id.0 != receiver_root
+        || effect.parent.is_some()
+        || effect.generation == 0
+        || !effect.opacity.is_finite()
+        || !(0.0..=1.0).contains(&effect.opacity)
+        || scroll.owner != receiver_root
+        || scroll.id.0 != receiver_root
+        || scroll.parent.is_some()
+        || scroll.generation == 0
+        || contents_clip.owner != receiver_root
+        || contents_clip.id.owner != receiver_root
+        || contents_clip.id.role != ClipNodeRole::ContentsClip
+        || contents_clip.generation == 0
+        || scroll_cutout.root != receiver_root
+        || scroll_cutout.stable_id != node.element.stable_id()
+        || scroll_cutout.kind != super::PlannedBoundaryKind::Scroll(scroll.id)
+        || state.paint.transform.is_some()
+        || state.paint.effect != Some(effect.id)
+        || state.paint.scroll.is_some()
+        || state.descendants.transform.is_some()
+        || state.descendants.effect != Some(effect.id)
+        || state.descendants.scroll != Some(scroll.id)
+        || state.descendants.clip != Some(contents_clip.id)
+        || generations.topology_revision == 0
+        || node.element.is_deferred_to_root_viewport_render()
+        || node
+            .element
+            .retained_scroll_normalized_paint_capability()
+            .is_none()
+        || arena.parent_of(*content_root) != Some(receiver_root)
+    {
+        return Err(invalid());
+    }
+    Ok(vec![RecordedTransformSurfaceStep::Boundary(scroll_cutout)])
+}
+
 /// Records one canonical effect surface at any property-forest depth. Direct
 /// child surfaces are typed cutouts, so this pass never traverses or bakes a
 /// descendant isolation. The exact live ancestor effect/clip suffixes are
@@ -5713,6 +6627,55 @@ pub(super) fn record_effect_property_surface_steps_for_plan(
     )
 }
 
+/// Records the inner effect half of one sealed same-owner
+/// `Transform -> Effect` boundary pair. The transform is projected only by
+/// the dedicated same-owner capability; the generic ancestor witness remains
+/// unavailable when both boundaries belong to the same node.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn record_same_owner_transform_effect_surface_steps_for_plan(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    contract: &EffectPropertySurfaceArtifactContract,
+    paint_offset: [f32; 2],
+    planned_boundary_cutouts: &super::PlannedBoundaryCutoutSet,
+    consumed_transform: super::ConsumedSameOwnerTransformBoundaryWitness,
+) -> Result<Vec<RecordedTransformSurfaceStep>, Vec<FrameArtifactFallbackReason>> {
+    if !contract.is_canonical()
+        || contract.boundary_root() != consumed_transform.owner
+        || contract.isolated_leaf().owner != consumed_transform.owner
+        || arena
+            .get(contract.boundary_root())
+            .is_none_or(|node| node.element.stable_id() != contract.stable_id())
+        || property_trees
+            .effect_snapshot_for(Some(contract.isolated_leaf().id))
+            .as_deref()
+            != Some(contract.live_effect_chain())
+    {
+        return Err(vec![FrameArtifactFallbackReason::InvalidRootEffect(
+            contract.boundary_root(),
+        )]);
+    }
+    record_ordered_property_steps_for_plan(
+        arena,
+        &[contract.boundary_root()],
+        property_trees,
+        paint_generations,
+        paint_offset,
+        planned_boundary_cutouts,
+        Some(PaintTransformSurfaceWitness::canonical_root(
+            contract.boundary_root(),
+        )),
+        Some(contract),
+        Some(super::ConsumedAncestorProperty::SameOwnerTransformBoundary(
+            consumed_transform,
+        )),
+        PaintOpacityAuthority::NeutralRootEffect(contract.isolated_leaf().id),
+        FrameArtifactAuthorityPolicy::EffectPropertySurface(contract.isolated_leaf().id),
+        None,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn record_ordered_property_steps_for_plan(
     arena: &NodeArena,
@@ -5728,9 +6691,43 @@ fn record_ordered_property_steps_for_plan(
     policy: FrameArtifactAuthorityPolicy,
     required_scroll_content_paint_offset_bits: Option<[u32; 2]>,
 ) -> Result<Vec<RecordedTransformSurfaceStep>, Vec<FrameArtifactFallbackReason>> {
+    record_ordered_property_steps_with_stack_for_plan(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        paint_offset,
+        planned_boundary_cutouts,
+        transform_surface_authority,
+        effect_surface_authority,
+        consumed_ancestor_property,
+        None,
+        opacity_authority,
+        policy,
+        required_scroll_content_paint_offset_bits,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_ordered_property_steps_with_stack_for_plan(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    paint_offset: [f32; 2],
+    planned_boundary_cutouts: &super::PlannedBoundaryCutoutSet,
+    transform_surface_authority: Option<PaintTransformSurfaceWitness>,
+    effect_surface_authority: Option<&EffectPropertySurfaceArtifactContract>,
+    consumed_ancestor_property: Option<super::ConsumedAncestorProperty>,
+    consumed_ancestor_property_stack: Option<super::ConsumedAncestorPropertyStackWitness>,
+    opacity_authority: PaintOpacityAuthority,
+    policy: FrameArtifactAuthorityPolicy,
+    required_scroll_content_paint_offset_bits: Option<[u32; 2]>,
+) -> Result<Vec<RecordedTransformSurfaceStep>, Vec<FrameArtifactFallbackReason>> {
     let context = PaintRecordingContext {
         paint_offset,
         consumed_ancestor_property,
+        consumed_ancestor_property_stack,
         opacity_authority,
         required_scroll_content_paint_offset_bits,
         baked_scroll_host: baked_scroll_host_witness(policy),
@@ -5778,6 +6775,132 @@ fn record_ordered_property_steps_for_plan(
     materialize_transform_surface_steps(full)
 }
 
+/// Records one detached scroll-content receiver with exactly one descendant
+/// effect cutout. ScrollContents is projected from both spans while the live
+/// offset is represented only by `witness.normalization_paint_offset()`.
+pub(super) fn record_scroll_content_effect_receiver_steps_for_plan(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    witness: PaintScrollContentWitness,
+    effect_cutout: super::PlannedBoundary,
+    consumed_transform: Option<super::ConsumedAncestorTransformWitness>,
+) -> Result<Vec<RecordedTransformSurfaceStep>, Vec<FrameArtifactFallbackReason>> {
+    let content_root = witness.content_root();
+    if effect_cutout.root == content_root
+        || !matches!(effect_cutout.kind, super::PlannedBoundaryKind::Isolation(_))
+    {
+        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+            effect_cutout.root,
+        )]);
+    }
+    let content_node = arena.get(content_root).ok_or_else(|| {
+        vec![FrameArtifactFallbackReason::Validation(
+            PaintCoverageValidationError::MissingNode(content_root),
+        )]
+    })?;
+    let content_element = content_node
+        .element
+        .as_any()
+        .downcast_ref::<crate::view::base_component::Element>()
+        .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(content_root)])?;
+    let required_paint_offset = content_element
+        .exact_retained_scroll_content_wrapper_recording_offset(
+            witness.normalization_paint_offset(),
+        )
+        .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(content_root)])?;
+    let consumed_entries = consumed_transform
+        .map(|transform| {
+            vec![
+                super::ConsumedAncestorProperty::Transform(transform),
+                witness.consumed_property(),
+            ]
+        })
+        .unwrap_or_else(|| vec![witness.consumed_property()]);
+    let consumed_stack =
+        super::ConsumedAncestorPropertyStackWitness::new(content_root, &consumed_entries)
+            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(content_root)])?;
+    let cutouts = super::PlannedBoundaryCutoutSet::from_iter([(effect_cutout.root, effect_cutout)]);
+    let steps = record_ordered_property_steps_with_stack_for_plan(
+        arena,
+        &[content_root],
+        property_trees,
+        paint_generations,
+        witness.normalization_paint_offset(),
+        &cutouts,
+        None,
+        None,
+        None,
+        Some(consumed_stack),
+        PaintOpacityAuthority::Baked,
+        FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(witness, effect_cutout),
+        Some(required_paint_offset.map(f32::to_bits)),
+    )?;
+    let marker_count = steps.iter().filter(|step| {
+        matches!(step, RecordedTransformSurfaceStep::Boundary(marker) if *marker == effect_cutout)
+    }).count();
+    (marker_count == 1).then_some(steps).ok_or_else(|| {
+        vec![FrameArtifactFallbackReason::PropertyBoundary(
+            effect_cutout.root,
+        )]
+    })
+}
+
+/// Records the isolated descendant E surface in offset-zero scroll-content
+/// space. The scroll/clip pair is projected but its offset never enters the E
+/// artifact identity; opacity remains the effect surface's composite input.
+pub(super) fn record_scroll_content_effect_surface_steps_for_plan(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    witness: PaintScrollContentWitness,
+    contract: &EffectPropertySurfaceArtifactContract,
+    consumed_transform: Option<super::ConsumedAncestorTransformWitness>,
+) -> Result<Vec<RecordedTransformSurfaceStep>, Vec<FrameArtifactFallbackReason>> {
+    let effect_root = contract.boundary_root();
+    let content_root = witness.content_root();
+    let required_paint_offset = arena
+        .get(content_root)
+        .and_then(|node| {
+            node.element
+                .as_any()
+                .downcast_ref::<crate::view::base_component::Element>()
+                .and_then(|element| {
+                    element.exact_retained_scroll_content_wrapper_recording_offset(
+                        witness.normalization_paint_offset(),
+                    )
+                })
+        })
+        .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(content_root)])?;
+    let scroll_property = witness.consumed_property().for_target(effect_root);
+    let consumed_entries = consumed_transform
+        .map(|transform| {
+            vec![
+                super::ConsumedAncestorProperty::Transform(transform),
+                scroll_property,
+            ]
+        })
+        .unwrap_or_else(|| vec![scroll_property]);
+    let consumed_stack =
+        super::ConsumedAncestorPropertyStackWitness::new(effect_root, &consumed_entries)
+            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(effect_root)])?;
+    record_ordered_property_steps_with_stack_for_plan(
+        arena,
+        &[effect_root],
+        property_trees,
+        paint_generations,
+        witness.normalization_paint_offset(),
+        &super::PlannedBoundaryCutoutSet::default(),
+        None,
+        Some(contract),
+        None,
+        Some(consumed_stack),
+        PaintOpacityAuthority::NeutralRootEffect(contract.isolated_leaf().id),
+        FrameArtifactAuthorityPolicy::EffectPropertySurface(contract.isolated_leaf().id),
+        Some(required_paint_offset.map(f32::to_bits)),
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RootOpacityGroupPlan {
     root: NodeKey,
@@ -5808,7 +6931,12 @@ enum FrameArtifactAuthorityPolicy {
         PaintScrollInteractiveTextAreaSubtreeWitness,
     ),
     ScrollTransformHost(PaintBakedScrollHostWitness, super::PlannedBoundary),
-    ScrollContentLocal(PaintScrollContentWitness),
+    ScrollContentLocal(
+        PaintScrollContentWitness,
+        Option<PaintScrollTextAreaSubtreeWitness>,
+    ),
+    ScrollContentEffectReceiver(PaintScrollContentWitness, super::PlannedBoundary),
+    NativeScrollForestContent(super::PaintScrollForestEdgeWitness),
     ScrollTextAreaSubtreeLocal(PaintScrollTextAreaSubtreeWitness),
     ScrollAtomicProjectionTextAreaSubtreeLocal(AtomicProjectionRecorderWitness),
     ScrollInteractiveTextAreaSubtreeLocal(PaintScrollInteractiveTextAreaSubtreeWitness),
@@ -5968,7 +7096,8 @@ fn materialize_transform_surface_steps(
             }
             PaintCoverageItem::ArtifactChunk { ops: None, .. }
             | PaintCoverageItem::LegacyBoundary { .. }
-            | PaintCoverageItem::NestedScrollContentReceiver { .. } => unreachable!(
+            | PaintCoverageItem::NestedScrollContentReceiver { .. }
+            | PaintCoverageItem::NativeScrollContentReceiver { .. } => unreachable!(
                 "eligible full transform-surface manifest has only chunks, transparent nodes, culled nodes, and planned boundaries"
             ),
         }
@@ -6026,7 +7155,8 @@ fn record_frame_artifact_with_policy_and_stack(
     let initial_recording_context =
         PaintRecordingContext {
             paint_offset: match policy {
-                FrameArtifactAuthorityPolicy::ScrollContentLocal(witness) => {
+                FrameArtifactAuthorityPolicy::ScrollContentLocal(witness, _)
+                | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(witness, _) => {
                     witness.normalization_paint_offset()
                 }
                 FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(witness) => {
@@ -6041,7 +7171,8 @@ fn record_frame_artifact_with_policy_and_stack(
                 _ => [0.0, 0.0],
             },
             consumed_ancestor_property: match policy {
-                FrameArtifactAuthorityPolicy::ScrollContentLocal(witness) => {
+                FrameArtifactAuthorityPolicy::ScrollContentLocal(witness, _)
+                | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(witness, _) => {
                     consumed_ancestor_property_stack
                         .is_none()
                         .then(|| witness.consumed_property())
@@ -6074,7 +7205,9 @@ fn record_frame_artifact_with_policy_and_stack(
                 | FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(_, _)
                 | FrameArtifactAuthorityPolicy::BakedScrollInteractiveTextAreaSubtreeHost(_, _)
                 | FrameArtifactAuthorityPolicy::ScrollTransformHost(_, _)
-                | FrameArtifactAuthorityPolicy::ScrollContentLocal(_)
+                | FrameArtifactAuthorityPolicy::ScrollContentLocal(_, _)
+                | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
+                | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_)
                 | FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(_) => {
                     PaintOpacityAuthority::Baked
                 }
@@ -6089,6 +7222,7 @@ fn record_frame_artifact_with_policy_and_stack(
             baked_scroll_host: baked_scroll_host_witness(policy),
             scroll_text_area_subtree: match policy {
                 FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(witness) => Some(witness),
+                FrameArtifactAuthorityPolicy::ScrollContentLocal(_, witness) => witness,
                 _ => None,
             },
             baked_scroll_text_area_subtree: match policy {
@@ -6207,7 +7341,9 @@ fn record_frame_artifact_with_policy_and_stack(
             | FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(_, _)
             | FrameArtifactAuthorityPolicy::BakedScrollInteractiveTextAreaSubtreeHost(_, _)
             | FrameArtifactAuthorityPolicy::ScrollTransformHost(_, _)
-            | FrameArtifactAuthorityPolicy::ScrollContentLocal(_)
+            | FrameArtifactAuthorityPolicy::ScrollContentLocal(_, _)
+            | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
+            | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_)
             | FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(_)
             | FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(_)
             | FrameArtifactAuthorityPolicy::ScrollInteractiveTextAreaSubtreeLocal(_) => {
@@ -6341,6 +7477,7 @@ fn assess_manifest(
         .collect::<Vec<_>>();
     let mut chunk_count = 0usize;
     let mut op_count = 0usize;
+    let mut planned_boundary_count = 0usize;
     let mut debug_boundaries = Vec::new();
     for item in &manifest.items {
         match item {
@@ -6355,8 +7492,25 @@ fn assess_manifest(
                         reasons.push(reason);
                     }
                 }
-                if matches!(policy, FrameArtifactAuthorityPolicy::ScrollContentLocal(_))
-                    && chunk.properties != Default::default()
+                if let FrameArtifactAuthorityPolicy::ScrollContentLocal(_, witness) = policy
+                    && match witness {
+                        Some(witness) => !scroll_text_area_subtree_local_properties_are_exact(
+                            chunk.properties,
+                            witness,
+                        ),
+                        None => chunk.properties != Default::default(),
+                    }
+                {
+                    let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
+                    if !reasons.contains(&reason) {
+                        reasons.push(reason);
+                    }
+                }
+                if matches!(
+                    policy,
+                    FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
+                        | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_)
+                ) && chunk.properties != Default::default()
                 {
                     let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
                     if !reasons.contains(&reason) {
@@ -6523,8 +7677,25 @@ fn assess_manifest(
             PaintCoverageItem::TransparentNode {
                 owner, properties, ..
             } => {
-                if matches!(policy, FrameArtifactAuthorityPolicy::ScrollContentLocal(_))
-                    && *properties != Default::default()
+                if let FrameArtifactAuthorityPolicy::ScrollContentLocal(_, witness) = policy
+                    && match witness {
+                        Some(witness) => !scroll_text_area_subtree_local_properties_are_exact(
+                            *properties,
+                            witness,
+                        ),
+                        None => *properties != Default::default(),
+                    }
+                {
+                    let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
+                    if !reasons.contains(&reason) {
+                        reasons.push(reason);
+                    }
+                }
+                if matches!(
+                    policy,
+                    FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
+                        | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_)
+                ) && *properties != Default::default()
                 {
                     let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
                     if !reasons.contains(&reason) {
@@ -6710,7 +7881,16 @@ fn assess_manifest(
                     FrameArtifactAuthorityPolicy::ScrollTransformHost(witness, _) => {
                         !baked_scroll_host_properties_are_exact(*owner, *properties, witness)
                     }
-                    FrameArtifactAuthorityPolicy::ScrollContentLocal(_) => {
+                    FrameArtifactAuthorityPolicy::ScrollContentLocal(_, Some(witness)) => {
+                        !scroll_text_area_subtree_local_properties_are_exact(*properties, witness)
+                    }
+                    FrameArtifactAuthorityPolicy::ScrollContentLocal(_, None) => {
+                        *properties != Default::default()
+                    }
+                    FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _) => {
+                        *properties != Default::default()
+                    }
+                    FrameArtifactAuthorityPolicy::NativeScrollForestContent(_) => {
                         *properties != Default::default()
                     }
                     FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(witness) => {
@@ -6752,6 +7932,7 @@ fn assess_manifest(
                 }
             }
             PaintCoverageItem::PlannedBoundary { boundary, .. } => {
+                planned_boundary_count = planned_boundary_count.saturating_add(1);
                 let allowed = match policy {
                     FrameArtifactAuthorityPolicy::TransformSurface(_)
                     | FrameArtifactAuthorityPolicy::TransformPropertySurface(_)
@@ -6759,6 +7940,12 @@ fn assess_manifest(
                     | FrameArtifactAuthorityPolicy::PropertyScene => true,
                     FrameArtifactAuthorityPolicy::ScrollTransformHost(_, expected) => {
                         *boundary == expected
+                    }
+                    FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, expected) => {
+                        *boundary == expected
+                    }
+                    FrameArtifactAuthorityPolicy::NativeScrollForestContent(_) => {
+                        matches!(boundary.kind, super::PlannedBoundaryKind::Scroll(scroll) if scroll.0 == boundary.root)
                     }
                     _ => false,
                 };
@@ -6771,7 +7958,8 @@ fn assess_manifest(
                     }
                 }
             }
-            PaintCoverageItem::NestedScrollContentReceiver { .. } => {
+            PaintCoverageItem::NestedScrollContentReceiver { .. }
+            | PaintCoverageItem::NativeScrollContentReceiver { .. } => {
                 let reason = FrameArtifactFallbackReason::Validation(
                     PaintCoverageValidationError::RecordingPassMismatch,
                 );
@@ -6779,6 +7967,18 @@ fn assess_manifest(
                     reasons.push(reason);
                 }
             }
+        }
+    }
+    if matches!(
+        policy,
+        FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
+    ) && planned_boundary_count != 1
+    {
+        let reason = FrameArtifactFallbackReason::Validation(
+            PaintCoverageValidationError::RecordingPassMismatch,
+        );
+        if !reasons.contains(&reason) {
+            reasons.push(reason);
         }
     }
     FrameArtifactEligibility {
@@ -7000,6 +8200,16 @@ fn root_opacity_group_plan(
         let Some(node) = arena.get(key) else {
             continue;
         };
+        if node.element.children() != node.children()
+            || node
+                .children()
+                .iter()
+                .any(|child| arena.parent_of(*child) != Some(key))
+        {
+            reasons.push(FrameArtifactFallbackReason::Validation(
+                PaintCoverageValidationError::InvalidOwnerSnapshot(key),
+            ));
+        }
         if node.element.is_deferred_to_root_viewport_render() {
             reasons.push(FrameArtifactFallbackReason::DeferredBoundary(key));
         }
@@ -7022,7 +8232,7 @@ fn root_opacity_group_plan(
             }
             None => reasons.push(FrameArtifactFallbackReason::MissingRootEffect(key)),
         }
-        stack.extend(node.element.children().iter().copied());
+        stack.extend(node.children().iter().copied());
     }
     reasons.sort_by_key(|reason| format!("{reason:?}"));
     reasons.dedup();
@@ -7052,8 +8262,8 @@ fn production_property_boundary_reasons(
         let Some(node) = arena.get(key) else {
             continue;
         };
-        let exact_deferred_viewport_root = roots == [key]
-            && exact_deferred_viewport_self_clip_witness(arena, key, property_trees).is_some();
+        let exact_deferred_viewport_root =
+            exact_deferred_viewport_self_clip_witness(arena, key, property_trees).is_some();
         if node.element.is_deferred_to_root_viewport_render() && !exact_deferred_viewport_root {
             let reason = FrameArtifactFallbackReason::LegacyBoundary(LegacyPaintReason::Deferred);
             if !reasons.contains(&reason) {
@@ -7090,7 +8300,9 @@ fn production_property_boundary_reasons(
                         _,
                     )
                     | FrameArtifactAuthorityPolicy::ScrollTransformHost(_, _)
-                    | FrameArtifactAuthorityPolicy::ScrollContentLocal(_)
+                    | FrameArtifactAuthorityPolicy::ScrollContentLocal(_, _)
+                    | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
+                    | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_)
                     | FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(_)
                     | FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(_)
                     | FrameArtifactAuthorityPolicy::ScrollInteractiveTextAreaSubtreeLocal(_) => {
@@ -7244,6 +8456,16 @@ pub(super) fn canonical_manifest_matches(
                     cutout: left_cutout,
                 },
                 PaintCoverageItem::NestedScrollContentReceiver {
+                    order: right_order,
+                    cutout: right_cutout,
+                },
+            ) => left_order == right_order && left_cutout == right_cutout,
+            (
+                PaintCoverageItem::NativeScrollContentReceiver {
+                    order: left_order,
+                    cutout: left_cutout,
+                },
+                PaintCoverageItem::NativeScrollContentReceiver {
                     order: right_order,
                     cutout: right_cutout,
                 },
@@ -8673,9 +9895,63 @@ mod scroll_host_tests {
                 scissor,
             )
         };
-        assert!(plan(2.0, [0.0; 2], None).is_err());
+        let dpr2 = plan(2.0, [0.0; 2], None)
+            .expect("device-aligned scroll-host geometry remains exact at DPR2");
+        let [super::super::PaintPlanStep::RetainedSurface(surface)] = dpr2.steps() else {
+            panic!("DPR2 scroll host must keep the single retained-surface descriptor");
+        };
+        let super::super::SurfaceKind::ScrollHost(scroll_plan) = surface.kind() else {
+            panic!("DPR2 scroll host must keep the typed scroll descriptor");
+        };
+        let device_aligned = |value: f32| {
+            let device = value * 2.0;
+            device.is_finite() && device.fract().to_bits() == 0.0_f32.to_bits()
+        };
+        assert!(
+            [
+                scroll_plan.admission.source_bounds.x,
+                scroll_plan.admission.source_bounds.y,
+                scroll_plan.admission.source_bounds.x + scroll_plan.admission.source_bounds.width,
+                scroll_plan.admission.source_bounds.y + scroll_plan.admission.source_bounds.height,
+                scroll_plan.scroll.viewport.x,
+                scroll_plan.scroll.viewport.y,
+                scroll_plan.scroll.viewport.x + scroll_plan.scroll.viewport.width,
+                scroll_plan.scroll.viewport.y + scroll_plan.scroll.viewport.height,
+            ]
+            .into_iter()
+            .all(device_aligned)
+        );
+        assert!(plan(0.0, [0.0; 2], None).is_err());
+        assert!(plan(f32::NAN, [0.0; 2], None).is_err());
         assert!(plan(1.0, [1.0, 0.0], None).is_err());
         assert!(plan(1.0, [0.0; 2], Some([0, 0, 100, 80])).is_err());
+
+        let (unaligned_arena, unaligned_root, _, mut properties, mut generations) = fixture();
+        unaligned_arena
+            .get_mut(unaligned_root)
+            .unwrap()
+            .element
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .unwrap()
+            .layout_state
+            .layout_position
+            .x += 0.25;
+        unaligned_arena.refresh_subtree_dirty_cache(unaligned_root);
+        properties.sync(&unaligned_arena, &[unaligned_root]);
+        generations.sync(&unaligned_arena, &[unaligned_root], &properties);
+        assert!(
+            super::super::plan_single_root_scroll_host_surface(
+                &unaligned_arena,
+                &[unaligned_root],
+                &properties,
+                &generations,
+                2.0,
+                [0.0; 2],
+                None,
+            )
+            .is_err()
+        );
     }
 
     #[test]

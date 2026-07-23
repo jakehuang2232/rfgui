@@ -52,6 +52,1343 @@ struct ValidatedArtifact {
     target: ValidatedArtifactTarget,
 }
 
+#[derive(Clone, Debug)]
+enum ValidatedFrameRootScrollReceiverStep {
+    Artifact {
+        artifact: PaintArtifact,
+        resolved_clips: Vec<ResolvedClip>,
+    },
+    Boundary(super::PlannedBoundary),
+}
+
+/// Compiler-sealed frame-target receiver whose child-mask scope may span the
+/// detached scroll cutout. The private step payload is the only input accepted
+/// by the paired emitter below.
+#[derive(Clone, Debug)]
+pub(crate) struct ValidatedFrameRootScrollReceiver {
+    steps: Vec<ValidatedFrameRootScrollReceiverStep>,
+    expected_boundary: Option<super::PlannedBoundary>,
+    scroll_host: Option<crate::view::node_arena::NodeKey>,
+    scroll: Option<ScrollNodeSnapshot>,
+    artifact_boundary_root: Option<crate::view::node_arena::NodeKey>,
+}
+
+/// Compiler-owned proof for the exact offset-zero scroll-content program
+/// `Artifact* -> Effect cutout -> Artifact*`.  This is deliberately separate
+/// from `ValidatedFrameRootScrollContent`: the legacy content validator stays
+/// leaf-only, while this token preserves a child-mask scope that may cross the
+/// typed effect insertion.
+#[derive(Clone, Debug)]
+pub(crate) struct ValidatedScrollContentEffectReceiverProgram {
+    receiver: ValidatedFrameRootScrollReceiver,
+    content_root: crate::view::node_arena::NodeKey,
+    content_stable_id: u64,
+    effect_cutout: super::PlannedBoundary,
+    effect_contract: EffectPropertySurfaceArtifactContract,
+    normalized_owners: Vec<ScrollContentEffectNormalizedOwnerWitness>,
+}
+
+/// Compiler-owned proof for one generalized detached frame-root scroll
+/// content artifact. The optional TextArea witness freezes the exact live to
+/// raster-local clip projection; callers cannot emit an unsealed artifact.
+#[derive(Debug)]
+pub(crate) struct ValidatedFrameRootScrollContent {
+    artifact: PaintArtifact,
+    resolved_clips: Vec<ResolvedClip>,
+    content_root: crate::view::node_arena::NodeKey,
+    text_area_witness: Option<super::PaintScrollTextAreaSubtreeWitness>,
+}
+
+pub(crate) fn validate_frame_root_scroll_content_artifact(
+    artifact: PaintArtifact,
+    content_root: crate::view::node_arena::NodeKey,
+    text_area_witness: Option<super::PaintScrollTextAreaSubtreeWitness>,
+) -> Option<ValidatedFrameRootScrollContent> {
+    let local_clip = text_area_witness.map(|witness| witness.local_contents_clip().id);
+    let validated = validate_artifact_store_with_policy(
+        &artifact,
+        ArtifactStoreValidationPolicy::FrameRootScrollContent { local_clip },
+    )?;
+    if !matches!(validated.target, ValidatedArtifactTarget::CurrentTarget)
+        || !artifact.effect_nodes.is_empty()
+    {
+        return None;
+    }
+    let owners = artifact
+        .owner_nodes
+        .iter()
+        .map(|snapshot| (snapshot.owner, snapshot.parent))
+        .collect::<FxHashMap<_, _>>();
+    if owners.len() != artifact.owner_nodes.len()
+        || owners.get(&content_root).copied().flatten().is_some()
+        || owners.values().filter(|parent| parent.is_none()).count() != 1
+    {
+        return None;
+    }
+    match text_area_witness {
+        None if artifact.clip_nodes.is_empty() => {}
+        Some(witness) => {
+            let outer = witness.outer();
+            let text_area_root = witness.text_area_root();
+            let live = witness.live_contents_clip();
+            let local = witness.local_contents_clip();
+            if outer.content_root() != content_root
+                || text_area_root == content_root
+                || live.id != local.id
+                || live.owner != text_area_root
+                || live.id.owner != text_area_root
+                || live.id.role != ClipNodeRole::ContentsClip
+                || live.parent != Some(outer.contents_clip_snapshot().id)
+                || live.behavior != ClipBehavior::Intersect
+                || live.generation == 0
+                || local.owner != text_area_root
+                || local.parent.is_some()
+                || local.behavior != ClipBehavior::Intersect
+                || local.generation != RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION
+                || artifact.clip_nodes.as_slice() != [local]
+                || !witness.paint_grammar().is_canonical()
+            {
+                return None;
+            }
+            let is_descendant_of = |owner, ancestor| {
+                let mut cursor = Some(owner);
+                let mut seen = FxHashSet::default();
+                while let Some(node) = cursor {
+                    if !seen.insert(node) {
+                        return false;
+                    }
+                    if node == ancestor {
+                        return true;
+                    }
+                    cursor = owners.get(&node).copied().flatten();
+                }
+                false
+            };
+            if !is_descendant_of(text_area_root, content_root)
+                || artifact.chunks.iter().any(|chunk| {
+                    chunk.properties.clip == Some(local.id)
+                        && !is_descendant_of(chunk.owner, text_area_root)
+                })
+            {
+                return None;
+            }
+            let text_area_roles = artifact
+                .chunks
+                .iter()
+                .filter(|chunk| chunk.owner == text_area_root)
+                .map(|chunk| chunk.id.role)
+                .collect::<Vec<_>>();
+            let grammar_matches = match witness.paint_grammar() {
+                crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::GlyphOnly => {
+                    text_area_roles == [PaintChunkRole::TextGlyphs]
+                }
+                crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs { .. } => {
+                    text_area_roles
+                        == [PaintChunkRole::SelectionUnderlay, PaintChunkRole::TextGlyphs]
+                }
+            };
+            if !grammar_matches {
+                return None;
+            }
+        }
+        _ => return None,
+    }
+    Some(ValidatedFrameRootScrollContent {
+        artifact,
+        resolved_clips: validated.resolved_clips,
+        content_root,
+        text_area_witness,
+    })
+}
+
+pub(crate) fn frame_root_scroll_content_matches(
+    validated: &ValidatedFrameRootScrollContent,
+    content_root: crate::view::node_arena::NodeKey,
+    text_area_witness: Option<super::PaintScrollTextAreaSubtreeWitness>,
+) -> bool {
+    validated.content_root == content_root && validated.text_area_witness == text_area_witness
+}
+
+#[cfg(test)]
+pub(crate) fn frame_root_scroll_content_local_clip_tampering_is_rejected(
+    validated: &ValidatedFrameRootScrollContent,
+) -> bool {
+    let Some(witness) = validated.text_area_witness else {
+        return false;
+    };
+    let rejects = |artifact: PaintArtifact| {
+        validate_frame_root_scroll_content_artifact(artifact, validated.content_root, Some(witness))
+            .is_none()
+    };
+    let Some(local_index) = validated
+        .artifact
+        .clip_nodes
+        .iter()
+        .position(|clip| clip.id == witness.local_contents_clip().id)
+    else {
+        return false;
+    };
+
+    let mut parent = validated.artifact.clone();
+    parent.clip_nodes[local_index].parent = Some(witness.outer().contents_clip_snapshot().id);
+    let mut generation = validated.artifact.clone();
+    generation.clip_nodes[local_index].generation = generation.clip_nodes[local_index]
+        .generation
+        .saturating_add(1);
+    let mut scissor = validated.artifact.clone();
+    scissor.clip_nodes[local_index].logical_scissor[0] =
+        scissor.clip_nodes[local_index].logical_scissor[0].saturating_add(1);
+    let mut owner = validated.artifact.clone();
+    owner.clip_nodes[local_index].owner = validated.content_root;
+    let mut id = validated.artifact.clone();
+    id.clip_nodes[local_index].id.owner = validated.content_root;
+
+    [parent, generation, scissor, owner, id]
+        .into_iter()
+        .all(rejects)
+}
+
+pub(crate) fn frame_root_scroll_content_opaque_order_count(
+    validated: &ValidatedFrameRootScrollContent,
+) -> Option<u32> {
+    Some(super::frame_plan::opaque_order_count(&validated.artifact))
+}
+
+pub(crate) fn emit_validated_frame_root_scroll_content(
+    validated: ValidatedFrameRootScrollContent,
+    graph: &mut FrameGraph,
+    ctx: &mut UiBuildContext,
+) {
+    #[cfg(test)]
+    ARTIFACT_COMPILE_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    compile_validated_artifact(&validated.artifact, validated.resolved_clips, graph, ctx);
+}
+
+pub(crate) fn validate_frame_root_scroll_receiver_steps(
+    steps: Vec<super::frame_recorder::RecordedTransformSurfaceStep>,
+    expected_boundary: super::PlannedBoundary,
+    scroll_host: crate::view::node_arena::NodeKey,
+    scroll: ScrollNodeSnapshot,
+) -> Option<ValidatedFrameRootScrollReceiver> {
+    validate_ordered_receiver_steps(
+        steps,
+        Some(expected_boundary),
+        ArtifactStoreValidationPolicy::FrameRootScrollReceiver {
+            root: scroll_host,
+            scroll,
+        },
+        Some((scroll_host, scroll)),
+        Some(scroll_host),
+    )
+}
+
+pub(crate) fn validate_frame_root_plain_receiver_steps(
+    steps: Vec<super::frame_recorder::RecordedTransformSurfaceStep>,
+) -> Option<ValidatedFrameRootScrollReceiver> {
+    validate_ordered_receiver_steps(
+        steps,
+        None,
+        ArtifactStoreValidationPolicy::PropertyScene,
+        None,
+        None,
+    )
+}
+
+/// Validates the complete T-local artifact sequence around one scroll cutout.
+/// Combining every artifact before store validation is essential: a retained
+/// child-mask begin/end pair may legally straddle the typed boundary marker.
+pub(crate) fn validate_effect_transform_scroll_inner_steps(
+    steps: Vec<super::frame_recorder::RecordedTransformSurfaceStep>,
+    expected_boundary: super::PlannedBoundary,
+    root: crate::view::node_arena::NodeKey,
+    transform: TransformNodeId,
+) -> Option<ValidatedFrameRootScrollReceiver> {
+    validate_ordered_receiver_steps(
+        steps,
+        Some(expected_boundary),
+        ArtifactStoreValidationPolicy::TransformPropertySurface { root, transform },
+        None,
+        Some(root),
+    )
+}
+
+/// Seals one direct `ScrollContent -> Effect` receiver program.  All recorded
+/// artifact chunks must already be projected to offset-zero content space and
+/// carry default property state; the one boundary marker must match the exact
+/// effect contract.  No scroll snapshot is accepted by this API, so live
+/// offset/generation cannot enter the receiver raster identity.
+pub(crate) fn validate_scroll_content_effect_receiver_steps(
+    steps: Vec<super::frame_recorder::RecordedTransformSurfaceStep>,
+    content_root: crate::view::node_arena::NodeKey,
+    content_stable_id: u64,
+    effect_cutout: super::PlannedBoundary,
+    effect_contract: &EffectPropertySurfaceArtifactContract,
+    normalized_owners: Vec<ScrollContentEffectNormalizedOwnerWitness>,
+) -> Option<ValidatedScrollContentEffectReceiverProgram> {
+    if content_root.is_null()
+        || content_stable_id == 0
+        || !effect_contract.is_canonical()
+        || effect_contract.boundary_root() == content_root
+        || effect_cutout.root != effect_contract.boundary_root()
+        || effect_cutout.stable_id != effect_contract.stable_id()
+        || effect_cutout.kind
+            != super::PlannedBoundaryKind::Isolation(effect_contract.isolated_leaf().id)
+    {
+        return None;
+    }
+    let receiver = validate_ordered_receiver_steps(
+        steps,
+        Some(effect_cutout),
+        ArtifactStoreValidationPolicy::FrameRootScrollContent { local_clip: None },
+        None,
+        Some(content_root),
+    )?;
+    let mut owners = FxHashMap::default();
+    let mut saw_artifact = false;
+    for step in &receiver.steps {
+        let ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } = step else {
+            continue;
+        };
+        saw_artifact = true;
+        if !artifact.effect_nodes.is_empty() {
+            return None;
+        }
+        for owner in &artifact.owner_nodes {
+            match owners.insert(owner.owner, owner.parent) {
+                Some(previous) if previous != owner.parent => return None,
+                _ => {}
+            }
+        }
+    }
+    if !saw_artifact
+        || owners.get(&content_root) != Some(&None)
+        || owners.values().filter(|parent| parent.is_none()).count() != 1
+        || normalized_owners.len() != owners.len()
+        || normalized_owners.iter().any(|witness| {
+            !witness.is_sealed()
+                || witness.owner.is_null()
+                || witness.stable_id == 0
+                || witness.topology_revision == 0
+                || !owners.contains_key(&witness.owner)
+        })
+        || normalized_owners
+            .iter()
+            .map(|witness| witness.owner)
+            .collect::<FxHashSet<_>>()
+            .len()
+            != normalized_owners.len()
+    {
+        return None;
+    }
+    Some(ValidatedScrollContentEffectReceiverProgram {
+        receiver,
+        content_root,
+        content_stable_id,
+        effect_cutout,
+        effect_contract: effect_contract.clone(),
+        normalized_owners,
+    })
+}
+
+pub(crate) fn emit_validated_scroll_content_effect_receiver<F>(
+    validated: ValidatedScrollContentEffectReceiverProgram,
+    graph: &mut FrameGraph,
+    ctx: &mut UiBuildContext,
+    emit_effect: F,
+) where
+    F: FnMut(super::PlannedBoundary, &mut FrameGraph, &mut UiBuildContext),
+{
+    emit_validated_frame_root_scroll_receiver(validated.receiver, graph, ctx, emit_effect);
+}
+
+fn validate_ordered_receiver_steps(
+    steps: Vec<super::frame_recorder::RecordedTransformSurfaceStep>,
+    expected_boundary: Option<super::PlannedBoundary>,
+    policy: ArtifactStoreValidationPolicy,
+    scroll_host: Option<(crate::view::node_arena::NodeKey, ScrollNodeSnapshot)>,
+    artifact_boundary_root: Option<crate::view::node_arena::NodeKey>,
+) -> Option<ValidatedFrameRootScrollReceiver> {
+    let mut combined = PaintArtifact {
+        target: PaintArtifactTarget::CurrentTarget,
+        chunks: Vec::new(),
+        ops: Vec::new(),
+        clip_nodes: Vec::new(),
+        effect_nodes: Vec::new(),
+        owner_nodes: Vec::new(),
+    };
+    let mut boundary_count = 0usize;
+    let mut owner_nodes = FxHashMap::default();
+    let mut clip_nodes = FxHashMap::default();
+    let mut effect_nodes = FxHashMap::default();
+    for step in &steps {
+        match step {
+            super::frame_recorder::RecordedTransformSurfaceStep::Boundary(boundary) => {
+                if Some(*boundary) != expected_boundary {
+                    return None;
+                }
+                boundary_count = boundary_count.checked_add(1)?;
+            }
+            super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                if artifact.target != PaintArtifactTarget::CurrentTarget {
+                    return None;
+                }
+                let op_base = combined.ops.len();
+                combined.ops.extend(artifact.ops.iter().cloned());
+                combined
+                    .chunks
+                    .extend(artifact.chunks.iter().cloned().map(|mut chunk| {
+                        chunk.op_range =
+                            chunk.op_range.start + op_base..chunk.op_range.end + op_base;
+                        chunk
+                    }));
+                for owner in &artifact.owner_nodes {
+                    match owner_nodes.get(&owner.owner) {
+                        Some(old) if old != owner => return None,
+                        Some(_) => {}
+                        None => {
+                            owner_nodes.insert(owner.owner, *owner);
+                            combined.owner_nodes.push(*owner);
+                        }
+                    }
+                }
+                for clip in &artifact.clip_nodes {
+                    match clip_nodes.get(&clip.id) {
+                        Some(old) if old != clip => return None,
+                        Some(_) => {}
+                        None => {
+                            clip_nodes.insert(clip.id, *clip);
+                            combined.clip_nodes.push(*clip);
+                        }
+                    }
+                }
+                for effect in &artifact.effect_nodes {
+                    match effect_nodes.get(&effect.id) {
+                        Some(old) if old != effect => return None,
+                        Some(_) => {}
+                        None => {
+                            effect_nodes.insert(effect.id, *effect);
+                            combined.effect_nodes.push(*effect);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if boundary_count != usize::from(expected_boundary.is_some()) {
+        return None;
+    }
+    let Some(validated) = validate_artifact_store_with_policy(&combined, policy) else {
+        return None;
+    };
+    if !matches!(validated.target, ValidatedArtifactTarget::CurrentTarget) {
+        return None;
+    }
+    let mut resolved = validated.resolved_clips.into_iter();
+    let sealed_steps = steps
+        .into_iter()
+        .map(|step| match step {
+            super::frame_recorder::RecordedTransformSurfaceStep::Boundary(boundary) => {
+                Some(ValidatedFrameRootScrollReceiverStep::Boundary(boundary))
+            }
+            super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                let resolved_clips = resolved
+                    .by_ref()
+                    .take(artifact.chunks.len())
+                    .collect::<Vec<_>>();
+                (resolved_clips.len() == artifact.chunks.len()).then_some(
+                    ValidatedFrameRootScrollReceiverStep::Artifact {
+                        artifact,
+                        resolved_clips,
+                    },
+                )
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if resolved.next().is_some() {
+        return None;
+    }
+    Some(ValidatedFrameRootScrollReceiver {
+        steps: sealed_steps,
+        expected_boundary,
+        scroll_host: scroll_host.map(|(root, _)| root),
+        scroll: scroll_host.map(|(_, scroll)| scroll),
+        artifact_boundary_root,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct NativeScrollForestCompilerStamp {
+    pub(super) boundary_root: crate::view::node_arena::NodeKey,
+    pub(super) host_op_count: usize,
+    pub(super) host_opaque_count: u32,
+    pub(super) content_op_count: usize,
+    pub(super) overlay_op_count: usize,
+    pub(super) overlay_opaque_count: u32,
+    pub(super) content_opaque_count: u32,
+    pub(super) child_markers: Vec<super::PlannedBoundary>,
+    pub(super) content_artifact_span: RetainedSurfaceArtifactSpanStamp,
+}
+
+/// Compiler-seals one forest boundary without granting emission authority.
+/// Content artifacts are validated as one combined store so child-mask
+/// begin/end pairs may legally span any number of child boundary markers.
+pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
+    boundary_root: crate::view::node_arena::NodeKey,
+    content_root: crate::view::node_arena::NodeKey,
+    scroll: ScrollNodeSnapshot,
+    expected_bounds_bits: [u32; 4],
+    host_before: &PaintArtifact,
+    content_steps: &[super::frame_recorder::RecordedTransformSurfaceStep],
+    expected_children: &[super::PlannedBoundary],
+    overlay_after: &PaintArtifact,
+) -> Option<NativeScrollForestCompilerStamp> {
+    let [host_chunk, host_tail @ ..] = host_before.chunks.as_slice() else {
+        return None;
+    };
+    let [overlay_head @ .., overlay_chunk] = overlay_after.chunks.as_slice() else {
+        return None;
+    };
+    let exact_host_chunk = host_chunk.owner == boundary_root
+        && host_chunk.id.owner == boundary_root
+        && host_chunk.id.scope == PaintPropertyScope::SelfPaint
+        && host_chunk.id.phase == super::PaintNodePhase::BeforeChildren
+        && host_chunk.id.slot == 0
+        && host_chunk.id.role == PaintChunkRole::SelfDecoration
+        && host_chunk.properties == Default::default()
+        && chunk_bounds_bits(host_chunk) == expected_bounds_bits;
+    let exact_overlay_chunk = overlay_chunk.owner == boundary_root
+        && overlay_chunk.id.owner == boundary_root
+        && overlay_chunk.id.scope == PaintPropertyScope::SelfPaint
+        && overlay_chunk.id.phase == super::PaintNodePhase::AfterChildren
+        && overlay_chunk.id.slot == 0
+        && overlay_chunk.id.role == PaintChunkRole::ScrollbarOverlay
+        && overlay_chunk.properties == Default::default()
+        && chunk_bounds_bits(overlay_chunk) == expected_bounds_bits;
+    let exact_mask_half = |chunk: &super::PaintChunk, phase: super::PaintNodePhase| {
+        chunk.owner == boundary_root
+            && chunk.id.owner == boundary_root
+            && chunk.id.scope == PaintPropertyScope::Contents
+            && chunk.id.phase == phase
+            && chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT
+            && chunk.id.role == PaintChunkRole::SelfDecoration
+            && chunk.properties == Default::default()
+    };
+    let mask_pair = match (host_tail, overlay_head) {
+        ([], []) => true,
+        ([mask_begin], [mask_end]) => {
+            exact_mask_half(mask_begin, super::PaintNodePhase::BeforeChildren)
+                && exact_mask_half(mask_end, super::PaintNodePhase::AfterChildren)
+                && chunk_bounds_bits(mask_begin) == chunk_bounds_bits(mask_end)
+                && mask_begin.payload_identity == mask_end.payload_identity
+        }
+        _ => false,
+    };
+    if !exact_host_chunk
+        || !exact_overlay_chunk
+        || !mask_pair
+        || host_before.target != PaintArtifactTarget::CurrentTarget
+        || overlay_after.target != PaintArtifactTarget::CurrentTarget
+        || host_before.owner_nodes.as_slice()
+            != [PaintOwnerSnapshot {
+                owner: boundary_root,
+                parent: None,
+            }]
+        || overlay_after.owner_nodes.as_slice()
+            != [PaintOwnerSnapshot {
+                owner: boundary_root,
+                parent: None,
+            }]
+        || !host_before.clip_nodes.is_empty()
+        || !host_before.effect_nodes.is_empty()
+        || !overlay_after.clip_nodes.is_empty()
+        || !overlay_after.effect_nodes.is_empty()
+    {
+        return None;
+    }
+    let mut combined = PaintArtifact {
+        target: PaintArtifactTarget::CurrentTarget,
+        chunks: Vec::new(),
+        ops: Vec::new(),
+        clip_nodes: Vec::new(),
+        effect_nodes: Vec::new(),
+        owner_nodes: Vec::new(),
+    };
+    let mut content_only = PaintArtifact {
+        target: PaintArtifactTarget::CurrentTarget,
+        chunks: Vec::new(),
+        ops: Vec::new(),
+        clip_nodes: Vec::new(),
+        effect_nodes: Vec::new(),
+        owner_nodes: Vec::new(),
+    };
+    let mut owner_nodes = FxHashMap::default();
+    let mut clip_nodes = FxHashMap::default();
+    let mut effect_nodes = FxHashMap::default();
+    let mut child_markers = Vec::new();
+    let mut content_opaque_count = 0_u32;
+    append_native_scroll_forest_artifact(
+        &mut combined,
+        host_before,
+        &mut owner_nodes,
+        &mut clip_nodes,
+        &mut effect_nodes,
+    )?;
+    for step in content_steps {
+        match step {
+            super::frame_recorder::RecordedTransformSurfaceStep::Boundary(boundary) => {
+                child_markers.push(*boundary);
+            }
+            super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                content_opaque_count = content_opaque_count
+                    .checked_add(super::frame_plan::opaque_order_count(artifact))?;
+                append_native_scroll_forest_artifact(
+                    &mut combined,
+                    artifact,
+                    &mut owner_nodes,
+                    &mut clip_nodes,
+                    &mut effect_nodes,
+                )?;
+                let mut content_owners = content_only
+                    .owner_nodes
+                    .iter()
+                    .map(|owner| (owner.owner, *owner))
+                    .collect();
+                let mut content_clips = FxHashMap::default();
+                let mut content_effects = FxHashMap::default();
+                append_native_scroll_forest_artifact(
+                    &mut content_only,
+                    artifact,
+                    &mut content_owners,
+                    &mut content_clips,
+                    &mut content_effects,
+                )?;
+            }
+        }
+    }
+    append_native_scroll_forest_artifact(
+        &mut combined,
+        overlay_after,
+        &mut owner_nodes,
+        &mut clip_nodes,
+        &mut effect_nodes,
+    )?;
+    if child_markers != expected_children
+        || combined.chunks.is_empty()
+        || combined
+            .chunks
+            .iter()
+            .any(|chunk| chunk.properties != Default::default())
+        || !combined.clip_nodes.is_empty()
+        || !combined.effect_nodes.is_empty()
+    {
+        return None;
+    }
+    let validated = validate_artifact_store_with_policy(
+        &combined,
+        ArtifactStoreValidationPolicy::NativeScrollForest {
+            root: boundary_root,
+            scroll,
+        },
+    )?;
+    if !matches!(validated.target, ValidatedArtifactTarget::CurrentTarget) {
+        return None;
+    }
+    let content_validated =
+        validate_artifact_store_with_policy(&content_only, ArtifactStoreValidationPolicy::General)?;
+    if !matches!(
+        content_validated.target,
+        ValidatedArtifactTarget::CurrentTarget
+    ) || !content_only.clip_nodes.is_empty()
+        || !content_only.effect_nodes.is_empty()
+    {
+        return None;
+    }
+    let content_artifact_span = retained_surface_artifact_span_stamp(
+        &content_only,
+        content_root,
+        0,
+        0..content_opaque_count,
+    )?;
+    Some(NativeScrollForestCompilerStamp {
+        boundary_root,
+        host_op_count: host_before.ops.len(),
+        host_opaque_count: super::frame_plan::opaque_order_count(host_before),
+        content_op_count: combined
+            .ops
+            .len()
+            .checked_sub(host_before.ops.len() + overlay_after.ops.len())?,
+        overlay_op_count: overlay_after.ops.len(),
+        overlay_opaque_count: super::frame_plan::opaque_order_count(overlay_after),
+        content_opaque_count,
+        child_markers,
+        content_artifact_span,
+    })
+}
+
+fn append_native_scroll_forest_artifact(
+    combined: &mut PaintArtifact,
+    artifact: &PaintArtifact,
+    owner_nodes: &mut FxHashMap<crate::view::node_arena::NodeKey, PaintOwnerSnapshot>,
+    clip_nodes: &mut FxHashMap<ClipNodeId, ClipNodeSnapshot>,
+    effect_nodes: &mut FxHashMap<EffectNodeId, EffectNodeSnapshot>,
+) -> Option<()> {
+    if artifact.target != PaintArtifactTarget::CurrentTarget {
+        return None;
+    }
+    let op_base = combined.ops.len();
+    combined.ops.extend(artifact.ops.iter().cloned());
+    combined
+        .chunks
+        .extend(artifact.chunks.iter().cloned().map(|mut chunk| {
+            chunk.op_range = chunk.op_range.start + op_base..chunk.op_range.end + op_base;
+            chunk
+        }));
+    for owner in &artifact.owner_nodes {
+        match owner_nodes.get(&owner.owner) {
+            Some(old) if old != owner => return None,
+            Some(_) => {}
+            None => {
+                owner_nodes.insert(owner.owner, *owner);
+                combined.owner_nodes.push(*owner);
+            }
+        }
+    }
+    for clip in &artifact.clip_nodes {
+        match clip_nodes.get(&clip.id) {
+            Some(old) if old != clip => return None,
+            Some(_) => {}
+            None => {
+                clip_nodes.insert(clip.id, *clip);
+                combined.clip_nodes.push(*clip);
+            }
+        }
+    }
+    for effect in &artifact.effect_nodes {
+        match effect_nodes.get(&effect.id) {
+            Some(old) if old != effect => return None,
+            Some(_) => {}
+            None => {
+                effect_nodes.insert(effect.id, *effect);
+                combined.effect_nodes.push(*effect);
+            }
+        }
+    }
+    Some(())
+}
+
+/// Owning compiler capability for one native forest boundary. Artifacts stay
+/// private to the compiler; the later emitter can only consume this token's
+/// phase-specific APIs and cannot swap in a post-validation `PaintArtifact`.
+pub(crate) struct ValidatedNativeScrollForestBoundaryProgram {
+    boundary: super::frame_plan::NativeScrollBoundaryId,
+    host_before: PaintArtifact,
+    content_steps: Vec<ValidatedNativeScrollForestContentStep>,
+    overlay_after: PaintArtifact,
+    content_program_opaque_terminal: u32,
+    stamp: NativeScrollForestCompilerStamp,
+}
+
+enum ValidatedNativeScrollForestContentStep {
+    Artifact(PaintArtifact),
+    ChildBoundary(super::frame_plan::NativeScrollBoundaryId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ValidatedNativeScrollForestContentStepKind {
+    Artifact,
+    ChildBoundary(super::frame_plan::NativeScrollBoundaryId),
+}
+
+pub(crate) struct NativeScrollForestEmissionMaskStack(
+    Vec<(crate::view::node_arena::NodeKey, u8, Option<[u32; 4]>)>,
+);
+
+impl NativeScrollForestEmissionMaskStack {
+    pub(crate) fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+pub(crate) fn validate_native_scroll_forest_boundary_program_for_emission(
+    scaffold: &super::frame_plan::NativeScrollForestScaffold,
+    index: usize,
+) -> Option<ValidatedNativeScrollForestBoundaryProgram> {
+    let boundary = scaffold.boundaries.get(index)?;
+    let program = scaffold.programs.get(index)?;
+    if boundary.id.0 as usize != index || program.boundary != boundary.id {
+        return None;
+    }
+    let expected_children = scaffold
+        .boundaries
+        .iter()
+        .filter(|child| child.parent == Some(boundary.id))
+        .map(|child| super::PlannedBoundary {
+            root: child.boundary_root,
+            stable_id: child.stable_id,
+            kind: super::PlannedBoundaryKind::Scroll(child.scroll.id),
+        })
+        .collect::<Vec<_>>();
+    let mut marker = 0usize;
+    let recorded = program
+        .content_steps
+        .iter()
+        .map(|step| match step {
+            super::frame_plan::NativeScrollForestContentProgramStep::Artifact(artifact) => {
+                (super::frame_plan::property_scroll_receiver_artifact_identity(artifact.artifact())
+                    .as_ref()
+                    == Some(&artifact.identity))
+                .then(|| {
+                    super::frame_recorder::RecordedTransformSurfaceStep::Artifact(
+                        artifact.artifact().clone(),
+                    )
+                })
+            }
+            super::frame_plan::NativeScrollForestContentProgramStep::ChildBoundary(child) => {
+                let expected = *expected_children.get(marker)?;
+                if expected.root != scaffold.boundaries.get(child.0 as usize)?.boundary_root {
+                    return None;
+                }
+                marker += 1;
+                Some(super::frame_recorder::RecordedTransformSurfaceStep::Boundary(expected))
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let source = boundary.admission.source_bounds;
+    let stamp = compile_native_scroll_forest_boundary_program_for_plan(
+        boundary.boundary_root,
+        boundary.admission.content_root,
+        boundary.scroll,
+        [
+            source.x.to_bits(),
+            source.y.to_bits(),
+            source.width.to_bits(),
+            source.height.to_bits(),
+        ],
+        program.host_before.artifact(),
+        &recorded,
+        &expected_children,
+        program.overlay_after.artifact(),
+    )?;
+    if marker != expected_children.len() || stamp != program.compiler_stamp {
+        return None;
+    }
+    let content_steps = program
+        .content_steps
+        .iter()
+        .map(|step| match step {
+            super::frame_plan::NativeScrollForestContentProgramStep::Artifact(artifact) => {
+                ValidatedNativeScrollForestContentStep::Artifact(artifact.artifact().clone())
+            }
+            super::frame_plan::NativeScrollForestContentProgramStep::ChildBoundary(child) => {
+                ValidatedNativeScrollForestContentStep::ChildBoundary(*child)
+            }
+        })
+        .collect();
+    Some(ValidatedNativeScrollForestBoundaryProgram {
+        boundary: boundary.id,
+        host_before: program.host_before.artifact().clone(),
+        content_steps,
+        overlay_after: program.overlay_after.artifact().clone(),
+        content_program_opaque_terminal: program.content_program_opaque_terminal,
+        stamp,
+    })
+}
+
+impl ValidatedNativeScrollForestBoundaryProgram {
+    pub(crate) fn boundary(&self) -> super::frame_plan::NativeScrollBoundaryId {
+        self.boundary
+    }
+
+    pub(crate) fn content_step_kinds(
+        &self,
+    ) -> impl Iterator<Item = ValidatedNativeScrollForestContentStepKind> + '_ {
+        self.content_steps.iter().map(|step| match step {
+            ValidatedNativeScrollForestContentStep::Artifact(_) => {
+                ValidatedNativeScrollForestContentStepKind::Artifact
+            }
+            ValidatedNativeScrollForestContentStep::ChildBoundary(child) => {
+                ValidatedNativeScrollForestContentStepKind::ChildBoundary(*child)
+            }
+        })
+    }
+
+    pub(crate) fn content_program_opaque_terminal(&self) -> u32 {
+        self.content_program_opaque_terminal
+    }
+
+    pub(crate) fn emit_host_before(
+        &self,
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        masks: &mut NativeScrollForestEmissionMaskStack,
+    ) {
+        compile_validated_artifact_segment(
+            &self.host_before,
+            vec![ResolvedClip::Unclipped; self.host_before.chunks.len()],
+            graph,
+            ctx,
+            &mut masks.0,
+        );
+    }
+
+    pub(crate) fn emit_content_steps(
+        &self,
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        masks: &mut NativeScrollForestEmissionMaskStack,
+        mut emit_child: impl FnMut(
+            super::frame_plan::NativeScrollBoundaryId,
+            &mut FrameGraph,
+            &mut UiBuildContext,
+            &mut NativeScrollForestEmissionMaskStack,
+        ),
+    ) {
+        for step in &self.content_steps {
+            match step {
+                ValidatedNativeScrollForestContentStep::Artifact(artifact) => {
+                    compile_validated_artifact_segment(
+                        artifact,
+                        vec![ResolvedClip::Unclipped; artifact.chunks.len()],
+                        graph,
+                        ctx,
+                        &mut masks.0,
+                    );
+                }
+                ValidatedNativeScrollForestContentStep::ChildBoundary(child) => {
+                    emit_child(*child, graph, ctx, masks);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn emit_overlay_after(
+        &self,
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        masks: &mut NativeScrollForestEmissionMaskStack,
+    ) {
+        compile_validated_artifact_segment(
+            &self.overlay_after,
+            vec![ResolvedClip::Unclipped; self.overlay_after.chunks.len()],
+            graph,
+            ctx,
+            &mut masks.0,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shape_for_test(&self) -> [usize; 4] {
+        let child_count = self
+            .content_steps
+            .iter()
+            .filter(|step| {
+                matches!(
+                    step,
+                    ValidatedNativeScrollForestContentStep::ChildBoundary(_)
+                )
+            })
+            .count();
+        let artifact_ops = self
+            .content_steps
+            .iter()
+            .map(|step| match step {
+                ValidatedNativeScrollForestContentStep::Artifact(artifact) => artifact.ops.len(),
+                ValidatedNativeScrollForestContentStep::ChildBoundary(_) => 0,
+            })
+            .sum();
+        [
+            self.host_before.ops.len(),
+            artifact_ops,
+            child_count,
+            self.overlay_after.ops.len(),
+        ]
+    }
+}
+
+/// Derives one artifact-span stamp only from a complete ordered receiver
+/// token. The token, rather than an isolated artifact, proves any child-mask
+/// stack that crosses the boundary is still exactly paired.
+pub(crate) fn validated_ordered_receiver_artifact_span_stamp(
+    validated: &ValidatedFrameRootScrollReceiver,
+    step_index: usize,
+    opaque_order_span: Range<u32>,
+) -> Option<RetainedSurfaceArtifactSpanStamp> {
+    let boundary_root = validated.artifact_boundary_root?;
+    let ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } =
+        validated.steps.get(step_index)?
+    else {
+        return None;
+    };
+    retained_surface_artifact_span_stamp(artifact, boundary_root, step_index, opaque_order_span)
+}
+
+#[cfg(test)]
+impl ValidatedFrameRootScrollReceiver {
+    pub(crate) fn rejects_effect_transform_scroll_inner_tampering(&self) -> bool {
+        let (Some(boundary), Some(root)) = (self.expected_boundary, self.artifact_boundary_root)
+        else {
+            return false;
+        };
+        let raw = || {
+            self.steps
+                .iter()
+                .cloned()
+                .map(|step| match step {
+                    ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } => {
+                        super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact)
+                    }
+                    ValidatedFrameRootScrollReceiverStep::Boundary(boundary) => {
+                        super::frame_recorder::RecordedTransformSurfaceStep::Boundary(boundary)
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let rejects = |steps| {
+            validate_effect_transform_scroll_inner_steps(
+                steps,
+                boundary,
+                root,
+                TransformNodeId(root),
+            )
+            .is_none()
+        };
+        let mask_step = |steps: &[super::frame_recorder::RecordedTransformSurfaceStep], phase| {
+            steps.iter().position(|step| match step {
+                super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                    artifact.chunks.iter().any(|chunk| {
+                        chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT && chunk.id.phase == phase
+                    })
+                }
+                super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_) => false,
+            })
+        };
+
+        let mut reordered = raw();
+        let (Some(begin), Some(end)) = (
+            mask_step(&reordered, super::PaintNodePhase::BeforeChildren),
+            mask_step(&reordered, super::PaintNodePhase::AfterChildren),
+        ) else {
+            return false;
+        };
+        reordered.swap(begin, end);
+
+        let mut missing = raw();
+        let Some(end) = mask_step(&missing, super::PaintNodePhase::AfterChildren) else {
+            return false;
+        };
+        let super::frame_recorder::RecordedTransformSurfaceStep::Artifact(end_artifact) =
+            &missing[end]
+        else {
+            return false;
+        };
+        if end_artifact.chunks.len() != 1 {
+            return false;
+        }
+        missing.remove(end);
+
+        let mut foreign_marker = raw();
+        let Some(marker) = foreign_marker.iter_mut().find_map(|step| match step {
+            super::frame_recorder::RecordedTransformSurfaceStep::Boundary(marker) => Some(marker),
+            super::frame_recorder::RecordedTransformSurfaceStep::Artifact(_) => None,
+        }) else {
+            return false;
+        };
+        marker.stable_id = marker.stable_id.saturating_add(1);
+
+        let mut owner_topology = raw();
+        let Some(owner) = owner_topology.iter_mut().find_map(|step| match step {
+            super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => artifact
+                .owner_nodes
+                .iter_mut()
+                .find(|owner| owner.owner != root),
+            super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_) => None,
+        }) else {
+            return false;
+        };
+        owner.parent = None;
+
+        [reordered, missing, foreign_marker, owner_topology]
+            .into_iter()
+            .all(rejects)
+    }
+}
+
+#[cfg(test)]
+impl ValidatedFrameRootScrollReceiver {
+    pub(crate) fn has_sealed_scroll_host_phase_order(&self) -> bool {
+        let (Some(boundary), Some(root), Some(scroll)) =
+            (self.expected_boundary, self.scroll_host, self.scroll)
+        else {
+            return false;
+        };
+        let Some(marker) = self.steps.iter().position(|step| {
+            matches!(step, ValidatedFrameRootScrollReceiverStep::Boundary(found) if *found == boundary)
+        }) else {
+            return false;
+        };
+        if self.steps[marker + 1..]
+            .iter()
+            .any(|step| matches!(step, ValidatedFrameRootScrollReceiverStep::Boundary(_)))
+        {
+            return false;
+        }
+        fn artifact_chunk(
+            step: &ValidatedFrameRootScrollReceiverStep,
+        ) -> Option<(&PaintArtifact, &super::PaintChunk)> {
+            match step {
+                ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } => {
+                    let [chunk] = artifact.chunks.as_slice() else {
+                        return None;
+                    };
+                    Some((artifact, chunk))
+                }
+                ValidatedFrameRootScrollReceiverStep::Boundary(_) => None,
+            }
+        }
+        let Some((_, host)) = marker
+            .checked_sub(2)
+            .and_then(|index| artifact_chunk(self.steps.get(index)?))
+        else {
+            return false;
+        };
+        let Some((begin_artifact, begin)) = marker
+            .checked_sub(1)
+            .and_then(|index| artifact_chunk(self.steps.get(index)?))
+        else {
+            return false;
+        };
+        let Some((end_artifact, end)) = self.steps.get(marker + 1).and_then(artifact_chunk) else {
+            return false;
+        };
+        let Some((overlay_artifact, overlay)) = self.steps.get(marker + 2).and_then(artifact_chunk)
+        else {
+            return false;
+        };
+        host.owner == root
+            && host.id.phase == super::PaintNodePhase::BeforeChildren
+            && host.id.role == PaintChunkRole::SelfDecoration
+            && host.id.slot == 0
+            && begin.owner == root
+            && begin.id.phase == super::PaintNodePhase::BeforeChildren
+            && begin.id.slot == super::RETAINED_CHILD_MASK_SLOT
+            && end.owner == root
+            && end.id.phase == super::PaintNodePhase::AfterChildren
+            && end.id.slot == super::RETAINED_CHILD_MASK_SLOT
+            && begin.payload_identity == end.payload_identity
+            && matches!(begin_artifact.ops.as_slice(), [PaintOp::DrawRect(_)])
+            && matches!(end_artifact.ops.as_slice(), [PaintOp::DrawRect(_)])
+            && overlay.owner == root
+            && overlay.id.phase == super::PaintNodePhase::AfterChildren
+            && overlay.id.role == PaintChunkRole::ScrollbarOverlay
+            && match scroll.scrollbar_overlay.paint_state {
+                crate::view::base_component::ScrollbarPaintStateWitness::HiddenNow
+                | crate::view::base_component::ScrollbarPaintStateWitness::NotPaintable => {
+                    overlay_artifact.ops.is_empty()
+                }
+                crate::view::base_component::ScrollbarPaintStateWitness::OpaqueNow
+                | crate::view::base_component::ScrollbarPaintStateWitness::TranslucentNow => {
+                    matches!(
+                        overlay_artifact.ops.as_slice(),
+                        [PaintOp::PreparedScrollbarOverlay(op)]
+                            if op.matches_witness(scroll.scrollbar_overlay)
+                    )
+                }
+            }
+    }
+
+    pub(crate) fn rejects_scroll_host_store_tampering(&self) -> bool {
+        let (Some(boundary), Some(root), Some(scroll)) =
+            (self.expected_boundary, self.scroll_host, self.scroll)
+        else {
+            return false;
+        };
+        let raw = || {
+            self.steps
+                .iter()
+                .cloned()
+                .map(|step| match step {
+                    ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } => {
+                        super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact)
+                    }
+                    ValidatedFrameRootScrollReceiverStep::Boundary(boundary) => {
+                        super::frame_recorder::RecordedTransformSurfaceStep::Boundary(boundary)
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let rejects = |steps| {
+            validate_frame_root_scroll_receiver_steps(steps, boundary, root, scroll).is_none()
+        };
+        let mut missing_clip = raw();
+        let Some(artifact) = missing_clip.iter_mut().find_map(|step| match step {
+            super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact)
+                if !artifact.clip_nodes.is_empty() =>
+            {
+                Some(artifact)
+            }
+            _ => None,
+        }) else {
+            return false;
+        };
+        artifact.clip_nodes.clear();
+
+        let mut generation = raw();
+        let Some(clip) = generation.iter_mut().find_map(|step| match step {
+            super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                artifact.clip_nodes.first_mut()
+            }
+            _ => None,
+        }) else {
+            return false;
+        };
+        clip.generation = 0;
+
+        let mut foreign_owner = raw();
+        let Some(clip) = foreign_owner.iter_mut().find_map(|step| match step {
+            super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                artifact.clip_nodes.first_mut()
+            }
+            _ => None,
+        }) else {
+            return false;
+        };
+        clip.owner = root;
+
+        let mut radii = raw();
+        let Some(mask) = radii.iter_mut().find_map(|step| match step {
+            super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => artifact
+                .chunks
+                .iter()
+                .position(|chunk| chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT)
+                .and_then(|index| artifact.ops.get_mut(artifact.chunks[index].op_range.start)),
+            _ => None,
+        }) else {
+            return false;
+        };
+        let PaintOp::DrawRect(mask) = mask else {
+            return false;
+        };
+        mask.params.border_radii[0][0] += 1.0;
+
+        [missing_clip, generation, foreign_owner, radii]
+            .into_iter()
+            .all(rejects)
+    }
+
+    pub(crate) fn scrollbar_axis_geometry_bits_for_test(
+        &self,
+    ) -> Option<Vec<([u32; 4], [u32; 4])>> {
+        self.steps.iter().find_map(|step| match step {
+            ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } => {
+                artifact.ops.iter().find_map(|op| match op {
+                    PaintOp::PreparedScrollbarOverlay(op) => Some(op.axis_geometry_bits_for_test()),
+                    _ => None,
+                })
+            }
+            ValidatedFrameRootScrollReceiverStep::Boundary(_) => None,
+        })
+    }
+
+    pub(crate) fn rejects_scrollbar_overlay_tampering_for_test(&self) -> bool {
+        let (Some(boundary), Some(root), Some(scroll)) =
+            (self.expected_boundary, self.scroll_host, self.scroll)
+        else {
+            return false;
+        };
+        let raw = || {
+            self.steps
+                .iter()
+                .cloned()
+                .map(|step| match step {
+                    ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } => {
+                        super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact)
+                    }
+                    ValidatedFrameRootScrollReceiverStep::Boundary(boundary) => {
+                        super::frame_recorder::RecordedTransformSurfaceStep::Boundary(boundary)
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        fn overlay_mut(
+            steps: &mut [super::frame_recorder::RecordedTransformSurfaceStep],
+        ) -> Option<&mut super::PreparedScrollbarOverlayOp> {
+            steps.iter_mut().find_map(|step| match step {
+                super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                    artifact.ops.iter_mut().find_map(|op| match op {
+                        PaintOp::PreparedScrollbarOverlay(op) => Some(op),
+                        _ => None,
+                    })
+                }
+                super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_) => None,
+            })
+        }
+        let rejects = |steps| {
+            validate_frame_root_scroll_receiver_steps(steps, boundary, root, scroll).is_none()
+        };
+
+        let mut axis = raw();
+        let Some(axis_overlay) = overlay_mut(&mut axis) else {
+            return false;
+        };
+        if !axis_overlay.tamper_axis_order_for_test() {
+            axis_overlay.tamper_primary_axis_for_test();
+        }
+
+        let mut track = raw();
+        let Some(track_overlay) = overlay_mut(&mut track) else {
+            return false;
+        };
+        track_overlay.tamper_track_position_for_test();
+
+        let mut thumb = raw();
+        let Some(thumb_overlay) = overlay_mut(&mut thumb) else {
+            return false;
+        };
+        thumb_overlay.tamper_thumb_size_for_test();
+
+        let mut alpha = raw();
+        let Some(alpha_overlay) = overlay_mut(&mut alpha) else {
+            return false;
+        };
+        alpha_overlay.tamper_alpha_for_test();
+
+        [axis, track, thumb, alpha].into_iter().all(rejects)
+    }
+}
+
+pub(crate) fn emit_validated_frame_root_scroll_receiver<F>(
+    validated: ValidatedFrameRootScrollReceiver,
+    graph: &mut FrameGraph,
+    ctx: &mut UiBuildContext,
+    mut emit_boundary: F,
+) where
+    F: FnMut(super::PlannedBoundary, &mut FrameGraph, &mut UiBuildContext),
+{
+    let mut child_mask_scopes = Vec::new();
+    for step in validated.steps {
+        match step {
+            ValidatedFrameRootScrollReceiverStep::Artifact {
+                artifact,
+                resolved_clips,
+            } => compile_validated_artifact_segment(
+                &artifact,
+                resolved_clips,
+                graph,
+                ctx,
+                &mut child_mask_scopes,
+            ),
+            ValidatedFrameRootScrollReceiverStep::Boundary(boundary) => {
+                emit_boundary(boundary, graph, ctx)
+            }
+        }
+    }
+    debug_assert!(child_mask_scopes.is_empty());
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ArtifactStoreValidationPolicy {
     General,
@@ -59,6 +1396,14 @@ enum ArtifactStoreValidationPolicy {
     /// property surfaces.  These spans may carry exact rectangular clips but
     /// no transform/effect/scroll boundary of their own.
     PropertyScene,
+    /// Frame-target receiver plus one native scroll host's exact host/mask
+    /// phases around a detached content marker. All stored properties are
+    /// projected to the frame target; only the typed scrollbar payload may
+    /// observe the frozen scroll snapshot.
+    FrameRootScrollReceiver {
+        root: crate::view::node_arena::NodeKey,
+        scroll: ScrollNodeSnapshot,
+    },
     TransformSurface {
         root: crate::view::node_arena::NodeKey,
         transform: TransformNodeId,
@@ -87,6 +1432,9 @@ enum ArtifactStoreValidationPolicy {
     ScrollSceneContent {
         content_root: crate::view::node_arena::NodeKey,
     },
+    FrameRootScrollContent {
+        local_clip: Option<ClipNodeId>,
+    },
     ScrollSceneTextAreaContent {
         content_root: crate::view::node_arena::NodeKey,
         text_area_root: crate::view::node_arena::NodeKey,
@@ -99,6 +1447,13 @@ enum ArtifactStoreValidationPolicy {
         contents_clip: ClipNodeId,
     },
     ScrollSceneOverlay {
+        root: crate::view::node_arena::NodeKey,
+        scroll: ScrollNodeSnapshot,
+    },
+    /// Graph-inert validation for one forest boundary's complete DFS span.
+    /// Keeping H/mask-open/content/mask-close/O in one store is what proves
+    /// that a mask scope remains balanced across child boundary callbacks.
+    NativeScrollForest {
         root: crate::view::node_arena::NodeKey,
         scroll: ScrollNodeSnapshot,
     },
@@ -237,6 +1592,13 @@ pub(crate) enum RetainedSurfaceResidentKey {
         boundary_root: crate::view::node_arena::NodeKey,
         stable_id: u64,
     },
+    /// Inner half of a property-effect boundary. This role-tagged identity is
+    /// intentionally distinct from `Surface`, allowing a sealed same-owner
+    /// Transform -> Effect pair without aliasing either resident allocation.
+    PropertyEffectSurface {
+        boundary_root: crate::view::node_arena::NodeKey,
+        stable_id: u64,
+    },
     ScrollContentTile {
         boundary_root: crate::view::node_arena::NodeKey,
         stable_id: u64,
@@ -276,6 +1638,12 @@ impl RetainedSurfaceRasterIdentity {
                 stable_id: self.stable_id,
                 index: tile.index,
             },
+            None if self.role == RetainedSurfaceRasterRole::PropertyEffect => {
+                RetainedSurfaceResidentKey::PropertyEffectSurface {
+                    boundary_root: self.boundary_root,
+                    stable_id: self.stable_id,
+                }
+            }
             None => RetainedSurfaceResidentKey::Surface {
                 boundary_root: self.boundary_root,
                 stable_id: self.stable_id,
@@ -410,6 +1778,10 @@ pub(crate) struct RetainedSurfaceRasterStamp {
     /// Dedicated property-effect raster inputs. Own effect opacity/generation
     /// are intentionally absent; they belong to the parent composite edge.
     pub(crate) property_effect: Option<PropertyEffectRasterIdentityInputs>,
+    /// Native scroll-forest child edges baked into this offset-zero C raster.
+    /// Existing retained grammars must keep this empty.
+    pub(crate) native_scroll_children:
+        Vec<super::frame_plan::NativeScrollForestChildRasterDependency>,
 }
 
 /// Closed raster-only dependency family for bounded atomic-projection
@@ -437,11 +1809,21 @@ pub(crate) struct RetainedScrollHostRasterDependency {
 pub(crate) enum RetainedSurfaceRasterStepStamp {
     ArtifactSpan(RetainedSurfaceArtifactSpanStamp),
     NestedSurface(NestedSurfaceRasterDependency),
+    /// Exact `ScrollContent -> Effect` child edge. The child is rastered by
+    /// the existing property-effect stamp gate, while its local composite
+    /// inputs are frozen into C. No scroll snapshot, generation, clip, or
+    /// offset is represented here.
+    ScrollContentEffectChild(ScrollContentEffectChildRasterDependency),
     /// Exact T -> E -> Scroll child edge. Unlike the generic nested-surface
     /// dependency this stamp carries only E's local composite inputs. The
     /// outer T viewport matrix and transform generation are deliberately not
     /// raster identity.
     TransformEffectScrollChild(TransformEffectScrollChildRasterDependency),
+    /// Exact E -> T -> Scroll child edge. The child is a canonical transform
+    /// receiver whose own stamp contains the complete ScrollBoundary H/C/O
+    /// dependency. Translation geometry belongs to this parent raster edge:
+    /// it repositions T inside E without polluting T's raster identity.
+    EffectTransformScrollChild(EffectTransformScrollChildRasterDependency),
     /// A scroll boundary rastered directly inside one transform receiver.
     /// This is not a generic child surface: H/O advance the receiver-local
     /// cursor, detached content owns a separate persistent target and has
@@ -460,6 +1842,66 @@ pub(crate) struct RetainedSurfaceArtifactSpanStamp {
     pub(crate) chunks: Vec<RetainedSurfaceChunkStamp>,
     pub(crate) op_count: usize,
     pub(crate) opaque_order_span: Range<u32>,
+    pub(crate) scroll_placement_normalized_owners: Vec<ScrollContentEffectNormalizedOwnerWitness>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ScrollContentEffectNormalizedOwnerWitness {
+    pub(crate) owner: crate::view::node_arena::NodeKey,
+    pub(crate) stable_id: u64,
+    pub(crate) topology_revision: u64,
+    pub(crate) kind: crate::view::base_component::RetainedScrollNormalizedPaintKind,
+    seal: u64,
+}
+
+fn scroll_content_effect_normalized_kind_rank(
+    kind: crate::view::base_component::RetainedScrollNormalizedPaintKind,
+) -> u64 {
+    use crate::view::base_component::RetainedScrollNormalizedPaintKind as Kind;
+    match kind {
+        Kind::Element => 1,
+        Kind::Text => 2,
+        Kind::Image => 3,
+        Kind::Svg => 4,
+        Kind::TextArea => 5,
+        Kind::TextAreaProjectionSegment => 6,
+        Kind::TextAreaTextRun => 7,
+        Kind::TextAreaLineBreak => 8,
+    }
+}
+
+pub(crate) fn scroll_content_effect_normalized_owner_witness(
+    owner: crate::view::node_arena::NodeKey,
+    stable_id: u64,
+    topology_revision: u64,
+    kind: crate::view::base_component::RetainedScrollNormalizedPaintKind,
+) -> Option<ScrollContentEffectNormalizedOwnerWitness> {
+    if owner.is_null() || stable_id == 0 || topology_revision == 0 {
+        return None;
+    }
+    let seal = owner.data().as_ffi().rotate_left(11)
+        ^ stable_id.rotate_left(23)
+        ^ topology_revision.rotate_left(37)
+        ^ scroll_content_effect_normalized_kind_rank(kind).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    Some(ScrollContentEffectNormalizedOwnerWitness {
+        owner,
+        stable_id,
+        topology_revision,
+        kind,
+        seal,
+    })
+}
+
+impl ScrollContentEffectNormalizedOwnerWitness {
+    fn is_sealed(self) -> bool {
+        scroll_content_effect_normalized_owner_witness(
+            self.owner,
+            self.stable_id,
+            self.topology_revision,
+            self.kind,
+        )
+        .is_some_and(|expected| expected.seal == self.seal)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -469,6 +1911,206 @@ pub(crate) struct NestedSurfaceRasterDependency {
     pub(crate) child_composite_geometry: RetainedSurfaceCompositeGeometryStamp,
     pub(crate) parent_opaque_order_before: u32,
     pub(crate) parent_opaque_order_after: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ScrollContentEffectChildRasterDependency {
+    pub(crate) step_index: usize,
+    pub(crate) child_stamp: Box<RetainedSurfaceRasterStamp>,
+    pub(crate) child_source_bounds_bits: [u32; 4],
+    pub(crate) child_opacity_bits: u32,
+    pub(crate) child_effect_generation: u64,
+    pub(crate) parent_opaque_order_before: u32,
+    pub(crate) parent_opaque_order_after: u32,
+}
+
+pub(crate) fn scroll_content_effect_child_dependency_validates_contract(
+    dependency: &ScrollContentEffectChildRasterDependency,
+    contract: &EffectPropertySurfaceArtifactContract,
+) -> bool {
+    let opacity = f32::from_bits(dependency.child_opacity_bits);
+    contract.is_canonical()
+        && contract
+            .detached_ancestor_clips()
+            .first()
+            .is_some_and(|clip| {
+                clip.id.role == ClipNodeRole::ContentsClip
+                    && clip.behavior == ClipBehavior::Intersect
+                    && clip.generation != 0
+            })
+        && dependency.child_source_bounds_bits
+            == dependency.child_stamp.target.source_bounds_bits
+        && dependency.child_opacity_bits == contract.isolated_leaf().opacity.to_bits()
+        && opacity.is_finite()
+        && (0.0..=1.0).contains(&opacity)
+        && dependency.child_effect_generation == contract.isolated_leaf().generation
+        && dependency.child_effect_generation != 0
+        // E is composited into the already offset-zero C raster. Its opaque
+        // cursor is target-local and never advances C's artifact cursor.
+        && dependency.parent_opaque_order_after == dependency.parent_opaque_order_before
+        && scroll_content_effect_surface_raster_stamp_validates_contract(
+            &dependency.child_stamp,
+            contract,
+        )
+}
+
+/// Phase3 E lives in offset-zero scroll-content space. Property-tree scroll
+/// generations advance the generic paint tracker for every descendant even
+/// when the normalized raster payload is unchanged, so that revision is not
+/// resident identity here. Payload, topology and normalized geometry remain
+/// fully sealed by the ordinary effect stamp.
+pub(crate) fn normalize_scroll_content_effect_surface_raster_stamp(
+    mut stamp: RetainedSurfaceRasterStamp,
+    contract: &EffectPropertySurfaceArtifactContract,
+    normalized_owners: &[ScrollContentEffectNormalizedOwnerWitness],
+) -> Option<RetainedSurfaceRasterStamp> {
+    if !property_effect_surface_raster_stamp_validates_contract_at_depth(&stamp, contract, 0) {
+        return None;
+    }
+    let witnesses = normalized_owners
+        .iter()
+        .map(|witness| (witness.owner, *witness))
+        .collect::<FxHashMap<_, _>>();
+    if witnesses.len() != normalized_owners.len()
+        || normalized_owners.iter().any(|witness| !witness.is_sealed())
+        || contract.content().len() != normalized_owners.len()
+        || contract.content().iter().any(|content| {
+            witnesses.get(&content.owner).is_none_or(|witness| {
+                witness.stable_id != content.stable_id
+                    || witness.topology_revision != content.topology_revision
+            })
+        })
+    {
+        return None;
+    }
+    let normalize_chunks = |chunks: &mut Vec<RetainedSurfaceChunkStamp>| -> Option<()> {
+        for chunk in chunks {
+            let witness = witnesses.get(&chunk.owner)?;
+            if witness.topology_revision != chunk.topology_revision {
+                return None;
+            }
+            chunk.non_boundary_self_paint_revision = None;
+        }
+        Some(())
+    };
+    let inputs = stamp.property_effect.as_mut()?;
+    for content in &mut inputs.content {
+        content.self_paint_revision = 0;
+    }
+    normalize_chunks(&mut stamp.chunks)?;
+    for step in &mut stamp.ordered_steps {
+        let RetainedSurfaceRasterStepStamp::ArtifactSpan(span) = step else {
+            return None;
+        };
+        normalize_chunks(&mut span.chunks)?;
+        span.scroll_placement_normalized_owners = span
+            .owner_topology
+            .iter()
+            .map(|owner| witnesses.get(&owner.owner).copied())
+            .collect::<Option<Vec<_>>>()?;
+    }
+    scroll_content_effect_surface_raster_stamp_validates_contract(&stamp, contract).then_some(stamp)
+}
+
+pub(crate) fn scroll_content_effect_surface_raster_stamp_validates_contract(
+    stamp: &RetainedSurfaceRasterStamp,
+    contract: &EffectPropertySurfaceArtifactContract,
+) -> bool {
+    let Some(inputs) = stamp.property_effect.as_ref() else {
+        return false;
+    };
+    if inputs
+        .content
+        .iter()
+        .any(|content| content.self_paint_revision != 0)
+    {
+        return false;
+    }
+    let expected_revisions = contract
+        .content()
+        .iter()
+        .map(|content| (content.owner, content.self_paint_revision))
+        .collect::<FxHashMap<_, _>>();
+    let boundary_root = contract.boundary_root();
+    let mut typed_witnesses = FxHashMap::default();
+    for step in &stamp.ordered_steps {
+        let RetainedSurfaceRasterStepStamp::ArtifactSpan(span) = step else {
+            return false;
+        };
+        if span.scroll_placement_normalized_owners.len() != span.owner_topology.len() {
+            return false;
+        }
+        for (owner, witness) in span
+            .owner_topology
+            .iter()
+            .zip(&span.scroll_placement_normalized_owners)
+        {
+            if owner.owner != witness.owner
+                || !witness.is_sealed()
+                || witness.stable_id == 0
+                || witness.topology_revision == 0
+                || typed_witnesses
+                    .insert(witness.owner, *witness)
+                    .is_some_and(|old| old != *witness)
+            {
+                return false;
+            }
+        }
+    }
+    if typed_witnesses.len() != contract.content().len()
+        || contract.content().iter().any(|content| {
+            typed_witnesses.get(&content.owner).is_none_or(|witness| {
+                witness.stable_id != content.stable_id
+                    || witness.topology_revision != content.topology_revision
+            })
+        })
+    {
+        return false;
+    }
+    let restore_chunks = |chunks: &mut Vec<RetainedSurfaceChunkStamp>| -> Option<()> {
+        for chunk in chunks {
+            let expected = expected_revisions.get(&chunk.owner).copied()?;
+            let witness = typed_witnesses.get(&chunk.owner)?;
+            if chunk.non_boundary_self_paint_revision.is_some()
+                || chunk.topology_revision != witness.topology_revision
+            {
+                return None;
+            }
+            chunk.non_boundary_self_paint_revision =
+                (chunk.owner != boundary_root).then_some(expected);
+        }
+        Some(())
+    };
+    let mut restored = stamp.clone();
+    let Some(restored_inputs) = restored.property_effect.as_mut() else {
+        return false;
+    };
+    if restored_inputs.content.len() != contract.content().len() {
+        return false;
+    }
+    for (content, expected) in restored_inputs.content.iter_mut().zip(contract.content()) {
+        if content.owner != expected.owner
+            || content.stable_id != expected.stable_id
+            || content.parent != expected.parent
+            || content.topology_revision != expected.topology_revision
+        {
+            return false;
+        }
+        content.self_paint_revision = expected.self_paint_revision;
+    }
+    if restore_chunks(&mut restored.chunks).is_none() {
+        return false;
+    }
+    for step in &mut restored.ordered_steps {
+        let RetainedSurfaceRasterStepStamp::ArtifactSpan(span) = step else {
+            return false;
+        };
+        if restore_chunks(&mut span.chunks).is_none() {
+            return false;
+        }
+        span.scroll_placement_normalized_owners.clear();
+    }
+    property_effect_surface_raster_stamp_validates_contract_at_depth(&restored, contract, 0)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -485,6 +2127,40 @@ pub(crate) struct TransformEffectScrollChildRasterDependency {
     pub(crate) parent_opaque_order_after: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EffectTransformScrollChildRasterDependency {
+    pub(crate) step_index: usize,
+    pub(crate) child_stamp: Box<RetainedSurfaceRasterStamp>,
+    pub(crate) child_composite_geometry: RetainedSurfaceCompositeGeometryStamp,
+    pub(crate) child_transform: TransformNodeId,
+    pub(crate) parent_opaque_order_before: u32,
+    pub(crate) parent_opaque_order_after: u32,
+}
+
+pub(crate) fn effect_transform_scroll_child_dependency_validates_contract(
+    dependency: &EffectTransformScrollChildRasterDependency,
+    child_transform: TransformNodeId,
+    child_geometry: crate::view::base_component::TransformSurfaceGeometrySnapshot,
+) -> bool {
+    dependency.child_transform == child_transform
+        && child_transform.0 == dependency.child_stamp.identity.boundary_root
+        && dependency.child_stamp.target.source_bounds_bits
+            == [
+                child_geometry.source_bounds.x.to_bits(),
+                child_geometry.source_bounds.y.to_bits(),
+                child_geometry.source_bounds.width.to_bits(),
+                child_geometry.source_bounds.height.to_bits(),
+            ]
+        && retained_surface_composite_geometry_stamp(child_geometry)
+            .as_ref()
+            == Some(&dependency.child_composite_geometry)
+        // The transform texture is a receiver-local composite cutout. Like
+        // the reverse grammar's effect edge, it does not consume artifact
+        // opaque-order slots owned by the outer recorder.
+        && dependency.parent_opaque_order_after == dependency.parent_opaque_order_before
+        && transform_scroll_receiver_raster_stamp_is_canonical(&dependency.child_stamp)
+}
+
 pub(crate) fn transform_effect_scroll_child_dependency_validates_contract(
     dependency: &TransformEffectScrollChildRasterDependency,
     outer_transform: TransformNodeId,
@@ -492,7 +2168,11 @@ pub(crate) fn transform_effect_scroll_child_dependency_validates_contract(
 ) -> bool {
     let opacity = f32::from_bits(dependency.child_opacity_bits);
     dependency.local_basis == outer_transform
-        && outer_transform.0 != child_contract.boundary_root()
+        && !outer_transform.0.is_null()
+        // Owner identity is not boundary-role identity. A native node may
+        // legally own both the outer T and inner E roles; the child's sealed
+        // PropertyEffect stamp and role-tagged resident key keep those
+        // allocations disjoint.
         && dependency.child_source_bounds_bits == dependency.child_stamp.target.source_bounds_bits
         && dependency.child_opacity_bits == child_contract.isolated_leaf().opacity.to_bits()
         && opacity.is_finite()
@@ -512,6 +2192,38 @@ pub(crate) fn transform_effect_scroll_child_dependency_validates_contract(
 /// receiver's pre-transform logical raster basis. The receiver matrix and
 /// transform generation deliberately live outside this stamp: translation is
 /// a final-composite-only dependency and cannot invalidate receiver raster.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SameOwnerTransformScrollRasterRoleStamp {
+    pub(crate) owner: crate::view::node_arena::NodeKey,
+    pub(crate) stable_id: u64,
+    pub(crate) transform: TransformNodeId,
+    pub(crate) scroll: ScrollNodeId,
+    pub(crate) contents_clip: ClipNodeId,
+    pub(crate) content_root: crate::view::node_arena::NodeKey,
+    pub(crate) content_stable_id: u64,
+}
+
+impl SameOwnerTransformScrollRasterRoleStamp {
+    fn is_canonical_for(&self, dependency: &TransformScrollBoundaryRasterDependency) -> bool {
+        self.owner == dependency.receiver_owner
+            && self.owner == dependency.boundary_root
+            && self.stable_id != 0
+            && self.stable_id == dependency.receiver_stable_id
+            && self.stable_id == dependency.boundary_stable_id
+            && self.transform == dependency.receiver_transform_id
+            && self.transform.0 == self.owner
+            && self.scroll == dependency.scroll.id
+            && self.scroll.0 == self.owner
+            && self.contents_clip == dependency.contents_clip.id
+            && self.contents_clip.owner == self.owner
+            && self.contents_clip.role == ClipNodeRole::ContentsClip
+            && self.content_root == dependency.content_root
+            && self.content_root != self.owner
+            && self.content_stable_id != 0
+            && self.content_stable_id == dependency.content_stable_id
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TransformScrollBoundaryRasterDependency {
     pub(crate) step_index: usize,
@@ -543,6 +2255,7 @@ pub(crate) struct TransformScrollBoundaryRasterDependency {
     /// from silently widening the accepted geometry grammar.
     pub(crate) receiver_local_raster_clips: Vec<ClipNodeSnapshot>,
     pub(crate) receiver_ancestor_composite_clips: Vec<ClipNodeSnapshot>,
+    pub(crate) same_owner_role: Option<SameOwnerTransformScrollRasterRoleStamp>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -572,6 +2285,42 @@ pub(crate) struct EffectScrollBoundaryRasterDependency {
     pub(crate) contents_clip: ClipNodeSnapshot,
     pub(crate) receiver_local_raster_clips: Vec<ClipNodeSnapshot>,
     pub(crate) receiver_ancestor_composite_clips: Vec<ClipNodeSnapshot>,
+    pub(crate) same_owner_role: Option<SameOwnerEffectScrollRasterRoleStamp>,
+}
+
+/// Compiler-only identity seal for a native owner carrying both E and S.
+/// This is deliberately distinct from the T+S stamp: an effect generation
+/// and effect node id are part of the role identity, while opacity and effect
+/// generation remain final-composite-only dependencies.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SameOwnerEffectScrollRasterRoleStamp {
+    pub(crate) owner: crate::view::node_arena::NodeKey,
+    pub(crate) stable_id: u64,
+    pub(crate) effect: EffectNodeId,
+    pub(crate) scroll: ScrollNodeId,
+    pub(crate) contents_clip: ClipNodeId,
+    pub(crate) content_root: crate::view::node_arena::NodeKey,
+    pub(crate) content_stable_id: u64,
+}
+
+impl SameOwnerEffectScrollRasterRoleStamp {
+    fn is_canonical_for(&self, dependency: &EffectScrollBoundaryRasterDependency) -> bool {
+        self.owner == dependency.receiver_owner
+            && self.owner == dependency.boundary_root
+            && self.stable_id != 0
+            && self.stable_id == dependency.receiver_stable_id
+            && self.stable_id == dependency.boundary_stable_id
+            && self.effect.0 == self.owner
+            && self.scroll == dependency.scroll.id
+            && self.scroll.0 == self.owner
+            && self.contents_clip == dependency.contents_clip.id
+            && self.contents_clip.owner == self.owner
+            && self.contents_clip.role == ClipNodeRole::ContentsClip
+            && self.content_root == dependency.content_root
+            && self.content_root != self.owner
+            && self.content_stable_id != 0
+            && self.content_stable_id == dependency.content_stable_id
+    }
 }
 
 impl EffectScrollBoundaryRasterDependency {
@@ -587,6 +2336,10 @@ impl EffectScrollBoundaryRasterDependency {
 pub(crate) fn effect_scroll_boundary_dependency_is_canonical(
     dependency: &EffectScrollBoundaryRasterDependency,
 ) -> bool {
+    let receiver_boundary_roles_are_canonical = match &dependency.same_owner_role {
+        None => dependency.boundary_root != dependency.receiver_owner,
+        Some(role) => role.is_canonical_for(dependency),
+    };
     let shared = TransformScrollBoundaryRasterDependency {
         step_index: dependency.step_index,
         scene_root_ordinal: dependency.scene_root_ordinal,
@@ -614,8 +2367,13 @@ pub(crate) fn effect_scroll_boundary_dependency_is_canonical(
         contents_clip: dependency.contents_clip,
         receiver_local_raster_clips: dependency.receiver_local_raster_clips.clone(),
         receiver_ancestor_composite_clips: dependency.receiver_ancestor_composite_clips.clone(),
+        same_owner_role: None,
     };
-    transform_scroll_boundary_dependency_is_canonical(&shared)
+    transform_scroll_boundary_dependency_is_canonical_with(
+        &shared,
+        receiver_boundary_roles_are_canonical,
+        retained_surface_raster_stamp_is_canonical,
+    )
 }
 
 impl TransformScrollBoundaryRasterDependency {
@@ -665,14 +2423,16 @@ fn embedded_scroll_artifact_span_is_canonical(
             .all(|chunk| chunk.owner == expected_owner && chunk.id.owner == expected_owner)
 }
 
-pub(crate) fn transform_scroll_boundary_dependency_is_canonical(
+fn transform_scroll_boundary_dependency_is_canonical_with(
     dependency: &TransformScrollBoundaryRasterDependency,
+    receiver_boundary_roles_are_canonical: bool,
+    mut content_stamp_is_canonical: impl FnMut(&RetainedSurfaceRasterStamp) -> bool,
 ) -> bool {
     if dependency.receiver_owner.is_null()
         || dependency.receiver_transform_id.0 != dependency.receiver_owner
         || dependency.receiver_stable_id == 0
         || dependency.boundary_root.is_null()
-        || dependency.boundary_root == dependency.receiver_owner
+        || !receiver_boundary_roles_are_canonical
         || dependency.boundary_stable_id == 0
         || dependency.content_root.is_null()
         || dependency.content_root == dependency.boundary_root
@@ -729,7 +2489,7 @@ pub(crate) fn transform_scroll_boundary_dependency_is_canonical(
             || stamp.identity.boundary_root != dependency.content_root
             || stamp.identity.stable_id != dependency.content_stable_id
             || stamp.opaque_order_span != dependency.content_local_span
-            || !retained_surface_raster_stamp_is_canonical(stamp)
+            || !content_stamp_is_canonical(stamp)
             || !resident_keys.insert(stamp.identity.resident_key())
             || !persistent_keys.insert(stamp.identity.color_key)
             || !persistent_keys.insert(depth_key)
@@ -748,6 +2508,57 @@ pub(crate) fn transform_scroll_boundary_dependency_is_canonical(
         }
     }
     (saw_single && !saw_tile && dependency.content_stamps.len() == 1) || (saw_tile && !saw_single)
+}
+
+pub(crate) fn transform_scroll_boundary_dependency_is_canonical(
+    dependency: &TransformScrollBoundaryRasterDependency,
+) -> bool {
+    let receiver_boundary_roles_are_canonical = match &dependency.same_owner_role {
+        None => dependency.boundary_root != dependency.receiver_owner,
+        Some(role) => role.is_canonical_for(dependency),
+    };
+    transform_scroll_boundary_dependency_is_canonical_with(
+        dependency,
+        receiver_boundary_roles_are_canonical,
+        retained_surface_raster_stamp_is_canonical,
+    )
+}
+
+pub(crate) fn transform_scroll_boundary_dependency_validates_scroll_content_effect(
+    dependency: &TransformScrollBoundaryRasterDependency,
+    effect_stamp: &RetainedSurfaceRasterStamp,
+    effect_contract: &EffectPropertySurfaceArtifactContract,
+) -> bool {
+    let [content_stamp] = dependency.content_stamps.as_slice() else {
+        return false;
+    };
+    let receiver_boundary_roles_are_canonical = match &dependency.same_owner_role {
+        None => dependency.boundary_root != dependency.receiver_owner,
+        Some(role) => role.is_canonical_for(dependency),
+    };
+    transform_scroll_boundary_dependency_is_canonical_with(
+        dependency,
+        receiver_boundary_roles_are_canonical,
+        |stamp| {
+            stamp == content_stamp
+                && scroll_content_effect_receiver_raster_stamp_validates_contract(
+                    stamp,
+                    dependency.content_root,
+                    dependency.content_stable_id,
+                    effect_contract,
+                )
+                && stamp
+                    .ordered_steps
+                    .iter()
+                    .filter_map(|step| match step {
+                        RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(child) => {
+                            Some(child.child_stamp.as_ref())
+                        }
+                        _ => None,
+                    })
+                    .eq(std::iter::once(effect_stamp))
+        },
+    )
 }
 
 fn transform_scroll_receiver_artifact_span_is_canonical(
@@ -770,8 +2581,9 @@ fn transform_scroll_receiver_artifact_span_is_canonical(
             .all(|chunk| chunk.id.owner == chunk.owner)
 }
 
-pub(crate) fn transform_scroll_receiver_raster_stamp_is_canonical(
+fn transform_scroll_receiver_raster_stamp_is_canonical_with(
     stamp: &RetainedSurfaceRasterStamp,
+    mut boundary_is_canonical: impl FnMut(&TransformScrollBoundaryRasterDependency) -> bool,
 ) -> bool {
     if stamp.identity.role != RetainedSurfaceRasterRole::Transform
         || stamp.identity.scroll_content_tile.is_some()
@@ -823,7 +2635,7 @@ pub(crate) fn transform_scroll_receiver_raster_stamp_is_canonical(
                     || boundary.receiver_owner != stamp.identity.boundary_root
                     || boundary.receiver_stable_id != stamp.identity.stable_id
                     || boundary.recorded_receiver_opaque_before != cursor
-                    || !transform_scroll_boundary_dependency_is_canonical(boundary)
+                    || !boundary_is_canonical(boundary)
                 {
                     return false;
                 }
@@ -843,7 +2655,9 @@ pub(crate) fn transform_scroll_receiver_raster_stamp_is_canonical(
                 };
                 scroll_dependency = Some(boundary);
             }
-            RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+            | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
             | RetainedSurfaceRasterStepStamp::NestedSurface(_)
             | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return false,
         }
@@ -872,7 +2686,30 @@ pub(crate) fn transform_scroll_receiver_raster_stamp_is_canonical(
         && stamp.op_count == op_count
 }
 
-pub(crate) fn validated_transform_scroll_receiver_raster_stamp(
+pub(crate) fn transform_scroll_receiver_raster_stamp_is_canonical(
+    stamp: &RetainedSurfaceRasterStamp,
+) -> bool {
+    transform_scroll_receiver_raster_stamp_is_canonical_with(
+        stamp,
+        transform_scroll_boundary_dependency_is_canonical,
+    )
+}
+
+pub(crate) fn transform_scroll_content_effect_receiver_raster_stamp_validates_contract(
+    stamp: &RetainedSurfaceRasterStamp,
+    effect_stamp: &RetainedSurfaceRasterStamp,
+    effect_contract: &EffectPropertySurfaceArtifactContract,
+) -> bool {
+    transform_scroll_receiver_raster_stamp_is_canonical_with(stamp, |dependency| {
+        transform_scroll_boundary_dependency_validates_scroll_content_effect(
+            dependency,
+            effect_stamp,
+            effect_contract,
+        )
+    })
+}
+
+fn build_transform_scroll_receiver_raster_stamp(
     boundary_root: crate::view::node_arena::NodeKey,
     stable_id: u64,
     target: RetainedSurfaceRasterInputs,
@@ -911,7 +2748,9 @@ pub(crate) fn validated_transform_scroll_receiver_raster_stamp(
                 op_count = op_count.checked_add(boundary.host_artifact.op_count)?;
                 op_count = op_count.checked_add(boundary.overlay_artifact.op_count)?;
             }
-            RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+            | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
             | RetainedSurfaceRasterStepStamp::NestedSurface(_)
             | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return None,
         }
@@ -930,8 +2769,261 @@ pub(crate) fn validated_transform_scroll_receiver_raster_stamp(
         atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect: None,
+        native_scroll_children: Vec::new(),
     };
+    Some(stamp)
+}
+
+pub(crate) fn validated_transform_scroll_receiver_raster_stamp(
+    boundary_root: crate::view::node_arena::NodeKey,
+    stable_id: u64,
+    target: RetainedSurfaceRasterInputs,
+    ordered_steps: Vec<RetainedSurfaceRasterStepStamp>,
+    aggregate_opaque_order_span: Range<u32>,
+) -> Option<RetainedSurfaceRasterStamp> {
+    let stamp = build_transform_scroll_receiver_raster_stamp(
+        boundary_root,
+        stable_id,
+        target,
+        ordered_steps,
+        aggregate_opaque_order_span,
+    )?;
     transform_scroll_receiver_raster_stamp_is_canonical(&stamp).then_some(stamp)
+}
+
+pub(crate) fn validated_transform_scroll_content_effect_receiver_raster_stamp(
+    boundary_root: crate::view::node_arena::NodeKey,
+    stable_id: u64,
+    target: RetainedSurfaceRasterInputs,
+    ordered_steps: Vec<RetainedSurfaceRasterStepStamp>,
+    aggregate_opaque_order_span: Range<u32>,
+    effect_stamp: &RetainedSurfaceRasterStamp,
+    effect_contract: &EffectPropertySurfaceArtifactContract,
+) -> Option<RetainedSurfaceRasterStamp> {
+    let stamp = build_transform_scroll_receiver_raster_stamp(
+        boundary_root,
+        stable_id,
+        target,
+        ordered_steps,
+        aggregate_opaque_order_span,
+    )?;
+    transform_scroll_content_effect_receiver_raster_stamp_validates_contract(
+        &stamp,
+        effect_stamp,
+        effect_contract,
+    )
+    .then_some(stamp)
+}
+
+fn merged_validated_receiver_artifact_span<'a>(
+    steps: impl IntoIterator<Item = &'a ValidatedFrameRootScrollReceiverStep>,
+    boundary_root: crate::view::node_arena::NodeKey,
+    step_index: usize,
+    opaque_order_span: Range<u32>,
+) -> Option<RetainedSurfaceArtifactSpanStamp> {
+    let mut owner_topology = Vec::new();
+    let mut clip_nodes = Vec::new();
+    let mut chunks = Vec::new();
+    let mut op_count = 0usize;
+    let mut local_cursor = 0_u32;
+    for step in steps {
+        let ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } = step else {
+            return None;
+        };
+        let count = retained_surface_opaque_order_count(artifact);
+        let end = local_cursor.checked_add(count)?;
+        let span = retained_surface_artifact_span_stamp(
+            artifact,
+            boundary_root,
+            step_index,
+            local_cursor..end,
+        )?;
+        owner_topology.extend(span.owner_topology);
+        clip_nodes.extend(span.clip_nodes);
+        chunks.extend(span.chunks);
+        op_count = op_count.checked_add(span.op_count)?;
+        local_cursor = end;
+    }
+    if opaque_order_span.end.checked_sub(opaque_order_span.start)? != local_cursor {
+        return None;
+    }
+    Some(RetainedSurfaceArtifactSpanStamp {
+        step_index,
+        owner_topology,
+        clip_nodes,
+        chunks,
+        op_count,
+        opaque_order_span,
+        scroll_placement_normalized_owners: Vec::new(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validated_transform_scroll_content_effect_receiver_program_raster_stamp(
+    outer_program: &ValidatedFrameRootScrollReceiver,
+    scroll_host_program: &ValidatedFrameRootScrollReceiver,
+    insertion: &super::frame_plan::PropertyScrollContentOuterTransformInsertionContract,
+    scene_root_ordinal: u32,
+    scroll_boundary_ordinal: u32,
+    scroll_content_marker: super::PlannedBoundary,
+    content_root: crate::view::node_arena::NodeKey,
+    content_stable_id: u64,
+    scroll: ScrollNodeSnapshot,
+    contents_clip: ClipNodeSnapshot,
+    target: RetainedSurfaceRasterInputs,
+    content_stamp: RetainedSurfaceRasterStamp,
+    effect_stamp: &RetainedSurfaceRasterStamp,
+    effect_contract: &EffectPropertySurfaceArtifactContract,
+) -> Option<RetainedSurfaceRasterStamp> {
+    let receiver = &insertion.receiver;
+    if outer_program.expected_boundary != Some(receiver.scroll_cutout)
+        || outer_program.artifact_boundary_root != Some(receiver.receiver.owner)
+        || outer_program.scroll_host.is_some()
+        || scroll_host_program.expected_boundary != Some(scroll_content_marker)
+        || scroll_host_program.scroll_host != Some(scroll.owner)
+        || scroll_host_program.scroll != Some(scroll)
+        || scroll_host_program.artifact_boundary_root != Some(scroll.owner)
+        || scroll_content_marker.root != scroll.owner
+        || scroll_content_marker.kind != super::PlannedBoundaryKind::Scroll(scroll.id)
+        || !scroll_content_effect_receiver_raster_stamp_validates_contract(
+            &content_stamp,
+            content_root,
+            content_stable_id,
+            effect_contract,
+        )
+        || !content_stamp
+            .ordered_steps
+            .iter()
+            .filter_map(|step| match step {
+                RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(child) => {
+                    Some(child.child_stamp.as_ref())
+                }
+                _ => None,
+            })
+            .eq(std::iter::once(effect_stamp))
+    {
+        return None;
+    }
+    let host_marker = scroll_host_program
+        .steps
+        .iter()
+        .position(|step| matches!(step, ValidatedFrameRootScrollReceiverStep::Boundary(marker) if *marker == scroll_content_marker))?;
+    if scroll_host_program.steps[host_marker + 1..]
+        .iter()
+        .any(|step| matches!(step, ValidatedFrameRootScrollReceiverStep::Boundary(_)))
+        || scroll_host_program.steps[..host_marker]
+            .iter()
+            .any(|step| matches!(step, ValidatedFrameRootScrollReceiverStep::Boundary(_)))
+    {
+        return None;
+    }
+    let host_count = scroll_host_program.steps[..host_marker].iter().try_fold(
+        0_u32,
+        |cursor, step| match step {
+            ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } => {
+                cursor.checked_add(retained_surface_opaque_order_count(artifact))
+            }
+            ValidatedFrameRootScrollReceiverStep::Boundary(_) => None,
+        },
+    )?;
+    let overlay_count = scroll_host_program.steps[host_marker + 1..]
+        .iter()
+        .try_fold(0_u32, |cursor, step| match step {
+            ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } => {
+                cursor.checked_add(retained_surface_opaque_order_count(artifact))
+            }
+            ValidatedFrameRootScrollReceiverStep::Boundary(_) => None,
+        })?;
+
+    let mut cursor = 0_u32;
+    let mut ordered_steps = Vec::with_capacity(outer_program.steps.len());
+    for (step_index, step) in outer_program.steps.iter().enumerate() {
+        match step {
+            ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } => {
+                let end = cursor.checked_add(retained_surface_opaque_order_count(artifact))?;
+                ordered_steps.push(RetainedSurfaceRasterStepStamp::ArtifactSpan(
+                    retained_surface_artifact_span_stamp(
+                        artifact,
+                        receiver.receiver.owner,
+                        step_index,
+                        cursor..end,
+                    )?,
+                ));
+                cursor = end;
+            }
+            ValidatedFrameRootScrollReceiverStep::Boundary(marker) => {
+                if *marker != receiver.scroll_cutout
+                    || step_index != receiver.insertion_index
+                    || cursor != receiver.receiver_opaque_before
+                {
+                    return None;
+                }
+                let host_end = cursor.checked_add(host_count)?;
+                let overlay_end = host_end.checked_add(overlay_count)?;
+                let host_parent_span = cursor..host_end;
+                let overlay_parent_span = host_end..overlay_end;
+                let host_artifact = merged_validated_receiver_artifact_span(
+                    &scroll_host_program.steps[..host_marker],
+                    scroll.owner,
+                    0,
+                    host_parent_span.clone(),
+                )?;
+                let overlay_artifact = merged_validated_receiver_artifact_span(
+                    &scroll_host_program.steps[host_marker + 1..],
+                    scroll.owner,
+                    2,
+                    overlay_parent_span.clone(),
+                )?;
+                let dependency = TransformScrollBoundaryRasterDependency {
+                    step_index,
+                    scene_root_ordinal,
+                    receiver_owner: receiver.receiver.owner,
+                    receiver_transform_id: receiver.receiver.id,
+                    receiver_stable_id: receiver.receiver_stable_id,
+                    scroll_boundary_ordinal,
+                    boundary_root: scroll.owner,
+                    boundary_stable_id: scroll_content_marker.stable_id,
+                    content_root,
+                    content_stable_id,
+                    insertion_index: receiver.insertion_index,
+                    receiver_step_count: outer_program.steps.len(),
+                    before_span: receiver.before_span.clone(),
+                    after_span: receiver.after_span.clone(),
+                    recorded_receiver_opaque_before: receiver.receiver_opaque_before,
+                    recorded_receiver_opaque_after: receiver.receiver_opaque_after,
+                    host_parent_span,
+                    content_local_span: content_stamp.opaque_order_span.clone(),
+                    overlay_parent_span,
+                    host_artifact,
+                    overlay_artifact,
+                    content_stamps: vec![content_stamp.clone()],
+                    scroll,
+                    contents_clip,
+                    receiver_local_raster_clips: Vec::new(),
+                    receiver_ancestor_composite_clips: Vec::new(),
+                    same_owner_role: None,
+                };
+                if !transform_scroll_boundary_dependency_validates_scroll_content_effect(
+                    &dependency,
+                    effect_stamp,
+                    effect_contract,
+                ) {
+                    return None;
+                }
+                ordered_steps.push(RetainedSurfaceRasterStepStamp::ScrollBoundary(dependency));
+                cursor = overlay_end;
+            }
+        }
+    }
+    validated_transform_scroll_content_effect_receiver_raster_stamp(
+        receiver.receiver.owner,
+        receiver.receiver_stable_id,
+        target,
+        ordered_steps,
+        0..cursor,
+        effect_stamp,
+        effect_contract,
+    )
 }
 
 pub(crate) fn effect_scroll_receiver_raster_stamp_validates_contract(
@@ -1007,7 +3099,9 @@ pub(crate) fn effect_scroll_receiver_raster_stamp_validates_contract(
                 op_count = next;
                 saw_scroll = true;
             }
-            RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+            | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
             | RetainedSurfaceRasterStepStamp::NestedSurface(_)
             | RetainedSurfaceRasterStepStamp::ScrollBoundary(_) => return false,
         }
@@ -1058,7 +3152,9 @@ pub(crate) fn validated_effect_scroll_receiver_raster_stamp(
                 op_count = op_count.checked_add(dependency.host_artifact.op_count)?;
                 op_count = op_count.checked_add(dependency.overlay_artifact.op_count)?;
             }
-            RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+            | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
             | RetainedSurfaceRasterStepStamp::NestedSurface(_)
             | RetainedSurfaceRasterStepStamp::ScrollBoundary(_) => return None,
         }
@@ -1080,6 +3176,7 @@ pub(crate) fn validated_effect_scroll_receiver_raster_stamp(
             local_raster_clips: contract.isolated_local_raster_clips(),
             content: contract.content().to_vec(),
         }),
+        native_scroll_children: Vec::new(),
     };
     effect_scroll_receiver_raster_stamp_validates_contract(&stamp, contract).then_some(stamp)
 }
@@ -1151,7 +3248,9 @@ pub(crate) fn transform_effect_scroll_outer_raster_stamp_validates_contract(
                 cursor = dependency.parent_opaque_order_after;
                 saw_child = true;
             }
-            RetainedSurfaceRasterStepStamp::NestedSurface(_)
+            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+            | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::NestedSurface(_)
             | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
             | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return false,
         }
@@ -1192,7 +3291,9 @@ pub(crate) fn validated_transform_effect_scroll_outer_raster_stamp(
                 op_count = op_count.checked_add(span.op_count)?;
             }
             RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_) => {}
-            RetainedSurfaceRasterStepStamp::NestedSurface(_)
+            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+            | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::NestedSurface(_)
             | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
             | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return None,
         }
@@ -1211,11 +3312,163 @@ pub(crate) fn validated_transform_effect_scroll_outer_raster_stamp(
         atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect: None,
+        native_scroll_children: Vec::new(),
     };
     transform_effect_scroll_outer_raster_stamp_validates_contract(
         &stamp,
         outer_transform,
         child_contract,
+    )
+    .then_some(stamp)
+}
+
+/// Dedicated outer-E validator for the exact E -> T -> Scroll grammar. It is
+/// intentionally disjoint from the direct E -> Scroll and generic property
+/// executors: the only admitted child is a canonical transform receiver whose
+/// typed stamp contains exactly one ScrollBoundary dependency.
+pub(crate) fn effect_transform_scroll_outer_raster_stamp_validates_contract(
+    stamp: &RetainedSurfaceRasterStamp,
+    outer_contract: &EffectPropertySurfaceArtifactContract,
+    child_transform: TransformNodeId,
+    child_geometry: crate::view::base_component::TransformSurfaceGeometrySnapshot,
+) -> bool {
+    if !outer_contract.is_canonical()
+        || stamp.identity.role != RetainedSurfaceRasterRole::PropertyEffect
+        || stamp.identity.boundary_root != outer_contract.boundary_root()
+        || stamp.identity.stable_id != outer_contract.stable_id()
+        || stamp.identity.color_key
+            != crate::view::base_component::isolation_layer_stable_key(outer_contract.stable_id())
+        || stamp.scroll_host.is_some()
+        || stamp.text_area_paint_grammar.is_some()
+        || stamp.interactive_text_area_resident.is_some()
+        || stamp.atomic_projection_text_area_resident.is_some()
+        || stamp.property_effect.as_ref()
+            != Some(&PropertyEffectRasterIdentityInputs {
+                local_raster_clips: outer_contract.isolated_local_raster_clips(),
+                content: outer_contract.content().to_vec(),
+            })
+        || !stamp
+            .target
+            .has_canonical_descriptor_pair_for(stamp.identity)
+        || stamp.opaque_order_span.start != 0
+    {
+        return false;
+    }
+    let mut cursor = 0_u32;
+    let mut owners = Vec::new();
+    let mut clips = Vec::new();
+    let mut chunks = Vec::new();
+    let mut op_count = 0usize;
+    let mut saw_child = false;
+    for (expected_index, step) in stamp.ordered_steps.iter().enumerate() {
+        match step {
+            RetainedSurfaceRasterStepStamp::ArtifactSpan(span) => {
+                if span.step_index != expected_index || span.opaque_order_span.start != cursor {
+                    return false;
+                }
+                cursor = span.opaque_order_span.end;
+                owners.extend(span.owner_topology.iter().copied());
+                clips.extend(span.clip_nodes.iter().copied());
+                chunks.extend(span.chunks.iter().cloned());
+                let Some(next) = op_count.checked_add(span.op_count) else {
+                    return false;
+                };
+                op_count = next;
+            }
+            RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(dependency) => {
+                if saw_child
+                    || dependency.step_index != expected_index
+                    || dependency.parent_opaque_order_before != cursor
+                    || !effect_transform_scroll_child_dependency_validates_contract(
+                        dependency,
+                        child_transform,
+                        child_geometry,
+                    )
+                {
+                    return false;
+                }
+                cursor = dependency.parent_opaque_order_after;
+                saw_child = true;
+            }
+            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+            | RetainedSurfaceRasterStepStamp::NestedSurface(_)
+            | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
+            | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return false,
+        }
+    }
+    saw_child
+        && stamp.opaque_order_span == (0..cursor)
+        && stamp.owner_topology == owners
+        && stamp.clip_nodes == clips
+        && stamp.chunks == chunks
+        && stamp.op_count == op_count
+}
+
+pub(crate) fn validated_effect_transform_scroll_outer_raster_stamp(
+    outer_contract: &EffectPropertySurfaceArtifactContract,
+    child_transform: TransformNodeId,
+    child_geometry: crate::view::base_component::TransformSurfaceGeometrySnapshot,
+    target: RetainedSurfaceRasterInputs,
+    ordered_steps: Vec<RetainedSurfaceRasterStepStamp>,
+    aggregate_opaque_order_span: Range<u32>,
+) -> Option<RetainedSurfaceRasterStamp> {
+    let identity = RetainedSurfaceRasterIdentity {
+        boundary_root: outer_contract.boundary_root(),
+        stable_id: outer_contract.stable_id(),
+        color_key: crate::view::base_component::isolation_layer_stable_key(
+            outer_contract.stable_id(),
+        ),
+        role: RetainedSurfaceRasterRole::PropertyEffect,
+        scroll_content_tile: None,
+    };
+    if !target.has_canonical_descriptor_pair_for(identity) {
+        return None;
+    }
+    let mut owners = Vec::new();
+    let mut clips = Vec::new();
+    let mut chunks = Vec::new();
+    let mut op_count = 0usize;
+    for step in &ordered_steps {
+        match step {
+            RetainedSurfaceRasterStepStamp::ArtifactSpan(span) => {
+                owners.extend(span.owner_topology.iter().copied());
+                clips.extend(span.clip_nodes.iter().copied());
+                chunks.extend(span.chunks.iter().cloned());
+                op_count = op_count.checked_add(span.op_count)?;
+            }
+            RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_) => {}
+            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+            | RetainedSurfaceRasterStepStamp::NestedSurface(_)
+            | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
+            | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return None,
+        }
+    }
+    let stamp = RetainedSurfaceRasterStamp {
+        identity,
+        target,
+        owner_topology: owners,
+        clip_nodes: clips,
+        chunks,
+        op_count,
+        opaque_order_span: aggregate_opaque_order_span,
+        ordered_steps,
+        text_area_paint_grammar: None,
+        interactive_text_area_resident: None,
+        atomic_projection_text_area_resident: None,
+        scroll_host: None,
+        property_effect: Some(PropertyEffectRasterIdentityInputs {
+            local_raster_clips: outer_contract.isolated_local_raster_clips(),
+            content: outer_contract.content().to_vec(),
+        }),
+        native_scroll_children: Vec::new(),
+    };
+    effect_transform_scroll_outer_raster_stamp_validates_contract(
+        &stamp,
+        outer_contract,
+        child_transform,
+        child_geometry,
     )
     .then_some(stamp)
 }
@@ -1564,6 +3817,33 @@ pub(crate) fn validated_scroll_host_artifact_span_stamp(
     retained_surface_artifact_span_stamp(artifact, boundary_root, step_index, opaque_order_span)
 }
 
+/// Freezes a generalized property-scene artifact as offset-zero scroll
+/// content. The caller still owns the typed scroll boundary and clip split;
+/// this function only seals the artifact payload and opaque-order identity.
+pub(crate) fn validated_property_scroll_content_artifact_span_stamp(
+    validated: &ValidatedFrameRootScrollContent,
+    step_index: usize,
+    opaque_order_span: Range<u32>,
+) -> Option<RetainedSurfaceArtifactSpanStamp> {
+    if !matches!(
+        validated.artifact.target,
+        PaintArtifactTarget::CurrentTarget
+    ) || !validated
+        .artifact
+        .owner_nodes
+        .iter()
+        .any(|owner| owner.owner == validated.content_root)
+    {
+        return None;
+    }
+    retained_surface_artifact_span_stamp(
+        &validated.artifact,
+        validated.content_root,
+        step_index,
+        opaque_order_span,
+    )
+}
+
 fn retained_surface_artifact_span_stamp(
     artifact: &PaintArtifact,
     boundary_root: crate::view::node_arena::NodeKey,
@@ -1605,6 +3885,7 @@ fn retained_surface_artifact_span_stamp(
         chunks,
         op_count: artifact.ops.len(),
         opaque_order_span,
+        scroll_placement_normalized_owners: Vec::new(),
     })
 }
 
@@ -1849,6 +4130,414 @@ pub(crate) fn validated_scroll_content_raster_stamp(
         None,
         None,
     )
+}
+
+/// Constructs one native scroll-forest C resident. Ordinary content chunks
+/// remain the existing scroll-content identity; typed child boundary edges
+/// account for the additional parent-local H/O cursor and invalidate only the
+/// ancestor chain that actually contains them.
+pub(crate) fn validated_native_scroll_forest_content_raster_stamp(
+    boundary_root: crate::view::node_arena::NodeKey,
+    stable_id: u64,
+    target: RetainedSurfaceRasterInputs,
+    artifact_span: RetainedSurfaceArtifactSpanStamp,
+    child_dependencies: Vec<super::frame_plan::NativeScrollForestChildRasterDependency>,
+    aggregate_opaque_order_span: Range<u32>,
+) -> Option<RetainedSurfaceRasterStamp> {
+    if aggregate_opaque_order_span.start != 0 {
+        return None;
+    }
+    let artifact_terminal = artifact_span.opaque_order_span.end;
+    let mut child_cursor = artifact_terminal;
+    let mut child_ids = FxHashSet::default();
+    for dependency in &child_dependencies {
+        if !child_ids.insert(dependency.child)
+            || dependency.content_stable_id == 0
+            || dependency.boundary_root.is_null()
+            || dependency.content_root.is_null()
+            || dependency.child_raster_identity.content_root != dependency.content_root
+            || dependency.child_raster_identity.content_stable_id != dependency.content_stable_id
+            || !native_scroll_forest_program_identity_is_canonical(
+                &dependency.child_raster_identity,
+                0,
+            )
+            || dependency.scroll.owner != dependency.boundary_root
+            || dependency.contents_clip.owner != dependency.boundary_root
+            || dependency.offset_bits
+                != [
+                    dependency.scroll.offset.x.to_bits(),
+                    dependency.scroll.offset.y.to_bits(),
+                ]
+            || dependency.composite_scissor != dependency.contents_clip.logical_scissor
+            || dependency.parent_opaque_after < dependency.parent_opaque_before
+        {
+            return None;
+        }
+        child_cursor = child_cursor.checked_add(
+            dependency
+                .parent_opaque_after
+                .checked_sub(dependency.parent_opaque_before)?,
+        )?;
+    }
+    if child_cursor != aggregate_opaque_order_span.end {
+        return None;
+    }
+    let identity = RetainedSurfaceRasterIdentity {
+        boundary_root,
+        stable_id,
+        color_key: crate::view::base_component::scroll_content_layer_stable_key(stable_id),
+        role: RetainedSurfaceRasterRole::ScrollContent,
+        scroll_content_tile: None,
+    };
+    if boundary_root.is_null()
+        || stable_id == 0
+        || !target.has_canonical_descriptor_pair_for(identity)
+        || artifact_span.step_index != 0
+        || artifact_span.opaque_order_span.start != 0
+        || artifact_span.chunks.is_empty()
+        || !artifact_span.clip_nodes.is_empty()
+        || artifact_span
+            .owner_topology
+            .iter()
+            .filter(|owner| owner.parent.is_none())
+            .count()
+            != 1
+        || !artifact_span
+            .owner_topology
+            .iter()
+            .any(|owner| owner.owner == boundary_root && owner.parent.is_none())
+        || artifact_span
+            .chunks
+            .iter()
+            .any(|chunk| chunk.clip.is_some() || chunk.id.owner != chunk.owner)
+    {
+        return None;
+    }
+    Some(RetainedSurfaceRasterStamp {
+        identity,
+        target,
+        owner_topology: artifact_span.owner_topology.clone(),
+        clip_nodes: artifact_span.clip_nodes.clone(),
+        chunks: artifact_span.chunks.clone(),
+        op_count: artifact_span.op_count,
+        opaque_order_span: aggregate_opaque_order_span,
+        ordered_steps: vec![RetainedSurfaceRasterStepStamp::ArtifactSpan(artifact_span)],
+        text_area_paint_grammar: None,
+        interactive_text_area_resident: None,
+        atomic_projection_text_area_resident: None,
+        scroll_host: None,
+        property_effect: None,
+        native_scroll_children: child_dependencies,
+    })
+}
+
+fn native_scroll_forest_program_identity_is_canonical(
+    identity: &super::frame_plan::NativeScrollForestContentRasterProgramIdentity,
+    depth: usize,
+) -> bool {
+    if depth >= usize::from(u8::MAX)
+        || identity.content_root.is_null()
+        || identity.content_stable_id == 0
+        || identity.artifact_span.step_index != 0
+        || identity.artifact_span.opaque_order_span.start != 0
+    {
+        return false;
+    }
+    let mut terminal = identity.artifact_span.opaque_order_span.end;
+    let mut children = FxHashSet::default();
+    for dependency in &identity.child_dependencies {
+        if !children.insert(dependency.child)
+            || dependency.content_root != dependency.child_raster_identity.content_root
+            || dependency.content_stable_id != dependency.child_raster_identity.content_stable_id
+            || !native_scroll_forest_program_identity_is_canonical(
+                &dependency.child_raster_identity,
+                depth + 1,
+            )
+        {
+            return false;
+        }
+        let Some(delta) = dependency
+            .parent_opaque_after
+            .checked_sub(dependency.parent_opaque_before)
+        else {
+            return false;
+        };
+        let Some(next) = terminal.checked_add(delta) else {
+            return false;
+        };
+        terminal = next;
+    }
+    terminal == identity.opaque_terminal
+}
+
+pub(crate) fn native_scroll_forest_content_raster_stamp_is_canonical(
+    stamp: &RetainedSurfaceRasterStamp,
+) -> bool {
+    let [RetainedSurfaceRasterStepStamp::ArtifactSpan(span)] = stamp.ordered_steps.as_slice()
+    else {
+        return false;
+    };
+    validated_native_scroll_forest_content_raster_stamp(
+        stamp.identity.boundary_root,
+        stamp.identity.stable_id,
+        stamp.target.clone(),
+        span.clone(),
+        stamp.native_scroll_children.clone(),
+        stamp.opaque_order_span.clone(),
+    )
+    .as_ref()
+        == Some(stamp)
+}
+
+/// Validates the dedicated C raster shape without widening the legacy
+/// `validated_scroll_content_raster_stamp` gate.  The only non-artifact step
+/// admitted here is the exact descendant E dependency sealed by the program
+/// token and property-effect contract.
+pub(crate) fn scroll_content_effect_receiver_raster_stamp_validates_contract(
+    stamp: &RetainedSurfaceRasterStamp,
+    content_root: crate::view::node_arena::NodeKey,
+    content_stable_id: u64,
+    effect_contract: &EffectPropertySurfaceArtifactContract,
+) -> bool {
+    if content_root.is_null()
+        || content_stable_id == 0
+        || !effect_contract.is_canonical()
+        || effect_contract.boundary_root() == content_root
+        || stamp.identity.boundary_root != content_root
+        || stamp.identity.stable_id != content_stable_id
+        || stamp.identity.role != RetainedSurfaceRasterRole::ScrollContent
+        || stamp.identity.scroll_content_tile.is_some()
+        || stamp.identity.color_key
+            != crate::view::base_component::scroll_content_layer_stable_key(content_stable_id)
+        || stamp.scroll_host.is_some()
+        || stamp.text_area_paint_grammar.is_some()
+        || stamp.interactive_text_area_resident.is_some()
+        || stamp.atomic_projection_text_area_resident.is_some()
+        || stamp.property_effect.is_some()
+        || !stamp.clip_nodes.is_empty()
+        || !stamp
+            .target
+            .has_canonical_descriptor_pair_for(stamp.identity)
+        || stamp.opaque_order_span.start != 0
+    {
+        return false;
+    }
+    let mut cursor = 0_u32;
+    let mut owners = Vec::new();
+    let mut chunks = Vec::new();
+    let mut op_count = 0usize;
+    let mut saw_child = false;
+    for (expected_index, step) in stamp.ordered_steps.iter().enumerate() {
+        match step {
+            RetainedSurfaceRasterStepStamp::ArtifactSpan(span) => {
+                let normalized = span
+                    .scroll_placement_normalized_owners
+                    .iter()
+                    .map(|witness| (witness.owner, witness))
+                    .collect::<FxHashMap<_, _>>();
+                if span.step_index != expected_index
+                    || span.opaque_order_span.start != cursor
+                    || span.opaque_order_span.end < span.opaque_order_span.start
+                    || !span.clip_nodes.is_empty()
+                    || span.op_count
+                        != span
+                            .chunks
+                            .iter()
+                            .map(|chunk| chunk.op_count)
+                            .sum::<usize>()
+                    || normalized.len() != span.owner_topology.len()
+                    || span.owner_topology.iter().any(|owner| {
+                        normalized.get(&owner.owner).is_none_or(|witness| {
+                            !witness.is_sealed()
+                                || witness.stable_id == 0
+                                || witness.topology_revision == 0
+                        })
+                    })
+                    || span.chunks.iter().any(|chunk| {
+                        chunk.id.owner != chunk.owner
+                            || chunk.non_boundary_self_paint_revision.is_some()
+                            || normalized.get(&chunk.owner).is_none_or(|witness| {
+                                witness.topology_revision != chunk.topology_revision
+                            })
+                            || chunk.id.role == PaintChunkRole::ScrollbarOverlay
+                            || matches!(
+                                chunk.payload_identity,
+                                PaintPayloadIdentity::PreparedScrollbarOverlay(_)
+                            )
+                    })
+                {
+                    return false;
+                }
+                cursor = span.opaque_order_span.end;
+                owners.extend(span.owner_topology.iter().copied());
+                chunks.extend(span.chunks.iter().cloned());
+                let Some(next) = op_count.checked_add(span.op_count) else {
+                    return false;
+                };
+                op_count = next;
+            }
+            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(dependency) => {
+                if saw_child
+                    || dependency.step_index != expected_index
+                    || dependency.parent_opaque_order_before != cursor
+                    || !scroll_content_effect_child_dependency_validates_contract(
+                        dependency,
+                        effect_contract,
+                    )
+                {
+                    return false;
+                }
+                cursor = dependency.parent_opaque_order_after;
+                saw_child = true;
+            }
+            RetainedSurfaceRasterStepStamp::NestedSurface(_)
+            | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
+            | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return false,
+        }
+    }
+    saw_child
+        && stamp.opaque_order_span == (0..cursor)
+        && stamp.owner_topology == owners
+        && stamp.chunks == chunks
+        && stamp.op_count == op_count
+}
+
+/// Builds the complete offset-zero C stamp directly from the compiler-owned
+/// ordered program. Artifact spans and the one E edge are derived internally,
+/// so callers cannot reorder, duplicate, or omit the cutout dependency.
+pub(crate) fn validated_scroll_content_effect_receiver_raster_stamp(
+    validated: &ValidatedScrollContentEffectReceiverProgram,
+    target: RetainedSurfaceRasterInputs,
+    child_stamp: RetainedSurfaceRasterStamp,
+) -> Option<RetainedSurfaceRasterStamp> {
+    if validated.effect_cutout.root != validated.effect_contract.boundary_root()
+        || validated.effect_cutout.stable_id != validated.effect_contract.stable_id()
+        || validated.effect_cutout.kind
+            != super::PlannedBoundaryKind::Isolation(validated.effect_contract.isolated_leaf().id)
+        || !scroll_content_effect_surface_raster_stamp_validates_contract(
+            &child_stamp,
+            &validated.effect_contract,
+        )
+    {
+        return None;
+    }
+    let identity = RetainedSurfaceRasterIdentity {
+        boundary_root: validated.content_root,
+        stable_id: validated.content_stable_id,
+        color_key: crate::view::base_component::scroll_content_layer_stable_key(
+            validated.content_stable_id,
+        ),
+        role: RetainedSurfaceRasterRole::ScrollContent,
+        scroll_content_tile: None,
+    };
+    if !target.has_canonical_descriptor_pair_for(identity) {
+        return None;
+    }
+    let mut cursor = 0_u32;
+    let mut ordered_steps = Vec::with_capacity(validated.receiver.steps.len());
+    for (step_index, step) in validated.receiver.steps.iter().enumerate() {
+        match step {
+            ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } => {
+                let opaque_count = retained_surface_opaque_order_count(artifact);
+                let end = cursor.checked_add(opaque_count)?;
+                let span = retained_surface_artifact_span_stamp(
+                    artifact,
+                    validated.content_root,
+                    step_index,
+                    cursor..end,
+                )?;
+                ordered_steps.push(RetainedSurfaceRasterStepStamp::ArtifactSpan(span));
+                cursor = end;
+            }
+            ValidatedFrameRootScrollReceiverStep::Boundary(boundary) => {
+                if *boundary != validated.effect_cutout {
+                    return None;
+                }
+                ordered_steps.push(RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(
+                    ScrollContentEffectChildRasterDependency {
+                        step_index,
+                        child_source_bounds_bits: child_stamp.target.source_bounds_bits,
+                        child_opacity_bits: validated
+                            .effect_contract
+                            .isolated_leaf()
+                            .opacity
+                            .to_bits(),
+                        child_effect_generation: validated
+                            .effect_contract
+                            .isolated_leaf()
+                            .generation,
+                        parent_opaque_order_before: cursor,
+                        parent_opaque_order_after: cursor,
+                        child_stamp: Box::new(child_stamp.clone()),
+                    },
+                ));
+            }
+        }
+    }
+    // As with the Phase3 E child, scroll placement advances the generic
+    // tracker revision of descendants even though the offset-zero C payload
+    // is unchanged. Keep this normalization local to the dedicated C grammar;
+    // payload identity, bounds, topology and clip stamps remain exact.
+    for step in &mut ordered_steps {
+        let RetainedSurfaceRasterStepStamp::ArtifactSpan(span) = step else {
+            continue;
+        };
+        let witnesses = validated
+            .normalized_owners
+            .iter()
+            .map(|witness| (witness.owner, *witness))
+            .collect::<FxHashMap<_, _>>();
+        span.scroll_placement_normalized_owners = span
+            .owner_topology
+            .iter()
+            .map(|owner| witnesses.get(&owner.owner).copied())
+            .collect::<Option<Vec<_>>>()?;
+        for chunk in &mut span.chunks {
+            let witness = witnesses.get(&chunk.owner)?;
+            if witness.topology_revision != chunk.topology_revision {
+                return None;
+            }
+            chunk.non_boundary_self_paint_revision = None;
+        }
+    }
+    let mut owner_topology = Vec::new();
+    let mut clip_nodes = Vec::new();
+    let mut chunks = Vec::new();
+    let mut op_count = 0usize;
+    for step in &ordered_steps {
+        let RetainedSurfaceRasterStepStamp::ArtifactSpan(span) = step else {
+            continue;
+        };
+        owner_topology.extend(span.owner_topology.iter().copied());
+        clip_nodes.extend(span.clip_nodes.iter().copied());
+        chunks.extend(span.chunks.iter().cloned());
+        op_count = op_count.checked_add(span.op_count)?;
+    }
+    let stamp = RetainedSurfaceRasterStamp {
+        identity,
+        target,
+        owner_topology,
+        clip_nodes,
+        chunks,
+        op_count,
+        opaque_order_span: 0..cursor,
+        ordered_steps,
+        text_area_paint_grammar: None,
+        interactive_text_area_resident: None,
+        atomic_projection_text_area_resident: None,
+        scroll_host: None,
+        property_effect: None,
+        native_scroll_children: Vec::new(),
+    };
+    scroll_content_effect_receiver_raster_stamp_validates_contract(
+        &stamp,
+        validated.content_root,
+        validated.content_stable_id,
+        &validated.effect_contract,
+    )
+    .then_some(stamp)
 }
 
 pub(crate) fn validated_scroll_text_area_content_raster_stamp(
@@ -2107,7 +4796,9 @@ fn validated_retained_surface_tree_raster_stamp_with_scroll(
                 }
                 cursor = dependency.parent_opaque_order_after;
             }
-            RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+            | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
             | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
             | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return None,
         }
@@ -2129,6 +4820,7 @@ fn validated_retained_surface_tree_raster_stamp_with_scroll(
         atomic_projection_text_area_resident,
         scroll_host,
         property_effect: None,
+        native_scroll_children: Vec::new(),
     };
     retained_surface_raster_stamp_is_canonical_at_depth(&stamp, depth).then_some(stamp)
 }
@@ -2189,7 +4881,9 @@ pub(crate) fn validated_property_scene_surface_raster_stamp(
                 }
                 cursor = dependency.parent_opaque_order_after;
             }
-            RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+            | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
             | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
             | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return None,
         }
@@ -2211,6 +4905,7 @@ pub(crate) fn validated_property_scene_surface_raster_stamp(
         atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect: None,
+        native_scroll_children: Vec::new(),
     };
     property_scene_surface_raster_stamp_is_canonical_at_depth(&stamp, depth).then_some(stamp)
 }
@@ -2219,6 +4914,9 @@ pub(crate) fn property_scene_surface_raster_stamp_is_canonical_at_depth(
     stamp: &RetainedSurfaceRasterStamp,
     initial_depth: usize,
 ) -> bool {
+    if !stamp.native_scroll_children.is_empty() {
+        return false;
+    }
     fn transform_geometry_is_canonical(
         geometry: &RetainedSurfaceCompositeGeometryStamp,
         child: &RetainedSurfaceRasterStamp,
@@ -2255,7 +4953,9 @@ pub(crate) fn property_scene_surface_raster_stamp_is_canonical_at_depth(
         span: &RetainedSurfaceArtifactSpanStamp,
         boundary_root: crate::view::node_arena::NodeKey,
     ) -> bool {
-        if span.opaque_order_span.end < span.opaque_order_span.start {
+        if span.opaque_order_span.end < span.opaque_order_span.start
+            || !span.scroll_placement_normalized_owners.is_empty()
+        {
             return false;
         }
         let mut owners = FxHashMap::default();
@@ -2427,7 +5127,9 @@ pub(crate) fn property_scene_surface_raster_stamp_is_canonical_at_depth(
                     }
                     cursor = after;
                 }
-                RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+                RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+                | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+                | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
                 | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
                 | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return false,
             }
@@ -2499,7 +5201,9 @@ pub(crate) fn validated_property_effect_surface_raster_stamp(
                     return None;
                 }
             }
-            RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+            | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+            | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
             | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
             | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return None,
         }
@@ -2524,6 +5228,7 @@ pub(crate) fn validated_property_effect_surface_raster_stamp(
             local_raster_clips: contract.isolated_local_raster_clips(),
             content: contract.content().to_vec(),
         }),
+        native_scroll_children: Vec::new(),
     };
     property_effect_surface_raster_stamp_validates_contract_at_depth(&stamp, contract, depth)
         .then_some(stamp)
@@ -2549,6 +5254,9 @@ pub(crate) fn property_effect_surface_raster_stamp_is_canonical_at_depth(
     stamp: &RetainedSurfaceRasterStamp,
     initial_depth: usize,
 ) -> bool {
+    if !stamp.native_scroll_children.is_empty() {
+        return false;
+    }
     fn span_is_canonical(
         span: &RetainedSurfaceArtifactSpanStamp,
         boundary_root: crate::view::node_arena::NodeKey,
@@ -2767,7 +5475,9 @@ pub(crate) fn property_effect_surface_raster_stamp_is_canonical_at_depth(
                         return false;
                     }
                 }
-                RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+                RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+                | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+                | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
                 | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
                 | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return false,
             }
@@ -2915,10 +5625,55 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical(
     retained_surface_raster_stamp_is_canonical_at_depth(stamp, 0)
 }
 
+fn classify_optional_child_mask_stamp_semantics<'a>(
+    chunks: &'a [RetainedSurfaceChunkStamp],
+    content_root: crate::view::node_arena::NodeKey,
+) -> Option<(
+    &'a RetainedSurfaceChunkStamp,
+    &'a [RetainedSurfaceChunkStamp],
+)> {
+    let (wrapper, tail) = chunks.split_first()?;
+    let is_mask =
+        |chunk: &RetainedSurfaceChunkStamp| chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT;
+    let has_boundary_mask = tail.first().is_some_and(|chunk| is_mask(chunk))
+        || tail.last().is_some_and(|chunk| is_mask(chunk));
+    if !has_boundary_mask {
+        return tail
+            .iter()
+            .all(|chunk| !is_mask(chunk))
+            .then_some((wrapper, tail));
+    }
+    let (mask_end, with_begin) = tail.split_last()?;
+    let (mask_begin, semantic) = with_begin.split_first()?;
+    let mask_exact = |chunk: &RetainedSurfaceChunkStamp, phase: super::PaintNodePhase| {
+        chunk.owner == content_root
+            && chunk.id.owner == content_root
+            && chunk.id.scope == PaintPropertyScope::Contents
+            && chunk.id.phase == phase
+            && chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT
+            && chunk.id.role == PaintChunkRole::SelfDecoration
+            && chunk.clip.is_none()
+            && chunk.op_count == 1
+            && matches!(
+                &chunk.payload_identity,
+                PaintPayloadIdentity::PreparedRects(rects) if rects.len() == 1
+            )
+    };
+    (semantic.iter().all(|chunk| !is_mask(chunk))
+        && mask_exact(mask_begin, super::PaintNodePhase::BeforeChildren)
+        && mask_exact(mask_end, super::PaintNodePhase::AfterChildren)
+        && mask_begin.bounds_bits == mask_end.bounds_bits
+        && mask_begin.payload_identity == mask_end.payload_identity)
+        .then_some((wrapper, semantic))
+}
+
 pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
     stamp: &RetainedSurfaceRasterStamp,
     initial_depth: usize,
 ) -> bool {
+    if !stamp.native_scroll_children.is_empty() {
+        return false;
+    }
     fn geometry_is_canonical(geometry: &RetainedSurfaceCompositeGeometryStamp) -> bool {
         let finite = |bits: u32| f32::from_bits(bits).is_finite();
         match geometry {
@@ -3112,17 +5867,23 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                         PaintPayloadIdentity::PreparedTexts(texts) if texts.len() == 1
                     )
             };
-            let chunks_match_grammar = match (paint_grammar, preedit) {
+            let chunks_match_grammar = (|| {
+                let (wrapper, semantic) = classify_optional_child_mask_stamp_semantics(
+                    stamp.chunks.as_slice(),
+                    stamp.identity.boundary_root,
+                )?;
+                if !wrapper_matches(wrapper) {
+                    return None;
+                }
+                let text_area_chunks = semantic
+                    .iter()
+                    .filter(|chunk| chunk.owner == clip.owner)
+                    .collect::<Vec<_>>();
+                match (paint_grammar, preedit) {
                 (
                     Some(crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::GlyphOnly),
                     None,
-                ) => {
-                    matches!(
-                        stamp.chunks.as_slice(),
-                        [wrapper, glyphs]
-                            if wrapper_matches(wrapper) && glyph_matches(glyphs)
-                    )
-                }
+                ) => matches!(text_area_chunks.as_slice(), [glyphs] if glyph_matches(glyphs)),
                 (
                     Some(paint_grammar @ crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
                         start_char,
@@ -3133,10 +5894,9 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                 ) => {
                     start_char < end_char
                         && matches!(
-                            stamp.chunks.as_slice(),
-                            [wrapper, selection, glyphs]
-                                if wrapper_matches(wrapper)
-                                    && selection.owner == clip.owner
+                            text_area_chunks.as_slice(),
+                            [selection, glyphs]
+                                if selection.owner == clip.owner
                                     && selection.id.owner == selection.owner
                                     && selection.id.scope == PaintPropertyScope::Contents
                                     && selection.id.phase == super::PaintNodePhase::BeforeChildren
@@ -3152,10 +5912,9 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                         )
                 }
                 (None, Some(seal)) => matches!(
-                    stamp.chunks.as_slice(),
-                    [wrapper, glyphs, underline]
-                        if wrapper_matches(wrapper)
-                            && glyph_matches(glyphs)
+                    text_area_chunks.as_slice(),
+                    [glyphs, underline]
+                        if glyph_matches(glyphs)
                             && underline.owner == clip.owner
                             && underline.id.owner == underline.owner
                             && underline.id.scope == PaintPropertyScope::Contents
@@ -3169,7 +5928,10 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                             && underline.bounds_bits == seal.underline_bounds_bits
                 ),
                 _ => false,
-            };
+                }
+                .then_some(())
+            })()
+            .is_some();
             if clip.id.owner != clip.owner
                 || clip.id.role != ClipNodeRole::ContentsClip
                 || clip.parent.is_some()
@@ -3184,7 +5946,7 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                 .iter()
                 .map(|owner| (owner.owner, owner.parent))
                 .collect::<FxHashMap<_, _>>();
-            owners.len() == stamp.owner_topology.len()
+            let exact_text_area_topology = owners.len() == stamp.owner_topology.len()
                 && owners
                     .get(&stamp.identity.boundary_root)
                     .is_some_and(Option::is_none)
@@ -3205,7 +5967,47 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                         cursor = owners.get(&current).copied().flatten();
                     }
                     false
+                });
+            let is_descendant_of = |owner, ancestor| {
+                let mut cursor = Some(owner);
+                let mut seen = FxHashSet::default();
+                while let Some(current) = cursor {
+                    if !seen.insert(current) {
+                        return false;
+                    }
+                    if current == ancestor {
+                        return true;
+                    }
+                    cursor = owners.get(&current).copied().flatten();
+                }
+                false
+            };
+            let generalized_topology = owners.len() == stamp.owner_topology.len()
+                && owners
+                    .get(&stamp.identity.boundary_root)
+                    .is_some_and(Option::is_none)
+                && is_descendant_of(clip.owner, stamp.identity.boundary_root)
+                && stamp
+                    .owner_topology
+                    .iter()
+                    .all(|owner| is_descendant_of(owner.owner, stamp.identity.boundary_root))
+                && stamp.chunks.iter().all(|chunk| {
+                    chunk.id.role != PaintChunkRole::ScrollbarOverlay
+                        && is_descendant_of(chunk.owner, stamp.identity.boundary_root)
+                        && match chunk.clip {
+                            None => true,
+                            Some(id) => id == clip.id && is_descendant_of(chunk.owner, clip.owner),
+                        }
                 })
+                && stamp.chunks.iter().any(|chunk| {
+                    chunk.owner == stamp.identity.boundary_root
+                        && chunk.id.scope == PaintPropertyScope::SelfPaint
+                        && chunk.id.phase == super::PaintNodePhase::BeforeChildren
+                        && chunk.id.slot == 0
+                        && chunk.id.role == PaintChunkRole::SelfDecoration
+                        && chunk.clip.is_none()
+                });
+            chunks_match_grammar && (exact_text_area_topology || generalized_topology)
         };
         let scroll_content_atomic_projection_glyph_text_area_is_canonical = || {
             if stamp.identity.scroll_content_tile.is_some()
@@ -3231,7 +6033,12 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                 return false;
             }
 
-            let [wrapper, text_area_glyph, projection_glyph] = stamp.chunks.as_slice() else {
+            let Some((wrapper, [text_area_glyph, projection_glyph])) =
+                classify_optional_child_mask_stamp_semantics(
+                    stamp.chunks.as_slice(),
+                    resident.content_root,
+                )
+            else {
                 return false;
             };
             let chunk_matches_seal =
@@ -3247,8 +6054,8 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                 PaintPayloadIdentity::PreparedShadows(shadows, decoration) => {
                     wrapper.op_count == shadows.len().saturating_add(decoration.len())
                 }
-                PaintPayloadIdentity::InlineIfcDecorations(decorations) => {
-                    wrapper.op_count == decorations.len()
+                PaintPayloadIdentity::InlineIfcDecorations(shadows, decorations) => {
+                    wrapper.op_count == shadows.len().saturating_add(decorations.len())
                 }
                 _ => false,
             };
@@ -3303,7 +6110,11 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
             {
                 return false;
             }
-            let [wrapper, selection, text_area_glyph, projection_glyph] = stamp.chunks.as_slice()
+            let Some((wrapper, [selection, text_area_glyph, projection_glyph])) =
+                classify_optional_child_mask_stamp_semantics(
+                    stamp.chunks.as_slice(),
+                    resident.content_root,
+                )
             else {
                 return false;
             };
@@ -3320,8 +6131,8 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                 PaintPayloadIdentity::PreparedShadows(shadows, decoration) => {
                     wrapper.op_count == shadows.len().saturating_add(decoration.len())
                 }
-                PaintPayloadIdentity::InlineIfcDecorations(decorations) => {
-                    wrapper.op_count == decorations.len()
+                PaintPayloadIdentity::InlineIfcDecorations(shadows, decorations) => {
+                    wrapper.op_count == shadows.len().saturating_add(decorations.len())
                 }
                 _ => false,
             };
@@ -3447,7 +6258,7 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                                     }
                                     crate::view::base_component::ScrollbarPaintStateWitness::OpaqueNow
                                     | crate::view::base_component::ScrollbarPaintStateWitness::TranslucentNow => {
-                                        super::PreparedScrollbarOverlayOp::from_vertical_witness(
+                                        super::PreparedScrollbarOverlayOp::from_witness(
                                             dependency.scroll.scrollbar_overlay,
                                         )
                                         .is_some_and(|expected| {
@@ -3553,7 +6364,9 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                     }
                     cursor = after;
                 }
-                RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+                RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
+                | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
+                | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
                 | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
                 | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return false,
             }
@@ -3692,8 +6505,88 @@ fn compile_validated_artifact(
     graph: &mut FrameGraph,
     ctx: &mut UiBuildContext,
 ) {
+    let mut child_mask_scopes = Vec::new();
+    compile_validated_artifact_segment(
+        artifact,
+        resolved_clips,
+        graph,
+        ctx,
+        &mut child_mask_scopes,
+    );
+    debug_assert!(child_mask_scopes.is_empty());
+}
+
+fn compile_validated_artifact_segment(
+    artifact: &PaintArtifact,
+    resolved_clips: Vec<ResolvedClip>,
+    graph: &mut FrameGraph,
+    ctx: &mut UiBuildContext,
+    child_mask_scopes: &mut Vec<(crate::view::node_arena::NodeKey, u8, Option<[u32; 4]>)>,
+) {
+    let mut mask_depth = child_mask_scopes.len();
+    let mut max_mask_depth = 0usize;
+    for chunk in &artifact.chunks {
+        if chunk.id.slot != super::RETAINED_CHILD_MASK_SLOT {
+            continue;
+        }
+        match chunk.id.phase {
+            super::PaintNodePhase::BeforeChildren => {
+                mask_depth = mask_depth.saturating_add(1);
+                max_mask_depth = max_mask_depth.max(mask_depth);
+            }
+            super::PaintNodePhase::AfterChildren => mask_depth = mask_depth.saturating_sub(1),
+        }
+    }
+    if ctx.current_clip_id() as usize + max_mask_depth > u8::MAX as usize {
+        return;
+    }
     for (chunk, resolved_clip) in artifact.chunks.iter().zip(resolved_clips) {
         let _observed_identity = (&chunk.bounds, chunk.properties, chunk.content_revision);
+        if chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT {
+            let [PaintOp::DrawRect(mask)] = &artifact.ops[chunk.op_range.clone()] else {
+                unreachable!("validated retained child-mask chunk owns one rect")
+            };
+            match chunk.id.phase {
+                super::PaintNodePhase::BeforeChildren => {
+                    let parent_clip_id = ctx.current_clip_id();
+                    let child_clip_id = ctx
+                        .push_clip_id()
+                        .expect("validated retained child-mask depth");
+                    let logical_scissor =
+                        crate::view::base_component::exact_logical_scissor_for_rect(chunk.bounds)
+                            .expect("validated retained child-mask scissor");
+                    let previous_scissor = ctx.push_scissor_rect(Some(logical_scissor));
+                    let mut pass = DrawRectPass::new(
+                        mask.params.clone(),
+                        DrawRectInput::default(),
+                        DrawRectOutput::default(),
+                    );
+                    pass.set_render_mode(mask.mode);
+                    pass.set_stencil_increment(parent_clip_id);
+                    pass.set_color_write_enabled(false);
+                    ctx.emit_draw_rect_pass(graph, pass);
+                    child_mask_scopes.push((chunk.owner, child_clip_id, previous_scissor));
+                }
+                super::PaintNodePhase::AfterChildren => {
+                    let (owner, child_clip_id, previous_scissor) = child_mask_scopes
+                        .pop()
+                        .expect("validated retained child-mask pairing");
+                    debug_assert_eq!(owner, chunk.owner);
+                    let mut pass = DrawRectPass::new(
+                        mask.params.clone(),
+                        DrawRectInput::default(),
+                        DrawRectOutput::default(),
+                    );
+                    pass.set_render_mode(mask.mode);
+                    pass.set_stencil_decrement(child_clip_id);
+                    pass.set_color_write_enabled(false);
+                    ctx.emit_draw_rect_pass(graph, pass);
+                    ctx.pop_clip_id();
+                    ctx.restore_scissor_rect(previous_scissor);
+                }
+            }
+            continue;
+        }
         let shadow_prefix_len = exact_self_clip_shadow_prefix_len(artifact, chunk).unwrap_or(0);
         let previous_scissor = match (shadow_prefix_len, resolved_clip) {
             (0, ResolvedClip::Unclipped) => None,
@@ -3788,6 +6681,26 @@ fn compile_validated_artifact(
                     );
                     thumb.set_render_mode(op.thumb.mode);
                     ctx.emit_draw_rect_pass(graph, thumb);
+                    if let Some((track_shadow, track, thumb_shadow, thumb)) = op.secondary_axis() {
+                        emit_prepared_scrollbar_shadow(track_shadow, graph, ctx);
+                        let track_mode = track.mode;
+                        let mut track = DrawRectPass::new(
+                            track.params.clone(),
+                            DrawRectInput::default(),
+                            DrawRectOutput::default(),
+                        );
+                        track.set_render_mode(track_mode);
+                        ctx.emit_draw_rect_pass(graph, track);
+                        emit_prepared_scrollbar_shadow(thumb_shadow, graph, ctx);
+                        let thumb_mode = thumb.mode;
+                        let mut thumb = DrawRectPass::new(
+                            thumb.params.clone(),
+                            DrawRectInput::default(),
+                            DrawRectOutput::default(),
+                        );
+                        thumb.set_render_mode(thumb_mode);
+                        ctx.emit_draw_rect_pass(graph, thumb);
+                    }
                 }
                 PaintOp::PreparedText(op) => {
                     let Some(input_target) = ctx.current_target() else {
@@ -5635,6 +8548,51 @@ fn chunk_bounds_bits(chunk: &super::PaintChunk) -> [u32; 4] {
     ]
 }
 
+fn classify_optional_child_mask_semantics<'a>(
+    artifact: &PaintArtifact,
+    chunks: &'a [super::PaintChunk],
+    content_root: crate::view::node_arena::NodeKey,
+    mask_properties: PropertyTreeState,
+) -> Option<(&'a super::PaintChunk, &'a [super::PaintChunk])> {
+    let (wrapper, tail) = chunks.split_first()?;
+    let is_mask = |chunk: &super::PaintChunk| chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT;
+    let has_boundary_mask = tail.first().is_some_and(|chunk| is_mask(chunk))
+        || tail.last().is_some_and(|chunk| is_mask(chunk));
+    if !has_boundary_mask {
+        return tail
+            .iter()
+            .all(|chunk| !is_mask(chunk))
+            .then_some((wrapper, tail));
+    }
+    let (mask_end, with_begin) = tail.split_last()?;
+    let (mask_begin, semantic) = with_begin.split_first()?;
+    let mask_exact = |chunk: &super::PaintChunk, phase: super::PaintNodePhase| {
+        let [PaintOp::DrawRect(mask)] = &artifact.ops[chunk.op_range.clone()] else {
+            return false;
+        };
+        chunk.owner == content_root
+            && chunk.id.owner == content_root
+            && chunk.id.scope == PaintPropertyScope::Contents
+            && chunk.id.phase == phase
+            && chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT
+            && chunk.id.role == PaintChunkRole::SelfDecoration
+            && chunk.properties == mask_properties
+            && mask.mode == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
+            && mask.params.position == [chunk.bounds.x, chunk.bounds.y]
+            && mask.params.size == [chunk.bounds.width, chunk.bounds.height]
+            && mask.params.fill_color == [0.0; 4]
+            && mask.params.opacity.to_bits() == 1.0_f32.to_bits()
+            && PaintPayloadIdentity::prepared_rects([mask]).as_ref()
+                == Some(&chunk.payload_identity)
+    };
+    (semantic.iter().all(|chunk| !is_mask(chunk))
+        && mask_exact(mask_begin, super::PaintNodePhase::BeforeChildren)
+        && mask_exact(mask_end, super::PaintNodePhase::AfterChildren)
+        && chunk_bounds_bits(mask_begin) == chunk_bounds_bits(mask_end)
+        && mask_begin.payload_identity == mask_end.payload_identity)
+        .then_some((wrapper, semantic))
+}
+
 pub(crate) fn validate_scroll_scene_host_before_artifact(
     artifact: PaintArtifact,
     root: crate::view::node_arena::NodeKey,
@@ -5804,21 +8762,22 @@ pub(crate) fn validate_scroll_scene_text_area_content_artifact(
                 )
             })
     };
-    let chunks_match_grammar = match paint_grammar {
+    let (wrapper, semantic) = classify_optional_child_mask_semantics(
+        &artifact,
+        artifact.chunks.as_slice(),
+        content_root,
+        Default::default(),
+    )?;
+    let chunks_match_grammar = wrapper_matches(wrapper) && match paint_grammar {
         crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::GlyphOnly => {
-            matches!(
-                artifact.chunks.as_slice(),
-                [wrapper, glyphs] if wrapper_matches(wrapper) && glyph_matches(glyphs)
-            )
+            matches!(semantic, [glyphs] if glyph_matches(glyphs))
         }
         crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
             ..
         } => matches!(
-            artifact.chunks.as_slice(),
-            [wrapper, selection, glyphs]
-                if wrapper_matches(wrapper)
-                    && selection_matches(selection)
-                    && glyph_matches(glyphs)
+            semantic,
+            [selection, glyphs]
+                if selection_matches(selection) && glyph_matches(glyphs)
         ),
     };
     let owner_nodes = artifact
@@ -5861,13 +8820,15 @@ pub(crate) fn validate_scroll_scene_text_area_content_artifact(
 }
 
 /// Dedicated C3a compiler validator.  It seals the complete source grammar
-/// against the exact three local chunks, clip, owner topology, payloads and
+/// against the exact three semantic chunks and an optional exact child-mask
+/// pair, clip, owner topology, payloads and
 /// bounds.  The generic TextArea validator remains unchanged.
 pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact_parts(
     artifact: PaintArtifact,
     raster_oracle: super::frame_recorder::RetainedAtomicProjectionTextAreaLiveRasterOracle,
 ) -> Option<ValidatedScrollSceneAtomicProjectionTextAreaContentArtifact> {
-    if !raster_oracle.matches_artifact(&artifact) || raster_oracle.chunks().len() != 3 {
+    if !raster_oracle.matches_artifact(&artifact) || !matches!(raster_oracle.chunks().len(), 3 | 5)
+    {
         return None;
     }
     let content_root = raster_oracle.content_root();
@@ -5925,8 +8886,19 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact
         clip: Some(contents_clip.id),
         ..Default::default()
     };
-    let [wrapper, root_glyph, projection_glyph] = artifact.chunks.as_slice() else {
+    let (wrapper, [root_glyph, projection_glyph]) = classify_optional_child_mask_semantics(
+        &artifact,
+        artifact.chunks.as_slice(),
+        content_root,
+        Default::default(),
+    )?
+    else {
         return None;
+    };
+    let semantic_indices = match artifact.chunks.len() {
+        3 => [0, 1, 2],
+        5 => [0, 2, 3],
+        _ => return None,
     };
     let wrapper_ops = &artifact.ops[wrapper.op_range.clone()];
     let root_ops = &artifact.ops[root_glyph.op_range.clone()];
@@ -6021,9 +8993,9 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact
         raster_oracle.source_grammar().clone(),
         contents_clip,
         raster_oracle.owner_nodes().to_vec().into(),
-        seal_chunk(&raster_oracle.chunks()[0]),
-        seal_chunk(&raster_oracle.chunks()[1]),
-        seal_chunk(&raster_oracle.chunks()[2]),
+        seal_chunk(&raster_oracle.chunks()[semantic_indices[0]]),
+        seal_chunk(&raster_oracle.chunks()[semantic_indices[1]]),
+        seal_chunk(&raster_oracle.chunks()[semantic_indices[2]]),
     );
     if !resident.is_canonical() {
         return None;
@@ -6042,7 +9014,8 @@ fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_
     raster_oracle: super::frame_recorder::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     selection: RetainedTextAreaSelectionRasterSeal,
 ) -> Option<ValidatedScrollSceneAtomicProjectionSelectionTextAreaContentArtifact> {
-    if !raster_oracle.matches_artifact(&artifact) || raster_oracle.chunks().len() != 4 {
+    if !raster_oracle.matches_artifact(&artifact) || !matches!(raster_oracle.chunks().len(), 4 | 6)
+    {
         return None;
     }
     let content_root = raster_oracle.content_root();
@@ -6096,9 +9069,20 @@ fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_
         clip: Some(contents_clip.id),
         ..Default::default()
     };
-    let [wrapper, selection_chunk, root_glyph, projection_glyph] = artifact.chunks.as_slice()
+    let Some((wrapper, [selection_chunk, root_glyph, projection_glyph])) =
+        classify_optional_child_mask_semantics(
+            &artifact,
+            artifact.chunks.as_slice(),
+            content_root,
+            Default::default(),
+        )
     else {
         return None;
+    };
+    let semantic_indices = if artifact.chunks.len() == 4 {
+        [0, 1, 2, 3]
+    } else {
+        [0, 2, 3, 4]
     };
     let wrapper_ops = &artifact.ops[wrapper.op_range.clone()];
     let selection_ops = &artifact.ops[selection_chunk.op_range.clone()];
@@ -6211,10 +9195,10 @@ fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_
             selection.clone(),
             contents_clip,
             raster_oracle.owner_nodes().to_vec().into(),
-            seal_chunk(&raster_oracle.chunks()[0]),
-            seal_chunk(&raster_oracle.chunks()[1]),
-            seal_chunk(&raster_oracle.chunks()[2]),
-            seal_chunk(&raster_oracle.chunks()[3]),
+            seal_chunk(&raster_oracle.chunks()[semantic_indices[0]]),
+            seal_chunk(&raster_oracle.chunks()[semantic_indices[1]]),
+            seal_chunk(&raster_oracle.chunks()[semantic_indices[2]]),
+            seal_chunk(&raster_oracle.chunks()[semantic_indices[3]]),
         )?;
     Some(
         ValidatedScrollSceneAtomicProjectionSelectionTextAreaContentArtifact {
@@ -6289,8 +9273,13 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
 ) -> Option<ValidatedScrollSceneAtomicProjectionTextAreaPlanParts> {
     if !host_raster_oracle.matches_artifact(&host_artifact)
         || !local_raster_oracle.matches_artifact(&local_artifact)
-        || host_raster_oracle.chunks().len() != 5
-        || local_raster_oracle.chunks().len() != 3
+        || !matches!(
+            (
+                host_raster_oracle.chunks().len(),
+                local_raster_oracle.chunks().len()
+            ),
+            (5, 3) | (7, 5)
+        )
         || host_raster_oracle.content_root() != local_raster_oracle.content_root()
         || host_raster_oracle.text_area_root() != local_raster_oracle.text_area_root()
         || host_raster_oracle.source_grammar() != local_raster_oracle.source_grammar()
@@ -6362,16 +9351,40 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
         return None;
     }
 
-    let [
-        root_before,
-        host_wrapper,
-        host_root_glyph,
-        host_projection_glyph,
-        overlay,
-    ] = host_artifact.chunks.as_slice()
-    else {
-        return None;
-    };
+    let (root_before, host_wrapper, host_masks, host_root_glyph, host_projection_glyph, overlay) =
+        match host_artifact.chunks.as_slice() {
+            [
+                root_before,
+                host_wrapper,
+                root_glyph,
+                projection_glyph,
+                overlay,
+            ] => (
+                root_before,
+                host_wrapper,
+                None,
+                root_glyph,
+                projection_glyph,
+                overlay,
+            ),
+            [
+                root_before,
+                host_wrapper,
+                mask_begin,
+                root_glyph,
+                projection_glyph,
+                mask_end,
+                overlay,
+            ] => (
+                root_before,
+                host_wrapper,
+                Some((mask_begin, mask_end)),
+                root_glyph,
+                projection_glyph,
+                overlay,
+            ),
+            _ => return None,
+        };
     let host_ops_are_exactly_partitioned =
         host_artifact
             .chunks
@@ -6381,11 +9394,19 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
                     .then_some(chunk.op_range.end)
             })
             == Some(host_artifact.ops.len());
-    let [local_wrapper, local_root_glyph, local_projection_glyph] =
-        local_artifact.chunks.as_slice()
-    else {
-        return None;
-    };
+    let (local_wrapper, local_masks, local_root_glyph, local_projection_glyph) =
+        match local_artifact.chunks.as_slice() {
+            [wrapper, root_glyph, projection_glyph] => {
+                (wrapper, None, root_glyph, projection_glyph)
+            }
+            [wrapper, mask_begin, root_glyph, projection_glyph, mask_end] => (
+                wrapper,
+                Some((mask_begin, mask_end)),
+                root_glyph,
+                projection_glyph,
+            ),
+            _ => return None,
+        };
     let content_zero_bounds_bits = atomic_projection_content_zero_bounds_bits(outer_scroll);
     let outer_state = PropertyTreeState {
         clip: Some(outer_contents_clip.id),
@@ -6428,12 +9449,76 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
             ) == Some(chunk_bounds_bits(local)))
         .then_some(())
     };
+    let child_mask_pair_is_exact =
+        |host: &super::PaintChunk, local: &super::PaintChunk, phase: super::PaintNodePhase| {
+            let delta = [
+                -f32::from_bits(source_grammar.last_unified_apply_bits.0),
+                -f32::from_bits(source_grammar.last_unified_apply_bits.1),
+            ];
+            let [PaintOp::DrawRect(host_mask)] = host_artifact.ops.get(host.op_range.clone())?
+            else {
+                return None;
+            };
+            let [PaintOp::DrawRect(local_mask)] = local_artifact.ops.get(local.op_range.clone())?
+            else {
+                return None;
+            };
+            let localized =
+                localize_exact_nested_scroll_leaf_op(&PaintOp::DrawRect(host_mask.clone()), delta)?;
+            let PaintOp::DrawRect(localized) = localized else {
+                return None;
+            };
+            (host.id == local.id
+                && host.owner == content_root
+                && local.owner == content_root
+                && host.id.scope == PaintPropertyScope::Contents
+                && host.id.phase == phase
+                && host.id.slot == super::RETAINED_CHILD_MASK_SLOT
+                && host.id.role == PaintChunkRole::SelfDecoration
+                && host.properties == outer_state
+                && local.properties == Default::default()
+                && localized.params.position == local_mask.params.position
+                && localized.params.size == local_mask.params.size
+                && localized.params.fill_color == [0.0; 4]
+                && localized.params.opacity.to_bits() == 1.0_f32.to_bits()
+                && local_mask.mode
+                    == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
+                && PaintPayloadIdentity::prepared_rects([&localized]).as_ref()
+                    == Some(&local.payload_identity)
+                && PaintPayloadIdentity::prepared_rects([local_mask]).as_ref()
+                    == Some(&local.payload_identity)
+                && localized_atomic_projection_host_bounds(
+                    chunk_bounds_bits(host),
+                    source_grammar.last_unified_apply_bits,
+                ) == Some(chunk_bounds_bits(local)))
+            .then_some(())
+        };
     let host_glyph_is_exact = |chunk: &super::PaintChunk| {
         let ops = host_artifact.ops.get(chunk.op_range.clone());
         chunk.properties == host_glyph_state
             && ops.is_some_and(|ops| {
                 ops.len() == 1 && validate_text_glyph_ops(ops, &chunk.payload_identity)
             })
+    };
+    let mask_pairs_are_exact = match (host_masks, local_masks) {
+        (None, None) => true,
+        (Some((host_begin, host_end)), Some((local_begin, local_end))) => {
+            child_mask_pair_is_exact(
+                host_begin,
+                local_begin,
+                super::PaintNodePhase::BeforeChildren,
+            )
+            .is_some()
+                && child_mask_pair_is_exact(
+                    host_end,
+                    local_end,
+                    super::PaintNodePhase::AfterChildren,
+                )
+                .is_some()
+                && chunk_bounds_bits(local_begin) == chunk_bounds_bits(local_end)
+                && local_begin.payload_identity == local_end.payload_identity
+        }
+        _ => false,
     };
     if !matches!(host_artifact.target, PaintArtifactTarget::CurrentTarget)
         || !host_ops_are_exactly_partitioned
@@ -6456,6 +9541,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
             .ops
             .get(host_wrapper.op_range.clone())
             .is_some_and(|ops| validate_self_decoration_ops(ops, &host_wrapper.payload_identity))
+        || !mask_pairs_are_exact
         || !host_glyph_is_exact(host_root_glyph)
         || !host_glyph_is_exact(host_projection_glyph)
         || host_root_glyph.owner != text_area_root
@@ -6484,7 +9570,11 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
 
     let host_before_artifact =
         isolate_atomic_projection_host_chunk(&host_artifact, 0, boundary_root)?;
-    let overlay_artifact = isolate_atomic_projection_host_chunk(&host_artifact, 4, boundary_root)?;
+    let overlay_artifact = isolate_atomic_projection_host_chunk(
+        &host_artifact,
+        host_artifact.chunks.len().checked_sub(1)?,
+        boundary_root,
+    )?;
     let host_before = validate_scroll_scene_host_before_artifact(
         host_before_artifact,
         boundary_root,
@@ -6620,8 +9710,13 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
 ) -> Option<ValidatedScrollSceneAtomicProjectionSelectionTextAreaPlanParts> {
     if !host_raster_oracle.matches_artifact(&host_artifact)
         || !local_raster_oracle.matches_artifact(&local_artifact)
-        || host_raster_oracle.chunks().len() != 6
-        || local_raster_oracle.chunks().len() != 4
+        || !matches!(
+            (
+                host_raster_oracle.chunks().len(),
+                local_raster_oracle.chunks().len()
+            ),
+            (6, 4) | (8, 6)
+        )
         || host_raster_oracle.content_root() != local_raster_oracle.content_root()
         || host_raster_oracle.text_area_root() != local_raster_oracle.text_area_root()
         || host_raster_oracle.source_grammar() != local_raster_oracle.source_grammar()
@@ -6688,23 +9783,30 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
     {
         return None;
     }
-    let [
-        root_before,
-        host_wrapper,
-        host_selection,
-        host_root_glyph,
-        host_projection_glyph,
-        overlay,
-    ] = host_artifact.chunks.as_slice()
+    let outer_state = PropertyTreeState {
+        clip: Some(outer_contents_clip.id),
+        scroll: Some(outer_scroll.id),
+        ..Default::default()
+    };
+    let (root_before, host_tail) = host_artifact.chunks.split_first()?;
+    let (overlay, host_content_chunks) = host_tail.split_last()?;
+    let Some((host_wrapper, [host_selection, host_root_glyph, host_projection_glyph])) =
+        classify_optional_child_mask_semantics(
+            &host_artifact,
+            host_content_chunks,
+            content_root,
+            outer_state,
+        )
     else {
         return None;
     };
-    let [
-        local_wrapper,
-        local_selection,
-        local_root_glyph,
-        local_projection_glyph,
-    ] = local_artifact.chunks.as_slice()
+    let Some((local_wrapper, [local_selection, local_root_glyph, local_projection_glyph])) =
+        classify_optional_child_mask_semantics(
+            &local_artifact,
+            local_artifact.chunks.as_slice(),
+            content_root,
+            Default::default(),
+        )
     else {
         return None;
     };
@@ -6716,11 +9818,6 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
     {
         return None;
     }
-    let outer_state = PropertyTreeState {
-        clip: Some(outer_contents_clip.id),
-        scroll: Some(outer_scroll.id),
-        ..Default::default()
-    };
     let host_local_state = PropertyTreeState {
         clip: Some(local_contents_clip.id),
         scroll: Some(outer_scroll.id),
@@ -6761,8 +9858,50 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
             ) == Some(chunk_bounds_bits(local)))
         .then_some(())
     };
+    let mask_pairs_match = match (host_artifact.chunks.len(), local_artifact.chunks.len()) {
+        (6, 4) => true,
+        (8, 6) => {
+            let host_begin = &host_artifact.chunks[2];
+            let host_end = &host_artifact.chunks[6];
+            let local_begin = &local_artifact.chunks[1];
+            let local_end = &local_artifact.chunks[5];
+            let pair = |host: &super::PaintChunk, local: &super::PaintChunk| {
+                let [PaintOp::DrawRect(host_mask)] =
+                    host_artifact.ops.get(host.op_range.clone())?
+                else {
+                    return None;
+                };
+                let [PaintOp::DrawRect(local_mask)] =
+                    local_artifact.ops.get(local.op_range.clone())?
+                else {
+                    return None;
+                };
+                let localized = localize_exact_nested_scroll_leaf_op(
+                    &PaintOp::DrawRect(host_mask.clone()),
+                    delta,
+                )?;
+                let PaintOp::DrawRect(localized) = localized else {
+                    return None;
+                };
+                (host.id == local.id
+                    && host.owner == local.owner
+                    && localized.params.position == local_mask.params.position
+                    && localized.params.size == local_mask.params.size
+                    && PaintPayloadIdentity::prepared_rects([&localized]).as_ref()
+                        == Some(&local.payload_identity)
+                    && localized_atomic_projection_host_bounds(
+                        chunk_bounds_bits(host),
+                        atomic_source.last_unified_apply_bits,
+                    ) == Some(chunk_bounds_bits(local)))
+                .then_some(())
+            };
+            pair(host_begin, local_begin).is_some() && pair(host_end, local_end).is_some()
+        }
+        _ => false,
+    };
     let content_zero_bounds_bits = atomic_projection_content_zero_bounds_bits(outer_scroll);
     if !matches!(host_artifact.target, PaintArtifactTarget::CurrentTarget)
+        || !mask_pairs_match
         || root_before.owner != boundary_root
         || root_before.id.owner != boundary_root
         || root_before.id.scope != PaintPropertyScope::SelfPaint
@@ -6797,7 +9936,11 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
     }
     let host_before_artifact =
         isolate_atomic_projection_host_chunk(&host_artifact, 0, boundary_root)?;
-    let overlay_artifact = isolate_atomic_projection_host_chunk(&host_artifact, 5, boundary_root)?;
+    let overlay_artifact = isolate_atomic_projection_host_chunk(
+        &host_artifact,
+        host_artifact.chunks.len().checked_sub(1)?,
+        boundary_root,
+    )?;
     let host_before = validate_scroll_scene_host_before_artifact(
         host_before_artifact,
         boundary_root,
@@ -6971,30 +10114,34 @@ pub(crate) fn validate_scroll_scene_interactive_text_area_content_artifact(
             && rect_phase_union_bounds_bits(ops) == Some(chunk_bounds_bits(selection)))
         .then_some(RetainedInteractiveTextAreaResidentRasterSeal::FocusedSelectionGlyphs(seal))
     };
+    let (wrapper, semantic) = classify_optional_child_mask_semantics(
+        &artifact,
+        artifact.chunks.as_slice(),
+        content_root,
+        Default::default(),
+    )?;
+    wrapper_matches(wrapper).then_some(())?;
     let resident = match paint_grammar {
         crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedGlyphs => {
             preedit_seal.is_none().then_some(())?;
-            matches!(artifact.chunks.as_slice(), [wrapper, glyphs]
-                if wrapper_matches(wrapper) && glyph_matches(glyphs))
+            matches!(semantic, [glyphs] if glyph_matches(glyphs))
                 .then_some(RetainedInteractiveTextAreaResidentRasterSeal::FocusedGlyphs)?
         }
         crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs { .. } => {
             preedit_seal.is_none().then_some(())?;
-            let [wrapper, selection, glyphs] = artifact.chunks.as_slice() else {
+            let [selection, glyphs] = semantic else {
                 return None;
             };
-            wrapper_matches(wrapper).then_some(())?;
             glyph_matches(glyphs).then_some(())?;
             selection_resident(selection)?
         }
         crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedPreeditGlyphs => {
-            let [wrapper, glyphs, underline] = artifact.chunks.as_slice() else {
+            let [glyphs, underline] = semantic else {
                 return None;
             };
             let seal = preedit_seal?;
             let underline_ops = &artifact.ops[underline.op_range.clone()];
-            if !wrapper_matches(wrapper)
-                || !glyph_matches(glyphs)
+            if !glyph_matches(glyphs)
                 || underline.owner != text_area_root
                 || underline.id.owner != text_area_root
                 || underline.id.scope != PaintPropertyScope::Contents
@@ -7587,6 +10734,11 @@ fn validate_artifact_store_with_policy(
     let mut cursor = 0usize;
     let mut seen_ids = FxHashSet::default();
     let mut seen_slots = FxHashSet::default();
+    let mut child_mask_stack = Vec::<(
+        crate::view::node_arena::NodeKey,
+        [u32; 4],
+        PaintPayloadIdentity,
+    )>::new();
     for chunk in &artifact.chunks {
         if !super::has_canonical_paint_bounds(chunk.bounds)
             || chunk.id.owner != chunk.owner
@@ -7603,6 +10755,11 @@ fn validate_artifact_store_with_policy(
                 chunk.properties.transform.is_none() && chunk.properties.scroll.is_none()
             }
             ArtifactStoreValidationPolicy::PropertyScene => {
+                chunk.properties.transform.is_none()
+                    && chunk.properties.effect.is_none()
+                    && chunk.properties.scroll.is_none()
+            }
+            ArtifactStoreValidationPolicy::FrameRootScrollReceiver { .. } => {
                 chunk.properties.transform.is_none()
                     && chunk.properties.effect.is_none()
                     && chunk.properties.scroll.is_none()
@@ -7641,11 +10798,22 @@ fn validate_artifact_store_with_policy(
                 }
             }
             ArtifactStoreValidationPolicy::ScrollSceneHostBefore { .. }
-            | ArtifactStoreValidationPolicy::ScrollSceneOverlay { .. } => {
+            | ArtifactStoreValidationPolicy::ScrollSceneOverlay { .. }
+            | ArtifactStoreValidationPolicy::NativeScrollForest { .. } => {
                 chunk.properties == Default::default()
             }
             ArtifactStoreValidationPolicy::ScrollSceneContent { .. } => {
                 chunk.properties == Default::default()
+            }
+            ArtifactStoreValidationPolicy::FrameRootScrollContent { local_clip } => {
+                chunk.properties == Default::default()
+                    || local_clip.is_some_and(|clip| {
+                        chunk.properties
+                            == PropertyTreeState {
+                                clip: Some(clip),
+                                ..Default::default()
+                            }
+                    })
             }
             ArtifactStoreValidationPolicy::ScrollSceneTextAreaContent {
                 content_root,
@@ -7687,6 +10855,61 @@ fn validate_artifact_store_with_policy(
             return None;
         }
         let ops = &artifact.ops[chunk.op_range.clone()];
+        if chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT {
+            let [PaintOp::DrawRect(mask)] = ops else {
+                return None;
+            };
+            let Some(logical_scissor) =
+                crate::view::base_component::exact_logical_scissor_for_rect(chunk.bounds)
+            else {
+                return None;
+            };
+            let canonical = chunk.id.role == PaintChunkRole::SelfDecoration
+                && chunk.id.scope == PaintPropertyScope::Contents
+                && mask.mode == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
+                && mask.params.position == [chunk.bounds.x, chunk.bounds.y]
+                && mask.params.size == [chunk.bounds.width, chunk.bounds.height]
+                && mask
+                    .params
+                    .size
+                    .iter()
+                    .all(|value| value.is_finite() && *value > 0.0)
+                && mask.params.fill_color == [0.0; 4]
+                && mask.params.opacity.to_bits() == 1.0_f32.to_bits()
+                && mask.params.border_widths == [0.0; 4]
+                && mask.params.border_radii.iter().flatten().all(|radius| {
+                    radius.is_finite()
+                        && *radius >= 0.0
+                        && *radius <= chunk.bounds.width.min(chunk.bounds.height) * 0.5
+                })
+                && mask.params.gradient.is_none()
+                && mask.params.border_gradient.is_none()
+                && chunk.payload_identity == PaintPayloadIdentity::prepared_rects([mask])?;
+            if !canonical {
+                return None;
+            }
+            match chunk.id.phase {
+                super::PaintNodePhase::BeforeChildren => {
+                    if child_mask_stack.len() >= u8::MAX as usize {
+                        return None;
+                    }
+                    child_mask_stack.push((
+                        chunk.owner,
+                        logical_scissor,
+                        chunk.payload_identity.clone(),
+                    ));
+                }
+                super::PaintNodePhase::AfterChildren => {
+                    if child_mask_stack.pop()
+                        != Some((chunk.owner, logical_scissor, chunk.payload_identity.clone()))
+                    {
+                        return None;
+                    }
+                }
+            }
+            cursor = chunk.op_range.end;
+            continue;
+        }
         match chunk.id.role {
             PaintChunkRole::ImageContent => {
                 if !validate_image_content_ops(ops, &chunk.payload_identity) {
@@ -7772,7 +10995,7 @@ fn validate_artifact_store_with_policy(
                                 matches!(
                                     ops,
                                     [PaintOp::PreparedScrollbarOverlay(overlay)]
-                                        if overlay.matches_vertical_witness(
+                                        if overlay.matches_witness(
                                             scroll.scrollbar_overlay,
                                         ) && chunk.payload_identity
                                             == PaintPayloadIdentity::prepared_scrollbar_overlay(
@@ -7803,12 +11026,72 @@ fn validate_artifact_store_with_policy(
                                     matches!(
                                         ops,
                                         [PaintOp::PreparedScrollbarOverlay(overlay)]
-                                            if overlay.matches_vertical_witness(
+                                            if overlay.matches_witness(
                                                 scroll.scrollbar_overlay,
                                             ) && chunk.payload_identity
                                                 == PaintPayloadIdentity::prepared_scrollbar_overlay(
                                                     overlay,
                                                 )
+                                    )
+                                }
+                            }
+                        }
+                        ArtifactStoreValidationPolicy::FrameRootScrollReceiver { root, scroll }
+                            if chunk.owner == root
+                                && chunk.id.owner == root
+                                && chunk.id.phase == super::PaintNodePhase::AfterChildren
+                                && chunk.id.scope == PaintPropertyScope::SelfPaint
+                                && chunk.id.slot == 0 =>
+                        {
+                            match scroll.scrollbar_overlay.paint_state {
+                                crate::view::base_component::ScrollbarPaintStateWitness::HiddenNow
+                                | crate::view::base_component::ScrollbarPaintStateWitness::NotPaintable => {
+                                    ops.is_empty()
+                                        && chunk.payload_identity
+                                            == PaintPayloadIdentity::prepared_shadows(
+                                                std::iter::empty(),
+                                            )
+                                }
+                                crate::view::base_component::ScrollbarPaintStateWitness::OpaqueNow
+                                | crate::view::base_component::ScrollbarPaintStateWitness::TranslucentNow => {
+                                    matches!(
+                                        ops,
+                                        [PaintOp::PreparedScrollbarOverlay(overlay)]
+                                            if overlay.matches_witness(scroll.scrollbar_overlay)
+                                                && chunk.payload_identity
+                                                    == PaintPayloadIdentity::prepared_scrollbar_overlay(
+                                                        overlay,
+                                                    )
+                                    )
+                                }
+                            }
+                        }
+                        ArtifactStoreValidationPolicy::NativeScrollForest { root, scroll }
+                            if chunk.owner == root
+                                && chunk.id.owner == root
+                                && chunk.id.phase == super::PaintNodePhase::AfterChildren
+                                && chunk.id.scope == PaintPropertyScope::SelfPaint
+                                && chunk.id.slot == 0 =>
+                        {
+                            match scroll.scrollbar_overlay.paint_state {
+                                crate::view::base_component::ScrollbarPaintStateWitness::HiddenNow
+                                | crate::view::base_component::ScrollbarPaintStateWitness::NotPaintable => {
+                                    ops.is_empty()
+                                        && chunk.payload_identity
+                                            == PaintPayloadIdentity::prepared_shadows(
+                                                std::iter::empty(),
+                                            )
+                                }
+                                crate::view::base_component::ScrollbarPaintStateWitness::OpaqueNow
+                                | crate::view::base_component::ScrollbarPaintStateWitness::TranslucentNow => {
+                                    matches!(
+                                        ops,
+                                        [PaintOp::PreparedScrollbarOverlay(overlay)]
+                                            if overlay.matches_witness(scroll.scrollbar_overlay)
+                                                && chunk.payload_identity
+                                                    == PaintPayloadIdentity::prepared_scrollbar_overlay(
+                                                        overlay,
+                                                    )
                                     )
                                 }
                             }
@@ -7821,6 +11104,9 @@ fn validate_artifact_store_with_policy(
             }
         }
         cursor = chunk.op_range.end;
+    }
+    if !child_mask_stack.is_empty() {
+        return None;
     }
     if cursor != artifact.ops.len() {
         return None;
@@ -7942,12 +11228,15 @@ fn validate_artifact_store_with_policy(
                     | ArtifactStoreValidationPolicy::TransformPropertySurface { .. }
                     | ArtifactStoreValidationPolicy::EffectPropertySurface { .. }
                     | ArtifactStoreValidationPolicy::PropertyScene
+                    | ArtifactStoreValidationPolicy::FrameRootScrollReceiver { .. }
                     | ArtifactStoreValidationPolicy::BakedScrollHost { .. }
                     | ArtifactStoreValidationPolicy::ScrollSceneHostBefore { .. }
                     | ArtifactStoreValidationPolicy::ScrollSceneContent { .. }
+                    | ArtifactStoreValidationPolicy::FrameRootScrollContent { .. }
                     | ArtifactStoreValidationPolicy::ScrollSceneTextAreaContent { .. }
                     | ArtifactStoreValidationPolicy::ScrollSceneAtomicProjectionTextAreaContent { .. }
                     | ArtifactStoreValidationPolicy::ScrollSceneOverlay { .. }
+                    | ArtifactStoreValidationPolicy::NativeScrollForest { .. }
             ) {
                 return None;
             }
@@ -8216,12 +11505,22 @@ fn validate_self_decoration_ops(ops: &[PaintOp], payload_identity: &PaintPayload
 
     if matches!(
         payload_identity,
-        PaintPayloadIdentity::InlineIfcDecorations(_)
+        PaintPayloadIdentity::InlineIfcDecorations(_, _)
     ) {
+        let shadow_count = ops
+            .iter()
+            .take_while(|op| matches!(op, PaintOp::PreparedShadow(_)))
+            .count();
+        if !ops[..shadow_count].iter().all(
+            |op| matches!(op, PaintOp::PreparedShadow(shadow) if shadow.has_canonical_identity()),
+        ) {
+            return false;
+        }
+        let decorations = &ops[shadow_count..];
         let mut header = None;
         let mut previous_order = None;
-        let last_index = ops.len().checked_sub(1);
-        for (index, op) in ops.iter().enumerate() {
+        let last_index = decorations.len().checked_sub(1);
+        for (index, op) in decorations.iter().enumerate() {
             let PaintOp::PreparedInlineIfcDecoration(prepared) = op else {
                 return false;
             };
@@ -8251,11 +11550,16 @@ fn validate_self_decoration_ops(ops: &[PaintOp], payload_identity: &PaintPayload
             }
             previous_order = Some(order);
         }
-        let expected =
-            PaintPayloadIdentity::inline_ifc_decorations(ops.iter().filter_map(|op| match op {
+        let expected = PaintPayloadIdentity::inline_ifc_decorations_with_shadows(
+            ops[..shadow_count].iter().filter_map(|op| match op {
+                PaintOp::PreparedShadow(shadow) => Some(shadow),
+                _ => None,
+            }),
+            decorations.iter().filter_map(|op| match op {
                 PaintOp::PreparedInlineIfcDecoration(prepared) => Some(prepared),
                 _ => None,
-            }));
+            }),
+        );
         return payload_identity == &expected;
     }
 
@@ -8616,6 +11920,7 @@ mod transform_scroll_boundary_stamp_tests {
             chunks: vec![chunk],
             op_count: 1,
             opaque_order_span: 0..1,
+            scroll_placement_normalized_owners: Vec::new(),
         };
         validated_scroll_content_raster_stamp(
             content_root,
@@ -8641,6 +11946,7 @@ mod transform_scroll_boundary_stamp_tests {
             chunks: Vec::new(),
             op_count: 0,
             opaque_order_span: 0..0,
+            scroll_placement_normalized_owners: Vec::new(),
         }
     }
 
@@ -8727,6 +12033,7 @@ mod transform_scroll_boundary_stamp_tests {
             contents_clip,
             receiver_local_raster_clips: Vec::new(),
             receiver_ancestor_composite_clips: Vec::new(),
+            same_owner_role: None,
         }
     }
 
@@ -8759,6 +12066,7 @@ mod transform_scroll_boundary_stamp_tests {
             contents_clip: dependency.contents_clip,
             receiver_local_raster_clips: dependency.receiver_local_raster_clips.clone(),
             receiver_ancestor_composite_clips: dependency.receiver_ancestor_composite_clips.clone(),
+            same_owner_role: None,
         }
     }
 
@@ -9072,6 +12380,40 @@ mod transform_scroll_boundary_stamp_tests {
     }
 
     #[test]
+    fn same_owner_effect_scroll_role_stamp_is_required_and_tamper_evident() {
+        let scroll_dependency = canonical_dependency();
+        let mut dependency = effect_dependency_from(&scroll_dependency);
+        dependency.receiver_owner = dependency.boundary_root;
+        dependency.receiver_stable_id = dependency.boundary_stable_id;
+        dependency.same_owner_role = Some(SameOwnerEffectScrollRasterRoleStamp {
+            owner: dependency.boundary_root,
+            stable_id: dependency.boundary_stable_id,
+            effect: EffectNodeId(dependency.boundary_root),
+            scroll: dependency.scroll.id,
+            contents_clip: dependency.contents_clip.id,
+            content_root: dependency.content_root,
+            content_stable_id: dependency.content_stable_id,
+        });
+        assert!(effect_scroll_boundary_dependency_is_canonical(&dependency));
+
+        let mut missing = dependency.clone();
+        missing.same_owner_role = None;
+        assert!(!effect_scroll_boundary_dependency_is_canonical(&missing));
+
+        let mut effect = dependency.clone();
+        effect.same_owner_role.as_mut().unwrap().effect = EffectNodeId(effect.content_root);
+        assert!(!effect_scroll_boundary_dependency_is_canonical(&effect));
+
+        let mut stable = dependency.clone();
+        stable.same_owner_role.as_mut().unwrap().stable_id ^= 1;
+        assert!(!effect_scroll_boundary_dependency_is_canonical(&stable));
+
+        let mut content = dependency;
+        content.same_owner_role.as_mut().unwrap().content_stable_id ^= 1;
+        assert!(!effect_scroll_boundary_dependency_is_canonical(&content));
+    }
+
+    #[test]
     fn generic_retained_surface_canonicalizers_reject_scroll_boundary_steps() {
         let dependency = canonical_dependency();
         let bounds = RetainedSurfaceBounds {
@@ -9118,6 +12460,7 @@ mod transform_scroll_boundary_stamp_tests {
             contents_clip: dependency.contents_clip,
             receiver_local_raster_clips: dependency.receiver_local_raster_clips.clone(),
             receiver_ancestor_composite_clips: dependency.receiver_ancestor_composite_clips.clone(),
+            same_owner_role: None,
         };
         receiver.ordered_steps = vec![RetainedSurfaceRasterStepStamp::ScrollBoundary(dependency)];
 

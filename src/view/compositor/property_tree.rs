@@ -12,7 +12,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::view::base_component::{
     Rect, ScrollAxisSnapshot, ScrollContentsClipWitness, ScrollGeometryObservation,
     ScrollGeometrySnapshot, ScrollbarOverlayWitness, ScrollbarPaintStateWitness, Size,
-    canonical_vertical_scrollbar_geometry, exact_logical_scissor_for_rect,
+    canonical_horizontal_scrollbar_geometry, canonical_vertical_scrollbar_geometry,
+    exact_logical_scissor_for_rect,
 };
 use crate::view::node_arena::{NodeArena, NodeKey};
 
@@ -230,59 +231,119 @@ impl PartialEq for ScrollNodeSnapshot {
 impl Eq for ScrollNodeSnapshot {}
 
 impl ScrollNodeSnapshot {
-    /// Geometry half of the compiler gate for one exact vertical baked-scroll
-    /// host. Paint-state policy is deliberately kept in the state-specific
-    /// wrappers below.
-    pub(crate) fn has_canonical_vertical_geometry_with_contents_clip(
-        self,
-        clip: ClipNodeSnapshot,
-    ) -> bool {
-        self.has_canonical_vertical_geometry_with_contents_clip_and_parents(clip, None, None)
+    /// Exact synchronized geometry gate for a scroll boundary nested below
+    /// an independently-owned ancestor clip chain. The contents clip remains
+    /// the scroll node's own authority; its parent is deliberately preserved
+    /// for the final composite instead of being required to be absent.
+    pub(crate) fn is_canonical_with_ancestor_contents_clip(self, clip: ClipNodeSnapshot) -> bool {
+        let geometry = ScrollGeometrySnapshot {
+            configured_axis: self.configured_axis,
+            offset: [self.offset.x, self.offset.y],
+            scrollport_rect: self.viewport,
+            content_size: [self.content_size.width, self.content_size.height],
+            layout_content_bounds_at_zero: self.layout_content_bounds_at_zero,
+            contents_clip: self.contents_clip,
+            scrollbar_overlay: self.scrollbar_overlay,
+        };
+        self.id.0 == self.owner
+            && self.parent.is_none()
+            && self.generation != 0
+            && clip.id.owner == self.owner
+            && clip.id.role == ClipNodeRole::ContentsClip
+            && clip.owner == self.owner
+            && clip.behavior == ClipBehavior::Intersect
+            && clip.generation != 0
+            && self.contents_clip == ScrollContentsClipWitness::ExactRect(clip.logical_scissor)
+            && scroll_geometry_snapshot_is_valid(geometry)
+    }
+
+    /// Geometry half of the compiler gate for one exact 2D baked-scroll host.
+    /// `configured_axis` controls input and scrollbar overlay geometry only;
+    /// both synchronized offset components and content extents remain raster
+    /// authority for Vertical, Horizontal, and Both hosts.
+    pub(crate) fn has_canonical_geometry_with_contents_clip(self, clip: ClipNodeSnapshot) -> bool {
+        self.has_canonical_geometry_with_contents_clip_and_parents(clip, None, None)
     }
 
     /// Exact parent-chain gate for the bounded `S0 -> S1` foundation slice.
     /// The parent must itself satisfy the unchanged parentless B0 geometry
     /// contract; this method only admits the direct child scroll/clip pair.
-    pub(crate) fn has_canonical_nested_vertical_geometry_with_contents_clip(
+    pub(crate) fn has_canonical_nested_geometry_with_contents_clip(
         self,
         clip: ClipNodeSnapshot,
         parent_scroll: ScrollNodeSnapshot,
         parent_clip: ClipNodeSnapshot,
     ) -> bool {
         self.owner != parent_scroll.owner
-            && parent_scroll.has_canonical_vertical_geometry_with_contents_clip(parent_clip)
-            && self.has_canonical_vertical_geometry_with_contents_clip_and_parents(
+            && parent_scroll.has_canonical_geometry_with_contents_clip(parent_clip)
+            && self.has_canonical_geometry_with_contents_clip_and_parents(
                 clip,
                 Some(parent_scroll.id),
                 Some(parent_clip.id),
             )
     }
 
-    fn has_canonical_vertical_geometry_with_contents_clip_and_parents(
+    /// Boundary-local parent edge gate for an arbitrary-depth scroll forest.
+    /// The complete ancestor chain is sealed by the forest planner, so this
+    /// validates exactly one edge instead of requiring the immediate parent
+    /// to be a parentless B0 root.
+    pub(crate) fn has_canonical_geometry_with_contents_clip_parent_ids(
         self,
         clip: ClipNodeSnapshot,
         expected_scroll_parent: Option<ScrollNodeId>,
         expected_clip_parent: Option<ClipNodeId>,
     ) -> bool {
-        let expected_vertical = canonical_vertical_scrollbar_geometry(
-            self.viewport,
-            self.content_size.height,
-            self.offset.y,
-            false,
-        );
+        self.has_canonical_geometry_with_contents_clip_and_parents(
+            clip,
+            expected_scroll_parent,
+            expected_clip_parent,
+        )
+    }
+
+    fn has_canonical_geometry_with_contents_clip_and_parents(
+        self,
+        clip: ClipNodeSnapshot,
+        expected_scroll_parent: Option<ScrollNodeId>,
+        expected_clip_parent: Option<ClipNodeId>,
+    ) -> bool {
         let overlay = self.scrollbar_overlay;
-        let overlay_is_exact = match expected_vertical {
-            Some((track, thumb)) => {
-                overlay
-                    .vertical_track
-                    .is_some_and(|actual| rect_bits_equal(actual, track))
-                    && overlay
-                        .vertical_thumb
-                        .is_some_and(|actual| rect_bits_equal(actual, thumb))
-            }
-            None => overlay.vertical_track.is_none() && overlay.vertical_thumb.is_none(),
-        } && overlay.horizontal_track.is_none()
-            && overlay.horizontal_thumb.is_none();
+        let can_scroll_x = matches!(
+            self.configured_axis,
+            ScrollAxisSnapshot::Horizontal | ScrollAxisSnapshot::Both
+        ) && self.content_size.width > self.viewport.width;
+        let can_scroll_y = matches!(
+            self.configured_axis,
+            ScrollAxisSnapshot::Vertical | ScrollAxisSnapshot::Both
+        ) && self.content_size.height > self.viewport.height;
+        let expected_vertical = can_scroll_y
+            .then(|| {
+                canonical_vertical_scrollbar_geometry(
+                    self.viewport,
+                    self.content_size.height,
+                    self.offset.y,
+                    can_scroll_x,
+                )
+            })
+            .flatten();
+        let expected_horizontal = can_scroll_x
+            .then(|| {
+                canonical_horizontal_scrollbar_geometry(
+                    self.viewport,
+                    self.content_size.width,
+                    self.offset.x,
+                    can_scroll_y,
+                )
+            })
+            .flatten();
+        let overlay_is_exact = scrollbar_geometry_pair_bits_equal(
+            expected_vertical,
+            overlay.vertical_track,
+            overlay.vertical_thumb,
+        ) && scrollbar_geometry_pair_bits_equal(
+            expected_horizontal,
+            overlay.horizontal_track,
+            overlay.horizontal_thumb,
+        );
 
         self.has_canonical_base_geometry_with_contents_clip(
             clip,
@@ -296,7 +357,7 @@ impl ScrollNodeSnapshot {
     /// property-tree synchronization; callers cannot substitute planner-only
     /// assumptions for compiler authority.
     pub(crate) fn is_canonical_with_contents_clip(self, clip: ClipNodeSnapshot) -> bool {
-        self.has_canonical_vertical_geometry_with_contents_clip(clip)
+        self.has_canonical_geometry_with_contents_clip(clip)
             && matches!(
                 self.scrollbar_overlay.paint_state,
                 ScrollbarPaintStateWitness::HiddenNow | ScrollbarPaintStateWitness::NotPaintable
@@ -304,7 +365,7 @@ impl ScrollNodeSnapshot {
     }
 
     pub(crate) fn is_canonical_painted_with_contents_clip(self, clip: ClipNodeSnapshot) -> bool {
-        self.has_canonical_vertical_geometry_with_contents_clip(clip)
+        self.has_canonical_geometry_with_contents_clip(clip)
             && matches!(
                 self.scrollbar_overlay.paint_state,
                 ScrollbarPaintStateWitness::OpaqueNow | ScrollbarPaintStateWitness::TranslucentNow
@@ -346,7 +407,6 @@ impl ScrollNodeSnapshot {
             && self.id.0 == self.owner
             && self.parent == expected_scroll_parent
             && self.generation != 0
-            && self.configured_axis == ScrollAxisSnapshot::Vertical
             && clip.id.owner == self.owner
             && clip.id.role == ClipNodeRole::ContentsClip
             && clip.owner == self.owner
@@ -355,6 +415,26 @@ impl ScrollNodeSnapshot {
             && clip.generation != 0
             && self.contents_clip == ScrollContentsClipWitness::ExactRect(clip.logical_scissor)
             && scroll_geometry_snapshot_is_valid(geometry)
+    }
+
+    /// Compatibility spelling for retained-scroll consumers that have not
+    /// yet migrated their API names. Semantics are the complete 2D contract.
+    pub(crate) fn has_canonical_vertical_geometry_with_contents_clip(
+        self,
+        clip: ClipNodeSnapshot,
+    ) -> bool {
+        self.has_canonical_geometry_with_contents_clip(clip)
+    }
+
+    /// Compatibility spelling for nested consumers. The configured axes of
+    /// each node are independent interaction/overlay metadata.
+    pub(crate) fn has_canonical_nested_vertical_geometry_with_contents_clip(
+        self,
+        clip: ClipNodeSnapshot,
+        parent_scroll: ScrollNodeSnapshot,
+        parent_clip: ClipNodeSnapshot,
+    ) -> bool {
+        self.has_canonical_nested_geometry_with_contents_clip(clip, parent_scroll, parent_clip)
     }
 }
 
@@ -958,6 +1038,21 @@ fn optional_rect_bits_equal(left: Option<Rect>, right: Option<Rect>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => rect_bits_equal(left, right),
         (None, None) => true,
+        _ => false,
+    }
+}
+
+fn scrollbar_geometry_pair_bits_equal(
+    expected: Option<(Rect, Rect)>,
+    actual_track: Option<Rect>,
+    actual_thumb: Option<Rect>,
+) -> bool {
+    match (expected, actual_track, actual_thumb) {
+        (Some((expected_track, expected_thumb)), Some(actual_track), Some(actual_thumb)) => {
+            rect_bits_equal(expected_track, actual_track)
+                && rect_bits_equal(expected_thumb, actual_thumb)
+        }
+        (None, None, None) => true,
         _ => false,
     }
 }
@@ -2264,6 +2359,153 @@ mod tests {
     }
 
     #[test]
+    fn canonical_scroll_geometry_and_element_admission_preserve_full_2d_state_for_all_axes() {
+        let cases = [
+            (
+                ScrollDirection::Vertical,
+                ScrollAxisSnapshot::Vertical,
+                false,
+                true,
+            ),
+            (
+                ScrollDirection::Horizontal,
+                ScrollAxisSnapshot::Horizontal,
+                true,
+                false,
+            ),
+            (ScrollDirection::Both, ScrollAxisSnapshot::Both, true, true),
+        ];
+        let mut both = None;
+        for (index, (direction, expected_axis, expect_horizontal, expect_vertical)) in
+            cases.into_iter().enumerate()
+        {
+            let mut arena = NodeArena::new();
+            let root = insert_element(&mut arena, 20_000 + index as u64 * 2);
+            let child = insert_element(&mut arena, 20_001 + index as u64 * 2);
+            append_child(&mut arena, root, child);
+            set_scroll_direction(&arena, root, direction);
+            for owner in [root, child] {
+                let mut style = Style::new();
+                style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+                arena
+                    .get_mut(owner)
+                    .unwrap()
+                    .element
+                    .as_any_mut()
+                    .downcast_mut::<Element>()
+                    .unwrap()
+                    .apply_style(style);
+            }
+            arena
+                .get_mut(child)
+                .unwrap()
+                .element
+                .as_any_mut()
+                .downcast_mut::<Element>()
+                .unwrap()
+                .set_background_color_value(crate::style::Color::rgb(24, 48, 72));
+            let viewport = Rect {
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 80.0,
+            };
+            let content_size = [280.0, 260.0];
+            let offset = [37.0, 41.0];
+            install_scroll_layout_geometry(&arena, root, viewport, content_size);
+            install_scroll_layout_geometry(
+                &arena,
+                child,
+                Rect {
+                    x: viewport.x - offset[0],
+                    y: viewport.y - offset[1],
+                    width: content_size[0],
+                    height: content_size[1],
+                },
+                content_size,
+            );
+            arena
+                .get_mut(root)
+                .unwrap()
+                .element
+                .set_scroll_offset((offset[0], offset[1]));
+            clear_layout_dirty_for_subtree(&arena, root);
+
+            let mut trees = PropertyTrees::default();
+            trees.sync(&arena, &[root]);
+            assert!(trees.validation_errors.is_empty(), "{direction:?}");
+            let snapshot = trees.scroll_snapshot_for(ScrollNodeId(root)).unwrap();
+            let clip_id = ClipNodeId {
+                owner: root,
+                role: ClipNodeRole::ContentsClip,
+            };
+            let clip = trees.clip_snapshot_for(Some(clip_id)).unwrap()[0];
+            assert_eq!(snapshot.configured_axis, expected_axis);
+            assert_eq!(snapshot.offset, Vec2::new(offset[0], offset[1]));
+            assert_eq!(
+                snapshot.scrollbar_overlay.horizontal_track.is_some(),
+                expect_horizontal
+            );
+            assert_eq!(
+                snapshot.scrollbar_overlay.vertical_track.is_some(),
+                expect_vertical
+            );
+            assert!(snapshot.has_canonical_geometry_with_contents_clip(clip));
+            assert!(snapshot.has_canonical_vertical_geometry_with_contents_clip(clip));
+
+            let admission = arena
+                .get(root)
+                .unwrap()
+                .element
+                .as_any()
+                .downcast_ref::<Element>()
+                .unwrap()
+                .exact_retained_scroll_host_admission(root, &arena, 1.0)
+                .unwrap_or_else(|| panic!("{direction:?} must pass exact Element admission"));
+            assert_eq!(admission.scroll.configured_axis, expected_axis);
+            assert_eq!(
+                admission.scroll.offset.map(f32::to_bits),
+                offset.map(f32::to_bits)
+            );
+            let child_bounds = arena.get(child).unwrap().element.box_model_snapshot();
+            assert_eq!(
+                (child_bounds.x + admission.scroll.offset[0]).to_bits(),
+                admission.scroll.layout_content_bounds_at_zero.x.to_bits()
+            );
+            assert_eq!(
+                (child_bounds.y + admission.scroll.offset[1]).to_bits(),
+                admission.scroll.layout_content_bounds_at_zero.y.to_bits()
+            );
+
+            if expected_axis == ScrollAxisSnapshot::Both {
+                both = Some((snapshot, clip));
+            }
+        }
+
+        let (both, clip) = both.expect("Both fixture");
+        let mut offset_tampered = both;
+        offset_tampered.offset.x += 1.0;
+        assert!(!offset_tampered.has_canonical_geometry_with_contents_clip(clip));
+
+        let mut bounds_tampered = both;
+        bounds_tampered.layout_content_bounds_at_zero.width += 1.0;
+        assert!(!bounds_tampered.has_canonical_geometry_with_contents_clip(clip));
+
+        let mut axis_tampered = both;
+        axis_tampered.configured_axis = ScrollAxisSnapshot::Vertical;
+        assert!(!axis_tampered.has_canonical_geometry_with_contents_clip(clip));
+
+        let mut overlay_tampered = both;
+        overlay_tampered
+            .scrollbar_overlay
+            .horizontal_thumb
+            .as_mut()
+            .unwrap()
+            .x += 1.0;
+        assert!(!overlay_tampered.has_canonical_geometry_with_contents_clip(clip));
+    }
+
+    #[test]
     fn scroll_snapshot_generations_track_axis_viewport_content_clip_and_overlay_fields() {
         let mut arena = NodeArena::new();
         let (root, _child) = make_vertical_scroll_fixture(&mut arena, 10, 11);
@@ -2419,11 +2661,62 @@ mod tests {
             "same geometry under a foreign inner identity must fail closed"
         );
 
+        let dpr2_admission = outer_element
+            .exact_retained_nested_scroll_scene_admission(outer, &arena, 2.0)
+            .expect("device-aligned nested scroll geometry remains exact at DPR2");
+        assert!(admission.bitwise_eq(dpr2_admission));
+        let device_aligned = |value: f32| {
+            let device = value * 2.0;
+            device.is_finite() && device.fract().to_bits() == 0.0_f32.to_bits()
+        };
+        let bounds_edges = |bounds: crate::view::base_component::RetainedSurfaceBounds| {
+            [
+                bounds.x,
+                bounds.y,
+                bounds.x + bounds.width,
+                bounds.y + bounds.height,
+            ]
+        };
+        let rect_edges = |rect: Rect| [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height];
+        assert!(
+            bounds_edges(dpr2_admission.outer_source_bounds)
+                .into_iter()
+                .chain(bounds_edges(dpr2_admission.inner_source_bounds))
+                .chain(rect_edges(dpr2_admission.outer_scroll.scrollport_rect))
+                .chain(rect_edges(dpr2_admission.inner_scroll.scrollport_rect))
+                .all(device_aligned)
+        );
+        assert!(
+            outer_element
+                .exact_retained_nested_scroll_scene_admission(outer, &arena, 0.0)
+                .is_none()
+        );
+        assert!(
+            outer_element
+                .exact_retained_nested_scroll_scene_admission(outer, &arena, f32::NAN)
+                .is_none()
+        );
+        drop(outer_node);
+        arena
+            .get_mut(outer)
+            .unwrap()
+            .element
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .unwrap()
+            .layout_state
+            .layout_position
+            .x += 0.25;
+        let outer_node = arena.get(outer).unwrap();
+        let outer_element = outer_node
+            .element
+            .as_any()
+            .downcast_ref::<Element>()
+            .unwrap();
         assert!(
             outer_element
                 .exact_retained_nested_scroll_scene_admission(outer, &arena, 2.0)
-                .is_none(),
-            "DPR must stay exact"
+                .is_none()
         );
 
         let (mut sibling_arena, sibling_outer, _, _) = {

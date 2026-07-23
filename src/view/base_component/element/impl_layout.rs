@@ -1282,21 +1282,12 @@ impl Element {
         self.children
             .get(index)
             .and_then(|k| arena.get(*k))
-            .and_then(|node| {
-                node.element.as_any().downcast_ref::<Element>().map(|el| {
-                    if el.computed_style.position.mode() != PositionMode::Absolute {
-                        return false;
-                    }
-                    match el.computed_style.position.clip_mode() {
-                        ClipMode::Parent => false,
-                        // AnchorParent always escapes the immediate parent's
-                        // inner clip: with an anchor it clips to the anchor's
-                        // parent; without one it falls back to the grandparent
-                        // clip. Either way the immediate parent's stencil/
-                        // scissor must not constrain the child.
-                        ClipMode::Viewport | ClipMode::AnchorParent => true,
-                    }
-                })
+            .map(|node| {
+                !matches!(
+                    node.element
+                        .retained_absolute_clip_mode_witness(self.children[index], arena),
+                    RetainedAbsoluteClipModeWitness::Normal
+                )
             })
             .unwrap_or(false)
     }
@@ -1327,6 +1318,65 @@ impl Element {
             || self.layout_transition_target_y.is_some()
             || self.layout_transition_target_width.is_some()
             || self.layout_transition_target_height.is_some()
+    }
+
+    pub(crate) fn exact_sampled_layout_transition_snapshot_for_paint_signature(
+        &self,
+        paint_signature: u64,
+    ) -> Option<super::RetainedSampledLayoutTransitionSnapshot> {
+        if !self.active_layout_transition_runtime_state()
+            || !self.has_layout_snapshot
+            || self.last_layout_placement.is_none()
+            || self.layout_dirty
+            || self
+                .dirty_flags
+                .intersects(super::DirtyPassMask::LAYOUT.union(super::DirtyPassMask::PLACEMENT))
+        {
+            return None;
+        }
+        let snapshot = self.box_model_snapshot();
+        let visual_offsets = [
+            self.layout_transition_visual_offset_x,
+            self.layout_transition_visual_offset_y,
+        ];
+        let override_size = [
+            self.layout_transition_override_width,
+            self.layout_transition_override_height,
+        ];
+        let target_position = [
+            self.layout_transition_target_x,
+            self.layout_transition_target_y,
+        ];
+        let target_size = [
+            self.layout_transition_target_width,
+            self.layout_transition_target_height,
+        ];
+        if snapshot.node_id != self.stable_id()
+            || [snapshot.x, snapshot.y, snapshot.width, snapshot.height]
+                .iter()
+                .any(|value| !value.is_finite())
+            || snapshot.width < 0.0
+            || snapshot.height < 0.0
+            || visual_offsets.iter().any(|value| !value.is_finite())
+            || override_size
+                .iter()
+                .chain(target_position.iter())
+                .chain(target_size.iter())
+                .flatten()
+                .any(|value| !value.is_finite())
+        {
+            return None;
+        }
+        Some(super::RetainedSampledLayoutTransitionSnapshot {
+            stable_id: snapshot.node_id,
+            bounds_bits: [snapshot.x, snapshot.y, snapshot.width, snapshot.height]
+                .map(f32::to_bits),
+            visual_offset_bits: visual_offsets.map(f32::to_bits),
+            override_size_bits: override_size.map(|value| value.map(f32::to_bits)),
+            target_position_bits: target_position.map(|value| value.map(f32::to_bits)),
+            target_size_bits: target_size.map(|value| value.map(f32::to_bits)),
+            paint_signature,
+        })
     }
 
     pub(crate) fn local_placement_eligibility_metadata(

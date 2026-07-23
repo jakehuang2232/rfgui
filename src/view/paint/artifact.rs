@@ -30,6 +30,49 @@ pub(crate) struct PaintDeferredViewportSelfClipWitness {
     clip: ClipNodeSnapshot,
 }
 
+/// Late-phase-only authority for one deferred viewport root whose opacity is
+/// owned by a retained effect surface. It binds the exact Replace self clip
+/// and isolated effect snapshot so neither can be replayed independently in
+/// the normal phase.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PaintDeferredViewportEffectWitness {
+    clip: PaintDeferredViewportSelfClipWitness,
+    effect: EffectNodeSnapshot,
+}
+
+impl PaintDeferredViewportEffectWitness {
+    pub(crate) fn new(
+        clip: PaintDeferredViewportSelfClipWitness,
+        effect: EffectNodeSnapshot,
+    ) -> Option<Self> {
+        (effect.id.0 == clip.target_owner
+            && effect.owner == clip.target_owner
+            && effect.parent.is_none()
+            && effect.generation != 0
+            && effect.opacity.is_finite()
+            && (0.0..=1.0).contains(&effect.opacity))
+        .then_some(Self { clip, effect })
+    }
+
+    fn is_canonical_for(
+        self,
+        owner: NodeKey,
+        stable_id: u64,
+        authoritative_self_clip: Option<ClipNodeId>,
+        effect: EffectNodeId,
+    ) -> bool {
+        self.effect.id == effect
+            && self.effect.owner == owner
+            && self.effect.parent.is_none()
+            && self.effect.generation != 0
+            && self.effect.opacity.is_finite()
+            && (0.0..=1.0).contains(&self.effect.opacity)
+            && self
+                .clip
+                .is_canonical_for(owner, stable_id, authoritative_self_clip)
+    }
+}
+
 impl PaintDeferredViewportSelfClipWitness {
     pub(crate) fn new(
         target_owner: NodeKey,
@@ -98,6 +141,9 @@ pub(crate) struct PaintRecordingContext {
     /// native root. Coverage clears and rebinds this frozen replace-scissor
     /// witness after every component context hook.
     pub(crate) deferred_viewport_self_clip: Option<PaintDeferredViewportSelfClipWitness>,
+    /// Bound only for the deferred root's late-phase coverage invocation when
+    /// the same root owns the active effect-surface contract.
+    pub(crate) deferred_viewport_effect: Option<PaintDeferredViewportEffectWitness>,
     /// Owner-scoped proof that this coverage invocation belongs to one
     /// canonically planned transform surface. The normal frame recorder never
     /// installs this witness; the surface recorder clears and rebinds it for
@@ -106,6 +152,10 @@ pub(crate) struct PaintRecordingContext {
     /// Recorder-owned authority for the one exact M10E1A root/child path.
     /// Coverage clears and rebinds this after every component hook.
     pub(crate) baked_scroll_host: Option<PaintBakedScrollHostWitness>,
+    /// Narrow frame-root receiver authority to encode the scroll host's
+    /// retained child mask around a detached content marker. Older baked-host
+    /// recorders keep their established H/C/O grammar and leave this false.
+    pub(crate) frame_root_scroll_host_child_mask: bool,
     /// Owner-bound proof that one ancestor property is already represented by
     /// the parent retained surface.  Recording may project only that exact
     /// property out of the artifact view; live property-tree state remains
@@ -123,6 +173,10 @@ pub(crate) struct PaintRecordingContext {
     /// Inner-host half of the bounded nested scene.  It projects S0/C0 from
     /// H1/O1 self paint while preserving S1/C1 on the receiver edge.
     pub(crate) nested_scroll_host: Option<PaintNestedScrollContentWitness>,
+    /// Boundary-local arbitrary-depth counterpart of `nested_scroll_host`.
+    /// It projects the parent S/C pair from host self paint while preserving
+    /// this boundary's own S/C pair on descendants.
+    pub(crate) scroll_forest_host: Option<PaintScrollForestEdgeWitness>,
     /// C1-only proof which consumes one outer Scroll/ContentsClip pair while
     /// preserving the exact TextArea-local ContentsClip in detached geometry.
     pub(crate) scroll_text_area_subtree: Option<PaintScrollTextAreaSubtreeWitness>,
@@ -182,6 +236,28 @@ impl PaintRecordingContext {
         )
     }
 
+    pub(crate) fn authorizes_deferred_viewport_effect_for(
+        self,
+        stable_id: u64,
+        effect: EffectNodeId,
+    ) -> bool {
+        matches!(
+            (
+                self.recording_owner,
+                self.recording_owner_stable_id,
+                self.deferred_viewport_effect,
+            ),
+            (Some(owner), Some(recording_stable_id), Some(witness))
+                if recording_stable_id == stable_id
+                    && witness.is_canonical_for(
+                        owner,
+                        stable_id,
+                        self.authoritative_self_clip,
+                        effect,
+                    )
+        )
+    }
+
     pub(crate) fn authorizes_transform_surface_owner(
         self,
         transform: Option<TransformNodeId>,
@@ -222,6 +298,10 @@ impl PaintRecordingContext {
                     && witness.boundary_root == owner
                     && witness.target_owner == owner
         )
+    }
+
+    pub(crate) fn authorizes_frame_root_scroll_host_child_mask(self, stable_id: u64) -> bool {
+        self.frame_root_scroll_host_child_mask && self.authorizes_baked_scroll_host_root(stable_id)
     }
 
     pub(crate) fn baked_scroll_host_snapshot_for_root(
@@ -268,6 +348,9 @@ impl PaintRecordingContext {
         if let Some(witness) = self.nested_scroll_host {
             return witness.project_host_for(self.recording_owner?, live);
         }
+        if let Some(witness) = self.scroll_forest_host {
+            return witness.project_host_for(self.recording_owner?, live);
+        }
         if let Some(witness) = self.scroll_text_area_subtree {
             return witness.project_for(self.recording_owner?, live);
         }
@@ -288,6 +371,32 @@ impl PaintRecordingContext {
                 {
                     Some(PropertyTreeState {
                         transform: None,
+                        ..live
+                    })
+                } else {
+                    None
+                }
+            }
+            Some(ConsumedAncestorProperty::SameOwnerTransformBoundary(witness)) => {
+                if witness.is_canonical_for(self.recording_owner?)
+                    && live.transform == Some(witness.transform)
+                {
+                    Some(PropertyTreeState {
+                        transform: None,
+                        ..live
+                    })
+                } else {
+                    None
+                }
+            }
+            Some(ConsumedAncestorProperty::SameOwnerEffectBoundary(witness)) => {
+                if witness.is_canonical_for(self.recording_owner?)
+                    && self.opacity_authority
+                        == PaintOpacityAuthority::NeutralRootEffect(witness.effect.id)
+                    && live.effect == witness.expected_before
+                {
+                    Some(PropertyTreeState {
+                        effect: witness.projected_after,
                         ..live
                     })
                 } else {
@@ -710,13 +819,15 @@ impl ConsumedAncestorPropertyStackWitness {
         {
             return None;
         }
-        let mut previous_rank = None;
         let mut transform_seen = false;
         let mut effect_seen = false;
         let mut scroll_seen = false;
-        for entry in entries {
-            let rank = match entry {
+        for (index, entry) in entries.iter().enumerate() {
+            match entry {
                 ConsumedAncestorProperty::Transform(witness) => {
+                    if scroll_seen {
+                        return None;
+                    }
                     if !witness
                         .for_target(target_owner)
                         .is_canonical_for(target_owner)
@@ -726,8 +837,9 @@ impl ConsumedAncestorPropertyStackWitness {
                     if std::mem::replace(&mut transform_seen, true) {
                         return None;
                     }
-                    0_u8
                 }
+                ConsumedAncestorProperty::SameOwnerTransformBoundary(_) => return None,
+                ConsumedAncestorProperty::SameOwnerEffectBoundary(_) => return None,
                 ConsumedAncestorProperty::ScrollContents(witness) => {
                     if !witness
                         .for_target(target_owner)
@@ -738,9 +850,14 @@ impl ConsumedAncestorPropertyStackWitness {
                     if std::mem::replace(&mut scroll_seen, true) {
                         return None;
                     }
-                    2_u8
+                    if index + 1 != entries.len() {
+                        return None;
+                    }
                 }
                 ConsumedAncestorProperty::Effect(witness) => {
+                    if scroll_seen {
+                        return None;
+                    }
                     if !witness
                         .for_target(target_owner)
                         .is_canonical_for(target_owner)
@@ -750,13 +867,8 @@ impl ConsumedAncestorPropertyStackWitness {
                     if std::mem::replace(&mut effect_seen, true) {
                         return None;
                     }
-                    1_u8
                 }
-            };
-            if previous_rank.is_some_and(|previous| previous >= rank) {
-                return None;
             }
-            previous_rank = Some(rank);
         }
         let mut sealed = [None; MAX_CONSUMED_ANCESTOR_PROPERTIES];
         for (slot, entry) in sealed.iter_mut().zip(entries.iter().copied()) {
@@ -765,6 +877,78 @@ impl ConsumedAncestorPropertyStackWitness {
         Some(Self {
             entries: sealed,
             len: entries.len() as u8,
+            target_owner,
+        })
+    }
+
+    /// Seals the only equal-owner stack admitted by the native property DAG:
+    /// the owner's outer transform followed by its scroll/contents-clip pair
+    /// projected onto the direct content child. The generic constructor keeps
+    /// rejecting equal-owner transform entries.
+    pub(crate) fn new_same_owner_transform_scroll(
+        target_owner: NodeKey,
+        transform: ConsumedSameOwnerTransformBoundaryWitness,
+        scroll: ConsumedAncestorScrollContentsWitness,
+    ) -> Option<Self> {
+        if target_owner.is_null()
+            || transform.owner != scroll.parent_boundary
+            || scroll.child_boundary != target_owner
+            || !transform
+                .for_target(target_owner)
+                .is_canonical_for(target_owner)
+            || !scroll
+                .for_target(target_owner)
+                .is_canonical_for(target_owner)
+        {
+            return None;
+        }
+        Some(Self {
+            entries: [
+                Some(ConsumedAncestorProperty::SameOwnerTransformBoundary(
+                    transform.for_target(target_owner),
+                )),
+                Some(ConsumedAncestorProperty::ScrollContents(
+                    scroll.for_target(target_owner),
+                )),
+                None,
+            ],
+            len: 2,
+            target_owner,
+        })
+    }
+
+    /// Seals the equal-owner `Effect -> ScrollContents` projection used by
+    /// the native E+S compiler. The generic constructor keeps rejecting this
+    /// shape so only the typed same-owner planner can neutralize the effect
+    /// before recording H/C/O.
+    pub(crate) fn new_same_owner_effect_scroll(
+        target_owner: NodeKey,
+        effect: ConsumedSameOwnerEffectBoundaryWitness,
+        scroll: ConsumedAncestorScrollContentsWitness,
+    ) -> Option<Self> {
+        if target_owner.is_null()
+            || effect.owner != scroll.parent_boundary
+            || scroll.child_boundary != target_owner
+            || !effect
+                .for_target(target_owner)
+                .is_canonical_for(target_owner)
+            || !scroll
+                .for_target(target_owner)
+                .is_canonical_for(target_owner)
+        {
+            return None;
+        }
+        Some(Self {
+            entries: [
+                Some(ConsumedAncestorProperty::SameOwnerEffectBoundary(
+                    effect.for_target(target_owner),
+                )),
+                Some(ConsumedAncestorProperty::ScrollContents(
+                    scroll.for_target(target_owner),
+                )),
+                None,
+            ],
+            len: 2,
             target_owner,
         })
     }
@@ -802,37 +986,57 @@ impl ConsumedAncestorPropertyStackWitness {
         {
             return false;
         }
-        let mut previous_rank = None;
+        let mut transform_seen = false;
+        let mut effect_seen = false;
         let mut scroll_witness = None;
-        for entry in self.entries() {
-            let rank = match entry {
+        for (index, entry) in self.entries().enumerate() {
+            match entry {
                 ConsumedAncestorProperty::Transform(witness) => {
-                    if !witness.is_canonical_for(owner) {
+                    if scroll_witness.is_some()
+                        || std::mem::replace(&mut transform_seen, true)
+                        || !witness.is_canonical_for(owner)
+                    {
                         return false;
                     }
-                    0_u8
+                }
+                ConsumedAncestorProperty::SameOwnerTransformBoundary(witness) => {
+                    if scroll_witness.is_some()
+                        || std::mem::replace(&mut transform_seen, true)
+                        || !witness.is_canonical_for(owner)
+                    {
+                        return false;
+                    }
+                }
+                ConsumedAncestorProperty::SameOwnerEffectBoundary(witness) => {
+                    if scroll_witness.is_some()
+                        || std::mem::replace(&mut effect_seen, true)
+                        || !witness.is_canonical_for(owner)
+                        || opacity_authority
+                            != PaintOpacityAuthority::NeutralRootEffect(witness.effect.id)
+                    {
+                        return false;
+                    }
                 }
                 ConsumedAncestorProperty::ScrollContents(witness) => {
                     if !witness.is_canonical_for(owner) || scroll_witness.replace(witness).is_some()
                     {
                         return false;
                     }
-                    2_u8
+                    if index + 1 != usize::from(self.len) {
+                        return false;
+                    }
                 }
                 ConsumedAncestorProperty::Effect(witness) => {
-                    if !witness.is_canonical_for(owner)
+                    if scroll_witness.is_some()
+                        || std::mem::replace(&mut effect_seen, true)
+                        || !witness.is_canonical_for(owner)
                         || opacity_authority
                             != PaintOpacityAuthority::NeutralRootEffect(witness.effect.id)
                     {
                         return false;
                     }
-                    1_u8
                 }
-            };
-            if previous_rank.is_some_and(|previous| previous >= rank) {
-                return false;
             }
-            previous_rank = Some(rank);
         }
         scroll_witness.is_some()
     }
@@ -854,6 +1058,26 @@ impl ConsumedAncestorPropertyStackWitness {
                 {
                     PropertyTreeState {
                         transform: None,
+                        ..live
+                    }
+                }
+                ConsumedAncestorProperty::SameOwnerTransformBoundary(witness)
+                    if witness.is_canonical_for(owner)
+                        && live.transform == Some(witness.transform) =>
+                {
+                    PropertyTreeState {
+                        transform: None,
+                        ..live
+                    }
+                }
+                ConsumedAncestorProperty::SameOwnerEffectBoundary(witness)
+                    if witness.is_canonical_for(owner)
+                        && opacity_authority
+                            == PaintOpacityAuthority::NeutralRootEffect(witness.effect.id)
+                        && live.effect == witness.expected_before =>
+                {
+                    PropertyTreeState {
+                        effect: witness.projected_after,
                         ..live
                     }
                 }
@@ -889,6 +1113,8 @@ impl ConsumedAncestorPropertyStackWitness {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ConsumedAncestorProperty {
     Transform(ConsumedAncestorTransformWitness),
+    SameOwnerTransformBoundary(ConsumedSameOwnerTransformBoundaryWitness),
+    SameOwnerEffectBoundary(ConsumedSameOwnerEffectBoundaryWitness),
     Effect(ConsumedAncestorEffectWitness),
     /// One scroll projection and its owning contents clip are consumed as a
     /// single boundary. Projecting only one half would either double-translate
@@ -900,9 +1126,60 @@ impl ConsumedAncestorProperty {
     pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
         match self {
             Self::Transform(witness) => Self::Transform(witness.for_target(target_owner)),
+            Self::SameOwnerTransformBoundary(witness) => {
+                Self::SameOwnerTransformBoundary(witness.for_target(target_owner))
+            }
+            Self::SameOwnerEffectBoundary(witness) => {
+                Self::SameOwnerEffectBoundary(witness.for_target(target_owner))
+            }
             Self::Effect(witness) => Self::Effect(witness.for_target(target_owner)),
             Self::ScrollContents(witness) => Self::ScrollContents(witness.for_target(target_owner)),
         }
+    }
+}
+
+/// Exact projection for an effect boundary and scroll host owned by the same
+/// native node. This capability is intentionally separate from
+/// `ConsumedAncestorEffectWitness`, whose unequal-owner invariant remains
+/// unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ConsumedSameOwnerEffectBoundaryWitness {
+    pub(crate) owner: NodeKey,
+    pub(crate) effect: EffectNodeSnapshot,
+    pub(crate) expected_before: Option<EffectNodeId>,
+    pub(crate) projected_after: Option<EffectNodeId>,
+    pub(crate) target_owner: NodeKey,
+}
+
+impl ConsumedSameOwnerEffectBoundaryWitness {
+    pub(crate) fn new(owner: NodeKey, effect: EffectNodeSnapshot) -> Option<Self> {
+        let witness = Self {
+            owner,
+            effect,
+            expected_before: Some(effect.id),
+            projected_after: effect.parent,
+            target_owner: owner,
+        };
+        witness.is_canonical_for(owner).then_some(witness)
+    }
+
+    pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
+        Self {
+            target_owner,
+            ..self
+        }
+    }
+
+    fn is_canonical_for(self, owner: NodeKey) -> bool {
+        self.effect.id.0 == self.owner
+            && self.effect.owner == self.owner
+            && self.effect.parent.is_none()
+            && self.effect.generation != 0
+            && self.effect.opacity.is_finite()
+            && (0.0..=1.0).contains(&self.effect.opacity)
+            && self.expected_before == Some(self.effect.id)
+            && self.projected_after == self.effect.parent
+            && self.target_owner == owner
     }
 }
 
@@ -1011,6 +1288,39 @@ pub(crate) struct ConsumedAncestorTransformWitness {
     pub(crate) target_owner: NodeKey,
 }
 
+/// Exact projection for a transform boundary already owned by an outer
+/// retained surface while an inner effect surface records the same node.
+/// This is deliberately separate from `ConsumedAncestorTransformWitness`:
+/// equal owners are canonical here and remain forbidden for the ancestor
+/// capability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ConsumedSameOwnerTransformBoundaryWitness {
+    pub(crate) owner: NodeKey,
+    pub(crate) transform: TransformNodeId,
+    pub(crate) target_owner: NodeKey,
+}
+
+impl ConsumedSameOwnerTransformBoundaryWitness {
+    pub(crate) fn new(owner: NodeKey, transform: TransformNodeId) -> Option<Self> {
+        (transform.0 == owner).then_some(Self {
+            owner,
+            transform,
+            target_owner: owner,
+        })
+    }
+
+    pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
+        Self {
+            target_owner,
+            ..self
+        }
+    }
+
+    fn is_canonical_for(self, owner: NodeKey) -> bool {
+        self.owner == self.transform.0 && self.target_owner == owner
+    }
+}
+
 impl ConsumedAncestorTransformWitness {
     pub(crate) fn new(
         parent_boundary: NodeKey,
@@ -1048,6 +1358,117 @@ pub(crate) struct PaintScrollContentWitness {
     scroll: ScrollNodeSnapshot,
     contents_clip: ClipNodeSnapshot,
     normalization_offset_bits: [u32; 2],
+}
+
+/// One boundary-local projection edge in an arbitrary-depth scroll forest.
+/// The witness consumes exactly this scroll/contents-clip pair; ancestor
+/// edges are represented by the parent target and never accumulated in the
+/// bounded ancestor-property stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PaintScrollForestEdgeWitness {
+    boundary_root: NodeKey,
+    content_root: NodeKey,
+    scroll: ScrollNodeSnapshot,
+    contents_clip: ClipNodeSnapshot,
+    normalization_offset_bits: [u32; 2],
+}
+
+impl PaintScrollForestEdgeWitness {
+    pub(crate) fn new(
+        boundary_root: NodeKey,
+        content_root: NodeKey,
+        scroll: ScrollNodeSnapshot,
+        contents_clip: ClipNodeSnapshot,
+        parent_scroll: Option<ScrollNodeId>,
+        parent_clip: Option<ClipNodeId>,
+    ) -> Option<Self> {
+        let normalization_offset = [scroll.offset.x, scroll.offset.y];
+        (boundary_root != content_root
+            && scroll.id.0 == boundary_root
+            && scroll.owner == boundary_root
+            && scroll.parent == parent_scroll
+            && scroll.generation != 0
+            && normalization_offset.into_iter().all(f32::is_finite)
+            && contents_clip.id.owner == boundary_root
+            && contents_clip.id.role == ClipNodeRole::ContentsClip
+            && contents_clip.owner == boundary_root
+            && contents_clip.parent == parent_clip
+            && contents_clip.generation != 0
+            && scroll.has_canonical_geometry_with_contents_clip_parent_ids(
+                contents_clip,
+                parent_scroll,
+                parent_clip,
+            ))
+        .then_some(Self {
+            boundary_root,
+            content_root,
+            scroll,
+            contents_clip,
+            normalization_offset_bits: normalization_offset.map(f32::to_bits),
+        })
+    }
+
+    pub(crate) fn boundary_root(self) -> NodeKey {
+        self.boundary_root
+    }
+
+    pub(crate) fn content_root(self) -> NodeKey {
+        self.content_root
+    }
+
+    pub(crate) fn scroll_snapshot(self) -> ScrollNodeSnapshot {
+        self.scroll
+    }
+
+    pub(crate) fn contents_clip_snapshot(self) -> ClipNodeSnapshot {
+        self.contents_clip
+    }
+
+    pub(crate) fn normalization_paint_offset(self) -> [f32; 2] {
+        self.normalization_offset_bits.map(f32::from_bits)
+    }
+
+    pub(crate) fn consumed_property(self) -> ConsumedAncestorProperty {
+        ConsumedAncestorProperty::ScrollContents(
+            ConsumedAncestorScrollContentsWitness::new(
+                self.boundary_root,
+                self.content_root,
+                self.scroll.id,
+                self.contents_clip.id,
+            )
+            .expect("canonical forest edge owns one scroll/clip projection"),
+        )
+    }
+
+    pub(crate) fn project_host_for(
+        self,
+        owner: NodeKey,
+        live: PropertyTreeState,
+    ) -> Option<PropertyTreeState> {
+        if owner != self.boundary_root {
+            return None;
+        }
+        let parent = PropertyTreeState {
+            clip: self.contents_clip.parent,
+            scroll: self.scroll.parent,
+            ..PropertyTreeState::default()
+        };
+        let own = PropertyTreeState {
+            clip: Some(self.contents_clip.id),
+            scroll: Some(self.scroll.id),
+            ..PropertyTreeState::default()
+        };
+        if live == parent {
+            Some(PropertyTreeState::default())
+        } else if live == own {
+            // Host masks are emitted on the parent target around the typed
+            // content receiver. The receiver keeps the own S/C edge; storing
+            // it again on the mask would double-apply scroll/clip state.
+            Some(PropertyTreeState::default())
+        } else {
+            None
+        }
+    }
 }
 
 impl PaintScrollContentWitness {
@@ -2022,6 +2443,162 @@ pub(crate) enum PaintNodePhase {
     AfterChildren,
 }
 
+/// Reserved `SelfDecoration` slot for the typed child-mask scope.
+/// The phase distinguishes the begin and end chunks.
+pub(crate) const RETAINED_CHILD_MASK_SLOT: u16 = u16::MAX;
+
+#[derive(Clone, Debug)]
+pub(crate) struct RetainedChildMaskPlan {
+    bounds: Rect,
+    logical_scissor: [u32; 4],
+    op: DrawRectOp,
+    payload_identity: PaintPayloadIdentity,
+    in_scope_children: Arc<[NodeKey]>,
+    overflow_children: Arc<[NodeKey]>,
+}
+
+impl RetainedChildMaskPlan {
+    pub(crate) fn new(
+        bounds: Rect,
+        logical_scissor: [u32; 4],
+        op: DrawRectOp,
+        children: &[NodeKey],
+        in_scope_children: Vec<NodeKey>,
+        overflow_children: Vec<NodeKey>,
+    ) -> Option<Self> {
+        if crate::view::base_component::exact_logical_scissor_for_rect(bounds)
+            != Some(logical_scissor)
+            || op.mode != crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
+            || op.params.position != [bounds.x, bounds.y]
+            || op.params.size != [bounds.width, bounds.height]
+            || op
+                .params
+                .size
+                .iter()
+                .any(|value| !value.is_finite() || *value <= 0.0)
+        {
+            return None;
+        }
+        let mut reconstructed = Vec::with_capacity(children.len());
+        let mut in_scope = in_scope_children.iter().copied();
+        let mut overflow = overflow_children.iter().copied();
+        let mut next_in_scope = in_scope.next();
+        let mut next_overflow = overflow.next();
+        for &child in children {
+            if next_in_scope == Some(child) {
+                reconstructed.push(child);
+                next_in_scope = in_scope.next();
+            } else if next_overflow == Some(child) {
+                reconstructed.push(child);
+                next_overflow = overflow.next();
+            } else {
+                return None;
+            }
+        }
+        if next_in_scope.is_some()
+            || next_overflow.is_some()
+            || reconstructed.as_slice() != children
+        {
+            return None;
+        }
+        let payload_identity = PaintPayloadIdentity::prepared_rects([&op])?;
+        Some(Self {
+            bounds,
+            logical_scissor,
+            op,
+            payload_identity,
+            in_scope_children: in_scope_children.into(),
+            overflow_children: overflow_children.into(),
+        })
+    }
+
+    pub(crate) fn is_canonical_for_children(&self, children: &[NodeKey]) -> bool {
+        let mut expected_in_scope = self.in_scope_children.iter().copied();
+        let mut expected_overflow = self.overflow_children.iter().copied();
+        let mut next_in_scope = expected_in_scope.next();
+        let mut next_overflow = expected_overflow.next();
+        for &child in children {
+            if next_in_scope == Some(child) {
+                next_in_scope = expected_in_scope.next();
+            } else if next_overflow == Some(child) {
+                next_overflow = expected_overflow.next();
+            } else {
+                return false;
+            }
+        }
+        next_in_scope.is_none() && next_overflow.is_none()
+    }
+
+    pub(crate) fn in_scope_children(&self) -> &[NodeKey] {
+        &self.in_scope_children
+    }
+
+    pub(crate) fn overflow_children(&self) -> &[NodeKey] {
+        &self.overflow_children
+    }
+
+    pub(crate) fn metadata(
+        &self,
+        owner: NodeKey,
+        phase: PaintNodePhase,
+        properties: PropertyTreeState,
+        content_revision: PaintContentRevision,
+    ) -> PaintChunkMetadata {
+        PaintChunkMetadata {
+            id: PaintChunkId {
+                owner,
+                scope: PaintPropertyScope::Contents,
+                phase,
+                slot: RETAINED_CHILD_MASK_SLOT,
+                role: PaintChunkRole::SelfDecoration,
+            },
+            owner,
+            bounds: self.bounds,
+            properties,
+            content_revision,
+            payload_identity: self.payload_identity.clone(),
+        }
+    }
+
+    pub(crate) fn artifact(
+        &self,
+        owner: NodeKey,
+        phase: PaintNodePhase,
+        properties: PropertyTreeState,
+        content_revision: PaintContentRevision,
+    ) -> PaintArtifact {
+        PaintArtifact {
+            target: Default::default(),
+            chunks: vec![PaintChunk {
+                id: PaintChunkId {
+                    owner,
+                    scope: PaintPropertyScope::Contents,
+                    phase,
+                    slot: RETAINED_CHILD_MASK_SLOT,
+                    role: PaintChunkRole::SelfDecoration,
+                },
+                owner,
+                op_range: 0..1,
+                bounds: self.bounds,
+                properties,
+                content_revision,
+                payload_identity: self.payload_identity.clone(),
+            }],
+            ops: vec![PaintOp::DrawRect(self.op.clone())],
+            clip_nodes: Vec::new(),
+            effect_nodes: Vec::new(),
+            owner_nodes: vec![PaintOwnerSnapshot {
+                owner,
+                parent: None,
+            }],
+        }
+    }
+
+    pub(crate) fn logical_scissor(&self) -> [u32; 4] {
+        self.logical_scissor
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PaintNodePlan<T> {
     pub(crate) before_children: Vec<T>,
@@ -2301,7 +2878,16 @@ pub(crate) struct PreparedScrollbarOverlayOp {
     pub(crate) track: DrawRectOp,
     pub(crate) thumb_shadow: PreparedScrollbarShadowOp,
     pub(crate) thumb: DrawRectOp,
+    secondary: Option<Box<PreparedScrollbarAxisOp>>,
     identity: PreparedScrollbarOverlayIdentity,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedScrollbarAxisOp {
+    track_shadow: PreparedScrollbarShadowOp,
+    track: DrawRectOp,
+    thumb_shadow: PreparedScrollbarShadowOp,
+    thumb: DrawRectOp,
 }
 
 #[derive(Clone, Debug)]
@@ -2312,6 +2898,15 @@ pub(crate) struct PreparedScrollbarShadowOp {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PreparedScrollbarOverlayIdentity {
+    track_shadow: PreparedScrollbarShadowIdentity,
+    track: PreparedDrawRectIdentity,
+    thumb_shadow: PreparedScrollbarShadowIdentity,
+    thumb: PreparedDrawRectIdentity,
+    secondary: Option<Box<PreparedScrollbarAxisIdentity>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreparedScrollbarAxisIdentity {
     track_shadow: PreparedScrollbarShadowIdentity,
     track: PreparedDrawRectIdentity,
     thumb_shadow: PreparedScrollbarShadowIdentity,
@@ -2331,14 +2926,12 @@ struct PreparedScrollbarShadowIdentity {
 }
 
 impl PreparedScrollbarOverlayOp {
-    pub(crate) fn from_vertical_witness(witness: ScrollbarOverlayWitness) -> Option<Self> {
+    pub(crate) fn from_witness(witness: ScrollbarOverlayWitness) -> Option<Self> {
         let alpha = witness.sampled_alpha;
         if !matches!(
             witness.paint_state,
             ScrollbarPaintStateWitness::OpaqueNow | ScrollbarPaintStateWitness::TranslucentNow
-        ) || witness.horizontal_track.is_some()
-            || witness.horizontal_thumb.is_some()
-            || !alpha.is_finite()
+        ) || !alpha.is_finite()
             || alpha <= 0.0
             || alpha > 1.0
             || (witness.paint_state == ScrollbarPaintStateWitness::OpaqueNow
@@ -2350,28 +2943,66 @@ impl PreparedScrollbarOverlayOp {
         {
             return None;
         }
-        let (track, thumb) = witness.vertical_track.zip(witness.vertical_thumb)?;
-        let track_shadow = Self::shadow(track, witness.shadow_blur_radius, 0.5 * alpha)?;
-        let track = Self::fill(track, [0.95, 0.95, 0.95, 0.35 * alpha])?;
-        let thumb_shadow = Self::shadow(thumb, witness.shadow_blur_radius, 0.5 * alpha)?;
-        let thumb = Self::fill(thumb, [0.95, 0.95, 0.95, 0.58 * alpha])?;
+        let mut axes = Vec::with_capacity(2);
+        if let Some((track, thumb)) = witness.vertical_track.zip(witness.vertical_thumb) {
+            axes.push(Self::axis(track, thumb, witness.shadow_blur_radius, alpha)?);
+        } else if witness.vertical_track.is_some() || witness.vertical_thumb.is_some() {
+            return None;
+        }
+        if let Some((track, thumb)) = witness.horizontal_track.zip(witness.horizontal_thumb) {
+            axes.push(Self::axis(track, thumb, witness.shadow_blur_radius, alpha)?);
+        } else if witness.horizontal_track.is_some() || witness.horizontal_thumb.is_some() {
+            return None;
+        }
+        if axes.is_empty() {
+            return None;
+        }
+        let first = axes.remove(0);
+        let secondary = axes.pop().map(Box::new);
         let identity = PreparedScrollbarOverlayIdentity::from_parts(
-            &track_shadow,
-            &track,
-            &thumb_shadow,
-            &thumb,
+            &first.track_shadow,
+            &first.track,
+            &first.thumb_shadow,
+            &first.thumb,
+            secondary.as_deref(),
         )?;
         Some(Self {
-            track_shadow,
-            track,
-            thumb_shadow,
-            thumb,
+            track_shadow: first.track_shadow,
+            track: first.track,
+            thumb_shadow: first.thumb_shadow,
+            thumb: first.thumb,
+            secondary,
             identity,
         })
     }
 
+    pub(crate) fn from_vertical_witness(witness: ScrollbarOverlayWitness) -> Option<Self> {
+        if witness.horizontal_track.is_some() || witness.horizontal_thumb.is_some() {
+            return None;
+        }
+        Self::from_witness(witness)
+    }
+
+    fn axis(
+        track: Rect,
+        thumb: Rect,
+        shadow_blur_radius: f32,
+        alpha: f32,
+    ) -> Option<PreparedScrollbarAxisOp> {
+        let track_shadow = Self::shadow(track, shadow_blur_radius, 0.5 * alpha)?;
+        let track = Self::fill(track, [0.95, 0.95, 0.95, 0.35 * alpha])?;
+        let thumb_shadow = Self::shadow(thumb, shadow_blur_radius, 0.5 * alpha)?;
+        let thumb = Self::fill(thumb, [0.95, 0.95, 0.95, 0.58 * alpha])?;
+        Some(PreparedScrollbarAxisOp {
+            track_shadow,
+            track,
+            thumb_shadow,
+            thumb,
+        })
+    }
+
     fn shadow(rect: Rect, blur_radius: f32, alpha: f32) -> Option<PreparedScrollbarShadowOp> {
-        let radius = (rect.width * 0.5).max(0.0);
+        let radius = (rect.width.min(rect.height) * 0.5).max(0.0);
         let shadow = PreparedScrollbarShadowOp {
             mesh: ShadowMesh::rounded_rect(
                 rect.x,
@@ -2403,7 +3034,7 @@ impl PreparedScrollbarOverlayOp {
             ..Default::default()
         };
         params.set_border_width(0.0);
-        params.set_border_radius((rect.width * 0.5).max(0.0));
+        params.set_border_radius((rect.width.min(rect.height) * 0.5).max(0.0));
         let op = DrawRectOp {
             params,
             mode: RectRenderMode::FillOnly,
@@ -2418,6 +3049,7 @@ impl PreparedScrollbarOverlayOp {
             &self.track,
             &self.thumb_shadow,
             &self.thumb,
+            self.secondary.as_deref(),
         )
         .as_ref()
             == Some(&self.identity)
@@ -2429,6 +3061,30 @@ impl PreparedScrollbarOverlayOp {
                 .is_some_and(|expected| expected.identity == self.identity)
     }
 
+    pub(crate) fn matches_witness(&self, witness: ScrollbarOverlayWitness) -> bool {
+        self.has_canonical_identity()
+            && Self::from_witness(witness)
+                .is_some_and(|expected| expected.identity == self.identity)
+    }
+
+    pub(crate) fn secondary_axis(
+        &self,
+    ) -> Option<(
+        &PreparedScrollbarShadowOp,
+        &DrawRectOp,
+        &PreparedScrollbarShadowOp,
+        &DrawRectOp,
+    )> {
+        self.secondary.as_deref().map(|axis| {
+            (
+                &axis.track_shadow,
+                &axis.track,
+                &axis.thumb_shadow,
+                &axis.thumb,
+            )
+        })
+    }
+
     pub(crate) fn frozen_identity(&self) -> PreparedScrollbarOverlayIdentity {
         self.identity.clone()
     }
@@ -2438,6 +3094,67 @@ impl PreparedScrollbarOverlayOp {
             && self.track.params.opacity.to_bits() == expected_bits
             && self.thumb_shadow.params.opacity.to_bits() == expected_bits
             && self.thumb.params.opacity.to_bits() == expected_bits
+            && self.secondary.as_deref().is_none_or(|axis| {
+                axis.track_shadow.params.opacity.to_bits() == expected_bits
+                    && axis.track.params.opacity.to_bits() == expected_bits
+                    && axis.thumb_shadow.params.opacity.to_bits() == expected_bits
+                    && axis.thumb.params.opacity.to_bits() == expected_bits
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn axis_geometry_bits_for_test(&self) -> Vec<([u32; 4], [u32; 4])> {
+        let rect_bits = |op: &DrawRectOp| {
+            (
+                [
+                    op.params.position[0].to_bits(),
+                    op.params.position[1].to_bits(),
+                    op.params.size[0].to_bits(),
+                    op.params.size[1].to_bits(),
+                ],
+                op.params.fill_color.map(f32::to_bits),
+            )
+        };
+        let mut axes = vec![(rect_bits(&self.track).0, rect_bits(&self.thumb).0)];
+        if let Some(axis) = self.secondary.as_deref() {
+            axes.push((rect_bits(&axis.track).0, rect_bits(&axis.thumb).0));
+        }
+        axes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_track_position_for_test(&mut self) {
+        self.track.params.position[0] += 1.0;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_primary_axis_for_test(&mut self) {
+        self.track.params.position.swap(0, 1);
+        self.track.params.size.swap(0, 1);
+        self.thumb.params.position.swap(0, 1);
+        self.thumb.params.size.swap(0, 1);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_thumb_size_for_test(&mut self) {
+        self.thumb.params.size[0] += 1.0;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_alpha_for_test(&mut self) {
+        self.track.params.fill_color[3] *= 0.5;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_axis_order_for_test(&mut self) -> bool {
+        let Some(secondary) = self.secondary.as_deref_mut() else {
+            return false;
+        };
+        std::mem::swap(&mut self.track_shadow, &mut secondary.track_shadow);
+        std::mem::swap(&mut self.track, &mut secondary.track);
+        std::mem::swap(&mut self.thumb_shadow, &mut secondary.thumb_shadow);
+        std::mem::swap(&mut self.thumb, &mut secondary.thumb);
+        true
     }
 }
 
@@ -2447,6 +3164,7 @@ impl PreparedScrollbarOverlayIdentity {
         track: &DrawRectOp,
         thumb_shadow: &PreparedScrollbarShadowOp,
         thumb: &DrawRectOp,
+        secondary: Option<&PreparedScrollbarAxisOp>,
     ) -> Option<Self> {
         Some(Self {
             track_shadow: PreparedScrollbarShadowIdentity::from_parts(
@@ -2459,6 +3177,27 @@ impl PreparedScrollbarOverlayIdentity {
                 thumb_shadow.params,
             )?,
             thumb: PreparedDrawRectIdentity::from_op(thumb)?,
+            secondary: match secondary {
+                Some(axis) => Some(Box::new(PreparedScrollbarAxisIdentity::from_axis(axis)?)),
+                None => None,
+            },
+        })
+    }
+}
+
+impl PreparedScrollbarAxisIdentity {
+    fn from_axis(axis: &PreparedScrollbarAxisOp) -> Option<Self> {
+        Some(Self {
+            track_shadow: PreparedScrollbarShadowIdentity::from_parts(
+                &axis.track_shadow.mesh,
+                axis.track_shadow.params,
+            )?,
+            track: PreparedDrawRectIdentity::from_op(&axis.track)?,
+            thumb_shadow: PreparedScrollbarShadowIdentity::from_parts(
+                &axis.thumb_shadow.mesh,
+                axis.thumb_shadow.params,
+            )?,
+            thumb: PreparedDrawRectIdentity::from_op(&axis.thumb)?,
         })
     }
 }
@@ -2525,7 +3264,7 @@ impl PreparedShadowIdentity {
             || !params.offset_x.is_finite()
             || !params.offset_y.is_finite()
             || !params.blur_radius.is_finite()
-            || params.blur_radius.to_bits() != 0.0_f32.to_bits()
+            || params.blur_radius.to_bits() != params.blur_radius.max(0.0).to_bits()
             || params
                 .color
                 .iter()
@@ -2533,7 +3272,6 @@ impl PreparedShadowIdentity {
             || !params.opacity.is_finite()
             || !(0.0..=1.0).contains(&params.opacity)
             || params.spread.to_bits() != 0.0_f32.to_bits()
-            || params.clip_to_geometry
         {
             return None;
         }
@@ -2865,7 +3603,10 @@ pub(crate) enum PaintPayloadIdentity {
     PreparedRects(Arc<[PreparedDrawRectIdentity]>),
     RetainedTextAreaSelection(RetainedTextAreaSelectionRasterSeal),
     PreparedScrollbarOverlay(PreparedScrollbarOverlayIdentity),
-    InlineIfcDecorations(Arc<[PreparedInlineIfcDecorationIdentity]>),
+    InlineIfcDecorations(
+        Arc<[PreparedShadowIdentity]>,
+        Arc<[PreparedInlineIfcDecorationIdentity]>,
+    ),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3619,7 +4360,19 @@ impl PaintPayloadIdentity {
     pub(crate) fn inline_ifc_decorations<'a>(
         decorations: impl IntoIterator<Item = &'a PreparedInlineIfcDecorationOp>,
     ) -> Self {
+        Self::inline_ifc_decorations_with_shadows(std::iter::empty(), decorations)
+    }
+
+    pub(crate) fn inline_ifc_decorations_with_shadows<'a, 'b>(
+        shadows: impl IntoIterator<Item = &'a PreparedShadowOp>,
+        decorations: impl IntoIterator<Item = &'b PreparedInlineIfcDecorationOp>,
+    ) -> Self {
         Self::InlineIfcDecorations(
+            shadows
+                .into_iter()
+                .map(PreparedShadowOp::frozen_identity)
+                .collect::<Vec<_>>()
+                .into(),
             decorations
                 .into_iter()
                 .map(PreparedInlineIfcDecorationOp::frozen_identity)
@@ -4225,16 +4978,35 @@ mod consumed_ancestor_property_tests {
             Some(PropertyTreeState::default())
         );
         assert!(context.authorizes_scroll_content_local_owner(content_owner));
-        for invalid in [
-            [
+        let effect_transform_stack = ConsumedAncestorPropertyStackWitness::new(
+            content_owner,
+            &[
                 ConsumedAncestorProperty::Effect(effect_witness),
                 ConsumedAncestorProperty::Transform(transform_witness),
                 ConsumedAncestorProperty::ScrollContents(scroll_witness),
             ],
+        )
+        .expect("the typed DAG also admits exact E->T->S order");
+        let effect_transform_context = PaintRecordingContext {
+            recording_owner: Some(content_owner),
+            consumed_ancestor_property_stack: Some(effect_transform_stack),
+            opacity_authority: PaintOpacityAuthority::NeutralRootEffect(effect.id),
+            ..Default::default()
+        };
+        assert_eq!(
+            effect_transform_context.project_consumed_ancestor_property(live),
+            Some(PropertyTreeState::default())
+        );
+        for invalid in [
             [
                 ConsumedAncestorProperty::Transform(transform_witness),
                 ConsumedAncestorProperty::ScrollContents(scroll_witness),
                 ConsumedAncestorProperty::Effect(effect_witness),
+            ],
+            [
+                ConsumedAncestorProperty::Effect(effect_witness),
+                ConsumedAncestorProperty::ScrollContents(scroll_witness),
+                ConsumedAncestorProperty::Transform(transform_witness),
             ],
         ] {
             assert!(ConsumedAncestorPropertyStackWitness::new(content_owner, &invalid).is_none());
@@ -4356,6 +5128,109 @@ mod consumed_ancestor_property_tests {
         assert_eq!(
             mismatch.project_consumed_ancestor_property(PropertyTreeState::default()),
             None
+        );
+    }
+
+    #[test]
+    fn same_owner_transform_boundary_is_typed_and_cannot_masquerade_as_ancestor() {
+        let (owner, child, descendant) = keys();
+        let transform = TransformNodeId(owner);
+        assert!(ConsumedAncestorTransformWitness::new(owner, owner, transform).is_none());
+        assert!(
+            ConsumedSameOwnerTransformBoundaryWitness::new(owner, TransformNodeId(child)).is_none()
+        );
+        let witness = ConsumedSameOwnerTransformBoundaryWitness::new(owner, transform).unwrap();
+        assert!(
+            ConsumedAncestorPropertyStackWitness::new(
+                child,
+                &[ConsumedAncestorProperty::SameOwnerTransformBoundary(
+                    witness
+                )]
+            )
+            .is_none()
+        );
+
+        let live = PropertyTreeState {
+            transform: Some(transform),
+            ..Default::default()
+        };
+        let wrong_target = PaintRecordingContext {
+            recording_owner: Some(child),
+            consumed_ancestor_property: Some(ConsumedAncestorProperty::SameOwnerTransformBoundary(
+                witness.for_target(descendant),
+            )),
+            ..Default::default()
+        };
+        assert_eq!(wrong_target.project_consumed_ancestor_property(live), None);
+
+        let exact = PaintRecordingContext {
+            recording_owner: Some(child),
+            consumed_ancestor_property: Some(ConsumedAncestorProperty::SameOwnerTransformBoundary(
+                witness.for_target(child),
+            )),
+            ..Default::default()
+        };
+        assert_eq!(
+            exact.project_consumed_ancestor_property(live),
+            Some(PropertyTreeState::default())
+        );
+    }
+
+    #[test]
+    fn deferred_effect_authority_requires_late_phase_clip_and_exact_effect() {
+        let (owner, other, _) = keys();
+        let stable_id = 0xde_fe01;
+        let clip = ClipNodeSnapshot {
+            id: ClipNodeId {
+                owner,
+                role: ClipNodeRole::SelfClip,
+            },
+            owner,
+            parent: None,
+            behavior: ClipBehavior::Replace,
+            logical_scissor: [0, 0, 40, 30],
+            generation: 7,
+        };
+        let clip_witness =
+            PaintDeferredViewportSelfClipWitness::new(owner, stable_id, clip, clip.logical_scissor)
+                .unwrap();
+        let effect = EffectNodeSnapshot {
+            id: EffectNodeId(owner),
+            owner,
+            parent: None,
+            opacity: 0.5,
+            generation: 8,
+        };
+        let witness = PaintDeferredViewportEffectWitness::new(clip_witness, effect).unwrap();
+        assert!(
+            PaintDeferredViewportEffectWitness::new(
+                clip_witness,
+                EffectNodeSnapshot {
+                    id: EffectNodeId(other),
+                    owner: other,
+                    ..effect
+                }
+            )
+            .is_none()
+        );
+
+        let normal_phase = PaintRecordingContext {
+            recording_owner: Some(owner),
+            recording_owner_stable_id: Some(stable_id),
+            authoritative_self_clip: Some(clip.id),
+            deferred_viewport_self_clip: Some(clip_witness),
+            opacity_authority: PaintOpacityAuthority::NeutralRootEffect(effect.id),
+            ..Default::default()
+        };
+        assert!(!normal_phase.authorizes_deferred_viewport_effect_for(stable_id, effect.id));
+
+        let late_phase = PaintRecordingContext {
+            deferred_viewport_effect: Some(witness),
+            ..normal_phase
+        };
+        assert!(late_phase.authorizes_deferred_viewport_effect_for(stable_id, effect.id));
+        assert!(
+            !late_phase.authorizes_deferred_viewport_effect_for(stable_id, EffectNodeId(other))
         );
     }
 }

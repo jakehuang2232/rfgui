@@ -79,6 +79,12 @@ pub(crate) struct NestedScrollContentReceiverCutout {
     pub(super) witness: super::PaintNestedScrollContentWitness,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NativeScrollContentReceiverCutout {
+    pub(super) stable_id: u64,
+    pub(super) witness: super::PaintScrollForestEdgeWitness,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum PaintCoverageItem {
     ArtifactChunk {
@@ -116,6 +122,10 @@ pub(crate) enum PaintCoverageItem {
     NestedScrollContentReceiver {
         order: CoverageOrder,
         cutout: NestedScrollContentReceiverCutout,
+    },
+    NativeScrollContentReceiver {
+        order: CoverageOrder,
+        cutout: NativeScrollContentReceiverCutout,
     },
 }
 
@@ -238,6 +248,9 @@ impl PaintCoverageManifest {
                 PaintCoverageItem::NestedScrollContentReceiver { cutout, .. } => {
                     nodes.insert(cutout.witness.content_root());
                 }
+                PaintCoverageItem::NativeScrollContentReceiver { cutout, .. } => {
+                    nodes.insert(cutout.witness.content_root());
+                }
             }
         }
         let legacy_nodes = self
@@ -321,15 +334,9 @@ pub(super) fn exact_deferred_viewport_self_clip_witness(
 ) -> Option<super::PaintDeferredViewportSelfClipWitness> {
     let node = arena.get(owner)?;
     let stable_id = node.element.stable_id();
-    let element = node
+    let logical_scissor = node
         .element
-        .as_any()
-        .downcast_ref::<crate::view::base_component::Element>()?;
-    let logical_scissor = element.exact_deferred_viewport_root_self_clip_scissor_rect(
-        owner,
-        arena,
-        arena.parent_of(owner).is_none(),
-    )?;
+        .exact_retained_deferred_viewport_self_clip_scissor_rect(owner, arena)?;
     let id = ClipNodeId {
         owner,
         role: crate::view::compositor::property_tree::ClipNodeRole::SelfClip,
@@ -345,17 +352,18 @@ pub(super) fn exact_deferred_viewport_self_clip_witness(
         effect: Some(effect_id),
         ..Default::default()
     };
-    let exact_root_transparency = property_trees
+    let exact_root_effect = property_trees
         .effects
         .get(&effect_id)
         .is_some_and(|effect| {
             effect.owner == owner
                 && effect.parent.is_none()
-                && effect.opacity.to_bits() == 0.0_f32.to_bits()
+                && effect.opacity.is_finite()
+                && (0.0..=1.0).contains(&effect.opacity)
                 && effect.generation != 0
         });
     let state_is_exact = (state.paint == exact_clip_state && state.descendants == exact_clip_state)
-        || (exact_root_transparency
+        || (exact_root_effect
             && state.paint == exact_clip_effect_state
             && state.descendants == exact_clip_effect_state);
     if !state_is_exact {
@@ -474,6 +482,7 @@ pub(super) fn record_coverage_manifest_with_property_authorities(
         effect_surface_authority,
         planned_boundary_cutouts,
         None,
+        None,
     )
 }
 
@@ -529,6 +538,7 @@ pub(super) fn record_coverage_manifest_with_nested_scroll_receiver(
         None,
         &PlannedBoundaryCutoutSet::default(),
         Some(receiver),
+        None,
     )
 }
 
@@ -554,6 +564,33 @@ pub(super) fn record_retained_coverage_manifest_with_nested_scroll_receiver(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) fn record_retained_coverage_manifest_with_native_scroll_receiver(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    recording_mode: CoverageRecordingMode,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    initial_recording_context: PaintRecordingContext,
+    receiver: NativeScrollContentReceiverCutout,
+) -> PaintCoverageManifest {
+    record_coverage_manifest_with_property_authorities_impl(
+        arena,
+        roots,
+        false,
+        true,
+        recording_mode,
+        property_trees,
+        paint_generations,
+        initial_recording_context,
+        None,
+        None,
+        &PlannedBoundaryCutoutSet::default(),
+        None,
+        Some(receiver),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn record_coverage_manifest_with_property_authorities_impl(
     arena: &NodeArena,
     roots: &[NodeKey],
@@ -567,6 +604,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
     effect_surface_authority: Option<&super::EffectPropertySurfaceArtifactContract>,
     planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
     nested_scroll_receiver: Option<NestedScrollContentReceiverCutout>,
+    native_scroll_receiver: Option<NativeScrollContentReceiverCutout>,
 ) -> PaintCoverageManifest {
     let mut manifest = PaintCoverageManifest::default();
     let mut seen_keys = FxHashSet::default();
@@ -649,6 +687,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
         consumed_ancestor_property_stack: Option<super::ConsumedAncestorPropertyStackWitness>,
         nested_scroll_content: Option<super::PaintNestedScrollContentWitness>,
         nested_scroll_host: Option<super::PaintNestedScrollContentWitness>,
+        scroll_forest_host: Option<super::PaintScrollForestEdgeWitness>,
         scroll_text_area_subtree: Option<super::PaintScrollTextAreaSubtreeWitness>,
         baked_scroll_text_area_subtree: Option<super::PaintScrollTextAreaSubtreeWitness>,
         scroll_atomic_projection_text_area_subtree:
@@ -663,6 +702,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
         opacity_authority: super::PaintOpacityAuthority,
         planned_boundary_cutouts: &'a PlannedBoundaryCutoutSet,
         nested_scroll_receiver: Option<NestedScrollContentReceiverCutout>,
+        native_scroll_receiver: Option<NativeScrollContentReceiverCutout>,
         items: &'a mut Vec<PaintCoverageItem>,
         validation_errors: &'a mut Vec<PaintCoverageValidationError>,
     }
@@ -749,6 +789,21 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 }
                 self.items
                     .push(PaintCoverageItem::NestedScrollContentReceiver { order, cutout });
+                return;
+            }
+            if let Some(cutout) = self.native_scroll_receiver
+                && key == cutout.witness.content_root()
+            {
+                if cutout.stable_id != stable_id
+                    || self.owner_parents.get(&key).copied().flatten()
+                        != Some(cutout.witness.boundary_root())
+                {
+                    self.validation_errors
+                        .push(PaintCoverageValidationError::InvalidPlannedBoundary(key));
+                    return;
+                }
+                self.items
+                    .push(PaintCoverageItem::NativeScrollContentReceiver { order, cutout });
                 return;
             }
             if let Some(boundary) = self.planned_boundary_cutouts.get(&key) {
@@ -859,6 +914,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 .map(|witness| witness.for_target(key));
             recording_context.nested_scroll_content = self.nested_scroll_content;
             recording_context.nested_scroll_host = self.nested_scroll_host;
+            recording_context.scroll_forest_host = self.scroll_forest_host;
             recording_context.scroll_text_area_subtree = self
                 .scroll_text_area_subtree
                 .map(|witness| witness.for_target(key));
@@ -969,9 +1025,16 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 .properties
                 .authoritative_self_clip_for_owner(key, live_properties);
             recording_context.deferred_viewport_self_clip = None;
+            recording_context.deferred_viewport_effect = None;
             if deferred_phase_root {
-                recording_context.deferred_viewport_self_clip =
+                let clip =
                     exact_deferred_viewport_self_clip_witness(self.arena, key, self.properties);
+                recording_context.deferred_viewport_self_clip = clip;
+                recording_context.deferred_viewport_effect = clip.and_then(|clip| {
+                    let contract = self.effect_surface_authority?;
+                    (contract.boundary_root() == key).then_some(())?;
+                    super::PaintDeferredViewportEffectWitness::new(clip, contract.isolated_leaf())
+                });
             }
             match node.element.shadow_paint_recording_capability(
                 self.arena,
@@ -1026,6 +1089,20 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     }
                 }
                 ShadowPaintRecordingCapability::Recordable => {
+                    let retained_child_mask = node
+                        .element
+                        .retained_child_mask_plan(self.arena, recording_context);
+                    if retained_child_mask.as_ref().is_some_and(|mask| {
+                        !mask.is_canonical_for_children(node.element.children())
+                    }) {
+                        self.push_legacy_boundary(
+                            key,
+                            stable_id,
+                            LegacyPaintReason::ChildClip,
+                            order,
+                        );
+                        return;
+                    }
                     let plan = match self.recording_mode {
                         CoverageRecordingMode::MetadataOnly => {
                             let Some(plan) = node.element.record_shadow_paint_metadata_plan(
@@ -1140,7 +1217,20 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     };
                     self.items.extend(before_children);
                     let children = node.element.children().to_vec();
-                    for (index, child) in children.into_iter().enumerate() {
+                    let in_scope_children = retained_child_mask
+                        .as_ref()
+                        .map_or(children.as_slice(), |mask| mask.in_scope_children());
+                    for &child in in_scope_children {
+                        let Some(index) = children.iter().position(|candidate| *candidate == child)
+                        else {
+                            self.push_legacy_boundary(
+                                key,
+                                stable_id,
+                                LegacyPaintReason::ChildClip,
+                                order.clone(),
+                            );
+                            return;
+                        };
                         let child_recording_context =
                             node.element.shadow_paint_recording_context_for_child(
                                 child,
@@ -1152,6 +1242,30 @@ fn record_coverage_manifest_with_property_authorities_impl(
                         path.pop();
                     }
                     self.items.extend(after_children);
+                    if let Some(mask) = retained_child_mask {
+                        for &child in mask.overflow_children() {
+                            let Some(index) =
+                                children.iter().position(|candidate| *candidate == child)
+                            else {
+                                self.push_legacy_boundary(
+                                    key,
+                                    stable_id,
+                                    LegacyPaintReason::ChildClip,
+                                    order.clone(),
+                                );
+                                return;
+                            };
+                            let child_recording_context =
+                                node.element.shadow_paint_recording_context_for_child(
+                                    child,
+                                    self.arena,
+                                    recording_context,
+                                );
+                            path.push(index);
+                            self.walk(child, root_index, path, false, child_recording_context);
+                            path.pop();
+                        }
+                    }
                 }
             }
         }
@@ -1460,6 +1574,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
             .consumed_ancestor_property_stack,
         nested_scroll_content: initial_recording_context.nested_scroll_content,
         nested_scroll_host: initial_recording_context.nested_scroll_host,
+        scroll_forest_host: initial_recording_context.scroll_forest_host,
         scroll_text_area_subtree: initial_recording_context.scroll_text_area_subtree,
         baked_scroll_text_area_subtree: initial_recording_context.baked_scroll_text_area_subtree,
         scroll_atomic_projection_text_area_subtree: initial_recording_context
@@ -1475,6 +1590,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
         opacity_authority: initial_recording_context.opacity_authority,
         planned_boundary_cutouts,
         nested_scroll_receiver,
+        native_scroll_receiver,
         items: &mut manifest.items,
         validation_errors: &mut manifest.validation_errors,
     };
@@ -1502,6 +1618,17 @@ fn record_coverage_manifest_with_property_authorities_impl(
     if let Some(receiver) = nested_scroll_receiver
         && !manifest.items.iter().any(|item| {
             matches!(item, PaintCoverageItem::NestedScrollContentReceiver { cutout, .. } if *cutout == receiver)
+        })
+    {
+        manifest
+            .validation_errors
+            .push(PaintCoverageValidationError::InvalidPlannedBoundary(
+                receiver.witness.content_root(),
+            ));
+    }
+    if let Some(receiver) = native_scroll_receiver
+        && !manifest.items.iter().any(|item| {
+            matches!(item, PaintCoverageItem::NativeScrollContentReceiver { cutout, .. } if *cutout == receiver)
         })
     {
         manifest

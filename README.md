@@ -92,6 +92,8 @@ Key files:
 
 ## Custom Components
 
+Before implementing a custom host, read the normative [RetainedAuto Mode Contract](RETAINED_AUTO.md) and the practical [Custom components under RetainedAuto](CUSTOM_RETAINED_COMPONENTS.md) guide. A custom GPU `Renderable::build` path remains Legacy-only until RFGUI has a complete engine-owned typed recorder/compiler/transaction contract for it.
+
 ### 1) `#[component]` reusable composition
 
 ```rust

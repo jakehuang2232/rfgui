@@ -129,22 +129,19 @@ impl Element {
         self.absolute_clip_scissor_rect()
     }
 
-    /// Exact first retained slice for a viewport-clipped absolute leaf that
-    /// is itself a frame root. The DOM walk omits this node from its authored
-    /// position and records it once in the deferred root phase, so admitting
-    /// descendants or an inherited frame-root relationship here would lose
-    /// the legacy ordering/clip proof.
+    /// Exact retained self-clip for a viewport-clipped absolute node.
+    ///
+    /// The authored-tree walk omits this complete subtree at its original
+    /// position and the deferred late-phase DFS records it once. Descendants
+    /// remain in that late subtree; nested viewport-deferred descendants are
+    /// cut out again and emitted as their own later roots in document order.
     pub(crate) fn exact_deferred_viewport_root_self_clip_scissor_rect(
         &self,
-        owner: crate::view::node_arena::NodeKey,
-        arena: &crate::view::node_arena::NodeArena,
-        is_frame_root: bool,
+        _owner: crate::view::node_arena::NodeKey,
+        _arena: &crate::view::node_arena::NodeArena,
+        _is_frame_root: bool,
     ) -> Option<[u32; 4]> {
-        if !is_frame_root
-            || arena.parent_of(owner).is_some()
-            || !arena.children_of(owner).is_empty()
-            || !self.children.is_empty()
-            || self.computed_style.position.mode() != PositionMode::Absolute
+        if self.computed_style.position.mode() != PositionMode::Absolute
             || self.computed_style.position.clip_mode() != ClipMode::Viewport
             || !self.should_append_to_root_viewport_render()
         {
@@ -179,8 +176,10 @@ impl Element {
         if parent_node.children() != parent_node.element.children() {
             return None;
         }
-        let parent = parent_node.element.as_any().downcast_ref::<Element>()?;
-        if parent.is_fragmentable_inline_element() || parent.inline_ifc_owned_by_root {
+        if !parent_node
+            .element
+            .retains_absolute_clip_child_phase_order()
+        {
             return None;
         }
 
@@ -191,22 +190,15 @@ impl Element {
                 true
             } else {
                 let child_node = arena.get(child)?;
-                if child_node.element.is_deferred_to_root_viewport_render() {
-                    return None;
-                }
-                match child_node.element.as_any().downcast_ref::<Element>() {
-                    Some(child)
-                        if child.computed_style.position.mode() == PositionMode::Absolute =>
-                    {
-                        match child.computed_style.position.clip_mode() {
-                            ClipMode::Parent => false,
-                            ClipMode::AnchorParent => true,
-                            // Viewport children leave the normal frame walk and
-                            // are therefore not covered by this ordering proof.
-                            ClipMode::Viewport => return None,
-                        }
-                    }
-                    _ => false,
+                match child_node
+                    .element
+                    .retained_absolute_clip_mode_witness(child, arena)
+                {
+                    RetainedAbsoluteClipModeWitness::Normal => false,
+                    RetainedAbsoluteClipModeWitness::AnchorParentEscape => true,
+                    // Viewport children leave the normal frame walk and are
+                    // therefore not covered by this ordering proof.
+                    RetainedAbsoluteClipModeWitness::ViewportDeferred => return None,
                 }
             };
             if child == owner {
@@ -389,12 +381,7 @@ impl Element {
             let Some(child_node) = arena.get(*child_key) else {
                 continue;
             };
-            if child_node
-                .element
-                .as_any()
-                .downcast_ref::<Element>()
-                .is_some_and(Element::should_append_to_root_viewport_render)
-            {
+            if child_node.element.is_deferred_to_root_viewport_render() {
                 continue;
             }
             let snapshot = child_node.element.box_model_snapshot();

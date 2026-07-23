@@ -156,6 +156,7 @@ pub enum DebugFramePaintAuthority {
     RetainedEffectSurface,
     RetainedScrollHost,
     RetainedScrollScene,
+    NativeScrollForest,
 }
 
 #[non_exhaustive]

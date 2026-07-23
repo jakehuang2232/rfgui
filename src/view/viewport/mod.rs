@@ -936,6 +936,7 @@ mod root_effect_retained_tests {
                         chunks: vec![chunk],
                         op_count: 1,
                         opaque_order_span: 0..1,
+                        scroll_placement_normalized_owners: Vec::new(),
                     },
                     0..1,
                 )
@@ -1185,6 +1186,7 @@ mod retained_surface_state_tests {
                     chunks: chunks.clone(),
                     op_count: 1,
                     opaque_order_span: 0..1,
+                    scroll_placement_normalized_owners: Vec::new(),
                 },
             ),
         ];
@@ -1218,6 +1220,7 @@ mod retained_surface_state_tests {
             atomic_projection_text_area_resident: None,
             scroll_host: None,
             property_effect: None,
+            native_scroll_children: Vec::new(),
         }
     }
 
