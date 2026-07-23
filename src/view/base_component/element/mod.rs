@@ -74,7 +74,8 @@ include!("impl_render.rs");
 include!("impl_layout.rs");
 include!("helpers.rs");
 include!("event_handler_props.rs");
-include!("tests.rs");
+#[cfg(test)]
+mod tests;
 
 use crate::time::{Duration, Instant};
 
@@ -256,8 +257,9 @@ pub enum ScrollAxisSnapshot {
 
 /// Exact logical contents clip observed from the legacy layout/paint path.
 ///
-/// M10E0 only admits rectangular scissor-backed scroll containers. Rounded
-/// stencil clips remain unsupported rather than being approximated here.
+/// The contents-clip witness remains the exact rectangular scrollport
+/// scissor. A rounded scroll host carries its corner geometry separately in
+/// the retained child-mask grammar, rather than approximating it here.
 #[doc(hidden)]
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -352,6 +354,55 @@ pub(crate) fn canonical_vertical_scrollbar_geometry(
             y: track.y + thumb_offset,
             width: track.width,
             height: thumb_h,
+        },
+    ))
+}
+
+/// Reconstructs the exact legacy horizontal scrollbar geometry without
+/// reading element state or wall-clock time. `configured_axis` decides
+/// whether this overlay exists; it never masks the synchronized X offset.
+pub(crate) fn canonical_horizontal_scrollbar_geometry(
+    viewport: Rect,
+    content_width: f32,
+    scroll_offset_x: f32,
+    reserve_vertical_scrollbar: bool,
+) -> Option<(Rect, Rect)> {
+    let max_scroll_x = (content_width - viewport.width).max(0.0);
+    if max_scroll_x <= 0.0 {
+        return None;
+    }
+    let reserve_v = if reserve_vertical_scrollbar {
+        SCROLLBAR_THICKNESS + SCROLLBAR_MARGIN
+    } else {
+        0.0
+    };
+    let track_x = viewport.x + SCROLLBAR_MARGIN;
+    let track_y = viewport.y + viewport.height - SCROLLBAR_THICKNESS - SCROLLBAR_MARGIN;
+    let track_w = (viewport.width - SCROLLBAR_MARGIN * 2.0 - reserve_v).max(0.0);
+    if track_w <= 0.0 {
+        return None;
+    }
+    let track = Rect {
+        x: track_x,
+        y: track_y,
+        width: track_w,
+        height: SCROLLBAR_THICKNESS,
+    };
+    let ratio = (viewport.width / content_width.max(1.0)).clamp(0.0, 1.0);
+    let thumb_w = (track_w * ratio).clamp(SCROLLBAR_MIN_THUMB.min(track_w), track_w);
+    let travel = (track_w - thumb_w).max(0.0);
+    let thumb_offset = if max_scroll_x > 0.0 {
+        (scroll_offset_x / max_scroll_x).clamp(0.0, 1.0) * travel
+    } else {
+        0.0
+    };
+    Some((
+        track,
+        Rect {
+            x: track.x + thumb_offset,
+            y: track.y,
+            width: thumb_w,
+            height: track.height,
         },
     ))
 }
@@ -513,6 +564,42 @@ pub(crate) struct RetainedNestedScrollSceneAdmissionSnapshot {
     pub(crate) inner_source_bounds: RetainedSurfaceBounds,
     pub(crate) outer_scroll: ScrollGeometrySnapshot,
     pub(crate) inner_scroll: ScrollGeometrySnapshot,
+}
+
+/// Boundary-local admission used by the arbitrary-depth native scroll forest.
+///
+/// Unlike `RetainedNestedScrollSceneAdmissionSnapshot`, this witness does not
+/// encode a fixed outer/inner pair.  The planner assigns dense boundary ids,
+/// discovers the nearest scroll ancestor through property-neutral wrappers,
+/// and seals the complete forest as one authority.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RetainedScrollForestHostAdmissionSnapshot {
+    pub(crate) boundary_root: NodeKey,
+    pub(crate) stable_id: u64,
+    pub(crate) content_root: NodeKey,
+    pub(crate) content_root_stable_id: u64,
+    pub(crate) source_bounds: RetainedSurfaceBounds,
+    pub(crate) scroll: ScrollGeometrySnapshot,
+}
+
+impl RetainedScrollForestHostAdmissionSnapshot {
+    pub(crate) fn bitwise_eq(self, other: Self) -> bool {
+        self.boundary_root == other.boundary_root
+            && self.stable_id == other.stable_id
+            && self.content_root == other.content_root
+            && self.content_root_stable_id == other.content_root_stable_id
+            && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
+            && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
+    }
+
+    pub(crate) fn matches_scroll_node(
+        self,
+        snapshot: crate::view::compositor::property_tree::ScrollNodeSnapshot,
+    ) -> bool {
+        snapshot.id.0 == self.boundary_root
+            && snapshot.owner == self.boundary_root
+            && scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
+    }
 }
 
 impl RetainedNestedScrollSceneAdmissionSnapshot {
@@ -864,6 +951,21 @@ fn is_exact_retained_nested_scroll_content_leaf(
             ),
             ShadowPaintRecordingCapability::Recordable
         )
+}
+
+/// Closed native corpus used while sealing an arbitrary-depth scroll forest.
+/// Interior `Element`s are property-neutral wrappers; terminal component
+/// leaves reuse the same strict native payload admission as the fixed nested
+/// oracle. Scroll hosts themselves are admitted separately.
+pub(crate) fn is_exact_retained_scroll_forest_content_node(
+    element: &dyn ElementTrait,
+    arena: &NodeArena,
+) -> bool {
+    if let Some(element) = element.as_any().downcast_ref::<Element>() {
+        return element.is_exact_retained_scroll_content_leaf()
+            || element.is_exact_retained_scroll_forest_neutral_wrapper();
+    }
+    is_exact_retained_nested_scroll_content_leaf(element, arena)
 }
 
 /// Typed result of observing a declared scroll host.
@@ -1935,7 +2037,7 @@ impl UiBuildContext {
         }
     }
 
-    fn current_clip_id(&self) -> u8 {
+    pub(crate) fn current_clip_id(&self) -> u8 {
         self.state.clip_id_stack.last().copied().unwrap_or(0)
     }
 
@@ -2998,6 +3100,19 @@ mod retained_paint_properties_tests {
     }
 }
 
+/// Exact native classification used by retained traversal when an authored
+/// child may escape its immediate parent's clip/order phase.
+///
+/// `Normal` intentionally includes non-absolute nodes and absolute
+/// `ClipMode::Parent` nodes: both stay in the ordinary child phase.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetainedAbsoluteClipModeWitness {
+    Normal,
+    ViewportDeferred,
+    AnchorParentEscape,
+}
+
 /// Common contract implemented by every arena-backed UI component.
 ///
 /// `ElementTrait` participates in layout, input, Legacy rendering, retained
@@ -3027,6 +3142,38 @@ mod retained_paint_properties_tests {
 /// See `docs/design/retained-auto-mode-contract.md` and
 /// `docs/guides/custom-retained-components.md` for the complete v1 contract
 /// and integration guide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetainedScrollNormalizedPaintKind {
+    Element,
+    Text,
+    Image,
+    Svg,
+    TextArea,
+    TextAreaProjectionSegment,
+    TextAreaTextRun,
+    TextAreaLineBreak,
+}
+
+/// Opaque engine-native proof used by the Phase3 offset-zero stamp grammar.
+/// Third-party components can observe the return type but cannot construct a
+/// token; their default remains fail-closed until a public extension contract
+/// defines an equally strong normalized identity.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetainedScrollNormalizedPaintCapability {
+    kind: RetainedScrollNormalizedPaintKind,
+}
+
+impl RetainedScrollNormalizedPaintCapability {
+    pub(crate) const fn native(kind: RetainedScrollNormalizedPaintKind) -> Self {
+        Self { kind }
+    }
+
+    pub(crate) const fn kind(self) -> RetainedScrollNormalizedPaintKind {
+        self.kind
+    }
+}
+
 pub trait ElementTrait:
     Layoutable + EventTarget + Renderable + ElementTypeName + std::any::Any
 {
@@ -3037,6 +3184,13 @@ pub trait ElementTrait:
     /// used to reconstruct current-frame ownership when an arena `NodeKey` is
     /// available.
     fn stable_id(&self) -> u64;
+
+    #[doc(hidden)]
+    fn retained_scroll_normalized_paint_capability(
+        &self,
+    ) -> Option<RetainedScrollNormalizedPaintCapability> {
+        None
+    }
 
     /// Returns the final placed box-model observation for the current frame.
     ///
@@ -3053,6 +3207,16 @@ pub trait ElementTrait:
         RetainedPaintProperties::default()
     }
 
+    /// Whether this native host admits the exact single-root opacity artifact
+    /// contract. The viewport still validates the complete property-tree,
+    /// child topology, recording identity, resources, and generations before
+    /// selecting that authority; this capability only replaces concrete-type
+    /// dispatch at the root boundary.
+    #[doc(hidden)]
+    fn admits_exact_retained_root_opacity_artifact(&self) -> bool {
+        false
+    }
+
     /// Returns the exact native self-clip admitted by the retained property
     /// tree. Native wrappers must forward this to their embedded `Element`;
     /// custom hosts remain unsupported unless they can provide an equivalent
@@ -3064,6 +3228,50 @@ pub trait ElementTrait:
         _is_frame_root: bool,
     ) -> Option<[u32; 4]> {
         None
+    }
+
+    /// Returns the exact viewport self-clip owned by this node when it is
+    /// emitted through the deferred root-viewport phase.
+    ///
+    /// Native wrappers can inherit this default by forwarding both
+    /// [`Self::is_deferred_to_root_viewport_render`] and
+    /// [`Self::exact_retained_self_clip_scissor_rect`] to their embedded
+    /// `Element`.
+    #[doc(hidden)]
+    fn exact_retained_deferred_viewport_self_clip_scissor_rect(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> Option<[u32; 4]> {
+        self.is_deferred_to_root_viewport_render()
+            .then(|| self.exact_retained_self_clip_scissor_rect(owner, arena, false))
+            .flatten()
+    }
+
+    /// Classifies the child phase without downcasting to a concrete native
+    /// component. Native wrappers around `Element` must forward this method;
+    /// the default recognizes only the independently observable deferred
+    /// phase and otherwise stays in the normal phase.
+    #[doc(hidden)]
+    fn retained_absolute_clip_mode_witness(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> RetainedAbsoluteClipModeWitness {
+        if self.is_deferred_to_root_viewport_render() {
+            RetainedAbsoluteClipModeWitness::ViewportDeferred
+        } else {
+            let _ = (owner, arena);
+            RetainedAbsoluteClipModeWitness::Normal
+        }
+    }
+
+    /// Whether this host's ordinary-then-overflow child traversal is an exact
+    /// retained ordering witness. Native wrappers with no children need not
+    /// opt in; child-owning hosts must prove their own traversal semantics.
+    #[doc(hidden)]
+    fn retains_absolute_clip_child_phase_order(&self) -> bool {
+        false
     }
 
     fn as_any(&self) -> &dyn std::any::Any;
@@ -3177,6 +3385,16 @@ pub trait ElementTrait:
 
     #[allow(private_interfaces)]
     #[doc(hidden)]
+    fn retained_child_mask_plan(
+        &self,
+        _arena: &crate::view::node_arena::NodeArena,
+        _recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> Option<crate::view::paint::RetainedChildMaskPlan> {
+        None
+    }
+
+    #[allow(private_interfaces)]
+    #[doc(hidden)]
     fn record_shadow_paint_metadata_plan(
         &self,
         owner: crate::view::node_arena::NodeKey,
@@ -3207,10 +3425,9 @@ pub trait ElementTrait:
                     }
                     ScrollbarPaintStateWitness::OpaqueNow
                     | ScrollbarPaintStateWitness::TranslucentNow => {
-                        let overlay =
-                            crate::view::paint::PreparedScrollbarOverlayOp::from_vertical_witness(
-                                scroll.scrollbar_overlay,
-                            )?;
+                        let overlay = crate::view::paint::PreparedScrollbarOverlayOp::from_witness(
+                            scroll.scrollbar_overlay,
+                        )?;
                         crate::view::paint::PaintPayloadIdentity::prepared_scrollbar_overlay(
                             &overlay,
                         )
@@ -3236,6 +3453,23 @@ pub trait ElementTrait:
                         content_revision,
                         payload_identity,
                     });
+            }
+            if let Some(mask) = self.retained_child_mask_plan(arena, recording_context) {
+                plan.before_children.push(mask.metadata(
+                    owner,
+                    crate::view::paint::PaintNodePhase::BeforeChildren,
+                    contents_properties,
+                    content_revision,
+                ));
+                plan.after_children.insert(
+                    0,
+                    mask.metadata(
+                        owner,
+                        crate::view::paint::PaintNodePhase::AfterChildren,
+                        contents_properties,
+                        content_revision,
+                    ),
+                );
             }
             return Some(plan);
         }
@@ -3287,10 +3521,9 @@ pub trait ElementTrait:
                     ),
                     ScrollbarPaintStateWitness::OpaqueNow
                     | ScrollbarPaintStateWitness::TranslucentNow => {
-                        let overlay =
-                            crate::view::paint::PreparedScrollbarOverlayOp::from_vertical_witness(
-                                scroll.scrollbar_overlay,
-                            )?;
+                        let overlay = crate::view::paint::PreparedScrollbarOverlayOp::from_witness(
+                            scroll.scrollbar_overlay,
+                        )?;
                         let identity =
                             crate::view::paint::PaintPayloadIdentity::prepared_scrollbar_overlay(
                                 &overlay,
@@ -3334,6 +3567,23 @@ pub trait ElementTrait:
                         parent: None,
                     }],
                 });
+            }
+            if let Some(mask) = self.retained_child_mask_plan(arena, recording_context) {
+                plan.before_children.push(mask.artifact(
+                    owner,
+                    crate::view::paint::PaintNodePhase::BeforeChildren,
+                    contents_properties,
+                    content_revision,
+                ));
+                plan.after_children.insert(
+                    0,
+                    mask.artifact(
+                        owner,
+                        crate::view::paint::PaintNodePhase::AfterChildren,
+                        contents_properties,
+                        content_revision,
+                    ),
+                );
             }
             return Some(plan);
         }
@@ -3464,6 +3714,24 @@ pub trait ElementTrait:
         None
     }
 
+    /// Exact viewport-space output owned by this native host when it is
+    /// detached as a nested opacity/isolation surface.
+    ///
+    /// The default is deliberately unsupported. Built-in hosts opt in by
+    /// delegating to [`exact_native_nested_isolation_render_output_bounds`],
+    /// which proves exact retained bounds, arena ownership, and the absence
+    /// of a nested transform boundary before the effect planner can seal the
+    /// surface.
+    #[doc(hidden)]
+    fn exact_nested_isolation_render_output_bounds(
+        &self,
+        _owner: crate::view::node_arena::NodeKey,
+        _arena: &crate::view::node_arena::NodeArena,
+        _parent_snapped_paint_offset: [f32; 2],
+    ) -> Option<RetainedSurfaceBounds> {
+        None
+    }
+
     /// Compatibility-only coverage for the legacy renderer. Unknown hosts
     /// retain the historical raw-box fallback so an existing transformed
     /// ancestor does not disappear; retained planning must use the exact API
@@ -3531,6 +3799,17 @@ pub trait ElementTrait:
         // `translate_in_place`. Keeping the default opaque means a new
         // host type is correct-by-default (falls back to full re-place).
         crate::view::node_arena::PlacementEligibilityMetadata::opaque_to_translation()
+    }
+
+    /// Returns the exact sampled layout-transition state installed for the
+    /// current paint frame. `None` is the safe default for custom hosts and
+    /// for native hosts whose transition sample is dirty, stale, malformed,
+    /// or has not completed layout/placement.
+    #[doc(hidden)]
+    fn retained_sampled_layout_transition_snapshot(
+        &self,
+    ) -> Option<RetainedSampledLayoutTransitionSnapshot> {
+        None
     }
 
     /// Shift this node's already-placed absolute geometry by `(dx, dy)`
@@ -3707,6 +3986,73 @@ pub trait ElementTrait:
     ) -> crate::view::fiber_work::PropApplyOutcome {
         crate::view::fiber_work::PropApplyOutcome::CannotReset(name)
     }
+}
+
+/// Shared native-only proof for a nested opacity/isolation surface.
+///
+/// Opt-in stays explicit on [`ElementTrait`], while this helper keeps every
+/// built-in host on one bounds and ownership grammar. The effect surface may
+/// contain nested effect boundaries (the planner cuts those out), but a
+/// transform boundary requires a different raster-space contract and is
+/// therefore rejected here.
+pub(crate) fn exact_native_nested_isolation_render_output_bounds(
+    host: &dyn ElementTrait,
+    owner: crate::view::node_arena::NodeKey,
+    arena: &crate::view::node_arena::NodeArena,
+    parent_snapped_paint_offset: [f32; 2],
+) -> Option<RetainedSurfaceBounds> {
+    if arena
+        .get(owner)
+        .is_none_or(|node| node.element.stable_id() != host.stable_id())
+    {
+        return None;
+    }
+    if host.has_retained_transform_surface()
+        || parent_snapped_paint_offset
+            .iter()
+            .any(|value| !value.is_finite())
+    {
+        return None;
+    }
+
+    let mut seen = FxHashSet::default();
+    let mut stack = host
+        .children()
+        .iter()
+        .copied()
+        .map(|child| (child, Some(owner)))
+        .collect::<Vec<_>>();
+    while let Some((key, expected_parent)) = stack.pop() {
+        if !seen.insert(key) {
+            return None;
+        }
+        let node = arena.get(key)?;
+        if expected_parent.is_some_and(|parent| arena.parent_of(key) != Some(parent))
+            || node.children() != node.element.children()
+            || node.element.has_retained_transform_surface()
+        {
+            return None;
+        }
+        stack.extend(
+            node.element
+                .children()
+                .iter()
+                .copied()
+                .map(|child| (child, Some(key))),
+        );
+    }
+
+    let bounds = host.retained_transform_output_bounds(arena, parent_snapped_paint_offset)?;
+    (bounds.x.is_finite()
+        && bounds.y.is_finite()
+        && bounds.width.is_finite()
+        && bounds.height.is_finite()
+        && bounds.x >= 0.0
+        && bounds.y >= 0.0
+        && bounds.width > 0.0
+        && bounds.height > 0.0
+        && bounds.corner_radii.map(f32::to_bits) == [0.0_f32.to_bits(); 4])
+        .then_some(bounds)
 }
 
 struct PreparedCustomLeafPaint {
@@ -4245,6 +4591,22 @@ pub struct RetainedSurfaceBounds {
     pub width: f32,
     pub height: f32,
     pub corner_radii: [f32; 4],
+}
+
+/// Exact, frame-installed geometry and paint identity for one active native
+/// layout-transition sample. Property planners may admit runtime layout state
+/// only when the owning host supplies this witness; the default remains
+/// fail-closed for third-party hosts.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetainedSampledLayoutTransitionSnapshot {
+    pub(crate) stable_id: u64,
+    pub(crate) bounds_bits: [u32; 4],
+    pub(crate) visual_offset_bits: [u32; 2],
+    pub(crate) override_size_bits: [Option<u32>; 2],
+    pub(crate) target_position_bits: [Option<u32>; 2],
+    pub(crate) target_size_bits: [Option<u32>; 2],
+    pub(crate) paint_signature: u64,
 }
 
 /// Owning, backend-independent transform payload observed by the compositor.
@@ -5465,6 +5827,7 @@ pub(crate) struct ElementInlineIfcDrawRectPassMetadata {
 
 pub(crate) struct PreparedElementInlineIfcDecorationPayload {
     pub(crate) bounds: Rect,
+    pub(crate) shadows: Vec<crate::view::paint::PreparedShadowOp>,
     pub(crate) ops: Vec<crate::view::paint::PreparedInlineIfcDecorationOp>,
 }
 
@@ -5582,6 +5945,33 @@ impl Element {
             && self.opacity.to_bits() == 1.0_f32.to_bits()
             && self.scroll_direction == ScrollDirection::None
             && self.resolved_transform.is_some() == requires_transform
+            && self.box_shadows.is_empty()
+            && !self.has_active_layout_transition()
+            && !self.has_active_animator()
+            && !self.inline_ifc_owned_by_root
+            && !self.is_owning_inline_ifc_root_role()
+            && !self.is_fragmentable_inline_element()
+            && !self.should_append_to_root_viewport_render()
+            && self.absolute_clip_scissor_rect().is_none()
+            && !self.retained_paint_properties().has_rounded_clip
+            && self.computed_style.position.mode() != PositionMode::Absolute
+    }
+
+    fn is_exact_retained_scroll_forest_neutral_wrapper(&self) -> bool {
+        !self.children.is_empty()
+            && self.layout_state.should_render
+            && self.core.should_paint
+            && self.layout_state.layout_position.x.is_finite()
+            && self.layout_state.layout_position.y.is_finite()
+            && self.layout_state.layout_size.width.is_finite()
+            && self.layout_state.layout_size.height.is_finite()
+            && self.layout_state.layout_size.width > 0.0
+            && self.layout_state.layout_size.height > 0.0
+            && self.opacity.to_bits() == 1.0_f32.to_bits()
+            && self.scroll_direction == ScrollDirection::None
+            && self.scroll_offset.x.to_bits() == 0.0_f32.to_bits()
+            && self.scroll_offset.y.to_bits() == 0.0_f32.to_bits()
+            && self.resolved_transform.is_none()
             && self.box_shadows.is_empty()
             && !self.has_active_layout_transition()
             && !self.has_active_animator()
@@ -5993,6 +6383,38 @@ impl Element {
         })
     }
 
+    /// Boundary-local sibling of the fixed `S0 -> S1 -> leaf` oracle.
+    ///
+    /// The direct child may be a property-neutral wrapper containing more
+    /// scroll boundaries.  Topology, nearest-scroll ancestry and terminal
+    /// native payloads are intentionally validated by the forest planner so
+    /// this method cannot independently authorize execution.
+    pub(crate) fn exact_retained_scroll_forest_host_admission(
+        &self,
+        owner: NodeKey,
+        arena: &NodeArena,
+        scale_factor: f32,
+    ) -> Option<RetainedScrollForestHostAdmissionSnapshot> {
+        let (source_bounds, scroll, content_root) = self.exact_retained_scroll_host_shell(
+            owner,
+            arena,
+            scale_factor,
+            arena.parent_of(owner),
+        )?;
+        let content = arena.get(content_root)?;
+        if !scroll_content_bounds_match(content.element.as_ref(), scroll) {
+            return None;
+        }
+        Some(RetainedScrollForestHostAdmissionSnapshot {
+            boundary_root: owner,
+            stable_id: self.stable_id(),
+            content_root,
+            content_root_stable_id: content.element.stable_id(),
+            source_bounds,
+            scroll,
+        })
+    }
+
     /// B4-2B nested counterpart of the top-level scroll admission. The
     /// receiver relationship is explicit and exact; the older root oracle
     /// remains top-level-only and cannot be widened accidentally.
@@ -6010,6 +6432,76 @@ impl Element {
             scale_factor,
             Some(receiver),
         )
+    }
+
+    /// Exact native self-role admission for one owner that owns both the
+    /// outer transform and the scroll host. This is separate from the nested
+    /// T->S oracle so equal owners remain rejected there.
+    pub(crate) fn exact_retained_same_owner_transform_scroll_host_admission(
+        &self,
+        owner: NodeKey,
+        arena: &NodeArena,
+        scale_factor: f32,
+    ) -> Option<RetainedScrollHostAdmissionSnapshot> {
+        let (source_bounds, scroll, child) = self
+            .exact_retained_scroll_host_shell_with_property_roles(
+                owner,
+                arena,
+                scale_factor,
+                None,
+                true,
+                false,
+            )?;
+        let child_node = arena.get(child)?;
+        let child_element = child_node.element.as_any().downcast_ref::<Element>()?;
+        if !child_element.is_exact_retained_scroll_content_leaf()
+            || !scroll_content_bounds_match(child_element, scroll)
+        {
+            return None;
+        }
+        Some(RetainedScrollHostAdmissionSnapshot {
+            boundary_root: owner,
+            stable_id: self.stable_id(),
+            child,
+            child_stable_id: child_element.stable_id(),
+            source_bounds,
+            scroll,
+        })
+    }
+
+    /// Exact native self-role admission for one owner that owns both the
+    /// outer effect and the scroll host. The effect is applied only after the
+    /// complete H/C/O target has been assembled.
+    pub(crate) fn exact_retained_same_owner_effect_scroll_host_admission(
+        &self,
+        owner: NodeKey,
+        arena: &NodeArena,
+        scale_factor: f32,
+    ) -> Option<RetainedScrollHostAdmissionSnapshot> {
+        let (source_bounds, scroll, child) = self
+            .exact_retained_scroll_host_shell_with_property_roles(
+                owner,
+                arena,
+                scale_factor,
+                None,
+                false,
+                true,
+            )?;
+        let child_node = arena.get(child)?;
+        let child_element = child_node.element.as_any().downcast_ref::<Element>()?;
+        if !child_element.is_exact_retained_scroll_content_leaf()
+            || !scroll_content_bounds_match(child_element, scroll)
+        {
+            return None;
+        }
+        Some(RetainedScrollHostAdmissionSnapshot {
+            boundary_root: owner,
+            stable_id: self.stable_id(),
+            child,
+            child_stable_id: child_element.stable_id(),
+            source_bounds,
+            scroll,
+        })
     }
 
     fn exact_retained_scroll_host_admission_with_parent(
@@ -6036,6 +6528,46 @@ impl Element {
             source_bounds,
             scroll,
         })
+    }
+
+    /// Offset-zero recorder oracle for a generalized native content subtree.
+    ///
+    /// Unlike the original direct-leaf and TextArea-wrapper admissions, this
+    /// helper deliberately permits children and absolute positioning. The
+    /// typed subtree recorder remains responsible for each descendant's paint
+    /// grammar; this oracle only proves that the content root itself has a
+    /// stable, property-neutral placement from which the complete 2D scroll
+    /// offset can be normalized.
+    pub(crate) fn exact_retained_scroll_content_subtree_recording_offset(
+        &self,
+        parent_offset: [f32; 2],
+    ) -> Option<[f32; 2]> {
+        if !self.layout_state.should_render
+            || ![
+                self.layout_state.layout_position.x,
+                self.layout_state.layout_position.y,
+                self.layout_state.layout_size.width,
+                self.layout_state.layout_size.height,
+            ]
+            .into_iter()
+            .all(f32::is_finite)
+            || self.layout_state.layout_size.width <= 0.0
+            || self.layout_state.layout_size.height <= 0.0
+            || self.scroll_direction != ScrollDirection::None
+            || self.resolved_transform.is_some()
+            || self.has_active_layout_transition()
+            || self.has_active_animator()
+            || self.should_append_to_root_viewport_render()
+            || parent_offset.iter().any(|value| !value.is_finite())
+        {
+            return None;
+        }
+        let paint_x = self.layout_state.layout_position.x + parent_offset[0];
+        let paint_y = self.layout_state.layout_position.y + parent_offset[1];
+        Some([
+            parent_offset[0] + round_layout_value(paint_x) - paint_x,
+            parent_offset[1] + round_layout_value(paint_y) - paint_y,
+        ])
     }
 
     pub(crate) fn exact_retained_scroll_content_wrapper_recording_offset(
@@ -6090,16 +6622,46 @@ impl Element {
         scale_factor: f32,
         expected_parent: Option<NodeKey>,
     ) -> Option<(RetainedSurfaceBounds, ScrollGeometrySnapshot, NodeKey)> {
-        if scale_factor.to_bits() != 1.0_f32.to_bits()
+        self.exact_retained_scroll_host_shell_with_property_roles(
+            owner,
+            arena,
+            scale_factor,
+            expected_parent,
+            false,
+            false,
+        )
+    }
+
+    fn exact_retained_scroll_host_shell_with_property_roles(
+        &self,
+        owner: NodeKey,
+        arena: &NodeArena,
+        scale_factor: f32,
+        expected_parent: Option<NodeKey>,
+        require_transform_role: bool,
+        require_effect_role: bool,
+    ) -> Option<(RetainedSurfaceBounds, ScrollGeometrySnapshot, NodeKey)> {
+        let sampled_layout_transition_is_exact = !self.active_layout_transition_runtime_state()
+            || self
+                .exact_sampled_layout_transition_snapshot_for_paint_signature(
+                    self.retained_paint_signature(),
+                )
+                .is_some();
+        if !scale_factor.is_finite()
+            || scale_factor <= 0.0
             || arena.parent_of(owner) != expected_parent
             || self.children.len() != 1
-            || self.scroll_direction != ScrollDirection::Vertical
+            || self.scroll_direction == ScrollDirection::None
             || !self.layout_state.should_render
             || !self.core.should_paint
-            || self.opacity.to_bits() != 1.0_f32.to_bits()
-            || self.resolved_transform.is_some()
+            || if require_effect_role {
+                !self.opacity.is_finite() || !(0.0..=1.0).contains(&self.opacity)
+            } else {
+                self.opacity.to_bits() != 1.0_f32.to_bits()
+            }
+            || self.resolved_transform.is_some() != require_transform_role
             || !self.box_shadows.is_empty()
-            || self.has_active_layout_transition()
+            || !sampled_layout_transition_is_exact
             || self.has_active_animator()
             || self.inline_ifc_owned_by_root
             || self.is_owning_inline_ifc_root_role()
@@ -6114,26 +6676,27 @@ impl Element {
             self.layout_state.layout_size.width.max(0.0),
             self.layout_state.layout_size.height.max(0.0),
         );
-        if outer_radii.has_any_rounding() || self.inner_clip_radii(outer_radii).has_any_rounding() {
-            return None;
-        }
+        let inner_radii = self.inner_clip_radii(outer_radii);
         let source_bounds = RetainedSurfaceBounds {
             x: self.layout_state.layout_position.x,
             y: self.layout_state.layout_position.y,
             width: self.layout_state.layout_size.width,
             height: self.layout_state.layout_size.height,
-            corner_radii: [0.0; 4],
+            corner_radii: inner_radii.to_array(),
         };
-        let edges_are_integer = |rect: Rect| {
+        let edges_are_device_aligned = |rect: Rect| {
             [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height]
                 .iter()
-                .all(|value| value.is_finite() && value.fract().to_bits() == 0.0_f32.to_bits())
+                .all(|value| {
+                    let device = *value * scale_factor;
+                    device.is_finite() && device.fract().to_bits() == 0.0_f32.to_bits()
+                })
         };
         if source_bounds.x < 0.0
             || source_bounds.y < 0.0
             || source_bounds.width <= 0.0
             || source_bounds.height <= 0.0
-            || !edges_are_integer(Rect {
+            || !edges_are_device_aligned(Rect {
                 x: source_bounds.x,
                 y: source_bounds.y,
                 width: source_bounds.width,
@@ -6147,8 +6710,7 @@ impl Element {
         else {
             return None;
         };
-        if scroll.configured_axis != ScrollAxisSnapshot::Vertical
-            || !edges_are_integer(scroll.scrollport_rect)
+        if !edges_are_device_aligned(scroll.scrollport_rect)
             || !matches!(
                 scroll.scrollbar_overlay.paint_state,
                 ScrollbarPaintStateWitness::HiddenNow
@@ -7973,6 +8535,14 @@ impl ElementTrait for Element {
         self.core.id
     }
 
+    fn retained_scroll_normalized_paint_capability(
+        &self,
+    ) -> Option<RetainedScrollNormalizedPaintCapability> {
+        Some(RetainedScrollNormalizedPaintCapability::native(
+            RetainedScrollNormalizedPaintKind::Element,
+        ))
+    }
+
     fn exact_retained_self_clip_scissor_rect(
         &self,
         owner: crate::view::node_arena::NodeKey,
@@ -7987,6 +8557,25 @@ impl ElementTrait for Element {
                     is_frame_root,
                 )
             })
+    }
+
+    fn retains_absolute_clip_child_phase_order(&self) -> bool {
+        !self.is_fragmentable_inline_element() && !self.inline_ifc_owned_by_root
+    }
+
+    fn retained_absolute_clip_mode_witness(
+        &self,
+        _owner: crate::view::node_arena::NodeKey,
+        _arena: &crate::view::node_arena::NodeArena,
+    ) -> RetainedAbsoluteClipModeWitness {
+        if self.computed_style.position.mode() != PositionMode::Absolute {
+            return RetainedAbsoluteClipModeWitness::Normal;
+        }
+        match self.computed_style.position.clip_mode() {
+            ClipMode::Parent => RetainedAbsoluteClipModeWitness::Normal,
+            ClipMode::Viewport => RetainedAbsoluteClipModeWitness::ViewportDeferred,
+            ClipMode::AnchorParent => RetainedAbsoluteClipModeWitness::AnchorParentEscape,
+        }
     }
 
     fn tick_post_layout_animation_frame(&mut self, now: crate::time::Instant) -> DirtyFlags {
@@ -8009,9 +8598,15 @@ impl ElementTrait for Element {
             ScrollDirection::Both => ScrollAxisSnapshot::Both,
         };
         let geometry_dirty = DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT);
+        let sampled_layout_transition_is_exact = !self.active_layout_transition_runtime_state()
+            || self
+                .exact_sampled_layout_transition_snapshot_for_paint_signature(
+                    self.retained_paint_signature(),
+                )
+                .is_some();
         if self.dirty_flags.intersects(geometry_dirty)
             || arena.subtree_dirty_intersects(owner, geometry_dirty)
-            || self.has_active_layout_transition()
+            || !sampled_layout_transition_is_exact
             || !arena
                 .get(owner)
                 .is_some_and(|node| node.children() == self.children.as_slice())
@@ -8025,9 +8620,6 @@ impl ElementTrait for Element {
             self.layout_state.layout_size.height.max(0.0),
         );
         let inner_radii = self.inner_clip_radii(outer_radii);
-        if inner_radii.has_any_rounding() {
-            return ScrollGeometryObservation::Unsupported;
-        }
         if self.children.is_empty() {
             return ScrollGeometryObservation::Inactive;
         }
@@ -8183,9 +8775,11 @@ impl ElementTrait for Element {
                 bounds: payload.bounds,
                 properties,
                 content_revision,
-                payload_identity: crate::view::paint::PaintPayloadIdentity::inline_ifc_decorations(
-                    payload.ops.iter(),
-                ),
+                payload_identity:
+                    crate::view::paint::PaintPayloadIdentity::inline_ifc_decorations_with_shadows(
+                        payload.shadows.iter(),
+                        payload.ops.iter(),
+                    ),
             });
         }
         self.record_shadow_node_paint_metadata(
@@ -8213,14 +8807,22 @@ impl ElementTrait for Element {
                 .ok()?;
             #[cfg(test)]
             crate::view::paint::note_full_artifact_record();
-            let payload_identity = crate::view::paint::PaintPayloadIdentity::inline_ifc_decorations(
-                payload.ops.iter(),
-            );
-            let ops = payload
-                .ops
+            let payload_identity =
+                crate::view::paint::PaintPayloadIdentity::inline_ifc_decorations_with_shadows(
+                    payload.shadows.iter(),
+                    payload.ops.iter(),
+                );
+            let mut ops = payload
+                .shadows
                 .into_iter()
-                .map(crate::view::paint::PaintOp::PreparedInlineIfcDecoration)
+                .map(crate::view::paint::PaintOp::PreparedShadow)
                 .collect::<Vec<_>>();
+            ops.extend(
+                payload
+                    .ops
+                    .into_iter()
+                    .map(crate::view::paint::PaintOp::PreparedInlineIfcDecoration),
+            );
             return Some(crate::view::paint::PaintArtifact {
                 target: Default::default(),
                 chunks: vec![crate::view::paint::PaintChunk {
@@ -8262,6 +8864,15 @@ impl ElementTrait for Element {
     }
 
     #[allow(private_interfaces)]
+    fn retained_child_mask_plan(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+        recording_context: crate::view::paint::PaintRecordingContext,
+    ) -> Option<crate::view::paint::RetainedChildMaskPlan> {
+        self.prepared_retained_child_mask_plan(arena, recording_context)
+    }
+
+    #[allow(private_interfaces)]
     fn shadow_paint_recording_context(
         &self,
         mut parent: crate::view::paint::PaintRecordingContext,
@@ -8277,6 +8888,14 @@ impl ElementTrait for Element {
         &self,
     ) -> crate::view::node_arena::PlacementEligibilityMetadata {
         self.local_placement_eligibility_metadata()
+    }
+
+    fn retained_sampled_layout_transition_snapshot(
+        &self,
+    ) -> Option<RetainedSampledLayoutTransitionSnapshot> {
+        self.exact_sampled_layout_transition_snapshot_for_paint_signature(
+            self.retained_paint_signature(),
+        )
     }
 
     fn last_placement(&self) -> Option<LayoutPlacement> {
@@ -8504,6 +9123,20 @@ impl ElementTrait for Element {
         paint_offset: [f32; 2],
     ) -> Option<RetainedSurfaceBounds> {
         self.retained_transform_render_output_bounds(arena, paint_offset)
+    }
+
+    fn exact_nested_isolation_render_output_bounds(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+        parent_snapped_paint_offset: [f32; 2],
+    ) -> Option<RetainedSurfaceBounds> {
+        exact_native_nested_isolation_render_output_bounds(
+            self,
+            owner,
+            arena,
+            parent_snapped_paint_offset,
+        )
     }
 
     fn legacy_transform_output_bounds(

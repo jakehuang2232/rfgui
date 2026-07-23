@@ -5,8 +5,9 @@ use std::ops::Range;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::view::base_component::{
-    Element, RetainedNestedScrollSceneAdmissionSnapshot, RetainedScrollHostAdmissionSnapshot,
-    TransformSurfaceGeometrySnapshot,
+    Element, ElementTrait, RetainedNestedScrollSceneAdmissionSnapshot,
+    RetainedScrollForestHostAdmissionSnapshot, RetainedScrollHostAdmissionSnapshot,
+    TransformSurfaceGeometrySnapshot, is_exact_retained_scroll_forest_content_node,
 };
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipGeometry, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId,
@@ -91,6 +92,173 @@ struct PropertyScenePlanSeal {
     /// separate from B4's one-scroll grammar and cannot mint a transaction,
     /// pool action or frame-graph handle.
     nested_scroll_scaffold: Option<NestedScrollSceneScaffold>,
+    /// Arbitrary-depth/multi-root native scroll forest.  This remains a
+    /// graph-inert sibling of the fixed two-boundary oracle until its joint
+    /// compiler/pool transaction is materialized.
+    native_scroll_forest_scaffold: Option<NativeScrollForestScaffold>,
+}
+
+/// Dense forest-local scroll boundary identity.  Ordinals are assigned in
+/// scene-root DFS order and are never derived from generational `NodeKey`
+/// storage details.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct NativeScrollBoundaryId(pub(super) u32);
+
+#[derive(Clone, Debug)]
+pub(super) struct NativeScrollForestScaffold {
+    pub(super) context: TransformSurfacePlanContext,
+    pub(super) scale_factor_bits: u32,
+    pub(super) roots: Vec<NativeScrollForestRoot>,
+    pub(super) boundaries: Vec<NativeScrollForestBoundaryContract>,
+    pub(super) schedule: NativeScrollForestSchedule,
+    pub(super) programs: Vec<NativeScrollForestBoundaryProgram>,
+    planned_context: TransformSurfacePlanContext,
+    planned_scale_factor_bits: u32,
+    planned_roots: Vec<NativeScrollForestRoot>,
+    planned_boundaries: Vec<NativeScrollForestBoundaryContract>,
+    planned_schedule: NativeScrollForestSchedule,
+    planned_programs: Vec<NativeScrollForestBoundaryProgram>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct NativeScrollForestRoot {
+    pub(super) ordinal: u32,
+    pub(super) root: NodeKey,
+    pub(super) stable_id: u64,
+    pub(super) boundary_span: Range<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct NativeScrollProjectionWitness {
+    pub(super) live_input: PropertyTreeState,
+    pub(super) projected_output: PropertyTreeState,
+    pub(super) parent_scroll: Option<ScrollNodeId>,
+    pub(super) parent_clip: Option<ClipNodeId>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct NativeScrollForestBoundaryContract {
+    pub(super) id: NativeScrollBoundaryId,
+    pub(super) scene_root_ordinal: u32,
+    pub(super) boundary_root: NodeKey,
+    pub(super) stable_id: u64,
+    pub(super) parent: Option<NativeScrollBoundaryId>,
+    pub(super) admission: RetainedScrollForestHostAdmissionSnapshot,
+    pub(super) scroll: ScrollNodeSnapshot,
+    pub(super) contents_clip: ClipNodeSnapshot,
+    pub(super) projection: NativeScrollProjectionWitness,
+}
+
+impl PartialEq for NativeScrollForestBoundaryContract {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.scene_root_ordinal == other.scene_root_ordinal
+            && self.boundary_root == other.boundary_root
+            && self.stable_id == other.stable_id
+            && self.parent == other.parent
+            && self.admission.bitwise_eq(other.admission)
+            && self.scroll == other.scroll
+            && self.contents_clip == other.contents_clip
+            && self.projection == other.projection
+    }
+}
+
+impl Eq for NativeScrollForestBoundaryContract {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NativeScrollArtifactPhase {
+    HostBefore,
+    OverlayAfter,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct NativeScrollForestSchedule {
+    pub(super) steps: Vec<NativeScrollForestScheduledStep>,
+}
+
+/// Structural DFS program. `Artifact` freezes the two host artifact slots;
+/// the compiler phase will replace each slot with a sealed artifact identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum NativeScrollForestScheduledStep {
+    Artifact {
+        boundary: NativeScrollBoundaryId,
+        phase: NativeScrollArtifactPhase,
+    },
+    ChildBoundary {
+        parent: Option<NativeScrollBoundaryId>,
+        child: NativeScrollBoundaryId,
+    },
+    ContentReceiver {
+        boundary: NativeScrollBoundaryId,
+        content_root: NodeKey,
+        stable_id: u64,
+        projection: NativeScrollProjectionWitness,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct NativeScrollForestBoundaryProgram {
+    pub(super) boundary: NativeScrollBoundaryId,
+    pub(super) receiver_stable_id: u64,
+    pub(super) edge: super::PaintScrollForestEdgeWitness,
+    pub(super) host_before: NestedScrollArtifactSeal,
+    pub(super) content_steps: Vec<NativeScrollForestContentProgramStep>,
+    pub(super) overlay_after: NestedScrollArtifactSeal,
+    pub(super) compiler_stamp: super::compiler::NativeScrollForestCompilerStamp,
+    pub(super) child_dependencies: Vec<NativeScrollForestChildRasterDependency>,
+    pub(super) content_program_opaque_terminal: u32,
+}
+
+/// Exact raster dependency contributed by one child scroll boundary to its
+/// parent's offset-zero content program. Child content remains a separate
+/// resident, while H/O, final composite geometry and the live scroll edge are
+/// parent-raster identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NativeScrollForestChildRasterDependency {
+    pub(super) child: NativeScrollBoundaryId,
+    pub(super) boundary_root: NodeKey,
+    pub(super) content_root: NodeKey,
+    pub(super) content_stable_id: u64,
+    pub(super) child_raster_identity: Box<NativeScrollForestContentRasterProgramIdentity>,
+    pub(super) host_identity: PropertyScrollReceiverArtifactIdentity,
+    pub(super) overlay_identity: PropertyScrollReceiverArtifactIdentity,
+    pub(super) scroll: ScrollNodeSnapshot,
+    pub(super) contents_clip: ClipNodeSnapshot,
+    pub(super) source_bounds_bits: [u32; 4],
+    pub(super) offset_bits: [u32; 2],
+    pub(super) composite_scissor: [u32; 4],
+    pub(super) parent_opaque_before: u32,
+    pub(super) parent_opaque_after: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NativeScrollForestContentRasterProgramIdentity {
+    pub(super) content_root: NodeKey,
+    pub(super) content_stable_id: u64,
+    pub(super) artifact_span: super::compiler::RetainedSurfaceArtifactSpanStamp,
+    pub(super) opaque_terminal: u32,
+    pub(super) child_dependencies: Vec<NativeScrollForestChildRasterDependency>,
+}
+
+impl NativeScrollForestBoundaryProgram {
+    fn content_raster_identity(
+        &self,
+        content_root: NodeKey,
+    ) -> NativeScrollForestContentRasterProgramIdentity {
+        NativeScrollForestContentRasterProgramIdentity {
+            content_root,
+            content_stable_id: self.receiver_stable_id,
+            artifact_span: self.compiler_stamp.content_artifact_span.clone(),
+            opaque_terminal: self.content_program_opaque_terminal,
+            child_dependencies: self.child_dependencies.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum NativeScrollForestContentProgramStep {
+    Artifact(NestedScrollArtifactSeal),
+    ChildBoundary(NativeScrollBoundaryId),
 }
 
 #[derive(Clone, Debug)]
@@ -177,17 +345,385 @@ pub(super) struct PropertyScrollScheduleScaffold {
     pub(super) schedule: PropertySceneSchedule,
     pub(super) boundaries: Vec<PropertyScrollBoundaryContract>,
     pub(super) receiver_insertions: Vec<PropertyScrollReceiverInsertionContract>,
+    pub(super) same_owner_transform_scroll_insertions:
+        Vec<PropertySameOwnerTransformScrollReceiverInsertionContract>,
+    pub(super) same_owner_effect_scroll_insertions:
+        Vec<PropertySameOwnerEffectScrollReceiverInsertionContract>,
+    pub(super) frame_receiver_insertions: Vec<PropertyFrameScrollReceiverInsertionContract>,
     pub(super) effect_receiver_insertions: Vec<PropertyEffectScrollReceiverInsertionContract>,
     pub(super) transform_effect_receiver_insertions:
         Vec<PropertyTransformEffectScrollReceiverInsertionContract>,
+    pub(super) effect_transform_receiver_insertions:
+        Vec<PropertyEffectTransformScrollReceiverInsertionContract>,
+    pub(super) scroll_content_effect_insertions: Vec<PropertyScrollContentEffectInsertionContract>,
+    pub(super) boundary_dag: PropertyBoundaryDag,
     planned_context: TransformSurfacePlanContext,
     planned_roots: Vec<PropertyScrollScheduleRoot>,
     planned_schedule: PropertySceneSchedule,
     planned_boundaries: Vec<PropertyScrollBoundaryContract>,
     planned_receiver_insertions: Vec<PropertyScrollReceiverInsertionContract>,
+    planned_same_owner_transform_scroll_insertions:
+        Vec<PropertySameOwnerTransformScrollReceiverInsertionContract>,
+    planned_same_owner_effect_scroll_insertions:
+        Vec<PropertySameOwnerEffectScrollReceiverInsertionContract>,
+    planned_frame_receiver_insertions: Vec<PropertyFrameScrollReceiverInsertionContract>,
     planned_effect_receiver_insertions: Vec<PropertyEffectScrollReceiverInsertionContract>,
     planned_transform_effect_receiver_insertions:
         Vec<PropertyTransformEffectScrollReceiverInsertionContract>,
+    planned_effect_transform_receiver_insertions:
+        Vec<PropertyEffectTransformScrollReceiverInsertionContract>,
+    planned_scroll_content_effect_insertions: Vec<PropertyScrollContentEffectInsertionContract>,
+    planned_boundary_dag: PropertyBoundaryDag,
+}
+
+/// Typed projection of the already-admitted property/scroll path grammar.
+///
+/// Unlike `PropertySceneSchedule`, receiver scope is explicit: a boundary may
+/// target the frame, another retained surface, or (for a later grammar slice)
+/// a scroll boundary's detached-content scope. Phase 0 projects only the
+/// existing S, T->S, E->S and T->E->S shapes; `ScrollContent` is sealed now so
+/// adding a post-scroll property later cannot silently reuse `FrameRoot`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyBoundaryDag {
+    pub(super) roots: Vec<PropertyBoundaryDagRoot>,
+    pub(super) nodes: Vec<PropertyBoundaryDagNode>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PropertyBoundaryDagGrammar {
+    FrameRootScroll,
+    TransformScroll,
+    EffectScroll,
+    TransformEffectScroll,
+    EffectTransformScroll,
+    ScrollEffect,
+    TransformScrollEffect,
+}
+
+impl PropertyBoundaryDag {
+    /// Classifies only the four grammars already executable before the DAG
+    /// projection. Empty roots are accepted solely as siblings of the
+    /// frame-root S grammar; every surface grammar remains exact and
+    /// homogeneous across the forest.
+    pub(super) fn existing_grammar(&self) -> Option<PropertyBoundaryDagGrammar> {
+        let mut grammar = None;
+        let mut saw_empty_root = false;
+        for root in &self.roots {
+            let nodes = self.nodes.get(root.node_span.clone())?;
+            let root_grammar = match nodes {
+                [] => {
+                    saw_empty_root = true;
+                    continue;
+                }
+                [
+                    PropertyBoundaryDagNode {
+                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                        ..
+                    },
+                ] => PropertyBoundaryDagGrammar::FrameRootScroll,
+                [
+                    PropertyBoundaryDagNode {
+                        id: outer_id,
+                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                        kind: PropertyBoundaryDagNodeKind::Transform(_),
+                        ..
+                    },
+                    PropertyBoundaryDagNode {
+                        receiver: PropertyBoundaryReceiverScope::Surface(receiver),
+                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                        ..
+                    },
+                ] if receiver == outer_id => PropertyBoundaryDagGrammar::TransformScroll,
+                [
+                    PropertyBoundaryDagNode {
+                        id: outer_id,
+                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                        kind: PropertyBoundaryDagNodeKind::Effect(_),
+                        ..
+                    },
+                    PropertyBoundaryDagNode {
+                        receiver: PropertyBoundaryReceiverScope::Surface(receiver),
+                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                        ..
+                    },
+                ] if receiver == outer_id => PropertyBoundaryDagGrammar::EffectScroll,
+                [
+                    PropertyBoundaryDagNode {
+                        id: transform_id,
+                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                        kind: PropertyBoundaryDagNodeKind::Transform(_),
+                        ..
+                    },
+                    PropertyBoundaryDagNode {
+                        id: effect_id,
+                        receiver: PropertyBoundaryReceiverScope::Surface(effect_receiver),
+                        kind: PropertyBoundaryDagNodeKind::Effect(_),
+                        ..
+                    },
+                    PropertyBoundaryDagNode {
+                        receiver: PropertyBoundaryReceiverScope::Surface(scroll_receiver),
+                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                        ..
+                    },
+                ] if effect_receiver == transform_id && scroll_receiver == effect_id => {
+                    PropertyBoundaryDagGrammar::TransformEffectScroll
+                }
+                [
+                    PropertyBoundaryDagNode {
+                        id: effect_id,
+                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                        kind: PropertyBoundaryDagNodeKind::Effect(_),
+                        ..
+                    },
+                    PropertyBoundaryDagNode {
+                        id: transform_id,
+                        receiver: PropertyBoundaryReceiverScope::Surface(transform_receiver),
+                        kind: PropertyBoundaryDagNodeKind::Transform(_),
+                        ..
+                    },
+                    PropertyBoundaryDagNode {
+                        receiver: PropertyBoundaryReceiverScope::Surface(scroll_receiver),
+                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                        ..
+                    },
+                ] if transform_receiver == effect_id && scroll_receiver == transform_id => {
+                    PropertyBoundaryDagGrammar::EffectTransformScroll
+                }
+                [
+                    PropertyBoundaryDagNode {
+                        id: scroll_id,
+                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                        ..
+                    },
+                    PropertyBoundaryDagNode {
+                        receiver: PropertyBoundaryReceiverScope::ScrollContent(receiver),
+                        kind: PropertyBoundaryDagNodeKind::Effect(_),
+                        ..
+                    },
+                ] if receiver == scroll_id => PropertyBoundaryDagGrammar::ScrollEffect,
+                [
+                    PropertyBoundaryDagNode {
+                        id: transform_id,
+                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                        kind: PropertyBoundaryDagNodeKind::Transform(_),
+                        ..
+                    },
+                    PropertyBoundaryDagNode {
+                        id: scroll_id,
+                        receiver: PropertyBoundaryReceiverScope::Surface(receiver),
+                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                        ..
+                    },
+                    PropertyBoundaryDagNode {
+                        receiver: PropertyBoundaryReceiverScope::ScrollContent(content_receiver),
+                        kind: PropertyBoundaryDagNodeKind::Effect(_),
+                        ..
+                    },
+                ] if receiver == transform_id && content_receiver == scroll_id => {
+                    PropertyBoundaryDagGrammar::TransformScrollEffect
+                }
+                _ => return None,
+            };
+            if grammar
+                .replace(root_grammar)
+                .is_some_and(|seen| seen != root_grammar)
+            {
+                return None;
+            }
+        }
+        let grammar = grammar?;
+        if saw_empty_root && grammar != PropertyBoundaryDagGrammar::FrameRootScroll {
+            return None;
+        }
+        Some(grammar)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyBoundaryDagRoot {
+    pub(super) scene_root_ordinal: u32,
+    pub(super) root: NodeKey,
+    pub(super) stable_id: u64,
+    pub(super) node_span: Range<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct PropertyBoundaryDagNodeId(pub(super) u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PropertyBoundaryReceiverScope {
+    FrameRoot { scene_root_ordinal: u32 },
+    Surface(PropertyBoundaryDagNodeId),
+    ScrollContent(PropertyBoundaryDagNodeId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PropertyBoundaryDagNodeKind {
+    Transform(TransformNodeSnapshot),
+    Effect(EffectNodeSnapshot),
+    Scroll(PropertyScrollBoundaryContract),
+}
+
+impl PropertyBoundaryDagNodeKind {
+    fn owner(&self) -> NodeKey {
+        match self {
+            Self::Transform(snapshot) => snapshot.owner,
+            Self::Effect(snapshot) => snapshot.owner,
+            Self::Scroll(boundary) => boundary.scroll.owner,
+        }
+    }
+
+    fn planned_boundary(&self) -> super::PlannedBoundaryKind {
+        match self {
+            Self::Transform(snapshot) => super::PlannedBoundaryKind::Transform(snapshot.id),
+            Self::Effect(snapshot) => super::PlannedBoundaryKind::Isolation(snapshot.id),
+            Self::Scroll(boundary) => super::PlannedBoundaryKind::Scroll(boundary.scroll.id),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyBoundaryDagNode {
+    pub(super) id: PropertyBoundaryDagNodeId,
+    pub(super) scene_root_ordinal: u32,
+    pub(super) owner: NodeKey,
+    pub(super) stable_id: u64,
+    pub(super) receiver: PropertyBoundaryReceiverScope,
+    pub(super) kind: PropertyBoundaryDagNodeKind,
+    pub(super) consumption: ConsumedPropertyEntry,
+    pub(super) placement: PropertyBoundaryDagPlacement,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PropertyBoundaryDagPlacement {
+    Root,
+    Cutout {
+        marker: super::PlannedBoundary,
+        neutral_path: Vec<PropertyBoundaryPathOwnerWitness>,
+        sealed: Option<PropertyBoundaryInsertionSeal>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PropertyBoundaryPathOwnerWitness {
+    pub(super) owner: NodeKey,
+    pub(super) stable_id: u64,
+}
+
+/// Shape-neutral receiver insertion identity. The optional seal preserves the
+/// existing planning-only lifecycle: T->S/E->S may be structurally admitted
+/// before their recorder payload is ready, while production compilation still
+/// requires the seal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyBoundaryInsertionSeal {
+    pub(super) insertion_index: usize,
+    pub(super) before_span: Range<usize>,
+    pub(super) after_span: Range<usize>,
+    pub(super) receiver_opaque_before: u32,
+    pub(super) receiver_opaque_after: u32,
+    recorded_steps: Vec<PropertyScrollReceiverRecordedStepIdentity>,
+}
+
+/// Exact Phase3 descendant effect insertion inside one detached ScrollContent
+/// receiver. The C program and E program are sealed independently so neither
+/// scroll offset nor final scrollbar overlay paint can enter E raster identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyScrollContentEffectInsertionContract {
+    pub(super) scene_root_ordinal: u32,
+    pub(super) scroll_boundary_ordinal: u32,
+    pub(super) content_root: NodeKey,
+    pub(super) content_stable_id: u64,
+    pub(super) effect: EffectNodeSnapshot,
+    pub(super) effect_stable_id: u64,
+    pub(super) effect_cutout: super::PlannedBoundary,
+    pub(super) insertion_index: usize,
+    pub(super) before_span: Range<usize>,
+    pub(super) after_span: Range<usize>,
+    pub(super) receiver_opaque_before: u32,
+    pub(super) receiver_opaque_after: u32,
+    pub(super) effect_raster_bounds_bits: [u32; 4],
+    pub(super) artifact_contract: EffectPropertySurfaceArtifactContract,
+    pub(super) consumed_transform: Option<ConsumedAncestorTransformWitness>,
+    pub(super) outer_transform: Option<PropertyScrollContentOuterTransformInsertionContract>,
+    receiver_recorded_steps: Vec<PropertyScrollReceiverRecordedStepIdentity>,
+    effect_recorded_steps: Vec<PropertyScrollReceiverArtifactIdentity>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct PropertyScrollContentOuterTransformInsertionContract {
+    pub(super) receiver: PropertyScrollReceiverInsertionContract,
+    pub(super) geometry: TransformSurfaceGeometrySnapshot,
+}
+
+impl PartialEq for PropertyScrollContentOuterTransformInsertionContract {
+    fn eq(&self, other: &Self) -> bool {
+        self.receiver == other.receiver && self.geometry.bitwise_eq(other.geometry)
+    }
+}
+
+impl Eq for PropertyScrollContentOuterTransformInsertionContract {}
+
+/// Exact Phase2 `Effect -> Transform -> ScrollContents` receiver pair. The
+/// inner T raster consumes E, then the outer E recorder owns the typed T
+/// cutout and applies opacity only at final composition.
+#[derive(Clone, Debug)]
+pub(super) struct PropertyEffectTransformScrollReceiverInsertionContract {
+    pub(super) scene_root_ordinal: u32,
+    pub(super) outer_receiver: EffectNodeSnapshot,
+    pub(super) outer_stable_id: u64,
+    pub(super) outer_artifact_contract: EffectPropertySurfaceArtifactContract,
+    pub(super) outer_raster_bounds_bits: [u32; 4],
+    pub(super) transform_cutout: super::PlannedBoundary,
+    pub(super) outer_insertion_index: usize,
+    pub(super) outer_before_span: Range<usize>,
+    pub(super) outer_after_span: Range<usize>,
+    pub(super) outer_opaque_before: u32,
+    pub(super) outer_opaque_after: u32,
+    pub(super) inner_geometry: TransformSurfaceGeometrySnapshot,
+    pub(super) inner: PropertyScrollReceiverInsertionContract,
+    outer_recorded_steps: Vec<PropertyScrollReceiverRecordedStepIdentity>,
+}
+
+impl PartialEq for PropertyEffectTransformScrollReceiverInsertionContract {
+    fn eq(&self, other: &Self) -> bool {
+        self.scene_root_ordinal == other.scene_root_ordinal
+            && self.outer_receiver == other.outer_receiver
+            && self.outer_stable_id == other.outer_stable_id
+            && self.outer_artifact_contract == other.outer_artifact_contract
+            && self.outer_raster_bounds_bits == other.outer_raster_bounds_bits
+            && self.transform_cutout == other.transform_cutout
+            && self.outer_insertion_index == other.outer_insertion_index
+            && self.outer_before_span == other.outer_before_span
+            && self.outer_after_span == other.outer_after_span
+            && self.outer_opaque_before == other.outer_opaque_before
+            && self.outer_opaque_after == other.outer_opaque_after
+            && self.inner_geometry.bitwise_eq(other.inner_geometry)
+            && self.inner == other.inner
+            && self.outer_recorded_steps == other.outer_recorded_steps
+    }
+}
+
+impl Eq for PropertyEffectTransformScrollReceiverInsertionContract {}
+
+/// Exact scene-root receiver schedule around one descendant ScrollContents
+/// cutout. Unlike the transform/effect siblings this receiver stays on the
+/// frame target; the ordered artifacts retain root decoration and child-mask
+/// begin/end ownership around the detached content composite.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyFrameScrollReceiverInsertionContract {
+    pub(super) scene_root_ordinal: u32,
+    pub(super) receiver_root: NodeKey,
+    pub(super) receiver_stable_id: u64,
+    pub(super) scroll_boundary_ordinal: u32,
+    pub(super) scroll_cutout: super::PlannedBoundary,
+    pub(super) insertion_index: usize,
+    pub(super) before_span: Range<usize>,
+    pub(super) after_span: Range<usize>,
+    pub(super) receiver_opaque_before: u32,
+    pub(super) receiver_opaque_after: u32,
+    recorded_steps: Vec<PropertyScrollReceiverRecordedStepIdentity>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,6 +739,117 @@ pub(super) struct PropertyScrollReceiverInsertionContract {
     pub(super) receiver_opaque_before: u32,
     pub(super) receiver_opaque_after: u32,
     recorded_steps: Vec<PropertyScrollReceiverRecordedStepIdentity>,
+}
+
+/// Sealed self-role authority for one native owner that owns both T and S.
+/// The outer transform receiver intentionally contains only the typed scroll
+/// insertion. All owner self paint belongs to S host/overlay recording, while
+/// descendants belong to the offset-zero C recorder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertySameOwnerTransformScrollReceiverInsertionContract {
+    pub(super) receiver: PropertyScrollReceiverInsertionContract,
+    pub(super) owner: NodeKey,
+    pub(super) stable_id: u64,
+    pub(super) transform: TransformNodeSnapshot,
+    pub(super) scroll: ScrollNodeSnapshot,
+    pub(super) contents_clip: ClipNodeSnapshot,
+    pub(super) content_root: NodeKey,
+    pub(super) content_stable_id: u64,
+}
+
+impl PropertySameOwnerTransformScrollReceiverInsertionContract {
+    pub(super) fn is_canonical(&self) -> bool {
+        self.owner == self.receiver.receiver.owner
+            && self.owner == self.receiver.receiver.id.0
+            && self.owner == self.transform.owner
+            && self.owner == self.transform.id.0
+            && self.owner == self.scroll.owner
+            && self.owner == self.scroll.id.0
+            && self.owner == self.contents_clip.owner
+            && self.owner == self.contents_clip.id.owner
+            && self.stable_id != 0
+            && self.stable_id == self.receiver.receiver_stable_id
+            && self.transform == self.receiver.receiver
+            && self.scroll.id
+                == match self.receiver.scroll_cutout.kind {
+                    super::PlannedBoundaryKind::Scroll(id) => id,
+                    _ => return false,
+                }
+            && self.receiver.scroll_cutout.root == self.owner
+            && self.receiver.scroll_cutout.stable_id == self.stable_id
+            && self.contents_clip.id.role == ClipNodeRole::ContentsClip
+            && self.contents_clip.generation != 0
+            && self.content_root != self.owner
+            && self.content_stable_id != 0
+            && self.receiver.insertion_index == 0
+            && self.receiver.before_span == (0..0)
+            && self.receiver.after_span == (1..1)
+            && self.receiver.receiver_opaque_before == 0
+            && self.receiver.receiver_opaque_after == 0
+            && self.receiver.recorded_steps
+                == [PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(
+                    self.receiver.scroll_cutout,
+                )]
+    }
+}
+
+/// Sealed self-role authority for one native owner that owns both E and S.
+/// The receiver program contains only the scroll insertion; H/C/O raster is
+/// assembled effect-neutral, then the owning opacity is applied once at the
+/// final E composite.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertySameOwnerEffectScrollReceiverInsertionContract {
+    pub(super) receiver: PropertyEffectScrollReceiverInsertionContract,
+    pub(super) owner: NodeKey,
+    pub(super) stable_id: u64,
+    pub(super) effect: EffectNodeSnapshot,
+    pub(super) scroll: ScrollNodeSnapshot,
+    pub(super) contents_clip: ClipNodeSnapshot,
+    pub(super) content_root: NodeKey,
+    pub(super) content_stable_id: u64,
+}
+
+impl PropertySameOwnerEffectScrollReceiverInsertionContract {
+    pub(super) fn is_canonical(&self) -> bool {
+        self.owner == self.receiver.receiver.owner
+            && self.owner == self.receiver.receiver.id.0
+            && self.owner == self.effect.owner
+            && self.owner == self.effect.id.0
+            && self.owner == self.scroll.owner
+            && self.owner == self.scroll.id.0
+            && self.owner == self.contents_clip.owner
+            && self.owner == self.contents_clip.id.owner
+            && self.stable_id != 0
+            && self.stable_id == self.receiver.receiver_stable_id
+            && self.effect == self.receiver.receiver
+            && self.scroll.id
+                == match self.receiver.scroll_cutout.kind {
+                    super::PlannedBoundaryKind::Scroll(id) => id,
+                    _ => return false,
+                }
+            && self.receiver.scroll_cutout.root == self.owner
+            && self.receiver.scroll_cutout.stable_id == self.stable_id
+            && self.contents_clip.id.role == ClipNodeRole::ContentsClip
+            && self.contents_clip.generation != 0
+            && self.content_root != self.owner
+            && self.content_stable_id != 0
+            && self.receiver.insertion_index == 0
+            && self.receiver.before_span == (0..0)
+            && self.receiver.after_span == (1..1)
+            && self.receiver.receiver_opaque_before == 0
+            && self.receiver.receiver_opaque_after == 0
+            && self.receiver.raster_bounds_bits
+                == [
+                    self.scroll.viewport.x.to_bits(),
+                    self.scroll.viewport.y.to_bits(),
+                    self.scroll.viewport.width.to_bits(),
+                    self.scroll.viewport.height.to_bits(),
+                ]
+            && self.receiver.recorded_steps
+                == [PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(
+                    self.receiver.scroll_cutout,
+                )]
+    }
 }
 
 /// Planning/compiler checkpoint for the strict direct `Effect ->
@@ -324,6 +971,27 @@ impl PropertyScrollReceiverInsertionContract {
     }
 }
 
+impl PropertyFrameScrollReceiverInsertionContract {
+    pub(super) fn validates_recorded_steps(
+        &self,
+        steps: &[super::frame_recorder::RecordedTransformSurfaceStep],
+    ) -> bool {
+        let identity = steps
+            .iter()
+            .map(|step| match step {
+                super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                    property_scroll_receiver_artifact_identity(artifact)
+                        .map(PropertyScrollReceiverRecordedStepIdentity::Artifact)
+                }
+                super::frame_recorder::RecordedTransformSurfaceStep::Boundary(boundary) => Some(
+                    PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(*boundary),
+                ),
+            })
+            .collect::<Option<Vec<_>>>();
+        identity.as_deref() == Some(self.recorded_steps.as_slice())
+    }
+}
+
 impl PropertyEffectScrollReceiverInsertionContract {
     pub(super) fn validates_recorded_steps(
         &self,
@@ -376,6 +1044,27 @@ impl PropertyTransformEffectScrollReceiverInsertionContract {
     }
 }
 
+impl PropertyEffectTransformScrollReceiverInsertionContract {
+    pub(super) fn validates_outer_recorded_steps(
+        &self,
+        steps: &[super::frame_recorder::RecordedTransformSurfaceStep],
+    ) -> bool {
+        let identity = steps
+            .iter()
+            .map(|step| match step {
+                super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                    property_scroll_receiver_artifact_identity(artifact)
+                        .map(PropertyScrollReceiverRecordedStepIdentity::Artifact)
+                }
+                super::frame_recorder::RecordedTransformSurfaceStep::Boundary(boundary) => Some(
+                    PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(*boundary),
+                ),
+            })
+            .collect::<Option<Vec<_>>>();
+        identity.as_deref() == Some(self.outer_recorded_steps.as_slice())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PropertySceneSchedule {
     pub(super) steps: Vec<PropertySceneScheduledStep>,
@@ -400,6 +1089,13 @@ pub(super) enum PropertySceneScheduledStep {
         scroll: ScrollNodeId,
         basis: ScrollCompositeBasis,
         phase: PropertyScrollPhaseSchedule,
+    },
+    /// A property surface rastered and composited inside one detached scroll
+    /// content target. Keeping this distinct from `RetainedSurface` prevents
+    /// a post-scroll property from being reinterpreted as a frame receiver.
+    ScrollContentSurface {
+        boundary: PropertyScheduledSurfaceBoundary,
+        scroll: ScrollNodeId,
     },
 }
 
@@ -430,9 +1126,139 @@ pub(super) struct PropertyScrollBoundaryContract {
     pub(super) scene_root_ordinal: u32,
     pub(super) scroll: ScrollNodeSnapshot,
     pub(super) contents_clip: ClipNodeSnapshot,
+    /// Complete leaf-to-root chain above `contents_clip`. These clips stay
+    /// on the final composite and are never baked into detached content.
+    pub(super) ancestor_composite_clips: Vec<ClipNodeSnapshot>,
+    /// Exact clips owned by the detached scroll-content subtree (for example
+    /// TextArea's local viewport clip). These remain raster-local.
+    pub(super) local_content_clips: Vec<ClipNodeSnapshot>,
+    /// Exact clips owned by the surrounding scene-root receiver, including
+    /// AnchorParent child-mask handles on either side of the scroll cutout.
+    pub(super) receiver_clips: Vec<ClipNodeSnapshot>,
     pub(super) basis: ScrollCompositeBasis,
     pub(super) phase: PropertyScrollPhaseSchedule,
     pub(super) consumed_properties: ConsumedPropertyStack,
+}
+
+impl PropertyScrollBoundaryContract {
+    /// Self-contained seal for consumers that retain a boundary after the
+    /// schedule scaffold has been consumed. This mirrors the boundary-local
+    /// portion of `property_scroll_schedule_scaffold_is_canonical` so a later
+    /// prepare step never has to trust planner-only clip/scroll geometry.
+    pub(super) fn is_canonical(&self) -> bool {
+        if self.scroll.owner != self.scroll.id.0
+            || self.scroll.parent.is_some()
+            || self.scroll.generation == 0
+            || self.contents_clip.id.owner != self.scroll.owner
+            || self.contents_clip.id.role != ClipNodeRole::ContentsClip
+            || self.contents_clip.owner != self.scroll.owner
+            || self.contents_clip.behavior != ClipBehavior::Intersect
+            || self.contents_clip.generation == 0
+            || !self
+                .scroll
+                .is_canonical_with_ancestor_contents_clip(self.contents_clip)
+        {
+            return false;
+        }
+
+        let mut expected_parent = self.contents_clip.parent;
+        for ancestor in &self.ancestor_composite_clips {
+            if Some(ancestor.id) != expected_parent
+                || ancestor.owner != ancestor.id.owner
+                || ancestor.generation == 0
+            {
+                return false;
+            }
+            expected_parent = ancestor.parent;
+        }
+        if expected_parent.is_some() {
+            return false;
+        }
+
+        let mut clip_ids = FxHashSet::default();
+        if !clip_ids.insert(self.contents_clip.id) {
+            return false;
+        }
+        for clip in self
+            .ancestor_composite_clips
+            .iter()
+            .chain(&self.local_content_clips)
+            .chain(&self.receiver_clips)
+        {
+            if !clip_ids.insert(clip.id)
+                || clip.owner != clip.id.owner
+                || clip.generation == 0
+                || clip
+                    .parent
+                    .is_some_and(|parent| !clip_ids.contains(&parent))
+            {
+                return false;
+            }
+        }
+
+        let stack = &self.consumed_properties;
+        if stack.target_owner != self.scroll.owner
+            || stack.entries.is_empty()
+            || stack.entries.first().map(|entry| entry.expected_before) != Some(stack.live_input)
+            || stack.entries.last().map(|entry| entry.projected_after)
+                != Some(stack.projected_output)
+            || stack.projected_output.clip != self.contents_clip.parent
+            || stack.projected_output.transform.is_some()
+            || stack.projected_output.effect.is_some()
+            || stack.projected_output.scroll.is_some()
+        {
+            return false;
+        }
+        let mut cursor = stack.live_input;
+        for entry in &stack.entries {
+            if entry.expected_before != cursor {
+                return false;
+            }
+            match entry.boundary {
+                ConsumedPropertyBoundary::Transform(id) if cursor.transform == Some(id) => {
+                    cursor.transform = None;
+                }
+                ConsumedPropertyBoundary::Effect(id) if cursor.effect == Some(id) => {
+                    cursor.effect = None;
+                }
+                ConsumedPropertyBoundary::ScrollContents {
+                    scroll,
+                    contents_clip,
+                } if cursor.scroll == Some(scroll)
+                    && cursor.clip == Some(contents_clip)
+                    && scroll == self.scroll.id
+                    && contents_clip == self.contents_clip.id =>
+                {
+                    cursor.scroll = None;
+                    cursor.clip = self.contents_clip.parent;
+                }
+                _ => return false,
+            }
+            if entry.projected_after != cursor {
+                return false;
+            }
+        }
+        cursor == stack.projected_output
+            && self.phase.host_before
+                == (PropertyScrollPhaseSlot {
+                    owner: self.scroll.owner,
+                    phase: PropertyScrollPhaseKind::HostBeforeChildren,
+                    receiver_state: cursor,
+                })
+            && self.phase.content_gap
+                == (PropertyScrollContentPhase {
+                    owner: self.scroll.owner,
+                    phase: PropertyScrollPhaseKind::DetachedContentComposite,
+                    content_state: stack.live_input,
+                    projected_receiver_state: cursor,
+                })
+            && self.phase.overlay_after
+                == (PropertyScrollPhaseSlot {
+                    owner: self.scroll.owner,
+                    phase: PropertyScrollPhaseKind::OverlayAfterChildren,
+                    receiver_state: cursor,
+                })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -521,10 +1347,18 @@ struct PropertyEffectSceneScaffold {
     surfaces: Vec<PropertyEffectSurfaceContract>,
     clip_forest: PropertyEffectClipForestContract,
     production_root_step_spans: Option<Vec<Range<usize>>>,
+    production_root_step_schedule: Option<Vec<Vec<PropertyEffectRootStepKind>>>,
     planned_roots: Vec<PropertyEffectRootWitness>,
     planned_surfaces: Vec<PropertyEffectSurfaceContract>,
     planned_clip_forest: PropertyEffectClipForestContract,
     planned_production_root_step_spans: Option<Vec<Range<usize>>>,
+    planned_production_root_step_schedule: Option<Vec<Vec<PropertyEffectRootStepKind>>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PropertyEffectRootStepKind {
+    NormalArtifact,
+    LateBoundary(PropertyBoundaryId),
 }
 
 /// Owning snapshot of the property clip forest and every reachable node's
@@ -826,7 +1660,10 @@ impl FramePaintPlan {
             return None;
         }
         let seal = self.property_scene_seal.as_ref()?;
-        if seal.scroll_schedule_scaffold.is_some() || seal.nested_scroll_scaffold.is_some() {
+        if seal.scroll_schedule_scaffold.is_some()
+            || seal.nested_scroll_scaffold.is_some()
+            || seal.native_scroll_forest_scaffold.is_some()
+        {
             return None;
         }
         let roots = if let Some(scaffold) = &seal.effect_scaffold {
@@ -947,7 +1784,17 @@ impl FramePaintPlan {
         surfaces.sort_unstable_by_key(|surface| surface.ordinal);
         let surface_ordinals = surfaces
             .iter()
-            .map(|surface| (surface.boundary_root, surface.ordinal))
+            .map(|surface| {
+                let boundary = match surface.kind {
+                    PropertySceneTransactionSurfaceKind::Transform(id) => {
+                        PropertyBoundaryId::Transform(id)
+                    }
+                    PropertySceneTransactionSurfaceKind::Effect(id) => {
+                        PropertyBoundaryId::Effect(id)
+                    }
+                };
+                (boundary, surface.ordinal)
+            })
             .collect::<FxHashMap<_, _>>();
         let mut top_level_surfaces = Vec::new();
         for root in &roots {
@@ -955,9 +1802,17 @@ impl FramePaintPlan {
                 let PaintPlanStep::RetainedSurface(surface) = &self.steps[step_index] else {
                     continue;
                 };
+                let boundary = match surface.kind() {
+                    SurfaceKind::Transform(plan) => PropertyBoundaryId::Transform(plan.transform),
+                    SurfaceKind::Isolation(plan) => PropertyBoundaryId::Effect(plan.effect.id),
+                    SurfaceKind::NestedIsolation(plan) => {
+                        PropertyBoundaryId::Effect(plan.effect.id)
+                    }
+                    SurfaceKind::ScrollHost(_) => return None,
+                };
                 top_level_surfaces.push(PropertySceneTopLevelSurfaceWitness {
                     step_index,
-                    surface_ordinal: *surface_ordinals.get(&surface.boundary_root())?,
+                    surface_ordinal: *surface_ordinals.get(&boundary)?,
                     scene_root_ordinal: root.ordinal,
                 });
             }
@@ -977,6 +1832,7 @@ impl FramePaintPlan {
                 self.property_scene_seal.as_ref().and_then(|seal| {
                     (seal.scroll_schedule_scaffold.is_none()
                         && seal.nested_scroll_scaffold.is_none()
+                        && seal.native_scroll_forest_scaffold.is_none()
                         && seal
                             .effect_scaffold
                             .as_ref()
@@ -1043,6 +1899,41 @@ impl FramePaintPlan {
             .as_ref()?
             .nested_scroll_scaffold
             .as_ref()
+    }
+
+    /// Graph-inert arbitrary-depth native scroll forest seal.
+    pub(super) fn native_scroll_forest_planning_scaffold(
+        &self,
+    ) -> Option<&NativeScrollForestScaffold> {
+        property_scene_plan_is_sealed(self).then_some(())?;
+        self.property_scene_seal
+            .as_ref()?
+            .native_scroll_forest_scaffold
+            .as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_native_scroll_forest_prepare_seal_for_test(&mut self, kind: &str) {
+        let scaffold = self
+            .property_scene_seal
+            .as_mut()
+            .and_then(|seal| seal.native_scroll_forest_scaffold.as_mut())
+            .expect("test plan owns a native scroll forest");
+        match kind {
+            "stamp" => {
+                scaffold.programs[1].child_dependencies[0].composite_scissor[0] += 1;
+                scaffold.planned_programs = scaffold.programs.clone();
+            }
+            "descriptor" => {
+                scaffold.programs[0].receiver_stable_id ^= 0x1000;
+                scaffold.planned_programs = scaffold.programs.clone();
+            }
+            "geometry" => {
+                scaffold.boundaries[1].contents_clip.logical_scissor[0] += 1;
+                scaffold.planned_boundaries = scaffold.boundaries.clone();
+            }
+            _ => panic!("unknown native forest prepare tamper"),
+        }
     }
 
     #[cfg(test)]
@@ -1538,6 +2429,7 @@ pub(crate) fn plan_transform_property_scene_with_context(
             effect_scaffold: None,
             scroll_schedule_scaffold: None,
             nested_scroll_scaffold: None,
+            native_scroll_forest_scaffold: None,
         }),
     };
     if !property_scene_plan_is_sealed(&plan) {
@@ -1621,51 +2513,45 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
                 FramePaintPlanRejection::DuplicateStableId(stable_id),
             );
         }
-        let exact_deferred_root_effect = node
-            .element
-            .as_any()
-            .downcast_ref::<Element>()
-            .and_then(|element| {
-                let logical_scissor = element
-                    .exact_deferred_viewport_root_self_clip_scissor_rect(key, arena, true)?;
-                let clip_id = ClipNodeId {
-                    owner: key,
-                    role: ClipNodeRole::SelfClip,
-                };
-                let effect_id = EffectNodeId(key);
-                let exact_state = PropertyTreeState {
-                    clip: Some(clip_id),
-                    effect: Some(effect_id),
-                    ..Default::default()
-                };
-                let state = property_trees.node_state_for(key)?;
-                let clip = property_trees.clips.get(&clip_id)?;
-                let effect = property_trees.effects.get(&effect_id)?;
-                (state.paint == exact_state
-                    && state.descendants == exact_state
-                    && clip.owner == key
-                    && clip.parent.is_none()
-                    && clip.behavior == ClipBehavior::Replace
-                    && matches!(
-                        clip.geometry,
-                        ClipGeometry::LogicalScissor(scissor) if scissor == logical_scissor
-                    )
-                    && clip.generation != 0
-                    && effect.owner == key
-                    && effect.parent.is_none()
-                    && effect.opacity.to_bits() == 0.0_f32.to_bits()
-                    && effect.generation != 0)
-                    .then_some(())
-            })
-            .is_some();
+        let exact_deferred_root_effect = (|| {
+            let logical_scissor = node
+                .element
+                .exact_retained_deferred_viewport_self_clip_scissor_rect(key, arena)?;
+            let clip_id = ClipNodeId {
+                owner: key,
+                role: ClipNodeRole::SelfClip,
+            };
+            let effect_id = EffectNodeId(key);
+            let exact_state = PropertyTreeState {
+                clip: Some(clip_id),
+                effect: Some(effect_id),
+                ..Default::default()
+            };
+            let state = property_trees.node_state_for(key)?;
+            let clip = property_trees.clips.get(&clip_id)?;
+            let effect = property_trees.effects.get(&effect_id)?;
+            (state.paint == exact_state
+                && state.descendants == exact_state
+                && clip.owner == key
+                && clip.parent.is_none()
+                && clip.behavior == ClipBehavior::Replace
+                && matches!(
+                    clip.geometry,
+                    ClipGeometry::LogicalScissor(scissor) if scissor == logical_scissor
+                )
+                && clip.generation != 0
+                && effect.owner == key
+                && effect.parent.is_none()
+                && effect.opacity.is_finite()
+                && (0.0..=1.0).contains(&effect.opacity)
+                && effect.generation != 0)
+                .then_some(())
+        })()
+        .is_some();
         if node.element.is_deferred_to_root_viewport_render() && !exact_deferred_root_effect {
             push_unique(reasons, FramePaintPlanRejection::DeferredBoundary(key));
         }
-        if node
-            .element
-            .placement_eligibility_metadata()
-            .contains_runtime_layout_state
-        {
+        if !sampled_layout_transition_is_exact(node.element.as_ref()) {
             push_unique(reasons, FramePaintPlanRejection::LayoutTransition(key));
         }
         if !property_trees.states.contains_key(&key) {
@@ -1675,21 +2561,10 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
         reachable.push(key);
         let transform = property_trees.transforms.get(&TransformNodeId(key));
         let effect = property_trees.effects.get(&EffectNodeId(key));
-        if transform.is_some() && effect.is_some() {
-            push_unique(
-                reasons,
-                FramePaintPlanRejection::CoLocatedTransformEffect(key),
-            );
-        }
-        let boundary = match (transform, effect) {
-            (Some(_), None) => Some(PropertyBoundaryId::Transform(TransformNodeId(key))),
-            (None, Some(_)) => Some(PropertyBoundaryId::Effect(EffectNodeId(key))),
-            _ => None,
-        };
-        let next_parent_boundary = if let Some(boundary) = boundary {
+        let mut push_boundary = |boundary, parent_boundary_ordinal, seeds: &mut Vec<Seed>| {
             let Ok(ordinal) = u32::try_from(seeds.len()) else {
                 push_unique(reasons, FramePaintPlanRejection::InvalidPropertyScene);
-                return;
+                return None;
             };
             seeds.push(Seed {
                 boundary,
@@ -1698,8 +2573,35 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
                 paint_offset: recording_context.paint_offset,
             });
             Some(ordinal)
-        } else {
-            parent_boundary_ordinal
+        };
+        // A co-located pair has one fixed compositor order: opacity owns the
+        // local raster, then the transform maps that raster into its parent.
+        // Represent that as Transform(outer) -> Effect(inner); descendants
+        // therefore inherit the inner effect boundary.
+        let next_parent_boundary = match (transform, effect) {
+            (Some(_), Some(_)) => push_boundary(
+                PropertyBoundaryId::Transform(TransformNodeId(key)),
+                parent_boundary_ordinal,
+                seeds,
+            )
+            .and_then(|transform_ordinal| {
+                push_boundary(
+                    PropertyBoundaryId::Effect(EffectNodeId(key)),
+                    Some(transform_ordinal),
+                    seeds,
+                )
+            }),
+            (Some(_), None) => push_boundary(
+                PropertyBoundaryId::Transform(TransformNodeId(key)),
+                parent_boundary_ordinal,
+                seeds,
+            ),
+            (None, Some(_)) => push_boundary(
+                PropertyBoundaryId::Effect(EffectNodeId(key)),
+                parent_boundary_ordinal,
+                seeds,
+            ),
+            (None, None) => parent_boundary_ordinal,
         };
         for &child in node.element.children() {
             if arena.parent_of(child) != Some(key) {
@@ -1810,16 +2712,30 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
             PropertyBoundaryId::Transform(id) => property_trees.transform_snapshot_for(id),
             PropertyBoundaryId::Effect(_) => None,
         });
+        let (direct_child_pair, same_owner_pair) =
+            seeds
+                .first()
+                .zip(seeds.get(1))
+                .map_or((false, false), |(outer, inner)| {
+                    (
+                        outer.boundary.owner() != inner.boundary.owner()
+                            && arena.parent_of(inner.boundary.owner())
+                                == Some(outer.boundary.owner()),
+                        outer.boundary.owner() == inner.boundary.owner()
+                            && arena
+                                .get(outer.boundary.owner())
+                                .is_some_and(|_| outer.scene_root_ordinal == 0),
+                    )
+                });
         let mixed_is_proven = property_trees.transforms.len() == 1
             && property_trees.effects.len() == 1
             && roots.len() == 1
             && seeds.len() == 2
             && matches!(seeds[0].boundary, PropertyBoundaryId::Transform(_))
             && matches!(seeds[1].boundary, PropertyBoundaryId::Effect(_))
-            && seeds[0].boundary.owner() == roots[0]
             && seeds[0].parent_boundary_ordinal.is_none()
             && seeds[1].parent_boundary_ordinal == Some(0)
-            && arena.parent_of(seeds[1].boundary.owner()) == Some(seeds[0].boundary.owner())
+            && ((direct_child_pair && seeds[0].boundary.owner() == roots[0]) || same_owner_pair)
             && mixed_transform.is_some_and(|snapshot| {
                 snapshot.parent.is_none() && matrix_is_finite_affine(snapshot.viewport_matrix)
             });
@@ -1885,18 +2801,34 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
                     ..leaf
                 };
                 let detached_ancestors = live_leaf_to_root[1..].to_vec();
-                let element = node
-                    .element
-                    .as_any()
-                    .downcast_ref::<Element>()
-                    .ok_or_else(|| FramePaintPlanError {
-                        reasons: vec![FramePaintPlanRejection::UnknownRootHost(owner)],
-                    })?;
-                let bounds = element
-                    .exact_nested_isolation_render_output_bounds(arena, seed.paint_offset)
-                    .ok_or_else(|| FramePaintPlanError {
-                        reasons: vec![FramePaintPlanRejection::InvalidIsolationGeometry(owner)],
-                    })?;
+                let bounds = match seed.parent_boundary_ordinal.and_then(|parent| {
+                    let parent = seeds.get(parent as usize)?;
+                    (parent.boundary == PropertyBoundaryId::Transform(TransformNodeId(owner)))
+                        .then_some(())
+                }) {
+                    Some(()) => {
+                        exact_surface_geometry_for_plan(
+                            node.element.as_ref(),
+                            arena,
+                            owner,
+                            context,
+                            property_trees
+                                .transform_snapshot_for(TransformNodeId(owner))
+                                .map(|snapshot| snapshot.viewport_matrix),
+                        )?
+                        .source_bounds
+                    }
+                    None => node
+                        .element
+                        .exact_nested_isolation_render_output_bounds(
+                            owner,
+                            arena,
+                            seed.paint_offset,
+                        )
+                        .ok_or_else(|| FramePaintPlanError {
+                            reasons: vec![FramePaintPlanRejection::InvalidIsolationGeometry(owner)],
+                        })?,
+                };
                 let source_bounds_bits =
                     [bounds.x, bounds.y, bounds.width, bounds.height].map(f32::to_bits);
                 let ancestor_composite_clips =
@@ -2077,10 +3009,12 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
         planned_surfaces: surfaces.clone(),
         planned_clip_forest: clip_forest.clone(),
         planned_production_root_step_spans: None,
+        planned_production_root_step_schedule: None,
         roots: effect_roots,
         surfaces,
         clip_forest,
         production_root_step_spans: None,
+        production_root_step_schedule: None,
     };
     let plan = FramePaintPlan {
         steps: Vec::new(),
@@ -2096,6 +3030,523 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
             effect_scaffold: Some(scaffold),
             scroll_schedule_scaffold: None,
             nested_scroll_scaffold: None,
+            native_scroll_forest_scaffold: None,
+        }),
+    };
+    property_scene_plan_is_sealed(&plan)
+        .then_some(plan)
+        .ok_or_else(property_scene_error)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_native_scroll_forest_node(
+    arena: &NodeArena,
+    node_key: NodeKey,
+    scene_root_ordinal: u32,
+    nearest_scroll: Option<NativeScrollBoundaryId>,
+    property_trees: &PropertyTrees,
+    scale_factor: f32,
+    reachable: &mut FxHashSet<NodeKey>,
+    stable_ids: &mut FxHashSet<u64>,
+    boundaries: &mut Vec<NativeScrollForestBoundaryContract>,
+    schedule: &mut Vec<NativeScrollForestScheduledStep>,
+) -> Result<(), FramePaintPlanError> {
+    let invalid = || property_scene_error();
+    if !reachable.insert(node_key) {
+        return Err(invalid());
+    }
+    let node = arena.get(node_key).ok_or_else(invalid)?;
+    if node.children() != node.element.children()
+        || node.element.stable_id() == 0
+        || !stable_ids.insert(node.element.stable_id())
+        || node.element.is_deferred_to_root_viewport_render()
+        || node
+            .element
+            .placement_eligibility_metadata()
+            .contains_runtime_layout_state
+    {
+        return Err(invalid());
+    }
+    let state = property_trees
+        .node_state_for(node_key)
+        .ok_or_else(invalid)?;
+    if let Some(scroll) = property_trees.scroll_snapshot_for(ScrollNodeId(node_key)) {
+        let element = node
+            .element
+            .as_any()
+            .downcast_ref::<Element>()
+            .ok_or_else(invalid)?;
+        let admission = element
+            .exact_retained_scroll_forest_host_admission(node_key, arena, scale_factor)
+            .ok_or_else(invalid)?;
+        let contents_clip_id = ClipNodeId {
+            owner: node_key,
+            role: ClipNodeRole::ContentsClip,
+        };
+        let contents_clip = property_trees
+            .clip_snapshot_for(Some(contents_clip_id))
+            .and_then(|chain| chain.first().copied())
+            .ok_or_else(invalid)?;
+        let (parent_scroll, parent_clip, projected_output) = match nearest_scroll {
+            Some(parent) => {
+                let parent = boundaries.get(parent.0 as usize).ok_or_else(invalid)?;
+                (
+                    Some(parent.scroll.id),
+                    Some(parent.contents_clip.id),
+                    parent.projection.live_input,
+                )
+            }
+            None => (None, None, PropertyTreeState::default()),
+        };
+        let live_input = PropertyTreeState {
+            clip: Some(contents_clip.id),
+            scroll: Some(scroll.id),
+            ..PropertyTreeState::default()
+        };
+        let geometry_is_canonical = scroll.has_canonical_geometry_with_contents_clip_parent_ids(
+            contents_clip,
+            parent_scroll,
+            parent_clip,
+        );
+        if !admission.matches_scroll_node(scroll)
+            || admission.boundary_root != node_key
+            || admission.stable_id != node.element.stable_id()
+            || scroll.id.0 != node_key
+            || scroll.owner != node_key
+            || scroll.parent != parent_scroll
+            || contents_clip.id != contents_clip_id
+            || contents_clip.owner != node_key
+            || contents_clip.parent != parent_clip
+            || contents_clip.behavior != ClipBehavior::Intersect
+            || scroll.generation == 0
+            || contents_clip.generation == 0
+            || !geometry_is_canonical
+            || state.paint != projected_output
+            || state.descendants != live_input
+        {
+            return Err(invalid());
+        }
+        let id = NativeScrollBoundaryId(u32::try_from(boundaries.len()).map_err(|_| invalid())?);
+        let projection = NativeScrollProjectionWitness {
+            live_input,
+            projected_output,
+            parent_scroll,
+            parent_clip,
+        };
+        boundaries.push(NativeScrollForestBoundaryContract {
+            id,
+            scene_root_ordinal,
+            boundary_root: node_key,
+            stable_id: admission.stable_id,
+            parent: nearest_scroll,
+            admission,
+            scroll,
+            contents_clip,
+            projection: projection.clone(),
+        });
+        schedule.push(NativeScrollForestScheduledStep::ChildBoundary {
+            parent: nearest_scroll,
+            child: id,
+        });
+        schedule.push(NativeScrollForestScheduledStep::Artifact {
+            boundary: id,
+            phase: NativeScrollArtifactPhase::HostBefore,
+        });
+        collect_native_scroll_forest_node(
+            arena,
+            admission.content_root,
+            scene_root_ordinal,
+            Some(id),
+            property_trees,
+            scale_factor,
+            reachable,
+            stable_ids,
+            boundaries,
+            schedule,
+        )?;
+        schedule.push(NativeScrollForestScheduledStep::Artifact {
+            boundary: id,
+            phase: NativeScrollArtifactPhase::OverlayAfter,
+        });
+        return Ok(());
+    }
+
+    if !is_exact_retained_scroll_forest_content_node(node.element.as_ref(), arena) {
+        return Err(invalid());
+    }
+    let expected = nearest_scroll
+        .and_then(|id| boundaries.get(id.0 as usize))
+        .map(|boundary| boundary.projection.live_input)
+        .unwrap_or_default();
+    if state.paint != expected || state.descendants != expected {
+        return Err(invalid());
+    }
+    if node.children().is_empty() {
+        let boundary = nearest_scroll.ok_or_else(invalid)?;
+        let projection = boundaries
+            .get(boundary.0 as usize)
+            .ok_or_else(invalid)?
+            .projection
+            .clone();
+        schedule.push(NativeScrollForestScheduledStep::ContentReceiver {
+            boundary,
+            content_root: node_key,
+            stable_id: node.element.stable_id(),
+            projection,
+        });
+    } else {
+        for &child in node.children() {
+            if arena.parent_of(child) != Some(node_key) {
+                return Err(invalid());
+            }
+            collect_native_scroll_forest_node(
+                arena,
+                child,
+                scene_root_ordinal,
+                nearest_scroll,
+                property_trees,
+                scale_factor,
+                reachable,
+                stable_ids,
+                boundaries,
+                schedule,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Plans an arbitrary-depth/multi-root native scroll forest without granting
+/// compiler, pool, transaction, or frame-graph authority.
+pub(crate) fn plan_native_scroll_forest_scaffold_with_context(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    scale_factor: f32,
+    context: TransformSurfacePlanContext,
+) -> Result<FramePaintPlan, FramePaintPlanError> {
+    if roots.is_empty()
+        || !scale_factor.is_finite()
+        || scale_factor <= 0.0
+        || context.paint_offset_bits != [0.0_f32.to_bits(); 2]
+        || context.outer_scissor_rect().is_some()
+        || !property_trees.validation_errors.is_empty()
+        || !property_trees.transforms.is_empty()
+        || !property_trees.effects.is_empty()
+        || property_trees.scrolls.len() < 3
+        || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
+    {
+        return Err(property_scene_error());
+    }
+    let mut seen_roots = FxHashSet::default();
+    let mut reachable = FxHashSet::default();
+    let mut stable_ids = FxHashSet::default();
+    let mut boundaries = Vec::new();
+    let mut steps = Vec::new();
+    let mut forest_roots = Vec::with_capacity(roots.len());
+    let mut plan_roots = Vec::with_capacity(roots.len());
+    for (ordinal, &root) in roots.iter().enumerate() {
+        if !seen_roots.insert(root) || arena.parent_of(root).is_some() {
+            return Err(property_scene_error());
+        }
+        let start = u32::try_from(boundaries.len()).map_err(|_| property_scene_error())?;
+        collect_native_scroll_forest_node(
+            arena,
+            root,
+            u32::try_from(ordinal).map_err(|_| property_scene_error())?,
+            None,
+            property_trees,
+            scale_factor,
+            &mut reachable,
+            &mut stable_ids,
+            &mut boundaries,
+            &mut steps,
+        )?;
+        let end = u32::try_from(boundaries.len()).map_err(|_| property_scene_error())?;
+        if start == end {
+            return Err(property_scene_error());
+        }
+        let stable_id = arena
+            .get(root)
+            .map(|node| node.element.stable_id())
+            .filter(|stable_id| *stable_id != 0)
+            .ok_or_else(property_scene_error)?;
+        forest_roots.push(NativeScrollForestRoot {
+            ordinal: ordinal as u32,
+            root,
+            stable_id,
+            boundary_span: start..end,
+        });
+        plan_roots.push(PropertySceneRootWitness {
+            ordinal: ordinal as u32,
+            root,
+            stable_id,
+            owner: PaintOwnerSnapshot {
+                owner: root,
+                parent: None,
+            },
+            top_level_step_span: 0..0,
+        });
+    }
+    if boundaries.len() != property_trees.scrolls.len()
+        || boundaries.len() != property_trees.clips.len()
+        || reachable.len() != property_trees.states.len()
+        || property_trees
+            .states
+            .keys()
+            .any(|key| !reachable.contains(key))
+    {
+        return Err(property_scene_error());
+    }
+    let artifact_seal = |artifact: &PaintArtifact| {
+        Ok::<_, FramePaintPlanError>(NestedScrollArtifactSeal {
+            recorded_artifact: artifact.clone(),
+            identity: property_scroll_receiver_artifact_identity(artifact)
+                .ok_or_else(property_scene_error)?,
+        })
+    };
+    let mut programs = Vec::with_capacity(boundaries.len());
+    for boundary in &boundaries {
+        let edge = super::PaintScrollForestEdgeWitness::new(
+            boundary.boundary_root,
+            boundary.admission.content_root,
+            boundary.scroll,
+            boundary.contents_clip,
+            boundary.projection.parent_scroll,
+            boundary.projection.parent_clip,
+        )
+        .ok_or_else(property_scene_error)?;
+        let host = super::PaintBakedScrollHostWitness::new(
+            boundary.boundary_root,
+            boundary.admission.content_root,
+            boundary.scroll,
+            boundary.contents_clip.id,
+        )
+        .ok_or_else(property_scene_error)?;
+        let consumed_parent = boundary
+            .parent
+            .map(|parent| {
+                let parent = &boundaries[parent.0 as usize];
+                super::ConsumedAncestorScrollContentsWitness::new(
+                    parent.boundary_root,
+                    boundary.boundary_root,
+                    parent.scroll.id,
+                    parent.contents_clip.id,
+                )
+                .ok_or_else(property_scene_error)
+            })
+            .transpose()?;
+        let content_stable_id = arena
+            .get(boundary.admission.content_root)
+            .map(|node| node.element.stable_id())
+            .filter(|stable_id| *stable_id != 0)
+            .ok_or_else(property_scene_error)?;
+        let host_steps = super::frame_recorder::record_native_scroll_forest_host_steps_for_plan(
+            arena,
+            boundary.boundary_root,
+            property_trees,
+            paint_generations,
+            host,
+            edge,
+            consumed_parent,
+            content_stable_id,
+        )
+        .map_err(|reasons| FramePaintPlanError {
+            reasons: reasons
+                .into_iter()
+                .map(FramePaintPlanRejection::Coverage)
+                .collect(),
+        })?;
+        let [
+            super::frame_recorder::RecordedNativeScrollHostStep::Artifact(host_before),
+            super::frame_recorder::RecordedNativeScrollHostStep::ContentReceiver(receiver),
+            super::frame_recorder::RecordedNativeScrollHostStep::Artifact(overlay_after),
+        ] = host_steps.as_slice()
+        else {
+            return Err(property_scene_error());
+        };
+        if receiver.stable_id != content_stable_id || receiver.witness != edge {
+            return Err(property_scene_error());
+        }
+        let child_boundaries = boundaries
+            .iter()
+            .filter(|child| child.parent == Some(boundary.id))
+            .map(|child| {
+                (
+                    child.id,
+                    super::PlannedBoundary {
+                        root: child.boundary_root,
+                        stable_id: child.stable_id,
+                        kind: super::PlannedBoundaryKind::Scroll(child.scroll.id),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let child_cutouts = child_boundaries
+            .iter()
+            .map(|(_, cutout)| *cutout)
+            .collect::<Vec<_>>();
+        let recorded_content =
+            super::frame_recorder::record_native_scroll_forest_content_steps_for_plan(
+                arena,
+                property_trees,
+                paint_generations,
+                edge,
+                &child_cutouts,
+            )
+            .map_err(|reasons| FramePaintPlanError {
+                reasons: reasons
+                    .into_iter()
+                    .map(FramePaintPlanRejection::Coverage)
+                    .collect(),
+            })?;
+        let mut marker_cursor = 0usize;
+        let content_steps = recorded_content
+            .iter()
+            .map(|step| match step {
+                super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                    artifact_seal(artifact).map(NativeScrollForestContentProgramStep::Artifact)
+                }
+                super::frame_recorder::RecordedTransformSurfaceStep::Boundary(marker) => {
+                    let Some((child, expected)) = child_boundaries.get(marker_cursor) else {
+                        return Err(property_scene_error());
+                    };
+                    if marker != expected {
+                        return Err(property_scene_error());
+                    }
+                    marker_cursor += 1;
+                    Ok(NativeScrollForestContentProgramStep::ChildBoundary(*child))
+                }
+            })
+            .collect::<Result<Vec<_>, FramePaintPlanError>>()?;
+        if marker_cursor != child_boundaries.len() || content_steps.is_empty() {
+            return Err(property_scene_error());
+        }
+        let source_bounds = boundary.admission.source_bounds;
+        let compiler_stamp =
+            super::compiler::compile_native_scroll_forest_boundary_program_for_plan(
+                boundary.boundary_root,
+                boundary.admission.content_root,
+                boundary.scroll,
+                [
+                    source_bounds.x.to_bits(),
+                    source_bounds.y.to_bits(),
+                    source_bounds.width.to_bits(),
+                    source_bounds.height.to_bits(),
+                ],
+                host_before,
+                &recorded_content,
+                &child_cutouts,
+                overlay_after,
+            )
+            .ok_or_else(property_scene_error)?;
+        programs.push(NativeScrollForestBoundaryProgram {
+            boundary: boundary.id,
+            receiver_stable_id: content_stable_id,
+            edge,
+            host_before: artifact_seal(host_before)?,
+            content_steps,
+            overlay_after: artifact_seal(overlay_after)?,
+            compiler_stamp,
+            child_dependencies: Vec::new(),
+            content_program_opaque_terminal: 0,
+        });
+    }
+    for program_index in (0..programs.len()).rev() {
+        let (dependencies, terminal) = {
+            let program = &programs[program_index];
+            let mut cursor = 0_u32;
+            let mut dependencies = Vec::new();
+            for step in &program.content_steps {
+                match step {
+                    NativeScrollForestContentProgramStep::Artifact(artifact) => {
+                        cursor = cursor
+                            .checked_add(opaque_order_count(artifact.artifact()))
+                            .ok_or_else(property_scene_error)?;
+                    }
+                    NativeScrollForestContentProgramStep::ChildBoundary(child) => {
+                        let child_program = programs
+                            .get(child.0 as usize)
+                            .ok_or_else(property_scene_error)?;
+                        let child_boundary = boundaries
+                            .get(child.0 as usize)
+                            .ok_or_else(property_scene_error)?;
+                        let before = cursor;
+                        cursor = cursor
+                            .checked_add(child_program.compiler_stamp.host_opaque_count)
+                            .and_then(|cursor| {
+                                cursor
+                                    .checked_add(child_program.compiler_stamp.overlay_opaque_count)
+                            })
+                            .ok_or_else(property_scene_error)?;
+                        let source = child_boundary.scroll.layout_content_bounds_at_zero;
+                        dependencies.push(NativeScrollForestChildRasterDependency {
+                            child: *child,
+                            boundary_root: child_boundary.boundary_root,
+                            content_root: child_boundary.admission.content_root,
+                            content_stable_id: child_program.receiver_stable_id,
+                            child_raster_identity: Box::new(
+                                child_program
+                                    .content_raster_identity(child_boundary.admission.content_root),
+                            ),
+                            host_identity: child_program.host_before.identity.clone(),
+                            overlay_identity: child_program.overlay_after.identity.clone(),
+                            scroll: child_boundary.scroll,
+                            contents_clip: child_boundary.contents_clip,
+                            source_bounds_bits: [
+                                source.x.to_bits(),
+                                source.y.to_bits(),
+                                source.width.to_bits(),
+                                source.height.to_bits(),
+                            ],
+                            offset_bits: [
+                                child_boundary.scroll.offset.x.to_bits(),
+                                child_boundary.scroll.offset.y.to_bits(),
+                            ],
+                            composite_scissor: child_boundary.contents_clip.logical_scissor,
+                            parent_opaque_before: before,
+                            parent_opaque_after: cursor,
+                        });
+                    }
+                }
+            }
+            (dependencies, cursor)
+        };
+        let program = &mut programs[program_index];
+        program.child_dependencies = dependencies;
+        program.content_program_opaque_terminal = terminal;
+    }
+    let schedule = NativeScrollForestSchedule { steps };
+    let scaffold = NativeScrollForestScaffold {
+        context,
+        scale_factor_bits: scale_factor.to_bits(),
+        roots: forest_roots.clone(),
+        boundaries: boundaries.clone(),
+        schedule: schedule.clone(),
+        programs: programs.clone(),
+        planned_context: context,
+        planned_scale_factor_bits: scale_factor.to_bits(),
+        planned_roots: forest_roots,
+        planned_boundaries: boundaries,
+        planned_schedule: schedule,
+        planned_programs: programs,
+    };
+    let plan = FramePaintPlan {
+        steps: Vec::new(),
+        property_scene_roots: Some(plan_roots.clone()),
+        property_scene_seal: Some(PropertyScenePlanSeal {
+            roots: plan_roots,
+            context,
+            outer_scissor_rect: None,
+            aggregate_opaque_order_span: 0..0,
+            surface_count: 0,
+            scene_artifact_validation: Vec::new(),
+            surfaces: FxHashMap::default(),
+            effect_scaffold: None,
+            scroll_schedule_scaffold: None,
+            nested_scroll_scaffold: None,
+            native_scroll_forest_scaffold: Some(scaffold),
         }),
     };
     property_scene_plan_is_sealed(&plan)
@@ -2434,6 +3885,7 @@ pub(crate) fn plan_nested_scroll_scene_scaffold_with_context(
             effect_scaffold: None,
             scroll_schedule_scaffold: None,
             nested_scroll_scaffold: Some(scaffold),
+            native_scroll_forest_scaffold: None,
         }),
     };
     property_scene_plan_is_sealed(&plan)
@@ -2477,6 +3929,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
     fn walk(
         arena: &NodeArena,
         key: NodeKey,
+        scene_root: NodeKey,
         scene_root_ordinal: u32,
         property_trees: &PropertyTrees,
         path: &mut Vec<PathBoundary>,
@@ -2511,11 +3964,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
         if node.element.is_deferred_to_root_viewport_render() {
             push_unique(reasons, FramePaintPlanRejection::DeferredBoundary(key));
         }
-        if node
-            .element
-            .placement_eligibility_metadata()
-            .contains_runtime_layout_state
-        {
+        if !sampled_layout_transition_is_exact(node.element.as_ref()) {
             push_unique(reasons, FramePaintPlanRejection::LayoutTransition(key));
         }
         let Some(state) = property_trees.node_state_for(key) else {
@@ -2525,10 +3974,21 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
         let transform = property_trees.transforms.get(&TransformNodeId(key));
         let effect = property_trees.effects.get(&EffectNodeId(key));
         let scroll = property_trees.scrolls.get(&ScrollNodeId(key));
+        let co_located_transform_effect =
+            transform.is_some() && effect.is_some() && scroll.is_none();
+        let co_located_transform_scroll =
+            transform.is_some() && effect.is_none() && scroll.is_some();
+        let co_located_effect_scroll = transform.is_none() && effect.is_some() && scroll.is_some();
+        let co_located_transform_effect_scroll =
+            transform.is_some() && effect.is_some() && scroll.is_some();
         if usize::from(transform.is_some())
             + usize::from(effect.is_some())
             + usize::from(scroll.is_some())
             > 1
+            && !co_located_transform_effect
+            && !co_located_transform_scroll
+            && !co_located_effect_scroll
+            && !co_located_transform_effect_scroll
         {
             push_unique(
                 reasons,
@@ -2540,10 +4000,135 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
             );
         }
 
+        let mut pre_pushed = 0usize;
+        if co_located_transform_scroll
+            || co_located_effect_scroll
+            || co_located_transform_effect_scroll
+        {
+            if path
+                .iter()
+                .any(|entry| matches!(entry, PathBoundary::Scroll(_)))
+            {
+                push_unique(
+                    reasons,
+                    FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
+                );
+            }
+            let mut parent = path.iter().rev().find_map(|entry| match entry {
+                PathBoundary::Transform(id) => {
+                    Some(PropertyScheduledSurfaceBoundaryId::Transform(*id))
+                }
+                PathBoundary::Effect(id) => Some(PropertyScheduledSurfaceBoundaryId::Effect(*id)),
+                PathBoundary::Scroll(_) => None,
+            });
+            if transform.is_some() {
+                let Some(snapshot) = property_trees.transform_snapshot_for(TransformNodeId(key))
+                else {
+                    push_unique(reasons, FramePaintPlanRejection::InvalidRootTransform(key));
+                    return;
+                };
+                if snapshot.owner != key
+                    || snapshot.generation == 0
+                    || !matrix_is_finite_affine(snapshot.viewport_matrix)
+                {
+                    push_unique(reasons, FramePaintPlanRejection::InvalidRootTransform(key));
+                }
+                schedule.push(PropertySceneScheduledStep::RetainedSurface {
+                    boundary: PropertyScheduledSurfaceBoundary::Transform(snapshot),
+                    parent,
+                });
+                path.push(PathBoundary::Transform(snapshot.id));
+                parent = Some(PropertyScheduledSurfaceBoundaryId::Transform(snapshot.id));
+                pre_pushed += 1;
+            }
+            if effect.is_some() {
+                let snapshot = property_trees
+                    .effect_snapshot_for(Some(EffectNodeId(key)))
+                    .and_then(|nodes| nodes.first().copied());
+                let Some(snapshot) = snapshot else {
+                    push_unique(reasons, FramePaintPlanRejection::InvalidEffectChain(key));
+                    return;
+                };
+                if snapshot.owner != key
+                    || snapshot.parent.is_some()
+                    || snapshot.generation == 0
+                    || !snapshot.opacity.is_finite()
+                    || !(0.0..=1.0).contains(&snapshot.opacity)
+                {
+                    push_unique(reasons, FramePaintPlanRejection::InvalidEffectChain(key));
+                }
+                schedule.push(PropertySceneScheduledStep::RetainedSurface {
+                    boundary: PropertyScheduledSurfaceBoundary::Effect(snapshot),
+                    parent,
+                });
+                path.push(PathBoundary::Effect(snapshot.id));
+                pre_pushed += 1;
+            }
+        }
+        let transform = (!(co_located_transform_scroll || co_located_transform_effect_scroll))
+            .then_some(transform)
+            .flatten();
+        let effect = (!(co_located_effect_scroll || co_located_transform_effect_scroll))
+            .then_some(effect)
+            .flatten();
         let path_has_scroll = path
             .iter()
             .any(|entry| matches!(entry, PathBoundary::Scroll(_)));
         let pushed = match (transform, effect, scroll) {
+            (Some(_), Some(_), None) => {
+                if path_has_scroll {
+                    push_unique(
+                        reasons,
+                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
+                    );
+                }
+                let Some(transform) = property_trees.transform_snapshot_for(TransformNodeId(key))
+                else {
+                    push_unique(reasons, FramePaintPlanRejection::InvalidRootTransform(key));
+                    return;
+                };
+                let effect = property_trees
+                    .effect_snapshot_for(Some(EffectNodeId(key)))
+                    .and_then(|nodes| nodes.first().copied());
+                let Some(effect) = effect else {
+                    push_unique(reasons, FramePaintPlanRejection::InvalidEffectChain(key));
+                    return;
+                };
+                if transform.owner != key
+                    || transform.generation == 0
+                    || !matrix_is_finite_affine(transform.viewport_matrix)
+                    || effect.owner != key
+                    || effect.parent.is_some()
+                    || effect.generation == 0
+                    || !effect.opacity.is_finite()
+                    || !(0.0..=1.0).contains(&effect.opacity)
+                {
+                    push_unique(
+                        reasons,
+                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
+                    );
+                }
+                let parent = path.iter().rev().find_map(|entry| match entry {
+                    PathBoundary::Transform(id) => {
+                        Some(PropertyScheduledSurfaceBoundaryId::Transform(*id))
+                    }
+                    PathBoundary::Effect(id) => {
+                        Some(PropertyScheduledSurfaceBoundaryId::Effect(*id))
+                    }
+                    PathBoundary::Scroll(_) => None,
+                });
+                schedule.push(PropertySceneScheduledStep::RetainedSurface {
+                    boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
+                    parent,
+                });
+                schedule.push(PropertySceneScheduledStep::RetainedSurface {
+                    boundary: PropertyScheduledSurfaceBoundary::Effect(effect),
+                    parent: Some(PropertyScheduledSurfaceBoundaryId::Transform(transform.id)),
+                });
+                path.push(PathBoundary::Transform(transform.id));
+                path.push(PathBoundary::Effect(effect.id));
+                2
+            }
             (Some(_), None, None) => {
                 if path_has_scroll {
                     push_unique(
@@ -2576,10 +4161,18 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                     parent,
                 });
                 path.push(PathBoundary::Transform(snapshot.id));
-                true
+                1
             }
             (None, Some(_), None) => {
-                if path_has_scroll {
+                let scroll_content_receiver = path
+                    .iter()
+                    .position(|entry| matches!(entry, PathBoundary::Scroll(_)));
+                if scroll_content_receiver.is_some()
+                    && path
+                        .iter()
+                        .skip(scroll_content_receiver.unwrap_or_default() + 1)
+                        .any(|entry| !matches!(entry, PathBoundary::Scroll(_)))
+                {
                     push_unique(
                         reasons,
                         FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
@@ -2597,21 +4190,31 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 {
                     push_unique(reasons, FramePaintPlanRejection::InvalidEffectChain(key));
                 }
-                let parent = path.iter().rev().find_map(|entry| match entry {
-                    PathBoundary::Transform(id) => {
-                        Some(PropertyScheduledSurfaceBoundaryId::Transform(*id))
-                    }
-                    PathBoundary::Effect(id) => {
-                        Some(PropertyScheduledSurfaceBoundaryId::Effect(*id))
-                    }
-                    PathBoundary::Scroll(_) => None,
-                });
-                schedule.push(PropertySceneScheduledStep::RetainedSurface {
-                    boundary: PropertyScheduledSurfaceBoundary::Effect(snapshot),
-                    parent,
-                });
+                if let Some(scroll) = path.iter().rev().find_map(|entry| match entry {
+                    PathBoundary::Scroll(id) => Some(*id),
+                    _ => None,
+                }) {
+                    schedule.push(PropertySceneScheduledStep::ScrollContentSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Effect(snapshot),
+                        scroll,
+                    });
+                } else {
+                    let parent = path.iter().rev().find_map(|entry| match entry {
+                        PathBoundary::Transform(id) => {
+                            Some(PropertyScheduledSurfaceBoundaryId::Transform(*id))
+                        }
+                        PathBoundary::Effect(id) => {
+                            Some(PropertyScheduledSurfaceBoundaryId::Effect(*id))
+                        }
+                        PathBoundary::Scroll(_) => None,
+                    });
+                    schedule.push(PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Effect(snapshot),
+                        parent,
+                    });
+                }
                 path.push(PathBoundary::Effect(snapshot.id));
-                true
+                1
             }
             (None, None, Some(_)) => {
                 if path_has_scroll {
@@ -2625,16 +4228,17 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                     owner: key,
                     role: ClipNodeRole::ContentsClip,
                 };
-                let Some(contents_clip) = property_trees
-                    .clip_snapshot_for(Some(clip_id))
-                    .and_then(|clips| (clips.len() == 1).then_some(clips[0]))
+                let Some(clip_chain) = property_trees.clip_snapshot_for(Some(clip_id)) else {
+                    push_unique(reasons, FramePaintPlanRejection::InvalidScrollHost(key));
+                    return;
+                };
+                let Some((&contents_clip, ancestor_composite_clips)) = clip_chain.split_first()
                 else {
                     push_unique(reasons, FramePaintPlanRejection::InvalidScrollHost(key));
                     return;
                 };
                 if scroll.parent.is_some()
-                    || (!scroll.is_canonical_with_contents_clip(contents_clip)
-                        && !scroll.is_canonical_painted_with_contents_clip(contents_clip))
+                    || !scroll.is_canonical_with_ancestor_contents_clip(contents_clip)
                     || state.descendants.scroll != Some(scroll.id)
                     || state.descendants.clip != Some(contents_clip.id)
                 {
@@ -2696,7 +4300,26 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                     expected_before: before,
                     projected_after: cursor,
                 });
-                if cursor != PropertyTreeState::default() {
+                let mut expected_receiver_state = state.paint;
+                for ancestor in path.iter().copied() {
+                    match ancestor {
+                        PathBoundary::Transform(id)
+                            if expected_receiver_state.transform == Some(id) =>
+                        {
+                            expected_receiver_state.transform = None;
+                        }
+                        PathBoundary::Effect(id) if expected_receiver_state.effect == Some(id) => {
+                            expected_receiver_state.effect = None;
+                        }
+                        _ => {
+                            push_unique(
+                                reasons,
+                                FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
+                            );
+                        }
+                    }
+                }
+                if cursor != expected_receiver_state {
                     push_unique(
                         reasons,
                         FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
@@ -2730,11 +4353,72 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                     push_unique(reasons, FramePaintPlanRejection::InvalidPropertyScene);
                     return;
                 };
+                let mut content_owners = FxHashSet::default();
+                let mut content_pending = node.element.children().to_vec();
+                while let Some(owner) = content_pending.pop() {
+                    if !content_owners.insert(owner) {
+                        push_unique(reasons, FramePaintPlanRejection::DuplicateNodeKey(owner));
+                        continue;
+                    }
+                    let Some(content_node) = arena.get(owner) else {
+                        push_unique(reasons, FramePaintPlanRejection::MissingRoot(owner));
+                        continue;
+                    };
+                    content_pending.extend(content_node.element.children().iter().copied());
+                }
+                let mut local_content_clips = Vec::new();
+                let mut receiver_clips = Vec::new();
+                for (&id, clip) in &property_trees.clips {
+                    let mut clip_root = clip.owner;
+                    while let Some(parent) = arena.parent_of(clip_root) {
+                        clip_root = parent;
+                    }
+                    if clip_root != scene_root {
+                        continue;
+                    }
+                    if id == contents_clip.id
+                        || ancestor_composite_clips
+                            .iter()
+                            .any(|ancestor| ancestor.id == id)
+                    {
+                        continue;
+                    }
+                    let ClipGeometry::LogicalScissor(logical_scissor) = clip.geometry else {
+                        push_unique(reasons, FramePaintPlanRejection::InvalidPropertyScene);
+                        continue;
+                    };
+                    let snapshot = ClipNodeSnapshot {
+                        id,
+                        owner: clip.owner,
+                        parent: clip.parent,
+                        logical_scissor,
+                        behavior: clip.behavior,
+                        generation: clip.generation,
+                    };
+                    if content_owners.contains(&clip.owner) {
+                        local_content_clips.push(snapshot);
+                    } else {
+                        receiver_clips.push(snapshot);
+                    }
+                }
+                let clip_sort_key = |clip: &ClipNodeSnapshot| {
+                    (
+                        arena
+                            .get(clip.owner)
+                            .map_or(0, |node| node.element.stable_id()),
+                        matches!(clip.id.role, ClipNodeRole::ContentsClip),
+                    )
+                };
+                local_content_clips.sort_by_key(clip_sort_key);
+                receiver_clips.sort_by_key(clip_sort_key);
                 boundaries.push(PropertyScrollBoundaryContract {
                     ordinal,
                     scene_root_ordinal,
                     scroll,
                     contents_clip,
+                    ancestor_composite_clips: ancestor_composite_clips.to_vec(),
+                    local_content_clips,
+                    receiver_clips,
                     basis: basis.clone(),
                     phase: phase.clone(),
                     consumed_properties,
@@ -2746,10 +4430,10 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                     phase,
                 });
                 path.push(PathBoundary::Scroll(scroll.id));
-                true
+                1
             }
-            (None, None, None) => false,
-            _ => false,
+            (None, None, None) => 0,
+            _ => 0,
         };
         for &child in node.element.children() {
             if arena.parent_of(child) != Some(key) {
@@ -2758,6 +4442,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
             walk(
                 arena,
                 child,
+                scene_root,
                 scene_root_ordinal,
                 property_trees,
                 path,
@@ -2769,7 +4454,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 reasons,
             );
         }
-        if pushed {
+        for _ in 0..pushed + pre_pushed {
             path.pop();
         }
     }
@@ -2794,6 +4479,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
         walk(
             arena,
             root,
+            root,
             u32::try_from(ordinal).unwrap_or(u32::MAX),
             property_trees,
             &mut Vec::new(),
@@ -2805,8 +4491,11 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
             &mut reasons,
         );
         let span = start..schedule_steps.len();
-        if boundaries.len() != boundary_start + 1
-            || !property_scroll_root_schedule_is_supported(&schedule_steps[span.clone()])
+        let root_boundary_count = boundaries.len().saturating_sub(boundary_start);
+        if root_boundary_count > 1
+            || (root_boundary_count == 1
+                && !property_scroll_root_schedule_is_supported(&schedule_steps[span.clone()]))
+            || (root_boundary_count == 0 && !schedule_steps[span.clone()].is_empty())
         {
             push_unique(
                 &mut reasons,
@@ -2848,11 +4537,16 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
             .scrolls
             .values()
             .any(|node| !reachable.contains(&node.owner))
-        || property_trees.clips.len() != boundaries.len()
         || property_trees.clips.keys().any(|id| {
-            !boundaries
-                .iter()
-                .any(|boundary| boundary.contents_clip.id == *id)
+            !boundaries.iter().any(|boundary| {
+                boundary.contents_clip.id == *id
+                    || boundary
+                        .ancestor_composite_clips
+                        .iter()
+                        .chain(&boundary.local_content_clips)
+                        .chain(&boundary.receiver_clips)
+                        .any(|clip| clip.id == *id)
+            })
         })
     {
         push_unique(&mut reasons, FramePaintPlanRejection::InvalidPropertyScene);
@@ -2872,7 +4566,34 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
         &schedule,
         &boundaries,
     )?;
+    let same_owner_transform_scroll_insertions =
+        plan_same_owner_transform_scroll_receiver_insertions(
+            arena,
+            property_trees,
+            paint_generations,
+            &schedule_roots,
+            &schedule,
+            &boundaries,
+        )?;
+    let frame_receiver_insertions = plan_property_frame_scroll_receiver_insertions(
+        arena,
+        property_trees,
+        paint_generations,
+        context,
+        &schedule_roots,
+        &schedule,
+        &boundaries,
+    )?;
     let effect_receiver_insertions = plan_property_effect_scroll_receiver_insertions(
+        arena,
+        property_trees,
+        paint_generations,
+        context,
+        &schedule_roots,
+        &schedule,
+        &boundaries,
+    )?;
+    let same_owner_effect_scroll_insertions = plan_same_owner_effect_scroll_receiver_insertions(
         arena,
         property_trees,
         paint_generations,
@@ -2891,21 +4612,67 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
             &schedule,
             &boundaries,
         )?;
+    let effect_transform_receiver_insertions =
+        plan_property_effect_transform_scroll_receiver_insertions(
+            arena,
+            property_trees,
+            paint_generations,
+            context,
+            &schedule_roots,
+            &schedule,
+            &boundaries,
+        )?;
+    let scroll_content_effect_insertions = plan_property_scroll_content_effect_insertions(
+        arena,
+        property_trees,
+        paint_generations,
+        context,
+        &schedule_roots,
+        &schedule,
+        &boundaries,
+    )?;
+    let boundary_dag = project_property_boundary_dag(
+        arena,
+        property_trees,
+        &schedule_roots,
+        &schedule,
+        &boundaries,
+        &receiver_insertions,
+        &same_owner_transform_scroll_insertions,
+        &same_owner_effect_scroll_insertions,
+        &frame_receiver_insertions,
+        &effect_receiver_insertions,
+        &transform_effect_receiver_insertions,
+        &effect_transform_receiver_insertions,
+        &scroll_content_effect_insertions,
+    )?;
     let scaffold = PropertyScrollScheduleScaffold {
         context,
         roots: schedule_roots.clone(),
         schedule: schedule.clone(),
         boundaries: boundaries.clone(),
         receiver_insertions: receiver_insertions.clone(),
+        same_owner_transform_scroll_insertions: same_owner_transform_scroll_insertions.clone(),
+        same_owner_effect_scroll_insertions: same_owner_effect_scroll_insertions.clone(),
+        frame_receiver_insertions: frame_receiver_insertions.clone(),
         effect_receiver_insertions: effect_receiver_insertions.clone(),
         transform_effect_receiver_insertions: transform_effect_receiver_insertions.clone(),
+        effect_transform_receiver_insertions: effect_transform_receiver_insertions.clone(),
+        scroll_content_effect_insertions: scroll_content_effect_insertions.clone(),
+        boundary_dag: boundary_dag.clone(),
         planned_context: context,
         planned_roots: schedule_roots,
         planned_schedule: schedule,
         planned_boundaries: boundaries,
         planned_receiver_insertions: receiver_insertions,
+        planned_same_owner_transform_scroll_insertions: same_owner_transform_scroll_insertions,
+        planned_same_owner_effect_scroll_insertions: same_owner_effect_scroll_insertions,
+        planned_frame_receiver_insertions: frame_receiver_insertions,
         planned_effect_receiver_insertions: effect_receiver_insertions,
         planned_transform_effect_receiver_insertions: transform_effect_receiver_insertions,
+        planned_effect_transform_receiver_insertions: effect_transform_receiver_insertions,
+        planned_scroll_content_effect_insertions: scroll_content_effect_insertions,
+        planned_boundary_dag: boundary_dag,
     };
     let plan = FramePaintPlan {
         steps: Vec::new(),
@@ -2921,6 +4688,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
             effect_scaffold: None,
             scroll_schedule_scaffold: Some(scaffold),
             nested_scroll_scaffold: None,
+            native_scroll_forest_scaffold: None,
         }),
     };
     property_scene_plan_is_sealed(&plan)
@@ -2930,6 +4698,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
 
 fn property_scroll_root_schedule_is_supported(steps: &[PropertySceneScheduledStep]) -> bool {
     match steps {
+        [] => true,
         [
             PropertySceneScheduledStep::ScrollBoundary {
                 basis: ScrollCompositeBasis::FrameRoot,
@@ -2970,8 +4739,759 @@ fn property_scroll_root_schedule_is_supported(steps: &[PropertySceneScheduledSte
                 ..
             },
         ] => transform.id == *parent && effect == basis,
+        [
+            PropertySceneScheduledStep::RetainedSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Effect(effect),
+                parent: None,
+            },
+            PropertySceneScheduledStep::RetainedSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
+                parent: Some(PropertyScheduledSurfaceBoundaryId::Effect(parent)),
+            },
+            PropertySceneScheduledStep::ScrollBoundary {
+                basis: ScrollCompositeBasis::Transform(basis),
+                ..
+            },
+        ] => effect.id == *parent && transform == basis,
+        [
+            PropertySceneScheduledStep::ScrollBoundary {
+                scroll,
+                basis: ScrollCompositeBasis::FrameRoot,
+                ..
+            },
+            PropertySceneScheduledStep::ScrollContentSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Effect(_),
+                scroll: receiver,
+            },
+        ] => scroll == receiver,
+        [
+            PropertySceneScheduledStep::RetainedSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
+                parent: None,
+            },
+            PropertySceneScheduledStep::ScrollBoundary {
+                scroll,
+                basis: ScrollCompositeBasis::Transform(basis),
+                ..
+            },
+            PropertySceneScheduledStep::ScrollContentSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Effect(_),
+                scroll: receiver,
+            },
+        ] => transform == basis && scroll == receiver,
         _ => false,
     }
+}
+
+fn property_boundary_insertion_seal(
+    insertion_index: usize,
+    before_span: Range<usize>,
+    after_span: Range<usize>,
+    receiver_opaque_before: u32,
+    receiver_opaque_after: u32,
+    recorded_steps: &[PropertyScrollReceiverRecordedStepIdentity],
+) -> PropertyBoundaryInsertionSeal {
+    PropertyBoundaryInsertionSeal {
+        insertion_index,
+        before_span,
+        after_span,
+        receiver_opaque_before,
+        receiver_opaque_after,
+        recorded_steps: recorded_steps.to_vec(),
+    }
+}
+
+fn property_boundary_neutral_path(
+    arena: &NodeArena,
+    receiver_owner: NodeKey,
+    boundary_owner: NodeKey,
+) -> Option<Vec<PropertyBoundaryPathOwnerWitness>> {
+    if receiver_owner == boundary_owner {
+        return Some(Vec::new());
+    }
+    let mut reverse = Vec::new();
+    let mut current = arena.parent_of(boundary_owner)?;
+    while current != receiver_owner {
+        let node = arena.get(current)?;
+        let stable_id = node.element.stable_id();
+        if stable_id == 0 {
+            return None;
+        }
+        reverse.push(PropertyBoundaryPathOwnerWitness {
+            owner: current,
+            stable_id,
+        });
+        current = arena.parent_of(current)?;
+    }
+    reverse.reverse();
+    Some(reverse)
+}
+
+fn property_boundary_consumption(
+    boundary: &PropertyScrollBoundaryContract,
+    kind: ConsumedPropertyBoundary,
+) -> Option<ConsumedPropertyEntry> {
+    boundary
+        .consumed_properties
+        .entries
+        .iter()
+        .copied()
+        .find(|entry| entry.boundary == kind)
+}
+
+fn property_scroll_content_effect_consumption(
+    property_trees: &PropertyTrees,
+    effect: EffectNodeSnapshot,
+) -> Option<ConsumedPropertyEntry> {
+    let mut projected_after = property_trees.node_state_for(effect.owner)?.descendants;
+    let expected_before = projected_after;
+    if projected_after.effect != Some(effect.id) {
+        return None;
+    }
+    projected_after.effect = effect.parent;
+    Some(ConsumedPropertyEntry {
+        boundary: ConsumedPropertyBoundary::Effect(effect.id),
+        expected_before,
+        projected_after,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_property_boundary_dag_node(
+    arena: &NodeArena,
+    nodes: &mut Vec<PropertyBoundaryDagNode>,
+    scene_root_ordinal: u32,
+    receiver: PropertyBoundaryReceiverScope,
+    kind: PropertyBoundaryDagNodeKind,
+    consumption: ConsumedPropertyEntry,
+    placement: PropertyBoundaryDagPlacement,
+) -> Result<PropertyBoundaryDagNodeId, FramePaintPlanError> {
+    let owner = kind.owner();
+    let stable_id = arena
+        .get(owner)
+        .map(|node| node.element.stable_id())
+        .filter(|stable_id| *stable_id != 0)
+        .ok_or_else(property_scene_error)?;
+    let id =
+        PropertyBoundaryDagNodeId(u32::try_from(nodes.len()).map_err(|_| property_scene_error())?);
+    nodes.push(PropertyBoundaryDagNode {
+        id,
+        scene_root_ordinal,
+        owner,
+        stable_id,
+        receiver,
+        kind,
+        consumption,
+        placement,
+    });
+    Ok(id)
+}
+
+fn project_property_boundary_dag(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    roots: &[PropertyScrollScheduleRoot],
+    schedule: &PropertySceneSchedule,
+    boundaries: &[PropertyScrollBoundaryContract],
+    receiver_insertions: &[PropertyScrollReceiverInsertionContract],
+    same_owner_transform_scroll_insertions:
+        &[PropertySameOwnerTransformScrollReceiverInsertionContract],
+    same_owner_effect_scroll_insertions:
+        &[PropertySameOwnerEffectScrollReceiverInsertionContract],
+    frame_receiver_insertions: &[PropertyFrameScrollReceiverInsertionContract],
+    effect_receiver_insertions: &[PropertyEffectScrollReceiverInsertionContract],
+    transform_effect_receiver_insertions: &[PropertyTransformEffectScrollReceiverInsertionContract],
+    effect_transform_receiver_insertions: &[PropertyEffectTransformScrollReceiverInsertionContract],
+    scroll_content_effect_insertions: &[PropertyScrollContentEffectInsertionContract],
+) -> Result<PropertyBoundaryDag, FramePaintPlanError> {
+    let mut dag_roots = Vec::with_capacity(roots.len());
+    let mut nodes = Vec::new();
+    for root in roots {
+        let node_start = nodes.len();
+        let root_steps = schedule
+            .steps
+            .get(root.step_span.clone())
+            .ok_or_else(property_scene_error)?;
+        let root_boundary = boundaries
+            .iter()
+            .find(|boundary| boundary.scene_root_ordinal == root.ordinal);
+        if root_steps.is_empty() {
+            if root_boundary.is_some() {
+                return Err(property_scene_error());
+            }
+        } else {
+            let boundary = root_boundary.ok_or_else(property_scene_error)?;
+            let scroll_marker = super::PlannedBoundary {
+                root: boundary.scroll.owner,
+                stable_id: arena
+                    .get(boundary.scroll.owner)
+                    .map(|node| node.element.stable_id())
+                    .filter(|stable_id| *stable_id != 0)
+                    .ok_or_else(property_scene_error)?,
+                kind: super::PlannedBoundaryKind::Scroll(boundary.scroll.id),
+            };
+            let scroll_consumption = property_boundary_consumption(
+                boundary,
+                ConsumedPropertyBoundary::ScrollContents {
+                    scroll: boundary.scroll.id,
+                    contents_clip: boundary.contents_clip.id,
+                },
+            )
+            .ok_or_else(property_scene_error)?;
+            match root_steps {
+                [PropertySceneScheduledStep::ScrollBoundary { .. }] => {
+                    let insertion = frame_receiver_insertions.iter().find(|insertion| {
+                        insertion.scene_root_ordinal == root.ordinal
+                            && insertion.scroll_boundary_ordinal == boundary.ordinal
+                    });
+                    let sealed = insertion.map(|insertion| {
+                        property_boundary_insertion_seal(
+                            insertion.insertion_index,
+                            insertion.before_span.clone(),
+                            insertion.after_span.clone(),
+                            insertion.receiver_opaque_before,
+                            insertion.receiver_opaque_after,
+                            &insertion.recorded_steps,
+                        )
+                    });
+                    let neutral_path =
+                        property_boundary_neutral_path(arena, root.root, boundary.scroll.owner)
+                            .ok_or_else(property_scene_error)?;
+                    push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::FrameRoot {
+                            scene_root_ordinal: root.ordinal,
+                        },
+                        PropertyBoundaryDagNodeKind::Scroll(boundary.clone()),
+                        scroll_consumption,
+                        PropertyBoundaryDagPlacement::Cutout {
+                            marker: scroll_marker,
+                            neutral_path,
+                            sealed,
+                        },
+                    )?;
+                }
+                [
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
+                        parent: None,
+                    },
+                    PropertySceneScheduledStep::ScrollBoundary { .. },
+                ] => {
+                    let transform_consumption = property_boundary_consumption(
+                        boundary,
+                        ConsumedPropertyBoundary::Transform(transform.id),
+                    )
+                    .ok_or_else(property_scene_error)?;
+                    let transform_id = push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::FrameRoot {
+                            scene_root_ordinal: root.ordinal,
+                        },
+                        PropertyBoundaryDagNodeKind::Transform(*transform),
+                        transform_consumption,
+                        PropertyBoundaryDagPlacement::Root,
+                    )?;
+                    let insertion = receiver_insertions
+                        .iter()
+                        .find(|insertion| {
+                            insertion.scene_root_ordinal == root.ordinal
+                                && insertion.scroll_boundary_ordinal == boundary.ordinal
+                        })
+                        .or_else(|| {
+                            same_owner_transform_scroll_insertions
+                                .iter()
+                                .map(|insertion| &insertion.receiver)
+                                .find(|insertion| {
+                                    insertion.scene_root_ordinal == root.ordinal
+                                        && insertion.scroll_boundary_ordinal == boundary.ordinal
+                                })
+                        });
+                    let sealed = insertion.map(|insertion| {
+                        property_boundary_insertion_seal(
+                            insertion.insertion_index,
+                            insertion.before_span.clone(),
+                            insertion.after_span.clone(),
+                            insertion.receiver_opaque_before,
+                            insertion.receiver_opaque_after,
+                            &insertion.recorded_steps,
+                        )
+                    });
+                    push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::Surface(transform_id),
+                        PropertyBoundaryDagNodeKind::Scroll(boundary.clone()),
+                        scroll_consumption,
+                        PropertyBoundaryDagPlacement::Cutout {
+                            marker: scroll_marker,
+                            neutral_path: property_boundary_neutral_path(
+                                arena,
+                                transform.owner,
+                                boundary.scroll.owner,
+                            )
+                            .ok_or_else(property_scene_error)?,
+                            sealed,
+                        },
+                    )?;
+                }
+                [
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Effect(effect),
+                        parent: None,
+                    },
+                    PropertySceneScheduledStep::ScrollBoundary { .. },
+                ] => {
+                    let effect_consumption = property_boundary_consumption(
+                        boundary,
+                        ConsumedPropertyBoundary::Effect(effect.id),
+                    )
+                    .ok_or_else(property_scene_error)?;
+                    let effect_id = push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::FrameRoot {
+                            scene_root_ordinal: root.ordinal,
+                        },
+                        PropertyBoundaryDagNodeKind::Effect(*effect),
+                        effect_consumption,
+                        PropertyBoundaryDagPlacement::Root,
+                    )?;
+                    let insertion = effect_receiver_insertions
+                        .iter()
+                        .find(|insertion| {
+                            insertion.scene_root_ordinal == root.ordinal
+                                && insertion.scroll_boundary_ordinal == boundary.ordinal
+                        })
+                        .or_else(|| {
+                            same_owner_effect_scroll_insertions
+                                .iter()
+                                .map(|insertion| &insertion.receiver)
+                                .find(|insertion| {
+                                    insertion.scene_root_ordinal == root.ordinal
+                                        && insertion.scroll_boundary_ordinal == boundary.ordinal
+                                })
+                        });
+                    let sealed = insertion.map(|insertion| {
+                        property_boundary_insertion_seal(
+                            insertion.insertion_index,
+                            insertion.before_span.clone(),
+                            insertion.after_span.clone(),
+                            insertion.receiver_opaque_before,
+                            insertion.receiver_opaque_after,
+                            &insertion.recorded_steps,
+                        )
+                    });
+                    push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::Surface(effect_id),
+                        PropertyBoundaryDagNodeKind::Scroll(boundary.clone()),
+                        scroll_consumption,
+                        PropertyBoundaryDagPlacement::Cutout {
+                            marker: scroll_marker,
+                            neutral_path: property_boundary_neutral_path(
+                                arena,
+                                effect.owner,
+                                boundary.scroll.owner,
+                            )
+                            .ok_or_else(property_scene_error)?,
+                            sealed,
+                        },
+                    )?;
+                }
+                [
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
+                        parent: None,
+                    },
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Effect(effect),
+                        parent: Some(PropertyScheduledSurfaceBoundaryId::Transform(parent)),
+                    },
+                    PropertySceneScheduledStep::ScrollBoundary { .. },
+                ] if *parent == transform.id => {
+                    let insertion = transform_effect_receiver_insertions
+                        .iter()
+                        .find(|insertion| {
+                            insertion.scene_root_ordinal == root.ordinal
+                                && insertion.inner.scroll_boundary_ordinal == boundary.ordinal
+                        })
+                        .ok_or_else(property_scene_error)?;
+                    let transform_consumption = property_boundary_consumption(
+                        boundary,
+                        ConsumedPropertyBoundary::Transform(transform.id),
+                    )
+                    .ok_or_else(property_scene_error)?;
+                    let transform_id = push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::FrameRoot {
+                            scene_root_ordinal: root.ordinal,
+                        },
+                        PropertyBoundaryDagNodeKind::Transform(*transform),
+                        transform_consumption,
+                        PropertyBoundaryDagPlacement::Root,
+                    )?;
+                    let effect_marker = insertion.effect_cutout;
+                    let effect_consumption = property_boundary_consumption(
+                        boundary,
+                        ConsumedPropertyBoundary::Effect(effect.id),
+                    )
+                    .ok_or_else(property_scene_error)?;
+                    let effect_id = push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::Surface(transform_id),
+                        PropertyBoundaryDagNodeKind::Effect(*effect),
+                        effect_consumption,
+                        PropertyBoundaryDagPlacement::Cutout {
+                            marker: effect_marker,
+                            neutral_path: property_boundary_neutral_path(
+                                arena,
+                                transform.owner,
+                                effect.owner,
+                            )
+                            .ok_or_else(property_scene_error)?,
+                            sealed: Some(property_boundary_insertion_seal(
+                                insertion.outer_insertion_index,
+                                insertion.outer_before_span.clone(),
+                                insertion.outer_after_span.clone(),
+                                insertion.outer_opaque_before,
+                                insertion.outer_opaque_after,
+                                &insertion.outer_recorded_steps,
+                            )),
+                        },
+                    )?;
+                    push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::Surface(effect_id),
+                        PropertyBoundaryDagNodeKind::Scroll(boundary.clone()),
+                        scroll_consumption,
+                        PropertyBoundaryDagPlacement::Cutout {
+                            marker: scroll_marker,
+                            neutral_path: property_boundary_neutral_path(
+                                arena,
+                                effect.owner,
+                                boundary.scroll.owner,
+                            )
+                            .ok_or_else(property_scene_error)?,
+                            sealed: Some(property_boundary_insertion_seal(
+                                insertion.inner.insertion_index,
+                                insertion.inner.before_span.clone(),
+                                insertion.inner.after_span.clone(),
+                                insertion.inner.receiver_opaque_before,
+                                insertion.inner.receiver_opaque_after,
+                                &insertion.inner.recorded_steps,
+                            )),
+                        },
+                    )?;
+                }
+                [
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Effect(effect),
+                        parent: None,
+                    },
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
+                        parent: Some(PropertyScheduledSurfaceBoundaryId::Effect(parent)),
+                    },
+                    PropertySceneScheduledStep::ScrollBoundary { .. },
+                ] if *parent == effect.id => {
+                    let insertion = effect_transform_receiver_insertions
+                        .iter()
+                        .find(|insertion| {
+                            insertion.scene_root_ordinal == root.ordinal
+                                && insertion.inner.scroll_boundary_ordinal == boundary.ordinal
+                        })
+                        .ok_or_else(property_scene_error)?;
+                    let effect_consumption = property_boundary_consumption(
+                        boundary,
+                        ConsumedPropertyBoundary::Effect(effect.id),
+                    )
+                    .ok_or_else(property_scene_error)?;
+                    let effect_id = push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::FrameRoot {
+                            scene_root_ordinal: root.ordinal,
+                        },
+                        PropertyBoundaryDagNodeKind::Effect(*effect),
+                        effect_consumption,
+                        PropertyBoundaryDagPlacement::Root,
+                    )?;
+                    let transform_consumption = property_boundary_consumption(
+                        boundary,
+                        ConsumedPropertyBoundary::Transform(transform.id),
+                    )
+                    .ok_or_else(property_scene_error)?;
+                    let transform_id = push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::Surface(effect_id),
+                        PropertyBoundaryDagNodeKind::Transform(*transform),
+                        transform_consumption,
+                        PropertyBoundaryDagPlacement::Cutout {
+                            marker: insertion.transform_cutout,
+                            neutral_path: property_boundary_neutral_path(
+                                arena,
+                                effect.owner,
+                                transform.owner,
+                            )
+                            .ok_or_else(property_scene_error)?,
+                            sealed: Some(property_boundary_insertion_seal(
+                                insertion.outer_insertion_index,
+                                insertion.outer_before_span.clone(),
+                                insertion.outer_after_span.clone(),
+                                insertion.outer_opaque_before,
+                                insertion.outer_opaque_after,
+                                &insertion.outer_recorded_steps,
+                            )),
+                        },
+                    )?;
+                    push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::Surface(transform_id),
+                        PropertyBoundaryDagNodeKind::Scroll(boundary.clone()),
+                        scroll_consumption,
+                        PropertyBoundaryDagPlacement::Cutout {
+                            marker: scroll_marker,
+                            neutral_path: property_boundary_neutral_path(
+                                arena,
+                                transform.owner,
+                                boundary.scroll.owner,
+                            )
+                            .ok_or_else(property_scene_error)?,
+                            sealed: Some(property_boundary_insertion_seal(
+                                insertion.inner.insertion_index,
+                                insertion.inner.before_span.clone(),
+                                insertion.inner.after_span.clone(),
+                                insertion.inner.receiver_opaque_before,
+                                insertion.inner.receiver_opaque_after,
+                                &insertion.inner.recorded_steps,
+                            )),
+                        },
+                    )?;
+                }
+                [
+                    PropertySceneScheduledStep::ScrollBoundary { .. },
+                    PropertySceneScheduledStep::ScrollContentSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Effect(effect),
+                        scroll,
+                    },
+                ] if *scroll == boundary.scroll.id => {
+                    let content_insertion = scroll_content_effect_insertions
+                        .iter()
+                        .find(|insertion| {
+                            insertion.scene_root_ordinal == root.ordinal
+                                && insertion.scroll_boundary_ordinal == boundary.ordinal
+                                && insertion.effect == *effect
+                        })
+                        .ok_or_else(property_scene_error)?;
+                    let insertion = frame_receiver_insertions.iter().find(|insertion| {
+                        insertion.scene_root_ordinal == root.ordinal
+                            && insertion.scroll_boundary_ordinal == boundary.ordinal
+                    });
+                    let scroll_id = push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::FrameRoot {
+                            scene_root_ordinal: root.ordinal,
+                        },
+                        PropertyBoundaryDagNodeKind::Scroll(boundary.clone()),
+                        scroll_consumption,
+                        PropertyBoundaryDagPlacement::Cutout {
+                            marker: scroll_marker,
+                            neutral_path: property_boundary_neutral_path(
+                                arena,
+                                root.root,
+                                boundary.scroll.owner,
+                            )
+                            .ok_or_else(property_scene_error)?,
+                            sealed: insertion.map(|insertion| {
+                                property_boundary_insertion_seal(
+                                    insertion.insertion_index,
+                                    insertion.before_span.clone(),
+                                    insertion.after_span.clone(),
+                                    insertion.receiver_opaque_before,
+                                    insertion.receiver_opaque_after,
+                                    &insertion.recorded_steps,
+                                )
+                            }),
+                        },
+                    )?;
+                    let effect_consumption =
+                        property_scroll_content_effect_consumption(property_trees, *effect)
+                            .ok_or_else(property_scene_error)?;
+                    let effect_marker = super::PlannedBoundary {
+                        root: effect.owner,
+                        stable_id: arena
+                            .get(effect.owner)
+                            .map(|node| node.element.stable_id())
+                            .filter(|stable_id| *stable_id != 0)
+                            .ok_or_else(property_scene_error)?,
+                        kind: super::PlannedBoundaryKind::Isolation(effect.id),
+                    };
+                    push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::ScrollContent(scroll_id),
+                        PropertyBoundaryDagNodeKind::Effect(*effect),
+                        effect_consumption,
+                        PropertyBoundaryDagPlacement::Cutout {
+                            marker: effect_marker,
+                            neutral_path: property_boundary_neutral_path(
+                                arena,
+                                boundary.scroll.owner,
+                                effect.owner,
+                            )
+                            .ok_or_else(property_scene_error)?,
+                            sealed: Some(property_boundary_insertion_seal(
+                                content_insertion.insertion_index,
+                                content_insertion.before_span.clone(),
+                                content_insertion.after_span.clone(),
+                                content_insertion.receiver_opaque_before,
+                                content_insertion.receiver_opaque_after,
+                                &content_insertion.receiver_recorded_steps,
+                            )),
+                        },
+                    )?;
+                }
+                [
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
+                        parent: None,
+                    },
+                    PropertySceneScheduledStep::ScrollBoundary { .. },
+                    PropertySceneScheduledStep::ScrollContentSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Effect(effect),
+                        scroll,
+                    },
+                ] if *scroll == boundary.scroll.id => {
+                    let content_insertion = scroll_content_effect_insertions
+                        .iter()
+                        .find(|insertion| {
+                            insertion.scene_root_ordinal == root.ordinal
+                                && insertion.scroll_boundary_ordinal == boundary.ordinal
+                                && insertion.effect == *effect
+                        })
+                        .ok_or_else(property_scene_error)?;
+                    let transform_consumption = property_boundary_consumption(
+                        boundary,
+                        ConsumedPropertyBoundary::Transform(transform.id),
+                    )
+                    .ok_or_else(property_scene_error)?;
+                    let transform_id = push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::FrameRoot {
+                            scene_root_ordinal: root.ordinal,
+                        },
+                        PropertyBoundaryDagNodeKind::Transform(*transform),
+                        transform_consumption,
+                        PropertyBoundaryDagPlacement::Root,
+                    )?;
+                    let insertion = receiver_insertions.iter().find(|insertion| {
+                        insertion.scene_root_ordinal == root.ordinal
+                            && insertion.scroll_boundary_ordinal == boundary.ordinal
+                    });
+                    let scroll_id = push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::Surface(transform_id),
+                        PropertyBoundaryDagNodeKind::Scroll(boundary.clone()),
+                        scroll_consumption,
+                        PropertyBoundaryDagPlacement::Cutout {
+                            marker: scroll_marker,
+                            neutral_path: property_boundary_neutral_path(
+                                arena,
+                                transform.owner,
+                                boundary.scroll.owner,
+                            )
+                            .ok_or_else(property_scene_error)?,
+                            sealed: insertion.map(|insertion| {
+                                property_boundary_insertion_seal(
+                                    insertion.insertion_index,
+                                    insertion.before_span.clone(),
+                                    insertion.after_span.clone(),
+                                    insertion.receiver_opaque_before,
+                                    insertion.receiver_opaque_after,
+                                    &insertion.recorded_steps,
+                                )
+                            }),
+                        },
+                    )?;
+                    let effect_consumption =
+                        property_scroll_content_effect_consumption(property_trees, *effect)
+                            .ok_or_else(property_scene_error)?;
+                    let effect_marker = super::PlannedBoundary {
+                        root: effect.owner,
+                        stable_id: arena
+                            .get(effect.owner)
+                            .map(|node| node.element.stable_id())
+                            .filter(|stable_id| *stable_id != 0)
+                            .ok_or_else(property_scene_error)?,
+                        kind: super::PlannedBoundaryKind::Isolation(effect.id),
+                    };
+                    push_property_boundary_dag_node(
+                        arena,
+                        &mut nodes,
+                        root.ordinal,
+                        PropertyBoundaryReceiverScope::ScrollContent(scroll_id),
+                        PropertyBoundaryDagNodeKind::Effect(*effect),
+                        effect_consumption,
+                        PropertyBoundaryDagPlacement::Cutout {
+                            marker: effect_marker,
+                            neutral_path: property_boundary_neutral_path(
+                                arena,
+                                boundary.scroll.owner,
+                                effect.owner,
+                            )
+                            .ok_or_else(property_scene_error)?,
+                            sealed: Some(property_boundary_insertion_seal(
+                                content_insertion.insertion_index,
+                                content_insertion.before_span.clone(),
+                                content_insertion.after_span.clone(),
+                                content_insertion.receiver_opaque_before,
+                                content_insertion.receiver_opaque_after,
+                                &content_insertion.receiver_recorded_steps,
+                            )),
+                        },
+                    )?;
+                }
+                _ => return Err(property_scene_error()),
+            }
+        }
+        dag_roots.push(PropertyBoundaryDagRoot {
+            scene_root_ordinal: root.ordinal,
+            root: root.root,
+            stable_id: root.stable_id,
+            node_span: node_start..nodes.len(),
+        });
+    }
+    Ok(PropertyBoundaryDag {
+        roots: dag_roots,
+        nodes,
+    })
 }
 
 pub(super) fn property_scroll_receiver_artifact_identity(
@@ -3062,8 +5582,11 @@ fn plan_property_scroll_receiver_insertions(
         let boundary = boundaries
             .get(*boundary_ordinal as usize)
             .ok_or_else(property_scene_error)?;
-        if boundary.scroll.id != *scroll || boundary.scroll.owner == receiver.owner {
+        if boundary.scroll.id != *scroll {
             return Err(property_scene_error());
+        }
+        if boundary.scroll.owner == receiver.owner {
+            continue;
         }
         let receiver_stable_id = arena
             .get(receiver.owner)
@@ -3140,6 +5663,234 @@ fn plan_property_scroll_receiver_insertions(
             scene_root_ordinal: root.ordinal,
             receiver: *receiver,
             receiver_stable_id,
+            scroll_boundary_ordinal: *boundary_ordinal,
+            scroll_cutout,
+            insertion_index: *insertion_index,
+            before_span: 0..*insertion_index,
+            after_span: *insertion_index + 1..recorded_steps.len(),
+            receiver_opaque_before,
+            receiver_opaque_after,
+            recorded_steps,
+        });
+    }
+    Ok(insertions)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_same_owner_transform_scroll_receiver_insertions(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    roots: &[PropertyScrollScheduleRoot],
+    schedule: &PropertySceneSchedule,
+    boundaries: &[PropertyScrollBoundaryContract],
+) -> Result<Vec<PropertySameOwnerTransformScrollReceiverInsertionContract>, FramePaintPlanError> {
+    let mut insertions = Vec::new();
+    for root in roots {
+        let root_steps = schedule
+            .steps
+            .get(root.step_span.clone())
+            .ok_or_else(property_scene_error)?;
+        let [
+            PropertySceneScheduledStep::RetainedSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Transform(receiver),
+                parent: None,
+            },
+            PropertySceneScheduledStep::ScrollBoundary {
+                boundary_ordinal,
+                scroll,
+                basis: ScrollCompositeBasis::Transform(basis),
+                ..
+            },
+        ] = root_steps
+        else {
+            continue;
+        };
+        let boundary = boundaries
+            .get(*boundary_ordinal as usize)
+            .ok_or_else(property_scene_error)?;
+        if receiver != basis
+            || receiver.owner != root.root
+            || receiver.owner != boundary.scroll.owner
+            || boundary.scroll.id != *scroll
+            || boundary.contents_clip.owner != receiver.owner
+        {
+            continue;
+        }
+        let receiver_node = arena.get(receiver.owner).ok_or_else(property_scene_error)?;
+        let [content_root] = receiver_node.element.children() else {
+            return Err(property_scene_error());
+        };
+        let content_node = arena.get(*content_root).ok_or_else(property_scene_error)?;
+        let scroll_cutout = super::PlannedBoundary {
+            root: receiver.owner,
+            stable_id: root.stable_id,
+            kind: super::PlannedBoundaryKind::Scroll(boundary.scroll.id),
+        };
+        let recorded =
+            super::frame_recorder::record_same_owner_transform_scroll_receiver_steps_for_plan(
+                arena,
+                receiver.owner,
+                property_trees,
+                paint_generations,
+                *receiver,
+                boundary.scroll,
+                boundary.contents_clip,
+                scroll_cutout,
+            )
+            .map_err(|fallbacks| FramePaintPlanError {
+                reasons: fallbacks
+                    .into_iter()
+                    .map(FramePaintPlanRejection::Coverage)
+                    .collect(),
+            })?;
+        let [super::frame_recorder::RecordedTransformSurfaceStep::Boundary(marker)] =
+            recorded.as_slice()
+        else {
+            return Err(property_scene_error());
+        };
+        if *marker != scroll_cutout {
+            return Err(property_scene_error());
+        }
+        let receiver_contract = PropertyScrollReceiverInsertionContract {
+            scene_root_ordinal: root.ordinal,
+            receiver: *receiver,
+            receiver_stable_id: root.stable_id,
+            scroll_boundary_ordinal: *boundary_ordinal,
+            scroll_cutout,
+            insertion_index: 0,
+            before_span: 0..0,
+            after_span: 1..1,
+            receiver_opaque_before: 0,
+            receiver_opaque_after: 0,
+            recorded_steps: vec![PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(
+                scroll_cutout,
+            )],
+        };
+        let contract = PropertySameOwnerTransformScrollReceiverInsertionContract {
+            receiver: receiver_contract,
+            owner: receiver.owner,
+            stable_id: root.stable_id,
+            transform: *receiver,
+            scroll: boundary.scroll,
+            contents_clip: boundary.contents_clip,
+            content_root: *content_root,
+            content_stable_id: content_node.element.stable_id(),
+        };
+        if !contract.is_canonical() {
+            return Err(property_scene_error());
+        }
+        insertions.push(contract);
+    }
+    Ok(insertions)
+}
+
+fn plan_property_frame_scroll_receiver_insertions(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    context: TransformSurfacePlanContext,
+    roots: &[PropertyScrollScheduleRoot],
+    schedule: &PropertySceneSchedule,
+    boundaries: &[PropertyScrollBoundaryContract],
+) -> Result<Vec<PropertyFrameScrollReceiverInsertionContract>, FramePaintPlanError> {
+    let mut insertions = Vec::new();
+    for root in roots {
+        let root_steps = schedule
+            .steps
+            .get(root.step_span.clone())
+            .ok_or_else(property_scene_error)?;
+        let [
+            PropertySceneScheduledStep::ScrollBoundary {
+                boundary_ordinal,
+                scroll,
+                basis: ScrollCompositeBasis::FrameRoot,
+                ..
+            },
+        ] = root_steps
+        else {
+            continue;
+        };
+        let boundary = boundaries
+            .get(*boundary_ordinal as usize)
+            .ok_or_else(property_scene_error)?;
+        if boundary.scroll.id != *scroll
+            || context.paint_offset_bits != [0.0_f32.to_bits(); 2]
+            || context.outer_scissor_rect().is_some()
+        {
+            return Err(property_scene_error());
+        }
+        let scroll_cutout = super::PlannedBoundary {
+            root: boundary.scroll.owner,
+            stable_id: arena
+                .get(boundary.scroll.owner)
+                .ok_or_else(property_scene_error)?
+                .element
+                .stable_id(),
+            kind: super::PlannedBoundaryKind::Scroll(boundary.scroll.id),
+        };
+        let cutouts =
+            super::PlannedBoundaryCutoutSet::from_iter([(scroll_cutout.root, scroll_cutout)]);
+        let recorded = super::frame_recorder::record_property_scene_steps_for_plan(
+            arena,
+            &[root.root],
+            property_trees,
+            paint_generations,
+            context.paint_offset(),
+            &cutouts,
+        )
+        .map_err(|fallbacks| FramePaintPlanError {
+            reasons: fallbacks
+                .into_iter()
+                .map(FramePaintPlanRejection::Coverage)
+                .collect(),
+        })?;
+        let recorded_steps = recorded
+            .into_iter()
+            .map(|step| match step {
+                super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                    property_scroll_receiver_artifact_identity(&artifact)
+                        .map(PropertyScrollReceiverRecordedStepIdentity::Artifact)
+                }
+                super::frame_recorder::RecordedTransformSurfaceStep::Boundary(marker) => Some(
+                    PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(marker),
+                ),
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(property_scene_error)?;
+        let markers = recorded_steps
+            .iter()
+            .enumerate()
+            .filter_map(|(index, step)| {
+                matches!(step, PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(marker) if *marker == scroll_cutout)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let [insertion_index] = markers.as_slice() else {
+            return Err(property_scene_error());
+        };
+        let receiver_opaque_before = recorded_steps[..*insertion_index]
+            .iter()
+            .try_fold(0_u32, |cursor, step| match step {
+                PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact) => {
+                    cursor.checked_add(artifact.opaque_count)
+                }
+                PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(_) => None,
+            })
+            .ok_or_else(property_scene_error)?;
+        let receiver_opaque_after = recorded_steps[*insertion_index + 1..]
+            .iter()
+            .try_fold(receiver_opaque_before, |cursor, step| match step {
+                PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact) => {
+                    cursor.checked_add(artifact.opaque_count)
+                }
+                PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(_) => None,
+            })
+            .ok_or_else(property_scene_error)?;
+        insertions.push(PropertyFrameScrollReceiverInsertionContract {
+            scene_root_ordinal: root.ordinal,
+            receiver_root: root.root,
+            receiver_stable_id: root.stable_id,
             scroll_boundary_ordinal: *boundary_ordinal,
             scroll_cutout,
             insertion_index: *insertion_index,
@@ -3250,6 +6001,12 @@ fn plan_property_effect_scroll_receiver_insertions(
         let boundary = boundaries
             .get(*boundary_ordinal as usize)
             .ok_or_else(property_scene_error)?;
+        if boundary.scroll.owner == receiver.owner {
+            // Equal-owner E+S is admitted only by the dedicated typed
+            // self-role planner below. The generic recorder keeps rejecting
+            // self cutouts.
+            continue;
+        }
         if receiver != basis
             || receiver.id.0 != root.root
             || receiver.owner != root.root
@@ -3258,7 +6015,6 @@ fn plan_property_effect_scroll_receiver_insertions(
             || !receiver.opacity.is_finite()
             || !(0.0..=1.0).contains(&receiver.opacity)
             || boundary.scroll.id != *scroll
-            || boundary.scroll.owner == receiver.owner
             || arena.children_of(receiver.owner) != [boundary.scroll.owner]
             || arena.parent_of(boundary.scroll.owner) != Some(receiver.owner)
             || context.paint_offset_bits != [0.0_f32.to_bits(); 2]
@@ -3415,6 +6171,617 @@ fn plan_property_effect_scroll_receiver_insertions(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn plan_same_owner_effect_scroll_receiver_insertions(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    context: TransformSurfacePlanContext,
+    roots: &[PropertyScrollScheduleRoot],
+    schedule: &PropertySceneSchedule,
+    boundaries: &[PropertyScrollBoundaryContract],
+) -> Result<Vec<PropertySameOwnerEffectScrollReceiverInsertionContract>, FramePaintPlanError> {
+    let mut insertions = Vec::new();
+    for root in roots {
+        let root_steps = schedule
+            .steps
+            .get(root.step_span.clone())
+            .ok_or_else(property_scene_error)?;
+        let [
+            PropertySceneScheduledStep::RetainedSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Effect(receiver),
+                parent: None,
+            },
+            PropertySceneScheduledStep::ScrollBoundary {
+                boundary_ordinal,
+                scroll,
+                basis: ScrollCompositeBasis::Effect(basis),
+                ..
+            },
+        ] = root_steps
+        else {
+            continue;
+        };
+        let boundary = boundaries
+            .get(*boundary_ordinal as usize)
+            .ok_or_else(property_scene_error)?;
+        if receiver != basis
+            || receiver.id.0 != root.root
+            || receiver.owner != root.root
+            || receiver.parent.is_some()
+            || receiver.generation == 0
+            || !receiver.opacity.is_finite()
+            || !(0.0..=1.0).contains(&receiver.opacity)
+            || boundary.scroll.id != *scroll
+            || boundary.scroll.owner != receiver.owner
+            || boundary.contents_clip.owner != receiver.owner
+            || context.paint_offset_bits != [0.0_f32.to_bits(); 2]
+            || context.outer_scissor_rect().is_some()
+        {
+            continue;
+        }
+        let children = arena.children_of(receiver.owner);
+        let [content_root] = children.as_slice() else {
+            return Err(property_scene_error());
+        };
+        let content_stable_id = arena
+            .get(*content_root)
+            .map(|node| node.element.stable_id())
+            .filter(|stable_id| *stable_id != 0)
+            .ok_or_else(property_scene_error)?;
+        let generations = paint_generations
+            .local_generations_for(receiver.owner)
+            .ok_or_else(property_scene_error)?;
+        let artifact_contract = EffectPropertySurfaceArtifactContract::new(
+            receiver.owner,
+            root.stable_id,
+            *receiver,
+            vec![*receiver],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![EffectPropertyContentWitness {
+                owner: receiver.owner,
+                stable_id: root.stable_id,
+                parent: None,
+                self_paint_revision: generations.self_paint_revision,
+                topology_revision: generations.topology_revision,
+            }],
+        )
+        .ok_or_else(property_scene_error)?;
+        let scroll_cutout = super::PlannedBoundary {
+            root: receiver.owner,
+            stable_id: root.stable_id,
+            kind: super::PlannedBoundaryKind::Scroll(boundary.scroll.id),
+        };
+        let recorded =
+            super::frame_recorder::record_same_owner_effect_scroll_receiver_steps_for_plan(
+                arena,
+                receiver.owner,
+                property_trees,
+                paint_generations,
+                &artifact_contract,
+                *receiver,
+                boundary.scroll,
+                boundary.contents_clip,
+                scroll_cutout,
+            )
+            .map_err(|fallbacks| FramePaintPlanError {
+                reasons: fallbacks
+                    .into_iter()
+                    .map(FramePaintPlanRejection::Coverage)
+                    .collect(),
+            })?;
+        let [super::frame_recorder::RecordedTransformSurfaceStep::Boundary(marker)] =
+            recorded.as_slice()
+        else {
+            return Err(property_scene_error());
+        };
+        if *marker != scroll_cutout {
+            return Err(property_scene_error());
+        }
+        let raster_bounds_bits = [
+            boundary.scroll.viewport.x.to_bits(),
+            boundary.scroll.viewport.y.to_bits(),
+            boundary.scroll.viewport.width.to_bits(),
+            boundary.scroll.viewport.height.to_bits(),
+        ];
+        let recorded_steps = vec![PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(
+            scroll_cutout,
+        )];
+        let receiver_contract = PropertyEffectScrollReceiverInsertionContract {
+            scene_root_ordinal: root.ordinal,
+            receiver: *receiver,
+            receiver_stable_id: root.stable_id,
+            scroll_boundary_ordinal: *boundary_ordinal,
+            scroll_cutout,
+            insertion_index: 0,
+            before_span: 0..0,
+            after_span: 1..1,
+            receiver_opaque_before: 0,
+            receiver_opaque_after: 0,
+            raster_bounds_bits,
+            artifact_contract: artifact_contract.clone(),
+            raster_identity: PropertyEffectScrollReceiverRasterIdentity {
+                receiver_owner: receiver.owner,
+                receiver_stable_id: root.stable_id,
+                raster_bounds_bits,
+                local_raster_clips: Vec::new(),
+                content: artifact_contract.content().to_vec(),
+                recorded_steps: recorded_steps.clone(),
+            },
+            recorded_steps,
+        };
+        let insertion = PropertySameOwnerEffectScrollReceiverInsertionContract {
+            receiver: receiver_contract,
+            owner: receiver.owner,
+            stable_id: root.stable_id,
+            effect: *receiver,
+            scroll: boundary.scroll,
+            contents_clip: boundary.contents_clip,
+            content_root: *content_root,
+            content_stable_id,
+        };
+        if !insertion.is_canonical() {
+            return Err(property_scene_error());
+        }
+        insertions.push(insertion);
+    }
+    Ok(insertions)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_property_scroll_content_effect_insertions(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    context: TransformSurfacePlanContext,
+    roots: &[PropertyScrollScheduleRoot],
+    schedule: &PropertySceneSchedule,
+    boundaries: &[PropertyScrollBoundaryContract],
+) -> Result<Vec<PropertyScrollContentEffectInsertionContract>, FramePaintPlanError> {
+    let mut insertions = Vec::new();
+    for root in roots {
+        let root_steps = schedule
+            .steps
+            .get(root.step_span.clone())
+            .ok_or_else(property_scene_error)?;
+        let (boundary_ordinal, scroll, effect, outer_transform) = match root_steps {
+            [
+                PropertySceneScheduledStep::ScrollBoundary {
+                    boundary_ordinal,
+                    scroll,
+                    basis: ScrollCompositeBasis::FrameRoot,
+                    ..
+                },
+                PropertySceneScheduledStep::ScrollContentSurface {
+                    boundary: PropertyScheduledSurfaceBoundary::Effect(effect),
+                    scroll: receiver,
+                },
+            ] if scroll == receiver => (*boundary_ordinal, *scroll, *effect, None),
+            [
+                PropertySceneScheduledStep::RetainedSurface {
+                    boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
+                    parent: None,
+                },
+                PropertySceneScheduledStep::ScrollBoundary {
+                    boundary_ordinal,
+                    scroll,
+                    basis: ScrollCompositeBasis::Transform(_),
+                    ..
+                },
+                PropertySceneScheduledStep::ScrollContentSurface {
+                    boundary: PropertyScheduledSurfaceBoundary::Effect(effect),
+                    scroll: receiver,
+                },
+            ] if scroll == receiver => (*boundary_ordinal, *scroll, *effect, Some(*transform)),
+            _ => continue,
+        };
+        let boundary = boundaries
+            .get(boundary_ordinal as usize)
+            .filter(|boundary| {
+                boundary.scene_root_ordinal == root.ordinal && boundary.scroll.id == scroll
+            })
+            .ok_or_else(property_scene_error)?;
+        let scroll_host = arena
+            .get(boundary.scroll.owner)
+            .ok_or_else(property_scene_error)?;
+        let [content_root] = scroll_host.element.children() else {
+            return Err(property_scene_error());
+        };
+        let content_root = *content_root;
+        let content_stable_id = arena
+            .get(content_root)
+            .map(|node| node.element.stable_id())
+            .filter(|stable_id| *stable_id != 0)
+            .ok_or_else(property_scene_error)?;
+        if effect.id.0 != effect.owner
+            || effect.parent.is_some()
+            || effect.generation == 0
+            || !effect.opacity.is_finite()
+            || !(0.0..=1.0).contains(&effect.opacity)
+            || effect.owner == content_root
+            || property_boundary_neutral_path(arena, content_root, effect.owner).is_none()
+        {
+            return Err(property_scene_error());
+        }
+        let effect_stable_id = arena
+            .get(effect.owner)
+            .map(|node| node.element.stable_id())
+            .filter(|stable_id| *stable_id != 0)
+            .ok_or_else(property_scene_error)?;
+        let effect_chain = property_trees
+            .effect_snapshot_for(Some(effect.id))
+            .filter(|chain| chain.as_slice() == [effect])
+            .ok_or_else(property_scene_error)?;
+        let effect_state = property_trees
+            .node_state_for(effect.owner)
+            .ok_or_else(property_scene_error)?;
+        if effect_state.descendants.effect != Some(effect.id)
+            || effect_state.descendants.scroll != Some(boundary.scroll.id)
+            || effect_state.descendants.clip != Some(boundary.contents_clip.id)
+        {
+            return Err(property_scene_error());
+        }
+        let live_clips = property_trees
+            .clip_snapshot_for(effect_state.descendants.clip)
+            .ok_or_else(property_scene_error)?;
+        let contents_index = live_clips
+            .iter()
+            .position(|clip| clip.id == boundary.contents_clip.id)
+            .ok_or_else(property_scene_error)?;
+        let local_raster_clips = live_clips[..contents_index].to_vec();
+        let detached_ancestor_clips = live_clips[contents_index..].to_vec();
+        if detached_ancestor_clips.first() != Some(&boundary.contents_clip) {
+            return Err(property_scene_error());
+        }
+
+        let mut content = Vec::new();
+        let mut pending = vec![(effect.owner, None)];
+        let mut seen = FxHashSet::default();
+        while let Some((owner, parent)) = pending.pop() {
+            if !seen.insert(owner) {
+                return Err(property_scene_error());
+            }
+            let node = arena.get(owner).ok_or_else(property_scene_error)?;
+            let stable_id = node.element.stable_id();
+            let generations = paint_generations
+                .local_generations_for(owner)
+                .ok_or_else(property_scene_error)?;
+            if stable_id == 0
+                || node.element.is_deferred_to_root_viewport_render()
+                || (owner != effect.owner
+                    && (property_trees
+                        .transforms
+                        .contains_key(&TransformNodeId(owner))
+                        || property_trees.effects.contains_key(&EffectNodeId(owner))
+                        || property_trees.scrolls.contains_key(&ScrollNodeId(owner))))
+            {
+                return Err(property_scene_error());
+            }
+            content.push(EffectPropertyContentWitness {
+                owner,
+                stable_id,
+                parent,
+                self_paint_revision: generations.self_paint_revision,
+                topology_revision: generations.topology_revision,
+            });
+            for &child in node.element.children().iter().rev() {
+                pending.push((child, Some(owner)));
+            }
+        }
+        let artifact_contract = EffectPropertySurfaceArtifactContract::new(
+            effect.owner,
+            effect_stable_id,
+            effect,
+            effect_chain,
+            Vec::new(),
+            local_raster_clips,
+            detached_ancestor_clips,
+            content,
+        )
+        .ok_or_else(property_scene_error)?;
+        let content_witness = super::PaintScrollContentWitness::new(
+            boundary.scroll.owner,
+            content_root,
+            boundary.scroll,
+            boundary.contents_clip,
+        )
+        .ok_or_else(property_scene_error)?;
+        let consumed_transform = outer_transform
+            .map(|transform| {
+                ConsumedAncestorTransformWitness::new(
+                    transform.owner,
+                    boundary.scroll.owner,
+                    transform.id,
+                )
+                .ok_or_else(property_scene_error)
+            })
+            .transpose()?;
+        let effect_cutout = super::PlannedBoundary {
+            root: effect.owner,
+            stable_id: effect_stable_id,
+            kind: super::PlannedBoundaryKind::Isolation(effect.id),
+        };
+        let receiver_recorded =
+            super::frame_recorder::record_scroll_content_effect_receiver_steps_for_plan(
+                arena,
+                property_trees,
+                paint_generations,
+                content_witness,
+                effect_cutout,
+                consumed_transform,
+            )
+            .map_err(|fallbacks| FramePaintPlanError {
+                reasons: fallbacks
+                    .into_iter()
+                    .map(FramePaintPlanRejection::Coverage)
+                    .collect(),
+            })?;
+        let effect_recorded =
+            super::frame_recorder::record_scroll_content_effect_surface_steps_for_plan(
+                arena,
+                property_trees,
+                paint_generations,
+                content_witness,
+                &artifact_contract,
+                consumed_transform,
+            )
+            .map_err(|fallbacks| FramePaintPlanError {
+                reasons: fallbacks
+                    .into_iter()
+                    .map(FramePaintPlanRejection::Coverage)
+                    .collect(),
+            })?;
+        if effect_recorded.iter().any(|step| {
+            matches!(
+                step,
+                super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_)
+            )
+        }) {
+            return Err(property_scene_error());
+        }
+        let receiver_recorded_steps = receiver_recorded
+            .iter()
+            .map(|step| match step {
+                super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                    property_scroll_receiver_artifact_identity(artifact)
+                        .map(PropertyScrollReceiverRecordedStepIdentity::Artifact)
+                }
+                super::frame_recorder::RecordedTransformSurfaceStep::Boundary(marker) => Some(
+                    PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(*marker),
+                ),
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(property_scene_error)?;
+        let effect_recorded_steps = effect_recorded
+            .iter()
+            .map(|step| match step {
+                super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                    if super::compiler::validate_effect_property_surface_artifact(
+                        artifact,
+                        &artifact_contract,
+                    )
+                    .is_none()
+                    {
+                        return None;
+                    }
+                    property_scroll_receiver_artifact_identity(artifact)
+                }
+                super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_) => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(property_scene_error)?;
+        let markers = receiver_recorded_steps
+            .iter()
+            .enumerate()
+            .filter_map(|(index, step)| {
+                matches!(step, PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(marker) if *marker == effect_cutout)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let [insertion_index] = markers.as_slice() else {
+            return Err(property_scene_error());
+        };
+        let opaque_before = receiver_recorded_steps[..*insertion_index]
+            .iter()
+            .try_fold(0_u32, |cursor, step| match step {
+                PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact) => {
+                    cursor.checked_add(artifact.opaque_count)
+                }
+                PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(_) => None,
+            })
+            .ok_or_else(property_scene_error)?;
+        let opaque_after = receiver_recorded_steps[*insertion_index + 1..]
+            .iter()
+            .try_fold(opaque_before, |cursor, step| match step {
+                PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact) => {
+                    cursor.checked_add(artifact.opaque_count)
+                }
+                PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(_) => None,
+            })
+            .ok_or_else(property_scene_error)?;
+        let first_bounds = effect_recorded
+            .iter()
+            .find_map(|step| match step {
+                super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                    artifact.chunks.first().map(|chunk| chunk.bounds)
+                }
+                super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_) => None,
+            })
+            .ok_or_else(property_scene_error)?;
+        let effect_raster_bounds_bits = recorded_step_bounds_union(
+            effect_recorded.iter().filter_map(|step| match step {
+                super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                    Some(artifact.chunks.iter().map(|chunk| chunk.bounds))
+                }
+                super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_) => None,
+            }),
+            [
+                first_bounds.x,
+                first_bounds.y,
+                first_bounds.width,
+                first_bounds.height,
+            ],
+        )
+        .ok_or_else(property_scene_error)?;
+        let outer_transform = outer_transform
+            .map(|transform| {
+                if transform.id.0 != root.root
+                    || transform.owner != root.root
+                    || transform.parent.is_some()
+                    || transform.generation == 0
+                    || transform.viewport_matrix.to_cols_array().map(f32::to_bits)
+                        != property_trees
+                            .transform_snapshot_for(transform.id)
+                            .map(|live| live.viewport_matrix.to_cols_array().map(f32::to_bits))
+                            .ok_or_else(property_scene_error)?
+                {
+                    return Err(property_scene_error());
+                }
+                let receiver_node = arena
+                    .get(transform.owner)
+                    .ok_or_else(property_scene_error)?;
+                let scroll_stable_id = arena
+                    .get(boundary.scroll.owner)
+                    .map(|node| node.element.stable_id())
+                    .filter(|stable_id| *stable_id != 0)
+                    .ok_or_else(property_scene_error)?;
+                let scroll_cutout = super::PlannedBoundary {
+                    root: boundary.scroll.owner,
+                    stable_id: scroll_stable_id,
+                    kind: super::PlannedBoundaryKind::Scroll(boundary.scroll.id),
+                };
+                let recorded =
+                    super::frame_recorder::record_property_scroll_receiver_steps_for_plan(
+                        arena,
+                        transform.owner,
+                        property_trees,
+                        paint_generations,
+                        PaintTransformSurfaceWitness::canonical_root(transform.owner),
+                        context.paint_offset(),
+                        scroll_cutout,
+                    )
+                    .map_err(|fallbacks| FramePaintPlanError {
+                        reasons: fallbacks
+                            .into_iter()
+                            .map(FramePaintPlanRejection::Coverage)
+                            .collect(),
+                    })?;
+                let raster_bounds_bits =
+                    effect_scroll_receiver_raster_bounds(&recorded, boundary.scroll.viewport)
+                        .ok_or_else(property_scene_error)?;
+                let [x, y, width, height] = raster_bounds_bits.map(f32::from_bits);
+                let receiver_element = receiver_node
+                    .element
+                    .as_any()
+                    .downcast_ref::<crate::view::base_component::Element>()
+                    .ok_or_else(property_scene_error)?;
+                let geometry = receiver_element
+                    .exact_transform_receiver_geometry_snapshot_for_raster_bounds(
+                        crate::view::base_component::RetainedSurfaceBounds {
+                            x,
+                            y,
+                            width,
+                            height,
+                            corner_radii: [0.0; 4],
+                        },
+                        context.paint_offset(),
+                        context.outer_scissor_rect,
+                    )
+                    .ok_or_else(property_scene_error)?;
+                if geometry
+                    .viewport_transform
+                    .to_cols_array()
+                    .map(f32::to_bits)
+                    != transform.viewport_matrix.to_cols_array().map(f32::to_bits)
+                {
+                    return Err(property_scene_error());
+                }
+                let recorded_steps = recorded
+                    .iter()
+                    .map(|step| match step {
+                        super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                            property_scroll_receiver_artifact_identity(artifact)
+                                .map(PropertyScrollReceiverRecordedStepIdentity::Artifact)
+                        }
+                        super::frame_recorder::RecordedTransformSurfaceStep::Boundary(marker) => {
+                            Some(PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(*marker))
+                        }
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(property_scene_error)?;
+                let markers = recorded_steps
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, step)| {
+                        matches!(step, PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(marker) if *marker == scroll_cutout)
+                            .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                let [insertion_index] = markers.as_slice() else {
+                    return Err(property_scene_error());
+                };
+                let receiver_opaque_before = recorded_steps[..*insertion_index]
+                    .iter()
+                    .try_fold(0_u32, |cursor, step| match step {
+                        PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact) => {
+                            cursor.checked_add(artifact.opaque_count)
+                        }
+                        PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(_) => None,
+                    })
+                    .ok_or_else(property_scene_error)?;
+                let receiver_opaque_after = recorded_steps[*insertion_index + 1..]
+                    .iter()
+                    .try_fold(receiver_opaque_before, |cursor, step| match step {
+                        PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact) => {
+                            cursor.checked_add(artifact.opaque_count)
+                        }
+                        PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(_) => None,
+                    })
+                    .ok_or_else(property_scene_error)?;
+                Ok(PropertyScrollContentOuterTransformInsertionContract {
+                    receiver: PropertyScrollReceiverInsertionContract {
+                        scene_root_ordinal: root.ordinal,
+                        receiver: transform,
+                        receiver_stable_id: root.stable_id,
+                        scroll_boundary_ordinal: boundary_ordinal,
+                        scroll_cutout,
+                        insertion_index: *insertion_index,
+                        before_span: 0..*insertion_index,
+                        after_span: *insertion_index + 1..recorded_steps.len(),
+                        receiver_opaque_before,
+                        receiver_opaque_after,
+                        recorded_steps,
+                    },
+                    geometry,
+                })
+            })
+            .transpose()?;
+        insertions.push(PropertyScrollContentEffectInsertionContract {
+            scene_root_ordinal: root.ordinal,
+            scroll_boundary_ordinal: boundary_ordinal,
+            content_root,
+            content_stable_id,
+            effect,
+            effect_stable_id,
+            effect_cutout,
+            insertion_index: *insertion_index,
+            before_span: 0..*insertion_index,
+            after_span: *insertion_index + 1..receiver_recorded_steps.len(),
+            receiver_opaque_before: opaque_before,
+            receiver_opaque_after: opaque_after,
+            effect_raster_bounds_bits,
+            artifact_contract,
+            consumed_transform,
+            outer_transform,
+            receiver_recorded_steps,
+            effect_recorded_steps,
+        });
+    }
+    Ok(insertions)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn plan_property_transform_effect_scroll_receiver_insertions(
     arena: &NodeArena,
     property_trees: &PropertyTrees,
@@ -3452,6 +6819,7 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
         let boundary = boundaries
             .get(*boundary_ordinal as usize)
             .ok_or_else(property_scene_error)?;
+        let same_owner = outer.owner == inner.owner;
         if outer.id != *parent
             || inner != basis
             || outer.owner != root.root
@@ -3462,8 +6830,9 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
             || !inner.opacity.is_finite()
             || !(0.0..=1.0).contains(&inner.opacity)
             || boundary.scroll.id != *scroll
-            || arena.children_of(outer.owner) != [inner.owner]
-            || arena.parent_of(inner.owner) != Some(outer.owner)
+            || (!same_owner
+                && (arena.children_of(outer.owner) != [inner.owner]
+                    || arena.parent_of(inner.owner) != Some(outer.owner)))
             || arena.children_of(inner.owner) != [boundary.scroll.owner]
             || arena.parent_of(boundary.scroll.owner) != Some(inner.owner)
             || context.paint_offset_bits != [0.0_f32.to_bits(); 2]
@@ -3477,11 +6846,12 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
         let inner_state = property_trees
             .node_state_for(inner.owner)
             .ok_or_else(property_scene_error)?;
-        if outer_state.paint
-            != (PropertyTreeState {
-                transform: Some(outer.id),
-                ..Default::default()
-            })
+        let expected_outer_state = PropertyTreeState {
+            transform: Some(outer.id),
+            effect: same_owner.then_some(inner.id),
+            ..Default::default()
+        };
+        if outer_state.paint != expected_outer_state
             || inner_state.paint
                 != (PropertyTreeState {
                     transform: Some(outer.id),
@@ -3560,10 +6930,24 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
                 &outer_cutouts,
             )
             .map_err(&record_error)?;
-        let consumed_transform =
-            ConsumedAncestorTransformWitness::new(outer.owner, inner.owner, outer.id)
-                .ok_or_else(property_scene_error)?;
-        let inner_recorded =
+        let inner_recorded = if same_owner {
+            let consumed_transform =
+                super::ConsumedSameOwnerTransformBoundaryWitness::new(outer.owner, outer.id)
+                    .ok_or_else(property_scene_error)?;
+            super::frame_recorder::record_same_owner_transform_effect_surface_steps_for_plan(
+                arena,
+                property_trees,
+                paint_generations,
+                &artifact_contract,
+                context.paint_offset(),
+                &super::PlannedBoundaryCutoutSet::from_iter([(scroll_cutout.root, scroll_cutout)]),
+                consumed_transform,
+            )
+            .map_err(&record_error)?
+        } else {
+            let consumed_transform =
+                ConsumedAncestorTransformWitness::new(outer.owner, inner.owner, outer.id)
+                    .ok_or_else(property_scene_error)?;
             super::frame_recorder::record_property_effect_scroll_receiver_steps_for_plan(
                 arena,
                 inner.owner,
@@ -3574,7 +6958,8 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
                 scroll_cutout,
                 Some(consumed_transform),
             )
-            .map_err(&record_error)?;
+            .map_err(&record_error)?
+        };
 
         let seal_steps = |recorded: &[super::frame_recorder::RecordedTransformSurfaceStep],
                           marker: super::PlannedBoundary|
@@ -3728,6 +7113,334 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
     Ok(insertions)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn plan_property_effect_transform_scroll_receiver_insertions(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    context: TransformSurfacePlanContext,
+    roots: &[PropertyScrollScheduleRoot],
+    schedule: &PropertySceneSchedule,
+    boundaries: &[PropertyScrollBoundaryContract],
+) -> Result<Vec<PropertyEffectTransformScrollReceiverInsertionContract>, FramePaintPlanError> {
+    let mut insertions = Vec::new();
+    for root in roots {
+        let root_steps = schedule
+            .steps
+            .get(root.step_span.clone())
+            .ok_or_else(property_scene_error)?;
+        let [
+            PropertySceneScheduledStep::RetainedSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Effect(outer),
+                parent: None,
+            },
+            PropertySceneScheduledStep::RetainedSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Transform(inner),
+                parent: Some(PropertyScheduledSurfaceBoundaryId::Effect(parent)),
+            },
+            PropertySceneScheduledStep::ScrollBoundary {
+                boundary_ordinal,
+                scroll,
+                basis: ScrollCompositeBasis::Transform(basis),
+                ..
+            },
+        ] = root_steps
+        else {
+            continue;
+        };
+        let boundary = boundaries
+            .get(*boundary_ordinal as usize)
+            .ok_or_else(property_scene_error)?;
+        if outer.id != *parent
+            || inner != basis
+            || outer.owner != root.root
+            || outer.parent.is_some()
+            || outer.generation == 0
+            || !outer.opacity.is_finite()
+            || !(0.0..=1.0).contains(&outer.opacity)
+            || inner.parent.is_some()
+            || inner.generation == 0
+            || super::compiler::direct_translation_bits(inner.viewport_matrix).is_none()
+            || boundary.scroll.id != *scroll
+            || property_boundary_neutral_path(arena, outer.owner, inner.owner).is_none()
+            || property_boundary_neutral_path(arena, inner.owner, boundary.scroll.owner).is_none()
+            || context.paint_offset_bits != [0.0_f32.to_bits(); 2]
+            || context.outer_scissor_rect().is_some()
+        {
+            return Err(property_scene_error());
+        }
+        let outer_state = property_trees
+            .node_state_for(outer.owner)
+            .ok_or_else(property_scene_error)?;
+        let inner_state = property_trees
+            .node_state_for(inner.owner)
+            .ok_or_else(property_scene_error)?;
+        if outer_state.paint.transform.is_some()
+            || outer_state.paint.scroll.is_some()
+            || outer_state.paint.effect != Some(outer.id)
+            || inner_state.paint.transform != Some(inner.id)
+            || inner_state.paint.effect != Some(outer.id)
+            || inner_state.paint.scroll.is_some()
+        {
+            return Err(property_scene_error());
+        }
+
+        let outer_stable_id = arena
+            .get(outer.owner)
+            .map(|node| node.element.stable_id())
+            .filter(|stable_id| *stable_id != 0)
+            .ok_or_else(property_scene_error)?;
+        let inner_stable_id = arena
+            .get(inner.owner)
+            .map(|node| node.element.stable_id())
+            .filter(|stable_id| *stable_id != 0)
+            .ok_or_else(property_scene_error)?;
+        let mut content = Vec::new();
+        let mut pending = vec![outer.owner];
+        let mut content_seen = FxHashSet::default();
+        while let Some(owner) = pending.pop() {
+            if owner == inner.owner {
+                continue;
+            }
+            if !content_seen.insert(owner) {
+                return Err(property_scene_error());
+            }
+            let node = arena.get(owner).ok_or_else(property_scene_error)?;
+            let generations = paint_generations
+                .local_generations_for(owner)
+                .ok_or_else(property_scene_error)?;
+            content.push(EffectPropertyContentWitness {
+                owner,
+                stable_id: node.element.stable_id(),
+                parent: (owner != outer.owner)
+                    .then(|| arena.parent_of(owner))
+                    .flatten(),
+                self_paint_revision: generations.self_paint_revision,
+                topology_revision: generations.topology_revision,
+            });
+            pending.extend(node.element.children().iter().rev().copied());
+        }
+        let live_effect_chain = property_trees
+            .effect_snapshot_for(Some(outer.id))
+            .ok_or_else(property_scene_error)?;
+        let isolated_outer = EffectNodeSnapshot {
+            parent: None,
+            ..*outer
+        };
+        let outer_clips = property_trees
+            .clip_snapshot_for(outer_state.paint.clip)
+            .unwrap_or_default();
+        let outer_artifact_contract = EffectPropertySurfaceArtifactContract::new(
+            outer.owner,
+            outer_stable_id,
+            isolated_outer,
+            live_effect_chain.clone(),
+            live_effect_chain[1..].to_vec(),
+            outer_clips,
+            Vec::new(),
+            content,
+        )
+        .ok_or_else(property_scene_error)?;
+
+        let transform_cutout = super::PlannedBoundary {
+            root: inner.owner,
+            stable_id: inner_stable_id,
+            kind: super::PlannedBoundaryKind::Transform(inner.id),
+        };
+        let scroll_cutout = super::PlannedBoundary {
+            root: boundary.scroll.owner,
+            stable_id: arena
+                .get(boundary.scroll.owner)
+                .map(|node| node.element.stable_id())
+                .filter(|stable_id| *stable_id != 0)
+                .ok_or_else(property_scene_error)?,
+            kind: super::PlannedBoundaryKind::Scroll(boundary.scroll.id),
+        };
+        let record_error = |fallbacks: Vec<FrameArtifactFallbackReason>| FramePaintPlanError {
+            reasons: fallbacks
+                .into_iter()
+                .map(FramePaintPlanRejection::Coverage)
+                .collect(),
+        };
+        let outer_cutouts =
+            super::PlannedBoundaryCutoutSet::from_iter([(inner.owner, transform_cutout)]);
+        let outer_recorded = super::frame_recorder::record_effect_property_surface_steps_for_plan(
+            arena,
+            property_trees,
+            paint_generations,
+            &outer_artifact_contract,
+            context.paint_offset(),
+            &outer_cutouts,
+            None,
+        )
+        .map_err(record_error)?;
+        let inner_cutouts =
+            super::PlannedBoundaryCutoutSet::from_iter([(boundary.scroll.owner, scroll_cutout)]);
+        let consumed_effect = crate::view::paint::ConsumedAncestorEffectWitness::new(
+            outer.owner,
+            inner.owner,
+            *outer,
+            Some(outer.id),
+            outer.parent,
+        )
+        .ok_or_else(property_scene_error)?;
+        let inner_recorded =
+            super::frame_recorder::record_effect_transform_property_surface_steps_for_plan(
+                arena,
+                inner.owner,
+                property_trees,
+                paint_generations,
+                PaintTransformSurfaceWitness::canonical_root(inner.owner),
+                context.paint_offset(),
+                &inner_cutouts,
+                consumed_effect,
+            )
+            .map_err(record_error)?;
+
+        let seal_steps = |recorded: &[super::frame_recorder::RecordedTransformSurfaceStep],
+                          marker: super::PlannedBoundary|
+         -> Option<(
+            Vec<PropertyScrollReceiverRecordedStepIdentity>,
+            usize,
+            u32,
+            u32,
+        )> {
+            let identities = recorded
+                .iter()
+                .map(|step| match step {
+                    super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                        property_scroll_receiver_artifact_identity(artifact)
+                            .map(PropertyScrollReceiverRecordedStepIdentity::Artifact)
+                    }
+                    super::frame_recorder::RecordedTransformSurfaceStep::Boundary(boundary) => {
+                        Some(PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(
+                            *boundary,
+                        ))
+                    }
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let markers = identities
+                .iter()
+                .enumerate()
+                .filter_map(|(index, step)| {
+                    matches!(step, PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(found) if *found == marker)
+                        .then_some(index)
+                })
+                .collect::<Vec<_>>();
+            let [insertion] = markers.as_slice() else {
+                return None;
+            };
+            let before =
+                identities[..*insertion]
+                    .iter()
+                    .try_fold(0_u32, |cursor, step| match step {
+                        PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact) => {
+                            cursor.checked_add(artifact.opaque_count)
+                        }
+                        PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(_) => None,
+                    })?;
+            let after = identities[*insertion + 1..]
+                .iter()
+                .try_fold(before, |cursor, step| match step {
+                    PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact) => {
+                        cursor.checked_add(artifact.opaque_count)
+                    }
+                    PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(_) => None,
+                })?;
+            Some((identities, *insertion, before, after))
+        };
+        let (outer_steps, outer_index, outer_before, outer_after) =
+            seal_steps(&outer_recorded, transform_cutout).ok_or_else(property_scene_error)?;
+        let (inner_steps, inner_index, inner_before, inner_after) =
+            seal_steps(&inner_recorded, scroll_cutout).ok_or_else(property_scene_error)?;
+
+        let inner_raster_bounds_bits =
+            effect_scroll_receiver_raster_bounds(&inner_recorded, boundary.scroll.viewport)
+                .ok_or_else(property_scene_error)?;
+        let inner_bounds = inner_raster_bounds_bits.map(f32::from_bits);
+        let inner_node = arena.get(inner.owner).ok_or_else(property_scene_error)?;
+        let inner_element = inner_node
+            .element
+            .as_any()
+            .downcast_ref::<Element>()
+            .ok_or_else(property_scene_error)?;
+        let inner_geometry = inner_element
+            .exact_transform_receiver_geometry_snapshot_for_raster_bounds(
+                crate::view::base_component::RetainedSurfaceBounds {
+                    x: inner_bounds[0],
+                    y: inner_bounds[1],
+                    width: inner_bounds[2],
+                    height: inner_bounds[3],
+                    corner_radii: [0.0; 4],
+                },
+                context.paint_offset(),
+                None,
+            )
+            .ok_or_else(property_scene_error)?;
+        let min_x = inner_geometry
+            .quad_positions
+            .iter()
+            .map(|point| point[0])
+            .fold(f32::INFINITY, f32::min);
+        let min_y = inner_geometry
+            .quad_positions
+            .iter()
+            .map(|point| point[1])
+            .fold(f32::INFINITY, f32::min);
+        let max_x = inner_geometry
+            .quad_positions
+            .iter()
+            .map(|point| point[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let max_y = inner_geometry
+            .quad_positions
+            .iter()
+            .map(|point| point[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let outer_raster_bounds_bits = recorded_step_bounds_union(
+            outer_recorded.iter().filter_map(|step| match step {
+                super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                    Some(artifact.chunks.iter().map(|chunk| chunk.bounds))
+                }
+                super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_) => None,
+            }),
+            [min_x, min_y, max_x - min_x, max_y - min_y],
+        )
+        .ok_or_else(property_scene_error)?;
+
+        let inner_insertion = PropertyScrollReceiverInsertionContract {
+            scene_root_ordinal: root.ordinal,
+            receiver: *inner,
+            receiver_stable_id: inner_stable_id,
+            scroll_boundary_ordinal: *boundary_ordinal,
+            scroll_cutout,
+            insertion_index: inner_index,
+            before_span: 0..inner_index,
+            after_span: inner_index + 1..inner_steps.len(),
+            receiver_opaque_before: inner_before,
+            receiver_opaque_after: inner_after,
+            recorded_steps: inner_steps,
+        };
+        insertions.push(PropertyEffectTransformScrollReceiverInsertionContract {
+            scene_root_ordinal: root.ordinal,
+            outer_receiver: *outer,
+            outer_stable_id,
+            outer_artifact_contract,
+            outer_raster_bounds_bits,
+            transform_cutout,
+            outer_insertion_index: outer_index,
+            outer_before_span: 0..outer_index,
+            outer_after_span: outer_index + 1..outer_steps.len(),
+            outer_opaque_before: outer_before,
+            outer_opaque_after: outer_after,
+            inner_geometry,
+            inner: inner_insertion,
+            outer_recorded_steps: outer_steps,
+        });
+    }
+    Ok(insertions)
+}
+
 /// Materializes the canonical M12A2 effect scaffold into the existing
 /// PropertyScene transaction shape. The scaffold remains the owning topology
 /// authority; this phase only records typed artifacts and freezes executable
@@ -3755,7 +7468,7 @@ pub(crate) fn plan_property_effect_scene_with_context(
     let ordinals = scaffold
         .surfaces
         .iter()
-        .map(|surface| (surface.boundary.owner(), surface.ordinal))
+        .map(|surface| (surface.boundary, surface.ordinal))
         .collect::<FxHashMap<_, _>>();
     let record_error = |fallbacks: Vec<FrameArtifactFallbackReason>| FramePaintPlanError {
         reasons: fallbacks
@@ -3767,6 +7480,7 @@ pub(crate) fn plan_property_effect_scene_with_context(
     let mut scene_steps = Vec::new();
     let mut scene_validation = Vec::new();
     let mut root_step_spans = Vec::with_capacity(roots.len());
+    let mut root_step_schedule = Vec::with_capacity(roots.len());
     let mut scene_cursor = 0_u32;
     let mut built = FxHashSet::default();
     for (root_ordinal, &root) in roots.iter().enumerate() {
@@ -3801,8 +7515,17 @@ pub(crate) fn plan_property_effect_scene_with_context(
                     scene_cursor = end;
                 }
                 super::frame_recorder::RecordedTransformSurfaceStep::Boundary(boundary) => {
+                    let boundary_id = match boundary.kind {
+                        super::PlannedBoundaryKind::Transform(id) => {
+                            PropertyBoundaryId::Transform(id)
+                        }
+                        super::PlannedBoundaryKind::Isolation(id) => PropertyBoundaryId::Effect(id),
+                        super::PlannedBoundaryKind::Scroll(_) => {
+                            return Err(property_scene_error());
+                        }
+                    };
                     let ordinal = *ordinals
-                        .get(&boundary.root)
+                        .get(&boundary_id)
                         .ok_or_else(property_scene_error)?;
                     let contract = &scaffold.surfaces[ordinal as usize];
                     if contract.parent_boundary_ordinal.is_some()
@@ -3827,6 +7550,27 @@ pub(crate) fn plan_property_effect_scene_with_context(
                 }
             }
         }
+        let root_schedule = scene_steps[start..]
+            .iter()
+            .map(|step| match step {
+                PaintPlanStep::ArtifactSpan(_) => Some(PropertyEffectRootStepKind::NormalArtifact),
+                PaintPlanStep::RetainedSurface(surface) => {
+                    let boundary = match surface.kind() {
+                        SurfaceKind::Transform(plan) => {
+                            PropertyBoundaryId::Transform(plan.transform)
+                        }
+                        SurfaceKind::Isolation(plan) => PropertyBoundaryId::Effect(plan.effect.id),
+                        SurfaceKind::NestedIsolation(plan) => {
+                            PropertyBoundaryId::Effect(plan.effect.id)
+                        }
+                        SurfaceKind::ScrollHost(_) => return None,
+                    };
+                    Some(PropertyEffectRootStepKind::LateBoundary(boundary))
+                }
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(property_scene_error)?;
+        root_step_schedule.push(root_schedule);
         root_step_spans.push(start..scene_steps.len());
     }
     if built.len() != scaffold.surfaces.len() {
@@ -3842,6 +7586,8 @@ pub(crate) fn plan_property_effect_scene_with_context(
         .ok_or_else(property_scene_error)?;
     scaffold.production_root_step_spans = Some(root_step_spans.clone());
     scaffold.planned_production_root_step_spans = Some(root_step_spans);
+    scaffold.production_root_step_schedule = Some(root_step_schedule.clone());
+    scaffold.planned_production_root_step_schedule = Some(root_step_schedule);
     seal.surface_count = scaffold.surfaces.len();
     seal.aggregate_opaque_order_span = 0..scene_cursor;
     seal.scene_artifact_validation = scene_validation;
@@ -3888,7 +7634,7 @@ fn materialize_property_effect_surface(
     paint_generations: &PaintGenerationTracker,
     scaffold: &PropertyEffectSceneScaffold,
     ordinal: u32,
-    ordinals: &FxHashMap<NodeKey, u32>,
+    ordinals: &FxHashMap<PropertyBoundaryId, u32>,
     built: &mut FxHashSet<u32>,
 ) -> Result<RetainedSurfacePlan, FramePaintPlanError> {
     let surface = scaffold
@@ -3910,13 +7656,8 @@ fn materialize_property_effect_surface(
     };
     let (recorded, kind, persistent_color_key) = match &surface.kind {
         PropertyEffectSurfaceKind::Transform { snapshot, .. } => {
-            let element = node
-                .element
-                .as_any()
-                .downcast_ref::<Element>()
-                .ok_or_else(property_scene_error)?;
             let geometry = exact_surface_geometry_for_plan(
-                element,
+                node.element.as_ref(),
                 arena,
                 owner,
                 scaffold.context,
@@ -3969,30 +7710,45 @@ fn materialize_property_effect_surface(
                 content,
             )
             .ok_or_else(property_scene_error)?;
-            let consumed_transform = surface.parent_boundary_ordinal.and_then(|parent| {
+            let parent_transform = surface.parent_boundary_ordinal.and_then(|parent| {
                 let parent = &scaffold.surfaces[parent as usize];
                 match parent.boundary {
-                    PropertyBoundaryId::Transform(transform) => {
-                        ConsumedAncestorTransformWitness::new(
-                            parent.boundary.owner(),
-                            owner,
-                            transform,
-                        )
-                    }
+                    PropertyBoundaryId::Transform(transform) => Some(transform),
                     PropertyBoundaryId::Effect(_) => None,
                 }
             });
             let paint_offset = isolation.raster_space.paint_offset_bits.map(f32::from_bits);
-            let recorded = super::frame_recorder::record_effect_property_surface_steps_for_plan(
-                arena,
-                property_trees,
-                paint_generations,
-                &artifact_contract,
-                paint_offset,
-                &cutouts,
-                consumed_transform,
-            )
-            .map_err(&record_error)?;
+            let recorded = if let Some(transform) = parent_transform
+                && transform.0 == owner
+            {
+                let witness =
+                    super::ConsumedSameOwnerTransformBoundaryWitness::new(owner, transform)
+                        .ok_or_else(property_scene_error)?;
+                super::frame_recorder::record_same_owner_transform_effect_surface_steps_for_plan(
+                    arena,
+                    property_trees,
+                    paint_generations,
+                    &artifact_contract,
+                    paint_offset,
+                    &cutouts,
+                    witness,
+                )
+                .map_err(&record_error)?
+            } else {
+                let consumed_transform = parent_transform.and_then(|transform| {
+                    ConsumedAncestorTransformWitness::new(transform.0, owner, transform)
+                });
+                super::frame_recorder::record_effect_property_surface_steps_for_plan(
+                    arena,
+                    property_trees,
+                    paint_generations,
+                    &artifact_contract,
+                    paint_offset,
+                    &cutouts,
+                    consumed_transform,
+                )
+                .map_err(&record_error)?
+            };
             let [x, y, width, height] = isolation
                 .raster_space
                 .source_bounds_bits
@@ -4063,8 +7819,15 @@ fn materialize_property_effect_surface(
                 cursor = end;
             }
             super::frame_recorder::RecordedTransformSurfaceStep::Boundary(boundary) => {
+                let boundary_id = match boundary.kind {
+                    super::PlannedBoundaryKind::Transform(id) => PropertyBoundaryId::Transform(id),
+                    super::PlannedBoundaryKind::Isolation(id) => PropertyBoundaryId::Effect(id),
+                    super::PlannedBoundaryKind::Scroll(_) => {
+                        return Err(property_scene_error());
+                    }
+                };
                 let child_ordinal = *ordinals
-                    .get(&boundary.root)
+                    .get(&boundary_id)
                     .ok_or_else(property_scene_error)?;
                 let child_contract = &scaffold.surfaces[child_ordinal as usize];
                 if child_contract.parent_boundary_ordinal != Some(ordinal)
@@ -4170,11 +7933,7 @@ fn validate_transform_property_scene_inputs(
         if node.element.is_deferred_to_root_viewport_render() {
             push_unique(reasons, FramePaintPlanRejection::DeferredBoundary(key));
         }
-        if node
-            .element
-            .placement_eligibility_metadata()
-            .contains_runtime_layout_state
-        {
+        if !sampled_layout_transition_is_exact(node.element.as_ref()) {
             push_unique(reasons, FramePaintPlanRejection::LayoutTransition(key));
         }
         let recording_context = node.element.shadow_paint_recording_context(parent_context);
@@ -4282,9 +8041,16 @@ fn validate_transform_property_scene_inputs(
             && snapshot.id == id
             && snapshot.generation != 0
             && matrix_is_finite_affine(snapshot.viewport_matrix)
-            && arena
-                .get(key)
-                .is_some_and(|node| node.element.as_any().downcast_ref::<Element>().is_some());
+            && arena.get(key).is_some_and(|node| {
+                node.element.has_retained_transform_surface()
+                    && node
+                        .element
+                        .compositor_viewport_transform_snapshot()
+                        .is_some_and(|live| {
+                            live.to_cols_array().map(f32::to_bits)
+                                == snapshot.viewport_matrix.to_cols_array().map(f32::to_bits)
+                        })
+            });
         if !valid {
             push_unique(
                 &mut reasons,
@@ -4410,11 +8176,6 @@ fn plan_transform_property_surface(
     let Some(node) = arena.get(id.owner) else {
         return Err(property_scene_error());
     };
-    let Some(element) = node.element.as_any().downcast_ref::<Element>() else {
-        return Err(FramePaintPlanError {
-            reasons: vec![FramePaintPlanRejection::UnknownRootHost(id.owner)],
-        });
-    };
     let Some(transform) = property_trees.transform_snapshot_for(id.transform) else {
         return Err(property_scene_error());
     };
@@ -4431,7 +8192,7 @@ fn plan_transform_property_surface(
     let surface_context =
         TransformSurfacePlanContext::new(paint_offset, resolved_composite_scissor);
     let geometry = exact_surface_geometry_for_plan(
-        element,
+        node.element.as_ref(),
         arena,
         id.owner,
         surface_context,
@@ -4757,7 +8518,10 @@ fn property_effect_scaffold_is_canonical(
     scaffold: &PropertyEffectSceneScaffold,
 ) -> bool {
     let production_spans = scaffold.production_root_step_spans.as_ref();
+    let production_schedule = scaffold.production_root_step_schedule.as_ref();
     if scaffold.production_root_step_spans != scaffold.planned_production_root_step_spans
+        || scaffold.production_root_step_schedule != scaffold.planned_production_root_step_schedule
+        || production_spans.is_some() != production_schedule.is_some()
         || (!seal.surfaces.is_empty())
         || production_spans.is_none()
             && (!plan.steps.is_empty()
@@ -4908,10 +8672,18 @@ fn property_effect_scaffold_is_canonical(
     let mut owners = FxHashSet::default();
     let mut stable_ids = FxHashSet::default();
     for (ordinal, surface) in scaffold.surfaces.iter().enumerate() {
+        let same_owner_effect_half = ordinal.checked_sub(1).is_some_and(|parent_ordinal| {
+            let parent = &scaffold.surfaces[parent_ordinal];
+            matches!(parent.boundary, PropertyBoundaryId::Transform(_))
+                && matches!(surface.boundary, PropertyBoundaryId::Effect(_))
+                && surface.parent_boundary_ordinal == Some(parent.ordinal)
+                && surface.boundary.owner() == parent.boundary.owner()
+                && surface.stable_id == parent.stable_id
+        });
         if surface.ordinal as usize != ordinal
             || surface.stable_id == 0
-            || !owners.insert(surface.boundary.owner())
-            || !stable_ids.insert(surface.stable_id)
+            || (!owners.insert(surface.boundary.owner()) && !same_owner_effect_half)
+            || (!stable_ids.insert(surface.stable_id) && !same_owner_effect_half)
             || clip_states
                 .get(&surface.boundary.owner())
                 .is_none_or(|state| state.stable_id != surface.stable_id)
@@ -4943,8 +8715,6 @@ fn property_effect_scaffold_is_canonical(
                     || snapshot.generation == 0
                     || snapshot.parent.is_some()
                     || surface.parent_boundary_ordinal.is_some()
-                    || surface.boundary.owner()
-                        != scaffold.roots[surface.scene_root_ordinal as usize].root
                     || !matrix_is_finite_affine(snapshot.viewport_matrix)
                 {
                     return false;
@@ -5202,7 +8972,13 @@ fn property_effect_scaffold_is_canonical(
         }
     }
     production_spans.is_none_or(|spans| {
-        property_effect_production_plan_is_canonical(plan, seal, scaffold, spans)
+        property_effect_production_plan_is_canonical(
+            plan,
+            seal,
+            scaffold,
+            spans,
+            production_schedule.expect("production span/schedule presence checked"),
+        )
     })
 }
 
@@ -5211,6 +8987,7 @@ fn property_effect_production_plan_is_canonical(
     seal: &PropertyScenePlanSeal,
     scaffold: &PropertyEffectSceneScaffold,
     root_spans: &[Range<usize>],
+    root_schedule: &[Vec<PropertyEffectRootStepKind>],
 ) -> bool {
     fn validate_surface(
         surface: &RetainedSurfacePlan,
@@ -5354,6 +9131,7 @@ fn property_effect_production_plan_is_canonical(
     }
 
     if root_spans.len() != scaffold.roots.len()
+        || root_schedule.len() != scaffold.roots.len()
         || seal.surface_count != scaffold.surfaces.len()
         || seal.scene_artifact_validation.len()
             != plan
@@ -5369,10 +9147,32 @@ fn property_effect_production_plan_is_canonical(
     let mut artifact_index = 0usize;
     let mut seen = FxHashSet::default();
     for (root_ordinal, span) in root_spans.iter().enumerate() {
-        if span.start != next_step || span.end < span.start || span.end > plan.steps.len() {
+        if span.start != next_step
+            || span.end < span.start
+            || span.end > plan.steps.len()
+            || root_schedule[root_ordinal].len() != span.len()
+        {
             return false;
         }
-        for step_index in span.clone() {
+        for (schedule_index, step_index) in span.clone().enumerate() {
+            let actual_kind = match &plan.steps[step_index] {
+                PaintPlanStep::ArtifactSpan(_) => PropertyEffectRootStepKind::NormalArtifact,
+                PaintPlanStep::RetainedSurface(surface) => match surface.kind() {
+                    SurfaceKind::Transform(plan) => PropertyEffectRootStepKind::LateBoundary(
+                        PropertyBoundaryId::Transform(plan.transform),
+                    ),
+                    SurfaceKind::Isolation(plan) => PropertyEffectRootStepKind::LateBoundary(
+                        PropertyBoundaryId::Effect(plan.effect.id),
+                    ),
+                    SurfaceKind::NestedIsolation(plan) => PropertyEffectRootStepKind::LateBoundary(
+                        PropertyBoundaryId::Effect(plan.effect.id),
+                    ),
+                    SurfaceKind::ScrollHost(_) => return false,
+                },
+            };
+            if root_schedule[root_ordinal].get(schedule_index) != Some(&actual_kind) {
+                return false;
+            }
             match &plan.steps[step_index] {
                 PaintPlanStep::ArtifactSpan(span) => {
                     if span.opaque_order_span.start != scene_cursor
@@ -5416,6 +9216,269 @@ fn property_effect_production_plan_is_canonical(
         && seal.aggregate_opaque_order_span == (0..scene_cursor)
 }
 
+fn property_boundary_insertion_seal_is_canonical(
+    seal: &PropertyBoundaryInsertionSeal,
+    marker: super::PlannedBoundary,
+) -> bool {
+    if seal.insertion_index >= seal.recorded_steps.len()
+        || seal.before_span != (0..seal.insertion_index)
+        || seal.after_span != (seal.insertion_index + 1..seal.recorded_steps.len())
+    {
+        return false;
+    }
+    let mut marker_count = 0usize;
+    let mut opaque = 0_u32;
+    for (index, step) in seal.recorded_steps.iter().enumerate() {
+        match step {
+            PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact) => {
+                if index == seal.insertion_index {
+                    return false;
+                }
+                let Some(next) = opaque.checked_add(artifact.opaque_count) else {
+                    return false;
+                };
+                opaque = next;
+            }
+            PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(recorded_marker) => {
+                marker_count += 1;
+                if index != seal.insertion_index
+                    || *recorded_marker != marker
+                    || opaque != seal.receiver_opaque_before
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    marker_count == 1 && opaque == seal.receiver_opaque_after
+}
+
+fn property_boundary_consumption_is_canonical(node: &PropertyBoundaryDagNode) -> bool {
+    let mut projected = node.consumption.expected_before;
+    match (&node.kind, node.consumption.boundary) {
+        (
+            PropertyBoundaryDagNodeKind::Transform(transform),
+            ConsumedPropertyBoundary::Transform(id),
+        ) if id == transform.id && projected.transform == Some(id) => {
+            projected.transform = None;
+        }
+        (PropertyBoundaryDagNodeKind::Effect(effect), ConsumedPropertyBoundary::Effect(id))
+            if id == effect.id && projected.effect == Some(id) =>
+        {
+            projected.effect = None;
+        }
+        (
+            PropertyBoundaryDagNodeKind::Scroll(boundary),
+            ConsumedPropertyBoundary::ScrollContents {
+                scroll,
+                contents_clip,
+            },
+        ) if scroll == boundary.scroll.id
+            && contents_clip == boundary.contents_clip.id
+            && projected.scroll == Some(scroll)
+            && projected.clip == Some(contents_clip) =>
+        {
+            projected.scroll = None;
+            projected.clip = boundary.contents_clip.parent;
+        }
+        _ => return false,
+    }
+    projected == node.consumption.projected_after
+}
+
+fn property_boundary_dag_is_canonical(scaffold: &PropertyScrollScheduleScaffold) -> bool {
+    if scaffold.boundary_dag.roots.len() != scaffold.roots.len() {
+        return false;
+    }
+    let mut next_node = 0usize;
+    let mut represented_scroll_boundaries = FxHashSet::default();
+    for (root_index, (dag_root, schedule_root)) in scaffold
+        .boundary_dag
+        .roots
+        .iter()
+        .zip(&scaffold.roots)
+        .enumerate()
+    {
+        if dag_root.scene_root_ordinal != schedule_root.ordinal
+            || dag_root.scene_root_ordinal as usize != root_index
+            || dag_root.root != schedule_root.root
+            || dag_root.stable_id != schedule_root.stable_id
+            || dag_root.stable_id == 0
+            || dag_root.node_span.start != next_node
+            || dag_root.node_span.end < dag_root.node_span.start
+            || dag_root.node_span.end > scaffold.boundary_dag.nodes.len()
+        {
+            return false;
+        }
+        let Some(schedule_steps) = scaffold.schedule.steps.get(schedule_root.step_span.clone())
+        else {
+            return false;
+        };
+        let Some(dag_nodes) = scaffold.boundary_dag.nodes.get(dag_root.node_span.clone()) else {
+            return false;
+        };
+        if dag_nodes.len() != schedule_steps.len() {
+            return false;
+        }
+        for (local_index, (node, step)) in dag_nodes.iter().zip(schedule_steps).enumerate() {
+            let absolute_index = dag_root.node_span.start + local_index;
+            if node.id != PropertyBoundaryDagNodeId(absolute_index as u32)
+                || node.scene_root_ordinal != dag_root.scene_root_ordinal
+                || node.owner != node.kind.owner()
+                || node.stable_id == 0
+                || !property_boundary_consumption_is_canonical(node)
+            {
+                return false;
+            }
+            let expected_receiver = match step {
+                PropertySceneScheduledStep::RetainedSurface { parent: None, .. } => {
+                    PropertyBoundaryReceiverScope::FrameRoot {
+                        scene_root_ordinal: dag_root.scene_root_ordinal,
+                    }
+                }
+                PropertySceneScheduledStep::RetainedSurface {
+                    parent: Some(parent),
+                    ..
+                } => {
+                    let Some(parent_index) =
+                        dag_nodes[..local_index].iter().position(|candidate| {
+                            match (parent, &candidate.kind) {
+                                (
+                                    PropertyScheduledSurfaceBoundaryId::Transform(id),
+                                    PropertyBoundaryDagNodeKind::Transform(transform),
+                                ) => *id == transform.id,
+                                (
+                                    PropertyScheduledSurfaceBoundaryId::Effect(id),
+                                    PropertyBoundaryDagNodeKind::Effect(effect),
+                                ) => *id == effect.id,
+                                _ => false,
+                            }
+                        })
+                    else {
+                        return false;
+                    };
+                    PropertyBoundaryReceiverScope::Surface(dag_nodes[parent_index].id)
+                }
+                PropertySceneScheduledStep::ScrollBoundary { basis, .. } => match basis {
+                    ScrollCompositeBasis::FrameRoot => PropertyBoundaryReceiverScope::FrameRoot {
+                        scene_root_ordinal: dag_root.scene_root_ordinal,
+                    },
+                    ScrollCompositeBasis::Transform(transform) => {
+                        let Some(receiver) = dag_nodes[..local_index].iter().find(|candidate| {
+                            matches!(&candidate.kind, PropertyBoundaryDagNodeKind::Transform(candidate) if candidate.id == transform.id)
+                        }) else {
+                            return false;
+                        };
+                        PropertyBoundaryReceiverScope::Surface(receiver.id)
+                    }
+                    ScrollCompositeBasis::Effect(effect) => {
+                        let Some(receiver) = dag_nodes[..local_index].iter().find(|candidate| {
+                            matches!(&candidate.kind, PropertyBoundaryDagNodeKind::Effect(candidate) if candidate.id == effect.id)
+                        }) else {
+                            return false;
+                        };
+                        PropertyBoundaryReceiverScope::Surface(receiver.id)
+                    }
+                },
+                PropertySceneScheduledStep::ScrollContentSurface { scroll, .. } => {
+                    let Some(receiver) = dag_nodes[..local_index].iter().find(|candidate| {
+                        matches!(&candidate.kind, PropertyBoundaryDagNodeKind::Scroll(candidate) if candidate.scroll.id == *scroll)
+                    }) else {
+                        return false;
+                    };
+                    PropertyBoundaryReceiverScope::ScrollContent(receiver.id)
+                }
+            };
+            if node.receiver != expected_receiver {
+                return false;
+            }
+            match (step, &node.kind) {
+                (
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Transform(expected),
+                        ..
+                    },
+                    PropertyBoundaryDagNodeKind::Transform(actual),
+                ) if actual == expected => {}
+                (
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Effect(expected),
+                        ..
+                    },
+                    PropertyBoundaryDagNodeKind::Effect(actual),
+                ) if actual == expected => {}
+                (
+                    PropertySceneScheduledStep::ScrollBoundary {
+                        boundary_ordinal,
+                        scroll,
+                        ..
+                    },
+                    PropertyBoundaryDagNodeKind::Scroll(actual),
+                ) if actual.ordinal == *boundary_ordinal
+                    && actual.scroll.id == *scroll
+                    && scaffold.boundaries.get(*boundary_ordinal as usize) == Some(actual) =>
+                {
+                    if !represented_scroll_boundaries.insert(*boundary_ordinal) {
+                        return false;
+                    }
+                }
+                (
+                    PropertySceneScheduledStep::ScrollContentSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Effect(expected),
+                        scroll,
+                    },
+                    PropertyBoundaryDagNodeKind::Effect(actual),
+                ) if actual == expected
+                    && dag_nodes[..local_index].iter().any(|candidate| {
+                        matches!(&candidate.kind, PropertyBoundaryDagNodeKind::Scroll(boundary) if boundary.scroll.id == *scroll)
+                    }) => {}
+                _ => return false,
+            }
+            match (&node.placement, &node.receiver, &node.kind) {
+                (
+                    PropertyBoundaryDagPlacement::Root,
+                    PropertyBoundaryReceiverScope::FrameRoot { .. },
+                    PropertyBoundaryDagNodeKind::Transform(_)
+                    | PropertyBoundaryDagNodeKind::Effect(_),
+                ) => {}
+                (
+                    PropertyBoundaryDagPlacement::Cutout {
+                        marker,
+                        neutral_path,
+                        sealed,
+                    },
+                    _,
+                    _,
+                ) => {
+                    if marker.root != node.owner
+                        || marker.stable_id != node.stable_id
+                        || marker.kind != node.kind.planned_boundary()
+                    {
+                        return false;
+                    }
+                    let mut neutral_owners = FxHashSet::default();
+                    if neutral_path.iter().any(|witness| {
+                        witness.stable_id == 0
+                            || witness.owner == node.owner
+                            || !neutral_owners.insert(witness.owner)
+                    }) {
+                        return false;
+                    }
+                    if sealed.as_ref().is_some_and(|seal| {
+                        !property_boundary_insertion_seal_is_canonical(seal, *marker)
+                    }) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        next_node = dag_root.node_span.end;
+    }
+    next_node == scaffold.boundary_dag.nodes.len()
+        && represented_scroll_boundaries.len() == scaffold.boundaries.len()
+}
+
 fn property_scroll_schedule_scaffold_is_canonical(
     plan: &FramePaintPlan,
     seal: &PropertyScenePlanSeal,
@@ -5433,11 +9496,22 @@ fn property_scroll_schedule_scaffold_is_canonical(
         || scaffold.schedule != scaffold.planned_schedule
         || scaffold.boundaries != scaffold.planned_boundaries
         || scaffold.receiver_insertions != scaffold.planned_receiver_insertions
+        || scaffold.same_owner_transform_scroll_insertions
+            != scaffold.planned_same_owner_transform_scroll_insertions
+        || scaffold.same_owner_effect_scroll_insertions
+            != scaffold.planned_same_owner_effect_scroll_insertions
+        || scaffold.frame_receiver_insertions != scaffold.planned_frame_receiver_insertions
         || scaffold.effect_receiver_insertions != scaffold.planned_effect_receiver_insertions
         || scaffold.transform_effect_receiver_insertions
             != scaffold.planned_transform_effect_receiver_insertions
+        || scaffold.effect_transform_receiver_insertions
+            != scaffold.planned_effect_transform_receiver_insertions
+        || scaffold.scroll_content_effect_insertions
+            != scaffold.planned_scroll_content_effect_insertions
+        || scaffold.boundary_dag != scaffold.planned_boundary_dag
         || scaffold.roots.is_empty()
-        || scaffold.boundaries.len() != scaffold.roots.len()
+        || scaffold.boundaries.is_empty()
+        || scaffold.boundaries.len() > scaffold.roots.len()
     {
         return false;
     }
@@ -5460,7 +9534,7 @@ fn property_scroll_schedule_scaffold_is_canonical(
             || !root_keys.insert(root.root)
             || !stable_ids.insert(root.stable_id)
             || root.step_span.start != next_step
-            || root.step_span.end <= root.step_span.start
+            || root.step_span.end < root.step_span.start
             || root.step_span.end > scaffold.schedule.steps.len()
             || plan_root.ordinal != root.ordinal
             || plan_root.root != root.root
@@ -5483,6 +9557,13 @@ fn property_scroll_schedule_scaffold_is_canonical(
             .iter()
             .filter(|boundary| boundary.scene_root_ordinal as usize == ordinal)
             .collect::<Vec<_>>();
+        if root.step_span.is_empty() {
+            if !root_boundaries.is_empty() {
+                return false;
+            }
+            next_step = root.step_span.end;
+            continue;
+        }
         let [boundary] = root_boundaries.as_slice() else {
             return false;
         };
@@ -5517,15 +9598,43 @@ fn property_scroll_schedule_scaffold_is_canonical(
             || boundary.contents_clip.id.owner != boundary.scroll.owner
             || boundary.contents_clip.id.role != ClipNodeRole::ContentsClip
             || boundary.contents_clip.owner != boundary.scroll.owner
-            || boundary.contents_clip.parent.is_some()
             || boundary.contents_clip.behavior != ClipBehavior::Intersect
             || boundary.contents_clip.generation == 0
-            || (!boundary
+            || !boundary
                 .scroll
-                .is_canonical_with_contents_clip(boundary.contents_clip)
-                && !boundary
-                    .scroll
-                    .is_canonical_painted_with_contents_clip(boundary.contents_clip))
+                .is_canonical_with_ancestor_contents_clip(boundary.contents_clip)
+        {
+            return false;
+        }
+        let mut expected_parent = boundary.contents_clip.parent;
+        for ancestor in &boundary.ancestor_composite_clips {
+            if Some(ancestor.id) != expected_parent
+                || ancestor.owner != ancestor.id.owner
+                || ancestor.generation == 0
+            {
+                return false;
+            }
+            expected_parent = ancestor.parent;
+        }
+        if expected_parent.is_some() {
+            return false;
+        }
+        let mut clip_ids = FxHashSet::default();
+        let extra_clips = boundary
+            .ancestor_composite_clips
+            .iter()
+            .chain(&boundary.local_content_clips)
+            .chain(&boundary.receiver_clips)
+            .collect::<Vec<_>>();
+        if !clip_ids.insert(boundary.contents_clip.id)
+            || extra_clips.iter().any(|clip| !clip_ids.insert(clip.id))
+            || extra_clips.iter().any(|clip| {
+                clip.owner != clip.id.owner
+                    || clip.generation == 0
+                    || clip
+                        .parent
+                        .is_some_and(|parent| !clip_ids.contains(&parent))
+            })
         {
             return false;
         }
@@ -5535,7 +9644,10 @@ fn property_scroll_schedule_scaffold_is_canonical(
             || stack.entries.first().map(|entry| entry.expected_before) != Some(stack.live_input)
             || stack.entries.last().map(|entry| entry.projected_after)
                 != Some(stack.projected_output)
-            || stack.projected_output != PropertyTreeState::default()
+            || stack.projected_output.clip != boundary.contents_clip.parent
+            || stack.projected_output.transform.is_some()
+            || stack.projected_output.effect.is_some()
+            || stack.projected_output.scroll.is_some()
         {
             return false;
         }
@@ -5597,11 +9709,12 @@ fn property_scroll_schedule_scaffold_is_canonical(
         .roots
         .iter()
         .filter(|root| {
+            let steps = &scaffold.schedule.steps[root.step_span.clone()];
             matches!(
-                &scaffold.schedule.steps[root.step_span.clone()],
+                steps,
                 [
                     PropertySceneScheduledStep::RetainedSurface {
-                        boundary: PropertyScheduledSurfaceBoundary::Transform(_),
+                        boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
                         parent: None,
                     },
                     PropertySceneScheduledStep::ScrollBoundary {
@@ -5609,6 +9722,10 @@ fn property_scroll_schedule_scaffold_is_canonical(
                         ..
                     },
                 ]
+                if steps.iter().find_map(|step| match step {
+                    PropertySceneScheduledStep::ScrollBoundary { scroll, .. } => Some(scroll.0),
+                    _ => None,
+                }) != Some(transform.owner)
             )
         })
         .count();
@@ -5619,6 +9736,79 @@ fn property_scroll_schedule_scaffold_is_canonical(
             && insertion_boundaries.insert(insertion.scroll_boundary_ordinal)
             && property_scroll_receiver_insertion_is_canonical(scaffold, insertion)
     });
+    let eligible_same_owner_transform_scroll_insertions = scaffold
+        .roots
+        .iter()
+        .filter(|root| {
+            matches!(
+                &scaffold.schedule.steps[root.step_span.clone()],
+                [
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
+                        parent: None,
+                    },
+                    PropertySceneScheduledStep::ScrollBoundary { scroll, .. },
+                ] if transform.owner == scroll.0
+            )
+        })
+        .count();
+    let mut same_owner_receivers = FxHashSet::default();
+    let mut same_owner_boundaries = FxHashSet::default();
+    let same_owner_insertions_are_canonical = scaffold
+        .same_owner_transform_scroll_insertions
+        .iter()
+        .all(|insertion| {
+            same_owner_receivers.insert(insertion.owner)
+                && same_owner_boundaries.insert(insertion.receiver.scroll_boundary_ordinal)
+                && property_same_owner_transform_scroll_insertion_is_canonical(scaffold, insertion)
+        });
+    let eligible_same_owner_effect_scroll_insertions = scaffold
+        .roots
+        .iter()
+        .filter(|root| {
+            matches!(
+                &scaffold.schedule.steps[root.step_span.clone()],
+                [
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Effect(effect),
+                        parent: None,
+                    },
+                    PropertySceneScheduledStep::ScrollBoundary { scroll, .. },
+                ] if effect.owner == scroll.0
+            )
+        })
+        .count();
+    let mut same_owner_effect_receivers = FxHashSet::default();
+    let mut same_owner_effect_boundaries = FxHashSet::default();
+    let same_owner_effect_insertions_are_canonical = scaffold
+        .same_owner_effect_scroll_insertions
+        .iter()
+        .all(|insertion| {
+            same_owner_effect_receivers.insert(insertion.owner)
+                && same_owner_effect_boundaries.insert(insertion.receiver.scroll_boundary_ordinal)
+                && property_same_owner_effect_scroll_insertion_is_canonical(scaffold, insertion)
+        });
+    let eligible_frame_receiver_insertions = scaffold
+        .roots
+        .iter()
+        .filter(|root| {
+            matches!(
+                &scaffold.schedule.steps[root.step_span.clone()],
+                [PropertySceneScheduledStep::ScrollBoundary {
+                    basis: ScrollCompositeBasis::FrameRoot,
+                    ..
+                }]
+            )
+        })
+        .count();
+    let mut frame_insertion_roots = FxHashSet::default();
+    let mut frame_insertion_boundaries = FxHashSet::default();
+    let frame_insertions_are_canonical =
+        scaffold.frame_receiver_insertions.iter().all(|insertion| {
+            frame_insertion_roots.insert(insertion.receiver_root)
+                && frame_insertion_boundaries.insert(insertion.scroll_boundary_ordinal)
+                && property_frame_scroll_receiver_insertion_is_canonical(scaffold, insertion)
+        });
     let eligible_effect_receiver_insertions = scaffold
         .roots
         .iter()
@@ -5683,6 +9873,79 @@ fn property_scroll_schedule_scaffold_is_canonical(
                     scaffold, insertion,
                 )
         });
+    let eligible_effect_transform_insertions = scaffold
+        .roots
+        .iter()
+        .filter(|root| {
+            matches!(
+                &scaffold.schedule.steps[root.step_span.clone()],
+                [
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Effect(_),
+                        parent: None,
+                    },
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Transform(_),
+                        parent: Some(PropertyScheduledSurfaceBoundaryId::Effect(_)),
+                    },
+                    PropertySceneScheduledStep::ScrollBoundary {
+                        basis: ScrollCompositeBasis::Transform(_),
+                        ..
+                    },
+                ]
+            )
+        })
+        .count();
+    let mut effect_transform_outer_receivers = FxHashSet::default();
+    let mut effect_transform_inner_receivers = FxHashSet::default();
+    let mut effect_transform_boundaries = FxHashSet::default();
+    let effect_transform_insertions_are_canonical = scaffold
+        .effect_transform_receiver_insertions
+        .iter()
+        .all(|insertion| {
+            effect_transform_outer_receivers.insert(insertion.outer_receiver.id)
+                && effect_transform_inner_receivers.insert(insertion.inner.receiver.id)
+                && effect_transform_boundaries.insert(insertion.inner.scroll_boundary_ordinal)
+                && property_effect_transform_scroll_receiver_insertion_is_canonical(
+                    scaffold, insertion,
+                )
+        });
+    let eligible_scroll_content_effect_insertions = scaffold
+        .roots
+        .iter()
+        .filter(|root| {
+            matches!(
+                &scaffold.schedule.steps[root.step_span.clone()],
+                [
+                    PropertySceneScheduledStep::ScrollBoundary { .. },
+                    PropertySceneScheduledStep::ScrollContentSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Effect(_),
+                        ..
+                    },
+                ] | [
+                    PropertySceneScheduledStep::RetainedSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Transform(_),
+                        parent: None,
+                    },
+                    PropertySceneScheduledStep::ScrollBoundary { .. },
+                    PropertySceneScheduledStep::ScrollContentSurface {
+                        boundary: PropertyScheduledSurfaceBoundary::Effect(_),
+                        ..
+                    },
+                ]
+            )
+        })
+        .count();
+    let mut scroll_content_effects = FxHashSet::default();
+    let mut scroll_content_effect_boundaries = FxHashSet::default();
+    let scroll_content_effect_insertions_are_canonical = scaffold
+        .scroll_content_effect_insertions
+        .iter()
+        .all(|insertion| {
+            scroll_content_effects.insert(insertion.effect.id)
+                && scroll_content_effect_boundaries.insert(insertion.scroll_boundary_ordinal)
+                && property_scroll_content_effect_insertion_is_canonical(scaffold, insertion)
+        });
     next_step == scaffold.schedule.steps.len()
         && scaffold
             .boundaries
@@ -5691,11 +9954,436 @@ fn property_scroll_schedule_scaffold_is_canonical(
             .all(|(ordinal, boundary)| boundary.ordinal as usize == ordinal)
         && scaffold.receiver_insertions.len() <= eligible_receiver_insertions
         && insertions_are_canonical
+        && scaffold.same_owner_transform_scroll_insertions.len()
+            == eligible_same_owner_transform_scroll_insertions
+        && same_owner_insertions_are_canonical
+        && scaffold.same_owner_effect_scroll_insertions.len()
+            == eligible_same_owner_effect_scroll_insertions
+        && same_owner_effect_insertions_are_canonical
+        && scaffold.frame_receiver_insertions.len() == eligible_frame_receiver_insertions
+        && frame_insertions_are_canonical
         && scaffold.effect_receiver_insertions.len() <= eligible_effect_receiver_insertions
         && effect_insertions_are_canonical
         && scaffold.transform_effect_receiver_insertions.len()
             == eligible_transform_effect_insertions
         && transform_effect_insertions_are_canonical
+        && scaffold.effect_transform_receiver_insertions.len()
+            == eligible_effect_transform_insertions
+        && effect_transform_insertions_are_canonical
+        && scaffold.scroll_content_effect_insertions.len()
+            == eligible_scroll_content_effect_insertions
+        && scroll_content_effect_insertions_are_canonical
+        && property_boundary_dag_is_canonical(scaffold)
+}
+
+fn property_scroll_content_effect_insertion_is_canonical(
+    scaffold: &PropertyScrollScheduleScaffold,
+    insertion: &PropertyScrollContentEffectInsertionContract,
+) -> bool {
+    let Some(root) = scaffold.roots.get(insertion.scene_root_ordinal as usize) else {
+        return false;
+    };
+    let Some(boundary) = scaffold
+        .boundaries
+        .get(insertion.scroll_boundary_ordinal as usize)
+    else {
+        return false;
+    };
+    let Some(root_steps) = scaffold.schedule.steps.get(root.step_span.clone()) else {
+        return false;
+    };
+    let schedule_matches = match root_steps {
+        [
+            PropertySceneScheduledStep::ScrollBoundary {
+                boundary_ordinal,
+                scroll,
+                basis: ScrollCompositeBasis::FrameRoot,
+                ..
+            },
+            PropertySceneScheduledStep::ScrollContentSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Effect(effect),
+                scroll: receiver,
+            },
+        ] => {
+            *boundary_ordinal == insertion.scroll_boundary_ordinal
+                && *scroll == boundary.scroll.id
+                && receiver == scroll
+                && *effect == insertion.effect
+        }
+        [
+            PropertySceneScheduledStep::RetainedSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
+                parent: None,
+            },
+            PropertySceneScheduledStep::ScrollBoundary {
+                boundary_ordinal,
+                scroll,
+                basis: ScrollCompositeBasis::Transform(basis),
+                ..
+            },
+            PropertySceneScheduledStep::ScrollContentSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Effect(effect),
+                scroll: receiver,
+            },
+        ] => {
+            transform == basis
+                && *boundary_ordinal == insertion.scroll_boundary_ordinal
+                && *scroll == boundary.scroll.id
+                && receiver == scroll
+                && *effect == insertion.effect
+        }
+        _ => false,
+    };
+    let expected_consumed_transform = match root_steps {
+        [
+            PropertySceneScheduledStep::ScrollBoundary { .. },
+            PropertySceneScheduledStep::ScrollContentSurface { .. },
+        ] => None,
+        [
+            PropertySceneScheduledStep::RetainedSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
+                parent: None,
+            },
+            PropertySceneScheduledStep::ScrollBoundary { .. },
+            PropertySceneScheduledStep::ScrollContentSurface { .. },
+        ] => ConsumedAncestorTransformWitness::new(
+            transform.owner,
+            boundary.scroll.owner,
+            transform.id,
+        ),
+        _ => None,
+    };
+    let outer_transform_is_canonical = match (root_steps, &insertion.outer_transform) {
+        (
+            [
+                PropertySceneScheduledStep::ScrollBoundary { .. },
+                PropertySceneScheduledStep::ScrollContentSurface { .. },
+            ],
+            None,
+        ) => true,
+        (
+            [
+                PropertySceneScheduledStep::RetainedSurface {
+                    boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
+                    parent: None,
+                },
+                PropertySceneScheduledStep::ScrollBoundary { .. },
+                PropertySceneScheduledStep::ScrollContentSurface { .. },
+            ],
+            Some(outer),
+        ) => property_scroll_content_outer_transform_insertion_is_canonical(
+            root,
+            boundary,
+            *transform,
+            outer,
+            scaffold.context,
+        ),
+        _ => false,
+    };
+    if !schedule_matches
+        || boundary.scene_root_ordinal != insertion.scene_root_ordinal
+        || insertion.content_stable_id == 0
+        || insertion.effect.id.0 != insertion.effect.owner
+        || insertion.effect.parent.is_some()
+        || insertion.effect.generation == 0
+        || insertion.effect_stable_id == 0
+        || insertion.effect_cutout.root != insertion.effect.owner
+        || insertion.effect_cutout.stable_id != insertion.effect_stable_id
+        || insertion.effect_cutout.kind
+            != super::PlannedBoundaryKind::Isolation(insertion.effect.id)
+        || insertion.artifact_contract.boundary_root() != insertion.effect.owner
+        || insertion.artifact_contract.stable_id() != insertion.effect_stable_id
+        || insertion.artifact_contract.isolated_leaf() != insertion.effect
+        || !insertion.artifact_contract.is_canonical()
+        || insertion.consumed_transform != expected_consumed_transform
+        || !outer_transform_is_canonical
+        || insertion.effect_recorded_steps.is_empty()
+        || insertion
+            .effect_raster_bounds_bits
+            .map(f32::from_bits)
+            .iter()
+            .any(|value| !value.is_finite())
+        || f32::from_bits(insertion.effect_raster_bounds_bits[2]) <= 0.0
+        || f32::from_bits(insertion.effect_raster_bounds_bits[3]) <= 0.0
+    {
+        return false;
+    }
+    property_boundary_insertion_seal_is_canonical(
+        &property_boundary_insertion_seal(
+            insertion.insertion_index,
+            insertion.before_span.clone(),
+            insertion.after_span.clone(),
+            insertion.receiver_opaque_before,
+            insertion.receiver_opaque_after,
+            &insertion.receiver_recorded_steps,
+        ),
+        insertion.effect_cutout,
+    )
+}
+
+fn property_effect_transform_scroll_receiver_insertion_is_canonical(
+    scaffold: &PropertyScrollScheduleScaffold,
+    insertion: &PropertyEffectTransformScrollReceiverInsertionContract,
+) -> bool {
+    let Some(root) = scaffold.roots.get(insertion.scene_root_ordinal as usize) else {
+        return false;
+    };
+    let Some(root_steps) = scaffold.schedule.steps.get(root.step_span.clone()) else {
+        return false;
+    };
+    let [
+        PropertySceneScheduledStep::RetainedSurface {
+            boundary: PropertyScheduledSurfaceBoundary::Effect(outer),
+            parent: None,
+        },
+        PropertySceneScheduledStep::RetainedSurface {
+            boundary: PropertyScheduledSurfaceBoundary::Transform(inner),
+            parent: Some(PropertyScheduledSurfaceBoundaryId::Effect(parent)),
+        },
+        PropertySceneScheduledStep::ScrollBoundary {
+            boundary_ordinal,
+            scroll,
+            basis: ScrollCompositeBasis::Transform(basis),
+            ..
+        },
+    ] = root_steps
+    else {
+        return false;
+    };
+    let Some(boundary) = scaffold.boundaries.get(*boundary_ordinal as usize) else {
+        return false;
+    };
+    let inner_min_x = insertion
+        .inner_geometry
+        .quad_positions
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::INFINITY, f32::min);
+    let inner_min_y = insertion
+        .inner_geometry
+        .quad_positions
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::INFINITY, f32::min);
+    let inner_max_x = insertion
+        .inner_geometry
+        .quad_positions
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let inner_max_y = insertion
+        .inner_geometry
+        .quad_positions
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let expected_outer_bounds = recorded_step_bounds_union(
+        insertion
+            .outer_recorded_steps
+            .iter()
+            .filter_map(|step| match step {
+                PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact) => {
+                    Some(artifact.chunks.iter().map(|chunk| {
+                        let [x, y, width, height] = chunk.bounds_bits.map(f32::from_bits);
+                        crate::view::base_component::Rect {
+                            x,
+                            y,
+                            width,
+                            height,
+                        }
+                    }))
+                }
+                PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(_) => None,
+            }),
+        [
+            inner_min_x,
+            inner_min_y,
+            inner_max_x - inner_min_x,
+            inner_max_y - inner_min_y,
+        ],
+    );
+    if insertion.outer_receiver != *outer
+        || outer.id != *parent
+        || insertion.inner.receiver != *inner
+        || insertion.inner.receiver != *basis
+        || insertion.outer_receiver.owner != root.root
+        || insertion.outer_receiver.parent.is_some()
+        || insertion.outer_receiver.generation == 0
+        || !insertion.outer_receiver.opacity.is_finite()
+        || !(0.0..=1.0).contains(&insertion.outer_receiver.opacity)
+        || insertion.outer_stable_id != root.stable_id
+        || !insertion.outer_artifact_contract.is_canonical()
+        || insertion.outer_artifact_contract.boundary_root() != root.root
+        || insertion.outer_artifact_contract.stable_id() != root.stable_id
+        || insertion.outer_artifact_contract.isolated_leaf() != insertion.outer_receiver
+        || insertion.outer_artifact_contract.live_effect_chain() != [insertion.outer_receiver]
+        || insertion.transform_cutout.root != inner.owner
+        || insertion.transform_cutout.stable_id != insertion.inner.receiver_stable_id
+        || !matches!(insertion.transform_cutout.kind, super::PlannedBoundaryKind::Transform(id) if id == inner.id)
+        || insertion.inner.scene_root_ordinal != insertion.scene_root_ordinal
+        || insertion.inner.scroll_boundary_ordinal != *boundary_ordinal
+        || !insertion.inner_geometry.matches_rebuilt_contract()
+        || insertion
+            .inner_geometry
+            .viewport_transform
+            .to_cols_array()
+            .map(f32::to_bits)
+            != insertion
+                .inner
+                .receiver
+                .viewport_matrix
+                .to_cols_array()
+                .map(f32::to_bits)
+        || super::compiler::direct_translation_bits(insertion.inner_geometry.viewport_transform)
+            .is_none()
+        || expected_outer_bounds != Some(insertion.outer_raster_bounds_bits)
+        || insertion.outer_insertion_index >= insertion.outer_recorded_steps.len()
+        || insertion.outer_before_span != (0..insertion.outer_insertion_index)
+        || insertion.outer_after_span
+            != (insertion.outer_insertion_index + 1..insertion.outer_recorded_steps.len())
+        || boundary.scene_root_ordinal != insertion.scene_root_ordinal
+        || boundary.scroll.id != *scroll
+        || boundary.contents_clip.id.owner != boundary.scroll.owner
+        || boundary.consumed_properties.target_owner != boundary.scroll.owner
+        || boundary.consumed_properties.projected_output != PropertyTreeState::default()
+        || !matches!(
+            boundary.consumed_properties.entries.as_slice(),
+            [
+                ConsumedPropertyEntry {
+                    boundary: ConsumedPropertyBoundary::Effect(effect),
+                    ..
+                },
+                ConsumedPropertyEntry {
+                    boundary: ConsumedPropertyBoundary::Transform(transform),
+                    ..
+                },
+                ConsumedPropertyEntry {
+                    boundary: ConsumedPropertyBoundary::ScrollContents {
+                        scroll: consumed_scroll,
+                        contents_clip,
+                    },
+                    ..
+                },
+            ] if *effect == outer.id
+                && *transform == inner.id
+                && *consumed_scroll == boundary.scroll.id
+                && *contents_clip == boundary.contents_clip.id
+        )
+        || insertion.inner.scroll_cutout.root != boundary.scroll.owner
+        || insertion.inner.scroll_cutout.stable_id == 0
+        || !matches!(insertion.inner.scroll_cutout.kind, super::PlannedBoundaryKind::Scroll(id) if id == boundary.scroll.id)
+        || insertion.inner.insertion_index >= insertion.inner.recorded_steps.len()
+        || insertion.inner.before_span != (0..insertion.inner.insertion_index)
+        || insertion.inner.after_span
+            != (insertion.inner.insertion_index + 1..insertion.inner.recorded_steps.len())
+    {
+        return false;
+    }
+
+    let seal_is_canonical = |steps: &[PropertyScrollReceiverRecordedStepIdentity],
+                             marker: super::PlannedBoundary,
+                             insertion_index: usize,
+                             opaque_before: u32,
+                             opaque_after: u32| {
+        let mut marker_count = 0usize;
+        let mut cursor = 0_u32;
+        for (index, step) in steps.iter().enumerate() {
+            match step {
+                PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact) => {
+                    if index == insertion_index
+                        || artifact.op_count
+                            != artifact
+                                .chunks
+                                .iter()
+                                .map(|chunk| chunk.op_count)
+                                .sum::<usize>()
+                    {
+                        return false;
+                    }
+                    let Some(next) = cursor.checked_add(artifact.opaque_count) else {
+                        return false;
+                    };
+                    cursor = next;
+                }
+                PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(found) => {
+                    marker_count += 1;
+                    if index != insertion_index || *found != marker || cursor != opaque_before {
+                        return false;
+                    }
+                }
+            }
+        }
+        marker_count == 1 && cursor == opaque_after
+    };
+    seal_is_canonical(
+        &insertion.outer_recorded_steps,
+        insertion.transform_cutout,
+        insertion.outer_insertion_index,
+        insertion.outer_opaque_before,
+        insertion.outer_opaque_after,
+    ) && seal_is_canonical(
+        &insertion.inner.recorded_steps,
+        insertion.inner.scroll_cutout,
+        insertion.inner.insertion_index,
+        insertion.inner.receiver_opaque_before,
+        insertion.inner.receiver_opaque_after,
+    )
+}
+
+fn property_frame_scroll_receiver_insertion_is_canonical(
+    scaffold: &PropertyScrollScheduleScaffold,
+    insertion: &PropertyFrameScrollReceiverInsertionContract,
+) -> bool {
+    let Some(root) = scaffold.roots.get(insertion.scene_root_ordinal as usize) else {
+        return false;
+    };
+    let Some(boundary) = scaffold
+        .boundaries
+        .get(insertion.scroll_boundary_ordinal as usize)
+    else {
+        return false;
+    };
+    let markers = insertion
+        .recorded_steps
+        .iter()
+        .enumerate()
+        .filter_map(|(index, step)| {
+            matches!(step, PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(marker) if *marker == insertion.scroll_cutout)
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let [marker] = markers.as_slice() else {
+        return false;
+    };
+    insertion.receiver_root == root.root
+        && insertion.receiver_stable_id == root.stable_id
+        && boundary.scene_root_ordinal == root.ordinal
+        && insertion.scroll_cutout.root == boundary.scroll.owner
+        && insertion.scroll_cutout.stable_id != 0
+        && insertion.scroll_cutout.kind == super::PlannedBoundaryKind::Scroll(boundary.scroll.id)
+        && insertion.insertion_index == *marker
+        && insertion.before_span == (0..*marker)
+        && insertion.after_span == (*marker + 1..insertion.recorded_steps.len())
+        && insertion.receiver_opaque_before
+            == insertion.recorded_steps[..*marker]
+                .iter()
+                .filter_map(|step| match step {
+                    PropertyScrollReceiverRecordedStepIdentity::Artifact(identity) => {
+                        Some(identity.opaque_count)
+                    }
+                    PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(_) => None,
+                })
+                .sum::<u32>()
+        && insertion.receiver_opaque_after
+            == insertion.recorded_steps[*marker + 1..]
+                .iter()
+                .filter_map(|step| match step {
+                    PropertyScrollReceiverRecordedStepIdentity::Artifact(identity) => {
+                        Some(identity.opaque_count)
+                    }
+                    PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(_) => None,
+                })
+                .fold(insertion.receiver_opaque_before, u32::saturating_add)
 }
 
 fn property_transform_effect_scroll_receiver_insertion_is_canonical(
@@ -6184,22 +10872,184 @@ fn property_scroll_receiver_insertion_is_canonical(
     marker_count == 1 && cursor == insertion.receiver_opaque_after
 }
 
+fn property_same_owner_transform_scroll_insertion_is_canonical(
+    scaffold: &PropertyScrollScheduleScaffold,
+    insertion: &PropertySameOwnerTransformScrollReceiverInsertionContract,
+) -> bool {
+    let receiver = &insertion.receiver;
+    let Some(root) = scaffold.roots.get(receiver.scene_root_ordinal as usize) else {
+        return false;
+    };
+    let Some(boundary) = scaffold
+        .boundaries
+        .get(receiver.scroll_boundary_ordinal as usize)
+    else {
+        return false;
+    };
+    let Some(root_steps) = scaffold.schedule.steps.get(root.step_span.clone()) else {
+        return false;
+    };
+    matches!(
+        root_steps,
+        [
+            PropertySceneScheduledStep::RetainedSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
+                parent: None,
+            },
+            PropertySceneScheduledStep::ScrollBoundary {
+                boundary_ordinal,
+                scroll,
+                basis: ScrollCompositeBasis::Transform(basis),
+                ..
+            },
+        ] if *transform == insertion.transform
+            && *basis == insertion.transform
+            && *boundary_ordinal == receiver.scroll_boundary_ordinal
+            && *scroll == insertion.scroll.id
+    ) && insertion.is_canonical()
+        && insertion.owner == root.root
+        && insertion.stable_id == root.stable_id
+        && insertion.scroll == boundary.scroll
+        && insertion.contents_clip == boundary.contents_clip
+        && insertion.receiver.scroll_boundary_ordinal == boundary.ordinal
+        && insertion.content_root != insertion.owner
+}
+
+fn property_same_owner_effect_scroll_insertion_is_canonical(
+    scaffold: &PropertyScrollScheduleScaffold,
+    insertion: &PropertySameOwnerEffectScrollReceiverInsertionContract,
+) -> bool {
+    let receiver = &insertion.receiver;
+    let Some(root) = scaffold.roots.get(receiver.scene_root_ordinal as usize) else {
+        return false;
+    };
+    let Some(boundary) = scaffold
+        .boundaries
+        .get(receiver.scroll_boundary_ordinal as usize)
+    else {
+        return false;
+    };
+    let Some(root_steps) = scaffold.schedule.steps.get(root.step_span.clone()) else {
+        return false;
+    };
+    matches!(
+        root_steps,
+        [
+            PropertySceneScheduledStep::RetainedSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Effect(effect),
+                parent: None,
+            },
+            PropertySceneScheduledStep::ScrollBoundary {
+                boundary_ordinal,
+                scroll,
+                basis: ScrollCompositeBasis::Effect(basis),
+                ..
+            },
+        ] if *effect == insertion.effect
+            && *basis == insertion.effect
+            && *boundary_ordinal == receiver.scroll_boundary_ordinal
+            && *scroll == insertion.scroll.id
+    ) && insertion.is_canonical()
+        && insertion.owner == root.root
+        && insertion.stable_id == root.stable_id
+        && insertion.scroll == boundary.scroll
+        && insertion.contents_clip == boundary.contents_clip
+        && insertion.receiver.scroll_boundary_ordinal == boundary.ordinal
+        && insertion.content_root != insertion.owner
+}
+
+fn property_scroll_content_outer_transform_insertion_is_canonical(
+    root: &PropertyScrollScheduleRoot,
+    boundary: &PropertyScrollBoundaryContract,
+    expected: TransformNodeSnapshot,
+    insertion: &PropertyScrollContentOuterTransformInsertionContract,
+    context: TransformSurfacePlanContext,
+) -> bool {
+    let receiver = &insertion.receiver;
+    if receiver.scene_root_ordinal != root.ordinal
+        || receiver.receiver != expected
+        || receiver.receiver.owner != root.root
+        || receiver.receiver.id.0 != root.root
+        || receiver.receiver.parent.is_some()
+        || receiver.receiver.generation == 0
+        || receiver.receiver_stable_id != root.stable_id
+        || receiver.scroll_boundary_ordinal != boundary.ordinal
+        || receiver.scroll_cutout.root != boundary.scroll.owner
+        || receiver.scroll_cutout.stable_id == 0
+        || receiver.scroll_cutout.kind != super::PlannedBoundaryKind::Scroll(boundary.scroll.id)
+        || receiver.insertion_index >= receiver.recorded_steps.len()
+        || receiver.before_span != (0..receiver.insertion_index)
+        || receiver.after_span != (receiver.insertion_index + 1..receiver.recorded_steps.len())
+        || !insertion.geometry.matches_rebuilt_contract()
+        || insertion
+            .geometry
+            .viewport_transform
+            .to_cols_array()
+            .map(f32::to_bits)
+            != expected.viewport_matrix.to_cols_array().map(f32::to_bits)
+        || insertion.geometry.outer_scissor_rect != context.outer_scissor_rect
+    {
+        return false;
+    }
+    let mut marker_count = 0usize;
+    let mut cursor = 0_u32;
+    for (index, step) in receiver.recorded_steps.iter().enumerate() {
+        match step {
+            PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact) => {
+                if index == receiver.insertion_index
+                    || artifact.op_count
+                        != artifact
+                            .chunks
+                            .iter()
+                            .map(|chunk| chunk.op_count)
+                            .sum::<usize>()
+                {
+                    return false;
+                }
+                let Some(next) = cursor.checked_add(artifact.opaque_count) else {
+                    return false;
+                };
+                cursor = next;
+            }
+            PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(marker) => {
+                marker_count += 1;
+                if index != receiver.insertion_index || *marker != receiver.scroll_cutout {
+                    return false;
+                }
+                if cursor != receiver.receiver_opaque_before {
+                    return false;
+                }
+            }
+        }
+    }
+    marker_count == 1 && cursor == receiver.receiver_opaque_after
+}
+
 fn property_scene_plan_is_sealed(plan: &FramePaintPlan) -> bool {
     let Some(seal) = &plan.property_scene_seal else {
         return false;
     };
+    if let Some(scaffold) = &seal.native_scroll_forest_scaffold {
+        return seal.effect_scaffold.is_none()
+            && seal.scroll_schedule_scaffold.is_none()
+            && seal.nested_scroll_scaffold.is_none()
+            && native_scroll_forest_scaffold_is_canonical(plan, seal, scaffold);
+    }
     if let Some(scaffold) = &seal.nested_scroll_scaffold {
         return seal.effect_scaffold.is_none()
             && seal.scroll_schedule_scaffold.is_none()
+            && seal.native_scroll_forest_scaffold.is_none()
             && nested_scroll_scene_scaffold_is_canonical(plan, seal, scaffold);
     }
     if let Some(scaffold) = &seal.scroll_schedule_scaffold {
         return seal.effect_scaffold.is_none()
             && seal.nested_scroll_scaffold.is_none()
+            && seal.native_scroll_forest_scaffold.is_none()
             && property_scroll_schedule_scaffold_is_canonical(plan, seal, scaffold);
     }
     if let Some(scaffold) = &seal.effect_scaffold {
         return seal.nested_scroll_scaffold.is_none()
+            && seal.native_scroll_forest_scaffold.is_none()
             && property_effect_scaffold_is_canonical(plan, seal, scaffold);
     }
     let Some(plan_roots) = &plan.property_scene_roots else {
@@ -6456,6 +11306,356 @@ fn nested_scroll_artifact_identity_is_canonical(
         && identity.opaque_count <= identity.op_count.saturating_mul(2) as u32
 }
 
+fn native_scroll_forest_scaffold_is_canonical(
+    plan: &FramePaintPlan,
+    seal: &PropertyScenePlanSeal,
+    scaffold: &NativeScrollForestScaffold,
+) -> bool {
+    if !plan.steps.is_empty()
+        || seal.surface_count != 0
+        || !seal.surfaces.is_empty()
+        || !seal.scene_artifact_validation.is_empty()
+        || seal.aggregate_opaque_order_span != (0..0)
+        || seal.context != scaffold.context
+        || seal.outer_scissor_rect.is_some()
+        || scaffold.context != scaffold.planned_context
+        || scaffold.scale_factor_bits != scaffold.planned_scale_factor_bits
+        || !f32::from_bits(scaffold.scale_factor_bits).is_finite()
+        || f32::from_bits(scaffold.scale_factor_bits) <= 0.0
+        || scaffold.context.paint_offset_bits != [0.0_f32.to_bits(); 2]
+        || scaffold.context.outer_scissor_rect().is_some()
+        || scaffold.roots != scaffold.planned_roots
+        || scaffold.boundaries != scaffold.planned_boundaries
+        || scaffold.schedule != scaffold.planned_schedule
+        || scaffold.programs != scaffold.planned_programs
+        || scaffold.roots.is_empty()
+        || scaffold.boundaries.len() < 3
+    {
+        return false;
+    }
+    let Some(plan_roots) = &plan.property_scene_roots else {
+        return false;
+    };
+    if plan_roots != &seal.roots || plan_roots.len() != scaffold.roots.len() {
+        return false;
+    }
+    let mut next_boundary = 0_u32;
+    let mut roots = FxHashSet::default();
+    let mut root_stable_ids = FxHashSet::default();
+    for (ordinal, (root, witness)) in scaffold.roots.iter().zip(plan_roots).enumerate() {
+        if root.ordinal != ordinal as u32
+            || witness.ordinal != root.ordinal
+            || witness.root != root.root
+            || witness.stable_id != root.stable_id
+            || witness.owner
+                != (PaintOwnerSnapshot {
+                    owner: root.root,
+                    parent: None,
+                })
+            || witness.top_level_step_span != (0..0)
+            || root.stable_id == 0
+            || !roots.insert(root.root)
+            || !root_stable_ids.insert(root.stable_id)
+            || root.boundary_span.start != next_boundary
+            || root.boundary_span.start >= root.boundary_span.end
+            || root.boundary_span.end as usize > scaffold.boundaries.len()
+        {
+            return false;
+        }
+        next_boundary = root.boundary_span.end;
+    }
+    if next_boundary as usize != scaffold.boundaries.len() {
+        return false;
+    }
+
+    let mut boundary_roots = FxHashSet::default();
+    let mut boundary_stable_ids = FxHashSet::default();
+    for (index, boundary) in scaffold.boundaries.iter().enumerate() {
+        let id = NativeScrollBoundaryId(index as u32);
+        let root = scaffold.roots.get(boundary.scene_root_ordinal as usize);
+        let expected_projected = boundary
+            .parent
+            .and_then(|parent| scaffold.boundaries.get(parent.0 as usize))
+            .map(|parent| parent.projection.live_input)
+            .unwrap_or_default();
+        let expected_parent_scroll = boundary
+            .parent
+            .and_then(|parent| scaffold.boundaries.get(parent.0 as usize))
+            .map(|parent| parent.scroll.id);
+        let expected_parent_clip = boundary
+            .parent
+            .and_then(|parent| scaffold.boundaries.get(parent.0 as usize))
+            .map(|parent| parent.contents_clip.id);
+        let expected_live = PropertyTreeState {
+            clip: Some(boundary.contents_clip.id),
+            scroll: Some(boundary.scroll.id),
+            ..PropertyTreeState::default()
+        };
+        let geometry_is_canonical = boundary.parent.is_none_or(|parent| {
+            parent.0 < id.0
+                && scaffold.boundaries[parent.0 as usize].scene_root_ordinal
+                    == boundary.scene_root_ordinal
+        }) && boundary
+            .scroll
+            .has_canonical_geometry_with_contents_clip_parent_ids(
+                boundary.contents_clip,
+                expected_parent_scroll,
+                expected_parent_clip,
+            );
+        if boundary.id != id
+            || root.is_none_or(|root| !root.boundary_span.contains(&id.0))
+            || boundary.boundary_root != boundary.scroll.owner
+            || boundary.scroll.id.0 != boundary.boundary_root
+            || boundary.contents_clip.id
+                != (ClipNodeId {
+                    owner: boundary.boundary_root,
+                    role: ClipNodeRole::ContentsClip,
+                })
+            || boundary.contents_clip.owner != boundary.boundary_root
+            || boundary.stable_id == 0
+            || boundary.stable_id != boundary.admission.stable_id
+            || boundary.admission.boundary_root != boundary.boundary_root
+            || boundary.admission.content_root_stable_id == 0
+            || !boundary.admission.matches_scroll_node(boundary.scroll)
+            || boundary.scroll.parent != expected_parent_scroll
+            || boundary.contents_clip.parent != expected_parent_clip
+            || boundary.contents_clip.behavior != ClipBehavior::Intersect
+            || boundary.scroll.generation == 0
+            || boundary.contents_clip.generation == 0
+            || boundary.projection.live_input != expected_live
+            || boundary.projection.projected_output != expected_projected
+            || boundary.projection.parent_scroll != expected_parent_scroll
+            || boundary.projection.parent_clip != expected_parent_clip
+            || !geometry_is_canonical
+            || !boundary_roots.insert(boundary.boundary_root)
+            || !boundary_stable_ids.insert(boundary.stable_id)
+        {
+            return false;
+        }
+    }
+
+    if scaffold.programs.len() != scaffold.boundaries.len() {
+        return false;
+    }
+    for (index, program) in scaffold.programs.iter().enumerate() {
+        let boundary = &scaffold.boundaries[index];
+        let expected_children = scaffold
+            .boundaries
+            .iter()
+            .filter(|child| child.parent == Some(boundary.id))
+            .map(|child| {
+                (
+                    child.id,
+                    super::PlannedBoundary {
+                        root: child.boundary_root,
+                        stable_id: child.stable_id,
+                        kind: super::PlannedBoundaryKind::Scroll(child.scroll.id),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut marker_cursor = 0usize;
+        let recorded_content = program
+            .content_steps
+            .iter()
+            .map(|step| match step {
+                NativeScrollForestContentProgramStep::Artifact(artifact) => {
+                    (property_scroll_receiver_artifact_identity(artifact.artifact()).as_ref()
+                        == Some(&artifact.identity))
+                    .then(|| {
+                        super::frame_recorder::RecordedTransformSurfaceStep::Artifact(
+                            artifact.artifact().clone(),
+                        )
+                    })
+                }
+                NativeScrollForestContentProgramStep::ChildBoundary(child) => {
+                    let (expected_id, expected) = expected_children.get(marker_cursor)?;
+                    if child != expected_id {
+                        return None;
+                    }
+                    marker_cursor += 1;
+                    Some(super::frame_recorder::RecordedTransformSurfaceStep::Boundary(*expected))
+                }
+            })
+            .collect::<Option<Vec<_>>>();
+        let source_bounds = boundary.admission.source_bounds;
+        let expected_cutouts = expected_children
+            .iter()
+            .map(|(_, cutout)| *cutout)
+            .collect::<Vec<_>>();
+        let expected_edge = super::PaintScrollForestEdgeWitness::new(
+            boundary.boundary_root,
+            boundary.admission.content_root,
+            boundary.scroll,
+            boundary.contents_clip,
+            boundary.projection.parent_scroll,
+            boundary.projection.parent_clip,
+        );
+        let mut dependency_cursor = 0_u32;
+        let expected_dependencies = program
+            .content_steps
+            .iter()
+            .map(|step| match step {
+                NativeScrollForestContentProgramStep::Artifact(artifact) => {
+                    dependency_cursor =
+                        dependency_cursor.checked_add(opaque_order_count(artifact.artifact()))?;
+                    Some(None)
+                }
+                NativeScrollForestContentProgramStep::ChildBoundary(child) => {
+                    let child_program = scaffold.programs.get(child.0 as usize)?;
+                    let child_boundary = scaffold.boundaries.get(child.0 as usize)?;
+                    let before = dependency_cursor;
+                    dependency_cursor = dependency_cursor
+                        .checked_add(child_program.compiler_stamp.host_opaque_count)?
+                        .checked_add(child_program.compiler_stamp.overlay_opaque_count)?;
+                    let source = child_boundary.scroll.layout_content_bounds_at_zero;
+                    Some(Some(NativeScrollForestChildRasterDependency {
+                        child: *child,
+                        boundary_root: child_boundary.boundary_root,
+                        content_root: child_boundary.admission.content_root,
+                        content_stable_id: child_program.receiver_stable_id,
+                        child_raster_identity: Box::new(
+                            child_program
+                                .content_raster_identity(child_boundary.admission.content_root),
+                        ),
+                        host_identity: child_program.host_before.identity.clone(),
+                        overlay_identity: child_program.overlay_after.identity.clone(),
+                        scroll: child_boundary.scroll,
+                        contents_clip: child_boundary.contents_clip,
+                        source_bounds_bits: [
+                            source.x.to_bits(),
+                            source.y.to_bits(),
+                            source.width.to_bits(),
+                            source.height.to_bits(),
+                        ],
+                        offset_bits: [
+                            child_boundary.scroll.offset.x.to_bits(),
+                            child_boundary.scroll.offset.y.to_bits(),
+                        ],
+                        composite_scissor: child_boundary.contents_clip.logical_scissor,
+                        parent_opaque_before: before,
+                        parent_opaque_after: dependency_cursor,
+                    }))
+                }
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(|items| items.into_iter().flatten().collect::<Vec<_>>());
+        if program.boundary != boundary.id
+            || program.receiver_stable_id != boundary.admission.content_root_stable_id
+            || Some(program.edge) != expected_edge
+            || property_scroll_receiver_artifact_identity(program.host_before.artifact()).as_ref()
+                != Some(&program.host_before.identity)
+            || property_scroll_receiver_artifact_identity(program.overlay_after.artifact()).as_ref()
+                != Some(&program.overlay_after.identity)
+            || marker_cursor != expected_children.len()
+            || recorded_content.as_ref().is_none_or(Vec::is_empty)
+            || expected_dependencies.as_ref() != Some(&program.child_dependencies)
+            || program.content_program_opaque_terminal != dependency_cursor
+            || recorded_content.as_ref().and_then(|content| {
+                super::compiler::compile_native_scroll_forest_boundary_program_for_plan(
+                    boundary.boundary_root,
+                    boundary.admission.content_root,
+                    boundary.scroll,
+                    [
+                        source_bounds.x.to_bits(),
+                        source_bounds.y.to_bits(),
+                        source_bounds.width.to_bits(),
+                        source_bounds.height.to_bits(),
+                    ],
+                    program.host_before.artifact(),
+                    content,
+                    &expected_cutouts,
+                    program.overlay_after.artifact(),
+                )
+            }) != Some(program.compiler_stamp.clone())
+        {
+            return false;
+        }
+    }
+
+    let mut stack = Vec::<NativeScrollBoundaryId>::new();
+    let mut pending = None;
+    let mut opened = FxHashSet::default();
+    let mut closed = FxHashSet::default();
+    let mut receivers = FxHashSet::default();
+    let mut boundary_has_body = vec![false; scaffold.boundaries.len()];
+    for step in &scaffold.schedule.steps {
+        match step {
+            NativeScrollForestScheduledStep::ChildBoundary { parent, child } => {
+                if pending.is_some()
+                    || scaffold
+                        .boundaries
+                        .get(child.0 as usize)
+                        .is_none_or(|boundary| {
+                            boundary.parent != *parent
+                                || stack.last().copied() != *parent
+                                || opened.contains(child)
+                        })
+                {
+                    return false;
+                }
+                if let Some(parent) = parent {
+                    boundary_has_body[parent.0 as usize] = true;
+                }
+                pending = Some(*child);
+            }
+            NativeScrollForestScheduledStep::Artifact {
+                boundary,
+                phase: NativeScrollArtifactPhase::HostBefore,
+            } => {
+                if pending != Some(*boundary) || !opened.insert(*boundary) {
+                    return false;
+                }
+                pending = None;
+                stack.push(*boundary);
+            }
+            NativeScrollForestScheduledStep::Artifact {
+                boundary,
+                phase: NativeScrollArtifactPhase::OverlayAfter,
+            } => {
+                if pending.is_some()
+                    || stack.pop() != Some(*boundary)
+                    || !boundary_has_body[boundary.0 as usize]
+                    || !closed.insert(*boundary)
+                {
+                    return false;
+                }
+            }
+            NativeScrollForestScheduledStep::ContentReceiver {
+                boundary,
+                content_root,
+                stable_id,
+                projection,
+            } => {
+                if pending.is_some()
+                    || stack.last() != Some(boundary)
+                    || *stable_id == 0
+                    || boundary_roots.contains(content_root)
+                    || !receivers.insert((*content_root, *stable_id))
+                    || scaffold
+                        .boundaries
+                        .get(boundary.0 as usize)
+                        .is_none_or(|contract| {
+                            contract.projection != *projection
+                                || contract.admission.content_root == *content_root
+                                    && contract.boundary_root == *content_root
+                        })
+                {
+                    return false;
+                }
+                boundary_has_body[boundary.0 as usize] = true;
+            }
+        }
+    }
+    pending.is_none()
+        && stack.is_empty()
+        && opened.len() == scaffold.boundaries.len()
+        && closed.len() == scaffold.boundaries.len()
+        && receivers.iter().all(|(_, stable_id)| {
+            !root_stable_ids.contains(stable_id) && !boundary_stable_ids.contains(stable_id)
+        })
+}
+
 fn nested_scroll_scene_scaffold_is_canonical(
     plan: &FramePaintPlan,
     seal: &PropertyScenePlanSeal,
@@ -6700,16 +11900,19 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
             reasons: vec![FramePaintPlanRejection::MissingRoot(*root)],
         });
     };
-    let Some(root_element) = root_node.element.as_any().downcast_ref::<Element>() else {
-        return Err(FramePaintPlanError {
-            reasons: vec![FramePaintPlanRejection::UnknownRootHost(*root)],
-        });
-    };
-
     let mut reasons = Vec::new();
     if arena.parent_of(*root).is_some() {
         push_unique(&mut reasons, FramePaintPlanRejection::RootHasParent(*root));
     }
+    if !root_node.element.has_retained_transform_surface() {
+        push_unique(
+            &mut reasons,
+            FramePaintPlanRejection::UnknownRootHost(*root),
+        );
+        return Err(FramePaintPlanError { reasons });
+    }
+    let root_element = root_node.element.as_ref();
+
     for &error in &property_trees.validation_errors {
         push_unique(&mut reasons, FramePaintPlanRejection::PropertyTree(error));
     }
@@ -6744,11 +11947,7 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
         if node.element.is_deferred_to_root_viewport_render() {
             push_unique(&mut reasons, FramePaintPlanRejection::DeferredBoundary(key));
         }
-        if node
-            .element
-            .placement_eligibility_metadata()
-            .contains_runtime_layout_state
-        {
+        if !sampled_layout_transition_is_exact(node.element.as_ref()) {
             push_unique(&mut reasons, FramePaintPlanRejection::LayoutTransition(key));
         }
         for &child in node.element.children() {
@@ -6806,11 +12005,11 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
         .find_map(|(&id, snapshot)| (id != transform).then_some((id, *snapshot)));
     let nested_root = nested_transform.map(|(_, snapshot)| snapshot.owner);
     if let Some((nested_id, snapshot)) = nested_transform {
-        let nested_is_direct_element = arena.parent_of(snapshot.owner) == Some(*root)
-            && arena
-                .get(snapshot.owner)
-                .is_some_and(|node| node.element.as_any().downcast_ref::<Element>().is_some());
-        if !nested_is_direct_element
+        let nested_element = arena.get(snapshot.owner).filter(|node| {
+            arena.parent_of(snapshot.owner) == Some(*root)
+                && node.element.has_retained_transform_surface()
+        });
+        if nested_element.is_none()
             || nested_id != TransformNodeId(snapshot.owner)
             || snapshot.parent != Some(transform)
             || snapshot.generation == 0
@@ -6818,6 +12017,20 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
             push_unique(
                 &mut reasons,
                 FramePaintPlanRejection::UnexpectedTransform(snapshot.owner),
+            );
+        }
+        if nested_element.is_some_and(|node| {
+            !node
+                .element
+                .compositor_viewport_transform_snapshot()
+                .is_some_and(|live| {
+                    live.to_cols_array().map(f32::to_bits)
+                        == snapshot.viewport_matrix.to_cols_array().map(f32::to_bits)
+                })
+        }) {
+            push_unique(
+                &mut reasons,
+                FramePaintPlanRejection::InvalidRootTransform(snapshot.owner),
             );
         }
         if !matrix_is_finite_affine(snapshot.viewport_matrix) {
@@ -6930,19 +12143,21 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
         let child_node = arena.get(child_root).ok_or_else(|| FramePaintPlanError {
             reasons: vec![FramePaintPlanRejection::MissingRoot(child_root)],
         })?;
-        let child_element = child_node
-            .element
-            .as_any()
-            .downcast_ref::<Element>()
-            .ok_or_else(|| FramePaintPlanError {
+        if !child_node.element.has_retained_transform_surface() {
+            return Err(FramePaintPlanError {
                 reasons: vec![FramePaintPlanRejection::UnexpectedTransform(child_root)],
-            })?;
+            });
+        }
+        let child_element = child_node.element.as_ref();
         let child_transform = TransformNodeId(child_root);
+        let root_recording_context =
+            root_element.shadow_paint_recording_context(super::PaintRecordingContext {
+                paint_offset: context.paint_offset(),
+                ..Default::default()
+            });
         let child_paint_offset = root_element
-            .retained_child_paint_offset(context.paint_offset())
-            .ok_or_else(|| FramePaintPlanError {
-                reasons: vec![FramePaintPlanRejection::InvalidSurfaceGeometry(child_root)],
-            })?;
+            .shadow_paint_recording_context_for_child(child_root, arena, root_recording_context)
+            .paint_offset;
         let child_context = TransformSurfacePlanContext::new(child_paint_offset, None);
         let child_geometry = exact_surface_geometry_for_plan(
             child_element,
@@ -7232,15 +12447,11 @@ pub(crate) fn plan_single_root_transform_child_isolation_surface_with_context(
         Some(_) => {}
     }
 
-    let child_is_direct_element = child_root.is_some_and(|child| {
-        arena.parent_of(child) == Some(*root)
-            && arena
-                .get(child)
-                .is_some_and(|node| node.element.as_any().downcast_ref::<Element>().is_some())
-    });
+    let child_is_direct_host = child_root
+        .is_some_and(|child| arena.parent_of(child) == Some(*root) && arena.get(child).is_some());
     let effect_id = child_root.map(EffectNodeId);
     let effect = effect_id.and_then(|effect| property_trees.effects.get(&effect).copied());
-    match (child_root, child_is_direct_element, effect) {
+    match (child_root, child_is_direct_host, effect) {
         (Some(child), true, Some(snapshot))
             if snapshot.owner == child
                 && snapshot.parent.is_none()
@@ -7287,11 +12498,7 @@ pub(crate) fn plan_single_root_transform_child_isolation_surface_with_context(
         if node.element.is_deferred_to_root_viewport_render() {
             push_unique(&mut reasons, FramePaintPlanRejection::DeferredBoundary(key));
         }
-        if node
-            .element
-            .placement_eligibility_metadata()
-            .contains_runtime_layout_state
-        {
+        if !sampled_layout_transition_is_exact(node.element.as_ref()) {
             push_unique(&mut reasons, FramePaintPlanRejection::LayoutTransition(key));
         }
         for &child in node.element.children() {
@@ -7374,11 +12581,7 @@ pub(crate) fn plan_single_root_transform_child_isolation_surface_with_context(
     let child_node = arena
         .get(child_root)
         .expect("validated direct child node remains reachable");
-    let child_element = child_node
-        .element
-        .as_any()
-        .downcast_ref::<Element>()
-        .expect("validated direct child Element");
+    let child_element = child_node.element.as_ref();
     let effect_id = EffectNodeId(child_root);
     let root_geometry = exact_surface_geometry_for_plan(
         root_element,
@@ -7393,7 +12596,7 @@ pub(crate) fn plan_single_root_transform_child_isolation_surface_with_context(
             reasons: vec![FramePaintPlanRejection::InvalidSurfaceGeometry(child_root)],
         })?;
     let child_bounds = child_element
-        .exact_nested_isolation_render_output_bounds(arena, child_paint_offset)
+        .exact_nested_isolation_render_output_bounds(child_root, arena, child_paint_offset)
         .ok_or_else(|| FramePaintPlanError {
             reasons: vec![FramePaintPlanRejection::InvalidSurfaceGeometry(child_root)],
         })?;
@@ -7608,11 +12811,7 @@ pub(crate) fn plan_single_root_isolation_surface(
         if current.element.is_deferred_to_root_viewport_render() {
             reasons.push(FramePaintPlanRejection::DeferredBoundary(key));
         }
-        if current
-            .element
-            .placement_eligibility_metadata()
-            .contains_runtime_layout_state
-        {
+        if !sampled_layout_transition_is_exact(current.element.as_ref()) {
             reasons.push(FramePaintPlanRejection::LayoutTransition(key));
         }
         let exact_effect = property_trees.states.get(&key).is_some_and(|state| {
@@ -7852,21 +13051,37 @@ pub(crate) fn plan_single_root_scroll_host_surface(
 }
 
 fn exact_surface_geometry_for_plan(
-    element: &Element,
+    element: &dyn ElementTrait,
     arena: &NodeArena,
     root: NodeKey,
     context: TransformSurfacePlanContext,
     expected_viewport_matrix: Option<glam::Mat4>,
 ) -> Result<TransformSurfaceGeometrySnapshot, FramePaintPlanError> {
-    let geometry = element
-        .exact_transform_surface_geometry_snapshot(
-            arena,
-            context.paint_offset(),
-            context.outer_scissor_rect,
-        )
+    let source_bounds = element
+        .retained_transform_surface_bounds(arena, context.paint_offset())
         .ok_or_else(|| FramePaintPlanError {
             reasons: vec![FramePaintPlanRejection::InvalidSurfaceGeometry(root)],
         })?;
+    let viewport_transform = element
+        .compositor_viewport_transform_snapshot()
+        .map(|snapshot| glam::Mat4::from_cols_array(&snapshot.to_cols_array()))
+        .ok_or_else(|| FramePaintPlanError {
+            reasons: vec![FramePaintPlanRejection::InvalidRootTransform(root)],
+        })?;
+    let visual_bounds = crate::view::viewport::scene_helpers::paint_snapped_retained_surface_bounds(
+        element,
+        source_bounds,
+        context.paint_offset(),
+    );
+    let geometry = TransformSurfaceGeometrySnapshot::new(
+        source_bounds,
+        visual_bounds,
+        viewport_transform,
+        context.outer_scissor_rect,
+    )
+    .ok_or_else(|| FramePaintPlanError {
+        reasons: vec![FramePaintPlanRejection::InvalidSurfaceGeometry(root)],
+    })?;
     if geometry.source_bounds.x < 0.0 || geometry.source_bounds.y < 0.0 {
         return Err(FramePaintPlanError {
             reasons: vec![FramePaintPlanRejection::NegativeSurfaceOrigin(root)],
@@ -7890,6 +13105,51 @@ fn push_unique(reasons: &mut Vec<FramePaintPlanRejection>, reason: FramePaintPla
     if !reasons.contains(&reason) {
         reasons.push(reason);
     }
+}
+
+pub(super) fn sampled_layout_transition_is_exact(element: &dyn ElementTrait) -> bool {
+    if !element
+        .placement_eligibility_metadata()
+        .contains_runtime_layout_state
+    {
+        return true;
+    }
+    let Some(witness) = element.retained_sampled_layout_transition_snapshot() else {
+        return false;
+    };
+    let bounds = element.box_model_snapshot();
+    let option_bits_are_finite = |values: [Option<u32>; 2]| {
+        values
+            .into_iter()
+            .flatten()
+            .all(|bits| f32::from_bits(bits).is_finite())
+    };
+    witness.stable_id != 0
+        && witness.stable_id == element.stable_id()
+        && witness.stable_id == bounds.node_id
+        && witness.bounds_bits
+            == [bounds.x, bounds.y, bounds.width, bounds.height].map(f32::to_bits)
+        && witness
+            .bounds_bits
+            .iter()
+            .all(|bits| f32::from_bits(*bits).is_finite())
+        && f32::from_bits(witness.bounds_bits[2]) >= 0.0
+        && f32::from_bits(witness.bounds_bits[3]) >= 0.0
+        && witness
+            .visual_offset_bits
+            .iter()
+            .all(|bits| f32::from_bits(*bits).is_finite())
+        && option_bits_are_finite(witness.override_size_bits)
+        && option_bits_are_finite(witness.target_position_bits)
+        && option_bits_are_finite(witness.target_size_bits)
+        && witness
+            .override_size_bits
+            .into_iter()
+            .chain(witness.target_size_bits)
+            .flatten()
+            .all(|bits| f32::from_bits(bits) >= 0.0)
+        && element.retained_paint_signature_is_complete()
+        && witness.paint_signature == element.retained_paint_signature()
 }
 
 fn matrix_is_finite_affine(matrix: glam::Mat4) -> bool {
@@ -7941,9244 +13201,4 @@ fn rect_is_opaque(
 }
 
 #[cfg(test)]
-pub(super) mod tests {
-    use super::*;
-    use std::any::Any;
-    use std::sync::Arc;
-
-    use slotmap::Key;
-
-    use crate::style::{
-        Angle, BoxShadow, Color, Layout, ParsedValue, PropertyId, Rotate, ScrollDirection, Style,
-        Transform,
-    };
-    use crate::view::base_component::{
-        BoxModelSnapshot, BuildState, DirtyPassMask, ElementTrait, EventTarget, Image,
-        LayoutConstraints, LayoutPlacement, Layoutable, Rect, Renderable, Size, Svg,
-        UiBuildContext,
-    };
-    use crate::view::frame_graph::{FrameGraph, FramePassTestPayload};
-    use crate::view::node_arena::Node;
-    use crate::view::paint::tests::exact_isolation_fixture;
-    use crate::view::paint::{
-        PaintBakedScrollHostWitness, PaintScrollContentWitness, PlannedBoundary,
-        PlannedBoundaryKind,
-    };
-    use crate::view::test_support::{
-        commit_child, commit_element, measure_and_place, new_test_arena,
-    };
-    use crate::view::viewport::Viewport;
-    use crate::view::{ImageSource, SvgSource};
-
-    struct UnknownHost {
-        id: u64,
-        width: f32,
-        height: f32,
-    }
-
-    impl Layoutable for UnknownHost {
-        fn measure(&mut self, _constraints: LayoutConstraints, _arena: &mut NodeArena) {}
-        fn place(&mut self, _placement: LayoutPlacement, _arena: &mut NodeArena) {}
-        fn measured_size(&self) -> (f32, f32) {
-            (self.width, self.height)
-        }
-        fn set_layout_width(&mut self, width: f32) {
-            self.width = width;
-        }
-        fn set_layout_height(&mut self, height: f32) {
-            self.height = height;
-        }
-    }
-
-    impl EventTarget for UnknownHost {}
-
-    impl Renderable for UnknownHost {
-        fn build(
-            &mut self,
-            graph: &mut FrameGraph,
-            _arena: &mut NodeArena,
-            mut ctx: UiBuildContext,
-        ) -> BuildState {
-            let mut pass = crate::view::render_pass::draw_rect_pass::DrawRectPass::new(
-                crate::view::render_pass::draw_rect_pass::RectPassParams {
-                    position: [0.0, 0.0],
-                    size: [self.width, self.height],
-                    fill_color: [0.2, 0.4, 0.6, 0.5],
-                    opacity: 1.0,
-                    ..Default::default()
-                },
-                Default::default(),
-                Default::default(),
-            );
-            pass.set_render_mode(
-                crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
-            );
-            ctx.emit_draw_rect_pass(graph, pass);
-            ctx.into_state()
-        }
-    }
-
-    impl ElementTrait for UnknownHost {
-        fn stable_id(&self) -> u64 {
-            self.id
-        }
-
-        fn box_model_snapshot(&self) -> BoxModelSnapshot {
-            BoxModelSnapshot {
-                node_id: self.id,
-                parent_id: None,
-                x: 0.0,
-                y: 0.0,
-                width: self.width,
-                height: self.height,
-                border_radius: 0.0,
-                should_render: true,
-            }
-        }
-
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-
-        fn as_any_mut(&mut self) -> &mut dyn Any {
-            self
-        }
-    }
-
-    fn exact_transform_fixture_at_origin_with_ids(
-        root_id: u64,
-        child_id: u64,
-        root_x: f32,
-        root_y: f32,
-    ) -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
-        let mut root = Element::new_with_id(root_id, root_x, root_y, 40.0, 24.0);
-        let mut root_style = Style::new();
-        root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        root_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::rgb(20, 40, 80)),
-        );
-        root_style.set_transform(Transform::new([Rotate::z(Angle::deg(12.0))]));
-        root.apply_style(root_style);
-
-        let mut child = Element::new_with_id(child_id, 0.0, 0.0, 18.0, 10.0);
-        let mut child_style = Style::new();
-        child_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::rgb(180, 60, 20)),
-        );
-        child.apply_style(child_style);
-
-        let mut arena = new_test_arena();
-        let root = commit_element(&mut arena, Box::new(root));
-        commit_child(&mut arena, root, Box::new(child));
-        measure_and_place(
-            &mut arena,
-            root,
-            LayoutConstraints {
-                max_width: 160.0,
-                max_height: 120.0,
-                viewport_width: 160.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(160.0),
-                percent_base_height: Some(120.0),
-            },
-            LayoutPlacement {
-                parent_x: root_x,
-                parent_y: root_y,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 160.0,
-                available_height: 120.0,
-                viewport_width: 160.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(160.0),
-                percent_base_height: Some(120.0),
-            },
-        );
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[root]);
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[root], &properties);
-        (arena, root, properties, generations)
-    }
-
-    fn exact_transform_fixture() -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
-        exact_transform_fixture_at_origin_with_ids(0xc1_0001, 0xc1_0002, 4.25, 3.5)
-    }
-
-    fn nested_exact_transform_fixture() -> (
-        NodeArena,
-        NodeKey,
-        NodeKey,
-        NodeKey,
-        NodeKey,
-        NodeKey,
-        PropertyTrees,
-        PaintGenerationTracker,
-    ) {
-        let styled_element = |id, x, y, width, height, color| {
-            let mut element = Element::new_with_id(id, x, y, width, height);
-            let mut style = Style::new();
-            style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-            style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(color));
-            element.apply_style(style);
-            element
-        };
-
-        let mut arena = new_test_arena();
-        let root = commit_element(
-            &mut arena,
-            Box::new(styled_element(
-                0xc5_a100,
-                0.25,
-                0.25,
-                40.0,
-                24.0,
-                Color::rgb(20, 40, 80),
-            )),
-        );
-        let before = commit_child(
-            &mut arena,
-            root,
-            Box::new(styled_element(
-                0xc5_a101,
-                1.25,
-                1.25,
-                2.0,
-                2.0,
-                Color::rgb(40, 120, 80),
-            )),
-        );
-        let child = commit_child(
-            &mut arena,
-            root,
-            Box::new(styled_element(
-                0xc5_a102,
-                4.25,
-                1.5,
-                18.0,
-                10.0,
-                Color::rgb(180, 60, 20),
-            )),
-        );
-        let descendant = commit_child(
-            &mut arena,
-            child,
-            Box::new(styled_element(
-                0xc5_a103,
-                5.0,
-                1.75,
-                1.0,
-                1.0,
-                Color::rgb(200, 160, 20),
-            )),
-        );
-        let after = commit_child(
-            &mut arena,
-            root,
-            Box::new(styled_element(
-                0xc5_a104,
-                2.25,
-                5.25,
-                2.0,
-                2.0,
-                Color::rgb(100, 80, 180),
-            )),
-        );
-
-        measure_and_place(
-            &mut arena,
-            root,
-            LayoutConstraints {
-                max_width: 160.0,
-                max_height: 120.0,
-                viewport_width: 160.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(160.0),
-                percent_base_height: Some(120.0),
-            },
-            LayoutPlacement {
-                parent_x: 0.25,
-                parent_y: 0.25,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 160.0,
-                available_height: 120.0,
-                viewport_width: 160.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(160.0),
-                percent_base_height: Some(120.0),
-            },
-        );
-
-        let parent_matrix = glam::Mat4::from_translation(glam::Vec3::new(100.0, 0.0, 0.0));
-        let child_matrix = glam::Mat4::from_cols_array(&[
-            0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 30.0, 0.0, 0.0, 1.0,
-        ]);
-        crate::view::test_support::get_element_mut::<Element>(&arena, root)
-            .set_resolved_transform_for_test(Some(parent_matrix));
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_resolved_transform_for_test(Some(child_matrix));
-
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[root]);
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[root], &properties);
-        (
-            arena,
-            root,
-            before,
-            child,
-            descendant,
-            after,
-            properties,
-            generations,
-        )
-    }
-
-    struct GeneralPropertySceneFixture {
-        arena: NodeArena,
-        roots: Vec<NodeKey>,
-        outer: NodeKey,
-        inner_a: NodeKey,
-        deep: NodeKey,
-        inner_b: NodeKey,
-        second_root: NodeKey,
-        properties: PropertyTrees,
-        generations: PaintGenerationTracker,
-    }
-
-    #[derive(Clone, Copy)]
-    enum ScrollInterleaveFixtureShape {
-        FrameRootScroll,
-        TransformScroll,
-        EffectScroll,
-        TransformEffectScroll,
-        ScrollTransform,
-        CoLocatedTransformScroll,
-    }
-
-    fn property_scroll_interleave_fixture(
-        shape: ScrollInterleaveFixtureShape,
-    ) -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
-        let mut arena = NodeArena::new();
-        let wrapper = |id| Element::new_with_id(id, 0.0, 0.0, 120.0, 90.0);
-        let root_element = if matches!(shape, ScrollInterleaveFixtureShape::TransformEffectScroll) {
-            Element::new_with_id(0xb4_0001, 0.0, 0.0, 168.0, 112.0)
-        } else {
-            wrapper(0xb4_0001)
-        };
-        let root = arena.insert(Node::new(Box::new(root_element)));
-        let (scroll, content) = match shape {
-            ScrollInterleaveFixtureShape::FrameRootScroll
-            | ScrollInterleaveFixtureShape::CoLocatedTransformScroll => {
-                let content = arena.insert(Node::new(Box::new(Element::new_with_id(
-                    0xb4_0010, 0.0, -20.0, 120.0, 240.0,
-                ))));
-                arena.set_parent(content, Some(root));
-                arena.push_child(root, content);
-                (root, content)
-            }
-            ScrollInterleaveFixtureShape::TransformScroll
-            | ScrollInterleaveFixtureShape::EffectScroll => {
-                let scroll = arena.insert(Node::new(Box::new(wrapper(0xb4_0002))));
-                let content = arena.insert(Node::new(Box::new(Element::new_with_id(
-                    0xb4_0010, 0.0, -20.0, 120.0, 240.0,
-                ))));
-                arena.set_parent(scroll, Some(root));
-                arena.push_child(root, scroll);
-                arena.set_parent(content, Some(scroll));
-                arena.push_child(scroll, content);
-                (scroll, content)
-            }
-            ScrollInterleaveFixtureShape::TransformEffectScroll => {
-                let effect = arena.insert(Node::new(Box::new(wrapper(0xb4_0002))));
-                let scroll = arena.insert(Node::new(Box::new(wrapper(0xb4_0003))));
-                let content = arena.insert(Node::new(Box::new(Element::new_with_id(
-                    0xb4_0010, 0.0, -20.0, 120.0, 240.0,
-                ))));
-                arena.set_parent(effect, Some(root));
-                arena.push_child(root, effect);
-                arena.set_parent(scroll, Some(effect));
-                arena.push_child(effect, scroll);
-                arena.set_parent(content, Some(scroll));
-                arena.push_child(scroll, content);
-                crate::view::test_support::get_element_mut::<Element>(&arena, effect)
-                    .set_opacity(0.5);
-                crate::view::test_support::get_element_mut::<Element>(&arena, effect)
-                    .set_background_color_value(Color::rgb(32, 64, 96));
-                let mut effect_style = Style::new();
-                effect_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-                crate::view::test_support::get_element_mut::<Element>(&arena, effect)
-                    .apply_style(effect_style);
-                crate::view::test_support::get_element_mut::<Element>(&arena, effect)
-                    .set_opacity(0.5);
-                crate::view::test_support::get_element_mut::<Element>(&arena, effect)
-                    .set_background_color_value(Color::rgb(32, 64, 96));
-                (scroll, content)
-            }
-            ScrollInterleaveFixtureShape::ScrollTransform => {
-                let transform = arena.insert(Node::new(Box::new(Element::new_with_id(
-                    0xb4_0002, 0.0, -20.0, 120.0, 240.0,
-                ))));
-                arena.set_parent(transform, Some(root));
-                arena.push_child(root, transform);
-                crate::view::test_support::get_element_mut::<Element>(&arena, transform)
-                    .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                        glam::Vec3::new(3.0, 0.0, 0.0),
-                    )));
-                (root, transform)
-            }
-        };
-        match shape {
-            ScrollInterleaveFixtureShape::TransformScroll
-            | ScrollInterleaveFixtureShape::TransformEffectScroll => {
-                crate::view::test_support::get_element_mut::<Element>(&arena, root)
-                    .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                        glam::Vec3::new(7.0, 0.0, 0.0),
-                    )));
-                if matches!(shape, ScrollInterleaveFixtureShape::TransformEffectScroll) {
-                    crate::view::test_support::get_element_mut::<Element>(&arena, root)
-                        .set_background_color_value(Color::rgb(16, 32, 48));
-                    let mut root_style = Style::new();
-                    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-                    crate::view::test_support::get_element_mut::<Element>(&arena, root)
-                        .apply_style(root_style);
-                    crate::view::test_support::get_element_mut::<Element>(&arena, root)
-                        .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                            glam::Vec3::new(7.0, 0.0, 0.0),
-                        )));
-                    crate::view::test_support::get_element_mut::<Element>(&arena, root)
-                        .set_background_color_value(Color::rgb(16, 32, 48));
-                }
-            }
-            ScrollInterleaveFixtureShape::EffectScroll => {
-                crate::view::test_support::get_element_mut::<Element>(&arena, root)
-                    .set_opacity(0.5);
-            }
-            ScrollInterleaveFixtureShape::CoLocatedTransformScroll => {
-                crate::view::test_support::get_element_mut::<Element>(&arena, root)
-                    .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                        glam::Vec3::new(7.0, 0.0, 0.0),
-                    )));
-            }
-            ScrollInterleaveFixtureShape::FrameRootScroll
-            | ScrollInterleaveFixtureShape::ScrollTransform => {}
-        }
-        let mut style = Style::new();
-        style.insert(
-            PropertyId::ScrollDirection,
-            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
-        );
-        style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        {
-            let mut scroll = crate::view::test_support::get_element_mut::<Element>(&arena, scroll);
-            scroll.apply_style(style);
-            scroll.layout_state.content_size = Size {
-                width: 120.0,
-                height: 240.0,
-            };
-            scroll.set_scroll_offset((0.0, 20.0));
-            scroll.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        }
-        if matches!(
-            shape,
-            ScrollInterleaveFixtureShape::CoLocatedTransformScroll
-        ) {
-            crate::view::test_support::get_element_mut::<Element>(&arena, root)
-                .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                    glam::Vec3::new(7.0, 0.0, 0.0),
-                )));
-        }
-        crate::view::test_support::get_element_mut::<Element>(&arena, content)
-            .set_background_color_value(Color::rgb(24, 48, 72));
-        arena
-            .get_mut(content)
-            .unwrap()
-            .element
-            .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        arena.refresh_subtree_dirty_cache(root);
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[root]);
-        assert!(
-            properties.validation_errors.is_empty(),
-            "{:?}",
-            properties.validation_errors
-        );
-        if matches!(shape, ScrollInterleaveFixtureShape::TransformEffectScroll) {
-            let children = arena.children_of(root);
-            let [effect] = children.as_slice() else {
-                panic!("T->E->S fixture owns one direct effect child")
-            };
-            assert!(properties.transforms.contains_key(&TransformNodeId(root)));
-            assert!(properties.effects.contains_key(&EffectNodeId(*effect)));
-        }
-        if matches!(shape, ScrollInterleaveFixtureShape::ScrollTransform) {
-            assert!(
-                properties
-                    .transforms
-                    .contains_key(&TransformNodeId(content))
-            );
-        }
-        if matches!(
-            shape,
-            ScrollInterleaveFixtureShape::CoLocatedTransformScroll
-        ) {
-            assert!(properties.transforms.contains_key(&TransformNodeId(root)));
-        }
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[root], &properties);
-        (arena, root, properties, generations)
-    }
-
-    pub(crate) fn nested_scroll_plan_fixture() -> (
-        NodeArena,
-        NodeKey,
-        NodeKey,
-        NodeKey,
-        PropertyTrees,
-        PaintGenerationTracker,
-    ) {
-        fn install_geometry(arena: &NodeArena, key: NodeKey, rect: Rect, content: Size) {
-            let mut element = crate::view::test_support::get_element_mut::<Element>(arena, key);
-            element.layout_state.layout_position.x = rect.x;
-            element.layout_state.layout_position.y = rect.y;
-            element.layout_state.layout_size = Size {
-                width: rect.width,
-                height: rect.height,
-            };
-            element.layout_state.layout_inner_position.x = rect.x;
-            element.layout_state.layout_inner_position.y = rect.y;
-            element.layout_state.layout_inner_size = Size {
-                width: rect.width,
-                height: rect.height,
-            };
-            element.layout_state.content_size = content;
-            element.set_background_color_value(Color::rgb(24, 48, 72));
-            element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        }
-
-        let mut arena = NodeArena::new();
-        let outer = arena.insert(Node::new(Box::new(Element::new_with_id(
-            0x1251_00, 10.0, 20.0, 100.0, 80.0,
-        ))));
-        let inner = arena.insert(Node::new(Box::new(Element::new_with_id(
-            0x1251_01, 10.0, 20.0, 100.0, 300.0,
-        ))));
-        let leaf = arena.insert(Node::new(Box::new(Element::new_with_id(
-            0x1251_02, 10.0, 20.0, 100.0, 600.0,
-        ))));
-        arena.set_parent(inner, Some(outer));
-        arena.push_child(outer, inner);
-        arena.set_parent(leaf, Some(inner));
-        arena.push_child(inner, leaf);
-        for owner in [outer, inner] {
-            let mut style = Style::new();
-            style.insert(
-                PropertyId::ScrollDirection,
-                ParsedValue::ScrollDirection(ScrollDirection::Vertical),
-            );
-            style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-            crate::view::test_support::get_element_mut::<Element>(&arena, owner).apply_style(style);
-        }
-        install_geometry(
-            &arena,
-            outer,
-            Rect {
-                x: 10.0,
-                y: 20.0,
-                width: 100.0,
-                height: 80.0,
-            },
-            Size {
-                width: 100.0,
-                height: 300.0,
-            },
-        );
-        install_geometry(
-            &arena,
-            inner,
-            Rect {
-                x: 10.0,
-                y: 20.0,
-                width: 100.0,
-                height: 300.0,
-            },
-            Size {
-                width: 100.0,
-                height: 600.0,
-            },
-        );
-        install_geometry(
-            &arena,
-            leaf,
-            Rect {
-                x: 10.0,
-                y: 20.0,
-                width: 100.0,
-                height: 600.0,
-            },
-            Size {
-                width: 100.0,
-                height: 600.0,
-            },
-        );
-        arena.refresh_subtree_dirty_cache(outer);
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[outer]);
-        assert!(properties.validation_errors.is_empty());
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[outer], &properties);
-        (arena, outer, inner, leaf, properties, generations)
-    }
-
-    #[test]
-    fn nested_scroll_planner_seals_exact_graph_inert_schedule_and_state_projection() {
-        let (arena, outer, inner, leaf, properties, generations) = nested_scroll_plan_fixture();
-        let plan = plan_nested_scroll_scene_scaffold_with_context(
-            &arena,
-            &[outer],
-            &properties,
-            &generations,
-            1.0,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect("exact nested-scroll planning scaffold");
-        assert!(property_scene_plan_is_sealed(&plan));
-        assert!(plan.steps().is_empty());
-        assert!(plan.property_scene_transaction_witness().is_none());
-        assert!(plan.property_scene_context().is_none());
-        assert!(plan.property_scroll_planning_scaffold().is_none());
-        assert!(plan.property_scroll_receiver_insertions().is_none());
-        assert!(plan.property_effect_scroll_receiver_insertions().is_none());
-        assert!(
-            plan.property_transform_effect_scroll_receiver_insertions()
-                .is_none()
-        );
-        let scaffold = plan
-            .nested_scroll_planning_scaffold()
-            .expect("dedicated nested-scroll seal");
-        assert_eq!(scaffold.boundaries.len(), 2);
-        assert_eq!(scaffold.boundaries[0].boundary_root, outer);
-        assert_eq!(scaffold.boundaries[0].parent, None);
-        assert_eq!(scaffold.boundaries[1].boundary_root, inner);
-        assert_eq!(
-            scaffold.boundaries[1].parent,
-            Some(NestedScrollBoundarySlot::Outer)
-        );
-        let outer_state = scaffold.boundaries[0].content_state;
-        let inner_state = scaffold.boundaries[1].content_state;
-        assert_eq!(
-            scaffold.boundaries[0].projected_receiver_state,
-            PropertyTreeState::default()
-        );
-        assert_eq!(scaffold.boundaries[1].projected_receiver_state, outer_state);
-        assert!(matches!(
-            scaffold.schedule.steps.as_slice(),
-            [
-                NestedScrollSceneScheduledStep::HostBefore {
-                    boundary: NestedScrollBoundarySlot::Outer,
-                    ..
-                },
-                NestedScrollSceneScheduledStep::HostBefore {
-                    boundary: NestedScrollBoundarySlot::Inner,
-                    ..
-                },
-                NestedScrollSceneScheduledStep::ContentReceiver(receiver),
-                NestedScrollSceneScheduledStep::OverlayAfter {
-                    boundary: NestedScrollBoundarySlot::Inner,
-                    ..
-                },
-                NestedScrollSceneScheduledStep::OverlayAfter {
-                    boundary: NestedScrollBoundarySlot::Outer,
-                    ..
-                },
-            ] if receiver.witness.content_root() == leaf
-                && receiver.live_input == inner_state
-                && receiver.projected_output == outer_state
-        ));
-    }
-
-    #[test]
-    fn nested_scroll_planner_accepts_retained_baseline_baseline_and_rejects_context_or_property_expansion()
-     {
-        let (arena, outer, _inner, _leaf, properties, generations) = nested_scroll_plan_fixture();
-        let plan = |arena: &NodeArena,
-                    properties: &PropertyTrees,
-                    generations: &PaintGenerationTracker,
-                    scale_factor: f32,
-                    context: TransformSurfacePlanContext| {
-            plan_nested_scroll_scene_scaffold_with_context(
-                arena,
-                &[outer],
-                properties,
-                generations,
-                scale_factor,
-                context,
-            )
-        };
-        assert!(
-            plan(
-                &arena,
-                &properties,
-                &generations,
-                2.0,
-                TransformSurfacePlanContext::default(),
-            )
-            .is_err()
-        );
-        assert!(
-            plan(
-                &arena,
-                &properties,
-                &generations,
-                1.0,
-                TransformSurfacePlanContext::new([1.0, 0.0], None),
-            )
-            .is_err()
-        );
-        assert!(
-            plan(
-                &arena,
-                &properties,
-                &generations,
-                1.0,
-                TransformSurfacePlanContext::new([0.0, 0.0], Some([0, 0, 10, 10])),
-            )
-            .is_err()
-        );
-        let baseline = plan(
-            &arena,
-            &properties,
-            &generations,
-            1.0,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect("retained-compatible retained nested-scroll baseline");
-        assert!(property_scene_plan_is_sealed(&baseline));
-
-        for expansion in 0..4 {
-            let (mut arena, outer, inner, leaf, mut properties, mut generations) =
-                nested_scroll_plan_fixture();
-            match expansion {
-                0 => crate::view::test_support::get_element_mut::<Element>(&arena, leaf)
-                    .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                        glam::Vec3::new(1.0, 0.0, 0.0),
-                    ))),
-                1 => crate::view::test_support::get_element_mut::<Element>(&arena, leaf)
-                    .set_opacity(0.5),
-                2 => {
-                    let sibling = arena.insert(Node::new(Box::new(Element::new_with_id(
-                        0x1251_03, 10.0, 20.0, 10.0, 10.0,
-                    ))));
-                    arena.set_parent(sibling, Some(inner));
-                    arena.push_child(inner, sibling);
-                }
-                3 => {
-                    let mut style = Style::new();
-                    style.insert(
-                        PropertyId::ScrollDirection,
-                        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
-                    );
-                    style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-                    let mut leaf =
-                        crate::view::test_support::get_element_mut::<Element>(&arena, leaf);
-                    leaf.apply_style(style);
-                    leaf.layout_state.content_size.height = 900.0;
-                }
-                _ => unreachable!(),
-            }
-            arena.refresh_subtree_dirty_cache(outer);
-            properties.sync(&arena, &[outer]);
-            generations.sync(&arena, &[outer], &properties);
-            assert!(
-                plan_nested_scroll_scene_scaffold_with_context(
-                    &arena,
-                    &[outer],
-                    &properties,
-                    &generations,
-                    1.0,
-                    TransformSurfacePlanContext::default(),
-                )
-                .is_err(),
-                "property/topology expansion {expansion} must fail closed"
-            );
-        }
-    }
-
-    #[test]
-    fn nested_scroll_seal_rejects_schedule_parent_generation_and_admission_drift() {
-        let (arena, outer, _inner, _leaf, properties, generations) = nested_scroll_plan_fixture();
-        let build = || {
-            plan_nested_scroll_scene_scaffold_with_context(
-                &arena,
-                &[outer],
-                &properties,
-                &generations,
-                1.0,
-                TransformSurfacePlanContext::default(),
-            )
-            .unwrap()
-        };
-        fn scaffold(plan: &mut FramePaintPlan) -> &mut NestedScrollSceneScaffold {
-            plan.property_scene_seal
-                .as_mut()
-                .unwrap()
-                .nested_scroll_scaffold
-                .as_mut()
-                .unwrap()
-        }
-
-        let mut reordered = build();
-        let nested = scaffold(&mut reordered);
-        nested.schedule.steps.swap(0, 1);
-        nested.planned_schedule.steps.swap(0, 1);
-        assert!(!property_scene_plan_is_sealed(&reordered));
-
-        let mut dropped = build();
-        let nested = scaffold(&mut dropped);
-        nested.schedule.steps.pop();
-        nested.planned_schedule.steps.pop();
-        assert!(!property_scene_plan_is_sealed(&dropped));
-
-        let mut duplicated = build();
-        let nested = scaffold(&mut duplicated);
-        let duplicate = nested.schedule.steps[0].clone();
-        nested.schedule.steps.insert(1, duplicate.clone());
-        nested.planned_schedule.steps.insert(1, duplicate);
-        assert!(!property_scene_plan_is_sealed(&duplicated));
-
-        let mut retargeted = build();
-        let nested = scaffold(&mut retargeted);
-        let NestedScrollSceneScheduledStep::HostBefore { boundary, .. } =
-            &mut nested.schedule.steps[0]
-        else {
-            unreachable!()
-        };
-        *boundary = NestedScrollBoundarySlot::Inner;
-        nested.planned_schedule = nested.schedule.clone();
-        assert!(!property_scene_plan_is_sealed(&retargeted));
-
-        let mut parent = build();
-        let nested = scaffold(&mut parent);
-        nested.boundaries[1].parent = None;
-        nested.planned_boundaries[1].parent = None;
-        assert!(!property_scene_plan_is_sealed(&parent));
-
-        let mut generation = build();
-        let nested = scaffold(&mut generation);
-        nested.boundaries[1].scroll.generation = 0;
-        nested.planned_boundaries[1].scroll.generation = 0;
-        assert!(!property_scene_plan_is_sealed(&generation));
-
-        let mut stable = build();
-        scaffold(&mut stable).boundaries[1].stable_id += 1;
-        assert!(!property_scene_plan_is_sealed(&stable));
-
-        let mut admission = build();
-        let nested = scaffold(&mut admission);
-        nested.admission.outer_source_bounds.x += 0.5;
-        nested.planned_admission.outer_source_bounds.x += 0.5;
-        assert!(!property_scene_plan_is_sealed(&admission));
-    }
-
-    #[test]
-    fn nested_scroll_seal_rejects_artifact_and_receiver_identity_drift() {
-        let (arena, outer, _inner, _leaf, properties, generations) = nested_scroll_plan_fixture();
-        let build = || {
-            plan_nested_scroll_scene_scaffold_with_context(
-                &arena,
-                &[outer],
-                &properties,
-                &generations,
-                1.0,
-                TransformSurfacePlanContext::default(),
-            )
-            .unwrap()
-        };
-        fn scaffold(plan: &mut FramePaintPlan) -> &mut NestedScrollSceneScaffold {
-            plan.property_scene_seal
-                .as_mut()
-                .unwrap()
-                .nested_scroll_scaffold
-                .as_mut()
-                .unwrap()
-        }
-
-        let mut artifact_plan = build();
-        let nested = scaffold(&mut artifact_plan);
-        let NestedScrollSceneScheduledStep::HostBefore {
-            artifact: identity, ..
-        } = &mut nested.schedule.steps[0]
-        else {
-            unreachable!()
-        };
-        identity.identity.op_count += 1;
-        nested.planned_schedule = nested.schedule.clone();
-        assert!(!property_scene_plan_is_sealed(&artifact_plan));
-
-        let mut opaque = build();
-        let nested = scaffold(&mut opaque);
-        let NestedScrollSceneScheduledStep::HostBefore { artifact, .. } =
-            &mut nested.schedule.steps[0]
-        else {
-            unreachable!()
-        };
-        artifact.identity.opaque_count = if artifact.identity.opaque_count == 0 {
-            1
-        } else {
-            0
-        };
-        nested.planned_schedule = nested.schedule.clone();
-        assert!(!property_scene_plan_is_sealed(&opaque));
-
-        let mut topology = build();
-        let nested = scaffold(&mut topology);
-        let NestedScrollSceneScheduledStep::HostBefore { artifact, .. } =
-            &mut nested.schedule.steps[0]
-        else {
-            unreachable!()
-        };
-        artifact.identity.owner_topology.push(PaintOwnerSnapshot {
-            owner: nested.admission.inner_boundary_root,
-            parent: None,
-        });
-        nested.planned_schedule = nested.schedule.clone();
-        assert!(!property_scene_plan_is_sealed(&topology));
-
-        let mut receiver_plan = build();
-        let nested = scaffold(&mut receiver_plan);
-        let NestedScrollSceneScheduledStep::ContentReceiver(receiver) =
-            &mut nested.schedule.steps[2]
-        else {
-            unreachable!()
-        };
-        receiver.projected_output = PropertyTreeState::default();
-        nested.planned_schedule = nested.schedule.clone();
-        assert!(!property_scene_plan_is_sealed(&receiver_plan));
-
-        let mut receiver_artifact = build();
-        let nested = scaffold(&mut receiver_artifact);
-        let NestedScrollSceneScheduledStep::ContentReceiver(receiver) =
-            &mut nested.schedule.steps[2]
-        else {
-            unreachable!()
-        };
-        receiver.artifact.identity.chunks[0].properties = PropertyTreeState::default();
-        nested.planned_schedule = nested.schedule.clone();
-        assert!(!property_scene_plan_is_sealed(&receiver_artifact));
-
-        let mut revision = build();
-        let nested = scaffold(&mut revision);
-        let NestedScrollSceneScheduledStep::ContentReceiver(receiver) =
-            &mut nested.schedule.steps[2]
-        else {
-            unreachable!()
-        };
-        receiver.artifact.identity.chunks[0]
-            .content_revision
-            .topology_revision += 1;
-        nested.planned_schedule = nested.schedule.clone();
-        assert!(!property_scene_plan_is_sealed(&revision));
-
-        let mut clip_snapshot = build();
-        let nested = scaffold(&mut clip_snapshot);
-        let NestedScrollSceneScheduledStep::ContentReceiver(receiver) =
-            &mut nested.schedule.steps[2]
-        else {
-            unreachable!()
-        };
-        receiver.artifact.identity.clip_nodes[0].generation += 1;
-        nested.planned_schedule = nested.schedule.clone();
-        assert!(!property_scene_plan_is_sealed(&clip_snapshot));
-
-        let mut effect_snapshot = build();
-        let nested = scaffold(&mut effect_snapshot);
-        let NestedScrollSceneScheduledStep::HostBefore { artifact, .. } =
-            &mut nested.schedule.steps[0]
-        else {
-            unreachable!()
-        };
-        artifact.identity.effect_nodes.push(EffectNodeSnapshot {
-            id: EffectNodeId(nested.admission.content_leaf),
-            owner: nested.admission.content_leaf,
-            parent: None,
-            opacity: 1.0,
-            generation: 1,
-        });
-        nested.planned_schedule = nested.schedule.clone();
-        assert!(!property_scene_plan_is_sealed(&effect_snapshot));
-
-        let mut payload = build();
-        let nested = scaffold(&mut payload);
-        let NestedScrollSceneScheduledStep::ContentReceiver(receiver) =
-            &mut nested.schedule.steps[2]
-        else {
-            unreachable!()
-        };
-        receiver.artifact.identity.chunks[0].payload_identity =
-            if receiver.artifact.identity.chunks[0].payload_identity
-                == crate::view::paint::PaintPayloadIdentity::None
-            {
-                crate::view::paint::PaintPayloadIdentity::PreparedTexts(Arc::from([]))
-            } else {
-                crate::view::paint::PaintPayloadIdentity::None
-            };
-        nested.planned_schedule = nested.schedule.clone();
-        assert!(!property_scene_plan_is_sealed(&payload));
-
-        let mut duplicate_chunk = build();
-        let nested = scaffold(&mut duplicate_chunk);
-        let NestedScrollSceneScheduledStep::ContentReceiver(receiver) =
-            &mut nested.schedule.steps[2]
-        else {
-            unreachable!()
-        };
-        receiver
-            .artifact
-            .identity
-            .chunks
-            .push(receiver.artifact.identity.chunks[0].clone());
-        nested.planned_schedule = nested.schedule.clone();
-        assert!(!property_scene_plan_is_sealed(&duplicate_chunk));
-    }
-
-    #[test]
-    fn direct_scroll_transform_admission_is_isolated_from_the_b0_oracle() {
-        let (plain_arena, plain_root, _, _) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::FrameRootScroll);
-        let plain_node = plain_arena.get(plain_root).expect("plain scroll host");
-        let plain = plain_node
-            .element
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("plain scroll host element");
-        assert!(
-            plain
-                .exact_retained_scroll_host_admission(plain_root, &plain_arena, 1.0)
-                .is_some()
-        );
-        assert!(
-            plain
-                .exact_retained_scroll_transform_host_admission(plain_root, &plain_arena, 1.0)
-                .is_none()
-        );
-
-        let (transform_arena, transform_root, _, _) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::ScrollTransform);
-        let transform_node = transform_arena
-            .get(transform_root)
-            .expect("scroll-transform host");
-        let transform = transform_node
-            .element
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("scroll-transform host element");
-        assert!(
-            transform
-                .exact_retained_scroll_host_admission(transform_root, &transform_arena, 1.0)
-                .is_none()
-        );
-        let admission = transform
-            .exact_retained_scroll_transform_host_admission(transform_root, &transform_arena, 1.0)
-            .expect("direct transformed content admission");
-        assert_eq!(admission.boundary_root, transform_root);
-        assert_eq!(admission.transform_content, transform.children()[0]);
-    }
-
-    #[test]
-    fn direct_scroll_transform_recorders_seal_host_marker_overlay_and_offset_zero_content() {
-        let (arena, root, properties, generations) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::ScrollTransform);
-        let root_node = arena.get(root).expect("scroll host");
-        let root_element = root_node
-            .element
-            .as_any()
-            .downcast_ref::<Element>()
-            .expect("scroll host element");
-        let admission = root_element
-            .exact_retained_scroll_transform_host_admission(root, &arena, 1.0)
-            .expect("direct S->T admission");
-        let child = admission.transform_content;
-        let scroll = properties
-            .scroll_snapshot_for(ScrollNodeId(root))
-            .expect("scroll snapshot");
-        let clip_id = ClipNodeId {
-            owner: root,
-            role: ClipNodeRole::ContentsClip,
-        };
-        let clip = properties
-            .clip_snapshot_for(Some(clip_id))
-            .and_then(|chain| (chain.len() == 1).then(|| chain[0]))
-            .expect("contents clip");
-        let marker = PlannedBoundary {
-            root: child,
-            stable_id: admission.transform_content_stable_id,
-            kind: PlannedBoundaryKind::Transform(TransformNodeId(child)),
-        };
-        let host_witness = PaintBakedScrollHostWitness::new(root, child, scroll, clip_id)
-            .expect("baked host witness");
-        let host_steps = super::super::frame_recorder::record_scroll_transform_host_steps_for_plan(
-            &arena,
-            root,
-            &properties,
-            &generations,
-            host_witness,
-            [0.0, 0.0],
-            marker,
-        )
-        .expect("exact H-marker-O host recording");
-        assert!(matches!(
-            host_steps.as_slice(),
-            [
-                super::super::frame_recorder::RecordedTransformSurfaceStep::Artifact(_),
-                super::super::frame_recorder::RecordedTransformSurfaceStep::Boundary(found),
-                super::super::frame_recorder::RecordedTransformSurfaceStep::Artifact(_),
-            ] if *found == marker
-        ));
-
-        let content_witness = PaintScrollContentWitness::new(root, child, scroll, clip)
-            .expect("scroll-content witness");
-        let content_steps =
-            super::super::frame_recorder::record_scroll_transform_content_steps_for_plan(
-                &arena,
-                child,
-                &properties,
-                &generations,
-                PaintTransformSurfaceWitness::canonical_root(child),
-                content_witness,
-            )
-            .expect("offset-zero transformed content recording");
-        let [super::super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact)] =
-            content_steps.as_slice()
-        else {
-            panic!("one transformed-content artifact")
-        };
-        assert!(artifact.chunks.iter().all(|chunk| {
-            chunk.properties.transform == Some(TransformNodeId(child))
-                && chunk.properties.scroll.is_none()
-                && chunk.properties.clip.is_none()
-        }));
-    }
-
-    #[test]
-    fn direct_scroll_transform_schedule_seals_only_s_then_direct_translation_content() {
-        let (arena, root, properties, generations) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::ScrollTransform);
-        let plan = super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            1.0,
-            [0.0, 0.0],
-            None,
-        )
-        .expect("exact [S, T-content] schedule");
-        assert!(plan.is_canonical());
-
-        assert!(
-            super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                2.0,
-                [0.0, 0.0],
-                None,
-            )
-            .is_err()
-        );
-
-        let (plain_arena, plain_root, plain_properties, plain_generations) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::FrameRootScroll);
-        assert!(
-            super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
-                &plain_arena,
-                &[plain_root],
-                &plain_properties,
-                &plain_generations,
-                1.0,
-                [0.0, 0.0],
-                None,
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn direct_scroll_transform_geometry_freezes_offset_zero_raster_and_one_xy_projection() {
-        let (arena, root, _, _) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::ScrollTransform);
-        let child = arena.children_of(root)[0];
-        {
-            let mut root_element =
-                crate::view::test_support::get_element_mut::<Element>(&arena, root);
-            root_element.layout_state.layout_position.x = 10.0;
-            root_element.layout_state.layout_position.y = 20.0;
-            root_element.layout_state.content_size.width = 240.0;
-            root_element.set_scroll_offset((3.5, 47.25));
-            root_element
-                .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        }
-        {
-            let mut child_element =
-                crate::view::test_support::get_element_mut::<Element>(&arena, child);
-            child_element.layout_state.layout_position.x = 6.5;
-            child_element.layout_state.layout_position.y = -27.25;
-            child_element.layout_state.layout_size.width = 240.0;
-            child_element
-                .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        }
-        arena.refresh_subtree_dirty_cache(root);
-        let observation = {
-            let node = arena.get(root).unwrap();
-            node.element.scroll_geometry_observation(root, &arena)
-        };
-        let crate::view::base_component::ScrollGeometryObservation::Exact(observation) =
-            observation
-        else {
-            panic!("{observation:?}")
-        };
-        assert_eq!(
-            observation.offset.map(f32::to_bits),
-            [3.5, 47.25].map(f32::to_bits)
-        );
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[root]);
-        assert!(
-            properties.validation_errors.is_empty(),
-            "{:?}",
-            properties.validation_errors
-        );
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[root], &properties);
-        let scaffold = super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            1.0,
-            [0.0, 0.0],
-            None,
-        )
-        .expect("nonzero-origin full-2D S->T scaffold");
-        assert_eq!(scaffold.overlay_op_count_for_test(), 0);
-        let geometry = super::super::scroll_scene::plan_direct_scroll_transform_geometry(
-            &arena,
-            scaffold,
-            wgpu::TextureFormat::Bgra8UnormSrgb,
-            super::super::scroll_scene::ScrollSceneSingleTextureBudget::new(u32::MAX, u64::MAX)
-                .unwrap(),
-        )
-        .expect("single direct transformed-content backing");
-        assert!(geometry.is_canonical());
-        assert_eq!(
-            [
-                geometry.raster_bounds().x,
-                geometry.raster_bounds().y,
-                geometry.raster_bounds().width,
-                geometry.raster_bounds().height,
-            ]
-            .map(f32::to_bits),
-            [10.0, 20.0, 240.0, 240.0].map(f32::to_bits),
-        );
-        let params = geometry.composite_params();
-        assert_eq!(
-            params.bounds.map(f32::to_bits),
-            [9.5, -27.25, 240.0, 240.0].map(f32::to_bits),
-        );
-        assert_ne!(
-            params.bounds.map(f32::to_bits),
-            [13.0, 20.0, 240.0, 240.0].map(f32::to_bits),
-            "scroll projection must not be omitted",
-        );
-        assert_ne!(
-            params.bounds.map(f32::to_bits),
-            [6.0, -74.5, 240.0, 240.0].map(f32::to_bits),
-            "scroll projection must not be applied twice",
-        );
-        assert_eq!(
-            params
-                .quad_positions
-                .expect("direct transformed quad")
-                .map(|point| point.map(f32::to_bits)),
-            [
-                [9.5, 212.75],
-                [249.5, 212.75],
-                [249.5, -27.25],
-                [9.5, -27.25],
-            ]
-            .map(|point| point.map(f32::to_bits)),
-        );
-        assert_eq!(
-            params.uv_bounds.expect("offset-zero UV").map(f32::to_bits),
-            [10.0, 20.0, 240.0, 240.0].map(f32::to_bits),
-        );
-        assert_eq!(params.scissor_rect, Some([10, 20, 120, 90]));
-    }
-
-    #[test]
-    fn direct_scroll_transform_geometry_rejects_rotation_and_tiling_fallback() {
-        let (arena, root, _, _) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::ScrollTransform);
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[root]);
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[root], &properties);
-        let scaffold = super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            1.0,
-            [0.0, 0.0],
-            None,
-        )
-        .expect("direct translation scaffold");
-        assert!(
-            super::super::scroll_scene::plan_direct_scroll_transform_geometry(
-                &arena,
-                scaffold,
-                wgpu::TextureFormat::Bgra8UnormSrgb,
-                super::super::scroll_scene::ScrollSceneSingleTextureBudget::new(64, u64::MAX)
-                    .unwrap(),
-            )
-            .is_err()
-        );
-
-        let child = arena.children_of(root)[0];
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_rotation_z(0.25)));
-        let mut rotated_properties = PropertyTrees::default();
-        rotated_properties.sync(&arena, &[root]);
-        let mut rotated_generations = PaintGenerationTracker::default();
-        rotated_generations.sync(&arena, &[root], &rotated_properties);
-        assert!(
-            super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
-                &arena,
-                &[root],
-                &rotated_properties,
-                &rotated_generations,
-                1.0,
-                [0.0, 0.0],
-                None,
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn direct_scroll_transform_frozen_artifact_geometry_and_backing_tamper_fail_closed() {
-        let (arena, root, properties, generations) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::ScrollTransform);
-        let scaffold = super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            1.0,
-            [0.0, 0.0],
-            None,
-        )
-        .expect("sealed direct S->T scaffold");
-        let mut artifact_tamper = scaffold.clone();
-        artifact_tamper.tamper_content_artifact_bounds_for_test();
-        assert!(!artifact_tamper.is_canonical());
-        assert!(super::super::scroll_scene::plan_direct_scroll_transform_geometry(
-            &arena,
-            artifact_tamper,
-            wgpu::TextureFormat::Bgra8UnormSrgb,
-            super::super::scroll_scene::ScrollSceneSingleTextureBudget::new(
-                u32::MAX,
-                u64::MAX,
-            )
-            .unwrap(),
-        )
-        .is_err());
-        let mut host_tamper = scaffold.clone();
-        host_tamper.tamper_host_artifact_bounds_for_test();
-        assert!(!host_tamper.is_canonical());
-
-        let geometry = super::super::scroll_scene::plan_direct_scroll_transform_geometry(
-            &arena,
-            scaffold.clone(),
-            wgpu::TextureFormat::Bgra8UnormSrgb,
-            super::super::scroll_scene::ScrollSceneSingleTextureBudget::new(u32::MAX, u64::MAX)
-                .unwrap(),
-        )
-        .expect("sealed direct geometry");
-        let mut geometry_tamper = geometry.clone();
-        geometry_tamper.tamper_geometry_seal_for_test();
-        assert!(!geometry_tamper.is_canonical());
-        let mut backing_tamper = geometry;
-        backing_tamper.tamper_backing_seal_for_test();
-        assert!(!backing_tamper.is_canonical());
-
-        let child = arena.children_of(root)[0];
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                4.0, 0.0, 0.0,
-            ))));
-        assert!(matches!(
-            super::super::scroll_scene::plan_direct_scroll_transform_geometry(
-                &arena,
-                scaffold,
-                wgpu::TextureFormat::Bgra8UnormSrgb,
-                super::super::scroll_scene::ScrollSceneSingleTextureBudget::new(
-                    u32::MAX,
-                    u64::MAX,
-                )
-                .unwrap(),
-            ),
-            Err(super::super::scroll_scene::PropertyScrollScenePlanError::LiveSnapshotDrift)
-        ));
-    }
-
-    #[test]
-    fn direct_scroll_transform_transaction_is_one_generic_t_and_no_scroll_group() {
-        let (arena, root, properties, generations) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::ScrollTransform);
-        let scaffold = super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            1.0,
-            [0.0, 0.0],
-            None,
-        )
-        .expect("direct S->T scaffold");
-        let geometry = super::super::scroll_scene::plan_direct_scroll_transform_geometry(
-            &arena,
-            scaffold,
-            wgpu::TextureFormat::Bgra8UnormSrgb,
-            super::super::scroll_scene::ScrollSceneSingleTextureBudget::new(u32::MAX, u64::MAX)
-                .unwrap(),
-        )
-        .expect("direct S->T geometry");
-        let transaction =
-            super::super::scroll_scene::compile_direct_scroll_transform_transaction(geometry)
-                .expect("authority-specific direct S->T transaction");
-        assert!(transaction.is_canonical());
-        assert_eq!(transaction.transaction_shape_for_test(), [1, 1, 1, 1, 0, 0]);
-        let stamp = transaction.stamp_for_test();
-        assert_eq!(
-            stamp.identity.role,
-            crate::view::paint::RetainedSurfaceRasterRole::Transform
-        );
-        assert!(stamp.scroll_host.is_none());
-        assert!(stamp.property_effect.is_none());
-        assert!(matches!(
-            stamp.ordered_steps.as_slice(),
-            [crate::view::paint::RetainedSurfaceRasterStepStamp::ArtifactSpan(_)]
-        ));
-        let base_stamp = stamp.clone();
-        let canonical_transaction = transaction.clone();
-
-        let mut binding_tamper = transaction.clone();
-        binding_tamper.tamper_transaction_binding_for_test();
-        assert!(!binding_tamper.is_canonical());
-        let mut synchronized_tamper = transaction;
-        synchronized_tamper.tamper_synchronized_root_contract_for_test();
-        assert!(!synchronized_tamper.is_canonical());
-        assert!(!synchronized_tamper.inner_transaction_is_canonical_for_test());
-
-        for variant in 0..4 {
-            let mut authority_tamper = canonical_transaction.clone();
-            authority_tamper.tamper_authority_for_test(variant);
-            assert!(!authority_tamper.inner_transaction_is_canonical_for_test());
-            assert!(!authority_tamper.is_canonical());
-        }
-        for variant in 0..3 {
-            let mut boundary_tamper = canonical_transaction.clone();
-            boundary_tamper.tamper_boundary_for_test(variant);
-            assert!(!boundary_tamper.inner_transaction_is_canonical_for_test());
-            assert!(!boundary_tamper.is_canonical());
-        }
-        let mut root_owner_tamper = canonical_transaction.clone();
-        root_owner_tamper.tamper_root_owner_for_test();
-        assert!(!root_owner_tamper.inner_transaction_is_canonical_for_test());
-        assert!(!root_owner_tamper.is_canonical());
-        let mut source_tamper = canonical_transaction.clone();
-        source_tamper.tamper_synchronized_source_bounds_for_test();
-        assert!(!source_tamper.inner_transaction_is_canonical_for_test());
-        assert!(!source_tamper.is_canonical());
-        let mut descriptor_tamper = canonical_transaction.clone();
-        descriptor_tamper.tamper_synchronized_descriptor_for_test();
-        assert!(!descriptor_tamper.is_canonical());
-        let mut span_tamper = canonical_transaction;
-        span_tamper.tamper_synchronized_artifact_span_for_test();
-        assert!(!span_tamper.inner_transaction_is_canonical_for_test());
-        assert!(!span_tamper.is_canonical());
-
-        let (moved_arena, moved_root, _, _) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::ScrollTransform);
-        let moved_child = moved_arena.children_of(moved_root)[0];
-        {
-            let mut root_element =
-                crate::view::test_support::get_element_mut::<Element>(&moved_arena, moved_root);
-            root_element.set_scroll_offset((0.0, 40.0));
-            root_element
-                .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        }
-        {
-            let mut child_element =
-                crate::view::test_support::get_element_mut::<Element>(&moved_arena, moved_child);
-            child_element.layout_state.layout_position.y = -40.0;
-            child_element.set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                glam::Vec3::new(9.0, 0.0, 0.0),
-            )));
-            child_element
-                .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        }
-        moved_arena.refresh_subtree_dirty_cache(moved_root);
-        let mut moved_properties = PropertyTrees::default();
-        moved_properties.sync(&moved_arena, &[moved_root]);
-        let mut moved_generations = PaintGenerationTracker::default();
-        moved_generations.sync(&moved_arena, &[moved_root], &moved_properties);
-        let moved_scaffold =
-            super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
-                &moved_arena,
-                &[moved_root],
-                &moved_properties,
-                &moved_generations,
-                1.0,
-                [0.0, 0.0],
-                None,
-            )
-            .expect("moved direct S->T scaffold");
-        let moved_geometry = super::super::scroll_scene::plan_direct_scroll_transform_geometry(
-            &moved_arena,
-            moved_scaffold,
-            wgpu::TextureFormat::Bgra8UnormSrgb,
-            super::super::scroll_scene::ScrollSceneSingleTextureBudget::new(u32::MAX, u64::MAX)
-                .unwrap(),
-        )
-        .expect("moved direct S->T geometry");
-        let moved_transaction =
-            super::super::scroll_scene::compile_direct_scroll_transform_transaction(moved_geometry)
-                .expect("moved direct S->T transaction");
-        assert_eq!(
-            moved_transaction.stamp_for_test(),
-            &base_stamp,
-            "T matrix and S offset stay out of the T raster stamp",
-        );
-    }
-
-    fn direct_scroll_transform_transaction_from_fixture_for_test(
-        arena: &NodeArena,
-        root: NodeKey,
-        properties: &PropertyTrees,
-        generations: &PaintGenerationTracker,
-    ) -> super::super::scroll_scene::ValidatedDirectScrollTransformTransaction {
-        let scaffold = super::super::scroll_scene::plan_direct_scroll_transform_scene_scaffold(
-            arena,
-            &[root],
-            properties,
-            generations,
-            1.0,
-            [0.0, 0.0],
-            None,
-        )
-        .unwrap();
-        let geometry = super::super::scroll_scene::plan_direct_scroll_transform_geometry(
-            &arena,
-            scaffold,
-            wgpu::TextureFormat::Bgra8UnormSrgb,
-            super::super::scroll_scene::ScrollSceneSingleTextureBudget::new(u32::MAX, u64::MAX)
-                .unwrap(),
-        )
-        .unwrap();
-        super::super::scroll_scene::compile_direct_scroll_transform_transaction(geometry).unwrap()
-    }
-
-    fn exact_direct_scroll_transform_transaction_for_test()
-    -> super::super::scroll_scene::ValidatedDirectScrollTransformTransaction {
-        let (arena, root, properties, generations) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::ScrollTransform);
-        direct_scroll_transform_transaction_from_fixture_for_test(
-            &arena,
-            root,
-            &properties,
-            &generations,
-        )
-    }
-
-    #[test]
-    fn direct_scroll_transform_prepare_freezes_action_before_graph_mutation() {
-        let transaction = exact_direct_scroll_transform_transaction_for_test();
-        let mut viewport = Viewport::new();
-        let frame_owner = viewport.begin_retained_surface_frame_stage().unwrap();
-        let mut invalid_graph = FrameGraph::new();
-        let invalid = super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
-            &mut viewport,
-            transaction.clone(),
-            &mut invalid_graph,
-            UiBuildContext::new(640, 480, wgpu::TextureFormat::Rgba8Unorm, 1.0),
-            [0.0; 4],
-            frame_owner,
-        );
-        assert!(matches!(
-            invalid,
-            Err(
-                super::super::scroll_scene::RetainedPropertyScrollScenePrepareError::ContextMismatch
-            )
-        ));
-        assert_eq!(invalid_graph.declared_persistent_texture_keys().count(), 0);
-        assert!(viewport.retained_property_scroll_scene_stage_is_available());
-
-        let mut graph = FrameGraph::new();
-        let prepared = super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
-            &mut viewport,
-            transaction,
-            &mut graph,
-            UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
-            [0.125, 0.25, 0.5, 1.0],
-            frame_owner,
-        )
-        .expect("direct S->T preflight");
-        assert_eq!(
-            prepared.action_for_test(),
-            crate::view::paint::RetainedSurfaceCompileAction::Reraster
-        );
-        assert_eq!(prepared.transaction_shape_for_test(), [1, 0]);
-        assert_eq!(prepared.graph_declared_key_count_for_test(), 0);
-        let parent_terminal = prepared.parent_terminal_for_test();
-        let outcome =
-            super::super::scroll_scene::emit_prepared_direct_scroll_transform_scene(prepared);
-        let (state, _) = outcome.into_parts();
-        assert_eq!(state.opaque_rect_order(), parent_terminal);
-        assert_eq!(
-            graph
-                .test_graphics_passes::<crate::view::render_pass::ClearPass>()
-                .len(),
-            2
-        );
-        assert_eq!(
-            graph
-                .test_graphics_passes::<crate::view::render_pass::texture_composite_pass::TextureCompositePass>()
-                .len(),
-            1
-        );
-        assert!(!viewport.retained_property_scroll_scene_stage_is_available());
-        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true));
-    }
-
-    #[test]
-    fn direct_scroll_transform_prepare_rejections_are_graph_pool_and_owner_atomic() {
-        use super::super::scroll_scene::RetainedPropertyScrollScenePrepareError as PrepareError;
-
-        macro_rules! reject_case {
-            ($transaction:expr, $graph:expr, $ctx:expr, $clear:expr, $expected:expr) => {{
-                let mut viewport = Viewport::new();
-                let owner = viewport.begin_retained_surface_frame_stage().unwrap();
-                let mut graph = $graph;
-                let graph_before = graph.build_state_snapshot_for_test();
-                let pool_before = viewport.retained_surface_transaction_shape_for_test();
-                assert_eq!(
-                    super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
-                        &mut viewport,
-                        $transaction,
-                        &mut graph,
-                        $ctx,
-                        $clear,
-                        owner,
-                    )
-                    .err(),
-                    Some($expected)
-                );
-                assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
-                assert_eq!(
-                    viewport.retained_surface_transaction_shape_for_test(),
-                    pool_before
-                );
-                assert!(viewport.retained_surface_frame_stage_owner_is_active(owner));
-                assert!(viewport.retained_property_scroll_scene_stage_is_available());
-                assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), false));
-            }};
-        }
-
-        let default_ctx =
-            || UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
-        let base = exact_direct_scroll_transform_transaction_for_test();
-
-        let mut descriptor = base.clone();
-        descriptor.tamper_synchronized_descriptor_for_test();
-        reject_case!(
-            descriptor,
-            FrameGraph::new(),
-            default_ctx(),
-            [0.0; 4],
-            PrepareError::BoundaryDrift
-        );
-        for pair in [false, true] {
-            let mut budget = base.clone();
-            budget.tamper_synchronized_backing_budget_for_test(pair);
-            reject_case!(
-                budget,
-                FrameGraph::new(),
-                default_ctx(),
-                [0.0; 4],
-                PrepareError::DescriptorPair
-            );
-        }
-
-        let (color_key, color_desc, depth_desc) = base.backing_for_test();
-        let depth_key = color_key.depth_stencil().unwrap();
-        for (key, desc) in [(color_key, color_desc), (depth_key, depth_desc)] {
-            let mut graph = FrameGraph::new();
-            let _ = graph.declare_persistent_texture_internal::<()>(desc, key);
-            reject_case!(
-                base.clone(),
-                graph,
-                default_ctx(),
-                [0.0; 4],
-                PrepareError::PersistentKeyAlreadyDeclared(color_key)
-            );
-        }
-
-        let mut offset = default_ctx();
-        offset.set_paint_offset([0.25, 0.0]);
-        let mut scissor = default_ctx();
-        scissor.replace_scissor_rect(Some([0, 0, 1, 1]));
-        let mut cursor = default_ctx();
-        let _ = cursor.next_opaque_rect_order();
-        let mut transform = default_ctx();
-        transform.set_current_render_transform(Some(glam::Mat4::IDENTITY));
-        let contexts = [
-            UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 2.0),
-            offset,
-            scissor,
-            cursor,
-            UiBuildContext::new(640, 480, wgpu::TextureFormat::Rgba8Unorm, 1.0),
-            transform,
-        ];
-        for ctx in contexts {
-            reject_case!(
-                base.clone(),
-                FrameGraph::new(),
-                ctx,
-                [0.0; 4],
-                PrepareError::ContextMismatch
-            );
-        }
-        reject_case!(
-            base.clone(),
-            FrameGraph::new(),
-            default_ctx(),
-            [f32::NAN, 0.0, 0.0, 0.0],
-            PrepareError::ContextMismatch
-        );
-
-        let mut foreign_graph = FrameGraph::new();
-        let mut foreign_ctx = default_ctx();
-        let foreign_target = foreign_ctx.allocate_target(&mut foreign_graph);
-        foreign_ctx.set_current_target(foreign_target);
-        reject_case!(
-            base.clone(),
-            FrameGraph::new(),
-            foreign_ctx,
-            [0.0; 4],
-            PrepareError::ParentTarget
-        );
-
-        let mut stale_viewport = Viewport::new();
-        let stale_owner = stale_viewport.begin_retained_surface_frame_stage().unwrap();
-        assert!(
-            stale_viewport.finish_retained_surface_transaction_for_frame(Some(stale_owner), false)
-        );
-        let mut stale_graph = FrameGraph::new();
-        let graph_before = stale_graph.build_state_snapshot_for_test();
-        let pool_before = stale_viewport.retained_surface_transaction_shape_for_test();
-        assert_eq!(
-            super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
-                &mut stale_viewport,
-                base,
-                &mut stale_graph,
-                default_ctx(),
-                [0.0; 4],
-                stale_owner,
-            )
-            .err(),
-            Some(PrepareError::StageUnavailable)
-        );
-        assert_eq!(stale_graph.build_state_snapshot_for_test(), graph_before);
-        assert_eq!(
-            stale_viewport.retained_surface_transaction_shape_for_test(),
-            pool_before
-        );
-
-        let mut occupied_viewport = Viewport::new();
-        let occupied_owner = occupied_viewport
-            .begin_retained_surface_frame_stage()
-            .unwrap();
-        let mut seed_graph = FrameGraph::new();
-        let seed = super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
-            &mut occupied_viewport,
-            exact_direct_scroll_transform_transaction_for_test(),
-            &mut seed_graph,
-            default_ctx(),
-            [0.0; 4],
-            occupied_owner,
-        )
-        .unwrap();
-        let _ = super::super::scroll_scene::emit_prepared_direct_scroll_transform_scene(seed);
-        assert!(!occupied_viewport.retained_property_scroll_scene_stage_is_available());
-        let mut occupied_graph = FrameGraph::new();
-        let graph_before = occupied_graph.build_state_snapshot_for_test();
-        let pool_before = occupied_viewport.retained_surface_transaction_shape_for_test();
-        let owner_active_before =
-            occupied_viewport.retained_surface_frame_stage_owner_is_active(occupied_owner);
-        assert_eq!(
-            super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
-                &mut occupied_viewport,
-                exact_direct_scroll_transform_transaction_for_test(),
-                &mut occupied_graph,
-                default_ctx(),
-                [0.0; 4],
-                occupied_owner,
-            )
-            .err(),
-            Some(PrepareError::StageUnavailable)
-        );
-        assert_eq!(occupied_graph.build_state_snapshot_for_test(), graph_before);
-        assert_eq!(
-            occupied_viewport.retained_surface_transaction_shape_for_test(),
-            pool_before
-        );
-        assert_eq!(
-            occupied_viewport.retained_surface_frame_stage_owner_is_active(occupied_owner),
-            owner_active_before
-        );
-        assert!(
-            occupied_viewport
-                .finish_retained_surface_transaction_for_frame(Some(occupied_owner), true)
-        );
-    }
-
-    #[test]
-    fn direct_scroll_transform_action_matrix_keeps_composite_inputs_dynamic() {
-        let (arena, root, mut properties, mut generations) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::ScrollTransform);
-        let child = arena.children_of(root)[0];
-        let ctx = || UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
-        let mut viewport = Viewport::new();
-
-        let cold_transaction = direct_scroll_transform_transaction_from_fixture_for_test(
-            &arena,
-            root,
-            &properties,
-            &generations,
-        );
-        let color_key = cold_transaction.backing_for_test().0;
-        let cold_owner = viewport.begin_retained_surface_frame_stage().unwrap();
-        let mut cold_graph = FrameGraph::new();
-        let cold = super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
-            &mut viewport,
-            cold_transaction,
-            &mut cold_graph,
-            ctx(),
-            [0.0; 4],
-            cold_owner,
-        )
-        .unwrap();
-        assert_eq!(
-            cold.action_for_test(),
-            crate::view::paint::RetainedSurfaceCompileAction::Reraster
-        );
-        let _ = super::super::take_artifact_compile_count();
-        let _ = super::super::scroll_scene::emit_prepared_direct_scroll_transform_scene(cold);
-        assert_eq!(super::super::take_artifact_compile_count(), 3);
-        assert_eq!(
-            cold_graph
-                .test_graphics_passes::<crate::view::render_pass::ClearPass>()
-                .len(),
-            2
-        );
-        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(cold_owner), true));
-
-        let mut run =
-            |transaction: super::super::scroll_scene::ValidatedDirectScrollTransformTransaction,
-             expected,
-             expected_content_clears| {
-                let owner = viewport.begin_retained_surface_frame_stage().unwrap();
-                let mut graph = FrameGraph::new();
-                let mut prepared =
-                    super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
-                        &mut viewport,
-                        transaction,
-                        &mut graph,
-                        ctx(),
-                        [0.0; 4],
-                        owner,
-                    )
-                    .unwrap();
-                prepared.refresh_action_from_committed_test_pool();
-                assert_eq!(prepared.action_for_test(), expected);
-                let composite = prepared.composite_params_for_test();
-                let _ = super::super::take_artifact_compile_count();
-                let _ = super::super::scroll_scene::emit_prepared_direct_scroll_transform_scene(
-                    prepared,
-                );
-                assert_eq!(
-                    super::super::take_artifact_compile_count(),
-                    if expected == crate::view::paint::RetainedSurfaceCompileAction::Reraster {
-                        3
-                    } else {
-                        2
-                    }
-                );
-                let composites = graph.test_graphics_passes::<
-                    crate::view::render_pass::texture_composite_pass::TextureCompositePass,
-                >();
-                let matching = composites
-                    .iter()
-                    .filter(|pass| {
-                        let snapshot = pass.test_snapshot();
-                        snapshot.bounds_bits == composite.bounds.map(f32::to_bits)
-                            && snapshot.quad_position_bits
-                                == composite
-                                    .quad_positions
-                                    .map(|quad| quad.map(|point| point.map(f32::to_bits)))
-                            && snapshot.uv_bounds_bits
-                                == composite.uv_bounds.map(|uv| uv.map(f32::to_bits))
-                            && snapshot.explicit_scissor_rect == composite.scissor_rect
-                    })
-                    .collect::<Vec<_>>();
-                assert_eq!(
-                    matching.len(),
-                    1,
-                    "final direct S->T composite is exact-once"
-                );
-                let content_target = matching[0]
-                    .test_snapshot()
-                    .source_handle
-                    .expect("direct S->T composite samples its persistent T target");
-                let content_clears = graph
-                    .test_graphics_passes::<crate::view::render_pass::ClearPass>()
-                    .iter()
-                    .filter(|pass| pass.test_snapshot().output_target == Some(content_target))
-                    .count();
-                assert_eq!(content_clears, expected_content_clears);
-                assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
-            };
-        let reuse = crate::view::paint::RetainedSurfaceCompileAction::Reuse;
-        let reraster = crate::view::paint::RetainedSurfaceCompileAction::Reraster;
-
-        run(
-            direct_scroll_transform_transaction_from_fixture_for_test(
-                &arena,
-                root,
-                &properties,
-                &generations,
-            ),
-            reuse,
-            0,
-        );
-
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                11.0, 4.0, 0.0,
-            ))));
-        arena.refresh_subtree_dirty_cache(root);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        run(
-            direct_scroll_transform_transaction_from_fixture_for_test(
-                &arena,
-                root,
-                &properties,
-                &generations,
-            ),
-            reuse,
-            0,
-        );
-
-        {
-            let mut root_element =
-                crate::view::test_support::get_element_mut::<Element>(&arena, root);
-            root_element.set_scroll_offset((0.0, 37.0));
-            root_element
-                .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        }
-        {
-            let mut child_element =
-                crate::view::test_support::get_element_mut::<Element>(&arena, child);
-            child_element.layout_state.layout_position.y = -37.0;
-            child_element.layout_state.layout_inner_position.y = -37.0;
-            child_element.layout_state.layout_flow_position.y = -37.0;
-            child_element.layout_state.layout_flow_inner_position.y = -37.0;
-            child_element
-                .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        }
-        arena.refresh_subtree_dirty_cache(root);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        run(
-            direct_scroll_transform_transaction_from_fixture_for_test(
-                &arena,
-                root,
-                &properties,
-                &generations,
-            ),
-            reuse,
-            0,
-        );
-
-        crate::view::test_support::get_element_mut::<Element>(&arena, root)
-            .set_sampled_scrollbar_alpha_for_test(1.0);
-        arena.refresh_subtree_dirty_cache(root);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        run(
-            direct_scroll_transform_transaction_from_fixture_for_test(
-                &arena,
-                root,
-                &properties,
-                &generations,
-            ),
-            reuse,
-            0,
-        );
-
-        crate::view::test_support::get_element_mut::<Element>(&arena, root)
-            .set_background_color_value(Color::rgb(18, 36, 54));
-        arena.refresh_subtree_dirty_cache(root);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        run(
-            direct_scroll_transform_transaction_from_fixture_for_test(
-                &arena,
-                root,
-                &properties,
-                &generations,
-            ),
-            reuse,
-            0,
-        );
-
-        {
-            let mut root_element =
-                crate::view::test_support::get_element_mut::<Element>(&arena, root);
-            root_element.layout_state.layout_size.height = 72.0;
-            root_element.layout_state.layout_inner_size.height = 72.0;
-            root_element
-                .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        }
-        arena.refresh_subtree_dirty_cache(root);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        run(
-            direct_scroll_transform_transaction_from_fixture_for_test(
-                &arena,
-                root,
-                &properties,
-                &generations,
-            ),
-            reuse,
-            0,
-        );
-
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_background_color_value(Color::rgb(72, 48, 24));
-        arena.refresh_subtree_dirty_cache(root);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        run(
-            direct_scroll_transform_transaction_from_fixture_for_test(
-                &arena,
-                root,
-                &properties,
-                &generations,
-            ),
-            reraster,
-            1,
-        );
-
-        drop(run);
-        viewport.forget_retained_surface_pair_witness_for_test(color_key);
-        let pair_owner = viewport.begin_retained_surface_frame_stage().unwrap();
-        let mut pair_graph = FrameGraph::new();
-        let mut pair = super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
-            &mut viewport,
-            direct_scroll_transform_transaction_from_fixture_for_test(
-                &arena,
-                root,
-                &properties,
-                &generations,
-            ),
-            &mut pair_graph,
-            ctx(),
-            [0.0; 4],
-            pair_owner,
-        )
-        .unwrap();
-        pair.refresh_action_from_committed_test_pool();
-        assert_eq!(pair.action_for_test(), reraster);
-        let composite = pair.composite_params_for_test();
-        let _ = super::super::take_artifact_compile_count();
-        let _ = super::super::scroll_scene::emit_prepared_direct_scroll_transform_scene(pair);
-        assert_eq!(super::super::take_artifact_compile_count(), 3);
-        let pair_composites = pair_graph
-            .test_graphics_passes::<crate::view::render_pass::texture_composite_pass::TextureCompositePass>();
-        let matching = pair_composites
-            .iter()
-            .filter(|pass| {
-                let snapshot = pass.test_snapshot();
-                snapshot.bounds_bits == composite.bounds.map(f32::to_bits)
-                    && snapshot.quad_position_bits
-                        == composite
-                            .quad_positions
-                            .map(|quad| quad.map(|point| point.map(f32::to_bits)))
-                    && snapshot.uv_bounds_bits == composite.uv_bounds.map(|uv| uv.map(f32::to_bits))
-                    && snapshot.explicit_scissor_rect == composite.scissor_rect
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(matching.len(), 1);
-        let content_target = matching[0].test_snapshot().source_handle.unwrap();
-        assert_eq!(
-            pair_graph
-                .test_graphics_passes::<crate::view::render_pass::ClearPass>()
-                .iter()
-                .filter(|pass| pass.test_snapshot().output_target == Some(content_target))
-                .count(),
-            1
-        );
-        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(pair_owner), true));
-    }
-
-    #[test]
-    fn property_scroll_interleave_scaffold_seals_only_supported_planning_shapes() {
-        for shape in [
-            ScrollInterleaveFixtureShape::FrameRootScroll,
-            ScrollInterleaveFixtureShape::TransformScroll,
-            ScrollInterleaveFixtureShape::EffectScroll,
-            ScrollInterleaveFixtureShape::TransformEffectScroll,
-        ] {
-            let (arena, root, properties, generations) = property_scroll_interleave_fixture(shape);
-            let plan = plan_property_scroll_interleave_scaffold_with_context(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                TransformSurfacePlanContext::default(),
-            )
-            .expect("supported B4-0 planning grammar");
-            assert!(property_scene_plan_is_sealed(&plan));
-            assert!(plan.property_scene_transaction_witness().is_none());
-            assert!(plan.property_scene_context().is_none());
-            let scaffold = plan
-                .property_scene_seal
-                .as_ref()
-                .and_then(|seal| seal.scroll_schedule_scaffold.as_ref())
-                .expect("sealed scroll schedule");
-            assert_eq!(scaffold.boundaries.len(), 1);
-            let boundary = &scaffold.boundaries[0];
-            assert_eq!(
-                boundary.phase.host_before.phase,
-                PropertyScrollPhaseKind::HostBeforeChildren
-            );
-            assert_eq!(
-                boundary.phase.content_gap.phase,
-                PropertyScrollPhaseKind::DetachedContentComposite
-            );
-            assert_eq!(
-                boundary.phase.overlay_after.phase,
-                PropertyScrollPhaseKind::OverlayAfterChildren
-            );
-            assert_eq!(
-                boundary.consumed_properties.projected_output,
-                PropertyTreeState::default()
-            );
-        }
-    }
-
-    #[test]
-    fn property_effect_scroll_checkpoint_freezes_cutout_geometry_and_effect_neutral_identity() {
-        let (arena, root, properties, generations) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::EffectScroll);
-        let plan = plan_property_scroll_interleave_scaffold_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect("lifecycle-independent E->S schedule");
-        let scaffold = plan.property_scroll_planning_scaffold().unwrap();
-        assert!(property_scene_plan_is_sealed(&plan));
-        assert!(scaffold.receiver_insertions.is_empty());
-        assert!(scaffold.effect_receiver_insertions.len() <= 1);
-        assert!(matches!(
-            scaffold.schedule.steps.as_slice(),
-            [
-                PropertySceneScheduledStep::RetainedSurface {
-                    boundary: PropertyScheduledSurfaceBoundary::Effect(_),
-                    parent: None,
-                },
-                PropertySceneScheduledStep::ScrollBoundary {
-                    basis: ScrollCompositeBasis::Effect(_),
-                    ..
-                }
-            ]
-        ));
-    }
-
-    #[test]
-    fn property_effect_scroll_checkpoint_rejects_raster_and_marker_drift() {
-        let (arena, root, properties, generations) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::EffectScroll);
-        let build = || {
-            plan_property_scroll_interleave_scaffold_with_context(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                TransformSurfacePlanContext::default(),
-            )
-            .unwrap()
-        };
-        let mut schedule = build();
-        let scaffold = schedule
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .scroll_schedule_scaffold
-            .as_mut()
-            .unwrap();
-        scaffold.schedule.steps.swap(0, 1);
-        assert!(!property_scene_plan_is_sealed(&schedule));
-    }
-
-    #[test]
-    fn property_transform_effect_scroll_insertion_freezes_nested_receivers_and_stack() {
-        let (arena, root, properties, generations) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformEffectScroll);
-        let plan = plan_property_scroll_interleave_scaffold_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect("exact T->E->S planning scaffold");
-        let scaffold = plan.property_scroll_planning_scaffold().unwrap();
-        assert!(scaffold.receiver_insertions.is_empty());
-        assert!(scaffold.effect_receiver_insertions.is_empty());
-        let [insertion] = scaffold.transform_effect_receiver_insertions.as_slice() else {
-            panic!("exact T->E->S owns one nested insertion")
-        };
-        assert!(
-            crate::view::paint::compiler::direct_translation_bits(
-                insertion.outer_geometry.viewport_transform
-            )
-            .is_some()
-        );
-        assert!(
-            insertion.outer_geometry.source_bounds.width
-                > f32::from_bits(insertion.inner.raster_bounds_bits[2])
-        );
-        assert_eq!(
-            insertion.outer_geometry.source_bounds.y.to_bits(),
-            0.0_f32.to_bits()
-        );
-        assert!(insertion.outer_geometry.source_bounds.height < 240.0);
-        assert_eq!(insertion.inner.receiver.parent, None);
-        assert_eq!(
-            insertion.inner.artifact_contract.live_effect_chain(),
-            [insertion.inner.receiver]
-        );
-        let boundary = &scaffold.boundaries[0];
-        assert!(matches!(
-            boundary.consumed_properties.entries.as_slice(),
-            [
-                ConsumedPropertyEntry {
-                    boundary: ConsumedPropertyBoundary::Transform(_),
-                    ..
-                },
-                ConsumedPropertyEntry {
-                    boundary: ConsumedPropertyBoundary::Effect(_),
-                    ..
-                },
-                ConsumedPropertyEntry {
-                    boundary: ConsumedPropertyBoundary::ScrollContents { .. },
-                    ..
-                }
-            ]
-        ));
-        assert_eq!(
-            boundary.consumed_properties.projected_output,
-            PropertyTreeState::default()
-        );
-        assert!(property_scene_plan_is_sealed(&plan));
-    }
-
-    #[test]
-    fn property_scroll_interleave_scaffold_rejects_scroll_descendants_and_colocation() {
-        for shape in [
-            ScrollInterleaveFixtureShape::ScrollTransform,
-            ScrollInterleaveFixtureShape::CoLocatedTransformScroll,
-        ] {
-            let (arena, root, properties, generations) = property_scroll_interleave_fixture(shape);
-            let error = plan_property_scroll_interleave_scaffold_with_context(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                TransformSurfacePlanContext::default(),
-            )
-            .expect_err("unsupported interleave must fail closed");
-            assert!(error.reasons.iter().any(|reason| matches!(
-                reason,
-                FramePaintPlanRejection::UnsupportedPropertyInterleave(_)
-                    | FramePaintPlanRejection::ScrollBoundary(_)
-            )));
-        }
-    }
-
-    #[test]
-    fn property_scroll_interleave_scaffold_seal_rejects_schedule_stack_and_phase_drift() {
-        let (arena, root, properties, generations) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformEffectScroll);
-        let build = || {
-            plan_property_scroll_interleave_scaffold_with_context(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                TransformSurfacePlanContext::default(),
-            )
-            .expect("sealed scaffold")
-        };
-        let mut schedule = build();
-        schedule
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .scroll_schedule_scaffold
-            .as_mut()
-            .unwrap()
-            .schedule
-            .steps
-            .swap(0, 1);
-        assert!(!property_scene_plan_is_sealed(&schedule));
-
-        let mut stack = build();
-        stack
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .scroll_schedule_scaffold
-            .as_mut()
-            .unwrap()
-            .boundaries[0]
-            .consumed_properties
-            .entries[0]
-            .projected_after = PropertyTreeState::default();
-        assert!(!property_scene_plan_is_sealed(&stack));
-
-        let mut phase = build();
-        phase
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .scroll_schedule_scaffold
-            .as_mut()
-            .unwrap()
-            .boundaries[0]
-            .phase
-            .overlay_after
-            .phase = PropertyScrollPhaseKind::HostBeforeChildren;
-        assert!(!property_scene_plan_is_sealed(&phase));
-
-        let mut incomplete = build();
-        let incomplete_scaffold = incomplete
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .scroll_schedule_scaffold
-            .as_mut()
-            .unwrap();
-        incomplete_scaffold
-            .transform_effect_receiver_insertions
-            .clear();
-        incomplete_scaffold
-            .planned_transform_effect_receiver_insertions
-            .clear();
-        assert!(!property_scene_plan_is_sealed(&incomplete));
-
-        let mut reordered_stack = build();
-        let reordered_scaffold = reordered_stack
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .scroll_schedule_scaffold
-            .as_mut()
-            .unwrap();
-        reordered_scaffold.boundaries[0]
-            .consumed_properties
-            .entries
-            .swap(0, 1);
-        reordered_scaffold.planned_boundaries[0]
-            .consumed_properties
-            .entries
-            .swap(0, 1);
-        assert!(!property_scene_plan_is_sealed(&reordered_stack));
-
-        let mut geometry = build();
-        let geometry_scaffold = geometry
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .scroll_schedule_scaffold
-            .as_mut()
-            .unwrap();
-        geometry_scaffold.transform_effect_receiver_insertions[0]
-            .outer_geometry
-            .source_bounds
-            .width += 1.0;
-        geometry_scaffold.planned_transform_effect_receiver_insertions[0]
-            .outer_geometry
-            .source_bounds
-            .width += 1.0;
-        assert!(!property_scene_plan_is_sealed(&geometry));
-    }
-
-    #[test]
-    fn property_scroll_receiver_insertion_seal_rejects_drop_duplicate_reorder_and_retarget() {
-        let (arena, root, properties, generations) =
-            property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformScroll);
-        let build = || {
-            let mut plan = plan_property_scroll_interleave_scaffold_with_context(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                TransformSurfacePlanContext::default(),
-            )
-            .unwrap();
-            let scaffold = plan
-                .property_scene_seal
-                .as_mut()
-                .unwrap()
-                .scroll_schedule_scaffold
-                .as_mut()
-                .unwrap();
-            let [
-                PropertySceneScheduledStep::RetainedSurface {
-                    boundary: PropertyScheduledSurfaceBoundary::Transform(receiver),
-                    ..
-                },
-                PropertySceneScheduledStep::ScrollBoundary {
-                    boundary_ordinal, ..
-                },
-            ] = scaffold.schedule.steps.as_slice()
-            else {
-                panic!("T->S schedule")
-            };
-            let boundary = &scaffold.boundaries[*boundary_ordinal as usize];
-            let artifact = PropertyScrollReceiverArtifactIdentity {
-                owner_topology: Vec::new(),
-                clip_nodes: Vec::new(),
-                effect_nodes: Vec::new(),
-                chunks: Vec::new(),
-                op_count: 0,
-                opaque_count: 0,
-            };
-            let cutout = super::super::PlannedBoundary {
-                root: boundary.scroll.owner,
-                stable_id: arena
-                    .get(boundary.scroll.owner)
-                    .unwrap()
-                    .element
-                    .stable_id(),
-                kind: super::super::PlannedBoundaryKind::Scroll(boundary.scroll.id),
-            };
-            let insertion = PropertyScrollReceiverInsertionContract {
-                scene_root_ordinal: 0,
-                receiver: *receiver,
-                receiver_stable_id: arena.get(root).unwrap().element.stable_id(),
-                scroll_boundary_ordinal: *boundary_ordinal,
-                scroll_cutout: cutout,
-                insertion_index: 1,
-                before_span: 0..1,
-                after_span: 2..3,
-                receiver_opaque_before: 0,
-                receiver_opaque_after: 0,
-                recorded_steps: vec![
-                    PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact.clone()),
-                    PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(cutout),
-                    PropertyScrollReceiverRecordedStepIdentity::Artifact(artifact),
-                ],
-            };
-            scaffold.receiver_insertions = vec![insertion.clone()];
-            scaffold.planned_receiver_insertions = vec![insertion];
-            assert!(property_scene_plan_is_sealed(&plan));
-            plan
-        };
-
-        let mut dropped = build();
-        dropped
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .scroll_schedule_scaffold
-            .as_mut()
-            .unwrap()
-            .receiver_insertions
-            .clear();
-        assert!(!property_scene_plan_is_sealed(&dropped));
-
-        let mut duplicated = build();
-        let scaffold = duplicated
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .scroll_schedule_scaffold
-            .as_mut()
-            .unwrap();
-        scaffold
-            .receiver_insertions
-            .push(scaffold.receiver_insertions[0].clone());
-        scaffold.planned_receiver_insertions = scaffold.receiver_insertions.clone();
-        assert!(!property_scene_plan_is_sealed(&duplicated));
-
-        let mut reordered = build();
-        let insertion = &mut reordered
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .scroll_schedule_scaffold
-            .as_mut()
-            .unwrap()
-            .receiver_insertions[0];
-        insertion.recorded_steps.swap(0, 1);
-        assert!(!property_scene_plan_is_sealed(&reordered));
-
-        let mut retargeted = build();
-        let scaffold = retargeted
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .scroll_schedule_scaffold
-            .as_mut()
-            .unwrap();
-        let mut wrong_receiver = scaffold.receiver_insertions[0].receiver;
-        wrong_receiver.owner = scaffold.boundaries[0].scroll.owner;
-        scaffold.receiver_insertions[0].receiver = wrong_receiver;
-        assert!(!property_scene_plan_is_sealed(&retargeted));
-    }
-
-    fn general_property_scene_fixture() -> GeneralPropertySceneFixture {
-        let (mut arena, outer, _before, inner_a, deep, inner_b, _, _) =
-            nested_exact_transform_fixture();
-        crate::view::test_support::get_element_mut::<Element>(&arena, deep)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                4.0, 0.0, 0.0,
-            ))));
-        crate::view::test_support::get_element_mut::<Element>(&arena, inner_b)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                5.0, 0.0, 0.0,
-            ))));
-
-        let neutral_root = commit_element(
-            &mut arena,
-            Box::new(Element::new_with_id(0xd1_0001, 130.0, 10.0, 8.0, 8.0)),
-        );
-        let second_root = commit_element(
-            &mut arena,
-            Box::new(Element::new_with_id(0xd1_0020, 145.0, 10.0, 12.0, 10.0)),
-        );
-        let trailing_root = commit_element(
-            &mut arena,
-            Box::new(Element::new_with_id(0xd1_0030, 166.0, 10.0, 8.0, 8.0)),
-        );
-        let constraints = LayoutConstraints {
-            max_width: 220.0,
-            max_height: 140.0,
-            viewport_width: 220.0,
-            viewport_height: 140.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(140.0),
-        };
-        for (root, x, y) in [
-            (neutral_root, 130.0, 10.0),
-            (second_root, 145.0, 10.0),
-            (trailing_root, 166.0, 10.0),
-        ] {
-            measure_and_place(
-                &mut arena,
-                root,
-                constraints,
-                LayoutPlacement {
-                    parent_x: x,
-                    parent_y: y,
-                    visual_offset_x: 0.0,
-                    visual_offset_y: 0.0,
-                    available_width: 220.0,
-                    available_height: 140.0,
-                    viewport_width: 220.0,
-                    viewport_height: 140.0,
-                    percent_base_width: Some(220.0),
-                    percent_base_height: Some(140.0),
-                },
-            );
-        }
-        crate::view::test_support::get_element_mut::<Element>(&arena, second_root)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                6.0, 0.0, 0.0,
-            ))));
-        let roots = vec![neutral_root, outer, second_root, trailing_root];
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &roots);
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &roots, &properties);
-        GeneralPropertySceneFixture {
-            arena,
-            roots,
-            outer,
-            inner_a,
-            deep,
-            inner_b,
-            second_root,
-            properties,
-            generations,
-        }
-    }
-
-    #[test]
-    fn property_scene_plans_multi_root_three_level_and_sibling_transform_forest() {
-        let fixture = general_property_scene_fixture();
-        let plan = plan_transform_property_scene_with_context(
-            &fixture.arena,
-            &fixture.roots,
-            &fixture.properties,
-            &fixture.generations,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect("general planning-only transform scene");
-        assert!(property_scene_plan_is_sealed(&plan));
-        let seal = plan
-            .property_scene_seal
-            .as_ref()
-            .expect("general scene seal");
-        assert_eq!(seal.surface_count, 5);
-        let id_for = |owner| {
-            seal.surfaces
-                .values()
-                .find(|contract| contract.id.owner == owner)
-                .expect("surface contract")
-                .id
-        };
-        let outer = id_for(fixture.outer);
-        let inner_a = id_for(fixture.inner_a);
-        let deep = id_for(fixture.deep);
-        let inner_b = id_for(fixture.inner_b);
-        let second_root = id_for(fixture.second_root);
-        assert_eq!(
-            [
-                outer.ordinal,
-                inner_a.ordinal,
-                deep.ordinal,
-                inner_b.ordinal,
-                second_root.ordinal,
-            ],
-            [0, 1, 2, 3, 4]
-        );
-        assert_eq!(seal.surfaces[&outer].parent, None);
-        assert_eq!(seal.surfaces[&inner_a].parent, Some(outer));
-        assert_eq!(seal.surfaces[&deep].parent, Some(inner_a));
-        assert_eq!(seal.surfaces[&inner_b].parent, Some(outer));
-        assert_eq!(seal.surfaces[&second_root].parent, None);
-
-        let top_level = plan
-            .steps()
-            .iter()
-            .filter_map(|step| match step {
-                PaintPlanStep::RetainedSurface(surface) => Some(surface.boundary_root()),
-                PaintPlanStep::ArtifactSpan(_) => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(top_level, vec![fixture.outer, fixture.second_root]);
-        let roots = plan.property_scene_roots.as_ref().unwrap();
-        assert_eq!(
-            roots[0].top_level_step_span.start,
-            roots[0].top_level_step_span.end
-        );
-        assert_eq!(
-            roots[3].top_level_step_span.start,
-            roots[3].top_level_step_span.end
-        );
-    }
-
-    fn property_surface_mut(
-        steps: &mut [PaintPlanStep],
-        owner: NodeKey,
-    ) -> Option<&mut RetainedSurfacePlan> {
-        for step in steps {
-            let PaintPlanStep::RetainedSurface(surface) = step else {
-                continue;
-            };
-            if surface.boundary_root() == owner {
-                return Some(surface);
-            }
-            if let Some(found) = property_surface_mut(&mut surface.raster_steps, owner) {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    #[test]
-    fn property_scene_seal_rejects_topology_identity_reference_and_witness_drift() {
-        let fixture = general_property_scene_fixture();
-        let base = plan_transform_property_scene_with_context(
-            &fixture.arena,
-            &fixture.roots,
-            &fixture.properties,
-            &fixture.generations,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect("sealed general property scene");
-
-        let mut ordinal = base.clone();
-        let seal = ordinal.property_scene_seal.as_mut().unwrap();
-        let old_id = seal
-            .surfaces
-            .keys()
-            .copied()
-            .find(|id| id.owner == fixture.inner_a)
-            .unwrap();
-        let mut contract = seal.surfaces.remove(&old_id).unwrap();
-        contract.id.ordinal += 7;
-        seal.surfaces.insert(contract.id, contract);
-        assert!(!property_scene_plan_is_sealed(&ordinal));
-
-        let mut parent = base.clone();
-        parent
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .surfaces
-            .values_mut()
-            .find(|contract| contract.id.owner == fixture.inner_a)
-            .unwrap()
-            .transform
-            .parent = None;
-        assert!(!property_scene_plan_is_sealed(&parent));
-
-        let mut matrix = base.clone();
-        matrix
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .surfaces
-            .values_mut()
-            .find(|contract| contract.id.owner == fixture.inner_a)
-            .unwrap()
-            .transform
-            .viewport_matrix = glam::Mat4::from_translation(glam::Vec3::new(99.0, 1.0, 0.0));
-        assert!(!property_scene_plan_is_sealed(&matrix));
-
-        let mut generation = base.clone();
-        generation
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .surfaces
-            .values_mut()
-            .find(|contract| contract.id.owner == fixture.inner_a)
-            .unwrap()
-            .transform
-            .generation += 1;
-        assert!(!property_scene_plan_is_sealed(&generation));
-
-        let mut identity = base.clone();
-        let outer_identity = {
-            let outer = property_surface_mut(&mut identity.steps, fixture.outer).unwrap();
-            (outer.stable_id, outer.persistent_color_key)
-        };
-        let inner = property_surface_mut(&mut identity.steps, fixture.inner_a).unwrap();
-        inner.stable_id = outer_identity.0;
-        inner.persistent_color_key = outer_identity.1;
-        assert!(!property_scene_plan_is_sealed(&identity));
-
-        let mut zero_stable = base.clone();
-        property_surface_mut(&mut zero_stable.steps, fixture.inner_a)
-            .unwrap()
-            .stable_id = 0;
-        assert!(!property_scene_plan_is_sealed(&zero_stable));
-
-        let mut zero_contract_stable = base.clone();
-        zero_contract_stable
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .surfaces
-            .values_mut()
-            .find(|contract| contract.id.owner == fixture.inner_a)
-            .unwrap()
-            .stable_id = 0;
-        assert!(!property_scene_plan_is_sealed(&zero_contract_stable));
-
-        let mut alternate_stable = base.clone();
-        property_surface_mut(&mut alternate_stable.steps, fixture.inner_a)
-            .unwrap()
-            .stable_id = 0xf0_f0_f0;
-        assert!(!property_scene_plan_is_sealed(&alternate_stable));
-
-        let mut alternate_contract_stable = base.clone();
-        alternate_contract_stable
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .surfaces
-            .values_mut()
-            .find(|contract| contract.id.owner == fixture.inner_a)
-            .unwrap()
-            .stable_id = 0xf0_f0_f0;
-        assert!(!property_scene_plan_is_sealed(&alternate_contract_stable));
-
-        let mut arbitrary_key = base.clone();
-        property_surface_mut(&mut arbitrary_key.steps, fixture.inner_a)
-            .unwrap()
-            .persistent_color_key =
-            crate::view::frame_graph::PersistentTextureKey::Generic(0xdead_beef);
-        assert!(!property_scene_plan_is_sealed(&arbitrary_key));
-
-        let mut missing = base.clone();
-        missing.steps.retain(|step| {
-            !matches!(step, PaintPlanStep::RetainedSurface(surface) if surface.boundary_root() == fixture.second_root)
-        });
-        assert!(!property_scene_plan_is_sealed(&missing));
-
-        let mut duplicate = base.clone();
-        let repeated = duplicate
-            .steps
-            .iter()
-            .find(|step| {
-                matches!(step, PaintPlanStep::RetainedSurface(surface) if surface.boundary_root() == fixture.second_root)
-            })
-            .cloned()
-            .unwrap();
-        duplicate.steps.push(repeated);
-        assert!(!property_scene_plan_is_sealed(&duplicate));
-
-        let mut artifact_witness = base.clone();
-        artifact_witness
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .surfaces
-            .values_mut()
-            .find(|contract| !contract.artifact_validation.is_empty())
-            .unwrap()
-            .artifact_validation
-            .pop();
-        assert!(!property_scene_plan_is_sealed(&artifact_witness));
-
-        let mut scissor = plan_transform_property_scene_with_context(
-            &fixture.arena,
-            &fixture.roots,
-            &fixture.properties,
-            &fixture.generations,
-            TransformSurfacePlanContext::new([0.0; 2], Some([3, 4, 80, 60])),
-        )
-        .expect("outer scissor is frozen by the scene seal");
-        scissor
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .outer_scissor_rect = None;
-        assert!(!property_scene_plan_is_sealed(&scissor));
-    }
-
-    #[test]
-    fn property_scene_preserves_ordered_root_spans_and_rejects_root_witness_drift() {
-        let mut fixture = general_property_scene_fixture();
-        let painted_root = |id: u64, x: f32, color| {
-            let mut element = Element::new_with_id(id, x, 30.0, 9.0, 7.0);
-            let mut style = Style::new();
-            style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-            style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(color));
-            element.apply_style(style);
-            element
-        };
-        let painted_a = commit_element(
-            &mut fixture.arena,
-            Box::new(painted_root(0xd1_1001, 180.0, Color::rgb(20, 60, 100))),
-        );
-        let painted_b = commit_element(
-            &mut fixture.arena,
-            Box::new(painted_root(0xd1_1002, 195.0, Color::rgb(100, 60, 20))),
-        );
-        let constraints = LayoutConstraints {
-            max_width: 220.0,
-            max_height: 140.0,
-            viewport_width: 220.0,
-            viewport_height: 140.0,
-            percent_base_width: Some(220.0),
-            percent_base_height: Some(140.0),
-        };
-        for (root, x) in [(painted_a, 180.0), (painted_b, 195.0)] {
-            measure_and_place(
-                &mut fixture.arena,
-                root,
-                constraints,
-                LayoutPlacement {
-                    parent_x: x,
-                    parent_y: 30.0,
-                    visual_offset_x: 0.0,
-                    visual_offset_y: 0.0,
-                    available_width: 220.0,
-                    available_height: 140.0,
-                    viewport_width: 220.0,
-                    viewport_height: 140.0,
-                    percent_base_width: Some(220.0),
-                    percent_base_height: Some(140.0),
-                },
-            );
-        }
-        let transparent = fixture.roots[0];
-        let trailing_transparent = fixture.roots[3];
-        crate::view::test_support::get_element_mut::<Element>(&fixture.arena, transparent)
-            .set_should_paint_for_test(false);
-        crate::view::test_support::get_element_mut::<Element>(&fixture.arena, trailing_transparent)
-            .set_should_paint_for_test(false);
-        fixture.roots = vec![
-            painted_a,
-            painted_b,
-            transparent,
-            fixture.outer,
-            fixture.second_root,
-            trailing_transparent,
-        ];
-        fixture.properties = PropertyTrees::default();
-        fixture.properties.sync(&fixture.arena, &fixture.roots);
-        fixture.generations = PaintGenerationTracker::default();
-        fixture
-            .generations
-            .sync(&fixture.arena, &fixture.roots, &fixture.properties);
-        let base = plan_transform_property_scene_with_context(
-            &fixture.arena,
-            &fixture.roots,
-            &fixture.properties,
-            &fixture.generations,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect("mixed roots retain their exact input order");
-        assert!(property_scene_plan_is_sealed(&base));
-        let roots = base.property_scene_roots.as_ref().unwrap();
-        assert_eq!(
-            roots.iter().map(|root| root.root).collect::<Vec<_>>(),
-            fixture.roots
-        );
-        assert!(roots[0].top_level_step_span.start < roots[0].top_level_step_span.end);
-        assert!(roots[1].top_level_step_span.start < roots[1].top_level_step_span.end);
-        assert_eq!(
-            roots[0].top_level_step_span.end,
-            roots[1].top_level_step_span.start
-        );
-        assert_eq!(
-            roots[2].top_level_step_span.start, roots[2].top_level_step_span.end,
-            "transparent root keeps an explicit empty insertion span"
-        );
-        assert!(roots[3].top_level_step_span.start < roots[3].top_level_step_span.end);
-        assert!(roots[4].top_level_step_span.start < roots[4].top_level_step_span.end);
-        assert_eq!(
-            roots[5].top_level_step_span.start,
-            roots[5].top_level_step_span.end
-        );
-
-        let duplicate_input = plan_transform_property_scene_with_context(
-            &fixture.arena,
-            &[painted_a, painted_a],
-            &fixture.properties,
-            &fixture.generations,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect_err("duplicate roots fail before materialization");
-        assert!(
-            duplicate_input
-                .reasons
-                .contains(&FramePaintPlanRejection::DuplicateRoot(painted_a))
-        );
-
-        let mut reordered_input = fixture.roots.clone();
-        reordered_input.reverse();
-        let reordered = plan_transform_property_scene_with_context(
-            &fixture.arena,
-            &reordered_input,
-            &fixture.properties,
-            &fixture.generations,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect("a new input order gets a newly sealed exact order");
-        assert_eq!(
-            reordered
-                .property_scene_roots
-                .as_ref()
-                .unwrap()
-                .iter()
-                .map(|root| root.root)
-                .collect::<Vec<_>>(),
-            reordered_input
-        );
-
-        let mut duplicate = base.clone();
-        duplicate.property_scene_roots.as_mut().unwrap()[1].root = painted_a;
-        assert!(!property_scene_plan_is_sealed(&duplicate));
-
-        let mut reorder = base.clone();
-        reorder.property_scene_roots.as_mut().unwrap().swap(0, 1);
-        assert!(!property_scene_plan_is_sealed(&reorder));
-
-        let mut stable = base.clone();
-        stable.property_scene_roots.as_mut().unwrap()[0].stable_id += 1;
-        assert!(!property_scene_plan_is_sealed(&stable));
-
-        let mut owner = base.clone();
-        owner.property_scene_roots.as_mut().unwrap()[0].owner.parent = Some(painted_b);
-        assert!(!property_scene_plan_is_sealed(&owner));
-
-        let mut span = base.clone();
-        span.property_scene_roots.as_mut().unwrap()[0]
-            .top_level_step_span
-            .end += 1;
-        assert!(!property_scene_plan_is_sealed(&span));
-    }
-
-    #[test]
-    fn property_scene_accepts_retained_baseline_baseline_and_rejects_effect_scroll_deferred_or_legacy_boundaries()
-     {
-        let fixture = general_property_scene_fixture();
-        let baseline = plan_transform_property_scene_with_context(
-            &fixture.arena,
-            &fixture.roots,
-            &fixture.properties,
-            &fixture.generations,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect("retained-compatible retained property scene");
-        assert!(property_scene_plan_is_sealed(&baseline));
-
-        for property in ["effect", "scroll"] {
-            let property_fixture = general_property_scene_fixture();
-            let mut properties = property_fixture.properties;
-            let state = properties
-                .states
-                .get_mut(&property_fixture.inner_a)
-                .unwrap();
-            match property {
-                "effect" => state.paint.effect = Some(EffectNodeId(property_fixture.inner_a)),
-                "scroll" => state.paint.scroll = Some(ScrollNodeId(property_fixture.inner_a)),
-                _ => unreachable!(),
-            }
-            let error = plan_transform_property_scene_with_context(
-                &property_fixture.arena,
-                &property_fixture.roots,
-                &properties,
-                &property_fixture.generations,
-                TransformSurfacePlanContext::default(),
-            )
-            .expect_err("unsupported property authority must fail closed");
-            assert!(
-                !error.reasons.is_empty()
-                    && error
-                        .reasons
-                        .iter()
-                        .all(|reason| matches!(reason, FramePaintPlanRejection::Coverage(_))),
-                "{property}: {:?}",
-                error.reasons
-            );
-        }
-
-        let deferred_fixture = general_property_scene_fixture();
-        let mut deferred_style = Style::new();
-        deferred_style.insert(
-            PropertyId::Position,
-            ParsedValue::Position(
-                crate::style::Position::absolute()
-                    .left(crate::style::Length::px(0.0))
-                    .clip(crate::style::ClipMode::Viewport),
-            ),
-        );
-        crate::view::test_support::get_element_mut::<Element>(
-            &deferred_fixture.arena,
-            deferred_fixture.inner_a,
-        )
-        .apply_style(deferred_style);
-        let deferred = plan_transform_property_scene_with_context(
-            &deferred_fixture.arena,
-            &deferred_fixture.roots,
-            &deferred_fixture.properties,
-            &deferred_fixture.generations,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect_err("deferred ordering cannot enter a retained property scene");
-        assert!(
-            deferred
-                .reasons
-                .contains(&FramePaintPlanRejection::DeferredBoundary(
-                    deferred_fixture.inner_a
-                ))
-        );
-
-        let mut legacy_fixture = general_property_scene_fixture();
-        let neutral_root = legacy_fixture.roots[0];
-        commit_child(
-            &mut legacy_fixture.arena,
-            neutral_root,
-            Box::new(Element::new_with_id(0xd1_00ff, 0.0, 0.0, 1.0, 1.0)),
-        );
-        measure_and_place(
-            &mut legacy_fixture.arena,
-            neutral_root,
-            LayoutConstraints {
-                max_width: 220.0,
-                max_height: 140.0,
-                viewport_width: 220.0,
-                viewport_height: 140.0,
-                percent_base_width: Some(220.0),
-                percent_base_height: Some(140.0),
-            },
-            LayoutPlacement {
-                parent_x: 130.0,
-                parent_y: 10.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 220.0,
-                available_height: 140.0,
-                viewport_width: 220.0,
-                viewport_height: 140.0,
-                percent_base_width: Some(220.0),
-                percent_base_height: Some(140.0),
-            },
-        );
-        legacy_fixture.properties = PropertyTrees::default();
-        legacy_fixture
-            .properties
-            .sync(&legacy_fixture.arena, &legacy_fixture.roots);
-        legacy_fixture.generations = PaintGenerationTracker::default();
-        legacy_fixture.generations.sync(
-            &legacy_fixture.arena,
-            &legacy_fixture.roots,
-            &legacy_fixture.properties,
-        );
-        let mut rounded = Style::new();
-        rounded.insert(
-            PropertyId::BorderRadius,
-            ParsedValue::Length(crate::style::Length::px(2.0)),
-        );
-        crate::view::test_support::get_element_mut::<Element>(&legacy_fixture.arena, neutral_root)
-            .apply_style(rounded);
-        let legacy = plan_transform_property_scene_with_context(
-            &legacy_fixture.arena,
-            &legacy_fixture.roots,
-            &legacy_fixture.properties,
-            &legacy_fixture.generations,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect_err("unowned child clip remains legacy");
-        assert!(
-            legacy.reasons.iter().any(|reason| matches!(
-                reason,
-                FramePaintPlanRejection::Coverage(FrameArtifactFallbackReason::LegacyBoundary(_))
-            )),
-            "{:?}",
-            legacy.reasons
-        );
-    }
-
-    #[test]
-    fn property_scene_freezes_exact_local_and_ancestor_rect_clips() {
-        let mut fixture = general_property_scene_fixture();
-        let clip_id = ClipNodeId {
-            owner: fixture.outer,
-            role: ClipNodeRole::SelfClip,
-        };
-        fixture.properties.clips.insert(
-            clip_id,
-            crate::view::compositor::property_tree::ClipNode {
-                owner: fixture.outer,
-                parent: None,
-                geometry: ClipGeometry::LogicalScissor([7, 9, 31, 19]),
-                behavior: ClipBehavior::Replace,
-                generation: 1,
-            },
-        );
-        let subtree = fixture
-            .properties
-            .states
-            .keys()
-            .copied()
-            .filter(|&key| {
-                let mut cursor = Some(key);
-                while let Some(owner) = cursor {
-                    if owner == fixture.outer {
-                        return true;
-                    }
-                    cursor = fixture.arena.parent_of(owner);
-                }
-                false
-            })
-            .collect::<Vec<_>>();
-        for key in subtree {
-            let state = fixture.properties.states.get_mut(&key).unwrap();
-            state.paint.clip = Some(clip_id);
-            state.descendants.clip = Some(clip_id);
-        }
-        fixture.generations = PaintGenerationTracker::default();
-        fixture
-            .generations
-            .sync(&fixture.arena, &fixture.roots, &fixture.properties);
-        let base = plan_transform_property_scene_with_context(
-            &fixture.arena,
-            &fixture.roots,
-            &fixture.properties,
-            &fixture.generations,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect("exact logical rect clips are admitted");
-        assert!(property_scene_plan_is_sealed(&base));
-        let seal = base.property_scene_seal.as_ref().unwrap();
-        let inner = seal
-            .surfaces
-            .values()
-            .find(|contract| contract.id.owner == fixture.inner_a)
-            .unwrap();
-        assert_eq!(inner.ancestor_composite_clips.len(), 1);
-        assert_eq!(inner.resolved_composite_scissor, Some([7, 9, 31, 19]));
-
-        let mut ancestor = base.clone();
-        ancestor
-            .property_scene_seal
-            .as_mut()
-            .unwrap()
-            .surfaces
-            .values_mut()
-            .find(|contract| contract.id.owner == fixture.inner_a)
-            .unwrap()
-            .ancestor_composite_clips[0]
-            .logical_scissor = [8, 9, 31, 19];
-        assert!(!property_scene_plan_is_sealed(&ancestor));
-
-        let mut local = base.clone();
-        let outer = property_surface_mut(&mut local.steps, fixture.outer).unwrap();
-        let snapshot = outer
-            .raster_steps
-            .iter_mut()
-            .find_map(|step| match step {
-                PaintPlanStep::ArtifactSpan(span) => span.artifact.clip_nodes.first_mut(),
-                PaintPlanStep::RetainedSurface(_) => None,
-            })
-            .expect("outer artifact owns the exact local clip");
-        snapshot.logical_scissor[0] += 1;
-        assert!(!property_scene_plan_is_sealed(&local));
-    }
-
-    #[test]
-    fn property_scene_executor_emits_arbitrary_depth_forest_and_stages_one_transaction() {
-        let fixture = general_property_scene_fixture();
-        let plan = plan_transform_property_scene_with_context(
-            &fixture.arena,
-            &fixture.roots,
-            &fixture.properties,
-            &fixture.generations,
-            TransformSurfacePlanContext::default(),
-        )
-        .expect("sealed general property scene");
-        let terminal = plan
-            .property_scene_seal
-            .as_ref()
-            .unwrap()
-            .aggregate_opaque_order_span
-            .end;
-        let mut graph = FrameGraph::new();
-        let (ctx, _) = parent_context_with_clear(&mut graph, 220, 140, 1.0);
-        let mut viewport = Viewport::new();
-        let prepared =
-            super::super::prepare_retained_property_scene_from_pool(&viewport, &plan, &graph, &ctx)
-                .expect("multi-root arbitrary-depth property-scene preflight");
-        let outcome = super::super::emit_prepared_retained_property_scene(
-            &mut viewport,
-            prepared,
-            &mut graph,
-            ctx,
-        );
-        let (state, trace) = outcome.into_parts();
-        assert_eq!(trace.root_count, fixture.roots.len());
-        assert_eq!(trace.surface_count, 5);
-        assert_eq!(trace.reraster_count, 5);
-        assert_eq!(trace.reuse_count, 0);
-        assert_eq!(state.opaque_rect_order_for_test(), terminal);
-        assert_eq!(
-            graph
-                .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-                .len(),
-            5,
-            "every transform edge is applied exactly once during the initial raster"
-        );
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (0, Some(5))
-        );
-        viewport.finish_retained_surface_transaction(true);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (5, None)
-        );
-
-        let mut reuse_graph = FrameGraph::new();
-        let (reuse_ctx, _) = parent_context_with_clear(&mut reuse_graph, 220, 140, 1.0);
-        let reuse = super::super::build_retained_property_scene_with_forced_pool_for_test(
-            &mut viewport,
-            &plan,
-            &mut reuse_graph,
-            reuse_ctx,
-        )
-        .expect("identical scene reuses every compatible resident pair");
-        let (_, reuse_trace) = reuse.into_parts();
-        assert_eq!(reuse_trace.reraster_count, 0);
-        assert_eq!(reuse_trace.reuse_count, 5);
-        assert_eq!(
-            reuse_graph
-                .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-                .len(),
-            2,
-            "a reused forest composites only its two already-rasterized top-level surfaces"
-        );
-        viewport.finish_retained_surface_transaction(false);
-    }
-
-    #[test]
-    fn property_scene_context_mismatch_rejects_before_graph_or_pool_mutation() {
-        let fixture = general_property_scene_fixture();
-        let plan = plan_transform_property_scene_with_context(
-            &fixture.arena,
-            &fixture.roots,
-            &fixture.properties,
-            &fixture.generations,
-            TransformSurfacePlanContext::default(),
-        )
-        .unwrap();
-        let graph = FrameGraph::new();
-        let mut ctx = UiBuildContext::new(220, 140, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        ctx.push_scissor_rect(Some([1, 2, 30, 40]));
-        let graph_before = graph.build_state_snapshot_for_test();
-        let viewport = Viewport::new();
-        let transaction_before = viewport.retained_surface_transaction_shape_for_test();
-        let error = match super::super::prepare_retained_property_scene_from_pool(
-            &viewport, &plan, &graph, &ctx,
-        ) {
-            Ok(_) => panic!("mismatched live context cannot prepare the frozen scene"),
-            Err(error) => error,
-        };
-        assert_eq!(
-            error,
-            super::super::ForcedTransformSurfaceError::ContextMismatch
-        );
-        assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            transaction_before
-        );
-    }
-
-    fn exact_transform_child_isolation_fixture() -> (
-        NodeArena,
-        NodeKey,
-        NodeKey,
-        NodeKey,
-        NodeKey,
-        NodeKey,
-        PropertyTrees,
-        PaintGenerationTracker,
-    ) {
-        let (arena, root, before, child, descendant, after, _, _) =
-            nested_exact_transform_fixture();
-        {
-            let mut child_element =
-                crate::view::test_support::get_element_mut::<Element>(&arena, child);
-            child_element.set_resolved_transform_for_test(None);
-            child_element.set_opacity(0.5);
-        }
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[root]);
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[root], &properties);
-        (
-            arena,
-            root,
-            before,
-            child,
-            descendant,
-            after,
-            properties,
-            generations,
-        )
-    }
-
-    fn planning_only_nested_effect_fixture() -> (
-        NodeArena,
-        NodeKey,
-        NodeKey,
-        NodeKey,
-        PropertyTrees,
-        PaintGenerationTracker,
-    ) {
-        let (arena, root, _before, child, grandchild, _after, _, _) =
-            nested_exact_transform_fixture();
-        {
-            let mut root_element =
-                crate::view::test_support::get_element_mut::<Element>(&arena, root);
-            root_element.set_resolved_transform_for_test(None);
-            root_element.set_opacity(0.5);
-        }
-        {
-            let mut child_element =
-                crate::view::test_support::get_element_mut::<Element>(&arena, child);
-            child_element.set_resolved_transform_for_test(None);
-            child_element.set_opacity(0.0);
-        }
-        crate::view::test_support::get_element_mut::<Element>(&arena, grandchild).set_opacity(0.75);
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[root]);
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[root], &properties);
-        (arena, root, child, grandchild, properties, generations)
-    }
-
-    #[test]
-    fn property_effect_scaffold_freezes_nested_chain_and_opacity_zero_structure() {
-        let (arena, root, child, grandchild, properties, generations) =
-            planning_only_nested_effect_fixture();
-        let plan = plan_property_effect_scene_scaffold_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect("pure nested opacity forest must produce a planning seal");
-        assert!(plan.property_effect_scaffold_is_sealed_for_test());
-        assert!(plan.property_scene_transaction_witness().is_none());
-        let scaffold = plan
-            .property_scene_seal
-            .as_ref()
-            .and_then(|seal| seal.effect_scaffold.as_ref())
-            .expect("effect scaffold");
-        assert_eq!(
-            scaffold
-                .surfaces
-                .iter()
-                .map(|surface| surface.boundary.owner())
-                .collect::<Vec<_>>(),
-            vec![root, child, grandchild]
-        );
-        let PropertyEffectSurfaceKind::Isolation(child_surface) = &scaffold.surfaces[1].kind else {
-            panic!("child effect surface")
-        };
-        assert_eq!(child_surface.composite.opacity_bits, 0.0_f32.to_bits());
-        assert_eq!(child_surface.effect_chain.live_leaf_to_root.len(), 2);
-        assert_eq!(child_surface.effect_chain.detached_ancestors.len(), 1);
-        assert_eq!(child_surface.effect_chain.isolated_leaf.parent, None);
-        assert!(!child_surface.raster_identity.content.is_empty());
-        assert_eq!(child_surface.parent_opaque_cursor_delta, 0);
-        let PropertyEffectSurfaceKind::Isolation(parent_surface) = &scaffold.surfaces[0].kind
-        else {
-            panic!("parent effect surface")
-        };
-        assert_eq!(parent_surface.nested_dependencies.len(), 1);
-        assert_eq!(
-            parent_surface.nested_dependencies[0].child_opacity_bits,
-            0.0_f32.to_bits()
-        );
-    }
-
-    #[test]
-    fn property_effect_scene_materializes_pure_nested_opacity_forest() {
-        let (arena, root, child, grandchild, properties, generations) =
-            planning_only_nested_effect_fixture();
-        let plan = plan_property_effect_scene_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect("canonical nested opacity forest must materialize");
-        assert!(property_scene_plan_is_sealed(&plan));
-        let witness = plan
-            .property_scene_transaction_witness()
-            .expect("production effect scene transaction witness");
-        assert_eq!(witness.roots.len(), 1);
-        assert_eq!(witness.surfaces.len(), 3);
-        assert_eq!(
-            witness
-                .surfaces
-                .iter()
-                .map(|surface| (surface.boundary_root, surface.parent_surface))
-                .collect::<Vec<_>>(),
-            vec![(root, None), (child, Some(root)), (grandchild, Some(child))]
-        );
-        assert!(
-            witness.surfaces.iter().all(|surface| matches!(
-                surface.kind,
-                PropertySceneTransactionSurfaceKind::Effect(_)
-            ))
-        );
-        assert_eq!(plan.steps.len(), 1);
-        let PaintPlanStep::RetainedSurface(root_surface) = &plan.steps[0] else {
-            panic!("effect root must be a top-level retained surface")
-        };
-        assert!(matches!(root_surface.kind, SurfaceKind::NestedIsolation(_)));
-
-        let mut viewport = Viewport::new();
-        let mut graph = FrameGraph::new();
-        let ctx = parent_context_without_clear(&mut graph, 160, 120, 1.0);
-        let before = graph.build_state_snapshot_for_test();
-        let prepared_stamps = super::super::prepare_retained_property_scene_stamps_for_test(
-            &viewport, &plan, &graph, &ctx,
-        )
-        .expect("effect stamps are fully prepared before graph mutation");
-        assert_eq!(prepared_stamps.len(), 3);
-        assert!(prepared_stamps.iter().all(|stamp| {
-            stamp.identity.role == super::super::RetainedSurfaceRasterRole::PropertyEffect
-                && stamp.property_effect.is_some()
-        }));
-        let root_dependency = prepared_stamps[0]
-            .ordered_steps
-            .iter()
-            .find_map(|step| match step {
-                super::super::RetainedSurfaceRasterStepStamp::NestedSurface(dependency) => {
-                    Some(dependency)
-                }
-                super::super::RetainedSurfaceRasterStepStamp::ArtifactSpan(_) => None,
-                super::super::RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
-                | super::super::RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
-                | super::super::RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => None,
-            })
-            .expect("root stamp embeds the direct child composite dependency");
-        let super::super::RetainedSurfaceCompositeGeometryStamp::PropertyEffect {
-            opacity_bits,
-            effect_generation,
-            basis,
-            resolved_scissor,
-            ancestor_composite_clips,
-            ..
-        } = &root_dependency.child_composite_geometry
-        else {
-            panic!("dedicated property-effect composite dependency")
-        };
-        assert_eq!(*opacity_bits, 0.0_f32.to_bits());
-        assert_eq!(
-            *effect_generation,
-            properties.effects[&EffectNodeId(child)].generation
-        );
-        assert_eq!(
-            *basis,
-            super::super::compiler::PropertyEffectCompositeBasisStamp::ParentEffect(EffectNodeId(
-                root
-            ))
-        );
-        assert_eq!(*resolved_scissor, None);
-        assert!(ancestor_composite_clips.is_empty());
-        assert_eq!(graph.build_state_snapshot_for_test(), before);
-        let outcome = super::super::build_retained_property_scene_with_forced_pool_for_test(
-            &mut viewport,
-            &plan,
-            &mut graph,
-            ctx,
-        )
-        .expect("pure nested effect scene must preflight and emit");
-        let (state, trace) = outcome.into_parts();
-        assert_eq!(trace.root_count, 1);
-        assert_eq!(trace.surface_count, 3);
-        assert_eq!(trace.reraster_count, 3);
-        assert_eq!(
-            state.opaque_rect_order_for_test(),
-            0,
-            "nested opacity composites must not leak their raster-local opaque cursors"
-        );
-        let composites = graph
-            .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>();
-        assert_eq!(composites.len(), 3);
-        assert_eq!(
-            composites
-                .iter()
-                .map(|pass| pass.test_snapshot().opacity_bits)
-                .collect::<Vec<_>>(),
-            vec![0.75_f32.to_bits(), 0.0_f32.to_bits(), 0.5_f32.to_bits()],
-            "each effect opacity is applied once, on its own child-to-parent composite edge"
-        );
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (0, Some(3)),
-            "the arbitrary-depth forest stages one exact atomic transaction"
-        );
-        assert_ne!(graph.build_state_snapshot_for_test(), before);
-        viewport.finish_retained_surface_transaction(true);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (3, None)
-        );
-    }
-
-    #[test]
-    fn property_effect_transaction_rejects_forged_terminal_shape_basis_and_scissor() {
-        let (arena, root, child, grandchild, properties, generations) =
-            planning_only_nested_effect_fixture();
-        let plan = plan_property_effect_scene_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect("canonical effect transaction fixture");
-        let viewport = Viewport::new();
-        let mut graph = FrameGraph::new();
-        let ctx = parent_context_without_clear(&mut graph, 160, 120, 1.0);
-        let stamps = super::super::prepare_retained_property_scene_stamps_for_test(
-            &viewport, &plan, &graph, &ctx,
-        )
-        .expect("canonical prepared stamps");
-        let witness = plan
-            .property_scene_transaction_witness()
-            .expect("canonical effect witness");
-        let step_count = plan.steps.len();
-        let aggregate = witness.aggregate_opaque_order_span.clone();
-        assert!(
-            super::super::retained_surface_executor::RetainedPropertyEffectSceneTransactionStamp::new_for_test(
-                witness.clone(),
-                &stamps,
-                step_count,
-                aggregate.clone(),
-            )
-            .is_some()
-        );
-
-        let mut aggregate_drift = witness.clone();
-        aggregate_drift.aggregate_opaque_order_span.end += 1;
-        assert!(
-            super::super::retained_surface_executor::RetainedPropertyEffectSceneTransactionStamp::new_for_test(
-                aggregate_drift,
-                &stamps,
-                step_count,
-                aggregate.clone(),
-            )
-            .is_none(),
-            "the transaction must recompute and bind the actual opaque terminal"
-        );
-
-        let mut root_coverage_drift = witness.clone();
-        root_coverage_drift.roots[0].top_level_step_span.end += 1;
-        assert!(
-            super::super::retained_surface_executor::RetainedPropertyEffectSceneTransactionStamp::new_for_test(
-                root_coverage_drift,
-                &stamps,
-                step_count,
-                aggregate.clone(),
-            )
-            .is_none(),
-            "root spans must cover exactly the prepared plan step count"
-        );
-
-        let mut transform_transform_effect = witness.clone();
-        for (surface, owner) in transform_transform_effect
-            .surfaces
-            .iter_mut()
-            .take(2)
-            .zip([root, child])
-        {
-            surface.kind = PropertySceneTransactionSurfaceKind::Transform(TransformNodeId(owner));
-            surface.transform_viewport_matrix_bits =
-                Some(glam::Mat4::IDENTITY.to_cols_array().map(f32::to_bits));
-            surface.effect_composite = None;
-        }
-        assert_eq!(
-            transform_transform_effect.surfaces[2].boundary_root,
-            grandchild
-        );
-        assert!(
-            super::super::retained_surface_executor::RetainedPropertyEffectSceneTransactionStamp::new_for_test(
-                transform_transform_effect,
-                &stamps,
-                step_count,
-                aggregate.clone(),
-            )
-            .is_none(),
-            "effect transaction admission must reject Transform -> Transform -> Effect"
-        );
-
-        let mut basis_drift = stamps.clone();
-        let dependency = basis_drift[0]
-            .ordered_steps
-            .iter_mut()
-            .find_map(|step| match step {
-                super::super::RetainedSurfaceRasterStepStamp::NestedSurface(dependency) => {
-                    Some(dependency)
-                }
-                super::super::RetainedSurfaceRasterStepStamp::ArtifactSpan(_) => None,
-                super::super::RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
-                | super::super::RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
-                | super::super::RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => None,
-            })
-            .expect("root effect embeds its child");
-        let super::super::RetainedSurfaceCompositeGeometryStamp::PropertyEffect { basis, .. } =
-            &mut dependency.child_composite_geometry
-        else {
-            panic!("effect dependency geometry")
-        };
-        *basis = super::super::compiler::PropertyEffectCompositeBasisStamp::ParentEffect(
-            EffectNodeId(grandchild),
-        );
-        assert!(
-            super::super::retained_surface_executor::RetainedPropertyEffectSceneTransactionStamp::new_for_test(
-                witness.clone(),
-                &basis_drift,
-                step_count,
-                aggregate.clone(),
-            )
-            .is_none(),
-            "child composite basis must match the actual parent witness"
-        );
-
-        let mut scissor_drift = stamps.clone();
-        let dependency = scissor_drift[0]
-            .ordered_steps
-            .iter_mut()
-            .find_map(|step| match step {
-                super::super::RetainedSurfaceRasterStepStamp::NestedSurface(dependency) => {
-                    Some(dependency)
-                }
-                super::super::RetainedSurfaceRasterStepStamp::ArtifactSpan(_) => None,
-                super::super::RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
-                | super::super::RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
-                | super::super::RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => None,
-            })
-            .expect("root effect embeds its child");
-        let super::super::RetainedSurfaceCompositeGeometryStamp::PropertyEffect {
-            resolved_scissor,
-            ..
-        } = &mut dependency.child_composite_geometry
-        else {
-            panic!("effect dependency geometry")
-        };
-        *resolved_scissor = Some([0, 0, 1, 1]);
-        assert!(
-            super::super::retained_surface_executor::RetainedPropertyEffectSceneTransactionStamp::new_for_test(
-                witness,
-                &scissor_drift,
-                step_count,
-                aggregate,
-            )
-            .is_none(),
-            "resolved scissor must match the child surface witness exactly"
-        );
-    }
-
-    #[test]
-    fn property_effect_scene_mismatch_rejects_before_graph_pool_or_pending_mutation() {
-        let (arena, root, _, _, properties, generations) = planning_only_nested_effect_fixture();
-        let plan = plan_property_effect_scene_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect("canonical property effect scene");
-
-        let mut viewport = Viewport::new();
-        let mut baseline_graph = FrameGraph::new();
-        let baseline_ctx = parent_context_without_clear(&mut baseline_graph, 160, 120, 1.0);
-        super::super::build_retained_property_scene_with_forced_pool_for_test(
-            &mut viewport,
-            &plan,
-            &mut baseline_graph,
-            baseline_ctx,
-        )
-        .expect("baseline transaction");
-        viewport.finish_retained_surface_transaction(true);
-
-        let mut mismatch = plan.clone();
-        let PaintPlanStep::RetainedSurface(root_surface) = &mut mismatch.steps[0] else {
-            panic!("effect root surface")
-        };
-        let SurfaceKind::NestedIsolation(root_effect) = &mut root_surface.kind else {
-            panic!("effect root kind")
-        };
-        root_effect
-            .property_scene
-            .as_mut()
-            .expect("property contract")
-            .composite
-            .effect_generation += 1;
-
-        let graph = FrameGraph::new();
-        let ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let graph_before = graph.build_state_snapshot_for_test();
-        let pool_before = viewport.retained_surface_transaction_shape_for_test();
-        let error = match super::super::prepare_retained_property_scene_from_pool(
-            &viewport, &mismatch, &graph, &ctx,
-        ) {
-            Ok(_) => panic!("drifted effect contract cannot mint a pre-clear token"),
-            Err(error) => error,
-        };
-        assert!(matches!(
-            error,
-            super::super::ForcedTransformSurfaceError::PlanShape
-                | super::super::ForcedTransformSurfaceError::GeometryContract
-        ));
-        assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            pool_before,
-            "failed preparation preserves both resident pool and pending transaction"
-        );
-    }
-
-    #[test]
-    fn property_effect_scene_child_opacity_reuses_child_and_rerasterizes_direct_parent() {
-        let (arena, root, child, grandchild, mut properties, mut generations) =
-            planning_only_nested_effect_fixture();
-        let build_plan = |properties: &PropertyTrees, generations: &PaintGenerationTracker| {
-            plan_property_effect_scene_with_context(
-                &arena,
-                &[root],
-                properties,
-                generations,
-                TransformSurfacePlanContext::new([0.0, 0.0], None),
-            )
-            .expect("canonical effect scene")
-        };
-        let baseline = build_plan(&properties, &generations);
-        let mut viewport = Viewport::new();
-        let mut baseline_graph = FrameGraph::new();
-        let baseline_ctx = parent_context_without_clear(&mut baseline_graph, 160, 120, 1.0);
-        super::super::build_retained_property_scene_with_forced_pool_for_test(
-            &mut viewport,
-            &baseline,
-            &mut baseline_graph,
-            baseline_ctx,
-        )
-        .expect("baseline effect transaction");
-        viewport.finish_retained_surface_transaction(true);
-
-        crate::view::test_support::get_element_mut::<Element>(&arena, child).set_opacity(0.25);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let changed = build_plan(&properties, &generations);
-        let mut changed_graph = FrameGraph::new();
-        let changed_ctx = parent_context_without_clear(&mut changed_graph, 160, 120, 1.0);
-        let changed = super::super::build_retained_property_scene_with_forced_pool_for_test(
-            &mut viewport,
-            &changed,
-            &mut changed_graph,
-            changed_ctx,
-        )
-        .expect("opacity-only effect transaction");
-        let (_, trace) = changed.into_parts();
-        let actions = trace
-            .surfaces
-            .iter()
-            .map(|surface| (surface.boundary_root, surface.action))
-            .collect::<FxHashMap<_, _>>();
-        assert_eq!(
-            actions[&child],
-            super::super::RetainedSurfaceCompileAction::Reuse,
-            "own opacity/effect generation are excluded from the child's own raster stamp"
-        );
-        assert_eq!(
-            actions[&grandchild],
-            super::super::RetainedSurfaceCompileAction::Reuse
-        );
-        assert_eq!(
-            actions[&root],
-            super::super::RetainedSurfaceCompileAction::Reraster,
-            "direct parent dependency includes child opacity and effect generation"
-        );
-        assert_eq!(trace.reraster_count, 1);
-        assert_eq!(trace.reuse_count, 2);
-        viewport.finish_retained_surface_transaction(true);
-
-        crate::view::test_support::get_element_mut::<Element>(&arena, grandchild).set_opacity(0.6);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let transitive = build_plan(&properties, &generations);
-        let mut transitive_graph = FrameGraph::new();
-        let transitive_ctx = parent_context_without_clear(&mut transitive_graph, 160, 120, 1.0);
-        let transitive = super::super::build_retained_property_scene_with_forced_pool_for_test(
-            &mut viewport,
-            &transitive,
-            &mut transitive_graph,
-            transitive_ctx,
-        )
-        .expect("grandchild opacity-only transaction");
-        let (_, trace) = transitive.into_parts();
-        let actions = trace
-            .surfaces
-            .iter()
-            .map(|surface| (surface.boundary_root, surface.action))
-            .collect::<FxHashMap<_, _>>();
-        assert_eq!(
-            actions[&grandchild],
-            super::super::RetainedSurfaceCompileAction::Reuse
-        );
-        assert_eq!(
-            actions[&child],
-            super::super::RetainedSurfaceCompileAction::Reraster
-        );
-        assert_eq!(
-            actions[&root],
-            super::super::RetainedSurfaceCompileAction::Reraster,
-            "the child's changed full stamp propagates into its own parent dependency"
-        );
-        assert_eq!(trace.reraster_count, 2);
-        assert_eq!(trace.reuse_count, 1);
-    }
-
-    #[test]
-    fn property_effect_scene_hidden_content_reraster_then_nonzero_reuses_child() {
-        let (arena, root, child, grandchild, mut properties, mut generations) =
-            planning_only_nested_effect_fixture();
-        let build_plan = |properties: &PropertyTrees, generations: &PaintGenerationTracker| {
-            plan_property_effect_scene_with_context(
-                &arena,
-                &[root],
-                properties,
-                generations,
-                TransformSurfacePlanContext::new([0.0, 0.0], None),
-            )
-            .expect("canonical hidden effect scene")
-        };
-        let baseline = build_plan(&properties, &generations);
-        let mut viewport = Viewport::new();
-        let mut baseline_graph = FrameGraph::new();
-        let baseline_ctx = parent_context_without_clear(&mut baseline_graph, 160, 120, 1.0);
-        super::super::build_retained_property_scene_with_forced_pool_for_test(
-            &mut viewport,
-            &baseline,
-            &mut baseline_graph,
-            baseline_ctx,
-        )
-        .expect("hidden baseline");
-        viewport.finish_retained_surface_transaction(true);
-
-        let mut style = Style::new();
-        style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::rgb(12, 180, 90)),
-        );
-        crate::view::test_support::get_element_mut::<Element>(&arena, child).apply_style(style);
-        crate::view::test_support::get_element_mut::<Element>(&arena, child).set_opacity(0.0);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let hidden_changed = build_plan(&properties, &generations);
-        let mut hidden_graph = FrameGraph::new();
-        let hidden_ctx = parent_context_without_clear(&mut hidden_graph, 160, 120, 1.0);
-        let hidden = super::super::build_retained_property_scene_with_forced_pool_for_test(
-            &mut viewport,
-            &hidden_changed,
-            &mut hidden_graph,
-            hidden_ctx,
-        )
-        .expect("hidden content change must remain structurally paintable");
-        let (_, hidden_trace) = hidden.into_parts();
-        let hidden_actions = hidden_trace
-            .surfaces
-            .iter()
-            .map(|surface| (surface.boundary_root, surface.action))
-            .collect::<FxHashMap<_, _>>();
-        assert_eq!(
-            hidden_actions[&child],
-            super::super::RetainedSurfaceCompileAction::Reraster
-        );
-        assert_eq!(
-            hidden_actions[&root],
-            super::super::RetainedSurfaceCompileAction::Reraster
-        );
-        assert_eq!(
-            hidden_actions[&grandchild],
-            super::super::RetainedSurfaceCompileAction::Reuse
-        );
-        viewport.finish_retained_surface_transaction(true);
-
-        crate::view::test_support::get_element_mut::<Element>(&arena, child).set_opacity(0.4);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let revealed = build_plan(&properties, &generations);
-        let mut revealed_graph = FrameGraph::new();
-        let revealed_ctx = parent_context_without_clear(&mut revealed_graph, 160, 120, 1.0);
-        let revealed = super::super::build_retained_property_scene_with_forced_pool_for_test(
-            &mut viewport,
-            &revealed,
-            &mut revealed_graph,
-            revealed_ctx,
-        )
-        .expect("revealing updated hidden content");
-        let (_, revealed_trace) = revealed.into_parts();
-        let revealed_actions = revealed_trace
-            .surfaces
-            .iter()
-            .map(|surface| (surface.boundary_root, surface.action))
-            .collect::<FxHashMap<_, _>>();
-        assert_eq!(
-            revealed_actions[&child],
-            super::super::RetainedSurfaceCompileAction::Reuse,
-            "0->nonzero changes only composite authority after hidden content was rerastered"
-        );
-        assert_eq!(
-            revealed_actions[&root],
-            super::super::RetainedSurfaceCompileAction::Reraster
-        );
-        assert_eq!(
-            revealed_actions[&grandchild],
-            super::super::RetainedSurfaceCompileAction::Reuse
-        );
-    }
-
-    #[test]
-    fn property_effect_scene_executes_only_proven_mixed_transform_effect_shape() {
-        let (arena, root, _, child, _, _, properties, generations) =
-            exact_transform_child_isolation_fixture();
-        let plan = plan_property_effect_scene_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect("proven mixed transform/effect scene");
-        let witness = plan
-            .property_scene_transaction_witness()
-            .expect("mixed transaction witness");
-        assert!(matches!(
-            witness.surfaces.as_slice(),
-            [
-                PropertySceneTransactionSurfaceWitness {
-                    kind: PropertySceneTransactionSurfaceKind::Transform(_),
-                    parent_surface: None,
-                    ..
-                },
-                PropertySceneTransactionSurfaceWitness {
-                    kind: PropertySceneTransactionSurfaceKind::Effect(_),
-                    parent_surface: Some(parent),
-                    boundary_root,
-                    ..
-                }
-            ] if *parent == root && *boundary_root == child
-        ));
-
-        let mut viewport = Viewport::new();
-        let mut graph = FrameGraph::new();
-        let ctx = parent_context_without_clear(&mut graph, 160, 120, 1.0);
-        let outcome = super::super::build_retained_property_scene_with_forced_pool_for_test(
-            &mut viewport,
-            &plan,
-            &mut graph,
-            ctx,
-        )
-        .expect("mixed scene preflight and infallible emit");
-        let (state, trace) = outcome.into_parts();
-        assert_eq!(trace.surface_count, 2);
-        assert_eq!(trace.reraster_count, 2);
-        assert_eq!(
-            state.opaque_rect_order_for_test(),
-            plan.property_scene_seal
-                .as_ref()
-                .expect("seal")
-                .aggregate_opaque_order_span
-                .end
-        );
-        let composites = graph
-            .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>();
-        assert_eq!(composites.len(), 1);
-        assert_eq!(
-            composites[0].test_snapshot().opacity_bits,
-            0.5_f32.to_bits(),
-            "the child effect applies opacity exactly once"
-        );
-        assert_eq!(
-            graph
-                .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-                .len(),
-            1,
-            "the transform root composites exactly once"
-        );
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (0, Some(2))
-        );
-    }
-
-    #[test]
-    fn property_effect_scaffold_rejects_colocated_and_unproven_interleave() {
-        let (arena, root, mut properties, mut generations) = exact_transform_fixture();
-        crate::view::test_support::get_element_mut::<Element>(&arena, root).set_opacity(0.5);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let error = plan_property_effect_scene_scaffold_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect_err("co-located transform/effect must fail closed");
-        assert!(
-            error
-                .reasons
-                .contains(&FramePaintPlanRejection::CoLocatedTransformEffect(root))
-        );
-
-        let (arena, root, child, _, mut properties, mut generations) =
-            planning_only_nested_effect_fixture();
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                3.0, 0.0, 0.0,
-            ))));
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let error = plan_property_effect_scene_scaffold_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect_err("unproven effect/transform interleave must fail closed");
-        assert!(error.reasons.iter().any(|reason| matches!(
-            reason,
-            FramePaintPlanRejection::CoLocatedTransformEffect(_)
-                | FramePaintPlanRejection::UnsupportedPropertyInterleave(_)
-        )));
-    }
-
-    #[test]
-    fn property_effect_scaffold_admits_only_proven_transform_direct_effect_mapping() {
-        let (arena, root, _, child, _, _, properties, generations) =
-            exact_transform_child_isolation_fixture();
-        let plan = plan_property_effect_scene_scaffold_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect("existing Transform -> direct Effect coordinate contract is proven");
-        let scaffold = plan
-            .property_scene_seal
-            .as_ref()
-            .and_then(|seal| seal.effect_scaffold.as_ref())
-            .expect("effect scaffold");
-        assert_eq!(scaffold.surfaces.len(), 2);
-        let PropertyEffectSurfaceKind::Transform {
-            nested_effect_dependencies,
-            ..
-        } = &scaffold.surfaces[0].kind
-        else {
-            panic!("transform parent")
-        };
-        assert_eq!(nested_effect_dependencies.len(), 1);
-        assert_eq!(
-            nested_effect_dependencies[0].child_effect,
-            EffectNodeId(child)
-        );
-        assert_eq!(
-            nested_effect_dependencies[0].child_opacity_bits,
-            0.5_f32.to_bits()
-        );
-        let PropertyEffectSurfaceKind::Isolation(isolation) = &scaffold.surfaces[1].kind else {
-            panic!("effect child")
-        };
-        assert!(matches!(
-            isolation.composite.basis,
-            PropertyIsolationCompositeBasis::ParentTransform { transform, .. }
-                if transform == TransformNodeId(root)
-        ));
-        assert_eq!(isolation.parent_opaque_cursor_delta, 0);
-    }
-
-    #[test]
-    fn property_effect_scaffold_rejects_mixed_wrapper_multiroot_and_non_affine_shapes() {
-        let (mut arena, root, _, _, _, _, mut properties, mut generations) =
-            exact_transform_child_isolation_fixture();
-        let wrapper = commit_element(
-            &mut arena,
-            Box::new(Element::new_with_id(0xea_3001, 0.0, 0.0, 160.0, 120.0)),
-        );
-        arena.set_parent(root, Some(wrapper));
-        arena.set_children(wrapper, vec![root]);
-        properties.sync(&arena, &[wrapper]);
-        generations.sync(&arena, &[wrapper], &properties);
-        let error = plan_property_effect_scene_scaffold_with_context(
-            &arena,
-            &[wrapper],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect_err("non-root transform wrapper is outside proven mixed shape");
-        assert!(error.reasons.iter().any(|reason| matches!(
-            reason,
-            FramePaintPlanRejection::UnsupportedPropertyInterleave(_)
-        )));
-
-        let (mut arena, root, _, _, _, _, mut properties, mut generations) =
-            exact_transform_child_isolation_fixture();
-        let side_root = commit_element(
-            &mut arena,
-            Box::new(Element::new_with_id(0xea_3002, 140.0, 0.0, 8.0, 8.0)),
-        );
-        let roots = [root, side_root];
-        properties.sync(&arena, &roots);
-        generations.sync(&arena, &roots, &properties);
-        let error = plan_property_effect_scene_scaffold_with_context(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect_err("mixed property scaffold is single-root only");
-        assert!(error.reasons.iter().any(|reason| matches!(
-            reason,
-            FramePaintPlanRejection::UnsupportedPropertyInterleave(_)
-        )));
-
-        let (arena, root, _, _, _, _, mut properties, generations) =
-            exact_transform_child_isolation_fixture();
-        properties
-            .transforms
-            .get_mut(&TransformNodeId(root))
-            .expect("transform")
-            .viewport_matrix = glam::Mat4::from_cols_array(&[
-            1.0, 0.0, 0.0, 0.25, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-        ]);
-        let error = plan_property_effect_scene_scaffold_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect_err("finite perspective matrix is not the proven affine contract");
-        assert!(error.reasons.iter().any(|reason| matches!(
-            reason,
-            FramePaintPlanRejection::UnsupportedPropertyInterleave(_)
-        )));
-    }
-
-    #[test]
-    fn property_effect_scaffold_places_local_and_ancestor_clips_exactly() {
-        let (arena, root, _child, _, mut properties, mut generations) =
-            planning_only_nested_effect_fixture();
-        let clip_id = ClipNodeId {
-            owner: root,
-            role: ClipNodeRole::SelfClip,
-        };
-        properties.clips.insert(
-            clip_id,
-            crate::view::compositor::property_tree::ClipNode {
-                owner: root,
-                parent: None,
-                geometry: ClipGeometry::LogicalScissor([2, 3, 20, 18]),
-                behavior: ClipBehavior::Replace,
-                generation: 41,
-            },
-        );
-        let state_keys = properties.states.keys().copied().collect::<Vec<_>>();
-        for key in state_keys {
-            let state = properties.states.get_mut(&key).expect("state");
-            state.paint.clip = Some(clip_id);
-            state.descendants.clip = Some(clip_id);
-        }
-        generations.sync(&arena, &[root], &properties);
-        let plan = plan_property_effect_scene_scaffold_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect("exact clip placement scaffold");
-        let scaffold = plan
-            .property_scene_seal
-            .as_ref()
-            .and_then(|seal| seal.effect_scaffold.as_ref())
-            .expect("effect scaffold");
-        let PropertyEffectSurfaceKind::Isolation(root_surface) = &scaffold.surfaces[0].kind else {
-            panic!("root isolation")
-        };
-        let PropertyEffectSurfaceKind::Isolation(child_surface) = &scaffold.surfaces[1].kind else {
-            panic!("child isolation")
-        };
-        assert_eq!(root_surface.local_raster_clips[0].id, clip_id);
-        assert!(root_surface.ancestor_composite_clips.is_empty());
-        assert!(child_surface.local_raster_clips.is_empty());
-        assert_eq!(child_surface.ancestor_composite_clips[0].id, clip_id);
-        assert_eq!(
-            child_surface.composite.resolved_scissor,
-            Some([2, 3, 20, 18])
-        );
-
-        let production = plan_property_effect_scene_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect("exact clip split must materialize");
-        let PaintPlanStep::RetainedSurface(production_root) = &production.steps[0] else {
-            panic!("root effect surface")
-        };
-        let root_local_clip = production_root
-            .raster_steps
-            .iter()
-            .find_map(|step| match step {
-                PaintPlanStep::ArtifactSpan(span) => span.artifact.clip_nodes.first(),
-                PaintPlanStep::RetainedSurface(_) => None,
-            })
-            .expect("root raster keeps its local clip");
-        assert_eq!(root_local_clip.id, clip_id);
-        assert_eq!(root_local_clip.parent, None);
-        let mut viewport = Viewport::new();
-        let mut graph = FrameGraph::new();
-        let ctx = parent_context_without_clear(&mut graph, 160, 120, 1.0);
-        super::super::build_retained_property_scene_with_forced_pool_for_test(
-            &mut viewport,
-            &production,
-            &mut graph,
-            ctx,
-        )
-        .expect("clip-bearing effect scene preflight and emit");
-        let composite_scissors = graph
-            .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>()
-            .into_iter()
-            .map(|pass| pass.test_snapshot().effective_scissor_rect)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            composite_scissors,
-            vec![Some([2, 3, 20, 18]), Some([2, 3, 20, 18]), None],
-            "inherited clip belongs on descendant composite edges, not root raster composite"
-        );
-
-        let mut clip_drift = plan.clone();
-        let scaffold = clip_drift
-            .property_scene_seal
-            .as_mut()
-            .and_then(|seal| seal.effect_scaffold.as_mut())
-            .expect("effect scaffold");
-        let PropertyEffectSurfaceKind::Isolation(root_surface) = &mut scaffold.surfaces[0].kind
-        else {
-            panic!("root isolation")
-        };
-        root_surface.local_raster_clips[0].generation += 1;
-        assert!(!property_scene_plan_is_sealed(&clip_drift));
-
-        let mut inherited_clip_erasure = plan.clone();
-        let scaffold = inherited_clip_erasure
-            .property_scene_seal
-            .as_mut()
-            .and_then(|seal| seal.effect_scaffold.as_mut())
-            .expect("effect scaffold");
-        for surfaces in [&mut scaffold.surfaces, &mut scaffold.planned_surfaces] {
-            let PropertyEffectSurfaceKind::Isolation(child_surface) = &mut surfaces[1].kind else {
-                panic!("child isolation")
-            };
-            child_surface.ancestor_composite_clips.clear();
-            child_surface.composite.resolved_scissor = None;
-        }
-        assert!(!property_scene_plan_is_sealed(&inherited_clip_erasure));
-
-        let mut local_parent_drift = plan.clone();
-        let scaffold = local_parent_drift
-            .property_scene_seal
-            .as_mut()
-            .and_then(|seal| seal.effect_scaffold.as_mut())
-            .expect("effect scaffold");
-        for surfaces in [&mut scaffold.surfaces, &mut scaffold.planned_surfaces] {
-            let PropertyEffectSurfaceKind::Isolation(root_surface) = &mut surfaces[0].kind else {
-                panic!("root isolation")
-            };
-            root_surface.local_raster_clips[0].parent = Some(clip_id);
-            root_surface.raster_identity.local_raster_clips[0].parent = Some(clip_id);
-        }
-        assert!(!property_scene_plan_is_sealed(&local_parent_drift));
-
-        let mut forest_terminal_drift = plan.clone();
-        let scaffold = forest_terminal_drift
-            .property_scene_seal
-            .as_mut()
-            .and_then(|seal| seal.effect_scaffold.as_mut())
-            .expect("effect scaffold");
-        for forest in [&mut scaffold.clip_forest, &mut scaffold.planned_clip_forest] {
-            forest.nodes[0].parent = Some(forest.nodes[0].id);
-        }
-        assert!(!property_scene_plan_is_sealed(&forest_terminal_drift));
-
-        let mut role_behavior_drift = plan.clone();
-        let scaffold = role_behavior_drift
-            .property_scene_seal
-            .as_mut()
-            .and_then(|seal| seal.effect_scaffold.as_mut())
-            .expect("effect scaffold");
-        for forest in [&mut scaffold.clip_forest, &mut scaffold.planned_clip_forest] {
-            forest.nodes[0].behavior = ClipBehavior::Intersect;
-        }
-        for surfaces in [&mut scaffold.surfaces, &mut scaffold.planned_surfaces] {
-            let PropertyEffectSurfaceKind::Isolation(root_surface) = &mut surfaces[0].kind else {
-                panic!("root isolation")
-            };
-            root_surface.local_raster_clips[0].behavior = ClipBehavior::Intersect;
-            root_surface.raster_identity.local_raster_clips[0].behavior = ClipBehavior::Intersect;
-        }
-        assert!(!property_scene_plan_is_sealed(&role_behavior_drift));
-    }
-
-    #[test]
-    fn property_effect_scaffold_rejects_clip_role_behavior_mismatch_at_admission() {
-        for (role, behavior) in [
-            (ClipNodeRole::SelfClip, ClipBehavior::Intersect),
-            (ClipNodeRole::ContentsClip, ClipBehavior::Replace),
-        ] {
-            let (arena, root, _, _, mut properties, generations) =
-                planning_only_nested_effect_fixture();
-            let clip_id = ClipNodeId { owner: root, role };
-            properties.clips.insert(
-                clip_id,
-                crate::view::compositor::property_tree::ClipNode {
-                    owner: root,
-                    parent: None,
-                    geometry: ClipGeometry::LogicalScissor([2, 3, 20, 18]),
-                    behavior,
-                    generation: 41,
-                },
-            );
-            let state_keys = properties.states.keys().copied().collect::<Vec<_>>();
-            for key in state_keys {
-                let state = properties.states.get_mut(&key).expect("state");
-                if key == root && role == ClipNodeRole::ContentsClip {
-                    state.paint.clip = None;
-                } else {
-                    state.paint.clip = Some(clip_id);
-                }
-                state.descendants.clip = Some(clip_id);
-            }
-            let error = plan_property_effect_scene_scaffold_with_context(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                TransformSurfacePlanContext::new([0.0, 0.0], None),
-            )
-            .expect_err("clip role and behavior pairing must be exact");
-            assert!(
-                error
-                    .reasons
-                    .contains(&FramePaintPlanRejection::InvalidClipChain(root))
-            );
-        }
-    }
-
-    #[test]
-    fn property_effect_scaffold_rejects_stale_live_generation_fingerprint() {
-        let (arena, root, _, _, properties, generations) = planning_only_nested_effect_fixture();
-        let mut style = Style::new();
-        style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::rgb(210, 30, 70)),
-        );
-        crate::view::test_support::get_element_mut::<Element>(&arena, root).apply_style(style);
-        assert!(!generations.matches_live_snapshot(&arena, &[root], &properties));
-        let error = plan_property_effect_scene_scaffold_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect_err("stale generations cannot mint an artifact-input fingerprint");
-        assert_eq!(
-            error.reasons,
-            vec![FramePaintPlanRejection::InvalidPropertyScene]
-        );
-    }
-
-    #[test]
-    fn property_effect_scaffold_seal_rejects_effect_clip_root_and_dependency_drift() {
-        let (arena, root, _, _, properties, generations) = planning_only_nested_effect_fixture();
-        let build = || {
-            plan_property_effect_scene_scaffold_with_context(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                TransformSurfacePlanContext::new([0.0, 0.0], None),
-            )
-            .expect("sealed scaffold")
-        };
-        let mut effect_drift = build();
-        let scaffold = effect_drift
-            .property_scene_seal
-            .as_mut()
-            .and_then(|seal| seal.effect_scaffold.as_mut())
-            .expect("scaffold");
-        let PropertyEffectSurfaceKind::Isolation(effect) = &mut scaffold.surfaces[1].kind else {
-            panic!("effect")
-        };
-        effect.composite.effect_generation += 1;
-        assert!(!property_scene_plan_is_sealed(&effect_drift));
-
-        let mut reparent_drift = build();
-        let scaffold = reparent_drift
-            .property_scene_seal
-            .as_mut()
-            .and_then(|seal| seal.effect_scaffold.as_mut())
-            .expect("scaffold");
-        let PropertyEffectSurfaceKind::Isolation(effect) = &mut scaffold.surfaces[1].kind else {
-            panic!("effect")
-        };
-        effect.effect_chain.live_leaf_to_root[0].parent = None;
-        assert!(!property_scene_plan_is_sealed(&reparent_drift));
-
-        let mut ancestor_snapshot_drift = build();
-        let scaffold = ancestor_snapshot_drift
-            .property_scene_seal
-            .as_mut()
-            .and_then(|seal| seal.effect_scaffold.as_mut())
-            .expect("scaffold");
-        for surfaces in [&mut scaffold.surfaces, &mut scaffold.planned_surfaces] {
-            let PropertyEffectSurfaceKind::Isolation(effect) = &mut surfaces[2].kind else {
-                panic!("grandchild effect")
-            };
-            effect.effect_chain.live_leaf_to_root[2].opacity = 0.625;
-            effect.effect_chain.live_leaf_to_root[2].generation += 1;
-            effect.effect_chain.detached_ancestors[1].opacity = 0.625;
-            effect.effect_chain.detached_ancestors[1].generation += 1;
-        }
-        assert!(!property_scene_plan_is_sealed(&ancestor_snapshot_drift));
-
-        let mut child_content_drift = build();
-        let scaffold = child_content_drift
-            .property_scene_seal
-            .as_mut()
-            .and_then(|seal| seal.effect_scaffold.as_mut())
-            .expect("scaffold");
-        for surfaces in [&mut scaffold.surfaces, &mut scaffold.planned_surfaces] {
-            let PropertyEffectSurfaceKind::Isolation(effect) = &mut surfaces[1].kind else {
-                panic!("child effect")
-            };
-            effect.raster_identity.content[0].self_paint_revision += 1;
-        }
-        assert!(!property_scene_plan_is_sealed(&child_content_drift));
-
-        let mut root_content_topology_drift = build();
-        let scaffold = root_content_topology_drift
-            .property_scene_seal
-            .as_mut()
-            .and_then(|seal| seal.effect_scaffold.as_mut())
-            .expect("scaffold");
-        for surfaces in [&mut scaffold.surfaces, &mut scaffold.planned_surfaces] {
-            let PropertyEffectSurfaceKind::Isolation(effect) = &mut surfaces[0].kind else {
-                panic!("root effect")
-            };
-            assert!(effect.raster_identity.content.len() > 1);
-            effect.raster_identity.content[1].parent = None;
-        }
-        assert!(!property_scene_plan_is_sealed(&root_content_topology_drift));
-
-        let mut dependency_drift = build();
-        let scaffold = dependency_drift
-            .property_scene_seal
-            .as_mut()
-            .and_then(|seal| seal.effect_scaffold.as_mut())
-            .expect("scaffold");
-        let PropertyEffectSurfaceKind::Isolation(effect) = &mut scaffold.surfaces[0].kind else {
-            panic!("effect")
-        };
-        effect.nested_dependencies[0].child_opacity_bits ^= 1;
-        assert!(!property_scene_plan_is_sealed(&dependency_drift));
-
-        let mut root_drift = build();
-        root_drift
-            .property_scene_seal
-            .as_mut()
-            .and_then(|seal| seal.effect_scaffold.as_mut())
-            .expect("scaffold")
-            .roots[0]
-            .boundary_ordinal_span = 1..3;
-        assert!(!property_scene_plan_is_sealed(&root_drift));
-
-        let mut context_drift = build();
-        context_drift
-            .property_scene_seal
-            .as_mut()
-            .expect("seal")
-            .context = TransformSurfacePlanContext::new([9.0, 0.0], None);
-        assert!(!property_scene_plan_is_sealed(&context_drift));
-
-        let mut outer_scissor_drift = build();
-        outer_scissor_drift
-            .property_scene_seal
-            .as_mut()
-            .expect("seal")
-            .outer_scissor_rect = Some([1, 2, 3, 4]);
-        assert!(!property_scene_plan_is_sealed(&outer_scissor_drift));
-
-        let mut resolved_scissor_drift = build();
-        let scaffold = resolved_scissor_drift
-            .property_scene_seal
-            .as_mut()
-            .and_then(|seal| seal.effect_scaffold.as_mut())
-            .expect("scaffold");
-        let PropertyEffectSurfaceKind::Isolation(effect) = &mut scaffold.surfaces[0].kind else {
-            panic!("effect")
-        };
-        effect.composite.resolved_scissor = Some([1, 2, 3, 4]);
-        assert!(!property_scene_plan_is_sealed(&resolved_scissor_drift));
-    }
-
-    #[test]
-    fn property_effect_scaffold_preserves_mixed_root_and_boundary_dfs_order() {
-        let (mut arena, first_root, _, _, _, _) = planning_only_nested_effect_fixture();
-        let mut second = Element::new_with_id(0xea_2001, 120.0, 4.0, 12.0, 9.0);
-        second.set_opacity(0.25);
-        let second_root = commit_element(&mut arena, Box::new(second));
-        let neutral_root = commit_element(
-            &mut arena,
-            Box::new(Element::new_with_id(0xea_2002, 138.0, 4.0, 8.0, 8.0)),
-        );
-        let constraints = LayoutConstraints {
-            max_width: 160.0,
-            max_height: 120.0,
-            viewport_width: 160.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(160.0),
-            percent_base_height: Some(120.0),
-        };
-        for (root, x) in [(second_root, 120.0), (neutral_root, 138.0)] {
-            measure_and_place(
-                &mut arena,
-                root,
-                constraints,
-                LayoutPlacement {
-                    parent_x: x,
-                    parent_y: 4.0,
-                    visual_offset_x: 0.0,
-                    visual_offset_y: 0.0,
-                    available_width: 160.0,
-                    available_height: 120.0,
-                    viewport_width: 160.0,
-                    viewport_height: 120.0,
-                    percent_base_width: Some(160.0),
-                    percent_base_height: Some(120.0),
-                },
-            );
-        }
-        let roots = [second_root, neutral_root, first_root];
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &roots);
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &roots, &properties);
-        let plan = plan_property_effect_scene_scaffold_with_context(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect("multi-root effect scaffold");
-        let scaffold = plan
-            .property_scene_seal
-            .as_ref()
-            .and_then(|seal| seal.effect_scaffold.as_ref())
-            .expect("effect scaffold");
-        assert_eq!(
-            scaffold
-                .roots
-                .iter()
-                .map(|root| root.root)
-                .collect::<Vec<_>>(),
-            roots
-        );
-        assert_eq!(scaffold.roots[0].boundary_ordinal_span, 0..1);
-        assert_eq!(scaffold.roots[1].boundary_ordinal_span, 1..1);
-        assert_eq!(scaffold.roots[2].boundary_ordinal_span, 1..4);
-        assert_eq!(scaffold.surfaces[0].boundary.owner(), second_root);
-        assert_eq!(scaffold.surfaces[1].boundary.owner(), first_root);
-
-        let production = plan_property_effect_scene_with_context(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], None),
-        )
-        .expect("multi-root effect forest must materialize");
-        let witness = production
-            .property_scene_transaction_witness()
-            .expect("multi-root effect transaction");
-        assert_eq!(witness.roots.len(), 3);
-        assert_eq!(witness.surfaces.len(), 4);
-        assert!(witness.roots[1].top_level_step_span.is_empty());
-        let mut viewport = Viewport::new();
-        let mut graph = FrameGraph::new();
-        let ctx = parent_context_without_clear(&mut graph, 160, 120, 1.0);
-        let outcome = super::super::build_retained_property_scene_with_forced_pool_for_test(
-            &mut viewport,
-            &production,
-            &mut graph,
-            ctx,
-        )
-        .expect("multi-root effect forest preflight and emit");
-        let (_, trace) = outcome.into_parts();
-        assert_eq!(trace.root_count, 3);
-        assert_eq!(trace.surface_count, 4);
-    }
-
-    fn nested_opaque_cursor_fixture(
-        parent_before_opaque: usize,
-        child_opaque: usize,
-        parent_after_opaque: usize,
-    ) -> (
-        NodeArena,
-        NodeKey,
-        NodeKey,
-        PropertyTrees,
-        PaintGenerationTracker,
-    ) {
-        assert!(child_opaque > 0);
-        let element = |id: u64, width: f32, height: f32, opaque: bool| {
-            let mut element = Element::new_with_id(id, 0.0, 0.0, width, height);
-            let mut style = Style::new();
-            style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-            if opaque {
-                style.insert(
-                    PropertyId::BackgroundColor,
-                    ParsedValue::color_like(Color::rgb(40, 100, 180)),
-                );
-            }
-            element.apply_style(style);
-            element
-        };
-
-        let mut next_id = 0xc5_a200_u64;
-        let mut take_id = || {
-            let id = next_id;
-            next_id += 1;
-            id
-        };
-        let mut arena = new_test_arena();
-        let root = commit_element(
-            &mut arena,
-            Box::new(element(take_id(), 80.0, 60.0, parent_before_opaque > 0)),
-        );
-        for _ in 1..parent_before_opaque {
-            commit_child(
-                &mut arena,
-                root,
-                Box::new(element(take_id(), 4.0, 4.0, true)),
-            );
-        }
-        let child = commit_child(
-            &mut arena,
-            root,
-            Box::new(element(take_id(), 20.0, 16.0, true)),
-        );
-        for _ in 1..child_opaque {
-            commit_child(
-                &mut arena,
-                child,
-                Box::new(element(take_id(), 3.0, 3.0, true)),
-            );
-        }
-        for _ in 0..parent_after_opaque {
-            commit_child(
-                &mut arena,
-                root,
-                Box::new(element(take_id(), 4.0, 4.0, true)),
-            );
-        }
-
-        measure_and_place(
-            &mut arena,
-            root,
-            LayoutConstraints {
-                max_width: 160.0,
-                max_height: 120.0,
-                viewport_width: 160.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(160.0),
-                percent_base_height: Some(120.0),
-            },
-            LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 160.0,
-                available_height: 120.0,
-                viewport_width: 160.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(160.0),
-                percent_base_height: Some(120.0),
-            },
-        );
-        crate::view::test_support::get_element_mut::<Element>(&arena, root)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                10.0, 0.0, 0.0,
-            ))));
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                20.0, 0.0, 0.0,
-            ))));
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[root]);
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[root], &properties);
-        (arena, root, child, properties, generations)
-    }
-
-    fn only_surface(plan: &FramePaintPlan) -> &RetainedSurfacePlan {
-        let [PaintPlanStep::RetainedSurface(surface)] = plan.steps.as_slice() else {
-            panic!("fixture must contain one retained surface")
-        };
-        surface
-    }
-
-    fn only_surface_mut(plan: &mut FramePaintPlan) -> &mut RetainedSurfacePlan {
-        let [PaintPlanStep::RetainedSurface(surface)] = plan.steps.as_mut_slice() else {
-            panic!("fixture must contain one retained surface")
-        };
-        surface
-    }
-
-    fn only_span(surface: &RetainedSurfacePlan) -> &ArtifactSpanPlan {
-        let [PaintPlanStep::ArtifactSpan(span)] = surface.raster_steps.as_slice() else {
-            panic!("fixture surface must contain one artifact span")
-        };
-        span
-    }
-
-    fn only_span_mut(surface: &mut RetainedSurfacePlan) -> &mut ArtifactSpanPlan {
-        let [PaintPlanStep::ArtifactSpan(span)] = surface.raster_steps.as_mut_slice() else {
-            panic!("fixture surface must contain one artifact span")
-        };
-        span
-    }
-
-    fn nested_surface_mut(plan: &mut FramePaintPlan) -> &mut RetainedSurfacePlan {
-        let parent = only_surface_mut(plan);
-        parent
-            .raster_steps
-            .iter_mut()
-            .find_map(|step| match step {
-                PaintPlanStep::RetainedSurface(surface) => Some(surface.as_mut()),
-                PaintPlanStep::ArtifactSpan(_) => None,
-            })
-            .expect("fixture contains one nested surface")
-    }
-
-    fn isolation_plan_mut(plan: &mut FramePaintPlan) -> &mut IsolationSurfacePlan {
-        match &mut only_surface_mut(plan).kind {
-            SurfaceKind::Isolation(plan) => plan,
-            SurfaceKind::Transform(_)
-            | SurfaceKind::NestedIsolation(_)
-            | SurfaceKind::ScrollHost(_) => {
-                panic!("fixture must contain root isolation surface")
-            }
-        }
-    }
-
-    fn assert_forced_rejection_has_zero_graph_mutation(
-        plan: &FramePaintPlan,
-        graph: &mut FrameGraph,
-        ctx: UiBuildContext,
-        expected: super::super::ForcedTransformSurfaceError,
-    ) {
-        let before = graph.build_state_snapshot_for_test();
-        let mut viewport = Viewport::new();
-        let viewport_before = viewport.retained_surface_transaction_shape_for_test();
-        let error = match super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            plan,
-            graph,
-            ctx,
-        ) {
-            Ok(_) => panic!("tampered forced plan must reject before emit"),
-            Err(error) => error,
-        };
-        assert_eq!(error, expected);
-        assert_eq!(graph.build_state_snapshot_for_test(), before);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            viewport_before,
-            "prepare rejection cannot stage or commit any retained-surface transaction"
-        );
-    }
-
-    fn commit_forced_nested_plan(viewport: &mut Viewport, plan: &FramePaintPlan) {
-        let mut graph = FrameGraph::new();
-        let mut ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let outer = ctx.allocate_target(&mut graph);
-        ctx.set_current_target(outer);
-        super::super::execute_forced_transform_surface_for_test(viewport, plan, &mut graph, ctx)
-            .expect("baseline nested R/R execution");
-        viewport.finish_retained_surface_transaction(true);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (2, None)
-        );
-    }
-
-    fn parent_context_with_clear(
-        graph: &mut FrameGraph,
-        width: u32,
-        height: u32,
-        scale: f32,
-    ) -> (
-        UiBuildContext,
-        crate::view::render_pass::draw_rect_pass::RenderTargetOut,
-    ) {
-        let mut ctx = UiBuildContext::new(width, height, wgpu::TextureFormat::Bgra8Unorm, scale);
-        let parent = ctx.allocate_target(graph);
-        ctx.set_current_target(parent);
-        graph.add_graphics_pass(crate::view::render_pass::ClearPass::new(
-            crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-            crate::view::render_pass::clear_pass::ClearInput {
-                pass_context: ctx.graphics_pass_context(),
-                clear_depth_stencil: true,
-            },
-            crate::view::render_pass::clear_pass::ClearOutput {
-                render_target: parent,
-            },
-        ));
-        (ctx, parent)
-    }
-
-    fn parent_context_without_clear(
-        graph: &mut FrameGraph,
-        width: u32,
-        height: u32,
-        scale: f32,
-    ) -> UiBuildContext {
-        let mut ctx = UiBuildContext::new(width, height, wgpu::TextureFormat::Bgra8Unorm, scale);
-        let parent = ctx.allocate_target(graph);
-        ctx.set_current_target(parent);
-        ctx
-    }
-
-    fn execute_forced_plan_graph(viewport: &mut Viewport, plan: &FramePaintPlan) -> FrameGraph {
-        let mut graph = FrameGraph::new();
-        let ctx = parent_context_without_clear(&mut graph, 160, 120, 1.0);
-        super::super::execute_forced_transform_surface_for_test(viewport, plan, &mut graph, ctx)
-            .expect("forced exact retained plan");
-        graph
-    }
-
-    fn retained_surface_stamp(
-        surface: &RetainedSurfacePlan,
-        artifact: &PaintArtifact,
-    ) -> Option<super::super::RetainedSurfaceRasterStamp> {
-        let scale = 2.0_f32;
-        let color_key = surface.persistent_color_key;
-        let color = crate::view::base_component::texture_desc_for_logical_bounds(
-            surface.geometry().source_bounds,
-            scale,
-            None,
-            wgpu::TextureFormat::Bgra8Unorm,
-        );
-        let (color, depth) =
-            crate::view::base_component::persistent_target_texture_descriptors(color, color_key);
-        super::super::validated_retained_surface_raster_stamp(
-            artifact,
-            surface.boundary_root,
-            surface.stable_id,
-            surface.transform(),
-            super::super::RetainedSurfaceRasterInputs {
-                color,
-                depth,
-                scale_factor_bits: scale.to_bits(),
-                source_bounds_bits: [
-                    surface.geometry().source_bounds.x.to_bits(),
-                    surface.geometry().source_bounds.y.to_bits(),
-                    surface.geometry().source_bounds.width.to_bits(),
-                    surface.geometry().source_bounds.height.to_bits(),
-                ],
-            },
-            surface.aggregate_opaque_order_span.clone(),
-        )
-    }
-
-    #[test]
-    fn planner_rejects_negative_origin_known_legacy_crop_before_execution() {
-        for (root_id, child_id, root_x, root_y, expected_source) in [
-            (0xc2_a001, 0xc2_a002, -4.25, 3.5, [-8.5, 7.0]),
-            (0xc2_a003, 0xc2_a004, 4.25, -3.5, [8.5, -7.0]),
-        ] {
-            let (arena, root, properties, generations) =
-                exact_transform_fixture_at_origin_with_ids(root_id, child_id, root_x, root_y);
-            let geometry = arena
-                .get(root)
-                .expect("root")
-                .element
-                .as_any()
-                .downcast_ref::<Element>()
-                .expect("Element root")
-                .transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None)
-                .expect("finite negative-origin geometry remains representable");
-            assert_eq!(
-                [
-                    geometry.source_bounds.x.to_bits(),
-                    geometry.source_bounds.y.to_bits(),
-                ],
-                expected_source.map(f32::to_bits)
-            );
-
-            let error =
-                plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                    .expect_err("known legacy crop must not reach C2 target declaration");
-            assert_eq!(
-                error.reasons,
-                vec![FramePaintPlanRejection::NegativeSurfaceOrigin(root)]
-            );
-        }
-    }
-
-    #[test]
-    fn exact_single_root_transform_builds_one_planning_only_surface_step() {
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("exact single-root transform subtree must be plan-eligible");
-
-        let [PaintPlanStep::RetainedSurface(surface)] = plan.steps.as_slice() else {
-            panic!("M10C1 must produce exactly one retained surface step")
-        };
-        assert_eq!(surface.boundary_root, root);
-        assert_eq!(surface.transform(), TransformNodeId(root));
-        assert_eq!(surface.parent_surface, None);
-        assert!(surface.geometry().outer_scissor_rect.is_none());
-        let span = only_span(surface);
-        assert!(!span.artifact.chunks.is_empty());
-        assert!(span.artifact.chunks.iter().all(|chunk| {
-            chunk.properties.transform == Some(TransformNodeId(root))
-                && chunk.properties.clip.is_none()
-                && chunk.properties.effect.is_none()
-                && chunk.properties.scroll.is_none()
-        }));
-        assert!(
-            super::super::compiler::validate_transform_surface_artifact_for_plan(
-                &span.artifact,
-                root,
-                TransformNodeId(root),
-            )
-        );
-    }
-
-    #[test]
-    fn transform_child_isolation_recording_projects_only_inherited_transform_and_partitions_ownership()
-     {
-        let (arena, root, before, child, descendant, after, properties, generations) =
-            exact_transform_child_isolation_fixture();
-        let effect = crate::view::compositor::property_tree::EffectNodeId(child);
-        let boundary = super::super::PlannedBoundary {
-            root: child,
-            stable_id: arena.get(child).unwrap().element.stable_id(),
-            kind: super::super::PlannedBoundaryKind::Isolation(effect),
-        };
-        let cutouts = super::super::PlannedBoundaryCutoutSet::from_iter([(child, boundary)]);
-        let parent_steps = super::super::frame_recorder::record_transform_surface_steps_for_plan(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            PaintTransformSurfaceWitness::canonical_root(root),
-            [0.0, 0.0],
-            &cutouts,
-        )
-        .expect("typed isolation cutout keeps parent transform stream recordable");
-        let [
-            super::super::frame_recorder::RecordedTransformSurfaceStep::Artifact(before_artifact),
-            super::super::frame_recorder::RecordedTransformSurfaceStep::Boundary(actual),
-            super::super::frame_recorder::RecordedTransformSurfaceStep::Artifact(after_artifact),
-        ] = parent_steps.as_slice()
-        else {
-            panic!("parent stream must flush before and after exactly one isolation marker")
-        };
-        assert_eq!(*actual, boundary);
-
-        let child_artifact =
-            super::super::frame_recorder::record_transform_child_isolation_artifact_for_plan(
-                &arena,
-                root,
-                child,
-                &properties,
-                &generations,
-            )
-            .expect("exact child isolation must record with consumed parent transform");
-        assert!(matches!(
-            child_artifact.target,
-            super::super::PaintArtifactTarget::RootOpacityGroup { root, effect: actual }
-                if root == child && actual == effect
-        ));
-        assert_eq!(child_artifact.effect_nodes.len(), 1);
-        assert_eq!(child_artifact.effect_nodes[0].id, effect);
-        assert!(child_artifact.chunks.iter().all(|chunk| {
-            chunk.properties.transform.is_none()
-                && chunk.properties.effect == Some(effect)
-                && chunk.properties.clip.is_none()
-                && chunk.properties.scroll.is_none()
-        }));
-        child_artifact.ops.iter().for_each(|op| match op {
-            PaintOp::DrawRect(op) => assert_eq!(op.params.opacity.to_bits(), 1.0_f32.to_bits()),
-            PaintOp::PreparedInlineIfcDecoration(op) => {
-                assert_eq!(op.fill.opacity.to_bits(), 1.0_f32.to_bits());
-                if let Some(border) = &op.border {
-                    assert_eq!(border.opacity.to_bits(), 1.0_f32.to_bits());
-                }
-            }
-            PaintOp::PreparedShadow(op) => {
-                assert_eq!(op.params.opacity.to_bits(), 1.0_f32.to_bits())
-            }
-            PaintOp::PreparedScrollbarOverlay(op) => {
-                assert!(op.has_baked_opacity(1.0_f32.to_bits()))
-            }
-            PaintOp::PreparedText(op) => assert!(
-                op.params
-                    .staging_input
-                    .glyphs
-                    .iter()
-                    .all(|glyph| glyph.paint.opacity.to_bits() == 1.0_f32.to_bits())
-            ),
-            PaintOp::PreparedImage(op) => {
-                assert_eq!(op.params.opacity.to_bits(), 1.0_f32.to_bits())
-            }
-            PaintOp::PreparedSvg(op) => {
-                assert_eq!(op.params.opacity.to_bits(), 1.0_f32.to_bits())
-            }
-        });
-
-        let parent_chunk_owners = before_artifact
-            .chunks
-            .iter()
-            .chain(&after_artifact.chunks)
-            .map(|chunk| chunk.owner)
-            .collect::<FxHashSet<_>>();
-        let child_chunk_owners = child_artifact
-            .chunks
-            .iter()
-            .map(|chunk| chunk.owner)
-            .collect::<FxHashSet<_>>();
-        assert!(parent_chunk_owners.is_disjoint(&child_chunk_owners));
-        assert_eq!(
-            parent_chunk_owners,
-            FxHashSet::from_iter([root, before, after])
-        );
-        assert_eq!(
-            child_chunk_owners,
-            FxHashSet::from_iter([child, descendant])
-        );
-        let all = parent_chunk_owners
-            .union(&child_chunk_owners)
-            .copied()
-            .collect::<FxHashSet<_>>();
-        assert_eq!(
-            all,
-            FxHashSet::from_iter([root, before, child, descendant, after]),
-            "parent spans plus child artifact must exhaust canonical paint ownership"
-        );
-    }
-
-    #[test]
-    fn transform_child_isolation_recording_rejects_wrong_boundary_and_live_projection_mismatch() {
-        let (arena, root, before, child, _, _, mut properties, generations) =
-            exact_transform_child_isolation_fixture();
-        assert!(
-            super::super::frame_recorder::record_transform_child_isolation_artifact_for_plan(
-                &arena,
-                before,
-                child,
-                &properties,
-                &generations,
-            )
-            .is_err(),
-            "a non-parent boundary cannot mint consumed-transform authority"
-        );
-
-        properties.states.get_mut(&child).unwrap().paint.transform = None;
-        assert!(
-            super::super::frame_recorder::record_transform_child_isolation_artifact_for_plan(
-                &arena,
-                root,
-                child,
-                &properties,
-                &generations,
-            )
-            .is_err(),
-            "live property mismatch must reject before projected recording"
-        );
-
-        let (arena, root, _, child, descendant, _, properties, generations) =
-            exact_transform_child_isolation_fixture();
-        let mut deferred_style = Style::new();
-        deferred_style.insert(
-            PropertyId::Position,
-            ParsedValue::Position(
-                crate::style::Position::absolute()
-                    .left(crate::style::Length::px(0.0))
-                    .clip(crate::style::ClipMode::Viewport),
-            ),
-        );
-        crate::view::test_support::get_element_mut::<Element>(&arena, descendant)
-            .apply_style(deferred_style);
-        let _ = super::super::take_full_artifact_record_count();
-        let error =
-            super::super::frame_recorder::record_transform_child_isolation_artifact_for_plan(
-                &arena,
-                root,
-                child,
-                &properties,
-                &generations,
-            )
-            .expect_err("deferred descendants must fail before either artifact recording pass");
-        assert_eq!(
-            error,
-            vec![super::super::FrameArtifactFallbackReason::DeferredBoundary(
-                descendant
-            )]
-        );
-        assert_eq!(
-            super::super::take_full_artifact_record_count(),
-            0,
-            "deferred preflight must reject before the full artifact pass"
-        );
-    }
-
-    #[test]
-    fn transform_child_isolation_planner_freezes_exact_fractional_geometry_and_cursors() {
-        let (arena, root, _, child, _, _, properties, generations) =
-            exact_transform_child_isolation_fixture();
-        let parent_snapped_offset = arena
-            .get(root)
-            .unwrap()
-            .element
-            .as_any()
-            .downcast_ref::<Element>()
-            .unwrap()
-            .retained_child_paint_offset([0.0, 0.0])
-            .unwrap();
-        let exact_child_bounds = arena
-            .get(child)
-            .unwrap()
-            .element
-            .as_any()
-            .downcast_ref::<Element>()
-            .unwrap()
-            .exact_nested_isolation_render_output_bounds(&arena, parent_snapped_offset)
-            .unwrap();
-        assert!(exact_child_bounds.x > 0.0 && exact_child_bounds.y > 0.0);
-        assert!(
-            exact_child_bounds.x.fract() != 0.0 || exact_child_bounds.y.fract() != 0.0,
-            "fixture must retain a positive fractional nonzero child-local origin"
-        );
-
-        let plan = plan_single_root_transform_child_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-        )
-        .expect("exact Transform -> direct child Isolation plan");
-        let root_surface = only_surface(&plan);
-        assert!(matches!(root_surface.kind(), SurfaceKind::Transform(_)));
-        let [
-            PaintPlanStep::ArtifactSpan(before),
-            PaintPlanStep::RetainedSurface(child_surface),
-            PaintPlanStep::ArtifactSpan(after),
-        ] = root_surface.raster_steps()
-        else {
-            panic!("parent recorder must preserve before-marker-after order")
-        };
-        let SurfaceKind::NestedIsolation(nested) = child_surface.kind() else {
-            panic!("typed marker must become a nested-isolation role")
-        };
-        assert_eq!(child_surface.boundary_root(), child);
-        assert_eq!(child_surface.parent_surface(), Some(root));
-        assert!(nested.geometry.bitwise_eq(nested.planned_geometry_witness));
-        assert_eq!(
-            [
-                nested.geometry.source_bounds.x,
-                nested.geometry.source_bounds.y,
-                nested.geometry.source_bounds.width,
-                nested.geometry.source_bounds.height,
-            ]
-            .map(f32::to_bits),
-            [
-                exact_child_bounds.x,
-                exact_child_bounds.y,
-                exact_child_bounds.width,
-                exact_child_bounds.height,
-            ]
-            .map(f32::to_bits)
-        );
-        assert_eq!(
-            nested.geometry.logical_size(),
-            [exact_child_bounds.width, exact_child_bounds.height,]
-        );
-        assert_eq!(nested.geometry.source_bounds.corner_radii, [0.0; 4]);
-
-        let [PaintPlanStep::ArtifactSpan(child_span)] = child_surface.raster_steps() else {
-            panic!("nested isolation owns exactly one projected artifact")
-        };
-        let child_terminal = opaque_order_count(child_span.artifact());
-        assert_eq!(child_span.opaque_order_span(), &(0..child_terminal));
-        assert_eq!(
-            child_surface.aggregate_opaque_order_span(),
-            &(0..child_terminal)
-        );
-        let before_end = opaque_order_count(before.artifact());
-        assert_eq!(before.opaque_order_span(), &(0..before_end));
-        let expected_after_start = before_end.max(child_terminal);
-        assert_eq!(after.opaque_order_span().start, expected_after_start);
-        assert_eq!(
-            after.opaque_order_span().end,
-            expected_after_start + opaque_order_count(after.artifact())
-        );
-        assert_eq!(
-            root_surface.aggregate_opaque_order_span(),
-            &(0..after.opaque_order_span().end)
-        );
-    }
-
-    #[test]
-    fn transform_child_isolation_planner_hard_gates_shape_and_extra_properties() {
-        let (arena, root, _, _, _, _, properties, generations) =
-            exact_transform_child_isolation_fixture();
-        let baseline = plan_single_root_transform_child_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-        )
-        .expect("retained-compatible transform child isolation baseline");
-        let _ = only_surface(&baseline);
-
-        let (arena, root, _, child, _, _, mut properties, generations) =
-            exact_transform_child_isolation_fixture();
-        properties.transforms.insert(
-            TransformNodeId(child),
-            crate::view::compositor::property_tree::TransformNode {
-                owner: child,
-                parent: Some(TransformNodeId(root)),
-                viewport_matrix: glam::Mat4::IDENTITY,
-                generation: 1,
-            },
-        );
-        let error = plan_single_root_transform_child_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-        )
-        .expect_err("a second transform is an extra property boundary");
-        assert!(
-            error
-                .reasons
-                .contains(&FramePaintPlanRejection::TransformNodeCount(2))
-        );
-
-        let (arena, root, _, child, _, _, mut properties, generations) =
-            exact_transform_child_isolation_fixture();
-        properties.states.get_mut(&child).unwrap().paint.clip =
-            Some(crate::view::compositor::property_tree::ClipNodeId {
-                owner: child,
-                role: crate::view::compositor::property_tree::ClipNodeRole::SelfClip,
-            });
-        let error = plan_single_root_transform_child_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-        )
-        .expect_err("clip state is outside the mixed exact slice");
-        assert!(
-            error
-                .reasons
-                .contains(&FramePaintPlanRejection::ClipBoundary(child))
-        );
-
-        let (arena, root, _, child, _, _, mut properties, generations) =
-            exact_transform_child_isolation_fixture();
-        properties.effects.remove(&EffectNodeId(child));
-        let error = plan_single_root_transform_child_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-        )
-        .expect_err("missing child effect snapshot cannot mint a nested isolation");
-        assert!(
-            error
-                .reasons
-                .iter()
-                .any(|reason| matches!(reason, FramePaintPlanRejection::InvalidIsolationEffect(_)))
-        );
-
-        let (arena, root, _, child, descendant, _, properties, generations) =
-            exact_transform_child_isolation_fixture();
-        crate::view::test_support::get_element_mut::<Element>(&arena, descendant)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                3.0, 2.0, 0.0,
-            ))));
-        let error = plan_single_root_transform_child_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-        )
-        .expect_err(
-            "a live descendant transform added after property sync must not produce a plan",
-        );
-        assert_eq!(
-            error.reasons,
-            vec![FramePaintPlanRejection::InvalidSurfaceGeometry(child)],
-            "child-local geometry must reject stale property trees before artifact recording"
-        );
-    }
-
-    #[test]
-    fn production_mixed_effect_tree_emits_frozen_child_geometry_and_atomic_stamps() {
-        let (arena, root, _, child, _, _, properties, generations) =
-            exact_transform_child_isolation_fixture();
-        let plan = plan_single_root_transform_child_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-        )
-        .expect("exact mixed plan");
-        let root_surface = only_surface(&plan);
-        let [_, PaintPlanStep::RetainedSurface(child_surface), _] = root_surface.raster_steps()
-        else {
-            panic!("mixed fixture keeps one typed child boundary")
-        };
-        let SurfaceKind::NestedIsolation(nested) = child_surface.kind() else {
-            panic!("typed nested isolation")
-        };
-        let bounds = nested.geometry.source_bounds;
-
-        let mut graph = FrameGraph::new();
-        let ctx = parent_context_without_clear(&mut graph, 160, 120, 1.0);
-        let mut viewport = Viewport::new();
-        let outcome = super::super::build_retained_effect_tree_from_pool(
-            &mut viewport,
-            &plan,
-            &mut graph,
-            ctx,
-        )
-        .expect("production mixed executor");
-        let (state, traces) = outcome.into_parts();
-        assert_eq!(state.opaque_rect_order_for_test(), 3);
-        assert_eq!(traces.len(), 2);
-        assert_eq!(traces[0].boundary_root, root);
-        assert_eq!(traces[1].boundary_root, child);
-        assert!(
-            traces.iter().all(|trace| {
-                trace.action == super::super::RetainedSurfaceCompileAction::Reraster
-            })
-        );
-
-        let child_key =
-            crate::view::base_component::isolation_layer_stable_key(child_surface.stable_id());
-        let child_desc = graph
-            .declared_persistent_textures()
-            .find_map(|(key, desc)| (key == child_key).then_some(desc))
-            .expect("child persistent color descriptor");
-        let expected_child_desc = crate::view::base_component::texture_desc_for_logical_bounds(
-            bounds,
-            1.0,
-            None,
-            wgpu::TextureFormat::Bgra8Unorm,
-        );
-        assert_eq!(
-            [child_desc.width(), child_desc.height()],
-            [expected_child_desc.width(), expected_child_desc.height()],
-            "child target descriptor is derived only from frozen bounds and scale"
-        );
-        assert_eq!(child_desc.origin(), expected_child_desc.origin());
-        assert_ne!(
-            child_desc.origin(),
-            (0, 0),
-            "positive fractional fixture must preserve a nonzero child-local target origin"
-        );
-        assert_eq!(
-            traces[1].descriptor_size,
-            [expected_child_desc.width(), expected_child_desc.height()]
-        );
-
-        let composites = graph.test_graphics_passes::<
-            crate::view::render_pass::composite_layer_pass::CompositeLayerPass,
-        >();
-        let [composite] = composites.as_slice() else {
-            panic!("one child-local CompositeLayer")
-        };
-        assert_eq!(
-            composite.test_params().rect_pos.map(f32::to_bits),
-            [bounds.x.to_bits(), bounds.y.to_bits(),]
-        );
-        assert_eq!(
-            composite.test_params().rect_size.map(f32::to_bits),
-            [bounds.width.to_bits(), bounds.height.to_bits(),]
-        );
-        assert_eq!(composite.test_params().corner_radii, [0.0; 4]);
-        assert_eq!(
-            composite.test_params().opacity.to_bits(),
-            nested.effect.opacity.to_bits()
-        );
-        assert_eq!(composite.test_params().scissor_rect, None);
-
-        let final_composites =
-            graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
-        let [final_composite] = final_composites.as_slice() else {
-            panic!("root CSS transform is emitted exactly once")
-        };
-        let root_geometry = root_surface.transform_plan_for_test().geometry;
-        let final_snapshot = final_composite.test_snapshot();
-        assert_eq!(
-            final_snapshot.quad_position_bits,
-            Some(
-                root_geometry
-                    .quad_positions
-                    .map(|point| point.map(f32::to_bits))
-            )
-        );
-        assert_eq!(
-            final_snapshot.uv_bounds_bits,
-            Some(root_geometry.uv_bounds.map(f32::to_bits))
-        );
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (0, Some(2))
-        );
-        viewport.finish_retained_surface_transaction(false);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (0, None)
-        );
-    }
-
-    #[test]
-    fn mixed_effect_tree_cpu_oracle_applies_group_opacity_once_after_source_over() {
-        fn premultiplied(fill: [f32; 4], opacity: f32) -> [f32; 4] {
-            let alpha = fill[3] * opacity;
-            [fill[0] * alpha, fill[1] * alpha, fill[2] * alpha, alpha]
-        }
-        fn source_over(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
-            let remainder = 1.0 - src[3];
-            [
-                src[0] + dst[0] * remainder,
-                src[1] + dst[1] * remainder,
-                src[2] + dst[2] * remainder,
-                src[3] + dst[3] * remainder,
-            ]
-        }
-        fn scaled(color: [f32; 4], opacity: f32) -> [f32; 4] {
-            color.map(|channel| channel * opacity)
-        }
-
-        let (arena, root, _, _, _, _, properties, generations) =
-            exact_transform_child_isolation_fixture();
-        let plan = plan_single_root_transform_child_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-        )
-        .unwrap();
-        let [_, PaintPlanStep::RetainedSurface(child), _] = only_surface(&plan).raster_steps()
-        else {
-            panic!("mixed child")
-        };
-        let SurfaceKind::NestedIsolation(isolation) = child.kind() else {
-            panic!("nested isolation")
-        };
-        let artifact = only_span(child).artifact();
-        let rects = artifact
-            .ops
-            .iter()
-            .filter_map(|op| match op {
-                PaintOp::DrawRect(op) => Some(&op.params),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let [bottom, top] = rects.as_slice() else {
-            panic!("fixture child artifact owns two overlapping rects")
-        };
-        let overlap_width = (bottom.position[0] + bottom.size[0])
-            .min(top.position[0] + top.size[0])
-            - bottom.position[0].max(top.position[0]);
-        let overlap_height = (bottom.position[1] + bottom.size[1])
-            .min(top.position[1] + top.size[1])
-            - bottom.position[1].max(top.position[1]);
-        assert!(overlap_width > 0.0 && overlap_height > 0.0);
-        assert_eq!(bottom.opacity.to_bits(), 1.0_f32.to_bits());
-        assert_eq!(top.opacity.to_bits(), 1.0_f32.to_bits());
-
-        let group = source_over(
-            premultiplied(bottom.fill_color, bottom.opacity),
-            premultiplied(top.fill_color, top.opacity),
-        );
-        let correct = scaled(group, isolation.effect.opacity);
-        let manual_top_once = premultiplied(top.fill_color, isolation.effect.opacity);
-        assert!(
-            correct
-                .iter()
-                .zip(manual_top_once)
-                .all(|(actual, expected)| (actual - expected).abs() <= f32::EPSILON),
-            "opaque top rect resolves the group, then root opacity scales premultiplied RGBA once"
-        );
-
-        let incorrectly_baked_then_grouped = scaled(
-            source_over(
-                premultiplied(bottom.fill_color, bottom.opacity * isolation.effect.opacity),
-                premultiplied(top.fill_color, top.opacity * isolation.effect.opacity),
-            ),
-            isolation.effect.opacity,
-        );
-        assert!(
-            correct
-                .iter()
-                .zip(incorrectly_baked_then_grouped)
-                .any(|(actual, wrong)| (actual - wrong).abs() > 0.000_001),
-            "per-op baking plus CompositeLayer would double-apply and is not the oracle"
-        );
-    }
-
-    #[test]
-    fn mixed_effect_tree_stamp_excludes_child_opacity_but_parent_dependency_tracks_it() {
-        fn child_dependency(
-            stamp: &super::super::RetainedSurfaceRasterStamp,
-        ) -> &super::super::NestedSurfaceRasterDependency {
-            let super::super::RetainedSurfaceRasterStepStamp::NestedSurface(dependency) =
-                &stamp.ordered_steps[1]
-            else {
-                panic!("middle step is nested isolation dependency")
-            };
-            dependency
-        }
-
-        let (arena, root, _, child, _, _, mut properties, mut generations) =
-            exact_transform_child_isolation_fixture();
-        let baseline = plan_single_root_transform_child_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-        )
-        .unwrap();
-        let ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let baseline_stamp = super::super::prepare_forced_retained_surface_stamp_for_test(
-            &baseline,
-            &FrameGraph::new(),
-            &ctx,
-        )
-        .unwrap();
-
-        crate::view::test_support::get_element_mut::<Element>(&arena, child).set_opacity(0.25);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let changed = plan_single_root_transform_child_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-        )
-        .unwrap();
-        let changed_stamp = super::super::prepare_forced_retained_surface_stamp_for_test(
-            &changed,
-            &FrameGraph::new(),
-            &ctx,
-        )
-        .unwrap();
-        let baseline_dependency = child_dependency(&baseline_stamp);
-        let changed_dependency = child_dependency(&changed_stamp);
-        assert_eq!(
-            baseline_dependency.child_stamp, changed_dependency.child_stamp,
-            "child isolation raster identity excludes its own group opacity"
-        );
-        assert_ne!(baseline_stamp, changed_stamp);
-        let (
-            super::super::RetainedSurfaceCompositeGeometryStamp::NestedIsolation {
-                source_bounds_bits: baseline_bounds,
-                opacity_bits: baseline_opacity,
-            },
-            super::super::RetainedSurfaceCompositeGeometryStamp::NestedIsolation {
-                source_bounds_bits: changed_bounds,
-                opacity_bits: changed_opacity,
-            },
-        ) = (
-            &baseline_dependency.child_composite_geometry,
-            &changed_dependency.child_composite_geometry,
-        )
-        else {
-            panic!("mixed parent dependency uses the dedicated nested-isolation stamp")
-        };
-        assert_eq!(baseline_bounds, changed_bounds);
-        assert_eq!(*baseline_opacity, 0.5_f32.to_bits());
-        assert_eq!(*changed_opacity, 0.25_f32.to_bits());
-
-        let mut tampered_parent = baseline_stamp.clone();
-        let super::super::RetainedSurfaceRasterStepStamp::NestedSurface(tampered_dependency) =
-            &mut tampered_parent.ordered_steps[1]
-        else {
-            panic!("mixed dependency")
-        };
-        tampered_dependency.child_stamp.identity.role =
-            super::super::RetainedSurfaceRasterRole::RootIsolation;
-        let tampered_child = tampered_dependency.child_stamp.as_ref().clone();
-        assert!(!super::super::retained_surface_raster_stamp_is_canonical(
-            &tampered_child
-        ));
-        assert!(!super::super::retained_surface_raster_stamp_is_canonical(
-            &tampered_parent
-        ));
-        let mut viewport = Viewport::new();
-        assert!(!viewport.stage_retained_surface_full_set([tampered_parent, tampered_child,]));
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (0, None)
-        );
-
-        let mut tampered_geometry_parent = baseline_stamp.clone();
-        let super::super::RetainedSurfaceRasterStepStamp::NestedSurface(
-            tampered_geometry_dependency,
-        ) = &mut tampered_geometry_parent.ordered_steps[1]
-        else {
-            panic!("mixed dependency")
-        };
-        let super::super::RetainedSurfaceCompositeGeometryStamp::NestedIsolation {
-            source_bounds_bits,
-            ..
-        } = &mut tampered_geometry_dependency.child_composite_geometry
-        else {
-            panic!("nested-isolation geometry")
-        };
-        source_bounds_bits[0] = (f32::from_bits(source_bounds_bits[0]) + 1.0).to_bits();
-        let tampered_geometry_child = tampered_geometry_dependency.child_stamp.as_ref().clone();
-        let mut viewport = Viewport::new();
-        assert!(
-            !viewport.stage_retained_surface_full_set([
-                tampered_geometry_parent,
-                tampered_geometry_child,
-            ])
-        );
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (0, None)
-        );
-
-        let mut duplicate_parent = baseline_stamp.clone();
-        let mut duplicate_dependency = duplicate_parent.ordered_steps[1].clone();
-        let super::super::RetainedSurfaceRasterStepStamp::NestedSurface(dependency) =
-            &mut duplicate_dependency
-        else {
-            panic!("mixed dependency")
-        };
-        let duplicate_child = dependency.child_stamp.as_ref().clone();
-        dependency.step_index = duplicate_parent.ordered_steps.len();
-        dependency.parent_opaque_order_before = duplicate_parent.opaque_order_span.end;
-        dependency.parent_opaque_order_after = duplicate_parent.opaque_order_span.end;
-        duplicate_parent.ordered_steps.push(duplicate_dependency);
-        assert!(
-            super::super::retained_surface_raster_stamp_is_canonical(&duplicate_parent),
-            "duplicate dependency remains a canonical parent stamp in isolation"
-        );
-        let mut viewport = Viewport::new();
-        assert!(
-            !viewport.stage_retained_surface_full_set([duplicate_parent, duplicate_child]),
-            "one child member referenced twice cannot form a canonical full-set tree"
-        );
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (0, None)
-        );
-    }
-
-    #[test]
-    fn mixed_effect_tree_forced_reuse_matrix_keeps_opacity_composite_only() {
-        // Opacity-only: child raster U, parent dependency R.
-        {
-            let (arena, root, _, child, _, _, mut properties, mut generations) =
-                exact_transform_child_isolation_fixture();
-            let baseline = plan_single_root_transform_child_isolation_surface(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-            )
-            .unwrap();
-            let mut viewport = Viewport::new();
-            assert_eq!(
-                execute_forced_plan_graph(&mut viewport, &baseline)
-                    .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                    .len(),
-                2
-            );
-            viewport.finish_retained_surface_transaction(true);
-
-            crate::view::test_support::get_element_mut::<Element>(&arena, child).set_opacity(0.25);
-            properties.sync(&arena, &[root]);
-            generations.sync(&arena, &[root], &properties);
-            let changed = plan_single_root_transform_child_isolation_surface(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-            )
-            .unwrap();
-            let graph = execute_forced_plan_graph(&mut viewport, &changed);
-            assert_eq!(
-                graph
-                    .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                    .len(),
-                1,
-                "opacity-only rerasterizes parent dependency, not child raster"
-            );
-            assert_eq!(graph.test_rect_pass_snapshots().len(), 3);
-            let composites = graph.test_graphics_passes::<
-                crate::view::render_pass::composite_layer_pass::CompositeLayerPass,
-            >();
-            assert_eq!(composites.len(), 1);
-            assert_eq!(
-                composites[0].test_params().opacity.to_bits(),
-                0.25_f32.to_bits()
-            );
-            viewport.finish_retained_surface_transaction(false);
-        }
-
-        // Root transform-only: both rasters U, final matrix updates.
-        {
-            let (arena, root, _, _, _, _, mut properties, mut generations) =
-                exact_transform_child_isolation_fixture();
-            let baseline = plan_single_root_transform_child_isolation_surface(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-            )
-            .unwrap();
-            let mut viewport = Viewport::new();
-            let baseline_graph = execute_forced_plan_graph(&mut viewport, &baseline);
-            let baseline_final = baseline_graph
-                .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()[0]
-                .test_snapshot();
-            viewport.finish_retained_surface_transaction(true);
-            crate::view::test_support::get_element_mut::<Element>(&arena, root)
-                .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                    glam::Vec3::new(101.0, 0.0, 0.0),
-                )));
-            properties.sync(&arena, &[root]);
-            generations.sync(&arena, &[root], &properties);
-            let changed = plan_single_root_transform_child_isolation_surface(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-            )
-            .unwrap();
-            let graph = execute_forced_plan_graph(&mut viewport, &changed);
-            assert!(
-                graph
-                    .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                    .is_empty()
-            );
-            assert!(graph.test_rect_pass_snapshots().is_empty());
-            assert!(
-                graph
-                    .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>()
-                    .is_empty()
-            );
-            let finals =
-                graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
-            assert_eq!(finals.len(), 1);
-            assert_ne!(finals[0].test_snapshot(), baseline_final);
-            viewport.finish_retained_surface_transaction(false);
-        }
-
-        // Child paint: child R and parent dependency R.
-        {
-            let (arena, root, _, child, _, _, mut properties, mut generations) =
-                exact_transform_child_isolation_fixture();
-            let baseline = plan_single_root_transform_child_isolation_surface(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-            )
-            .unwrap();
-            let mut viewport = Viewport::new();
-            execute_forced_plan_graph(&mut viewport, &baseline);
-            viewport.finish_retained_surface_transaction(true);
-            crate::view::test_support::get_element_mut::<Element>(&arena, child)
-                .set_background_color_value(Color::rgb(12, 220, 44));
-            properties.sync(&arena, &[root]);
-            generations.sync(&arena, &[root], &properties);
-            let changed = plan_single_root_transform_child_isolation_surface(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-            )
-            .unwrap();
-            let graph = execute_forced_plan_graph(&mut viewport, &changed);
-            assert_eq!(
-                graph
-                    .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                    .len(),
-                2
-            );
-            assert_eq!(graph.test_rect_pass_snapshots().len(), 5);
-            viewport.finish_retained_surface_transaction(false);
-        }
-
-        // Parent-only paint: parent R, child U.
-        {
-            let (arena, root, _, _, _, _, mut properties, mut generations) =
-                exact_transform_child_isolation_fixture();
-            let baseline = plan_single_root_transform_child_isolation_surface(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-            )
-            .unwrap();
-            let mut viewport = Viewport::new();
-            execute_forced_plan_graph(&mut viewport, &baseline);
-            viewport.finish_retained_surface_transaction(true);
-            crate::view::test_support::get_element_mut::<Element>(&arena, root)
-                .set_background_color_value(Color::rgb(220, 12, 44));
-            properties.sync(&arena, &[root]);
-            generations.sync(&arena, &[root], &properties);
-            let changed = plan_single_root_transform_child_isolation_surface(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-            )
-            .unwrap();
-            let graph = execute_forced_plan_graph(&mut viewport, &changed);
-            assert_eq!(
-                graph
-                    .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                    .len(),
-                1
-            );
-            assert_eq!(graph.test_rect_pass_snapshots().len(), 3);
-            assert_eq!(
-                graph
-                    .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>()
-                    .len(),
-                1
-            );
-            viewport.finish_retained_surface_transaction(false);
-        }
-    }
-
-    #[test]
-    fn mixed_root_isolation_and_transform_tree_executors_reject_cross_shape_atomically() {
-        let (arena, root, _, _, _, _, properties, generations) =
-            exact_transform_child_isolation_fixture();
-        let mixed = plan_single_root_transform_child_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-        )
-        .unwrap();
-        let (arena, transform_root, _, _, _, _, properties, generations) =
-            nested_exact_transform_fixture();
-        let transform_tree = plan_single_root_transform_surface(
-            &arena,
-            &[transform_root],
-            &properties,
-            &generations,
-        )
-        .unwrap();
-        let (arena, isolation_root, properties, generations) = exact_isolation_fixture(0.5);
-        let root_isolation = plan_single_root_isolation_surface(
-            &arena,
-            &[isolation_root],
-            &properties,
-            &generations,
-            160,
-            120,
-            1.0,
-            None,
-        )
-        .unwrap();
-        let mut viewport = Viewport::new();
-
-        let mut graph = FrameGraph::new();
-        let ctx = parent_context_without_clear(&mut graph, 160, 120, 1.0);
-        let graph_before = graph.build_state_snapshot_for_test();
-        let transaction_before = viewport.retained_surface_transaction_shape_for_test();
-        let error = match super::super::build_retained_surface_tree_from_pool(
-            &mut viewport,
-            &mixed,
-            &mut graph,
-            ctx,
-        ) {
-            Ok(_) => panic!("T->T executor cannot accept mixed effect tree"),
-            Err(error) => error,
-        };
-        assert_eq!(error, super::super::ForcedTransformSurfaceError::PlanShape);
-        assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            transaction_before
-        );
-
-        let mut graph = FrameGraph::new();
-        let ctx = parent_context_without_clear(&mut graph, 160, 120, 1.0);
-        let graph_before = graph.build_state_snapshot_for_test();
-        let error = match super::super::build_retained_isolation_surface_from_pool(
-            &mut viewport,
-            &mixed,
-            &mut graph,
-            ctx,
-        ) {
-            Ok(_) => panic!("root isolation executor cannot accept mixed effect tree"),
-            Err(error) => error,
-        };
-        assert_eq!(error, super::super::ForcedTransformSurfaceError::PlanShape);
-        assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            transaction_before
-        );
-
-        for (label, plan) in [
-            ("T->T", &transform_tree),
-            ("root isolation", &root_isolation),
-        ] {
-            let mut graph = FrameGraph::new();
-            let ctx = parent_context_without_clear(&mut graph, 160, 120, 1.0);
-            let graph_before = graph.build_state_snapshot_for_test();
-            let error = match super::super::build_retained_effect_tree_from_pool(
-                &mut viewport,
-                plan,
-                &mut graph,
-                ctx,
-            ) {
-                Ok(_) => panic!("mixed executor cannot accept {label}"),
-                Err(error) => error,
-            };
-            assert_eq!(error, super::super::ForcedTransformSurfaceError::PlanShape);
-            assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
-            assert_eq!(
-                viewport.retained_surface_transaction_shape_for_test(),
-                transaction_before
-            );
-        }
-    }
-
-    #[test]
-    fn nested_exact_transform_builds_ordered_owning_stream_and_absolute_matrix_golden() {
-        let (mut arena, root, before, child, descendant, after, properties, generations) =
-            nested_exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("one direct transformed Element child must produce a nested owning plan");
-
-        let [PaintPlanStep::RetainedSurface(parent)] = plan.steps.as_slice() else {
-            panic!("one top-level retained surface")
-        };
-        let [
-            PaintPlanStep::ArtifactSpan(before_span),
-            PaintPlanStep::RetainedSurface(nested),
-            PaintPlanStep::ArtifactSpan(after_span),
-        ] = parent.raster_steps.as_slice()
-        else {
-            panic!("DFS order must be parent-before, child surface, parent-after")
-        };
-        let [PaintPlanStep::ArtifactSpan(child_span)] = nested.raster_steps.as_slice() else {
-            panic!("C5A1 nested surface owns one complete child artifact")
-        };
-
-        assert_eq!(parent.boundary_root, root);
-        assert_eq!(parent.parent_surface, None);
-        assert_eq!(nested.boundary_root, child);
-        assert_eq!(nested.parent_surface, Some(root));
-        assert_eq!(nested.transform(), TransformNodeId(child));
-
-        let chunk_owners = |span: &ArtifactSpanPlan| {
-            span.artifact
-                .chunks
-                .iter()
-                .map(|chunk| chunk.owner)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(chunk_owners(before_span), vec![root, before]);
-        assert_eq!(chunk_owners(child_span), vec![child, descendant]);
-        assert_eq!(chunk_owners(after_span), vec![after]);
-
-        let before_count = opaque_order_count(&before_span.artifact);
-        let child_count = opaque_order_count(&child_span.artifact);
-        let after_count = opaque_order_count(&after_span.artifact);
-        assert_eq!((before_count, child_count, after_count), (2, 2, 1));
-        assert_eq!(before_span.opaque_order_span, 0..2);
-        assert_eq!(child_span.opaque_order_span, 0..2);
-        assert_eq!(after_span.opaque_order_span, 2..3);
-        assert_eq!(nested.aggregate_opaque_order_span, 0..2);
-        assert_eq!(parent.aggregate_opaque_order_span, 0..3);
-
-        let expected_child_matrix = properties.transforms[&TransformNodeId(child)].viewport_matrix;
-        assert_eq!(
-            nested
-                .geometry()
-                .viewport_transform
-                .to_cols_array()
-                .map(f32::to_bits),
-            expected_child_matrix.to_cols_array().map(f32::to_bits),
-            "child surface stores canonical absolute C; parent edge is topology only"
-        );
-        assert_eq!(
-            parent
-                .geometry()
-                .viewport_transform
-                .to_cols_array()
-                .map(f32::to_bits),
-            properties.transforms[&TransformNodeId(root)]
-                .viewport_matrix
-                .to_cols_array()
-                .map(f32::to_bits)
-        );
-        let mapped = parent.geometry().viewport_transform
-            * nested.geometry().viewport_transform
-            * glam::Vec4::new(2.0, 3.0, 0.0, 1.0);
-        assert_eq!(
-            [mapped.x.to_bits(), mapped.y.to_bits(), mapped.w.to_bits()],
-            [127.0_f32.to_bits(), 2.0_f32.to_bits(), 1.0_f32.to_bits()],
-            "stored absolute matrices must compose as P*C with no inverse-derived child matrix"
-        );
-        let mut forced_graph = FrameGraph::new();
-        let mut forced_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let forced_outer_target = forced_ctx.allocate_target(&mut forced_graph);
-        forced_ctx.set_current_target(forced_outer_target);
-        let mut forced_viewport = Viewport::new();
-        let forced_state = super::super::execute_forced_transform_surface_for_test(
-            &mut forced_viewport,
-            &plan,
-            &mut forced_graph,
-            forced_ctx,
-        )
-        .expect("C5B0 forced nested R/R execution");
-        assert_eq!(forced_state.opaque_rect_order_for_test(), 3);
-
-        let mut legacy_graph = FrameGraph::new();
-        let mut legacy_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let outer_target = legacy_ctx.allocate_target(&mut legacy_graph);
-        legacy_ctx.set_current_target(outer_target);
-        let legacy_state = arena
-            .with_element_taken(root, |element, arena| {
-                element.build(&mut legacy_graph, arena, legacy_ctx)
-            })
-            .expect("legacy nested transform build");
-        let clears = legacy_graph
-            .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-            .into_iter()
-            .map(|clear| clear.test_snapshot())
-            .collect::<Vec<_>>();
-        let [parent_clear, child_clear] = clears.as_slice() else {
-            panic!("legacy nested graph must own one target per transform surface")
-        };
-        let rects = legacy_graph.test_rect_pass_snapshots();
-        assert_eq!(rects.len(), 5);
-        assert_eq!(
-            rects
-                .iter()
-                .map(|rect| (rect.output_target, rect.opaque_depth_order))
-                .collect::<Vec<_>>(),
-            vec![
-                (parent_clear.output_target, Some(0)),
-                (parent_clear.output_target, Some(1)),
-                (child_clear.output_target, Some(0)),
-                (child_clear.output_target, Some(1)),
-                (parent_clear.output_target, Some(2)),
-            ],
-            "each surface starts at zero; child terminal is merged into the parent by max before the after span"
-        );
-        assert_eq!(
-            legacy_state.opaque_rect_order_for_test(),
-            3,
-            "parent terminal is max(parent-before=2, child=2)+parent-after=1, not a global sum of five"
-        );
-
-        let surface_pass_names = |graph: &FrameGraph| {
-            let clear = std::any::type_name::<crate::view::frame_graph::ClearPass>();
-            let composite = std::any::type_name::<crate::view::render_pass::TextureCompositePass>();
-            graph
-                .pass_descriptors()
-                .into_iter()
-                .filter_map(|descriptor| {
-                    (descriptor.name == clear)
-                        .then_some("clear")
-                        .or_else(|| (descriptor.name == composite).then_some("composite"))
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            surface_pass_names(&forced_graph),
-            ["clear", "clear", "composite", "composite"]
-        );
-        assert_eq!(
-            surface_pass_names(&forced_graph),
-            surface_pass_names(&legacy_graph)
-        );
-        assert_eq!(
-            forced_graph.test_rect_pass_snapshots(),
-            legacy_graph.test_rect_pass_snapshots(),
-            "forced nested artifact payload, targets, and depth orders must match legacy"
-        );
-        assert_eq!(
-            forced_graph
-                .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                .into_iter()
-                .map(|pass| pass.test_snapshot())
-                .collect::<Vec<_>>(),
-            legacy_graph
-                .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                .into_iter()
-                .map(|pass| pass.test_snapshot())
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            forced_graph
-                .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-                .into_iter()
-                .map(|pass| pass.test_snapshot())
-                .collect::<Vec<_>>(),
-            legacy_graph
-                .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-                .into_iter()
-                .map(|pass| pass.test_snapshot())
-                .collect::<Vec<_>>(),
-            "child P*C composite and parent composite payload must stay bit-identical"
-        );
-        assert_eq!(
-            forced_graph
-                .declared_persistent_textures()
-                .collect::<Vec<_>>(),
-            legacy_graph
-                .declared_persistent_textures()
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            forced_viewport.retained_surface_transaction_shape_for_test(),
-            (0, Some(2)),
-            "the complete nested stamp set is staged exactly once"
-        );
-        forced_viewport.finish_retained_surface_transaction(false);
-        assert_eq!(
-            forced_viewport.retained_surface_transaction_shape_for_test(),
-            (0, None),
-            "a failed frame must clear the complete pending nested stamp set"
-        );
-    }
-
-    #[test]
-    fn production_isolation_first_frame_matches_canonical_root_group_oracle() {
-        let (arena, root, properties, generations) = exact_isolation_fixture(0.5);
-        let plan = plan_single_root_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            160,
-            120,
-            1.0,
-            None,
-        )
-        .expect("exact root opacity isolation plan");
-        let surface = only_surface(&plan);
-        let SurfaceKind::Isolation(isolation) = surface.kind() else {
-            panic!("M9F3 plan must carry typed isolation payload");
-        };
-        assert_eq!(isolation.effect.id.0, root);
-        assert_eq!(isolation.effect.opacity.to_bits(), 0.5_f32.to_bits());
-        assert_eq!(
-            surface.persistent_color_key(),
-            crate::view::base_component::isolation_layer_stable_key(0x9f_3001)
-        );
-        assert!(matches!(
-            only_span(surface).artifact.target,
-            crate::view::paint::PaintArtifactTarget::RootOpacityGroup { root: target, effect }
-                if target == root && effect.0 == root
-        ));
-
-        let mut production_graph = FrameGraph::new();
-        let (production_ctx, _) = parent_context_with_clear(&mut production_graph, 160, 120, 1.0);
-        let mut viewport = Viewport::new();
-        let outcome = super::super::build_retained_isolation_surface_from_pool(
-            &mut viewport,
-            &plan,
-            &mut production_graph,
-            production_ctx,
-        )
-        .expect("production isolation build");
-        let (state, trace) = outcome.into_parts();
-        assert_eq!(
-            trace.action,
-            super::super::RetainedSurfaceCompileAction::Reraster
-        );
-        assert_eq!(trace.descriptor_size, [160, 120]);
-        assert_eq!(state.opaque_rect_order_for_test(), 2);
-
-        let mut oracle_graph = FrameGraph::new();
-        let (oracle_ctx, _) = parent_context_with_clear(&mut oracle_graph, 160, 120, 1.0);
-        let oracle_state = match super::super::try_compile_root_effect_artifact(
-            &only_span(surface).artifact,
-            super::super::RootEffectCompileAction::Reraster,
-            &mut oracle_graph,
-            oracle_ctx,
-        ) {
-            Ok(state) => state,
-            Err(_) => panic!("canonical root group oracle compiles"),
-        };
-        assert_eq!(oracle_state.opaque_rect_order_for_test(), 2);
-        assert_eq!(
-            production_graph.test_rect_pass_snapshots(),
-            oracle_graph.test_rect_pass_snapshots(),
-            "isolation raster payload and local opaque order reuse the canonical recorder/compiler"
-        );
-        assert_eq!(
-            production_graph
-                .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                .into_iter()
-                .map(|pass| pass.test_snapshot())
-                .collect::<Vec<_>>(),
-            oracle_graph
-                .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                .into_iter()
-                .map(|pass| pass.test_snapshot())
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            production_graph
-                .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>()
-                .into_iter()
-                .map(|pass| pass.test_snapshot())
-                .collect::<Vec<_>>(),
-            oracle_graph
-                .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>()
-                .into_iter()
-                .map(|pass| pass.test_snapshot())
-                .collect::<Vec<_>>(),
-            "full-viewport CompositeLayer opacity authority remains bit-exact"
-        );
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (0, Some(1))
-        );
-        viewport.finish_retained_surface_transaction(true);
-        let mut second_graph = FrameGraph::new();
-        let (second_ctx, _) = parent_context_with_clear(&mut second_graph, 160, 120, 1.0);
-        let second = super::super::build_retained_isolation_surface_from_pool(
-            &mut viewport,
-            &plan,
-            &mut second_graph,
-            second_ctx,
-        )
-        .expect("second production isolation build");
-        let (_, second_trace) = second.into_parts();
-        assert_eq!(
-            second_trace.action,
-            super::super::RetainedSurfaceCompileAction::Reraster,
-            "production isolation cannot consume the test-only pair witness"
-        );
-        viewport.finish_retained_surface_transaction(false);
-    }
-
-    #[test]
-    fn isolation_opacity_is_composite_only_but_future_parent_dependency_tracks_it() {
-        let (arena, root, mut properties, mut generations) = exact_isolation_fixture(0.5);
-        let baseline = plan_single_root_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            160,
-            120,
-            1.0,
-            None,
-        )
-        .expect("baseline isolation");
-        let graph = FrameGraph::new();
-        let ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let baseline_stamp =
-            super::super::prepare_forced_retained_surface_stamp_for_test(&baseline, &graph, &ctx)
-                .expect("baseline stamp");
-        let SurfaceKind::Isolation(baseline_isolation) = only_surface(&baseline).kind() else {
-            panic!("isolation");
-        };
-
-        crate::view::test_support::get_element_mut::<Element>(&arena, root).set_opacity(0.25);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let changed = plan_single_root_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            160,
-            120,
-            1.0,
-            None,
-        )
-        .expect("opacity-only isolation");
-        let changed_stamp =
-            super::super::prepare_forced_retained_surface_stamp_for_test(&changed, &graph, &ctx)
-                .expect("changed stamp");
-        assert_eq!(
-            baseline_stamp, changed_stamp,
-            "own isolation opacity is excluded from raster identity"
-        );
-        let SurfaceKind::Isolation(changed_isolation) = only_surface(&changed).kind() else {
-            panic!("isolation");
-        };
-        let baseline_dependency = super::super::retained_isolation_composite_geometry_stamp(
-            baseline_isolation.geometry.source_bounds,
-            baseline_isolation.geometry.logical_size,
-            baseline_isolation.effect.opacity,
-            None,
-        )
-        .unwrap();
-        let changed_dependency = super::super::retained_isolation_composite_geometry_stamp(
-            changed_isolation.geometry.source_bounds,
-            changed_isolation.geometry.logical_size,
-            changed_isolation.effect.opacity,
-            None,
-        )
-        .unwrap();
-        assert_ne!(
-            baseline_dependency, changed_dependency,
-            "future parent raster dependency must include child isolation opacity"
-        );
-
-        let mut viewport = Viewport::new();
-        let mut first_graph = FrameGraph::new();
-        let (first_ctx, _) = parent_context_with_clear(&mut first_graph, 160, 120, 1.0);
-        super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &baseline,
-            &mut first_graph,
-            first_ctx,
-        )
-        .expect("forced baseline isolation");
-        viewport.finish_retained_surface_transaction(true);
-        let mut changed_graph = FrameGraph::new();
-        let (changed_ctx, _) = parent_context_with_clear(&mut changed_graph, 160, 120, 1.0);
-        super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &changed,
-            &mut changed_graph,
-            changed_ctx,
-        )
-        .expect("forced opacity-only isolation reuse");
-        assert_eq!(
-            changed_graph
-                .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                .len(),
-            1,
-            "only the legal outer producer remains on isolation reuse"
-        );
-        assert!(changed_graph.test_rect_pass_snapshots().is_empty());
-        let composites = changed_graph.test_graphics_passes::<
-            crate::view::render_pass::composite_layer_pass::CompositeLayerPass,
-        >();
-        assert_eq!(composites.len(), 1);
-        assert_eq!(
-            composites[0].test_params().opacity.to_bits(),
-            0.25_f32.to_bits()
-        );
-        viewport.finish_retained_surface_transaction(false);
-    }
-
-    #[test]
-    fn isolation_planner_accepts_retained_baseline_baseline_and_rejects_unsupported_or_tampered_state_atomically()
-     {
-        let (arena, root, properties, generations) = exact_isolation_fixture(0.5);
-        let baseline = plan_single_root_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            160,
-            120,
-            1.0,
-            None,
-        )
-        .expect("retained-compatible retained isolation baseline");
-        let _ = only_surface(&baseline);
-        let scissor_error = plan_single_root_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            160,
-            120,
-            1.0,
-            Some([1, 2, 3, 4]),
-        )
-        .expect_err("first isolation slice rejects outer scissor");
-        assert!(
-            scissor_error
-                .reasons
-                .contains(&FramePaintPlanRejection::IsolationOuterScissor)
-        );
-
-        let mut plan = plan_single_root_isolation_surface(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            160,
-            120,
-            1.0,
-            None,
-        )
-        .expect("baseline isolation");
-        isolation_plan_mut(&mut plan).effect.opacity = f32::NAN;
-        let mut graph = FrameGraph::new();
-        let (ctx, _) = parent_context_with_clear(&mut graph, 160, 120, 1.0);
-        let graph_before = graph.build_state_snapshot_for_test();
-        let mut viewport = Viewport::new();
-        let transaction_before = viewport.retained_surface_transaction_shape_for_test();
-        let error = match super::super::build_retained_isolation_surface_from_pool(
-            &mut viewport,
-            &plan,
-            &mut graph,
-            ctx,
-        ) {
-            Ok(_) => panic!("tampered effect cannot emit"),
-            Err(error) => error,
-        };
-        assert_eq!(
-            error,
-            super::super::ForcedTransformSurfaceError::GeometryContract
-        );
-        assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            transaction_before
-        );
-    }
-
-    #[test]
-    fn production_tree_canary_first_frame_matches_legacy_and_uses_pool_only_actions() {
-        let (mut arena, root, _before, child, _descendant, _after, properties, generations) =
-            nested_exact_transform_fixture();
-        let outer_scissor = Some([3, 4, 50, 60]);
-        let plan = plan_single_root_transform_surface_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], outer_scissor),
-        )
-        .expect("exact depth-two production plan");
-
-        let mut production_graph = FrameGraph::new();
-        let (mut production_ctx, _) =
-            parent_context_with_clear(&mut production_graph, 160, 120, 1.0);
-        production_ctx.push_scissor_rect(outer_scissor);
-        let mut viewport = Viewport::new();
-        let outcome = super::super::build_retained_surface_tree_from_pool(
-            &mut viewport,
-            &plan,
-            &mut production_graph,
-            production_ctx,
-        )
-        .expect("production tree executor accepts the exact planner shape");
-        let (production_state, traces) = outcome.into_parts();
-        assert_eq!(production_state.opaque_rect_order_for_test(), 3);
-        assert_eq!(traces.len(), 2);
-        assert_eq!(traces[0].boundary_root, root);
-        assert_eq!(traces[1].boundary_root, child);
-        assert!(traces.iter().all(|trace| {
-            trace.action == super::super::RetainedSurfaceCompileAction::Reraster
-                && trace.descriptor_size[0] > 0
-                && trace.descriptor_size[1] > 0
-                && trace.chunk_count > 0
-                && trace.op_count > 0
-        }));
-
-        let mut legacy_graph = FrameGraph::new();
-        let (mut legacy_ctx, _) = parent_context_with_clear(&mut legacy_graph, 160, 120, 1.0);
-        legacy_ctx.push_scissor_rect(outer_scissor);
-        let legacy_state = arena
-            .with_element_taken(root, |element, arena| {
-                element.build(&mut legacy_graph, arena, legacy_ctx)
-            })
-            .expect("legacy nested transform build");
-        assert_eq!(legacy_state.opaque_rect_order_for_test(), 3);
-        assert_eq!(
-            production_graph.test_rect_pass_snapshots(),
-            legacy_graph.test_rect_pass_snapshots()
-        );
-        assert_eq!(
-            production_graph
-                .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                .into_iter()
-                .map(|pass| pass.test_snapshot())
-                .collect::<Vec<_>>(),
-            legacy_graph
-                .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                .into_iter()
-                .map(|pass| pass.test_snapshot())
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            production_graph
-                .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-                .into_iter()
-                .map(|pass| pass.test_snapshot())
-                .collect::<Vec<_>>(),
-            legacy_graph
-                .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-                .into_iter()
-                .map(|pass| pass.test_snapshot())
-                .collect::<Vec<_>>(),
-            "production tree keeps P*C, target nesting, and root-only outer scissor parity"
-        );
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (0, Some(2))
-        );
-        viewport.finish_retained_surface_transaction(true);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (2, None)
-        );
-
-        let mut second_graph = FrameGraph::new();
-        let (mut second_ctx, _) = parent_context_with_clear(&mut second_graph, 160, 120, 1.0);
-        second_ctx.push_scissor_rect(outer_scissor);
-        let second = super::super::build_retained_surface_tree_from_pool(
-            &mut viewport,
-            &plan,
-            &mut second_graph,
-            second_ctx,
-        )
-        .expect("second production tree frame");
-        let (_, second_traces) = second.into_parts();
-        assert!(
-            second_traces.iter().all(|trace| {
-                trace.action == super::super::RetainedSurfaceCompileAction::Reraster
-            }),
-            "logical success alone cannot fabricate real GPU-pool residency"
-        );
-        viewport.finish_retained_surface_transaction(false);
-    }
-
-    #[test]
-    fn production_singleton_and_tree_executors_reject_each_others_shape_before_mutation() {
-        let (arena, root, _before, _child, _descendant, _after, properties, generations) =
-            nested_exact_transform_fixture();
-        let nested = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("nested plan");
-        let mut graph = FrameGraph::new();
-        let (ctx, _) = parent_context_with_clear(&mut graph, 160, 120, 1.0);
-        let graph_before = graph.build_state_snapshot_for_test();
-        let mut viewport = Viewport::new();
-        let transaction_before = viewport.retained_surface_transaction_shape_for_test();
-        let error = match super::super::build_retained_surface_from_pool(
-            &mut viewport,
-            &nested,
-            &mut graph,
-            ctx,
-        ) {
-            Ok(_) => panic!("singleton production executor cannot accept nested input"),
-            Err(error) => error,
-        };
-        assert_eq!(
-            error,
-            super::super::ForcedTransformSurfaceError::NestedSurface
-        );
-        assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            transaction_before
-        );
-
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let singleton =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("singleton plan");
-        let mut graph = FrameGraph::new();
-        let (ctx, _) = parent_context_with_clear(&mut graph, 160, 120, 1.0);
-        let graph_before = graph.build_state_snapshot_for_test();
-        let error = match super::super::build_retained_surface_tree_from_pool(
-            &mut viewport,
-            &singleton,
-            &mut graph,
-            ctx,
-        ) {
-            Ok(_) => panic!("tree production executor requires exact depth two"),
-            Err(error) => error,
-        };
-        assert_eq!(error, super::super::ForcedTransformSurfaceError::PlanShape);
-        assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            transaction_before
-        );
-    }
-
-    #[test]
-    fn forced_nested_outer_scissor_applies_only_to_parent_final_composite() {
-        let (arena, root, _before, _child, _descendant, _after, properties, generations) =
-            nested_exact_transform_fixture();
-        let outer_scissor = Some([3, 4, 50, 60]);
-        let plan = plan_single_root_transform_surface_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], outer_scissor),
-        )
-        .expect("nested retained surface with an outer scissor");
-        let [PaintPlanStep::RetainedSurface(parent)] = plan.steps.as_slice() else {
-            panic!("one parent surface")
-        };
-        let [
-            PaintPlanStep::ArtifactSpan(_),
-            PaintPlanStep::RetainedSurface(child),
-            PaintPlanStep::ArtifactSpan(_),
-        ] = parent.raster_steps.as_slice()
-        else {
-            panic!("parent-before, child surface, parent-after")
-        };
-        assert_eq!(parent.geometry().outer_scissor_rect, outer_scissor);
-        assert_eq!(
-            child.geometry().outer_scissor_rect,
-            None,
-            "the child raster/composite stays surface-local and cannot inherit the frame scissor"
-        );
-
-        let mut graph = FrameGraph::new();
-        let mut ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let outer_target = ctx.allocate_target(&mut graph);
-        ctx.set_current_target(outer_target);
-        ctx.push_scissor_rect(outer_scissor);
-        let mut viewport = Viewport::new();
-        let state = super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &plan,
-            &mut graph,
-            ctx,
-        )
-        .expect("forced nested R/R execution with outer scissor");
-        assert_eq!(state.opaque_rect_order_for_test(), 3);
-        assert!(graph.test_rect_pass_snapshots().iter().all(|snapshot| {
-            snapshot.explicit_scissor_rect.is_none() && snapshot.effective_scissor_rect.is_none()
-        }));
-
-        let composites = graph
-            .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-            .into_iter()
-            .map(|pass| pass.test_snapshot())
-            .collect::<Vec<_>>();
-        let [child_composite, parent_composite] = composites.as_slice() else {
-            panic!("child and parent final composites")
-        };
-        assert_eq!(child_composite.explicit_scissor_rect, None);
-        assert_eq!(child_composite.effective_scissor_rect, None);
-        assert_eq!(parent_composite.explicit_scissor_rect, outer_scissor);
-        assert_eq!(parent_composite.effective_scissor_rect, outer_scissor);
-    }
-
-    #[test]
-    fn forced_nested_child_transform_only_freezes_parent_reraster_child_reuse() {
-        let (arena, root, _before, child, _descendant, _after, mut properties, mut generations) =
-            nested_exact_transform_fixture();
-        let baseline =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("baseline nested plan");
-        let mut viewport = Viewport::new();
-        let mut first_graph = FrameGraph::new();
-        let mut first_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let first_outer = first_ctx.allocate_target(&mut first_graph);
-        first_ctx.set_current_target(first_outer);
-        super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &baseline,
-            &mut first_graph,
-            first_ctx,
-        )
-        .expect("baseline nested R/R");
-        viewport.finish_retained_surface_transaction(true);
-
-        let child_matrix = glam::Mat4::from_cols_array(&[
-            0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 31.0, 0.0, 0.0, 1.0,
-        ]);
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_resolved_transform_for_test(Some(child_matrix));
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let child_transform_only =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("child transform-only nested plan");
-
-        let mut graph = FrameGraph::new();
-        let mut ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let outer = ctx.allocate_target(&mut graph);
-        ctx.set_current_target(outer);
-        let state = super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &child_transform_only,
-            &mut graph,
-            ctx,
-        )
-        .expect("parent R / child U execution");
-        assert_eq!(state.opaque_rect_order_for_test(), 3);
-
-        let clears = graph
-            .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-            .into_iter()
-            .map(|pass| pass.test_snapshot())
-            .collect::<Vec<_>>();
-        let [parent_clear] = clears.as_slice() else {
-            panic!("R/U clears only the parent pair")
-        };
-        let rects = graph.test_rect_pass_snapshots();
-        assert_eq!(
-            rects.len(),
-            3,
-            "the child resident pair emits no raster work"
-        );
-        assert!(rects.iter().all(|rect| {
-            rect.output_target == parent_clear.output_target
-                && rect.input_target == parent_clear.output_target
-        }));
-        assert_eq!(
-            rects
-                .iter()
-                .map(|rect| rect.opaque_depth_order)
-                .collect::<Vec<_>>(),
-            [Some(0), Some(1), Some(2)],
-            "child terminal is replayed by max before the parent after span"
-        );
-
-        let composites = graph
-            .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-            .into_iter()
-            .map(|pass| pass.test_snapshot())
-            .collect::<Vec<_>>();
-        let [child_composite, parent_composite] = composites.as_slice() else {
-            panic!("R/U emits child-to-parent and parent-to-caller composites")
-        };
-        assert_eq!(child_composite.output_target, parent_clear.output_target);
-        assert_ne!(child_composite.source_handle, parent_clear.output_target);
-        assert_eq!(parent_composite.source_handle, parent_clear.output_target);
-        assert_eq!(parent_composite.output_target, outer.handle());
-        assert_eq!(
-            graph.declared_persistent_texture_keys().count(),
-            4,
-            "R/U declares both complete persistent target pairs"
-        );
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (2, Some(2)),
-            "the frozen R/U action tree still stages the canonical full set"
-        );
-    }
-
-    #[test]
-    fn forced_nested_parent_transform_only_reuses_whole_tree_without_child_composite() {
-        let (arena, root, _before, _child, _descendant, _after, mut properties, mut generations) =
-            nested_exact_transform_fixture();
-        let baseline =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("baseline nested plan");
-        let mut viewport = Viewport::new();
-        commit_forced_nested_plan(&mut viewport, &baseline);
-
-        crate::view::test_support::get_element_mut::<Element>(&arena, root)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                101.0, 0.0, 0.0,
-            ))));
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let parent_transform_only =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("parent transform-only nested plan");
-
-        let mut graph = FrameGraph::new();
-        let mut ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let outer = ctx.allocate_target(&mut graph);
-        ctx.set_current_target(outer);
-        let state = super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &parent_transform_only,
-            &mut graph,
-            ctx,
-        )
-        .expect("parent U / child U execution");
-        assert_eq!(state.opaque_rect_order_for_test(), 3);
-        assert_eq!(state.target_pair_count_for_test(), 3);
-        assert!(
-            graph
-                .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                .is_empty()
-        );
-        assert!(graph.test_rect_pass_snapshots().is_empty());
-        let composites = graph
-            .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-            .into_iter()
-            .map(|pass| pass.test_snapshot())
-            .collect::<Vec<_>>();
-        let [parent_composite] = composites.as_slice() else {
-            panic!("U/U emits only the latest parent-to-caller composite")
-        };
-        assert_eq!(parent_composite.output_target, outer.handle());
-        let parent = only_surface(&parent_transform_only);
-        assert_eq!(
-            parent_composite.quad_position_bits,
-            Some(
-                parent
-                    .geometry()
-                    .quad_positions
-                    .map(|point| point.map(f32::to_bits)),
-            ),
-            "U/U final composite must use the latest parent transform"
-        );
-        assert_eq!(graph.declared_persistent_texture_keys().count(), 4);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (2, Some(2))
-        );
-        viewport.finish_retained_surface_transaction(false);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (0, None),
-            "a failed U/U frame invalidates both logical stamps and pair witnesses"
-        );
-        let mut retry_graph = FrameGraph::new();
-        let mut retry_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let retry_outer = retry_ctx.allocate_target(&mut retry_graph);
-        retry_ctx.set_current_target(retry_outer);
-        super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &parent_transform_only,
-            &mut retry_graph,
-            retry_ctx,
-        )
-        .expect("retry after failed U/U frame");
-        assert_eq!(
-            retry_graph
-                .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                .len(),
-            2
-        );
-        assert_eq!(retry_graph.test_rect_pass_snapshots().len(), 5);
-        assert_eq!(
-            retry_graph
-                .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-                .len(),
-            2,
-            "finish(false) forces the next nested frame back to R/R"
-        );
-    }
-
-    #[test]
-    fn forced_nested_child_pool_miss_reraster_materializes_without_touching_cached_parent() {
-        let (arena, root, _before, child, _descendant, _after, properties, generations) =
-            nested_exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("baseline nested plan");
-        let mut viewport = Viewport::new();
-        commit_forced_nested_plan(&mut viewport, &plan);
-        let child_key = crate::view::base_component::transformed_layer_stable_key(
-            arena.get(child).expect("child").element.stable_id(),
-        );
-        viewport.forget_retained_surface_pair_witness_for_test(child_key);
-
-        let mut graph = FrameGraph::new();
-        let (ctx, outer) = parent_context_with_clear(&mut graph, 160, 120, 1.0);
-        let state = super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &plan,
-            &mut graph,
-            ctx,
-        )
-        .expect("parent U / child R_pool execution");
-        assert_eq!(state.opaque_rect_order_for_test(), 3);
-        assert_eq!(state.target_pair_count_for_test(), 3);
-        let clears = graph
-            .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-            .into_iter()
-            .map(|pass| pass.test_snapshot())
-            .collect::<Vec<_>>();
-        let [_outer_clear, child_clear] = clears.as_slice() else {
-            panic!("U/R_pool has one legal outer producer and clears only the missing child pair")
-        };
-        let rects = graph.test_rect_pass_snapshots();
-        assert_eq!(rects.len(), 2);
-        assert!(rects.iter().all(|rect| {
-            rect.input_target == child_clear.output_target
-                && rect.output_target == child_clear.output_target
-        }));
-        let composites = graph
-            .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-            .into_iter()
-            .map(|pass| pass.test_snapshot())
-            .collect::<Vec<_>>();
-        let [parent_composite] = composites.as_slice() else {
-            panic!("U/R_pool cannot composite the child into the cached parent")
-        };
-        assert_ne!(parent_composite.source_handle, child_clear.output_target);
-        assert_eq!(parent_composite.output_target, outer.handle());
-        assert_eq!(graph.declared_persistent_texture_keys().count(), 4);
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            (2, Some(2))
-        );
-
-        let present = graph.add_graphics_pass(
-            crate::view::render_pass::present_surface_pass::PresentSurfacePass::new(
-                crate::view::render_pass::present_surface_pass::PresentSurfaceParams,
-                crate::view::render_pass::present_surface_pass::PresentSurfaceInput {
-                    source: crate::view::render_pass::draw_rect_pass::RenderTargetIn::with_handle(
-                        outer.handle().expect("outer target handle"),
-                    ),
-                },
-                crate::view::render_pass::present_surface_pass::PresentSurfaceOutput,
-            ),
-        );
-        graph
-            .add_pass_sink(
-                present,
-                crate::view::frame_graph::ExternalSinkKind::SurfacePresent,
-            )
-            .expect("surface-present root");
-
-        let compiled = graph
-            .test_compile_snapshot()
-            .expect("surface-present and persistent-materialization roots must compile together");
-        assert_eq!(
-            compiled
-                .pass_payloads()
-                .iter()
-                .filter(|payload| matches!(payload, FramePassTestPayload::Clear(_)))
-                .count(),
-            2,
-            "the legal outer depth producer and detached child clear both stay live"
-        );
-        assert_eq!(
-            compiled
-                .pass_payloads()
-                .iter()
-                .filter(|payload| matches!(payload, FramePassTestPayload::DrawRect(_)))
-                .count(),
-            2,
-            "the persistent materialization sink keeps child raster writes live"
-        );
-        assert_eq!(
-            compiled
-                .pass_payloads()
-                .iter()
-                .filter(|payload| matches!(payload, FramePassTestPayload::TextureComposite(_)))
-                .count(),
-            1,
-            "only parent-to-caller composite remains; child-to-cached-parent is forbidden"
-        );
-        assert_eq!(
-            compiled
-                .pass_payloads()
-                .iter()
-                .filter(|payload| matches!(payload, FramePassTestPayload::PresentSurface(_)))
-                .count(),
-            1,
-            "the parent final-composite and present chain stays live beside materialization"
-        );
-    }
-
-    #[test]
-    fn forced_nested_parent_and_child_paint_changes_freeze_r_u_and_r_r() {
-        let (arena, root, _before, _child, _descendant, _after, mut properties, mut generations) =
-            nested_exact_transform_fixture();
-        let baseline =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("parent-paint baseline");
-        let mut viewport = Viewport::new();
-        commit_forced_nested_plan(&mut viewport, &baseline);
-        crate::view::test_support::get_element_mut::<Element>(&arena, root)
-            .set_background_color_value(Color::rgb(90, 20, 140));
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let parent_paint =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("parent own-paint plan");
-        let mut parent_graph = FrameGraph::new();
-        let mut parent_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let parent_outer = parent_ctx.allocate_target(&mut parent_graph);
-        parent_ctx.set_current_target(parent_outer);
-        let parent_state = super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &parent_paint,
-            &mut parent_graph,
-            parent_ctx,
-        )
-        .expect("parent paint R/U");
-        assert_eq!(parent_state.opaque_rect_order_for_test(), 3);
-        assert_eq!(parent_state.target_pair_count_for_test(), 3);
-        assert_eq!(
-            parent_graph
-                .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                .len(),
-            1
-        );
-        assert_eq!(parent_graph.test_rect_pass_snapshots().len(), 3);
-        assert_eq!(
-            parent_graph
-                .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-                .len(),
-            2
-        );
-        assert_eq!(parent_graph.declared_persistent_texture_keys().count(), 4);
-
-        let (arena, root, _before, child, _descendant, _after, mut properties, mut generations) =
-            nested_exact_transform_fixture();
-        let baseline =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("child-paint baseline");
-        let mut viewport = Viewport::new();
-        commit_forced_nested_plan(&mut viewport, &baseline);
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_background_color_value(Color::rgb(12, 220, 44));
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let child_paint =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("child paint plan");
-        let mut child_graph = FrameGraph::new();
-        let mut child_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let child_outer = child_ctx.allocate_target(&mut child_graph);
-        child_ctx.set_current_target(child_outer);
-        let child_state = super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &child_paint,
-            &mut child_graph,
-            child_ctx,
-        )
-        .expect("child paint R/R");
-        assert_eq!(child_state.opaque_rect_order_for_test(), 3);
-        assert_eq!(child_state.target_pair_count_for_test(), 3);
-        assert_eq!(
-            child_graph
-                .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-                .len(),
-            2
-        );
-        assert_eq!(child_graph.test_rect_pass_snapshots().len(), 5);
-        assert_eq!(
-            child_graph
-                .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-                .len(),
-            2
-        );
-        assert_eq!(child_graph.declared_persistent_texture_keys().count(), 4);
-    }
-
-    #[test]
-    fn nested_transform_shape_and_affine_rejections_fail_closed() {
-        let (arena, root, before, _child, _descendant, _after, _, _) =
-            nested_exact_transform_fixture();
-        crate::view::test_support::get_element_mut::<Element>(&arena, before)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                5.0, 0.0, 0.0,
-            ))));
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[root]);
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[root], &properties);
-        let multiple =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err("two direct transformed children exceed the C5A1 exact shape");
-        assert!(
-            multiple
-                .reasons
-                .contains(&FramePaintPlanRejection::TransformNodeCount(3))
-        );
-
-        let (arena, root, _before, child, descendant, _after, _, _) =
-            nested_exact_transform_fixture();
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_resolved_transform_for_test(None);
-        crate::view::test_support::get_element_mut::<Element>(&arena, descendant)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                7.0, 0.0, 0.0,
-            ))));
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[root]);
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[root], &properties);
-        let depth_three =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err("a transformed grandchild is outside the direct-child C5A1 shape");
-        assert!(
-            depth_three
-                .reasons
-                .contains(&FramePaintPlanRejection::UnexpectedTransform(descendant))
-        );
-
-        let (arena, root, _before, child, _descendant, _after, mut properties, generations) =
-            nested_exact_transform_fixture();
-        let child_transform = properties
-            .transforms
-            .get_mut(&TransformNodeId(child))
-            .expect("child transform");
-        let mut perspective = child_transform.viewport_matrix.to_cols_array();
-        perspective[3] = 0.25;
-        child_transform.viewport_matrix = glam::Mat4::from_cols_array(&perspective);
-        let non_affine =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err("perspective child matrix is outside C5A1");
-        assert!(
-            non_affine
-                .reasons
-                .contains(&FramePaintPlanRejection::NonAffineTransform(child))
-        );
-
-        let (arena, root, _before, child, _descendant, _after, mut properties, generations) =
-            nested_exact_transform_fixture();
-        properties
-            .transforms
-            .get_mut(&TransformNodeId(child))
-            .expect("child transform")
-            .viewport_matrix = glam::Mat4::from_translation(glam::Vec3::new(31.0, 0.0, 0.0));
-        let mismatched =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err(
-                    "planned C must match the Element canonical geometry matrix bit-for-bit",
-                );
-        assert_eq!(
-            mismatched.reasons,
-            vec![FramePaintPlanRejection::InvalidRootTransform(child)]
-        );
-    }
-
-    #[test]
-    fn nested_opaque_spans_use_surface_local_cursor_and_max_child_terminal() {
-        let (arena, root, child, properties, generations) = nested_opaque_cursor_fixture(3, 1, 1);
-        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("parent-before dominant cursor fixture");
-        let [PaintPlanStep::RetainedSurface(parent)] = plan.steps.as_slice() else {
-            panic!("one parent surface")
-        };
-        let [
-            PaintPlanStep::ArtifactSpan(before),
-            PaintPlanStep::RetainedSurface(nested),
-            PaintPlanStep::ArtifactSpan(after),
-        ] = parent.raster_steps.as_slice()
-        else {
-            panic!("before, child, after roles must stay explicit")
-        };
-        let [PaintPlanStep::ArtifactSpan(child_span)] = nested.raster_steps.as_slice() else {
-            panic!("one child-local artifact span")
-        };
-        assert_eq!(nested.boundary_root, child);
-        assert_eq!(opaque_order_count(&before.artifact), 3);
-        assert_eq!(opaque_order_count(&child_span.artifact), 1);
-        assert_eq!(opaque_order_count(&after.artifact), 1);
-        assert_eq!(before.opaque_order_span, 0..3);
-        assert_eq!(child_span.opaque_order_span, 0..1);
-        assert_eq!(nested.aggregate_opaque_order_span, 0..1);
-        assert_eq!(after.opaque_order_span, 3..4);
-        assert_eq!(parent.aggregate_opaque_order_span, 0..4);
-
-        let (arena, root, child, properties, generations) = nested_opaque_cursor_fixture(0, 2, 1);
-        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("child-dominant cursor fixture");
-        let [PaintPlanStep::RetainedSurface(parent)] = plan.steps.as_slice() else {
-            panic!("one parent surface")
-        };
-        let [
-            PaintPlanStep::ArtifactSpan(before),
-            PaintPlanStep::RetainedSurface(nested),
-            PaintPlanStep::ArtifactSpan(after),
-        ] = parent.raster_steps.as_slice()
-        else {
-            panic!("zero-count parent-before span must retain its owning role")
-        };
-        let [PaintPlanStep::ArtifactSpan(child_span)] = nested.raster_steps.as_slice() else {
-            panic!("one child-local artifact span")
-        };
-        assert_eq!(nested.boundary_root, child);
-        assert_eq!(opaque_order_count(&before.artifact), 0);
-        assert_eq!(opaque_order_count(&child_span.artifact), 2);
-        assert_eq!(opaque_order_count(&after.artifact), 1);
-        assert_eq!(before.opaque_order_span, 0..0);
-        assert_eq!(child_span.opaque_order_span, 0..2);
-        assert_eq!(nested.aggregate_opaque_order_span, 0..2);
-        assert_eq!(after.opaque_order_span, 2..3);
-        assert_eq!(parent.aggregate_opaque_order_span, 0..3);
-    }
-
-    #[test]
-    fn nested_stamp_tracks_child_raster_and_composite_geometry_but_not_parent_transform_only() {
-        let (arena, root, _before, child, _descendant, _after, mut properties, mut generations) =
-            nested_exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("baseline nested plan");
-        let ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let baseline = super::super::prepare_forced_retained_surface_stamp_for_test(
-            &plan,
-            &FrameGraph::new(),
-            &ctx,
-        )
-        .expect("baseline nested stamp");
-        let child_stamp = |stamp: &super::super::RetainedSurfaceRasterStamp| {
-            let super::super::RetainedSurfaceRasterStepStamp::NestedSurface(dependency) =
-                &stamp.ordered_steps[1]
-            else {
-                panic!("middle step is the exact child dependency")
-            };
-            dependency.child_stamp.as_ref().clone()
-        };
-
-        crate::view::test_support::get_element_mut::<Element>(&arena, root)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                101.0, 0.0, 0.0,
-            ))));
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let parent_transform_plan =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("parent transform-only nested plan");
-        let parent_transform_stamp = super::super::prepare_forced_retained_surface_stamp_for_test(
-            &parent_transform_plan,
-            &FrameGraph::new(),
-            &ctx,
-        )
-        .expect("parent transform-only stamp");
-        assert_eq!(
-            parent_transform_stamp, baseline,
-            "parent final composite transform stays outside its own raster stamp"
-        );
-
-        let child_matrix = glam::Mat4::from_cols_array(&[
-            0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 31.0, 0.0, 0.0, 1.0,
-        ]);
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_resolved_transform_for_test(Some(child_matrix));
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let child_transform_plan =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("child transform-only nested plan");
-        let child_transform_stamp = super::super::prepare_forced_retained_surface_stamp_for_test(
-            &child_transform_plan,
-            &FrameGraph::new(),
-            &ctx,
-        )
-        .expect("child transform-only stamp");
-        assert_eq!(
-            child_stamp(&child_transform_stamp),
-            child_stamp(&baseline),
-            "child final composite transform stays outside the child raster stamp"
-        );
-        assert_ne!(
-            child_transform_stamp, baseline,
-            "child composite geometry is an exact parent raster dependency"
-        );
-
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_background_color_value(Color::rgb(12, 220, 44));
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let child_paint_plan =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("child paint nested plan");
-        let child_paint_stamp = super::super::prepare_forced_retained_surface_stamp_for_test(
-            &child_paint_plan,
-            &FrameGraph::new(),
-            &ctx,
-        )
-        .expect("child paint stamp");
-        assert_ne!(child_stamp(&child_paint_stamp), child_stamp(&baseline));
-        assert_ne!(child_paint_stamp, baseline);
-    }
-
-    #[test]
-    fn forced_rect_executor_emits_clear_raster_composite_to_distinct_targets() {
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("exact rect surface plan");
-
-        let mut graph = FrameGraph::new();
-        let mut ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let parent_target = ctx.allocate_target(&mut graph);
-        let parent_handle = parent_target.handle().expect("parent texture handle");
-        ctx.set_current_target(parent_target);
-        let mut viewport = Viewport::new();
-        let state = super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &plan,
-            &mut graph,
-            ctx,
-        )
-        .expect("forced exact rect surface execution");
-        assert_eq!(
-            state.current_target().and_then(|target| target.handle()),
-            Some(parent_handle)
-        );
-
-        let pass_names = graph
-            .pass_descriptors()
-            .into_iter()
-            .map(|descriptor| descriptor.name)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            pass_names.first().copied(),
-            Some(std::any::type_name::<crate::view::render_pass::ClearPass>())
-        );
-        assert_eq!(
-            pass_names.last().copied(),
-            Some(std::any::type_name::<
-                crate::view::render_pass::TextureCompositePass,
-            >())
-        );
-        assert!(pass_names[1..pass_names.len() - 1].iter().all(|name| {
-            *name
-                == std::any::type_name::<
-                    crate::view::render_pass::draw_rect_pass::OpaqueRectPass,
-                >()
-                || *name
-                    == std::any::type_name::<
-                        crate::view::render_pass::draw_rect_pass::DrawRectPass,
-                    >()
-        }));
-
-        let clears = graph.test_graphics_passes::<crate::view::render_pass::ClearPass>();
-        let [clear] = clears.as_slice() else {
-            panic!("forced surface emits one transparent clear")
-        };
-        let clear = clear.test_snapshot();
-        assert_eq!(clear.color_bits, [0.0_f32.to_bits(); 4]);
-        assert!(clear.clear_depth_stencil);
-        assert_ne!(clear.output_target, Some(parent_handle));
-
-        let composites =
-            graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
-        let [composite] = composites.as_slice() else {
-            panic!("forced surface emits one final composite")
-        };
-        let composite = composite.test_snapshot();
-        assert_eq!(composite.source_handle, clear.output_target);
-        assert_eq!(composite.output_target, Some(parent_handle));
-        assert_eq!(
-            graph.declared_persistent_texture_keys().collect::<Vec<_>>(),
-            vec![
-                crate::view::base_component::transformed_layer_stable_key(0xc1_0001),
-                crate::view::base_component::transformed_layer_stable_key(0xc1_0001)
-                    .depth_stencil()
-                    .expect("transformed depth key"),
-            ]
-        );
-    }
-
-    #[test]
-    fn retained_surface_stamp_excludes_transform_only_drift_and_tracks_raster_drift() {
-        let (arena, root, mut properties, mut generations) = exact_transform_fixture();
-        let first_plan =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("exact retained surface plan");
-        let [PaintPlanStep::RetainedSurface(first_surface)] = first_plan.steps.as_slice() else {
-            panic!("one retained surface")
-        };
-        let baseline = retained_surface_stamp(first_surface, &only_span(first_surface).artifact)
-            .expect("validated retained raster stamp");
-        let first_boundary_self_revision = only_span(first_surface)
-            .artifact
-            .chunks
-            .iter()
-            .find(|chunk| chunk.owner == root)
-            .expect("boundary chunk")
-            .content_revision
-            .self_paint_revision;
-        let first_viewport_transform = first_surface.geometry().viewport_transform;
-        assert_eq!(baseline.identity.boundary_root, root);
-        assert_eq!(baseline.identity.stable_id, 0xc1_0001);
-        assert_eq!(
-            baseline.identity.color_key,
-            first_surface.persistent_color_key
-        );
-        assert!(
-            baseline
-                .target
-                .has_canonical_descriptor_pair_for(baseline.identity)
-        );
-        assert_eq!(baseline.opaque_order_span, 0..2);
-
-        let mut transform_style = Style::new();
-        transform_style.set_transform(Transform::new([Rotate::z(Angle::deg(24.0))]));
-        arena
-            .get_mut(root)
-            .expect("root")
-            .element
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .expect("Element root")
-            .apply_style(transform_style);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let transform_plan =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("transform-only retained surface replan");
-        let [PaintPlanStep::RetainedSurface(transform_surface)] = transform_plan.steps.as_slice()
-        else {
-            panic!("one retained surface")
-        };
-        let transform_boundary_self_revision = only_span(transform_surface)
-            .artifact
-            .chunks
-            .iter()
-            .find(|chunk| chunk.owner == root)
-            .expect("boundary chunk")
-            .content_revision
-            .self_paint_revision;
-        assert_ne!(
-            transform_boundary_self_revision, first_boundary_self_revision,
-            "real property-tree transform generation is conservatively folded into boundary self paint"
-        );
-        assert_ne!(
-            transform_surface.geometry().viewport_transform,
-            first_viewport_transform,
-            "the second plan must carry the latest composite matrix"
-        );
-        assert_eq!(
-            retained_surface_stamp(transform_surface, &only_span(transform_surface).artifact),
-            Some(baseline.clone()),
-            "a true transform sync/re-record must keep the raster stamp reusable"
-        );
-
-        let mut boundary_composite = only_span(transform_surface).artifact.clone();
-        boundary_composite
-            .chunks
-            .iter_mut()
-            .find(|chunk| chunk.owner == root)
-            .expect("boundary chunk")
-            .content_revision
-            .composite_revision += 1;
-        assert_eq!(
-            retained_surface_stamp(transform_surface, &boundary_composite),
-            Some(baseline.clone()),
-            "boundary composite revision is consumed by the final composite"
-        );
-
-        let child = arena.get(root).expect("root").element.children()[0];
-        let mut descendant_composite = only_span(transform_surface).artifact.clone();
-        descendant_composite
-            .chunks
-            .iter_mut()
-            .find(|chunk| chunk.owner == child)
-            .expect("descendant chunk")
-            .content_revision
-            .composite_revision += 1;
-        assert_ne!(
-            retained_surface_stamp(transform_surface, &descendant_composite),
-            Some(baseline.clone())
-        );
-
-        arena
-            .get_mut(root)
-            .expect("root")
-            .element
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .expect("Element root")
-            .set_background_color_value(Color::rgb(90, 110, 130));
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let repaint_plan =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("root-fill retained surface replan");
-        let [PaintPlanStep::RetainedSurface(repaint_surface)] = repaint_plan.steps.as_slice()
-        else {
-            panic!("one retained surface")
-        };
-        assert_ne!(
-            retained_surface_stamp(repaint_surface, &only_span(repaint_surface).artifact),
-            Some(baseline.clone()),
-            "exact root paint payload identity must still veto reuse"
-        );
-
-        let mut invalid_store = only_span(transform_surface).artifact.clone();
-        invalid_store.chunks[0].properties.transform = None;
-        assert!(retained_surface_stamp(transform_surface, &invalid_store).is_none());
-    }
-
-    #[test]
-    fn forced_retained_surface_reuses_only_after_success_and_composites_latest_transform() {
-        let (arena, root, mut properties, mut generations) = exact_transform_fixture();
-        let first_plan =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("first retained surface plan");
-        let mut viewport = Viewport::new();
-        let mut first_graph = FrameGraph::new();
-        let first_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let first_state = super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &first_plan,
-            &mut first_graph,
-            first_ctx,
-        )
-        .expect("first frame reraster");
-        assert_eq!(first_state.opaque_rect_order_for_test(), 2);
-        assert_eq!(
-            first_graph
-                .test_graphics_passes::<crate::view::render_pass::ClearPass>()
-                .len(),
-            1
-        );
-        assert_eq!(
-            first_graph
-                .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::OpaqueRectPass>()
-                .len()
-                + first_graph
-                    .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::DrawRectPass>(
-                    )
-                    .len(),
-            2
-        );
-        let first_composite = first_graph
-            .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()[0]
-            .test_snapshot();
-
-        viewport.finish_retained_surface_transaction(true);
-
-        let mut transform_style = Style::new();
-        transform_style.set_transform(Transform::new([Rotate::z(Angle::deg(24.0))]));
-        arena
-            .get_mut(root)
-            .expect("root")
-            .element
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .expect("Element root")
-            .apply_style(transform_style);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let latest_scissor = Some([3, 4, 50, 60]);
-        let second_plan = plan_single_root_transform_surface_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], latest_scissor),
-        )
-        .expect("transform-only retained surface replan");
-        let mut second_graph = FrameGraph::new();
-        let mut second_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        second_ctx.push_scissor_rect(latest_scissor);
-        let second_state = super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &second_plan,
-            &mut second_graph,
-            second_ctx,
-        )
-        .expect("second frame reuse");
-        assert_eq!(
-            second_state.opaque_rect_order_for_test(),
-            2,
-            "reuse skips raster operations but must replay the prepared opaque terminal"
-        );
-        assert!(
-            second_graph
-                .test_graphics_passes::<crate::view::render_pass::ClearPass>()
-                .is_empty(),
-            "reuse must not clear the resident pair"
-        );
-        assert!(
-            second_graph
-                .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::OpaqueRectPass>()
-                .is_empty()
-        );
-        assert!(
-            second_graph
-                .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::DrawRectPass>()
-                .is_empty()
-        );
-        assert_eq!(
-            second_graph
-                .declared_persistent_texture_keys()
-                .collect::<Vec<_>>()
-                .len(),
-            2,
-            "reuse still declares the canonical persistent color/depth pair"
-        );
-        let second_composites =
-            second_graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
-        let [second_composite] = second_composites.as_slice() else {
-            panic!("reuse emits exactly one final composite")
-        };
-        let second_composite = second_composite.test_snapshot();
-        assert_ne!(
-            second_composite.quad_position_bits, first_composite.quad_position_bits,
-            "reuse composite must use the latest transform geometry"
-        );
-        assert_eq!(second_composite.explicit_scissor_rect, latest_scissor);
-        assert_eq!(second_composite.effective_scissor_rect, latest_scissor);
-        viewport.finish_retained_surface_transaction(true);
-
-        arena
-            .get_mut(root)
-            .expect("root")
-            .element
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .expect("Element root")
-            .set_background_color_value(Color::rgb(90, 110, 130));
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let repaint_plan = plan_single_root_transform_surface_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            TransformSurfacePlanContext::new([0.0, 0.0], latest_scissor),
-        )
-        .expect("root paint retained surface replan");
-        let mut repaint_graph = FrameGraph::new();
-        let mut repaint_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        repaint_ctx.push_scissor_rect(latest_scissor);
-        super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &repaint_plan,
-            &mut repaint_graph,
-            repaint_ctx,
-        )
-        .expect("root paint change reraster");
-        assert_eq!(
-            repaint_graph
-                .test_graphics_passes::<crate::view::render_pass::ClearPass>()
-                .len(),
-            1,
-            "a real root paint/payload change must veto reuse"
-        );
-    }
-
-    #[test]
-    fn forced_retained_surface_failed_frame_cannot_become_reusable() {
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("retained surface plan");
-        for (compiled, executed, failure) in [
-            (false, false, "compile failure"),
-            (true, false, "execute failure"),
-        ] {
-            let mut viewport = Viewport::new();
-            let mut failed_graph = FrameGraph::new();
-            super::super::execute_forced_transform_surface_for_test(
-                &mut viewport,
-                &plan,
-                &mut failed_graph,
-                UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0),
-            )
-            .expect("failed frame still builds a reraster graph");
-            viewport.finish_retained_surface_transaction(compiled && executed);
-
-            let mut retry_graph = FrameGraph::new();
-            super::super::execute_forced_transform_surface_for_test(
-                &mut viewport,
-                &plan,
-                &mut retry_graph,
-                UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0),
-            )
-            .expect("retry frame reraster");
-            assert_eq!(
-                retry_graph
-                    .test_graphics_passes::<crate::view::render_pass::ClearPass>()
-                    .len(),
-                1,
-                "{failure} must not commit a reusable resident pair"
-            );
-            assert_eq!(
-                retry_graph
-                    .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-                    .len(),
-                1
-            );
-        }
-    }
-
-    #[test]
-    fn forced_rect_executor_locks_nonzero_context_descriptor_pair_and_opaque_span() {
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let frozen = TransformSurfacePlanContext::new([0.25, -0.25], Some([3, 4, 50, 60]));
-        let plan = plan_single_root_transform_surface_with_context(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            frozen,
-        )
-        .expect("nonzero frozen transform context");
-        let [PaintPlanStep::RetainedSurface(surface)] = plan.steps.as_slice() else {
-            panic!("one retained surface")
-        };
-        assert_eq!(surface.context(), frozen);
-        assert_eq!(surface.aggregate_opaque_order_span, 0..2);
-        assert_eq!(
-            [
-                surface.geometry().source_bounds.x.to_bits(),
-                surface.geometry().source_bounds.y.to_bits(),
-                surface.geometry().source_bounds.width.to_bits(),
-                surface.geometry().source_bounds.height.to_bits(),
-            ],
-            [
-                8.5_f32.to_bits(),
-                7.0_f32.to_bits(),
-                40.0_f32.to_bits(),
-                24.0_f32.to_bits(),
-            ]
-        );
-        assert_eq!(
-            [
-                surface.geometry().visual_bounds.x.to_bits(),
-                surface.geometry().visual_bounds.y.to_bits(),
-            ],
-            [9.0_f32.to_bits(), 7.0_f32.to_bits()],
-            "hard-coded paint-snap delta is (+0.5, 0.0)"
-        );
-        assert_eq!(surface.geometry().outer_scissor_rect, Some([3, 4, 50, 60]));
-
-        let mut graph = FrameGraph::new();
-        let mut ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 2.0);
-        ctx.translate_paint_offset(0.25, -0.25);
-        ctx.push_scissor_rect(Some([3, 4, 50, 60]));
-        let mut viewport = Viewport::new();
-        let state = super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &plan,
-            &mut graph,
-            ctx,
-        )
-        .expect("runtime context matches frozen plan bit-for-bit");
-        assert_eq!(state.opaque_rect_order_for_test(), 2);
-
-        let color_key = crate::view::base_component::transformed_layer_stable_key(0xc1_0001);
-        let depth_key = color_key.depth_stencil().expect("transformed depth key");
-        let declared = graph
-            .declared_persistent_textures()
-            .collect::<std::collections::HashMap<_, _>>();
-        assert_eq!(declared.len(), 2);
-        let color = declared.get(&color_key).expect("surface color descriptor");
-        let depth = declared.get(&depth_key).expect("surface depth descriptor");
-        assert_eq!((color.width(), color.height()), (80, 48));
-        assert_eq!(color.origin(), (17, 14));
-        assert_eq!(color.format(), wgpu::TextureFormat::Bgra8Unorm);
-        assert_eq!(color.dimension(), wgpu::TextureDimension::D2);
-        assert_eq!(color.sample_count(), 1);
-        assert_eq!(
-            color.usage(),
-            wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST
-        );
-        assert_eq!((depth.width(), depth.height()), (80, 48));
-        assert_eq!(depth.origin(), (0, 0));
-        assert_eq!(depth.format(), wgpu::TextureFormat::Depth24PlusStencil8);
-        assert_eq!(depth.dimension(), wgpu::TextureDimension::D2);
-        assert_eq!(depth.sample_count(), 1);
-        assert_eq!(depth.usage(), wgpu::TextureUsages::RENDER_ATTACHMENT);
-
-        let rects = graph.test_rect_pass_snapshots();
-        let opaque_orders = rects
-            .iter()
-            .map(|snapshot| snapshot.opaque_depth_order)
-            .collect::<Vec<_>>();
-        assert_eq!(opaque_orders, vec![Some(0), Some(1)]);
-        assert!(rects.iter().all(|snapshot| {
-            snapshot.explicit_scissor_rect.is_none()
-                && snapshot.effective_scissor_rect.is_none()
-                && snapshot.input_target == snapshot.output_target
-        }));
-        let clears = graph.test_graphics_passes::<crate::view::render_pass::ClearPass>();
-        let [clear] = clears.as_slice() else {
-            panic!("one surface clear")
-        };
-        let clear = clear.test_snapshot();
-        assert!(rects.iter().all(|snapshot| {
-            snapshot.input_target == clear.output_target
-                && snapshot.output_target == clear.output_target
-        }));
-        let composites =
-            graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
-        let [composite] = composites.as_slice() else {
-            panic!("one final composite")
-        };
-        let composite = composite.test_snapshot();
-        assert_eq!(composite.source_handle, clear.output_target);
-        assert_eq!(
-            composite.output_target,
-            state.current_target().and_then(|target| target.handle())
-        );
-        assert_ne!(composite.output_target, composite.source_handle);
-        assert_eq!(composite.explicit_scissor_rect, Some([3, 4, 50, 60]));
-        assert_eq!(
-            composite.bounds_bits,
-            [
-                9.0_f32.to_bits(),
-                7.0_f32.to_bits(),
-                40.0_f32.to_bits(),
-                24.0_f32.to_bits(),
-            ]
-        );
-        assert_eq!(
-            composite.uv_bounds_bits,
-            Some([
-                8.5_f32.to_bits(),
-                7.0_f32.to_bits(),
-                40.0_f32.to_bits(),
-                24.0_f32.to_bits(),
-            ])
-        );
-    }
-
-    #[test]
-    fn forced_executor_rejections_are_table_driven_and_graph_bit_identical() {
-        use super::super::ForcedTransformSurfaceError as Error;
-
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let baseline =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("baseline forced plan");
-        let default_ctx = || UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-
-        let mut plan = baseline.clone();
-        only_surface_mut(&mut plan)
-            .transform_plan_mut_for_test()
-            .geometry
-            .visual_bounds
-            .x = f32::NAN;
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::GeometryContract,
-        );
-
-        let mut plan = baseline.clone();
-        only_surface_mut(&mut plan)
-            .transform_plan_mut_for_test()
-            .context = TransformSurfacePlanContext::new([0.25, 0.0], None);
-        let mut matching_tampered_ctx = default_ctx();
-        matching_tampered_ctx.translate_paint_offset(0.25, 0.0);
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            matching_tampered_ctx,
-            Error::GeometryContract,
-        );
-
-        let mut plan = baseline.clone();
-        only_surface_mut(&mut plan)
-            .transform_plan_mut_for_test()
-            .geometry
-            .quad_positions[0][0] = f32::NAN;
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::GeometryContract,
-        );
-
-        let mut plan = baseline.clone();
-        only_surface_mut(&mut plan)
-            .transform_plan_mut_for_test()
-            .geometry
-            .uv_bounds[0] += 1.0;
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::GeometryContract,
-        );
-
-        let mut plan = baseline.clone();
-        only_surface_mut(&mut plan)
-            .transform_plan_mut_for_test()
-            .geometry
-            .outer_scissor_rect = Some([1, 2, 3, 4]);
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::GeometryContract,
-        );
-
-        let mut plan = baseline.clone();
-        only_surface_mut(&mut plan).aggregate_opaque_order_span.end += 1;
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::OpaqueSpan,
-        );
-
-        let mut plan = baseline.clone();
-        only_span_mut(only_surface_mut(&mut plan)).artifact.chunks[0]
-            .properties
-            .transform = None;
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::ArtifactStore,
-        );
-
-        let mut plan = baseline.clone();
-        let surface = only_surface_mut(&mut plan);
-        let boundary_root = surface.boundary_root;
-        only_span_mut(surface).artifact.owner_nodes[0].parent = Some(boundary_root);
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::ArtifactStore,
-        );
-
-        let mut plan = baseline.clone();
-        let surface = only_surface_mut(&mut plan);
-        let span = only_span_mut(surface);
-        let PaintOp::DrawRect(rect) = &mut span.artifact.ops[0] else {
-            panic!("rect fixture starts with decoration")
-        };
-        rect.params.opacity = 0.25;
-        span.opaque_order_span.end = opaque_order_count(&span.artifact);
-        surface.aggregate_opaque_order_span = span.opaque_order_span.clone();
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::ArtifactStore,
-        );
-
-        let mut plan = baseline.clone();
-        let surface = only_surface_mut(&mut plan);
-        let boundary_root = surface.boundary_root;
-        only_span_mut(surface).artifact.target =
-            super::super::PaintArtifactTarget::RootOpacityGroup {
-                root: boundary_root,
-                effect: crate::view::compositor::property_tree::EffectNodeId(boundary_root),
-            };
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::ArtifactTarget,
-        );
-
-        let mut plan = baseline.clone();
-        only_surface_mut(&mut plan).stable_id = 999_999;
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::BoundaryIdentity,
-        );
-
-        let mut plan = baseline.clone();
-        let nested = plan.steps[0].clone();
-        only_surface_mut(&mut plan).raster_steps.push(nested);
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::NestedSurface,
-        );
-
-        let mut plan = baseline.clone();
-        only_surface_mut(&mut plan).parent_surface = Some(root);
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::NestedSurface,
-        );
-
-        let mut plan = baseline.clone();
-        let top_level_span = only_span(only_surface_mut(&mut plan)).clone();
-        plan.steps[0] = PaintPlanStep::ArtifactSpan(top_level_span);
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::PlanShape,
-        );
-
-        let mut plan = baseline.clone();
-        plan.steps.push(plan.steps[0].clone());
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::PlanShape,
-        );
-
-        let mut ctx = default_ctx();
-        ctx.translate_paint_offset(0.25, 0.0);
-        assert_forced_rejection_has_zero_graph_mutation(
-            &baseline,
-            &mut FrameGraph::new(),
-            ctx,
-            Error::ContextMismatch,
-        );
-
-        let mut graph = FrameGraph::new();
-        let mut declaration_ctx = default_ctx();
-        let color_key = crate::view::base_component::transformed_layer_stable_key(0xc1_0001);
-        let _ = declaration_ctx.allocate_persistent_target_with_key(
-            &mut graph,
-            color_key,
-            only_surface_mut(&mut baseline.clone())
-                .transform_plan_for_test()
-                .geometry
-                .source_bounds,
-        );
-        assert_forced_rejection_has_zero_graph_mutation(
-            &baseline,
-            &mut graph,
-            declaration_ctx,
-            Error::PersistentKeyAlreadyDeclared(color_key),
-        );
-
-        let mut foreign_graph = FrameGraph::new();
-        let mut foreign_ctx = default_ctx();
-        let foreign_target = foreign_ctx.allocate_target(&mut foreign_graph);
-        foreign_ctx.set_current_target(foreign_target);
-        assert_forced_rejection_has_zero_graph_mutation(
-            &baseline,
-            &mut FrameGraph::new(),
-            foreign_ctx,
-            Error::ParentTarget,
-        );
-
-        let mut graph = FrameGraph::new();
-        let bad_parent = graph
-            .declare_texture::<crate::view::render_pass::draw_rect_pass::RenderTargetTag>(
-                crate::view::frame_graph::TextureDesc::new(
-                    16,
-                    16,
-                    wgpu::TextureFormat::Rgba8Unorm,
-                    wgpu::TextureDimension::D1,
-                )
-                .with_usage(wgpu::TextureUsages::TEXTURE_BINDING),
-            );
-        let mut ctx = default_ctx();
-        ctx.set_current_target(bad_parent);
-        assert_forced_rejection_has_zero_graph_mutation(
-            &baseline,
-            &mut graph,
-            ctx,
-            Error::ParentTarget,
-        );
-    }
-
-    #[test]
-    fn forced_nested_prepare_rejections_are_deep_and_transactionally_inert() {
-        use super::super::ForcedTransformSurfaceError as Error;
-
-        let (arena, root, _before, child, _descendant, _after, properties, generations) =
-            nested_exact_transform_fixture();
-        let baseline =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("baseline nested plan");
-        let default_ctx = || UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-
-        let mut plan = baseline.clone();
-        only_span_mut(nested_surface_mut(&mut plan)).artifact.chunks[0]
-            .properties
-            .transform = None;
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::ArtifactStore,
-        );
-
-        let mut plan = baseline.clone();
-        nested_surface_mut(&mut plan).persistent_color_key =
-            crate::view::base_component::transformed_layer_stable_key(0xdead_beef);
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::BoundaryIdentity,
-        );
-
-        let mut plan = baseline.clone();
-        nested_surface_mut(&mut plan)
-            .transform_plan_mut_for_test()
-            .geometry
-            .quad_positions[0][0] = f32::NAN;
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::GeometryContract,
-        );
-
-        let mut plan = baseline.clone();
-        only_span_mut(nested_surface_mut(&mut plan))
-            .opaque_order_span
-            .end += 1;
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::OpaqueSpan,
-        );
-
-        let mut plan = baseline.clone();
-        nested_surface_mut(&mut plan)
-            .aggregate_opaque_order_span
-            .end += 1;
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::OpaqueSpan,
-        );
-
-        let mut plan = baseline.clone();
-        nested_surface_mut(&mut plan).parent_surface = None;
-        assert_forced_rejection_has_zero_graph_mutation(
-            &plan,
-            &mut FrameGraph::new(),
-            default_ctx(),
-            Error::NestedSurface,
-        );
-
-        let child_key = crate::view::base_component::transformed_layer_stable_key(
-            arena.get(child).expect("child").element.stable_id(),
-        );
-        let child_bounds = nested_surface_mut(&mut baseline.clone())
-            .transform_plan_for_test()
-            .geometry
-            .source_bounds;
-        let mut graph = FrameGraph::new();
-        let mut declaration_ctx = default_ctx();
-        let _ = declaration_ctx.allocate_persistent_target_with_key(
-            &mut graph,
-            child_key,
-            child_bounds,
-        );
-        assert_forced_rejection_has_zero_graph_mutation(
-            &baseline,
-            &mut graph,
-            declaration_ctx,
-            Error::PersistentKeyAlreadyDeclared(child_key),
-        );
-    }
-
-    #[test]
-    fn forced_rect_graph_is_strictly_identical_to_legacy_graph() {
-        let (mut legacy_arena, legacy_root, _, _) = exact_transform_fixture();
-        let mut legacy_graph = FrameGraph::new();
-        let (legacy_ctx, legacy_parent) =
-            parent_context_with_clear(&mut legacy_graph, 160, 120, 1.0);
-        legacy_arena
-            .with_element_taken(legacy_root, |element, arena| {
-                element.build(&mut legacy_graph, arena, legacy_ctx)
-            })
-            .expect("legacy transformed rect build");
-        legacy_graph
-            .add_texture_sink(
-                &legacy_parent,
-                crate::view::frame_graph::ExternalSinkKind::DebugCapture,
-            )
-            .expect("legacy parent sink");
-
-        let (forced_arena, forced_root, properties, generations) = exact_transform_fixture();
-        let forced_plan = plan_single_root_transform_surface(
-            &forced_arena,
-            &[forced_root],
-            &properties,
-            &generations,
-        )
-        .expect("forced transformed rect plan");
-        let mut forced_graph = FrameGraph::new();
-        let (forced_ctx, forced_parent) =
-            parent_context_with_clear(&mut forced_graph, 160, 120, 1.0);
-        let mut viewport = Viewport::new();
-        super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &forced_plan,
-            &mut forced_graph,
-            forced_ctx,
-        )
-        .expect("forced transformed rect build");
-        forced_graph
-            .add_texture_sink(
-                &forced_parent,
-                crate::view::frame_graph::ExternalSinkKind::DebugCapture,
-            )
-            .expect("forced parent sink");
-
-        let legacy = legacy_graph
-            .test_compile_snapshot()
-            .expect("strict legacy graph snapshot");
-        let forced = forced_graph
-            .test_compile_snapshot()
-            .expect("strict forced graph snapshot");
-        assert_eq!(forced, legacy);
-    }
-
-    #[test]
-    fn forced_rect_nonzero_context_graph_is_strictly_identical_to_legacy_graph() {
-        let frozen = TransformSurfacePlanContext::new([0.25, -0.25], Some([3, 4, 50, 60]));
-        let (mut legacy_arena, legacy_root, _, _) = exact_transform_fixture();
-        let mut legacy_graph = FrameGraph::new();
-        let (mut legacy_ctx, legacy_parent) =
-            parent_context_with_clear(&mut legacy_graph, 160, 120, 2.0);
-        legacy_ctx.translate_paint_offset(0.25, -0.25);
-        legacy_ctx.push_scissor_rect(Some([3, 4, 50, 60]));
-        legacy_arena
-            .with_element_taken(legacy_root, |element, arena| {
-                element.build(&mut legacy_graph, arena, legacy_ctx)
-            })
-            .expect("legacy nonzero-context transformed rect build");
-        legacy_graph
-            .add_texture_sink(
-                &legacy_parent,
-                crate::view::frame_graph::ExternalSinkKind::DebugCapture,
-            )
-            .expect("legacy nonzero-context parent sink");
-
-        let (forced_arena, forced_root, properties, generations) = exact_transform_fixture();
-        let forced_plan = plan_single_root_transform_surface_with_context(
-            &forced_arena,
-            &[forced_root],
-            &properties,
-            &generations,
-            frozen,
-        )
-        .expect("forced nonzero-context transformed rect plan");
-        let mut forced_graph = FrameGraph::new();
-        let (mut forced_ctx, forced_parent) =
-            parent_context_with_clear(&mut forced_graph, 160, 120, 2.0);
-        forced_ctx.translate_paint_offset(0.25, -0.25);
-        forced_ctx.push_scissor_rect(Some([3, 4, 50, 60]));
-        let mut viewport = Viewport::new();
-        super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &forced_plan,
-            &mut forced_graph,
-            forced_ctx,
-        )
-        .expect("forced nonzero-context transformed rect build");
-        forced_graph
-            .add_texture_sink(
-                &forced_parent,
-                crate::view::frame_graph::ExternalSinkKind::DebugCapture,
-            )
-            .expect("forced nonzero-context parent sink");
-
-        assert_eq!(
-            forced_graph
-                .test_compile_snapshot()
-                .expect("strict forced nonzero-context snapshot"),
-            legacy_graph
-                .test_compile_snapshot()
-                .expect("strict legacy nonzero-context snapshot")
-        );
-    }
-
-    #[test]
-    fn forced_zero_blur_shadow_graph_is_strictly_identical_to_legacy_graph() {
-        let mut root = Element::new_with_id(0xc2_b100, 20.0, 20.0, 30.0, 18.0);
-        let mut style = Style::new();
-        style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::rgb(40, 80, 120)),
-        );
-        style.set_box_shadow(vec![
-            BoxShadow::new().offset_x(3.0).offset_y(4.0).spread(2.0),
-        ]);
-        style.set_transform(Transform::new([Rotate::z(Angle::deg(6.0))]));
-        root.apply_style(style);
-
-        let mut arena = new_test_arena();
-        let root = commit_element(&mut arena, Box::new(root));
-        measure_and_place(
-            &mut arena,
-            root,
-            LayoutConstraints {
-                max_width: 160.0,
-                max_height: 120.0,
-                viewport_width: 160.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(160.0),
-                percent_base_height: Some(120.0),
-            },
-            LayoutPlacement {
-                parent_x: 20.0,
-                parent_y: 20.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 160.0,
-                available_height: 120.0,
-                viewport_width: 160.0,
-                viewport_height: 120.0,
-                percent_base_width: Some(160.0),
-                percent_base_height: Some(120.0),
-            },
-        );
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[root]);
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[root], &properties);
-        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("zero-blur outer shadow surface plan");
-        let [PaintPlanStep::RetainedSurface(surface)] = plan.steps.as_slice() else {
-            panic!("one shadow surface")
-        };
-        assert!(
-            only_span(surface)
-                .artifact
-                .ops
-                .iter()
-                .any(|op| matches!(op, PaintOp::PreparedShadow(_)))
-        );
-
-        let mut legacy_graph = FrameGraph::new();
-        let (legacy_ctx, legacy_parent) =
-            parent_context_with_clear(&mut legacy_graph, 160, 120, 1.0);
-        arena
-            .with_element_taken(root, |element, arena| {
-                element.build(&mut legacy_graph, arena, legacy_ctx)
-            })
-            .expect("legacy zero-blur shadow build");
-        legacy_graph
-            .add_texture_sink(
-                &legacy_parent,
-                crate::view::frame_graph::ExternalSinkKind::DebugCapture,
-            )
-            .expect("legacy shadow sink");
-
-        let mut forced_graph = FrameGraph::new();
-        let (forced_ctx, forced_parent) =
-            parent_context_with_clear(&mut forced_graph, 160, 120, 1.0);
-        let mut viewport = Viewport::new();
-        super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &plan,
-            &mut forced_graph,
-            forced_ctx,
-        )
-        .expect("forced zero-blur shadow build");
-        forced_graph
-            .add_texture_sink(
-                &forced_parent,
-                crate::view::frame_graph::ExternalSinkKind::DebugCapture,
-            )
-            .expect("forced shadow sink");
-
-        assert_eq!(
-            forced_graph
-                .test_compile_snapshot()
-                .expect("strict forced shadow snapshot"),
-            legacy_graph
-                .test_compile_snapshot()
-                .expect("strict legacy shadow snapshot")
-        );
-    }
-
-    #[test]
-    fn ordinary_recorder_and_compiler_still_reject_the_same_transform_artifact() {
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let outcome = super::super::record_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            super::super::RendererMode::Auto,
-        )
-        .expect("auto recorder must return a whole-frame fallback");
-        let super::super::FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) =
-            outcome
-        else {
-            panic!("ordinary recorder must not acquire transform surface authority")
-        };
-        assert!(eligibility.reasons.contains(
-            &super::super::FrameArtifactFallbackReason::LegacyBoundary(
-                super::super::LegacyPaintReason::Transform,
-            )
-        ));
-
-        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("surface-only planner owns the positive path");
-        let PaintPlanStep::RetainedSurface(surface) = &plan.steps[0] else {
-            panic!("one retained surface")
-        };
-        let mut graph = FrameGraph::new();
-        let before = graph.build_state_snapshot_for_test();
-        let result = super::super::try_compile_artifact(
-            &only_span(surface).artifact,
-            &mut graph,
-            UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0),
-        );
-        let error = match result {
-            Ok(_) => panic!("general compiler must reject transform chunks"),
-            Err(error) => error,
-        };
-        assert_eq!(
-            error.kind(),
-            super::super::ArtifactCompileErrorKind::InvalidStore
-        );
-        assert_eq!(graph.build_state_snapshot_for_test(), before);
-    }
-
-    #[test]
-    fn ambient_or_wrong_owner_transform_witness_cannot_escape_surface_policy() {
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let root_stable_id = arena.get(root).expect("root").element.stable_id();
-        let ambient = super::super::PaintRecordingContext {
-            recording_owner: Some(root),
-            recording_owner_stable_id: Some(root_stable_id),
-            transform_surface: Some(PaintTransformSurfaceWitness::canonical_root(root)),
-            ..Default::default()
-        };
-        let manifest = super::super::coverage_manifest::record_coverage_manifest_with_context(
-            &arena,
-            &[root],
-            false,
-            true,
-            super::super::CoverageRecordingMode::MetadataOnly,
-            &properties,
-            &generations,
-            ambient,
-            None,
-            &Default::default(),
-        );
-        assert!(matches!(
-            manifest.items.as_slice(),
-            [super::super::PaintCoverageItem::LegacyBoundary {
-                reason: super::super::LegacyPaintReason::Transform,
-                ..
-            }]
-        ));
-
-        let child = arena
-            .get(root)
-            .expect("root")
-            .element
-            .children()
-            .first()
-            .copied()
-            .expect("child");
-        let wrong_owner = super::super::PaintRecordingContext {
-            recording_owner: Some(root),
-            recording_owner_stable_id: Some(root_stable_id),
-            transform_surface: Some(
-                PaintTransformSurfaceWitness::canonical_root(root).for_target(child),
-            ),
-            ..Default::default()
-        };
-        assert!(!wrong_owner.authorizes_transform_surface_root(root_stable_id));
-        assert!(!wrong_owner.authorizes_transform_surface_owner(Some(TransformNodeId(root))));
-    }
-
-    #[test]
-    fn planner_rejects_nested_subroot_and_arena_trait_topology_drift() {
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let child = arena
-            .get(root)
-            .expect("root")
-            .element
-            .children()
-            .first()
-            .copied()
-            .expect("child");
-        let nested =
-            plan_single_root_transform_surface(&arena, &[child], &properties, &generations)
-                .expect_err("an arena child cannot masquerade as a frame root");
-        assert!(
-            nested
-                .reasons
-                .contains(&FramePaintPlanRejection::RootHasParent(child))
-        );
-
-        let (mut parent_drift_arena, parent_drift_root, properties, generations) =
-            exact_transform_fixture();
-        let parent_drift_child = parent_drift_arena
-            .get(parent_drift_root)
-            .expect("root")
-            .element
-            .children()[0];
-        parent_drift_arena.set_parent(parent_drift_child, None);
-        let parent_drift = plan_single_root_transform_surface(
-            &parent_drift_arena,
-            &[parent_drift_root],
-            &properties,
-            &generations,
-        )
-        .expect_err("foreign child parent edge must fail closed");
-        assert!(
-            parent_drift
-                .reasons
-                .contains(&FramePaintPlanRejection::TopologyMismatch(
-                    parent_drift_child
-                ))
-        );
-
-        let (mut mirror_arena, mirror_root, properties, generations) = exact_transform_fixture();
-        mirror_arena.set_arena_children_without_mirror_for_test(mirror_root, Vec::new());
-        let mirror = plan_single_root_transform_surface(
-            &mirror_arena,
-            &[mirror_root],
-            &properties,
-            &generations,
-        )
-        .expect_err("arena/trait child mirror drift must fail closed");
-        assert!(
-            mirror
-                .reasons
-                .contains(&FramePaintPlanRejection::TopologyMismatch(mirror_root))
-        );
-    }
-
-    #[test]
-    fn planner_rejects_zero_stable_id_for_root_or_descendant() {
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        crate::view::test_support::get_element_mut::<Element>(&arena, root)
-            .set_stable_id_for_test(0);
-        let root_error =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err("stable id zero cannot own a persistent transform surface");
-        assert!(
-            root_error
-                .reasons
-                .contains(&FramePaintPlanRejection::InvalidStableId(root))
-        );
-
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let child = arena.get(root).expect("root").element.children()[0];
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_stable_id_for_test(0);
-        let child_error =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err("every reachable owner requires a nonzero paint identity");
-        assert!(
-            child_error
-                .reasons
-                .contains(&FramePaintPlanRejection::InvalidStableId(child))
-        );
-    }
-
-    #[test]
-    fn planner_accepts_retained_baseline_baseline_and_rejects_property_identity_or_root_shape_boundaries()
-     {
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let child = arena.get(root).expect("root").element.children()[0];
-        let multi_root =
-            plan_single_root_transform_surface(&arena, &[root, child], &properties, &generations)
-                .expect_err("M10C1 is exact single-root only");
-        assert_eq!(
-            multi_root.reasons,
-            vec![FramePaintPlanRejection::RootCount(2)]
-        );
-
-        let baseline =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect("retained-compatible retained transform baseline");
-        let _ = only_surface(&baseline);
-
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let child = arena.get(root).expect("root").element.children()[0];
-        let root_id = arena.get(root).expect("root").element.stable_id();
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .set_stable_id_for_test(root_id);
-        let duplicate =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err("duplicate nonzero stable ids cannot prove owning identity");
-        assert!(
-            duplicate
-                .reasons
-                .contains(&FramePaintPlanRejection::DuplicateStableId(root_id))
-        );
-
-        for property in ["clip", "effect", "scroll"] {
-            let (arena, root, mut properties, generations) = exact_transform_fixture();
-            let child = arena.get(root).expect("root").element.children()[0];
-            let state = properties.states.get_mut(&child).expect("child state");
-            match property {
-                "clip" => {
-                    state.paint.clip = Some(crate::view::compositor::property_tree::ClipNodeId {
-                        owner: child,
-                        role: crate::view::compositor::property_tree::ClipNodeRole::SelfClip,
-                    });
-                }
-                "effect" => {
-                    state.paint.effect =
-                        Some(crate::view::compositor::property_tree::EffectNodeId(child));
-                }
-                "scroll" => {
-                    state.paint.scroll =
-                        Some(crate::view::compositor::property_tree::ScrollNodeId(child));
-                }
-                _ => unreachable!(),
-            }
-            let error =
-                plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                    .expect_err("non-transform property authority must stay out of M10C1");
-            assert!(error.reasons.iter().any(|reason| match (property, reason) {
-                ("clip", FramePaintPlanRejection::ClipBoundary(owner))
-                | ("effect", FramePaintPlanRejection::EffectBoundary(owner))
-                | ("scroll", FramePaintPlanRejection::ScrollBoundary(owner)) => *owner == child,
-                _ => false,
-            }));
-        }
-    }
-
-    #[test]
-    fn planner_explicitly_rejects_transformed_descendant_before_execution() {
-        let (arena, root, mut properties, generations) = exact_transform_fixture();
-        let child = arena.get(root).expect("root").element.children()[0];
-        let root_transform = properties.transforms[&TransformNodeId(root)];
-        properties.transforms.insert(
-            TransformNodeId(child),
-            crate::view::compositor::property_tree::TransformNode {
-                owner: child,
-                parent: Some(TransformNodeId(root)),
-                viewport_matrix: root_transform.viewport_matrix,
-                generation: 1,
-            },
-        );
-        properties
-            .states
-            .get_mut(&child)
-            .expect("child state")
-            .paint
-            .transform = Some(TransformNodeId(child));
-        let nested = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect_err("a second transform boundary requires recursive planning in a later slice");
-        assert!(
-            nested
-                .reasons
-                .contains(&FramePaintPlanRejection::WrongTransformBoundary(child))
-        );
-        assert_eq!(
-            nested.reasons,
-            vec![FramePaintPlanRejection::WrongTransformBoundary(child)],
-            "an incomplete nested property scope must fail closed before plan ownership is built"
-        );
-    }
-
-    #[test]
-    fn planner_rejects_nonfinite_parented_and_wrong_transform_boundaries() {
-        let (arena, root, mut properties, generations) = exact_transform_fixture();
-        properties
-            .transforms
-            .get_mut(&TransformNodeId(root))
-            .expect("root transform")
-            .viewport_matrix = glam::Mat4::from_cols_array(&[
-            f32::NAN,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-        ]);
-        let nonfinite =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err("nonfinite transform evidence must fail before recording");
-        assert!(
-            nonfinite
-                .reasons
-                .contains(&FramePaintPlanRejection::InvalidRootTransform(root))
-        );
-
-        let (arena, root, mut properties, generations) = exact_transform_fixture();
-        let child = arena.get(root).expect("root").element.children()[0];
-        properties
-            .transforms
-            .get_mut(&TransformNodeId(root))
-            .expect("root transform")
-            .parent = Some(TransformNodeId(child));
-        let parented =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err("frame-root transform must be parentless");
-        assert!(
-            parented
-                .reasons
-                .contains(&FramePaintPlanRejection::InvalidRootTransform(root))
-        );
-    }
-
-    #[test]
-    fn planner_rejects_deferred_unknown_missing_and_cyclic_inputs() {
-        let (arena, _root, properties, generations) = exact_transform_fixture();
-        let missing = NodeKey::null();
-        assert_eq!(
-            plan_single_root_transform_surface(&arena, &[missing], &properties, &generations,)
-                .expect_err("missing root must fail closed")
-                .reasons,
-            vec![FramePaintPlanRejection::MissingRoot(missing)]
-        );
-
-        let mut unknown_arena = new_test_arena();
-        let unknown = commit_element(
-            &mut unknown_arena,
-            Box::new(UnknownHost {
-                id: 0xc1_3000,
-                width: 10.0,
-                height: 10.0,
-            }),
-        );
-        assert_eq!(
-            plan_single_root_transform_surface(
-                &unknown_arena,
-                &[unknown],
-                &PropertyTrees::default(),
-                &PaintGenerationTracker::default(),
-            )
-            .expect_err("only concrete Element may own the first transform surface")
-            .reasons,
-            vec![FramePaintPlanRejection::UnknownRootHost(unknown)]
-        );
-
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let child = arena.get(root).expect("root").element.children()[0];
-        let mut deferred_style = Style::new();
-        deferred_style.insert(
-            PropertyId::Position,
-            ParsedValue::Position(
-                crate::style::Position::absolute()
-                    .left(crate::style::Length::px(0.0))
-                    .clip(crate::style::ClipMode::Viewport),
-            ),
-        );
-        crate::view::test_support::get_element_mut::<Element>(&arena, child)
-            .apply_style(deferred_style);
-        let deferred =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err("deferred subtree changes frame ordering");
-        assert!(
-            deferred
-                .reasons
-                .contains(&FramePaintPlanRejection::DeferredBoundary(child))
-        );
-
-        let (arena, root, mut properties, generations) = exact_transform_fixture();
-        properties.transforms.remove(&TransformNodeId(root));
-        let missing_transform =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err("root transform identity is mandatory");
-        assert!(
-            missing_transform
-                .reasons
-                .contains(&FramePaintPlanRejection::MissingRootTransform(root))
-        );
-
-        let (arena, root, mut properties, generations) = exact_transform_fixture();
-        let child = arena.get(root).expect("root").element.children()[0];
-        properties.states.remove(&child);
-        let missing_state =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err("every reachable owner requires a property snapshot");
-        assert!(
-            missing_state
-                .reasons
-                .contains(&FramePaintPlanRejection::MissingPropertyState(child))
-        );
-
-        let (mut arena, root, properties, generations) = exact_transform_fixture();
-        let child = arena.get(root).expect("root").element.children()[0];
-        arena.push_child(child, root);
-        arena.set_parent(root, Some(child));
-        let cycle = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect_err("cycle cannot prove canonical owner topology");
-        assert!(
-            cycle
-                .reasons
-                .contains(&FramePaintPlanRejection::RootHasParent(root))
-        );
-        assert!(
-            cycle
-                .reasons
-                .contains(&FramePaintPlanRejection::DuplicateNodeKey(root))
-        );
-    }
-
-    #[test]
-    fn whole_subtree_must_be_recordable_and_surface_artifact_store_is_strict() {
-        let mut root = Element::new_with_id(0xc1_3100, 0.0, 0.0, 30.0, 20.0);
-        let mut style = Style::new();
-        style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        style.set_transform(Transform::new([Rotate::z(Angle::deg(4.0))]));
-        root.apply_style(style);
-        let mut arena = new_test_arena();
-        let root = commit_element(&mut arena, Box::new(root));
-        commit_child(
-            &mut arena,
-            root,
-            Box::new(UnknownHost {
-                id: 0xc1_3101,
-                width: 8.0,
-                height: 6.0,
-            }),
-        );
-        measure_and_place(
-            &mut arena,
-            root,
-            LayoutConstraints {
-                max_width: 80.0,
-                max_height: 60.0,
-                viewport_width: 80.0,
-                viewport_height: 60.0,
-                percent_base_width: Some(80.0),
-                percent_base_height: Some(60.0),
-            },
-            LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: 80.0,
-                available_height: 60.0,
-                viewport_width: 80.0,
-                viewport_height: 60.0,
-                percent_base_width: Some(80.0),
-                percent_base_height: Some(60.0),
-            },
-        );
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[root]);
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[root], &properties);
-        let error = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect_err("one unknown descendant makes the whole surface ineligible");
-        assert!(error.reasons.contains(&FramePaintPlanRejection::Coverage(
-            super::super::FrameArtifactFallbackReason::LegacyBoundary(
-                super::super::LegacyPaintReason::UnknownHost,
-            )
-        )));
-        {
-            let root_node = arena.get(root).expect("root node");
-            let root_element = root_node
-                .element
-                .as_any()
-                .downcast_ref::<Element>()
-                .expect("Element root");
-            assert!(
-                root_element
-                    .exact_transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None)
-                    .is_none(),
-                "custom descendants do not silently acquire exact retained bounds authority"
-            );
-            assert!(
-                root_element
-                    .transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None)
-                    .is_some(),
-                "legacy compatibility bounds must remain available"
-            );
-        }
-        let mut graph = FrameGraph::new();
-        let ctx = UiBuildContext::new(80, 60, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        arena
-            .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
-            .expect("legacy custom descendant build");
-        assert_eq!(
-            graph
-                .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::DrawRectPass>()
-                .len(),
-            1,
-            "exact rejection must not blank the legacy custom draw"
-        );
-
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("baseline surface plan");
-        let PaintPlanStep::RetainedSurface(surface) = &plan.steps[0] else {
-            panic!("one retained surface")
-        };
-        let validate = |artifact: &PaintArtifact| {
-            super::super::compiler::validate_transform_surface_artifact_for_plan(
-                artifact,
-                root,
-                TransformNodeId(root),
-            )
-        };
-
-        let mut wrong_transform = only_span(surface).artifact.clone();
-        wrong_transform.chunks[0].properties.transform = None;
-        assert!(!validate(&wrong_transform));
-
-        let mut wrong_topology = only_span(surface).artifact.clone();
-        let child = arena.get(root).expect("root").element.children()[0];
-        wrong_topology
-            .owner_nodes
-            .iter_mut()
-            .find(|snapshot| snapshot.owner == root)
-            .expect("root owner snapshot")
-            .parent = Some(child);
-        assert!(!validate(&wrong_topology));
-
-        let mut wrong_payload = only_span(surface).artifact.clone();
-        let PaintOp::DrawRect(rect) = &mut wrong_payload.ops[0] else {
-            panic!("fixture begins with a decoration draw")
-        };
-        rect.params.opacity = 0.25;
-        assert!(!validate(&wrong_payload));
-    }
-
-    #[test]
-    fn planning_is_validation_only_and_does_not_compile_or_mutate_inputs() {
-        let (arena, root, properties, generations) = exact_transform_fixture();
-        let children_before = arena.children_of(root);
-        let root_parent_before = arena.parent_of(root);
-        let property_epoch_before = properties.epoch;
-        let state_count_before = properties.states.len();
-        let _ = super::super::take_artifact_compile_count();
-        let _ = super::super::take_full_artifact_record_count();
-
-        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("pure planning succeeds");
-        assert_eq!(plan.steps.len(), 1);
-        assert_eq!(super::super::take_artifact_compile_count(), 0);
-        assert!(super::super::take_full_artifact_record_count() > 0);
-        assert_eq!(arena.children_of(root), children_before);
-        assert_eq!(arena.parent_of(root), root_parent_before);
-        assert_eq!(properties.epoch, property_epoch_before);
-        assert_eq!(properties.states.len(), state_count_before);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn image_and_svg_inherited_transform_are_authorized_only_by_surface_recording() {
-        const SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='12'><rect width='16' height='12' fill='#22c55e'/></svg>";
-        let mut root = Element::new_with_id(0xc1_1000, 0.0, 0.0, 48.0, 32.0);
-        let mut root_style = Style::new();
-        root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        root_style.set_transform(Transform::new([Rotate::z(Angle::deg(8.0))]));
-        root.apply_style(root_style);
-
-        let mut image = Image::new_with_id(
-            0xc1_1001,
-            ImageSource::Rgba {
-                width: 1,
-                height: 1,
-                pixels: Arc::from([255_u8, 255, 255, 255]),
-            },
-        );
-        let mut media_style = Style::new();
-        media_style.insert(
-            PropertyId::Width,
-            ParsedValue::Length(crate::style::Length::px(16.0)),
-        );
-        media_style.insert(
-            PropertyId::Height,
-            ParsedValue::Length(crate::style::Length::px(12.0)),
-        );
-        image.apply_style(media_style.clone());
-        let mut svg = Svg::new_with_id(0xc1_1002, SvgSource::Content(SVG.into()));
-        svg.apply_style(media_style);
-
-        let mut arena = new_test_arena();
-        let root = commit_element(&mut arena, Box::new(root));
-        let image = commit_child(&mut arena, root, Box::new(image));
-        let svg = commit_child(&mut arena, root, Box::new(svg));
-        let constraints = LayoutConstraints {
-            max_width: 160.0,
-            max_height: 120.0,
-            viewport_width: 160.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(160.0),
-            percent_base_height: Some(120.0),
-        };
-        let placement = LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 160.0,
-            available_height: 120.0,
-            viewport_width: 160.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(160.0),
-            percent_base_height: Some(120.0),
-        };
-        measure_and_place(&mut arena, root, constraints, placement);
-        arena
-            .get_mut(svg)
-            .expect("svg")
-            .element
-            .as_any_mut()
-            .downcast_mut::<Svg>()
-            .expect("Svg host")
-            .prepare_content_paint_for_test(SVG, (16.0, 12.0), 1.0)
-            .expect("prepare exact SVG paint");
-
-        let mut properties = PropertyTrees::default();
-        properties.sync(&arena, &[root]);
-        let mut generations = PaintGenerationTracker::default();
-        generations.sync(&arena, &[root], &properties);
-        let transform = TransformNodeId(root);
-        for owner in [image, svg] {
-            let property = properties.paint_state_for(owner).expect("property state");
-            let local = generations
-                .local_generations_for(owner)
-                .expect("paint generations");
-            let revision = super::super::PaintContentRevision {
-                self_paint_revision: local.self_paint_revision,
-                composite_revision: local.composite_revision,
-                topology_revision: local.topology_revision,
-            };
-            let node = arena.get(owner).expect("media child");
-            assert!(
-                node.element
-                    .record_shadow_paint_metadata(
-                        owner,
-                        property,
-                        revision,
-                        &arena,
-                        super::super::PaintRecordingContext::default(),
-                    )
-                    .is_none(),
-                "ordinary metadata path must reject inherited transform"
-            );
-            let context = super::super::PaintRecordingContext {
-                recording_owner: Some(owner),
-                recording_owner_stable_id: Some(node.element.stable_id()),
-                transform_surface: Some(
-                    PaintTransformSurfaceWitness::canonical_root(root).for_target(owner),
-                ),
-                ..Default::default()
-            };
-            assert!(context.authorizes_transform_surface_owner(Some(transform)));
-            assert!(
-                node.element
-                    .record_shadow_paint_metadata(owner, property, revision, &arena, context,)
-                    .is_some(),
-                "surface-scoped canonical owner witness must admit inherited transform"
-            );
-        }
-
-        let plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("surface planner must own Image/SVG inherited transform");
-        let PaintPlanStep::RetainedSurface(surface) = &plan.steps[0] else {
-            panic!("one retained surface")
-        };
-        let roles = only_span(surface)
-            .artifact
-            .chunks
-            .iter()
-            .map(|chunk| chunk.id.role)
-            .collect::<Vec<_>>();
-        assert!(roles.contains(&super::super::PaintChunkRole::ImageContent));
-        assert!(roles.contains(&super::super::PaintChunkRole::SvgContent));
-
-        let mut graph = FrameGraph::new();
-        assert!(
-            super::super::try_compile_artifact(
-                &only_span(surface).artifact,
-                &mut graph,
-                UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0),
-            )
-            .is_err()
-        );
-        assert!(graph.pass_descriptors().is_empty());
-
-        let mut legacy_graph = FrameGraph::new();
-        let (legacy_ctx, legacy_parent) =
-            parent_context_with_clear(&mut legacy_graph, 160, 120, 1.0);
-        arena
-            .with_element_taken(root, |element, arena| {
-                element.build(&mut legacy_graph, arena, legacy_ctx)
-            })
-            .expect("legacy Image/SVG transformed build");
-        legacy_graph
-            .add_texture_sink(
-                &legacy_parent,
-                crate::view::frame_graph::ExternalSinkKind::DebugCapture,
-            )
-            .expect("legacy Image/SVG sink");
-
-        let mut forced_graph = FrameGraph::new();
-        let (forced_ctx, forced_parent) =
-            parent_context_with_clear(&mut forced_graph, 160, 120, 1.0);
-        let mut viewport = Viewport::new();
-        super::super::execute_forced_transform_surface_for_test(
-            &mut viewport,
-            &plan,
-            &mut forced_graph,
-            forced_ctx,
-        )
-        .expect("forced Image/SVG transformed build");
-        forced_graph
-            .add_texture_sink(
-                &forced_parent,
-                crate::view::frame_graph::ExternalSinkKind::DebugCapture,
-            )
-            .expect("forced Image/SVG sink");
-        assert_eq!(
-            forced_graph
-                .test_compile_snapshot()
-                .expect("strict forced Image/SVG snapshot"),
-            legacy_graph
-                .test_compile_snapshot()
-                .expect("strict legacy Image/SVG snapshot")
-        );
-
-        arena
-            .get_mut(image)
-            .expect("image")
-            .element
-            .as_any_mut()
-            .downcast_mut::<Image>()
-            .expect("Image host")
-            .set_layout_transition_width_for_test(17.0);
-        arena
-            .get_mut(svg)
-            .expect("svg")
-            .element
-            .as_any_mut()
-            .downcast_mut::<Svg>()
-            .expect("Svg host")
-            .set_layout_transition_width_for_test(17.0);
-        let error = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect_err("wrapper-forwarded runtime layout state must fail closed");
-        assert!(
-            error
-                .reasons
-                .contains(&FramePaintPlanRejection::LayoutTransition(image))
-        );
-        assert!(
-            error
-                .reasons
-                .contains(&FramePaintPlanRejection::LayoutTransition(svg))
-        );
-    }
-}
+pub(super) mod tests;
