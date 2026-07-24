@@ -18,13 +18,13 @@ mod scroll_tiles;
 pub(crate) use artifact::{
     ConsumedAncestorEffectWitness, ConsumedAncestorProperty, ConsumedAncestorPropertyStackWitness,
     ConsumedAncestorScrollContentsWitness, ConsumedAncestorTransformWitness,
-    ConsumedSameOwnerEffectBoundaryWitness, ConsumedSameOwnerTransformBoundaryWitness, DrawRectOp,
-    EffectPropertyContentWitness, EffectPropertySurfaceArtifactContract, PaintArtifact,
-    PaintArtifactTarget, PaintBakedScrollHostWitness, PaintChunk, PaintChunkId, PaintChunkMetadata,
-    PaintChunkRole, PaintContentRevision, PaintDeferredViewportEffectWitness,
-    PaintDeferredViewportSelfClipWitness, PaintNestedScrollContentWitness, PaintNodePhase,
-    PaintNodePlan, PaintOp, PaintOpacityAuthority, PaintOwnerSnapshot, PaintPayloadIdentity,
-    PaintPropertyScope, PaintRecordingContext,
+    ConsumedPropertyForestAncestorChainWitness, ConsumedSameOwnerEffectBoundaryWitness,
+    ConsumedSameOwnerTransformBoundaryWitness, DrawRectOp, EffectPropertyContentWitness,
+    EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactTarget,
+    PaintBakedScrollHostWitness, PaintChunk, PaintChunkId, PaintChunkMetadata, PaintChunkRole,
+    PaintContentRevision, PaintDeferredViewportEffectWitness, PaintDeferredViewportSelfClipWitness,
+    PaintNestedScrollContentWitness, PaintNodePhase, PaintNodePlan, PaintOp, PaintOpacityAuthority,
+    PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope, PaintRecordingContext,
     PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
     PaintScrollAtomicProjectionTextAreaRecorderWitness,
     PaintScrollAtomicProjectionTextAreaSubtreeWitness, PaintScrollContentWitness,
@@ -35,7 +35,7 @@ pub(crate) use artifact::{
     PreparedInlineIfcDecorationIdentity, PreparedInlineIfcDecorationOp,
     PreparedScrollbarOverlayIdentity, PreparedScrollbarOverlayOp, PreparedShadowIdentity,
     PreparedShadowOp, PreparedSvgIdentity, PreparedSvgOp, PreparedTextIdentity, PreparedTextOp,
-    RETAINED_CHILD_MASK_SLOT, RecordedRetainedTextAreaCaretOverlay,
+    PropertyForestBoundarySnapshot, RETAINED_CHILD_MASK_SLOT, RecordedRetainedTextAreaCaretOverlay,
     RetainedAtomicProjectionTextAreaChunkRasterSeal, RetainedChildMaskPlan,
     RetainedTextAreaCaretOverlayIdentity, RetainedTextAreaCaretOverlayPaintIdentity,
     RetainedTextAreaGeneratedNodeKind, RetainedTextAreaGeneratedNodeSeal,
@@ -124,7 +124,9 @@ pub(crate) use recorder::{note_full_artifact_record, take_full_artifact_record_c
 pub(crate) use retained_surface_executor::{
     ForcedTransformSurfaceError, build_retained_property_scene_with_forced_pool_for_test,
     execute_forced_transform_surface_for_test, prepare_forced_retained_surface_stamp_for_test,
+    prepare_property_boundary_forest_with_tamper_for_test,
     prepare_retained_property_scene_stamps_for_test, prepare_retained_scroll_host_stamp_for_test,
+    PropertyBoundaryForestPrepareTamper,
 };
 #[allow(unused_imports)]
 pub(crate) use retained_surface_executor::{

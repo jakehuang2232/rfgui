@@ -57,6 +57,7 @@ pub(crate) enum RetainedSurfacePrepareError {
     PersistentKeyAlreadyDeclared(PersistentTextureKey),
     DescriptorPair,
     DuplicateSurfaceIdentity,
+    ActionSet,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +116,7 @@ struct PreparedFramePaintPlan<'a> {
 struct PreparedPropertyScene<'a> {
     steps: Vec<PreparedPropertySceneStep<'a>>,
     transaction_witness: super::frame_plan::PropertySceneTransactionWitness,
+    boundary_forest: Option<super::frame_plan::PropertyBoundaryForest>,
     parent_target: Option<RenderTargetOut>,
 }
 
@@ -165,12 +167,12 @@ impl PreparedFramePaintPlan<'_> {
     fn freeze_actions(
         &mut self,
         mut actions: FxHashMap<super::RetainedSurfaceResidentKey, RetainedSurfaceCompileAction>,
-    ) {
-        self.root.freeze_actions(&mut actions);
-        assert!(
-            actions.is_empty(),
-            "the viewport action provider must cover the prepared full set exactly"
-        );
+    ) -> Result<(), RetainedSurfacePrepareError> {
+        self.root.freeze_actions(&mut actions)?;
+        actions
+            .is_empty()
+            .then_some(())
+            .ok_or(RetainedSurfacePrepareError::ActionSet)
     }
 
     fn stamps(&self) -> Vec<&RetainedSurfaceRasterStamp> {
@@ -201,16 +203,16 @@ impl PreparedPropertyScene<'_> {
     fn freeze_actions(
         &mut self,
         mut actions: FxHashMap<super::RetainedSurfaceResidentKey, RetainedSurfaceCompileAction>,
-    ) {
+    ) -> Result<(), RetainedSurfacePrepareError> {
         for step in &mut self.steps {
             if let PreparedPropertySceneStep::RetainedSurface(surface) = step {
-                surface.freeze_actions(&mut actions);
+                surface.freeze_actions(&mut actions)?;
             }
         }
-        assert!(
-            actions.is_empty(),
-            "the viewport action provider must cover the prepared property scene exactly"
-        );
+        actions
+            .is_empty()
+            .then_some(())
+            .ok_or(RetainedSurfacePrepareError::ActionSet)
     }
 
     fn stamps(&self) -> Vec<&RetainedSurfaceRasterStamp> {
@@ -256,21 +258,21 @@ impl PreparedSurface<'_> {
     fn freeze_actions(
         &mut self,
         actions: &mut FxHashMap<super::RetainedSurfaceResidentKey, RetainedSurfaceCompileAction>,
-    ) {
-        assert!(
-            self.action.is_none(),
-            "surface action can only be frozen once"
-        );
+    ) -> Result<(), RetainedSurfacePrepareError> {
+        if self.action.is_some() {
+            return Err(RetainedSurfacePrepareError::ActionSet);
+        }
         self.action = Some(
             actions
                 .remove(&self.stamp.identity.resident_key())
-                .expect("viewport action provider omitted a prepared surface"),
+                .ok_or(RetainedSurfacePrepareError::ActionSet)?,
         );
         for step in &mut self.raster_steps {
             if let PreparedSurfaceStep::RetainedSurface(nested) = step {
-                nested.child.freeze_actions(actions);
+                nested.child.freeze_actions(actions)?;
             }
         }
+        Ok(())
     }
 
     fn collect_traces(&self, traces: &mut Vec<RetainedSurfaceBuildTrace>) {
@@ -490,6 +492,7 @@ fn prepare_property_scene<'a>(
     let transaction_witness = plan
         .property_scene_transaction_witness()
         .ok_or(RetainedSurfacePrepareError::PlanShape)?;
+    let boundary_forest = plan.property_boundary_forest();
     if plan
         .property_scene_context()
         .is_none_or(|context| !context.matches_ui_context(ctx))
@@ -554,6 +557,7 @@ fn prepare_property_scene<'a>(
     Ok(PreparedPropertyScene {
         steps,
         transaction_witness,
+        boundary_forest,
         parent_target: ctx.current_target(),
     })
 }
@@ -1159,45 +1163,38 @@ fn prepare_surface<'a>(
             },
         ),
         SurfaceKind::Transform(_) if policy == RetainedSurfaceTreePolicy::PropertyScene => {
-            if surface.raster_steps().iter().any(|step| {
-                matches!(
-                    step,
-                    PaintPlanStep::RetainedSurface(child)
-                        if surface_is_property_effect(child)
-                )
-            }) {
-                validated_mixed_property_transform_raster_stamp(
-                    surface.boundary_root(),
-                    surface.stable_id(),
-                    surface.persistent_color_key(),
-                    depth,
-                    target,
-                    stamp_steps,
-                    surface.aggregate_opaque_order_span().clone(),
-                )
-            } else {
-                super::compiler::validated_property_scene_surface_raster_stamp(
-                    surface.boundary_root(),
-                    surface.stable_id(),
-                    surface.persistent_color_key(),
-                    depth,
-                    target,
-                    stamp_steps,
-                    surface.aggregate_opaque_order_span().clone(),
-                )
-            }
-        }
-        SurfaceKind::NestedIsolation(plan)
-            if policy == RetainedSurfaceTreePolicy::PropertyScene =>
-        {
-            super::compiler::validated_property_effect_surface_raster_stamp(
-                plan.property_scene_artifact
-                    .as_ref()
-                    .ok_or(RetainedSurfacePrepareError::ArtifactStore)?,
+            super::compiler::validated_property_boundary_forest_surface_raster_stamp(
+                surface.boundary_root(),
+                surface.stable_id(),
+                surface.persistent_color_key(),
+                RetainedSurfaceRasterRole::Transform,
                 depth,
                 target,
                 stamp_steps,
                 surface.aggregate_opaque_order_span().clone(),
+                None,
+            )
+        }
+        SurfaceKind::NestedIsolation(plan)
+            if policy == RetainedSurfaceTreePolicy::PropertyScene =>
+        {
+            let artifact_contract = plan
+                .property_scene_artifact
+                .as_ref()
+                .ok_or(RetainedSurfacePrepareError::ArtifactStore)?;
+            super::compiler::validated_property_boundary_forest_surface_raster_stamp(
+                surface.boundary_root(),
+                surface.stable_id(),
+                surface.persistent_color_key(),
+                RetainedSurfaceRasterRole::PropertyEffect,
+                depth,
+                target,
+                stamp_steps,
+                surface.aggregate_opaque_order_span().clone(),
+                Some(super::compiler::PropertyEffectRasterIdentityInputs {
+                    local_raster_clips: artifact_contract.isolated_local_raster_clips(),
+                    content: artifact_contract.content().to_vec(),
+                }),
             )
         }
         kind => validated_retained_surface_tree_raster_stamp(
@@ -1639,10 +1636,21 @@ pub(crate) struct RetainedPropertySceneBuildOutcome {
 pub(crate) enum RetainedPropertySceneTransaction {
     Transform(super::compiler::RetainedPropertySceneTransactionStamp),
     Effect(RetainedPropertyEffectSceneTransactionStamp),
+    PropertyBoundaryForest(RetainedPropertyBoundaryForestSceneTransactionStamp),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RetainedPropertyEffectSceneTransactionStamp {
+    witness: super::frame_plan::PropertySceneTransactionWitness,
+    ordered_stamps: Vec<RetainedSurfaceRasterStamp>,
+    plan_step_count: usize,
+    aggregate_opaque_order_span: std::ops::Range<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RetainedPropertyBoundaryForestSceneTransactionStamp {
+    forest: super::frame_plan::PropertyBoundaryForest,
+    forest_transaction: super::compiler::RetainedPropertyBoundaryForestTransactionStamp,
     witness: super::frame_plan::PropertySceneTransactionWitness,
     ordered_stamps: Vec<RetainedSurfaceRasterStamp>,
     plan_step_count: usize,
@@ -1662,6 +1670,7 @@ impl RetainedPropertySceneTransaction {
         match self {
             Self::Transform(transaction) => transaction.is_canonical(),
             Self::Effect(transaction) => transaction.is_canonical(),
+            Self::PropertyBoundaryForest(transaction) => transaction.is_canonical(),
         }
     }
 
@@ -1669,7 +1678,57 @@ impl RetainedPropertySceneTransaction {
         match self {
             Self::Transform(transaction) => transaction.validates_surface_stamps(stamps),
             Self::Effect(transaction) => transaction.validates_surface_stamps(stamps),
+            Self::PropertyBoundaryForest(transaction) => {
+                transaction.validates_surface_stamps(stamps)
+            }
         }
+    }
+}
+
+impl RetainedPropertyBoundaryForestSceneTransactionStamp {
+    fn new(
+        forest: super::frame_plan::PropertyBoundaryForest,
+        witness: super::frame_plan::PropertySceneTransactionWitness,
+        ordered_stamps: &[RetainedSurfaceRasterStamp],
+        plan_step_count: usize,
+        aggregate_opaque_order_span: std::ops::Range<u32>,
+    ) -> Option<Self> {
+        let forest_transaction =
+            super::compiler::RetainedPropertyBoundaryForestTransactionStamp::new(
+                forest.clone(),
+                ordered_stamps,
+            )?;
+        property_boundary_forest_scene_transaction_is_canonical(
+            &forest,
+            &forest_transaction,
+            &witness,
+            ordered_stamps,
+            plan_step_count,
+            &aggregate_opaque_order_span,
+        )
+        .then(|| Self {
+            forest,
+            forest_transaction,
+            witness,
+            ordered_stamps: ordered_stamps.to_vec(),
+            plan_step_count,
+            aggregate_opaque_order_span,
+        })
+    }
+
+    fn is_canonical(&self) -> bool {
+        property_boundary_forest_scene_transaction_is_canonical(
+            &self.forest,
+            &self.forest_transaction,
+            &self.witness,
+            &self.ordered_stamps,
+            self.plan_step_count,
+            &self.aggregate_opaque_order_span,
+        )
+    }
+
+    fn validates_surface_stamps(&self, stamps: &[RetainedSurfaceRasterStamp]) -> bool {
+        self.is_canonical() && self.ordered_stamps == stamps
     }
 }
 
@@ -1946,93 +2005,262 @@ pub(crate) fn legacy_property_executor_rejects_effect_transform_scroll_child_for
     !property_effect_scene_surface_stamp_is_canonical(stamp, 0)
 }
 
-fn validated_mixed_property_transform_raster_stamp(
-    boundary_root: crate::view::node_arena::NodeKey,
-    stable_id: u64,
-    color_key: PersistentTextureKey,
-    depth: usize,
-    target: RetainedSurfaceRasterInputs,
-    ordered_steps: Vec<RetainedSurfaceRasterStepStamp>,
-    aggregate_opaque_order_span: std::ops::Range<u32>,
-) -> Option<RetainedSurfaceRasterStamp> {
-    if stable_id == 0
-        || color_key != transformed_layer_stable_key(stable_id)
-        || aggregate_opaque_order_span.start != 0
-        || !ordered_steps.iter().any(|step| {
-            matches!(
-                step,
-                RetainedSurfaceRasterStepStamp::NestedSurface(dependency)
-                    if dependency.child_stamp.identity.role
-                        == RetainedSurfaceRasterRole::PropertyEffect
-            )
-        })
-    {
-        return None;
-    }
-    let identity = super::RetainedSurfaceRasterIdentity {
-        boundary_root,
-        stable_id,
-        color_key,
-        role: RetainedSurfaceRasterRole::Transform,
-        scroll_content_tile: None,
+fn property_boundary_forest_scene_transaction_is_canonical(
+    forest: &super::frame_plan::PropertyBoundaryForest,
+    forest_transaction: &super::compiler::RetainedPropertyBoundaryForestTransactionStamp,
+    witness: &super::frame_plan::PropertySceneTransactionWitness,
+    ordered_stamps: &[RetainedSurfaceRasterStamp],
+    plan_step_count: usize,
+    aggregate_opaque_order_span: &std::ops::Range<u32>,
+) -> bool {
+    use super::frame_plan::{
+        PropertyBoundaryForestReceiver as Receiver, PropertyBoundaryForestRole as Role,
+        PropertyIsolationCompositeBasis, PropertySceneTransactionSurfaceKind as SurfaceKind,
     };
-    if !target.has_canonical_descriptor_pair_for(identity) {
-        return None;
+
+    if !forest_transaction.validates_forest_and_ordered_stamps(forest, ordered_stamps)
+        || forest.roots.len() != witness.roots.len()
+        || forest.nodes.len() != witness.surfaces.len()
+        || ordered_stamps.len() != forest.nodes.len()
+        || witness.aggregate_opaque_order_span != *aggregate_opaque_order_span
+        || aggregate_opaque_order_span.start != 0
+    {
+        return false;
     }
-    let mut cursor = 0_u32;
-    let mut owner_topology = Vec::new();
-    let mut clip_nodes = Vec::new();
-    let mut chunks = Vec::new();
-    let mut op_count = 0usize;
-    for (expected_index, step) in ordered_steps.iter().enumerate() {
-        match step {
-            RetainedSurfaceRasterStepStamp::ArtifactSpan(span) => {
-                if span.step_index != expected_index || span.opaque_order_span.start != cursor {
-                    return None;
-                }
-                cursor = span.opaque_order_span.end;
-                owner_topology.extend(span.owner_topology.iter().copied());
-                clip_nodes.extend(span.clip_nodes.iter().copied());
-                chunks.extend(span.chunks.iter().cloned());
-                op_count = op_count.checked_add(span.op_count)?;
+
+    let mut next_root_step = 0usize;
+    let mut root_keys = FxHashSet::default();
+    for (ordinal, (root, forest_root)) in witness.roots.iter().zip(&forest.roots).enumerate() {
+        if root.ordinal as usize != ordinal
+            || forest_root.scene_root_ordinal as usize != ordinal
+            || root.root != forest_root.root
+            || root.stable_id != forest_root.stable_id
+            || root.top_level_step_span.start != next_root_step
+            || root.top_level_step_span.end < root.top_level_step_span.start
+            || !root_keys.insert(root.root)
+        {
+            return false;
+        }
+        next_root_step = root.top_level_step_span.end;
+    }
+    if next_root_step != plan_step_count {
+        return false;
+    }
+
+    let mut node_by_role_owner = FxHashMap::default();
+    for (ordinal, ((node, surface), stamp)) in forest
+        .nodes
+        .iter()
+        .zip(&witness.surfaces)
+        .zip(ordered_stamps)
+        .enumerate()
+    {
+        let Some(root) = forest.roots.get(node.scene_root_ordinal as usize) else {
+            return false;
+        };
+        let expected_parent = match node.receiver {
+            Receiver::FrameRoot { .. } => None,
+            Receiver::Surface { parent, .. } => Some(forest.nodes[parent.0 as usize].owner),
+        };
+        let kind_matches = match (node.stable_key.role, surface.kind) {
+            (Role::Transform, SurfaceKind::Transform(transform)) => {
+                transform.0 == node.owner
+                    && surface.effect_composite.is_none()
+                    && surface
+                        .transform_viewport_matrix_bits
+                        .is_some_and(|matrix| {
+                            matrix.into_iter().map(f32::from_bits).all(f32::is_finite)
+                        })
+                    && stamp.identity.role == RetainedSurfaceRasterRole::Transform
             }
-            RetainedSurfaceRasterStepStamp::NestedSurface(dependency) => {
-                if dependency.step_index != expected_index
-                    || dependency.parent_opaque_order_before != cursor
-                    || dependency.parent_opaque_order_after != cursor
-                    || dependency.child_stamp.identity.role
-                        != RetainedSurfaceRasterRole::PropertyEffect
-                {
-                    return None;
-                }
+            (Role::Effect, SurfaceKind::Effect(effect)) => {
+                effect.0 == node.owner
+                    && surface.transform_viewport_matrix_bits.is_none()
+                    && surface.effect_composite.is_some()
+                    && stamp.identity.role == RetainedSurfaceRasterRole::PropertyEffect
             }
-            RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(_)
-            | RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(_)
-            | RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
-            | RetainedSurfaceRasterStepStamp::ScrollBoundary(_)
-            | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return None,
+            _ => false,
+        };
+        if node.id.0 as usize != ordinal
+            || surface.ordinal as usize != ordinal
+            || !kind_matches
+            || surface.boundary_root != node.owner
+            || surface.stable_id != node.stable_key.stable_id
+            || surface.persistent_color_key != node.persistent_color_key
+            || surface.parent_surface != expected_parent
+            || surface.scene_root != root.root
+            || stamp.identity.boundary_root != node.owner
+            || stamp.identity.stable_id != node.stable_key.stable_id
+            || stamp.identity.color_key != node.persistent_color_key
+            || node_by_role_owner
+                .insert((node.stable_key.role, node.owner), ordinal)
+                .is_some()
+        {
+            return false;
+        }
+
+        if let SurfaceKind::Effect(_) = surface.kind {
+            let Some(effect) = surface.effect_composite.as_ref() else {
+                return false;
+            };
+            let expected_basis = match node.receiver {
+                Receiver::FrameRoot { .. } => PropertyIsolationCompositeBasis::FrameRoot,
+                Receiver::Surface { parent, .. } => {
+                    let Some(parent_surface) = witness.surfaces.get(parent.0 as usize) else {
+                        return false;
+                    };
+                    match parent_surface.kind {
+                        SurfaceKind::Transform(transform) => {
+                            let Some(viewport_matrix_bits) =
+                                parent_surface.transform_viewport_matrix_bits
+                            else {
+                                return false;
+                            };
+                            PropertyIsolationCompositeBasis::ParentTransform {
+                                transform,
+                                viewport_matrix_bits,
+                            }
+                        }
+                        SurfaceKind::Effect(effect) => {
+                            PropertyIsolationCompositeBasis::ParentEffect(effect)
+                        }
+                    }
+                }
+            };
+            let opacity = f32::from_bits(effect.mapping.opacity_bits);
+            if effect.mapping.basis != expected_basis
+                || effect.mapping.rect_bits != stamp.target.source_bounds_bits
+                || effect.mapping.effect_generation == 0
+                || !opacity.is_finite()
+                || !(0.0..=1.0).contains(&opacity)
+                || super::frame_plan::resolve_composite_scissor(
+                    witness.outer_scissor_rect,
+                    &effect.ancestor_composite_clips,
+                )
+                .ok()
+                    != Some(effect.mapping.resolved_scissor)
+            {
+                return false;
+            }
         }
     }
-    if aggregate_opaque_order_span != (0..cursor) {
-        return None;
+
+    let mut nested_children = FxHashSet::default();
+    for (parent_ordinal, parent_stamp) in ordered_stamps.iter().enumerate() {
+        for step in &parent_stamp.ordered_steps {
+            let RetainedSurfaceRasterStepStamp::NestedSurface(dependency) = step else {
+                continue;
+            };
+            let child_role = match dependency.child_stamp.identity.role {
+                RetainedSurfaceRasterRole::Transform => Role::Transform,
+                RetainedSurfaceRasterRole::PropertyEffect => Role::Effect,
+                _ => return false,
+            };
+            let Some(&child_ordinal) = node_by_role_owner
+                .get(&(child_role, dependency.child_stamp.identity.boundary_root))
+            else {
+                return false;
+            };
+            if !matches!(
+                forest.nodes[child_ordinal].receiver,
+                Receiver::Surface { parent, .. } if parent.0 as usize == parent_ordinal
+            ) || dependency.child_stamp.as_ref() != &ordered_stamps[child_ordinal]
+                || !nested_children.insert(child_ordinal)
+            {
+                return false;
+            }
+            let child_surface = &witness.surfaces[child_ordinal];
+            let geometry_matches = match (
+                child_role,
+                &dependency.child_composite_geometry,
+                child_surface.kind,
+            ) {
+                (
+                    Role::Transform,
+                    RetainedSurfaceCompositeGeometryStamp::Transform {
+                        source_bounds_bits,
+                        viewport_transform_bits,
+                        ..
+                    },
+                    SurfaceKind::Transform(_),
+                ) => {
+                    *source_bounds_bits == dependency.child_stamp.target.source_bounds_bits
+                        && Some(*viewport_transform_bits)
+                            == child_surface.transform_viewport_matrix_bits
+                }
+                (
+                    Role::Effect,
+                    RetainedSurfaceCompositeGeometryStamp::PropertyEffect {
+                        source_bounds_bits,
+                        opacity_bits,
+                        effect_generation,
+                        basis,
+                        resolved_scissor,
+                        ancestor_composite_clips,
+                    },
+                    SurfaceKind::Effect(_),
+                ) => {
+                    let Some(expected) = child_surface.effect_composite.as_ref() else {
+                        return false;
+                    };
+                    let expected_basis = match expected.mapping.basis {
+                        PropertyIsolationCompositeBasis::FrameRoot => return false,
+                        PropertyIsolationCompositeBasis::ParentEffect(effect) => {
+                            super::compiler::PropertyEffectCompositeBasisStamp::ParentEffect(effect)
+                        }
+                        PropertyIsolationCompositeBasis::ParentTransform {
+                            transform,
+                            viewport_matrix_bits,
+                        } => super::compiler::PropertyEffectCompositeBasisStamp::ParentTransform {
+                            transform,
+                            viewport_matrix_bits,
+                        },
+                    };
+                    *source_bounds_bits == expected.mapping.rect_bits
+                        && *opacity_bits == expected.mapping.opacity_bits
+                        && *effect_generation == expected.mapping.effect_generation
+                        && *basis == expected_basis
+                        && *resolved_scissor == expected.mapping.resolved_scissor
+                        && *ancestor_composite_clips == expected.ancestor_composite_clips
+                }
+                _ => false,
+            };
+            if !geometry_matches {
+                return false;
+            }
+        }
     }
-    let stamp = RetainedSurfaceRasterStamp {
-        identity,
-        target,
-        owner_topology,
-        clip_nodes,
-        chunks,
-        op_count,
-        opaque_order_span: aggregate_opaque_order_span,
-        ordered_steps,
-        text_area_paint_grammar: None,
-        interactive_text_area_resident: None,
-        atomic_projection_text_area_resident: None,
-        scroll_host: None,
-        property_effect: None,
-        native_scroll_children: Vec::new(),
-    };
-    property_effect_scene_surface_stamp_is_canonical(&stamp, depth).then_some(stamp)
+    if forest.nodes.iter().enumerate().any(|(ordinal, node)| {
+        matches!(node.receiver, Receiver::Surface { .. }) != nested_children.contains(&ordinal)
+    }) {
+        return false;
+    }
+
+    let mut top_level = FxHashSet::default();
+    let mut previous_step = None;
+    for top in &witness.top_level_surfaces {
+        let Some(node) = forest.nodes.get(top.surface_ordinal as usize) else {
+            return false;
+        };
+        let Some(root) = forest.roots.get(top.scene_root_ordinal as usize) else {
+            return false;
+        };
+        if !matches!(node.receiver, Receiver::FrameRoot { .. })
+            || node.scene_root_ordinal != top.scene_root_ordinal
+            || !witness.roots[top.scene_root_ordinal as usize]
+                .top_level_step_span
+                .contains(&top.step_index)
+            || root.root != witness.surfaces[top.surface_ordinal as usize].scene_root
+            || previous_step.is_some_and(|previous| previous >= top.step_index)
+            || !top_level.insert(top.surface_ordinal as usize)
+        {
+            return false;
+        }
+        previous_step = Some(top.step_index);
+    }
+    forest.nodes.iter().enumerate().all(|(ordinal, node)| {
+        matches!(node.receiver, Receiver::FrameRoot { .. }) == top_level.contains(&ordinal)
+    })
 }
 
 fn property_effect_scene_transaction_is_canonical(
@@ -2351,7 +2579,7 @@ pub(crate) fn build_retained_surface_from_pool(
 ) -> Result<RetainedSurfaceBuildOutcome, RetainedSurfacePrepareError> {
     let mut prepared = prepare_retained_surface(plan, graph, &ctx)?;
     let actions = viewport.retained_surface_compile_actions_from_pool(prepared.stamps());
-    prepared.freeze_actions(actions);
+    prepared.freeze_actions(actions)?;
     let trace = RetainedSurfaceBuildTrace::from_prepared(&prepared.root);
     let (state, stamps) = emit_prepared_retained_surface(prepared, graph, ctx);
     let [stamp] = <Vec<_> as TryInto<[RetainedSurfaceRasterStamp; 1]>>::try_into(stamps)
@@ -2371,7 +2599,7 @@ pub(crate) fn build_retained_isolation_surface_from_pool(
 ) -> Result<RetainedSurfaceBuildOutcome, RetainedSurfacePrepareError> {
     let mut prepared = prepare_retained_isolation_surface(plan, graph, &ctx)?;
     let actions = viewport.retained_surface_compile_actions_from_pool(prepared.stamps());
-    prepared.freeze_actions(actions);
+    prepared.freeze_actions(actions)?;
     let trace = RetainedSurfaceBuildTrace::from_prepared(&prepared.root);
     let (state, stamps) = emit_prepared_retained_surface(prepared, graph, ctx);
     let [stamp] = <Vec<_> as TryInto<[RetainedSurfaceRasterStamp; 1]>>::try_into(stamps)
@@ -2394,7 +2622,7 @@ pub(crate) fn build_retained_scroll_host_surface_from_pool(
 ) -> Result<RetainedSurfaceBuildOutcome, RetainedSurfacePrepareError> {
     let mut prepared = prepare_retained_scroll_host_surface(plan, graph, &ctx)?;
     let actions = viewport.retained_surface_compile_actions_from_pool(prepared.stamps());
-    prepared.freeze_actions(actions);
+    prepared.freeze_actions(actions)?;
     let trace = RetainedSurfaceBuildTrace::from_prepared(&prepared.root);
     let (state, stamps) = emit_prepared_retained_surface(prepared, graph, ctx);
     let [stamp] = <Vec<_> as TryInto<[RetainedSurfaceRasterStamp; 1]>>::try_into(stamps)
@@ -2417,7 +2645,7 @@ pub(crate) fn build_retained_surface_tree_from_pool(
 ) -> Result<RetainedSurfaceTreeBuildOutcome, RetainedSurfacePrepareError> {
     let mut prepared = prepare_retained_surface_tree(plan, graph, &ctx)?;
     let actions = viewport.retained_surface_compile_actions_from_pool(prepared.stamps());
-    prepared.freeze_actions(actions);
+    prepared.freeze_actions(actions)?;
     let mut traces = Vec::new();
     prepared.root.collect_traces(&mut traces);
     let (state, stamps) = emit_prepared_retained_surface(prepared, graph, ctx);
@@ -2445,7 +2673,7 @@ pub(crate) fn build_retained_effect_tree_from_pool(
 ) -> Result<RetainedSurfaceTreeBuildOutcome, RetainedSurfacePrepareError> {
     let mut prepared = prepare_retained_effect_tree(plan, graph, &ctx)?;
     let actions = viewport.retained_surface_compile_actions_from_pool(prepared.stamps());
-    prepared.freeze_actions(actions);
+    prepared.freeze_actions(actions)?;
     let mut traces = Vec::new();
     prepared.root.collect_traces(&mut traces);
     let (state, stamps) = emit_prepared_retained_surface(prepared, graph, ctx);
@@ -2497,6 +2725,65 @@ pub(crate) fn prepare_retained_property_scene_stamps_for_test(
     )
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PropertyBoundaryForestPrepareTamper {
+    Descriptor,
+    OrderedStamp,
+    Receiver,
+    OmittedAction,
+}
+
+#[cfg(test)]
+pub(crate) fn prepare_property_boundary_forest_with_tamper_for_test(
+    viewport: &Viewport,
+    plan: &FramePaintPlan,
+    graph: &FrameGraph,
+    ctx: &UiBuildContext,
+    tamper: PropertyBoundaryForestPrepareTamper,
+) -> Result<(), RetainedSurfacePrepareError> {
+    let mut prepared = prepare_property_scene(plan, graph, ctx)?;
+    let mut ordered_stamps = prepared.stamps().into_iter().cloned().collect::<Vec<_>>();
+    let mut forest = prepared
+        .boundary_forest
+        .clone()
+        .ok_or(RetainedSurfacePrepareError::PlanShape)?;
+    match tamper {
+        PropertyBoundaryForestPrepareTamper::Descriptor => {
+            ordered_stamps[0].target.scale_factor_bits = 0.0_f32.to_bits();
+        }
+        PropertyBoundaryForestPrepareTamper::OrderedStamp => {
+            ordered_stamps.swap(0, 1);
+        }
+        PropertyBoundaryForestPrepareTamper::Receiver => {
+            forest.nodes[1].receiver =
+                super::frame_plan::PropertyBoundaryForestReceiver::FrameRoot {
+                    scene_root_ordinal: forest.nodes[1].scene_root_ordinal,
+                };
+        }
+        PropertyBoundaryForestPrepareTamper::OmittedAction => {}
+    }
+    RetainedPropertyBoundaryForestSceneTransactionStamp::new(
+        forest,
+        prepared.transaction_witness.clone(),
+        &ordered_stamps,
+        prepared.steps.len(),
+        prepared.recomputed_aggregate_opaque_order_span(),
+    )
+    .ok_or(RetainedSurfacePrepareError::ArtifactStore)?;
+    let mut actions = viewport.retained_surface_compile_actions_from_pool(prepared.stamps());
+    if matches!(tamper, PropertyBoundaryForestPrepareTamper::OmittedAction) {
+        let key = prepared
+            .stamps()
+            .first()
+            .ok_or(RetainedSurfacePrepareError::ActionSet)?
+            .identity
+            .resident_key();
+        actions.remove(&key);
+    }
+    prepared.freeze_actions(actions)
+}
+
 fn prepare_retained_property_scene_with_pool_policy<'a>(
     viewport: &Viewport,
     plan: &'a FramePaintPlan,
@@ -2508,7 +2795,18 @@ fn prepare_retained_property_scene_with_pool_policy<'a>(
     let ordered_stamps = prepared.stamps().into_iter().cloned().collect::<Vec<_>>();
     let plan_step_count = prepared.steps.len();
     let aggregate_opaque_order_span = prepared.recomputed_aggregate_opaque_order_span();
-    let transaction = if prepared.transaction_witness.surfaces.iter().any(|surface| {
+    let transaction = if let Some(forest) = prepared.boundary_forest.clone() {
+        RetainedPropertySceneTransaction::PropertyBoundaryForest(
+            RetainedPropertyBoundaryForestSceneTransactionStamp::new(
+                forest,
+                prepared.transaction_witness.clone(),
+                &ordered_stamps,
+                plan_step_count,
+                aggregate_opaque_order_span,
+            )
+            .ok_or(RetainedSurfacePrepareError::ArtifactStore)?,
+        )
+    } else if prepared.transaction_witness.surfaces.iter().any(|surface| {
         matches!(
             surface.kind,
             super::frame_plan::PropertySceneTransactionSurfaceKind::Effect(_)
@@ -2542,7 +2840,7 @@ fn prepare_retained_property_scene_with_pool_policy<'a>(
     } else {
         viewport.retained_surface_compile_actions_from_pool(prepared.stamps())
     };
-    prepared.freeze_actions(actions);
+    prepared.freeze_actions(actions)?;
     let surfaces = prepared.collect_traces();
     let trace = RetainedPropertySceneBuildTrace {
         root_count: prepared.transaction_witness.roots.len(),
@@ -2609,7 +2907,7 @@ pub(crate) fn execute_forced_transform_surface_for_test(
 ) -> Result<BuildState, ForcedTransformSurfaceError> {
     let mut prepared = prepare_frame_paint_plan_forced(plan, graph, &ctx)?;
     let actions = viewport.retained_surface_compile_actions_for_forced_test(prepared.stamps());
-    prepared.freeze_actions(actions);
+    prepared.freeze_actions(actions)?;
     let (state, stamps) = emit_prepared_retained_surface(prepared, graph, ctx);
     assert!(
         viewport.stage_retained_surface_full_set(stamps),

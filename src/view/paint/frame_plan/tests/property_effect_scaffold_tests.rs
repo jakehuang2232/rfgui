@@ -70,7 +70,7 @@ fn property_effect_scaffold_admits_only_proven_transform_direct_effect_mapping()
 }
 
 #[test]
-fn property_effect_scaffold_rejects_mixed_wrapper_multiroot_and_non_affine_shapes() {
+fn property_effect_scaffold_accepts_sealed_neutral_prefix_and_rejects_unproven_shapes() {
     let (mut arena, root, _, _, _, _, mut properties, mut generations) =
         exact_transform_child_isolation_fixture();
     let wrapper = commit_element(
@@ -81,6 +81,30 @@ fn property_effect_scaffold_rejects_mixed_wrapper_multiroot_and_non_affine_shape
     arena.set_children(wrapper, vec![root]);
     properties.sync(&arena, &[wrapper]);
     generations.sync(&arena, &[wrapper], &properties);
+    let plan = plan_property_effect_scene_scaffold_with_context(
+        &arena,
+        &[wrapper],
+        &properties,
+        &generations,
+        TransformSurfacePlanContext::new([0.0, 0.0], None),
+    )
+    .expect("one exact neutral root edge preserves the reviewed mixed chain");
+    let scaffold = plan
+        .property_scene_seal
+        .as_ref()
+        .and_then(|seal| seal.effect_scaffold.as_ref())
+        .expect("effect scaffold");
+    assert_eq!(scaffold.roots[0].root, wrapper);
+    assert_eq!(scaffold.boundary_forest.nodes[0].owner, root);
+
+    let sibling = commit_child(
+        &mut arena,
+        wrapper,
+        Box::new(Element::new_with_id(0xea_3003, 150.0, 0.0, 8.0, 8.0)),
+    );
+    assert_ne!(sibling, root);
+    properties.sync(&arena, &[wrapper]);
+    generations.sync(&arena, &[wrapper], &properties);
     let error = plan_property_effect_scene_scaffold_with_context(
         &arena,
         &[wrapper],
@@ -88,10 +112,43 @@ fn property_effect_scaffold_rejects_mixed_wrapper_multiroot_and_non_affine_shape
         &generations,
         TransformSurfacePlanContext::new([0.0, 0.0], None),
     )
-    .expect_err("non-root transform wrapper is outside proven mixed shape");
+    .expect_err("neutral root prefix with an unsealed sibling must fail closed");
     assert!(error.reasons.iter().any(|reason| matches!(
         reason,
         FramePaintPlanRejection::UnsupportedPropertyInterleave(_)
+    )));
+
+    let (mut arena, root, _, _, _, _, mut properties, mut generations) =
+        exact_transform_child_isolation_fixture();
+    let branch = commit_child(
+        &mut arena,
+        root,
+        Box::new(Element::new_with_id(0xea_3004, 145.0, 0.0, 8.0, 8.0)),
+    );
+    crate::view::test_support::get_element_mut::<Element>(&arena, branch).set_opacity(0.4);
+    properties.sync(&arena, &[root]);
+    generations.sync(&arena, &[root], &properties);
+    let plan = plan_property_effect_scene_scaffold_with_context(
+        &arena,
+        &[root],
+        &properties,
+        &generations,
+        TransformSurfacePlanContext::new([0.0, 0.0], None),
+    )
+    .expect("a reviewed transform parent may own multiple effect children");
+    let forest = &plan
+        .property_scene_seal
+        .as_ref()
+        .and_then(|seal| seal.effect_scaffold.as_ref())
+        .expect("branch effect scaffold")
+        .boundary_forest;
+    assert_eq!(forest.nodes.len(), 3);
+    assert!(forest.nodes[1..].iter().all(|node| matches!(
+        node.receiver,
+        PropertyBoundaryForestReceiver::Surface {
+            parent: PropertyBoundaryForestNodeId(0),
+            ..
+        }
     )));
 
     let (mut arena, root, _, _, _, _, mut properties, mut generations) =
@@ -103,18 +160,23 @@ fn property_effect_scaffold_rejects_mixed_wrapper_multiroot_and_non_affine_shape
     let roots = [root, side_root];
     properties.sync(&arena, &roots);
     generations.sync(&arena, &roots, &properties);
-    let error = plan_property_effect_scene_scaffold_with_context(
+    let plan = plan_property_effect_scene_scaffold_with_context(
         &arena,
         &roots,
         &properties,
         &generations,
         TransformSurfacePlanContext::new([0.0, 0.0], None),
     )
-    .expect_err("mixed property scaffold is single-root only");
-    assert!(error.reasons.iter().any(|reason| matches!(
-        reason,
-        FramePaintPlanRejection::UnsupportedPropertyInterleave(_)
-    )));
+    .expect("plain side root owns an empty forest span without a fake surface");
+    let forest = &plan
+        .property_scene_seal
+        .unwrap()
+        .effect_scaffold
+        .unwrap()
+        .boundary_forest;
+    assert_eq!(forest.roots.len(), 2);
+    assert_eq!(forest.roots[0].node_span, 0..2);
+    assert_eq!(forest.roots[1].node_span, 2..2);
 
     let (arena, root, _, _, _, _, mut properties, generations) =
         exact_transform_child_isolation_fixture();
@@ -224,7 +286,8 @@ fn property_effect_scaffold_places_local_and_ancestor_clips_exactly() {
     )
     .expect("clip-bearing effect scene preflight and emit");
     let composite_scissors = graph
-        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>()
+        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
+        )
         .into_iter()
         .map(|pass| pass.test_snapshot().effective_scissor_rect)
         .collect::<Vec<_>>();
@@ -240,8 +303,7 @@ fn property_effect_scaffold_places_local_and_ancestor_clips_exactly() {
         .as_mut()
         .and_then(|seal| seal.effect_scaffold.as_mut())
         .expect("effect scaffold");
-    let PropertyEffectSurfaceKind::Isolation(root_surface) = &mut scaffold.surfaces[0].kind
-    else {
+    let PropertyEffectSurfaceKind::Isolation(root_surface) = &mut scaffold.surfaces[0].kind else {
         panic!("root isolation")
     };
     root_surface.local_raster_clips[0].generation += 1;

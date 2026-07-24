@@ -2273,47 +2273,7 @@ impl DirtyPassMask {
 }
 
 #[cfg(test)]
-mod dirty_pass_mask_tests {
-    use super::{DirtyFlags, DirtyPassMask};
-
-    #[test]
-    fn dirty_pass_masks_encode_phase_4a_dependencies() {
-        assert_eq!(DirtyPassMask::LAYOUT, DirtyFlags::LAYOUT);
-
-        let placement = DirtyFlags::PLACE
-            .union(DirtyFlags::BOX_MODEL)
-            .union(DirtyFlags::HIT_TEST);
-        assert_eq!(DirtyPassMask::PLACEMENT, placement);
-        assert!(!DirtyPassMask::PLACEMENT.intersects(DirtyFlags::LAYOUT));
-        assert!(!DirtyPassMask::PLACEMENT.intersects(DirtyFlags::PAINT));
-        assert!(!DirtyPassMask::PLACEMENT.intersects(DirtyFlags::COMPOSITE));
-
-        assert_eq!(DirtyPassMask::BOX_MODEL, DirtyFlags::BOX_MODEL);
-        assert_eq!(DirtyPassMask::HIT_TEST, DirtyFlags::HIT_TEST);
-        assert_eq!(DirtyPassMask::PAINT, DirtyFlags::PAINT);
-        assert_eq!(DirtyPassMask::COMPOSITE, DirtyFlags::COMPOSITE);
-        assert!(!DirtyPassMask::PAINT.intersects(DirtyPassMask::PLACEMENT));
-        assert!(!DirtyPassMask::PAINT.intersects(DirtyFlags::COMPOSITE));
-
-        assert_eq!(
-            DirtyPassMask::RUNTIME,
-            DirtyPassMask::PLACEMENT
-                .union(DirtyPassMask::PAINT)
-                .union(DirtyPassMask::COMPOSITE)
-        );
-        assert_eq!(
-            DirtyPassMask::RUNTIME,
-            DirtyFlags::PLACE
-                .union(DirtyFlags::BOX_MODEL)
-                .union(DirtyFlags::HIT_TEST)
-                .union(DirtyFlags::PAINT)
-                .union(DirtyFlags::COMPOSITE)
-        );
-        assert!(!DirtyPassMask::RUNTIME.intersects(DirtyFlags::LAYOUT));
-        assert!(DirtyPassMask::RUNTIME.contains(DirtyFlags::COMPOSITE));
-        assert!(DirtyFlags::ALL.contains(DirtyFlags::COMPOSITE));
-    }
-}
+mod dirty_pass_mask_tests;
 
 impl LayoutConstraints {
     fn context(self) -> LayoutContext {
@@ -3050,55 +3010,7 @@ impl Default for RetainedPaintProperties {
 }
 
 #[cfg(test)]
-mod retained_paint_properties_tests {
-    use super::{Element, ElementTrait, RetainedPaintProperties, Text};
-    use crate::style::{BoxShadow, ScrollDirection};
-    use crate::view::base_component::TextArea;
-
-    #[test]
-    fn default_contract_is_property_neutral() {
-        let text_area = TextArea::new();
-        assert_eq!(
-            text_area.retained_paint_properties(),
-            RetainedPaintProperties::default()
-        );
-    }
-
-    #[test]
-    fn element_contract_observes_retained_paint_semantics() {
-        let mut element = Element::new(0.0, 0.0, 100.0, 50.0);
-        element.set_opacity(0.4);
-        element.set_border_radius(6.0);
-        element.set_box_shadows(vec![BoxShadow::new().offset(2.0)]);
-        element.border_widths.left = 1.0;
-        element.scroll_direction = ScrollDirection::Vertical;
-
-        assert_eq!(
-            element.retained_paint_properties(),
-            RetainedPaintProperties {
-                opacity: 0.4,
-                has_rounded_clip: true,
-                has_box_shadow: true,
-                has_border: true,
-                is_scroll_container: true,
-            }
-        );
-    }
-
-    #[test]
-    fn text_contract_preserves_native_opacity() {
-        let mut text = Text::from_content("retained");
-        text.set_opacity(0.35);
-
-        assert_eq!(
-            text.retained_paint_properties(),
-            RetainedPaintProperties {
-                opacity: 0.35,
-                ..Default::default()
-            }
-        );
-    }
-}
+mod retained_paint_properties_tests;
 
 /// Exact native classification used by retained traversal when an authored
 /// child may escape its immediate parent's clip/order phase.
@@ -6504,6 +6416,41 @@ impl Element {
         })
     }
 
+    /// Exact native admission for one owner carrying T, E and S. Raster
+    /// assembly consumes T/E before H/C/O recording; E and T are then applied
+    /// exactly once in that order by their retained composites.
+    pub(crate) fn exact_retained_same_owner_transform_effect_scroll_host_admission(
+        &self,
+        owner: NodeKey,
+        arena: &NodeArena,
+        scale_factor: f32,
+    ) -> Option<RetainedScrollHostAdmissionSnapshot> {
+        let (source_bounds, scroll, child) = self
+            .exact_retained_scroll_host_shell_with_property_roles(
+                owner,
+                arena,
+                scale_factor,
+                None,
+                true,
+                true,
+            )?;
+        let child_node = arena.get(child)?;
+        let child_element = child_node.element.as_any().downcast_ref::<Element>()?;
+        if !child_element.is_exact_retained_scroll_content_leaf()
+            || !scroll_content_bounds_match(child_element, scroll)
+        {
+            return None;
+        }
+        Some(RetainedScrollHostAdmissionSnapshot {
+            boundary_root: owner,
+            stable_id: self.stable_id(),
+            child,
+            child_stable_id: child_element.stable_id(),
+            source_bounds,
+            scroll,
+        })
+    }
+
     fn exact_retained_scroll_host_admission_with_parent(
         &self,
         owner: NodeKey,
@@ -8330,6 +8277,7 @@ impl Element {
     /// transform-output contract: the caller/planner never independently
     /// recomputes raw layout bounds, and this path never uses the legacy
     /// unknown-host fallback.
+    #[cfg(test)]
     pub(crate) fn exact_nested_isolation_render_output_bounds(
         &self,
         arena: &crate::view::node_arena::NodeArena,

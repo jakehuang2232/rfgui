@@ -480,6 +480,40 @@ pub(super) fn record_coverage_manifest_with_property_authorities(
         initial_recording_context,
         transform_surface_authority,
         effect_surface_authority,
+        None,
+        planned_boundary_cutouts,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn record_retained_coverage_manifest_with_property_forest_authorities(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    force_legacy_roots: bool,
+    emit_deferred_late: bool,
+    recording_mode: CoverageRecordingMode,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    initial_recording_context: PaintRecordingContext,
+    transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
+    effect_surface_authority: Option<&super::EffectPropertySurfaceArtifactContract>,
+    property_forest_ancestor_chain: &super::ConsumedPropertyForestAncestorChainWitness,
+    planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
+) -> PaintCoverageManifest {
+    record_coverage_manifest_with_property_authorities_impl(
+        arena,
+        roots,
+        force_legacy_roots,
+        emit_deferred_late,
+        recording_mode,
+        property_trees,
+        paint_generations,
+        initial_recording_context,
+        transform_surface_authority,
+        effect_surface_authority,
+        Some(property_forest_ancestor_chain),
         planned_boundary_cutouts,
         None,
         None,
@@ -536,6 +570,7 @@ pub(super) fn record_coverage_manifest_with_nested_scroll_receiver(
         initial_recording_context,
         None,
         None,
+        None,
         &PlannedBoundaryCutoutSet::default(),
         Some(receiver),
         None,
@@ -584,6 +619,7 @@ pub(super) fn record_retained_coverage_manifest_with_native_scroll_receiver(
         initial_recording_context,
         None,
         None,
+        None,
         &PlannedBoundaryCutoutSet::default(),
         None,
         Some(receiver),
@@ -602,6 +638,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
     initial_recording_context: PaintRecordingContext,
     transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
     effect_surface_authority: Option<&super::EffectPropertySurfaceArtifactContract>,
+    property_forest_ancestor_chain: Option<&super::ConsumedPropertyForestAncestorChainWitness>,
     planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
     nested_scroll_receiver: Option<NestedScrollContentReceiverCutout>,
     native_scroll_receiver: Option<NativeScrollContentReceiverCutout>,
@@ -682,6 +719,8 @@ fn record_coverage_manifest_with_property_authorities_impl(
         recording_mode: CoverageRecordingMode,
         transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
         effect_surface_authority: Option<&'a super::EffectPropertySurfaceArtifactContract>,
+        property_forest_ancestor_chain:
+            Option<&'a super::ConsumedPropertyForestAncestorChainWitness>,
         baked_scroll_host_authority: Option<super::PaintBakedScrollHostWitness>,
         consumed_ancestor_property: Option<super::ConsumedAncestorProperty>,
         consumed_ancestor_property_stack: Option<super::ConsumedAncestorPropertyStackWitness>,
@@ -912,6 +951,9 @@ fn record_coverage_manifest_with_property_authorities_impl(
             recording_context.consumed_ancestor_property_stack = self
                 .consumed_ancestor_property_stack
                 .map(|witness| witness.for_target(key));
+            recording_context.property_forest_projection = self
+                .property_forest_ancestor_chain
+                .and_then(|witness| witness.projection_for_target(key));
             recording_context.nested_scroll_content = self.nested_scroll_content;
             recording_context.nested_scroll_host = self.nested_scroll_host;
             recording_context.scroll_forest_host = self.scroll_forest_host;
@@ -1568,6 +1610,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
         recording_mode,
         transform_surface_authority,
         effect_surface_authority,
+        property_forest_ancestor_chain,
         baked_scroll_host_authority: initial_recording_context.baked_scroll_host,
         consumed_ancestor_property: initial_recording_context.consumed_ancestor_property,
         consumed_ancestor_property_stack: initial_recording_context

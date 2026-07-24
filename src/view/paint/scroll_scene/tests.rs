@@ -946,6 +946,11 @@ fn same_owner_transform_effect_scroll_fixture()
     (arena, root, properties, generations)
 }
 
+fn fully_same_owner_transform_effect_scroll_fixture()
+-> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
+    super::super::frame_plan::tests::same_owner_transform_effect_scroll_roles_fixture()
+}
+
 fn effect_transform_scroll_fixture()
 -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
     let (mut arena, transform, _scroll, _content, _, _) =
@@ -2098,6 +2103,7 @@ mod property_boundary_dag_tests;
 mod transform_effect_scroll_plan_tests;
 mod transform_effect_scroll_prepare_tests;
 mod transform_effect_scroll_action_tests;
+mod same_owner_transform_effect_scroll_tests;
 mod effect_scroll_tests;
 mod property_scroll_b1_tests;
 mod property_scroll_b0_tests;

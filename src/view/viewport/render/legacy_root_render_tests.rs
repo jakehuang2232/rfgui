@@ -1,19 +1,17 @@
 use crate::style::{
-    Border, BoxShadow, ClipMode, Color, Layout, Length, ParsedValue, Position, PropertyId,
-    Rotate, Scale, ScrollDirection, Style, Transform, TransformEntry, Transition,
-    TransitionProperty, Transitions, Translate,
+    Border, BoxShadow, ClipMode, Color, Layout, Length, ParsedValue, Position, PropertyId, Rotate,
+    Scale, ScrollDirection, Style, Transform, TransformEntry, Transition, TransitionProperty,
+    Transitions, Translate,
 };
 use crate::view::base_component::{
-    BoxModelSnapshot, BuildState, DirtyFlags, DirtyPassMask, Element, ElementTrait,
-    EventTarget, Image, LayoutConstraints, LayoutPlacement, Layoutable, Renderable,
+    BoxModelSnapshot, BuildState, DirtyFlags, DirtyPassMask, Element, ElementTrait, EventTarget,
+    Image, LayoutConstraints, LayoutPlacement, Layoutable, Renderable,
     ShadowPaintRecordingCapability, Size, Svg, Text, TextArea, UiBuildContext,
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::{Node, NodeArena, NodeKey};
-use crate::view::test_support::{
-    commit_child, commit_element, measure_and_place, new_test_arena,
-};
+use crate::view::test_support::{commit_child, commit_element, measure_and_place, new_test_arena};
 use crate::view::viewport::ViewportPaintRendererMode;
 use crate::view::{ImageSource, SvgSource, image_resource};
 use std::any::Any;
@@ -77,19 +75,18 @@ use super::{
     AutoAuthorityDecision, AutoAuthorityKind, AutoAuthorityRejection, AutoAuthorityTrace,
     CachedCompiledGraph, FrameDisposition, PaintAuthorityFallbackStage, PaintAuthorityKind,
     PaintAuthorityTelemetry, PendingRootEffectTransaction, PropertyNeutralArtifactAttempt,
-    RecordedArtifactCandidate, RetainedAutoTerminalFailureStage,
-    RetainedTransformCanarySelection, RootEffectBuildPlan, RootEffectRetainedState, Viewport,
+    RecordedArtifactCandidate, RetainedAutoTerminalFailureStage, RetainedTransformCanarySelection,
+    RootEffectBuildPlan, RootEffectRetainedState, Viewport,
     begin_paint_authority_telemetry_attempt, build_root_legacy, debug_legacy_fallback,
     direct_scroll_transform_prepare_rejection_dispatch,
-    direct_scroll_transform_prepare_rejection_fallback_stage,
-    enable_paint_authority_test_capture, finish_frame_dirty_lifecycle, frame_disposition,
-    nested_scroll_prepare_rejection_dispatch, nested_scroll_prepare_rejection_fallback_stage,
-    nested_scroll_success_trace, paint_authority_test_capture_enabled,
-    preflight_direct_scroll_transform_selection, preflight_nested_scroll_selection,
-    preflight_transform_effect_scroll_selection, retained_auto_circuit_breaker_selection,
-    retained_auto_fallback_overlay_records, retained_auto_overlay_label,
-    retained_auto_terminal_fallback_stage, select_retained_auto_authority,
-    select_retained_transform_canary, should_store_compile_cache,
+    direct_scroll_transform_prepare_rejection_fallback_stage, enable_paint_authority_test_capture,
+    finish_frame_dirty_lifecycle, frame_disposition, nested_scroll_prepare_rejection_dispatch,
+    nested_scroll_prepare_rejection_fallback_stage, nested_scroll_success_trace,
+    paint_authority_test_capture_enabled, preflight_direct_scroll_transform_selection,
+    preflight_nested_scroll_selection, preflight_transform_effect_scroll_selection,
+    retained_auto_circuit_breaker_selection, retained_auto_fallback_overlay_records,
+    retained_auto_overlay_label, retained_auto_terminal_fallback_stage,
+    select_retained_auto_authority, select_retained_transform_canary, should_store_compile_cache,
     store_paint_authority_test_snapshot, take_paint_authority_test_snapshot,
     terminal_failure_stage, transform_effect_scroll_prepare_rejection_dispatch,
     transform_effect_scroll_prepare_rejection_fallback_stage,
@@ -535,10 +532,7 @@ fn prepared_native_media_transform(host: &str, state: &str) -> (NodeArena, Vec<N
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn prepared_nested_native_effect(
-    host: &str,
-    state: &str,
-) -> (NodeArena, Vec<NodeKey>, NodeKey) {
+fn prepared_nested_native_effect(host: &str, state: &str) -> (NodeArena, Vec<NodeKey>, NodeKey) {
     const SVG: &str = r##"<svg width="18" height="14" viewBox="0 0 18 14" xmlns="http://www.w3.org/2000/svg"><rect width="18" height="14" fill="#22c55e"/></svg>"##;
     let mut parent = Element::new_with_id(0xd3_a060, 0.0, 0.0, 64.0, 40.0);
     let mut parent_style = Style::new();
@@ -843,15 +837,15 @@ fn prepared_general_transform_scene() -> (NodeArena, Vec<NodeKey>) {
         (second_root, 13.0),
     ] {
         crate::view::test_support::get_element_mut::<Element>(&arena, node)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                glam::Vec3::new(x, 0.0, 0.0),
-            )));
+            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
+                x, 0.0, 0.0,
+            ))));
     }
     (arena, vec![root, second_root])
 }
 
-fn prepared_transform_child_isolation_tree()
--> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey, NodeKey) {
+fn prepared_transform_child_isolation_tree() -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey, NodeKey)
+{
     let mixed_element = |id, x, y, width, height, color| {
         let mut element = Element::new_with_id(id, x, y, width, height);
         let mut style = Style::new();
@@ -983,9 +977,9 @@ fn prepared_same_owner_transform_scroll_scene() -> (
     PropertyTrees,
     PaintGenerationTracker,
 ) {
-    let (mut arena, roots, _, _) = prepared_transform_scroll_scene(
-        glam::Mat4::from_translation(glam::Vec3::new(7.0, 5.0, 0.0)),
-    );
+    let (mut arena, roots, _, _) = prepared_transform_scroll_scene(glam::Mat4::from_translation(
+        glam::Vec3::new(7.0, 5.0, 0.0),
+    ));
     let root = roots[0];
     let scroll = arena.children_of(root)[0];
     let content = arena.children_of(scroll)[0];
@@ -1040,9 +1034,9 @@ fn prepared_transform_effect_scroll_scene() -> (
     PropertyTrees,
     PaintGenerationTracker,
 ) {
-    let (mut arena, roots, _, _) = prepared_transform_scroll_scene(
-        glam::Mat4::from_translation(glam::Vec3::new(3.0, 0.0, 0.0)),
-    );
+    let (mut arena, roots, _, _) = prepared_transform_scroll_scene(glam::Mat4::from_translation(
+        glam::Vec3::new(3.0, 0.0, 0.0),
+    ));
     let transform_root = roots[0];
     let scroll = arena.children_of(transform_root)[0];
     let mut effect = Element::new_with_id(0xe2_c3f0, 0.0, 0.0, 120.0, 90.0);
@@ -1094,8 +1088,7 @@ fn prepared_exact_scroll_scene() -> (
             height: 300.0,
         };
         root_element.set_scroll_offset((0.0, 20.0));
-        root_element
-            .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+        root_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
     }
     arena
         .get_mut(child)
@@ -1241,8 +1234,7 @@ fn prepared_focused_atomic_projection_scroll_text_area_scene_with_preedit(
     );
     root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
     {
-        let mut root_element =
-            crate::view::test_support::get_element_mut::<Element>(&arena, root);
+        let mut root_element = crate::view::test_support::get_element_mut::<Element>(&arena, root);
         root_element.apply_style(root_style);
         root_element.layout_state.content_size = Size {
             width,
@@ -1322,16 +1314,14 @@ fn prepared_scroll_text_area_scene_with(
     );
     root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
     {
-        let mut root_element =
-            crate::view::test_support::get_element_mut::<Element>(&arena, root);
+        let mut root_element = crate::view::test_support::get_element_mut::<Element>(&arena, root);
         root_element.apply_style(root_style);
         root_element.layout_state.content_size = Size {
             width: 100.0,
             height: 300.0,
         };
         root_element.set_scroll_offset((0.0, outer_scroll_y));
-        root_element
-            .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+        root_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
     }
     arena
         .get_mut(wrapper)
@@ -1380,8 +1370,7 @@ fn update_prepared_scroll_text_area_scene(
         .layout_position
         .y = -outer_scroll_y;
     {
-        let mut root_element =
-            crate::view::test_support::get_element_mut::<Element>(arena, *root);
+        let mut root_element = crate::view::test_support::get_element_mut::<Element>(arena, *root);
         root_element.set_scroll_offset((0.0, outer_scroll_y));
     }
     let text_area_place = LayoutPlacement {
@@ -1618,12 +1607,8 @@ fn telemetry_for_auto_decision(decision: AutoAuthorityDecision) -> PaintAuthorit
 
 fn auto_authority_kind(decision: &AutoAuthorityDecision) -> AutoAuthorityKind {
     match decision {
-        AutoAuthorityDecision::NativeScrollForest { .. } => {
-            AutoAuthorityKind::NativeScrollForest
-        }
-        AutoAuthorityDecision::PropertyBoundaryDagScene { .. } => {
-            AutoAuthorityKind::PropertyScene
-        }
+        AutoAuthorityDecision::NativeScrollForest { .. } => AutoAuthorityKind::NativeScrollForest,
+        AutoAuthorityDecision::PropertyBoundaryDagScene { .. } => AutoAuthorityKind::PropertyScene,
         AutoAuthorityDecision::NestedScrollScene { .. } => AutoAuthorityKind::PropertyScene,
         AutoAuthorityDecision::DirectScrollTransformScene { .. } => {
             AutoAuthorityKind::PropertyScene
@@ -1717,11 +1702,6 @@ fn assert_native_host_retained_closure(
         );
     }
 }
-
-
-
-
-
 
 fn assert_native_root_opacity_artifact(
     host: &str,
@@ -1819,9 +1799,9 @@ fn assert_native_root_opacity_artifact(
         ),
         PropertyNeutralArtifactAttempt::Compiled { .. }
     ));
-    let composites = graph.test_graphics_passes::<
-        crate::view::render_pass::composite_layer_pass::CompositeLayerPass,
-    >();
+    let composites = graph
+        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
+        );
     if opacity.to_bits() == 1.0_f32.to_bits() {
         assert!(composites.is_empty(), "{host}: neutral opacity");
     } else {
@@ -1908,77 +1888,6 @@ fn assert_native_property_scene_authority(
     );
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true,));
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 struct TransparentContentsClipParent {
     id: u64,
@@ -2101,7 +2010,6 @@ fn prepared_outer_shadow_leaf(opacity: f32, blur: f32) -> (NodeArena, Vec<NodeKe
     (arena, vec![root])
 }
 
-
 fn prepared_mixed_eligibility_roots() -> (NodeArena, Vec<NodeKey>) {
     let mut arena = new_test_arena();
     let safe_leaf = commit_element(
@@ -2218,10 +2126,7 @@ fn build_roots_graph_with_renderer_mode(
     graph
 }
 
-fn artifact_canary_attempt(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-) -> PropertyNeutralArtifactAttempt {
+fn artifact_canary_attempt(arena: &NodeArena, roots: &[NodeKey]) -> PropertyNeutralArtifactAttempt {
     let mut properties = PropertyTrees::default();
     properties.sync(arena, roots);
     let mut generations = PaintGenerationTracker::default();
@@ -2312,18 +2217,25 @@ fn assert_composite_dirty_preserved(arena: &NodeArena, key: NodeKey) {
     );
 }
 
+mod canary_tests;
+mod composite_dirty_tests;
+mod mode_and_failure_tests;
 mod native_authority_tests;
-mod text_transform_tests;
-mod window_showcase_tests;
-mod telemetry_tests;
-mod scroll_forest_tests;
 mod nested_scroll_tests;
-mod text_area_scene_tests;
+mod production_artifact_tests;
+mod property_boundary_forest_branching_tests;
+mod property_boundary_forest_depth_three_tests;
+mod property_boundary_forest_linear_tests;
+mod property_boundary_forest_multi_root_tests;
+mod property_boundary_forest_plain_root_tests;
+mod property_boundary_forest_tests;
+mod same_owner_transform_effect_scroll_tests;
+mod scroll_forest_tests;
+mod scroll_production_dispatch_tests;
+mod scroll_topology_tests;
+mod telemetry_tests;
 mod text_area_caret_reuse_tests;
 mod text_area_interaction_tests;
-mod scroll_topology_tests;
-mod scroll_production_dispatch_tests;
-mod mode_and_failure_tests;
-mod canary_tests;
-mod production_artifact_tests;
-mod composite_dirty_tests;
+mod text_area_scene_tests;
+mod text_transform_tests;
+mod window_showcase_tests;

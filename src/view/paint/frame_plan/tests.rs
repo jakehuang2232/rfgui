@@ -18,12 +18,9 @@ use crate::view::node_arena::Node;
 use crate::view::paint::tests::exact_isolation_fixture;
 use crate::view::paint::{
     PaintBakedScrollHostWitness, PaintNodePhase, PaintPropertyScope, PaintScrollContentWitness,
-    PlannedBoundary, PlannedBoundaryKind, RETAINED_CHILD_MASK_SLOT,
-    RetainedSurfaceCompileAction,
+    PlannedBoundary, PlannedBoundaryKind, RETAINED_CHILD_MASK_SLOT, RetainedSurfaceCompileAction,
 };
-use crate::view::test_support::{
-    commit_child, commit_element, measure_and_place, new_test_arena,
-};
+use crate::view::test_support::{commit_child, commit_element, measure_and_place, new_test_arena};
 use crate::view::viewport::Viewport;
 use crate::view::{ImageSource, SvgSource};
 
@@ -67,9 +64,7 @@ impl Renderable for UnknownHost {
             Default::default(),
             Default::default(),
         );
-        pass.set_render_mode(
-            crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
-        );
+        pass.set_render_mode(crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly);
         ctx.emit_draw_rect_pass(graph, pass);
         ctx.into_state()
     }
@@ -368,16 +363,14 @@ fn property_scroll_interleave_fixture(
             arena.push_child(effect, scroll);
             arena.set_parent(content, Some(scroll));
             arena.push_child(scroll, content);
-            crate::view::test_support::get_element_mut::<Element>(&arena, effect)
-                .set_opacity(0.5);
+            crate::view::test_support::get_element_mut::<Element>(&arena, effect).set_opacity(0.5);
             crate::view::test_support::get_element_mut::<Element>(&arena, effect)
                 .set_background_color_value(Color::rgb(32, 64, 96));
             let mut effect_style = Style::new();
             effect_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
             crate::view::test_support::get_element_mut::<Element>(&arena, effect)
                 .apply_style(effect_style);
-            crate::view::test_support::get_element_mut::<Element>(&arena, effect)
-                .set_opacity(0.5);
+            crate::view::test_support::get_element_mut::<Element>(&arena, effect).set_opacity(0.5);
             crate::view::test_support::get_element_mut::<Element>(&arena, effect)
                 .set_background_color_value(Color::rgb(32, 64, 96));
             (scroll, content)
@@ -517,8 +510,7 @@ fn property_scroll_interleave_fixture(
             }
         }
         ScrollInterleaveFixtureShape::EffectScroll => {
-            crate::view::test_support::get_element_mut::<Element>(&arena, root)
-                .set_opacity(0.5);
+            crate::view::test_support::get_element_mut::<Element>(&arena, root).set_opacity(0.5);
         }
         ScrollInterleaveFixtureShape::EffectTransformScroll
         | ScrollInterleaveFixtureShape::EffectNeutralTransformNeutralScroll => {
@@ -526,8 +518,7 @@ fn property_scroll_interleave_fixture(
             root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
             crate::view::test_support::get_element_mut::<Element>(&arena, root)
                 .apply_style(root_style);
-            crate::view::test_support::get_element_mut::<Element>(&arena, root)
-                .set_opacity(0.5);
+            crate::view::test_support::get_element_mut::<Element>(&arena, root).set_opacity(0.5);
             crate::view::test_support::get_element_mut::<Element>(&arena, root)
                 .set_background_color_value(Color::rgb(16, 32, 48));
         }
@@ -561,9 +552,9 @@ fn property_scroll_interleave_fixture(
         ScrollInterleaveFixtureShape::CoLocatedTransformScroll
     ) {
         crate::view::test_support::get_element_mut::<Element>(&arena, root)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                glam::Vec3::new(7.0, 0.0, 0.0),
-            )));
+            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
+                7.0, 0.0, 0.0,
+            ))));
     }
     crate::view::test_support::get_element_mut::<Element>(&arena, content)
         .set_background_color_value(Color::rgb(24, 48, 72));
@@ -657,14 +648,12 @@ pub(crate) fn scroll_content_effect_interleave_fixture(
     if outer_transform {
         let mut root_style = Style::new();
         root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        let mut root_element =
-            crate::view::test_support::get_element_mut::<Element>(&arena, root);
+        let mut root_element = crate::view::test_support::get_element_mut::<Element>(&arena, root);
         root_element.apply_style(root_style);
         root_element.set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
             glam::Vec3::new(7.0, 0.0, 0.0),
         )));
-        root_element
-            .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+        root_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
     }
     let scroll = if outer_transform {
         arena.children_of(root)[0]
@@ -1222,23 +1211,6 @@ fn native_scroll_forest_plan_fixture_with_s2_offset(
     (arena, roots, properties, generations)
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 fn direct_scroll_transform_transaction_from_fixture_for_test(
     arena: &NodeArena,
     root: NodeKey,
@@ -1277,26 +1249,6 @@ fn exact_direct_scroll_transform_transaction_for_test()
         &generations,
     )
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 fn general_property_scene_fixture() -> GeneralPropertySceneFixture {
     let (mut arena, outer, _before, inner_a, deep, inner_b, _, _) =
@@ -1375,7 +1327,6 @@ fn general_property_scene_fixture() -> GeneralPropertySceneFixture {
     }
 }
 
-
 fn property_surface_mut(
     steps: &mut [PaintPlanStep],
     owner: NodeKey,
@@ -1394,12 +1345,6 @@ fn property_surface_mut(
     None
 }
 
-
-
-
-
-
-
 fn exact_transform_child_isolation_fixture() -> (
     NodeArena,
     NodeKey,
@@ -1410,8 +1355,7 @@ fn exact_transform_child_isolation_fixture() -> (
     PropertyTrees,
     PaintGenerationTracker,
 ) {
-    let (arena, root, before, child, descendant, after, _, _) =
-        nested_exact_transform_fixture();
+    let (arena, root, before, child, descendant, after, _, _) = nested_exact_transform_fixture();
     {
         let mut child_element =
             crate::view::test_support::get_element_mut::<Element>(&arena, child);
@@ -1442,11 +1386,9 @@ fn planning_only_nested_effect_fixture() -> (
     PropertyTrees,
     PaintGenerationTracker,
 ) {
-    let (arena, root, _before, child, grandchild, _after, _, _) =
-        nested_exact_transform_fixture();
+    let (arena, root, _before, child, grandchild, _after, _, _) = nested_exact_transform_fixture();
     {
-        let mut root_element =
-            crate::view::test_support::get_element_mut::<Element>(&arena, root);
+        let mut root_element = crate::view::test_support::get_element_mut::<Element>(&arena, root);
         root_element.set_resolved_transform_for_test(None);
         root_element.set_opacity(0.5);
     }
@@ -1752,30 +1694,6 @@ fn deferred_element_effect_fixture(
     (arena, root, deferred, nested, properties, generations)
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 fn nested_opaque_cursor_fixture(
     parent_before_opaque: usize,
     child_opaque: usize,
@@ -2050,25 +1968,31 @@ fn retained_surface_stamp(
     )
 }
 
-mod native_scroll_forest_seal_tests;
-mod native_scroll_forest_pool_tests;
-mod nested_scroll_seal_tests;
-mod direct_scroll_transform_seal_tests;
-mod direct_scroll_transform_prepare_tests;
-mod property_boundary_dag_tests;
-mod property_scroll_interleave_tests;
-mod property_scene_tests;
-mod property_effect_scene_tests;
-mod property_effect_scaffold_tests;
-mod same_owner_effect_tests;
 mod deferred_effect_tests;
-mod transform_isolation_tests;
-mod mixed_effect_tree_tests;
-mod isolation_tree_tests;
+mod direct_scroll_transform_prepare_tests;
+mod direct_scroll_transform_seal_tests;
+mod forced_executor_rejection_tests;
 mod forced_nested_surface_tests;
 mod forced_rect_executor_tests;
-mod forced_executor_rejection_tests;
-mod legacy_graph_equivalence_tests;
-mod planner_rejection_tests;
-mod native_media_transform_tests;
 mod inherited_transform_authorization_tests;
+mod isolation_tree_tests;
+mod legacy_graph_equivalence_tests;
+mod mixed_effect_tree_tests;
+mod native_media_transform_tests;
+mod native_scroll_forest_pool_tests;
+mod native_scroll_forest_seal_tests;
+mod nested_scroll_seal_tests;
+mod planner_rejection_tests;
+mod property_boundary_dag_tests;
+mod property_boundary_forest_branching_tests;
+mod property_boundary_forest_linear_tests;
+mod property_boundary_forest_multi_root_tests;
+mod property_boundary_forest_plain_root_tests;
+mod property_boundary_forest_tests;
+mod property_effect_scaffold_tests;
+mod property_effect_scene_tests;
+mod property_scene_tests;
+mod property_scroll_interleave_tests;
+mod same_owner_effect_tests;
+mod same_owner_transform_effect_scroll_tests;
+mod transform_isolation_tests;

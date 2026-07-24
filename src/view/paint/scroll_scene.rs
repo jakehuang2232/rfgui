@@ -2061,6 +2061,8 @@ struct ValidatedTransformEffectScrollRoot {
     outer_geometry: crate::view::base_component::TransformSurfaceGeometrySnapshot,
     outer_steps: Vec<super::frame_recorder::RecordedTransformSurfaceStep>,
     insertion: super::frame_plan::PropertyTransformEffectScrollReceiverInsertionContract,
+    same_owner_insertion:
+        Option<super::frame_plan::PropertySameOwnerTransformEffectScrollReceiverInsertionContract>,
     inner_steps: Vec<super::frame_recorder::RecordedTransformSurfaceStep>,
     composite: EffectScrollCompositeWitness,
     boundary: ValidatedPropertyScrollBoundary,
@@ -3044,6 +3046,23 @@ impl ValidatedTransformEffectScrollScene {
                         .to_cols_array()
                         .map(f32::to_bits)
                 && root.insertion.scene_root_ordinal == root.scene_root_ordinal
+                && match &root.same_owner_insertion {
+                    Some(same_owner) => {
+                        same_owner.is_canonical()
+                            && same_owner.receiver == root.insertion
+                            && same_owner.owner == root.outer_receiver.owner
+                            && same_owner.effect == inner.receiver
+                            && same_owner.scroll == scroll.scroll
+                            && same_owner.contents_clip == scroll.contents_clip
+                            && same_owner.content_root == scroll.admission.child
+                            && same_owner.content_stable_id
+                                == scroll.admission.child_stable_id
+                    }
+                    None => {
+                        root.outer_receiver.owner != inner.receiver.owner
+                            || inner.receiver.owner != scroll.scene_root
+                    }
+                }
                 && root.insertion.outer_receiver == root.outer_receiver
                 && root.insertion.outer_stable_id == root.outer_stable_id
                 && root
@@ -3076,7 +3095,8 @@ impl ValidatedTransformEffectScrollScene {
                 && scroll.target_format == self.target_format
                 && scroll.budget == self.budget
                 && scroll.scale_factor_bits == self.scale_factor_bits
-                && scroll.scene_root != inner.receiver.owner
+                && (root.same_owner_insertion.is_some()
+                    || scroll.scene_root != inner.receiver.owner)
                 && transform_owners.insert(root.outer_receiver.owner)
                 && effect_owners.insert(inner.receiver.owner)
                 && scroll_owners.insert(scroll.scene_root)
@@ -10280,6 +10300,193 @@ fn plan_exact_same_owner_transform_scroll_boundary(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn plan_exact_same_owner_transform_effect_scroll_boundary(
+    arena: &NodeArena,
+    insertion:
+        &super::frame_plan::PropertySameOwnerTransformEffectScrollReceiverInsertionContract,
+    boundary: &super::frame_plan::PropertyScrollBoundaryContract,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    scale_factor: f32,
+) -> Result<ScrollScenePlan, FramePaintPlanError> {
+    let boundary_root = boundary.scroll.owner;
+    let invalid = || FramePaintPlanError {
+        reasons: vec![FramePaintPlanRejection::InvalidScrollHost(boundary_root)],
+    };
+    let node = arena.get(boundary_root).ok_or_else(invalid)?;
+    let element = node
+        .element
+        .as_any()
+        .downcast_ref::<crate::view::base_component::Element>()
+        .ok_or_else(invalid)?;
+    let admission = element
+        .exact_retained_same_owner_transform_effect_scroll_host_admission(
+            boundary_root,
+            arena,
+            scale_factor,
+        )
+        .ok_or_else(invalid)?;
+    let transform = insertion.transform;
+    let effect = insertion.effect;
+    let scroll = boundary.scroll;
+    let contents_clip = boundary.contents_clip;
+    if !insertion.is_canonical()
+        || insertion.owner != boundary_root
+        || insertion.scroll != scroll
+        || insertion.contents_clip != contents_clip
+        || insertion.content_root != admission.child
+        || insertion.content_stable_id != admission.child_stable_id
+        || transform.owner != boundary_root
+        || transform.id.0 != boundary_root
+        || transform.parent.is_some()
+        || transform.generation == 0
+        || effect.owner != boundary_root
+        || effect.id.0 != boundary_root
+        || effect.parent.is_some()
+        || effect.generation == 0
+        || !effect.opacity.is_finite()
+        || !(0.0..=1.0).contains(&effect.opacity)
+        || scroll.id.0 != boundary_root
+        || scroll.owner != boundary_root
+        || scroll.parent.is_some()
+        || scroll.generation == 0
+        || contents_clip.id.owner != boundary_root
+        || contents_clip.id.role != ClipNodeRole::ContentsClip
+        || contents_clip.owner != boundary_root
+        || contents_clip.parent.is_some()
+        || contents_clip.behavior != ClipBehavior::Intersect
+        || contents_clip.generation == 0
+        || !admission.matches_scroll_node(scroll)
+    {
+        return Err(invalid());
+    }
+    let consumed_transform =
+        super::ConsumedSameOwnerTransformBoundaryWitness::new(boundary_root, transform.id)
+            .ok_or_else(invalid)?;
+    let consumed_effect =
+        super::ConsumedSameOwnerEffectBoundaryWitness::new(boundary_root, effect)
+            .ok_or_else(invalid)?;
+    let baked_witness = super::PaintBakedScrollHostWitness::new(
+        boundary_root,
+        admission.child,
+        scroll,
+        contents_clip.id,
+    )
+    .ok_or_else(invalid)?;
+    let baked_artifact =
+        super::frame_recorder::record_same_owner_transform_effect_scroll_host_artifact_for_plan(
+            arena,
+            &[boundary_root],
+            property_trees,
+            paint_generations,
+            baked_witness,
+            consumed_transform,
+            consumed_effect,
+        )
+        .map_err(|fallbacks| FramePaintPlanError {
+            reasons: fallbacks
+                .into_iter()
+                .map(FramePaintPlanRejection::Coverage)
+                .collect(),
+        })?;
+    if !super::compiler::validate_baked_scroll_host_artifact_for_plan(
+        &baked_artifact,
+        boundary_root,
+        admission.child,
+        scroll,
+        contents_clip,
+    ) {
+        return Err(invalid());
+    }
+    let [host_chunk, content_chunk, overlay_chunk] = baked_artifact.chunks.as_slice() else {
+        return Err(invalid());
+    };
+    if host_chunk.owner != boundary_root
+        || content_chunk.owner != admission.child
+        || overlay_chunk.owner != boundary_root
+    {
+        return Err(invalid());
+    }
+    let host_before =
+        extract_root_scene_chunk(&baked_artifact, 0, boundary_root).ok_or_else(invalid)?;
+    let overlay =
+        extract_root_scene_chunk(&baked_artifact, 2, boundary_root).ok_or_else(invalid)?;
+    let content_witness =
+        PaintScrollContentWitness::new(boundary_root, admission.child, scroll, contents_clip)
+            .ok_or_else(invalid)?;
+    let consumed_scroll = super::ConsumedAncestorScrollContentsWitness::new(
+        boundary_root,
+        admission.child,
+        scroll.id,
+        contents_clip.id,
+    )
+    .ok_or_else(invalid)?;
+    let content_stack =
+        super::ConsumedAncestorPropertyStackWitness::new_same_owner_transform_effect_scroll(
+            admission.child,
+            consumed_transform,
+            consumed_effect,
+            consumed_scroll,
+        )
+        .ok_or_else(invalid)?;
+    let content_local =
+        super::frame_recorder::record_effect_scroll_content_local_artifact_with_stack_for_plan(
+            arena,
+            property_trees,
+            paint_generations,
+            content_witness,
+            content_stack,
+            effect,
+        )
+        .map_err(|fallbacks| FramePaintPlanError {
+            reasons: fallbacks
+                .into_iter()
+                .map(FramePaintPlanRejection::Coverage)
+                .collect(),
+        })?;
+    let host_terminal = opaque_order_count(&host_before);
+    let content_terminal = opaque_order_count(&content_local);
+    let parent_terminal = host_terminal
+        .checked_add(opaque_order_count(&overlay))
+        .ok_or_else(invalid)?;
+    let admission = PropertyScrollHostAdmission::direct_leaf(admission);
+    Ok(ScrollScenePlan {
+        boundary_root,
+        root_stable_id: admission.stable_id,
+        content_root: admission.child,
+        content_stable_id: admission.child_stable_id,
+        admission: admission.clone(),
+        text_area_subtree_admission: None,
+        interactive_text_area_subtree_admission: None,
+        atomic_projection_text_area_subtree_admission: None,
+        focused_atomic_projection_text_area_subtree_admission: None,
+        post_composite: PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
+        interactive_resident: None,
+        atomic_projection_resident: None,
+        scroll,
+        contents_clip,
+        planned_admission_witness: admission,
+        planned_text_area_subtree_admission: None,
+        planned_interactive_text_area_subtree_admission: None,
+        planned_atomic_projection_text_area_subtree_admission: None,
+        planned_focused_atomic_projection_text_area_subtree_admission: None,
+        planned_post_composite: PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
+        planned_interactive_resident: None,
+        planned_atomic_projection_resident: None,
+        planned_scroll_witness: scroll,
+        planned_clip_witness: contents_clip,
+        recorded: ScrollSceneRecordedAuthority::Existing {
+            host_before,
+            content_local,
+            overlay,
+            host_parent_span: 0..host_terminal,
+            content_local_span: 0..content_terminal,
+            overlay_parent_span: host_terminal..parent_terminal,
+        },
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn plan_exact_same_owner_effect_scroll_boundary(
     arena: &NodeArena,
     insertion: &super::frame_plan::PropertySameOwnerEffectScrollReceiverInsertionContract,
@@ -13666,7 +13873,15 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
         || scaffold.boundaries.len() != roots.len()
         || !scaffold.receiver_insertions.is_empty()
         || !scaffold.effect_receiver_insertions.is_empty()
-        || scaffold.transform_effect_receiver_insertions.len() != roots.len()
+        || scaffold
+            .transform_effect_receiver_insertions
+            .len()
+            .checked_add(
+                scaffold
+                    .same_owner_transform_effect_scroll_insertions
+                    .len(),
+            )
+            != Some(roots.len())
     {
         return Err(PropertyScrollScenePlanError::InvalidContract);
     }
@@ -13709,11 +13924,19 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
             .boundaries
             .get(*boundary_ordinal as usize)
             .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
-        let insertion = scaffold
+        let generic_insertion = scaffold
             .transform_effect_receiver_insertions
             .iter()
-            .find(|insertion| insertion.scene_root_ordinal == root.ordinal)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .find(|insertion| insertion.scene_root_ordinal == root.ordinal);
+        let same_owner_insertion = scaffold
+            .same_owner_transform_effect_scroll_insertions
+            .iter()
+            .find(|insertion| insertion.receiver.scene_root_ordinal == root.ordinal);
+        let insertion = match (generic_insertion, same_owner_insertion) {
+            (Some(insertion), None) => insertion,
+            (None, Some(insertion)) => &insertion.receiver,
+            _ => return Err(PropertyScrollScenePlanError::InvalidContract),
+        };
         if outer.id != *parent
             || inner != basis
             || outer.owner != root.root
@@ -13726,20 +13949,48 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
         {
             return Err(PropertyScrollScenePlanError::InvalidContract);
         }
-        let outer_cutouts =
-            super::PlannedBoundaryCutoutSet::from_iter([(inner.owner, insertion.effect_cutout)]);
-        let outer_steps = super::frame_recorder::record_transform_property_surface_steps_for_plan(
-            arena,
-            outer.owner,
-            property_trees,
-            paint_generations,
-            super::PaintTransformSurfaceWitness::canonical_root(outer.owner),
-            incoming_paint_offset,
-            &outer_cutouts,
-        )
-        .map_err(&coverage_error)?;
+        let outer_steps = if same_owner_insertion.is_some() {
+            super::frame_recorder::record_same_owner_transform_effect_scroll_outer_steps_for_plan(
+                arena,
+                outer.owner,
+                property_trees,
+                paint_generations,
+                *outer,
+                *inner,
+                boundary_contract.scroll,
+                boundary_contract.contents_clip,
+                insertion.effect_cutout,
+            )
+            .map_err(&coverage_error)?
+        } else {
+            let outer_cutouts =
+                super::PlannedBoundaryCutoutSet::from_iter([(inner.owner, insertion.effect_cutout)]);
+            super::frame_recorder::record_transform_property_surface_steps_for_plan(
+                arena,
+                outer.owner,
+                property_trees,
+                paint_generations,
+                super::PaintTransformSurfaceWitness::canonical_root(outer.owner),
+                incoming_paint_offset,
+                &outer_cutouts,
+            )
+            .map_err(&coverage_error)?
+        };
         let same_owner = outer.owner == inner.owner;
-        let inner_steps = if same_owner {
+        let inner_steps = if same_owner_insertion.is_some() {
+            super::frame_recorder::record_same_owner_transform_effect_scroll_effect_steps_for_plan(
+                arena,
+                inner.owner,
+                property_trees,
+                paint_generations,
+                *outer,
+                *inner,
+                boundary_contract.scroll,
+                boundary_contract.contents_clip,
+                insertion.inner.scroll_cutout,
+            )
+            .map_err(&coverage_error)?
+        } else if same_owner {
             let consumed =
                 super::ConsumedSameOwnerTransformBoundaryWitness::new(outer.owner, outer.id)
                     .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
@@ -13777,22 +14028,34 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
         {
             return Err(PropertyScrollScenePlanError::InvalidContract);
         }
-        let consumed_scroll_transform = super::ConsumedAncestorTransformWitness::new(
-            outer.owner,
-            boundary_contract.scroll.owner,
-            outer.id,
-        )
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
-        let scroll = plan_exact_effect_scroll_boundary_checkpoint(
-            arena,
-            *inner,
-            boundary_contract,
-            property_trees,
-            paint_generations,
-            scale_factor,
-            Some(consumed_scroll_transform),
-        )
-        .map_err(PropertyScrollScenePlanError::Frame)?;
+        let scroll = if let Some(same_owner_insertion) = same_owner_insertion {
+            plan_exact_same_owner_transform_effect_scroll_boundary(
+                arena,
+                same_owner_insertion,
+                boundary_contract,
+                property_trees,
+                paint_generations,
+                scale_factor,
+            )
+            .map_err(PropertyScrollScenePlanError::Frame)?
+        } else {
+            let consumed_scroll_transform = super::ConsumedAncestorTransformWitness::new(
+                outer.owner,
+                boundary_contract.scroll.owner,
+                outer.id,
+            )
+            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            plan_exact_effect_scroll_boundary_checkpoint(
+                arena,
+                *inner,
+                boundary_contract,
+                property_trees,
+                paint_generations,
+                scale_factor,
+                Some(consumed_scroll_transform),
+            )
+            .map_err(PropertyScrollScenePlanError::Frame)?
+        };
         let scroll = property_scroll_plan_from_exact_scene(
             scroll,
             scale_factor,
@@ -13820,6 +14083,7 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
             outer_geometry: insertion.outer_geometry,
             outer_steps,
             insertion: insertion.clone(),
+            same_owner_insertion: same_owner_insertion.cloned(),
             inner_steps,
             composite,
             boundary,
@@ -17050,6 +17314,7 @@ pub(crate) fn prepare_retained_transform_effect_scroll_scene_from_pool<'a>(
     for root in scene.roots {
         let ordinal = root.scene_root_ordinal;
         let inner_insertion = &root.insertion.inner;
+        let same_owner_insertion = root.same_owner_insertion.as_ref();
         let scroll_planner = &root.boundary.planner.seal;
         let scroll = scroll_planner.scroll;
         let contents_clip = scroll_planner.contents_clip;
@@ -17245,7 +17510,17 @@ pub(crate) fn prepare_retained_transform_effect_scroll_scene_from_pool<'a>(
                         contents_clip,
                         receiver_local_raster_clips: Vec::new(),
                         receiver_ancestor_composite_clips: Vec::new(),
-                        same_owner_role: None,
+                        same_owner_role: same_owner_insertion.map(|same_owner| {
+                            super::compiler::SameOwnerEffectScrollRasterRoleStamp {
+                                owner: same_owner.owner,
+                                stable_id: same_owner.stable_id,
+                                effect: same_owner.effect.id,
+                                scroll: same_owner.scroll.id,
+                                contents_clip: same_owner.contents_clip.id,
+                                content_root: same_owner.content_root,
+                                content_stable_id: same_owner.content_stable_id,
+                            }
+                        }),
                     };
                     if !super::compiler::effect_scroll_boundary_dependency_is_canonical(&dependency)
                     {
@@ -17316,6 +17591,18 @@ pub(crate) fn prepare_retained_transform_effect_scroll_scene_from_pool<'a>(
                         local_basis: root.outer_receiver.id,
                         parent_opaque_order_before: outer_cursor,
                         parent_opaque_order_after: outer_cursor,
+                        same_owner_role: same_owner_insertion.map(|same_owner| {
+                            super::compiler::SameOwnerTransformEffectScrollRasterRoleStamp {
+                                owner: same_owner.owner,
+                                stable_id: same_owner.stable_id,
+                                transform: same_owner.transform.id,
+                                effect: same_owner.effect.id,
+                                scroll: same_owner.scroll.id,
+                                contents_clip: same_owner.contents_clip.id,
+                                content_root: same_owner.content_root,
+                                content_stable_id: same_owner.content_stable_id,
+                            }
+                        }),
                     };
                     if !super::compiler::transform_effect_scroll_child_dependency_validates_contract(
                         &dependency,

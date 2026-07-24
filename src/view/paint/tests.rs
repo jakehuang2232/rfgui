@@ -8,9 +8,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use slotmap::Key;
 
 use crate::style::{
-    Border, BorderRadius, BoxShadow, ClipMode, Color, ColorLike, Gradient, Layout, Length,
-    Opacity, ParsedValue, Position, PropertyId, ScrollDirection, SideOrCorner, Style,
-    TextAlign, TextWrap, Transform, Translate,
+    Border, BorderRadius, BoxShadow, ClipMode, Color, ColorLike, Gradient, Layout, Length, Opacity,
+    ParsedValue, Position, PropertyId, ScrollDirection, SideOrCorner, Style, TextAlign, TextWrap,
+    Transform, Translate,
 };
 use crate::view::base_component::text_area::{TextAreaProjectionSegment, TextAreaTextRun};
 use crate::view::base_component::{
@@ -31,9 +31,7 @@ use crate::view::render_pass::draw_rect_pass::{
     DrawRectInput, DrawRectOutput, DrawRectPass, RectPassParams, RectPassTestSnapshot,
     RectRenderMode,
 };
-use crate::view::test_support::{
-    commit_child, commit_element, measure_and_place, new_test_arena,
-};
+use crate::view::test_support::{commit_child, commit_element, measure_and_place, new_test_arena};
 use crate::view::{ImageSource, SvgSource};
 
 use super::*;
@@ -169,10 +167,7 @@ fn apply_gradient_style(
     element.apply_style(style);
 }
 
-fn sync_identity(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-) -> (PropertyTrees, PaintGenerationTracker) {
+fn sync_identity(arena: &NodeArena, roots: &[NodeKey]) -> (PropertyTrees, PaintGenerationTracker) {
     let mut properties = PropertyTrees::default();
     properties.sync(arena, roots);
     let mut generations = PaintGenerationTracker::default();
@@ -314,9 +309,7 @@ fn anchor_parent_self_clip_shadow_root() -> (NodeArena, Vec<NodeKey>) {
     (arena, vec![clipped])
 }
 
-fn nested_anchor_parent_mixed_siblings(
-    anchor_first: bool,
-) -> (NodeArena, Vec<NodeKey>, NodeKey) {
+fn nested_anchor_parent_mixed_siblings(anchor_first: bool) -> (NodeArena, Vec<NodeKey>, NodeKey) {
     let mut arena = new_test_arena();
     let mut root = Element::new_with_id(220, 0.0, 0.0, 320.0, 240.0);
     let mut root_style = Style::new();
@@ -370,8 +363,8 @@ fn nested_anchor_parent_mixed_siblings(
     (arena, vec![root], anchor)
 }
 
-fn nested_deferred_viewport_popups()
--> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey, NodeKey, NodeKey) {
+fn nested_deferred_viewport_popups() -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey, NodeKey, NodeKey)
+{
     let mut arena = new_test_arena();
     let mut root = Element::new_with_id(0x8d20, 0.0, 0.0, 320.0, 240.0);
     let mut root_style = Style::new();
@@ -514,10 +507,6 @@ fn legacy_graph(mut arena: NodeArena, root: NodeKey) -> FrameGraph {
     graph
 }
 
-
-
-
-
 fn fallback_reason(element: Box<dyn ElementTrait>) -> LegacyPaintReason {
     let mut arena = new_test_arena();
     let root = commit_element(&mut arena, element);
@@ -529,7 +518,6 @@ fn fallback_reason(element: Box<dyn ElementTrait>) -> LegacyPaintReason {
     };
     legacy.reason
 }
-
 
 fn prepared_image_fixture(
     pixels: Arc<[u8]>,
@@ -644,9 +632,7 @@ impl ElementTrait for TransparentContentsClipParent {
         Some(self.scissor)
     }
 
-    fn retained_paint_properties(
-        &self,
-    ) -> crate::view::base_component::RetainedPaintProperties {
+    fn retained_paint_properties(&self) -> crate::view::base_component::RetainedPaintProperties {
         crate::view::base_component::RetainedPaintProperties {
             opacity: self.opacity,
             ..Default::default()
@@ -724,9 +710,6 @@ fn bare_image_fixture(
     (arena, vec![root])
 }
 
-
-
-
 fn assert_image_metadata_fallback(
     arena: &NodeArena,
     roots: &[NodeKey],
@@ -748,13 +731,6 @@ fn assert_image_metadata_fallback(
     );
     assert_eq!(take_full_artifact_record_count(), 0);
 }
-
-
-
-
-
-
-
 
 struct RecordingHost {
     id: u64,
@@ -1090,9 +1066,7 @@ impl ElementTrait for CustomLeafPaintHost {
         self.active_animator
     }
 
-    fn retained_paint_properties(
-        &self,
-    ) -> crate::view::base_component::RetainedPaintProperties {
+    fn retained_paint_properties(&self) -> crate::view::base_component::RetainedPaintProperties {
         self.retained_properties
     }
 }
@@ -1355,7 +1329,6 @@ impl ElementTrait for RecordingHost {
     }
 }
 
-
 fn custom_leaf_fixture(
     host: CustomLeafPaintHost,
 ) -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
@@ -1364,13 +1337,6 @@ fn custom_leaf_fixture(
     let (properties, generations) = sync_identity(&arena, &[root]);
     (arena, root, properties, generations)
 }
-
-
-
-
-
-
-
 
 fn custom_wrapper_fixture(
     host: CustomWrapperPaintHost,
@@ -1388,11 +1354,6 @@ fn custom_wrapper_fixture(
     let (properties, generations) = sync_identity(&arena, &[root]);
     (arena, root, child, properties, generations)
 }
-
-
-
-
-
 
 fn malformed_host(
     malformed: MalformedChunk,
@@ -1416,11 +1377,6 @@ fn malformed_host(
     let (properties, generations) = sync_identity(&arena, &[root]);
     (arena, root, full_records, properties, generations)
 }
-
-
-
-
-
 
 fn compiler_test_artifact() -> PaintArtifact {
     let (arena, root, properties, generations) =
@@ -1468,9 +1424,6 @@ fn refresh_rect_phase_identity(artifact: &mut PaintArtifact) {
     )
     .expect("remaining rect parameters must stay canonical");
 }
-
-
-
 
 fn compiler_image_test_artifact(with_decoration: bool) -> PaintArtifact {
     let pixels: Arc<[u8]> = Arc::from([
@@ -1544,15 +1497,6 @@ fn refresh_svg_standard_draw_rect_identity(artifact: &mut PaintArtifact) {
     .unwrap();
 }
 
-
-
-
-
-
-
-
-
-
 fn compiler_clip_test_artifact() -> PaintArtifact {
     let (arena, roots) = anchor_parent_self_clip_roots(1.0, false);
     let (properties, generations) = sync_identity(&arena, &roots);
@@ -1614,10 +1558,6 @@ fn add_inherited_contents_clip(
     }
     id
 }
-
-
-
-
 
 fn compiler_effect_test_artifact(
     parent_opacity: f32,
@@ -1711,35 +1651,21 @@ fn assert_compiler_rejects_before_emit(artifact: &PaintArtifact, case: &str) {
 
 fn refresh_inline_decoration_payload_identity(artifact: &mut PaintArtifact) {
     let range = artifact.chunks[0].op_range.clone();
-    let identity = PaintPayloadIdentity::inline_ifc_decorations(
-        artifact.ops[range].iter().filter_map(|op| match op {
-            PaintOp::PreparedInlineIfcDecoration(prepared) => Some(prepared),
-            _ => None,
-        }),
-    );
+    let identity =
+        PaintPayloadIdentity::inline_ifc_decorations(artifact.ops[range].iter().filter_map(|op| {
+            match op {
+                PaintOp::PreparedInlineIfcDecoration(prepared) => Some(prepared),
+                _ => None,
+            }
+        }));
     artifact.chunks[0].payload_identity = identity;
 }
-
-
-
-
-
-
-
-
-
 
 fn distinct_chunk(mut chunk: PaintChunk) -> PaintChunk {
     chunk.id.owner = NodeKey::null();
     chunk.owner = NodeKey::null();
     chunk
 }
-
-
-
-
-
-
 
 fn whole_frame_artifact(
     arena: &NodeArena,
@@ -1831,25 +1757,6 @@ fn two_outer_shadows() -> Vec<BoxShadow> {
     ]
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 fn root_effect_raster_inputs() -> RootEffectRasterInputs {
     RootEffectRasterInputs {
         width: 320,
@@ -1859,16 +1766,6 @@ fn root_effect_raster_inputs() -> RootEffectRasterInputs {
         scale_factor_bits: 1.0_f32.to_bits(),
     }
 }
-
-
-
-
-
-
-
-
-
-
 
 fn compiled_whole_frame_graph(artifact: &PaintArtifact) -> FrameGraph {
     compiled_whole_frame_graph_with_config(artifact, PaintParityConfig::default())
@@ -1925,10 +1822,7 @@ struct PaintParitySnapshot {
     graph: FrameGraphTestSnapshot,
 }
 
-fn strict_paint_snapshot(
-    graph: &mut FrameGraph,
-    config: PaintParityConfig,
-) -> PaintParitySnapshot {
+fn strict_paint_snapshot(graph: &mut FrameGraph, config: PaintParityConfig) -> PaintParitySnapshot {
     PaintParitySnapshot {
         viewport: config.into(),
         graph: graph
@@ -2294,8 +2188,7 @@ fn prepared_projection_text_area_tree_with(
     (arena, roots, root, projection, projected_text)
 }
 
-fn prepared_projection_text_area_tree() -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey, NodeKey)
-{
+fn prepared_projection_text_area_tree() -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey, NodeKey) {
     prepared_projection_text_area_tree_with("before projected after", 7..16, "projected")
 }
 
@@ -2438,8 +2331,7 @@ fn prepared_atomic_projection_scroll_shell_fixture(
     );
     root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
     {
-        let mut root_element =
-            crate::view::test_support::get_element_mut::<Element>(&arena, root);
+        let mut root_element = crate::view::test_support::get_element_mut::<Element>(&arena, root);
         root_element.apply_style(root_style);
         root_element.layout_state.content_size = Size {
             width: fixture.width,
@@ -2482,8 +2374,7 @@ fn validated_atomic_projection_scroll_scene_fixture(
     let (arena, root, _, _) = prepared_atomic_projection_scroll_shell_fixture(fixture);
     let (properties, generations) = sync_identity(&arena, &[root]);
     let budget =
-        super::scroll_scene::ScrollSceneSingleTextureBudget::new(8192, 128 * 1024 * 1024)
-            .unwrap();
+        super::scroll_scene::ScrollSceneSingleTextureBudget::new(8192, 128 * 1024 * 1024).unwrap();
     super::scroll_scene::plan_and_validate_property_scroll_scene(
         &arena,
         &[root],
@@ -2525,8 +2416,7 @@ fn validated_atomic_projection_selection_scroll_scene_fixture(
     }
     let (properties, generations) = sync_identity(&arena, &[root]);
     let budget =
-        super::scroll_scene::ScrollSceneSingleTextureBudget::new(8192, 128 * 1024 * 1024)
-            .unwrap();
+        super::scroll_scene::ScrollSceneSingleTextureBudget::new(8192, 128 * 1024 * 1024).unwrap();
     super::scroll_scene::plan_and_validate_property_scroll_scene(
         &arena,
         &[root],
@@ -2557,14 +2447,11 @@ fn atomic_projection_emission_fixture_for_test(
     std::sync::Arc<super::compiler::ValidatedScrollSceneAtomicProjectionTextAreaPlanParts>,
     RetainedSurfaceRasterStamp,
 )> {
-    let (arena, root, wrapper, _) =
-        prepared_atomic_projection_scroll_shell_with(projected_content);
+    let (arena, root, wrapper, _) = prepared_atomic_projection_scroll_shell_with(projected_content);
     let root_node = arena.get(root)?;
     let root_element = root_node.element.as_any().downcast_ref::<Element>()?;
     let admission = root_element
-        .exact_retained_scroll_atomic_projection_text_area_subtree_admission(
-            root, &arena, 1.0,
-        )?;
+        .exact_retained_scroll_atomic_projection_text_area_subtree_admission(root, &arena, 1.0)?;
     drop(root_node);
     let (properties, generations) = sync_identity(&arena, &[root]);
     let scroll = properties
@@ -2619,20 +2506,19 @@ fn atomic_projection_emission_fixture_for_test(
     );
     let (color, depth) =
         crate::view::base_component::persistent_target_texture_descriptors(color, color_key);
-    let stamp =
-        super::compiler::validated_scroll_atomic_projection_text_area_content_raster_stamp(
-            wrapper,
-            stable_id,
-            RetainedSurfaceRasterInputs {
-                color,
-                depth,
-                scale_factor_bits: 1.0_f32.to_bits(),
-                source_bounds_bits: [x, y, width, height].map(f32::to_bits),
-            },
-            span,
-            0..terminal,
-            plan_parts.resident().clone(),
-        )?;
+    let stamp = super::compiler::validated_scroll_atomic_projection_text_area_content_raster_stamp(
+        wrapper,
+        stable_id,
+        RetainedSurfaceRasterInputs {
+            color,
+            depth,
+            scale_factor_bits: 1.0_f32.to_bits(),
+            source_bounds_bits: [x, y, width, height].map(f32::to_bits),
+        },
+        span,
+        0..terminal,
+        plan_parts.resident().clone(),
+    )?;
     Some((std::sync::Arc::new(plan_parts), stamp))
 }
 
@@ -2648,9 +2534,7 @@ fn atomic_projection_selection_emission_fixture_for_test(
     selection_end: usize,
     stable_id: u64,
 ) -> Option<(
-    std::sync::Arc<
-        super::compiler::ValidatedScrollSceneAtomicProjectionSelectionTextAreaPlanParts,
-    >,
+    std::sync::Arc<super::compiler::ValidatedScrollSceneAtomicProjectionSelectionTextAreaPlanParts>,
     RetainedSurfaceRasterStamp,
 )> {
     let (arena, root, wrapper, text_area) = prepared_atomic_projection_scroll_shell();
@@ -2843,8 +2727,7 @@ fn place_text_area_with_baked_scroll(
         element.set_layout_height(height);
         {
             let text_area = element.as_any_mut().downcast_mut::<TextArea>().unwrap();
-            let max_x = (text_area.layout_state.content_size.width
-                - text_area.viewport_size.width)
+            let max_x = (text_area.layout_state.content_size.width - text_area.viewport_size.width)
                 .max(0.0);
             let max_y = (text_area.layout_state.content_size.height
                 - text_area.viewport_size.height)
@@ -2886,8 +2769,7 @@ fn assert_text_area_fallback_before_full(
     let (properties, generations) = sync_identity(arena, roots);
     take_full_artifact_record_count();
     let outcome =
-        record_frame_artifact(arena, roots, &properties, &generations, RendererMode::Auto)
-            .unwrap();
+        record_frame_artifact(arena, roots, &properties, &generations, RendererMode::Auto).unwrap();
     let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) = outcome else {
         panic!("unsafe TextArea state must fail metadata preflight")
     };
@@ -3690,11 +3572,6 @@ fn first_text_color_bits(artifact: &PaintArtifact) -> [u32; 4] {
         .expect("fixture must retain at least one prepared glyph")
 }
 
-
-
-
-
-
 fn prepared_plain_tree() -> (NodeArena, Vec<NodeKey>, NodeKey) {
     let mut arena = new_test_arena();
     let first = commit_element(
@@ -3773,34 +3650,6 @@ fn prepared_zero_opacity_tree() -> (NodeArena, Vec<NodeKey>) {
     measure_and_place(&mut arena, visible, measure, place);
     (arena, vec![empty, visible])
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn window_like_native_showcase_fixture() -> (NodeArena, Vec<NodeKey>) {
@@ -3987,8 +3836,7 @@ pub(crate) fn window_like_native_showcase_fixture() -> (NodeArena, Vec<NodeKey>)
         },
     );
     {
-        let mut scroll_host =
-            crate::view::test_support::get_element_mut::<Element>(&arena, scroll);
+        let mut scroll_host = crate::view::test_support::get_element_mut::<Element>(&arena, scroll);
         scroll_host.layout_state.content_size = Size {
             width: 760.0,
             height: 520.0,
@@ -4011,99 +3859,6 @@ pub(crate) fn window_like_native_showcase_fixture() -> (NodeArena, Vec<NodeKey>)
 
     (arena, vec![root, plain_root])
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 fn hidden_element_subtree(root_id: u64, child_id: u64) -> (NodeArena, NodeKey, NodeKey) {
     let mut arena = new_test_arena();
@@ -4138,33 +3893,39 @@ fn hidden_element_subtree(root_id: u64, child_id: u64) -> (NodeArena, NodeKey, N
     (arena, root, child)
 }
 
+mod anchor_parent_clip_tests;
 mod artifact_identity_tests;
-mod prepared_image_tests;
-mod custom_leaf_tests;
-mod custom_wrapper_tests;
-mod metadata_preflight_tests;
+mod atomic_projection_emission_tests;
+mod atomic_projection_property_scroll_tests;
+mod atomic_projection_raster_stamp_tests;
+mod atomic_projection_record_tests;
+mod child_mask_and_self_decoration_tests;
+mod chunk_range_tests;
 mod compiler_rect_grammar_tests;
 mod compiler_svg_grammar_tests;
 mod contents_clip_tests;
+mod culling_tests;
+mod custom_leaf_tests;
+mod custom_wrapper_tests;
 mod effect_store_tests;
-mod chunk_range_tests;
-mod outer_shadow_tests;
-mod child_mask_and_self_decoration_tests;
-mod root_effect_tests;
-mod text_artifact_tests;
-mod structural_parity_tests;
-mod anchor_parent_clip_tests;
-mod whole_frame_tests;
 mod inline_span_tests;
-mod owning_inline_root_tests;
+mod metadata_preflight_tests;
+mod outer_shadow_tests;
 mod owning_inline_root_atomic_tests;
-mod plain_text_area_tests;
+mod owning_inline_root_tests;
 mod plain_text_area_preedit_tests;
-mod atomic_projection_emission_tests;
-mod atomic_projection_record_tests;
-mod atomic_projection_raster_stamp_tests;
-mod atomic_projection_property_scroll_tests;
+mod plain_text_area_tests;
+mod prepared_image_tests;
+mod property_boundary_forest_branching_executor_tests;
+mod property_boundary_forest_depth_three_executor_tests;
+mod property_boundary_forest_executor_tests;
+mod property_boundary_forest_linear_executor_tests;
+mod property_boundary_forest_multi_root_executor_tests;
+mod property_boundary_forest_plain_root_executor_tests;
+mod root_effect_tests;
+mod structural_parity_tests;
 mod text_area_projection_preedit_tests;
 mod text_area_projection_selection_tests;
 mod text_area_state_tests;
-mod culling_tests;
+mod text_artifact_tests;
+mod whole_frame_tests;
