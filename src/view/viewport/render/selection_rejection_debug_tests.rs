@@ -394,3 +394,129 @@ mod capture_flag_is_decision_neutral {
         assert!(retained_auto_circuit_breaker_selection(None, true).is_none());
     }
 }
+
+/// Live-snapshot drift the planner could not report.
+mod census_live_snapshot_additions {
+    use super::super::census_live_snapshot_fallback_additions;
+    use crate::view::compositor::paint_generation::{LiveSnapshotField, LiveSnapshotMismatch};
+    use crate::view::debug::{
+        DebugFallbackCategory, DebugFallbackDetail, DebugFallbackStage,
+        DebugRetainedAutoFallbackCaptureInput,
+    };
+    use crate::view::node_arena::{Node, NodeArena, NodeKey};
+
+    fn keys(count: usize) -> (NodeArena, Vec<NodeKey>) {
+        let mut arena = NodeArena::new();
+        let keys = (0..count)
+            .map(|index| {
+                arena.insert(Node::new(Box::new(
+                    crate::view::base_component::Element::new_with_id(
+                        index as u64 + 1,
+                        0.0,
+                        0.0,
+                        10.0,
+                        10.0,
+                    ),
+                )))
+            })
+            .collect();
+        (arena, keys)
+    }
+
+    fn no_identity(_: NodeKey) -> Option<(u64, &'static str, crate::view::debug::DebugRect)> {
+        None
+    }
+
+    fn planner_record(
+        owner: Option<NodeKey>,
+        field: LiveSnapshotField,
+    ) -> DebugRetainedAutoFallbackCaptureInput {
+        DebugRetainedAutoFallbackCaptureInput {
+            stage: DebugFallbackStage::Planning,
+            category: DebugFallbackCategory::Validation,
+            detail: DebugFallbackDetail::Code { code: field.code() },
+            owner,
+            stable_id: None,
+            element_type: None,
+            bounds: None,
+        }
+    }
+
+    #[test]
+    fn every_drifting_node_becomes_one_record() {
+        let (_arena, keys) = keys(2);
+        let mismatches = [
+            LiveSnapshotMismatch {
+                owner: Some(keys[0]),
+                field: LiveSnapshotField::Children,
+            },
+            LiveSnapshotMismatch {
+                owner: Some(keys[1]),
+                field: LiveSnapshotField::SelfSignature,
+            },
+        ];
+
+        let additions = census_live_snapshot_fallback_additions(&mismatches, &[], no_identity);
+
+        assert_eq!(additions.len(), 2);
+        assert!(
+            additions
+                .iter()
+                .all(|record| record.stage == DebugFallbackStage::Planning
+                    && record.category == DebugFallbackCategory::Validation)
+        );
+    }
+
+    #[test]
+    fn the_node_the_planner_already_named_is_not_repeated() {
+        let (_arena, keys) = keys(1);
+        let mismatches = [LiveSnapshotMismatch {
+            owner: Some(keys[0]),
+            field: LiveSnapshotField::SelfSignature,
+        }];
+
+        let additions = census_live_snapshot_fallback_additions(
+            &mismatches,
+            &[planner_record(
+                Some(keys[0]),
+                LiveSnapshotField::SelfSignature,
+            )],
+            no_identity,
+        );
+
+        assert!(additions.is_empty());
+    }
+
+    #[test]
+    fn the_same_owner_drifting_on_a_different_field_is_still_reported() {
+        let (_arena, keys) = keys(1);
+        let mismatches = [LiveSnapshotMismatch {
+            owner: Some(keys[0]),
+            field: LiveSnapshotField::Children,
+        }];
+
+        let additions = census_live_snapshot_fallback_additions(
+            &mismatches,
+            &[planner_record(
+                Some(keys[0]),
+                LiveSnapshotField::SelfSignature,
+            )],
+            no_identity,
+        );
+
+        assert_eq!(additions.len(), 1);
+    }
+
+    #[test]
+    fn a_whole_scene_mismatch_reports_no_owner() {
+        let mismatches = [LiveSnapshotMismatch {
+            owner: None,
+            field: LiveSnapshotField::ObservedRoots,
+        }];
+
+        let additions = census_live_snapshot_fallback_additions(&mismatches, &[], no_identity);
+
+        assert_eq!(additions.len(), 1);
+        assert_eq!(additions[0].owner, None);
+    }
+}

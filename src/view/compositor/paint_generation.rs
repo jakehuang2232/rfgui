@@ -142,6 +142,108 @@ impl PaintGenerationTracker {
             .is_none()
     }
 
+    /// Every reason this tracker no longer describes the live arena.
+    ///
+    /// [`Self::live_snapshot_mismatch`] stops at the first disagreement
+    /// because the planners that gate on it only need a yes or no, and they
+    /// run every frame. Diagnostics want the whole set: a planner that rejects
+    /// on this precondition returns before its per-node validation runs at
+    /// all, so one drifting node anywhere suppresses every other reason in the
+    /// scene. Collecting them turns that into one pass instead of one node per
+    /// run.
+    ///
+    /// Callers pay a full traversal, so this belongs behind a diagnostic
+    /// switch rather than on a planning path.
+    pub(crate) fn live_snapshot_mismatches(
+        &self,
+        arena: &NodeArena,
+        roots: &[NodeKey],
+        property_trees: &PropertyTrees,
+    ) -> Vec<LiveSnapshotMismatch> {
+        let mut mismatches = Vec::new();
+        if self.observed_roots.as_slice() != roots {
+            mismatches.push(LiveSnapshotMismatch {
+                owner: None,
+                field: LiveSnapshotField::ObservedRoots,
+            });
+        }
+        let mut stack = roots.to_vec();
+        let mut seen = FxHashSet::default();
+        while let Some(key) = stack.pop() {
+            if !seen.insert(key) {
+                mismatches.push(LiveSnapshotMismatch {
+                    owner: Some(key),
+                    field: LiveSnapshotField::RepeatedNode,
+                });
+                continue;
+            }
+            let Some(node) = arena.get(key) else {
+                mismatches.push(LiveSnapshotMismatch {
+                    owner: Some(key),
+                    field: LiveSnapshotField::MissingNode,
+                });
+                continue;
+            };
+            let children = node.children();
+            stack.extend(children.iter().copied());
+            let Some(record) = self.nodes.get(&key) else {
+                mismatches.push(LiveSnapshotMismatch {
+                    owner: Some(key),
+                    field: LiveSnapshotField::MissingRecord,
+                });
+                continue;
+            };
+            let field = if !record.active {
+                Some(LiveSnapshotField::InactiveRecord)
+            } else if record.last_seen_epoch != self.epoch {
+                Some(LiveSnapshotField::Epoch)
+            } else if record.observed_parent != node.parent() {
+                Some(LiveSnapshotField::Parent)
+            } else if record.observed_children.as_slice() != children {
+                Some(LiveSnapshotField::Children)
+            } else if record.coverage != coverage_for(node.element.as_ref()) {
+                Some(LiveSnapshotField::Coverage)
+            } else if record.observed_self_signature != node.element.retained_paint_signature() {
+                Some(LiveSnapshotField::SelfSignature)
+            } else if record.observed_transform_generation
+                != property_trees.transform_generation_for_owner(key)
+            {
+                Some(LiveSnapshotField::TransformGeneration)
+            } else if record.observed_effect_generation
+                != property_trees.effect_generation_for_owner(key)
+            {
+                Some(LiveSnapshotField::EffectGeneration)
+            } else if record.observed_scroll_generation
+                != property_trees.scroll_generation_for_owner(key)
+            {
+                Some(LiveSnapshotField::ScrollGeneration)
+            } else {
+                None
+            };
+            if let Some(field) = field {
+                mismatches.push(LiveSnapshotMismatch {
+                    owner: Some(key),
+                    field,
+                });
+            }
+        }
+        let mut unreachable = self
+            .nodes
+            .iter()
+            .filter(|(key, record)| {
+                record.active && record.last_seen_epoch == self.epoch && !seen.contains(key)
+            })
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>();
+        // `nodes` is a hash map, so fix an order before reporting.
+        unreachable.sort_unstable();
+        mismatches.extend(unreachable.into_iter().map(|key| LiveSnapshotMismatch {
+            owner: Some(key),
+            field: LiveSnapshotField::UnreachableRecord,
+        }));
+        mismatches
+    }
+
     /// The first reason this tracker no longer describes the live arena, or
     /// `None` when it still does.
     ///

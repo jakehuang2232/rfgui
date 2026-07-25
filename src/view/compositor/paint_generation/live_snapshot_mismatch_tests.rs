@@ -137,3 +137,80 @@ fn every_field_has_a_distinct_stable_code() {
             && code.chars().all(|c| c.is_ascii_lowercase() || c == '-')
     }));
 }
+
+#[test]
+fn the_collector_agrees_with_the_first_mismatch() {
+    let (mut arena, roots, property_trees, tracker) = observed_scene();
+
+    assert!(
+        tracker
+            .live_snapshot_mismatches(&arena, &roots, &property_trees)
+            .is_empty()
+    );
+
+    let added = arena.insert(Node::with_parent(
+        Box::new(Element::new_with_id(3, 0.0, 0.0, 10.0, 10.0)),
+        Some(roots[0]),
+    ));
+    arena.push_child(roots[0], added);
+
+    let all = tracker.live_snapshot_mismatches(&arena, &roots, &property_trees);
+    let first = tracker
+        .live_snapshot_mismatch(&arena, &roots, &property_trees)
+        .expect("drift is reported by both");
+
+    assert!(!all.is_empty());
+    assert!(
+        all.contains(&first),
+        "the early-exit answer must appear in the collected set"
+    );
+}
+
+#[test]
+fn the_collector_reports_every_drifting_node_not_just_the_first() {
+    let (mut arena, roots, property_trees, tracker) = observed_scene();
+    // Two unobserved children under different parents: the early-exit check
+    // can only ever name one of them.
+    let child = arena
+        .get(roots[0])
+        .expect("root stays live")
+        .children()
+        .first()
+        .copied()
+        .expect("root has one child");
+    for (parent, id) in [(roots[0], 3), (child, 4)] {
+        let added = arena.insert(Node::with_parent(
+            Box::new(Element::new_with_id(id, 0.0, 0.0, 10.0, 10.0)),
+            Some(parent),
+        ));
+        arena.push_child(parent, added);
+    }
+
+    let all = tracker.live_snapshot_mismatches(&arena, &roots, &property_trees);
+    let owners = all
+        .iter()
+        .filter(|mismatch| mismatch.field == LiveSnapshotField::Children)
+        .filter_map(|mismatch| mismatch.owner)
+        .collect::<Vec<_>>();
+
+    assert!(owners.contains(&roots[0]));
+    assert!(owners.contains(&child));
+}
+
+#[test]
+fn collected_mismatches_are_deterministic() {
+    let (mut arena, roots, property_trees, tracker) = observed_scene();
+    let added = arena.insert(Node::with_parent(
+        Box::new(Element::new_with_id(3, 0.0, 0.0, 10.0, 10.0)),
+        Some(roots[0]),
+    ));
+    arena.push_child(roots[0], added);
+
+    let first = tracker.live_snapshot_mismatches(&arena, &roots, &property_trees);
+    for _ in 0..4 {
+        assert_eq!(
+            tracker.live_snapshot_mismatches(&arena, &roots, &property_trees),
+            first
+        );
+    }
+}

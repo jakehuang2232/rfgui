@@ -1022,6 +1022,45 @@ fn artifact_rejection_debug_records(
         .collect()
 }
 
+/// Live-snapshot drift records the planners could not report.
+///
+/// A planner that rejects on the live-snapshot precondition returns before its
+/// per-node validation runs, so it reports one drifting node and nothing else
+/// from the whole scene. A census wants every drifting node, and existing
+/// records win so the one the planner already named is not repeated.
+fn census_live_snapshot_fallback_additions(
+    mismatches: &[crate::view::compositor::paint_generation::LiveSnapshotMismatch],
+    existing: &[crate::view::debug::DebugRetainedAutoFallbackCaptureInput],
+    identity: impl Fn(
+        crate::view::node_arena::NodeKey,
+    ) -> Option<(u64, &'static str, crate::view::debug::DebugRect)>,
+) -> Vec<crate::view::debug::DebugRetainedAutoFallbackCaptureInput> {
+    let mut additions: Vec<crate::view::debug::DebugRetainedAutoFallbackCaptureInput> = Vec::new();
+    for mismatch in mismatches {
+        let detail = crate::view::debug::DebugFallbackDetail::Code {
+            code: mismatch.field.code(),
+        };
+        let already_reported = existing
+            .iter()
+            .chain(additions.iter())
+            .any(|fallback| fallback.owner == mismatch.owner && fallback.detail == detail);
+        if already_reported {
+            continue;
+        }
+        let identity = mismatch.owner.and_then(&identity);
+        additions.push(crate::view::debug::DebugRetainedAutoFallbackCaptureInput {
+            stage: crate::view::debug::DebugFallbackStage::Planning,
+            category: crate::view::debug::DebugFallbackCategory::Validation,
+            detail,
+            owner: mismatch.owner,
+            stable_id: identity.map(|identity| identity.0),
+            element_type: identity.map(|identity| identity.1),
+            bounds: identity.map(|identity| identity.2),
+        });
+    }
+    additions
+}
+
 /// Observational fallback records for one candidate rejection.
 fn selection_rejection_debug_records(
     rejection: &PaintAuthoritySelectionRejection,
@@ -3016,11 +3055,20 @@ impl Viewport {
                 &self.compositor.property_trees,
                 &self.compositor.paint_generations,
             );
+            let live_snapshot = census_live_snapshot_fallback_additions(
+                &self.compositor.paint_generations.live_snapshot_mismatches(
+                    &self.scene.node_arena,
+                    roots,
+                    &self.compositor.property_trees,
+                ),
+                &fallbacks,
+                |owner| self.retained_auto_debug_identity(owner),
+            );
             let additions =
                 census_coverage_fallback_additions(&manifest.items, &fallbacks, |owner| {
                     self.retained_auto_debug_identity(owner)
                 });
-            for fallback in additions {
+            for fallback in live_snapshot.into_iter().chain(additions) {
                 if let Some(owner) = fallback.owner
                     && let Some(node) = nodes.get_mut(&owner)
                 {
