@@ -1022,6 +1022,24 @@ fn artifact_rejection_debug_records(
         .collect()
 }
 
+/// The bare code inside a debug detail, ignoring which candidate raised it.
+///
+/// `Code` and `CandidateCode` describe the same invariant; only the latter
+/// also names the grammar. Deduplication has to see through that difference.
+fn fallback_detail_code(
+    detail: &crate::view::debug::DebugFallbackDetail,
+) -> Option<&'static str> {
+    match detail {
+        crate::view::debug::DebugFallbackDetail::Code { code }
+        | crate::view::debug::DebugFallbackDetail::CandidateCode { code, .. } => Some(code),
+        crate::view::debug::DebugFallbackDetail::None
+        | crate::view::debug::DebugFallbackDetail::Boundary { .. }
+        | crate::view::debug::DebugFallbackDetail::Validation { .. }
+        | crate::view::debug::DebugFallbackDetail::Resource { .. }
+        | crate::view::debug::DebugFallbackDetail::Capacity { .. } => None,
+    }
+}
+
 /// Live-snapshot drift records the planners could not report.
 ///
 /// A planner that rejects on the live-snapshot precondition returns before its
@@ -1037,13 +1055,15 @@ fn census_live_snapshot_fallback_additions(
 ) -> Vec<crate::view::debug::DebugRetainedAutoFallbackCaptureInput> {
     let mut additions: Vec<crate::view::debug::DebugRetainedAutoFallbackCaptureInput> = Vec::new();
     for mismatch in mismatches {
-        let detail = crate::view::debug::DebugFallbackDetail::Code {
-            code: mismatch.field.code(),
-        };
-        let already_reported = existing
-            .iter()
-            .chain(additions.iter())
-            .any(|fallback| fallback.owner == mismatch.owner && fallback.detail == detail);
+        let code = mismatch.field.code();
+        let detail = crate::view::debug::DebugFallbackDetail::Code { code };
+        // Compare the code, not the whole detail: a planner's record carries
+        // the candidate that raised it, so the same drift arrives here as
+        // `CandidateCode` while this pass produces a bare `Code`.
+        let already_reported = existing.iter().chain(additions.iter()).any(|fallback| {
+            fallback.owner == mismatch.owner
+                && fallback_detail_code(&fallback.detail) == Some(code)
+        });
         if already_reported {
             continue;
         }

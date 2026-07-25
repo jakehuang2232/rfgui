@@ -488,6 +488,30 @@ mod census_live_snapshot_additions {
     }
 
     #[test]
+    fn a_planner_record_naming_its_candidate_still_dedupes() {
+        // The planner wraps its code with the grammar that raised it, so the
+        // same drift arrives as `CandidateCode` while this pass produces a
+        // bare `Code`. Comparing whole details would double count it.
+        let (_arena, keys) = keys(1);
+        let mismatches = [LiveSnapshotMismatch {
+            owner: Some(keys[0]),
+            field: LiveSnapshotField::SelfSignature,
+        }];
+        let planner = DebugRetainedAutoFallbackCaptureInput {
+            detail: DebugFallbackDetail::CandidateCode {
+                candidate: "property-boundary-dag",
+                code: LiveSnapshotField::SelfSignature.code(),
+            },
+            ..planner_record(Some(keys[0]), LiveSnapshotField::SelfSignature)
+        };
+
+        let additions =
+            census_live_snapshot_fallback_additions(&mismatches, &[planner], no_identity);
+
+        assert!(additions.is_empty());
+    }
+
+    #[test]
     fn the_same_owner_drifting_on_a_different_field_is_still_reported() {
         let (_arena, keys) = keys(1);
         let mismatches = [LiveSnapshotMismatch {
@@ -497,14 +521,21 @@ mod census_live_snapshot_additions {
 
         let additions = census_live_snapshot_fallback_additions(
             &mismatches,
-            &[planner_record(
-                Some(keys[0]),
-                LiveSnapshotField::SelfSignature,
-            )],
+            &[DebugRetainedAutoFallbackCaptureInput {
+                detail: DebugFallbackDetail::CandidateCode {
+                    candidate: "property-boundary-dag",
+                    code: LiveSnapshotField::SelfSignature.code(),
+                },
+                ..planner_record(Some(keys[0]), LiveSnapshotField::SelfSignature)
+            }],
             no_identity,
         );
 
-        assert_eq!(additions.len(), 1);
+        assert_eq!(
+            additions.len(),
+            1,
+            "a different field is a different invariant"
+        );
     }
 
     #[test]
