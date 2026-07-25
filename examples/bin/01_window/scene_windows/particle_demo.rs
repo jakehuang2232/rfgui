@@ -776,10 +776,19 @@ impl ElementTrait for ParticleCanvas {
     }
 
     fn retained_paint_signature(&self) -> u64 {
-        // Always changing → prevents retained paint from caching stale frames.
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static CTR: AtomicU64 = AtomicU64::new(1);
-        CTR.fetch_add(1, Ordering::Relaxed)
+        // Constant on purpose. The engine samples this more than once per
+        // frame — once when observing paint generations, again when a planner
+        // checks that its snapshot still describes the live arena — and the
+        // retained contract requires the same semantic frame to read the same
+        // value. A counter that advances per call fails that whole-tree check
+        // at this node, which returns the planner before it validates anything
+        // else and so denies retained authority to the entire scene.
+        //
+        // Repainting every frame does not need a changing signature: this host
+        // reports `DirtyFlags::ALL` and leaves
+        // `retained_paint_signature_is_complete()` at its default `false`,
+        // which already marks it untracked for retained generation purposes.
+        0
     }
 
     fn local_dirty_flags(&self) -> DirtyFlags {
