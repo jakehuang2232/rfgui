@@ -68,6 +68,54 @@ pub(crate) struct LocalPaintGenerations {
     pub(crate) topology_revision: u64,
 }
 
+/// Why a [`PaintGenerationTracker`] no longer describes the live arena.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LiveSnapshotMismatch {
+    /// The node that disagreed, or `None` for a whole-scene mismatch.
+    pub(crate) owner: Option<NodeKey>,
+    pub(crate) field: LiveSnapshotField,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LiveSnapshotField {
+    ObservedRoots,
+    RepeatedNode,
+    MissingNode,
+    MissingRecord,
+    InactiveRecord,
+    Epoch,
+    Parent,
+    Children,
+    Coverage,
+    SelfSignature,
+    TransformGeneration,
+    EffectGeneration,
+    ScrollGeneration,
+    UnreachableRecord,
+}
+
+impl LiveSnapshotField {
+    /// Stable lowercase code for debug reporting.
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::ObservedRoots => "live-snapshot-observed-roots",
+            Self::RepeatedNode => "live-snapshot-repeated-node",
+            Self::MissingNode => "live-snapshot-missing-node",
+            Self::MissingRecord => "live-snapshot-missing-record",
+            Self::InactiveRecord => "live-snapshot-inactive-record",
+            Self::Epoch => "live-snapshot-epoch",
+            Self::Parent => "live-snapshot-parent",
+            Self::Children => "live-snapshot-children",
+            Self::Coverage => "live-snapshot-coverage",
+            Self::SelfSignature => "live-snapshot-self-signature",
+            Self::TransformGeneration => "live-snapshot-transform-generation",
+            Self::EffectGeneration => "live-snapshot-effect-generation",
+            Self::ScrollGeneration => "live-snapshot-scroll-generation",
+            Self::UnreachableRecord => "live-snapshot-unreachable-record",
+        }
+    }
+}
+
 impl PaintGenerationTracker {
     pub(crate) fn local_generations_for(&self, key: NodeKey) -> Option<LocalPaintGenerations> {
         self.nodes
@@ -90,42 +138,84 @@ impl PaintGenerationTracker {
         roots: &[NodeKey],
         property_trees: &PropertyTrees,
     ) -> bool {
+        self.live_snapshot_mismatch(arena, roots, property_trees)
+            .is_none()
+    }
+
+    /// The first reason this tracker no longer describes the live arena, or
+    /// `None` when it still does.
+    ///
+    /// [`Self::matches_live_snapshot`] answers the same question as a boolean
+    /// and discards everything else. A whole-tree equality check that fails
+    /// somewhere in a few thousand nodes is not actionable on its own, so this
+    /// reports the node and the field that first disagreed. Traversal order is
+    /// deterministic, so the reported node is stable for a given snapshot.
+    pub(crate) fn live_snapshot_mismatch(
+        &self,
+        arena: &NodeArena,
+        roots: &[NodeKey],
+        property_trees: &PropertyTrees,
+    ) -> Option<LiveSnapshotMismatch> {
+        let drift = |owner: Option<NodeKey>, field: LiveSnapshotField| {
+            Some(LiveSnapshotMismatch { owner, field })
+        };
         if self.observed_roots.as_slice() != roots {
-            return false;
+            return drift(None, LiveSnapshotField::ObservedRoots);
         }
         let mut stack = roots.to_vec();
         let mut seen = FxHashSet::default();
         while let Some(key) = stack.pop() {
             if !seen.insert(key) {
-                return false;
+                return drift(Some(key), LiveSnapshotField::RepeatedNode);
             }
             let Some(node) = arena.get(key) else {
-                return false;
+                return drift(Some(key), LiveSnapshotField::MissingNode);
             };
             let Some(record) = self.nodes.get(&key) else {
-                return false;
+                return drift(Some(key), LiveSnapshotField::MissingRecord);
             };
             let children = node.children();
-            if !record.active
-                || record.last_seen_epoch != self.epoch
-                || record.observed_parent != node.parent()
-                || record.observed_children.as_slice() != children
-                || record.coverage != coverage_for(node.element.as_ref())
-                || record.observed_self_signature != node.element.retained_paint_signature()
-                || record.observed_transform_generation
-                    != property_trees.transform_generation_for_owner(key)
-                || record.observed_effect_generation
-                    != property_trees.effect_generation_for_owner(key)
-                || record.observed_scroll_generation
-                    != property_trees.scroll_generation_for_owner(key)
+            let field = if !record.active {
+                Some(LiveSnapshotField::InactiveRecord)
+            } else if record.last_seen_epoch != self.epoch {
+                Some(LiveSnapshotField::Epoch)
+            } else if record.observed_parent != node.parent() {
+                Some(LiveSnapshotField::Parent)
+            } else if record.observed_children.as_slice() != children {
+                Some(LiveSnapshotField::Children)
+            } else if record.coverage != coverage_for(node.element.as_ref()) {
+                Some(LiveSnapshotField::Coverage)
+            } else if record.observed_self_signature != node.element.retained_paint_signature() {
+                Some(LiveSnapshotField::SelfSignature)
+            } else if record.observed_transform_generation
+                != property_trees.transform_generation_for_owner(key)
             {
-                return false;
+                Some(LiveSnapshotField::TransformGeneration)
+            } else if record.observed_effect_generation
+                != property_trees.effect_generation_for_owner(key)
+            {
+                Some(LiveSnapshotField::EffectGeneration)
+            } else if record.observed_scroll_generation
+                != property_trees.scroll_generation_for_owner(key)
+            {
+                Some(LiveSnapshotField::ScrollGeneration)
+            } else {
+                None
+            };
+            if let Some(field) = field {
+                return drift(Some(key), field);
             }
             stack.extend(children.iter().copied());
         }
-        self.nodes.iter().all(|(key, record)| {
-            !record.active || record.last_seen_epoch != self.epoch || seen.contains(key)
-        })
+        self.nodes
+            .iter()
+            .find(|(key, record)| {
+                record.active && record.last_seen_epoch == self.epoch && !seen.contains(key)
+            })
+            .map(|(key, _)| LiveSnapshotMismatch {
+                owner: Some(*key),
+                field: LiveSnapshotField::UnreachableRecord,
+            })
     }
 
     pub(crate) fn begin_frame(&mut self, roots: &[NodeKey]) {
@@ -735,3 +825,6 @@ mod tests {
         assert!(tracker.matches_live_snapshot(&arena, &[root], &trees));
     }
 }
+
+#[cfg(test)]
+mod live_snapshot_mismatch_tests;

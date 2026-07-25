@@ -902,6 +902,9 @@ fn frame_plan_rejection_debug(
         Rejection::InvalidPropertyScene(invariant) => {
             (None, Category::PropertyTopology, code(invariant))
         }
+        Rejection::LiveSnapshotDrift { owner, field } => {
+            (*owner, Category::Validation, code(field))
+        }
         Rejection::InvalidClipChain(owner) => (
             Some(*owner),
             Category::PropertyTopology,

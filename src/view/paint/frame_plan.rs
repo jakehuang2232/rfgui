@@ -2815,6 +2815,13 @@ pub(crate) enum FramePaintPlanRejection {
     UnsupportedPropertyInterleave(NodeKey),
     InvalidEffectChain(NodeKey),
     InvalidIsolationGeometry(NodeKey),
+    /// The paint generation tracker no longer describes the live arena.
+    ///
+    /// `owner` is `None` for a whole-scene mismatch such as changed roots.
+    LiveSnapshotDrift {
+        owner: Option<NodeKey>,
+        field: &'static str,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4594,8 +4601,17 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
             reasons: vec![FramePaintPlanRejection::EmptyScene],
         });
     }
-    if !paint_generations.matches_live_snapshot(arena, roots, property_trees) {
-        return Err(property_scene_error("property-scroll-interleave-live-snapshot"));
+    // Report the node and field that drifted. This planner is the only scroll
+    // grammar without a blanket transform/effect exclusion, so a bare "live
+    // snapshot mismatch" here hides the single condition keeping mixed
+    // property scenes out of every retained authority.
+    if let Some(mismatch) = paint_generations.live_snapshot_mismatch(arena, roots, property_trees) {
+        return Err(FramePaintPlanError {
+            reasons: vec![FramePaintPlanRejection::LiveSnapshotDrift {
+                owner: mismatch.owner,
+                field: mismatch.field.code(),
+            }],
+        });
     }
     let mut reasons = property_trees
         .validation_errors
