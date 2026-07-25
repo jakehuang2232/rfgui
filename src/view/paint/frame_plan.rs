@@ -9570,13 +9570,19 @@ fn detach_ancestor_clip_chain(
             });
         }
     }
-    if artifact.chunks.iter().any(|chunk| {
+    // Name the chunk that still points outside the detached subtree. The
+    // rejection is unchanged; reporting the owner is what lets a census
+    // attribute a failed clip localisation to a component instead of leaving
+    // it as an unattributed whole-frame reason.
+    if let Some(chunk) = artifact.chunks.iter().find(|chunk| {
         chunk
             .properties
             .clip
             .is_some_and(|clip| !local_ids.contains(&clip))
     }) {
-        return Err(property_scene_error());
+        return Err(FramePaintPlanError {
+            reasons: vec![FramePaintPlanRejection::InvalidClipChain(chunk.owner)],
+        });
     }
     Ok(artifact)
 }

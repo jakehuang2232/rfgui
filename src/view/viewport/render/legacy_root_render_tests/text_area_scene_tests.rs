@@ -98,7 +98,7 @@ fn retained_auto_scroll_text_area_subtree_selects_typed_property_scene() {
     };
     assert!(matches!(
         trace.rejections.as_slice(),
-        [AutoAuthorityRejection::PropertyScrollPlan { .. }]
+        [AutoAuthorityRejection::FrameRootScrollPlan { .. }]
     ));
     assert_eq!(scene.boundary_count(), 1);
     assert!(scene.is_canonical());
@@ -178,7 +178,7 @@ fn retained_auto_focused_atomic_projection_text_area_selects_property_scene() {
     };
     assert!(matches!(
         trace.rejections.as_slice(),
-        [AutoAuthorityRejection::PropertyScrollPlan { .. }]
+        [AutoAuthorityRejection::FrameRootScrollPlan { .. }]
     ));
     assert_eq!(scene.boundary_count(), 1);
     assert!(scene.is_canonical());
@@ -275,7 +275,7 @@ fn retained_auto_focused_atomic_projection_preedit_selects_property_scene() {
     };
     assert!(matches!(
         trace.rejections.as_slice(),
-        [AutoAuthorityRejection::PropertyScrollPlan { .. }]
+        [AutoAuthorityRejection::FrameRootScrollPlan { .. }]
     ));
     assert_eq!(scene.boundary_count(), 1);
     assert!(scene.is_canonical());
@@ -581,7 +581,7 @@ fn retained_auto_scroll_text_area_selection_noncanonical_states_fail_closed() {
         };
         assert!(matches!(
             trace.rejections.first(),
-            Some(AutoAuthorityRejection::PropertyScrollPlan { .. })
+            Some(AutoAuthorityRejection::FrameRootScrollPlan { .. })
         ));
     }
     assert_eq!(graph.build_state_snapshot_for_test(), graph_before);

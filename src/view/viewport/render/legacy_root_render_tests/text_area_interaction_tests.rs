@@ -27,7 +27,7 @@ fn retained_auto_scroll_text_area_subtree_interaction_and_budget_fail_closed() {
         AutoAuthorityDecision::PropertyScrollScene { scene, trace } => {
             assert!(matches!(
                 trace.rejections.as_slice(),
-                [AutoAuthorityRejection::PropertyScrollPlan { .. }]
+                [AutoAuthorityRejection::FrameRootScrollPlan { .. }]
             ));
             scene
         }
@@ -212,7 +212,7 @@ fn retained_auto_scroll_text_area_subtree_interaction_and_budget_fail_closed() {
         };
         assert!(matches!(
             trace.rejections.as_slice(),
-            [AutoAuthorityRejection::PropertyScrollPlan { .. }]
+            [AutoAuthorityRejection::FrameRootScrollPlan { .. }]
         ));
         assert!(scene.is_canonical());
     }
@@ -284,7 +284,7 @@ fn retained_auto_scroll_text_area_subtree_interaction_and_budget_fail_closed() {
         };
         assert!(matches!(
             trace.rejections.first(),
-            Some(AutoAuthorityRejection::PropertyScrollPlan { .. })
+            Some(AutoAuthorityRejection::FrameRootScrollPlan { .. })
         ));
     }
 
@@ -338,7 +338,7 @@ fn retained_auto_scroll_text_area_selection_is_exact_reusable_and_invalidating()
             AutoAuthorityDecision::PropertyScrollScene { scene, trace } => {
                 assert!(matches!(
                     trace.rejections.as_slice(),
-                    [AutoAuthorityRejection::PropertyScrollPlan { .. }]
+                    [AutoAuthorityRejection::FrameRootScrollPlan { .. }]
                 ));
                 scene
             }

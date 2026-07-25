@@ -15,7 +15,7 @@ fn retained_auto_transform_scroll_selects_and_emits_one_atomic_scene() {
     assert!(matches!(
         trace.rejections.as_slice(),
         [
-            AutoAuthorityRejection::PropertyScrollPlan { .. },
+            AutoAuthorityRejection::FrameRootScrollPlan { .. },
             AutoAuthorityRejection::PropertyScrollPlan { .. }
         ]
     ));
@@ -135,7 +135,7 @@ fn retained_auto_effect_scroll_selects_and_emits_one_atomic_scene() {
     assert!(matches!(
         trace.rejections.as_slice(),
         [
-            AutoAuthorityRejection::PropertyScrollPlan { .. },
+            AutoAuthorityRejection::FrameRootScrollPlan { .. },
             AutoAuthorityRejection::PropertyScrollPlan { .. },
             AutoAuthorityRejection::TransformScrollPlan { .. }
         ]
@@ -191,7 +191,7 @@ fn retained_auto_exact_multi_scroll_selects_one_atomic_scene() {
     assert_eq!(scene.boundary_count(), 2);
     assert!(matches!(
         trace.rejections.as_slice(),
-        [AutoAuthorityRejection::PropertyScrollPlan { .. }]
+        [AutoAuthorityRejection::FrameRootScrollPlan { .. }]
     ));
     assert_eq!(properties.scrolls.len(), 2);
 }
@@ -261,7 +261,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
         let expected = matches!(
             trace.rejections.as_slice(),
             [
-                AutoAuthorityRejection::PropertyScrollPlan { .. },
+                AutoAuthorityRejection::FrameRootScrollPlan { .. },
                 AutoAuthorityRejection::PropertyScrollPlan { .. },
                 AutoAuthorityRejection::TransformScrollPlan { .. },
                 AutoAuthorityRejection::EffectScrollPlan { .. },
@@ -355,7 +355,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
         auto_authority_trace(&captured).rejections.as_slice(),
         [
             AutoAuthorityRejection::NestedScrollPlan { .. },
-            AutoAuthorityRejection::PropertyScrollPlan { .. },
+            AutoAuthorityRejection::FrameRootScrollPlan { .. },
             AutoAuthorityRejection::PropertyScrollPlan { .. },
             AutoAuthorityRejection::TransformScrollPlan { .. },
             AutoAuthorityRejection::EffectScrollPlan { .. },
@@ -456,7 +456,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
     assert!(matches!(
         trace.rejections.as_slice(),
         [
-            AutoAuthorityRejection::PropertyScrollPlan { .. },
+            AutoAuthorityRejection::FrameRootScrollPlan { .. },
             AutoAuthorityRejection::PropertyScrollPlan { .. },
             AutoAuthorityRejection::TransformScrollPlan { .. },
             AutoAuthorityRejection::EffectScrollPlan { .. },
@@ -517,7 +517,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
     assert!(matches!(
         trace.rejections.as_slice(),
         [
-            AutoAuthorityRejection::PropertyScrollPlan { .. },
+            AutoAuthorityRejection::FrameRootScrollPlan { .. },
             AutoAuthorityRejection::PropertyScrollPlan { .. },
             AutoAuthorityRejection::TransformScrollPlan { .. }
         ]
@@ -560,7 +560,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
     assert!(matches!(
         trace.rejections.as_slice(),
         [
-            AutoAuthorityRejection::PropertyScrollPlan { .. },
+            AutoAuthorityRejection::FrameRootScrollPlan { .. },
             AutoAuthorityRejection::PropertyScrollPlan { .. },
             AutoAuthorityRejection::TransformScrollPlan { .. },
             AutoAuthorityRejection::EffectScrollPlan { .. }
@@ -760,7 +760,7 @@ fn retained_auto_does_not_treat_plain_overflow_as_an_authored_scroll_boundary() 
     if let AutoAuthorityDecision::Legacy { trace } = decision {
         assert!(!trace.rejections.iter().any(|rejection| matches!(
             rejection,
-            AutoAuthorityRejection::PropertyScrollPlan { .. }
+            AutoAuthorityRejection::FrameRootScrollPlan { .. }
         )));
     }
 }

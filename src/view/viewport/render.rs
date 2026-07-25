@@ -40,6 +40,12 @@ enum AutoAuthorityRejection {
     PropertyScrollPlan {
         error: crate::view::paint::PropertyScrollScenePlanError,
     },
+    /// The frame-root scroll candidate shares `PropertyScrollScenePlanError`
+    /// with the property-scroll candidate, but they are different grammars and
+    /// a debug record must name the one that rejected.
+    FrameRootScrollPlan {
+        error: crate::view::paint::PropertyScrollScenePlanError,
+    },
     NativeScrollForestPlan {
         error: crate::view::paint::FramePaintPlanError,
     },
@@ -95,6 +101,9 @@ impl AutoAuthorityRejection {
             }
             Self::PropertyScrollPlan { error } => {
                 format!("plan(property-scene-scroll):{error:?}")
+            }
+            Self::FrameRootScrollPlan { error } => {
+                format!("plan(frame-root-scroll):{error:?}")
             }
             Self::NativeScrollForestPlan { error } => {
                 format!("plan(native-scroll-forest):{:?}", error.reasons)
@@ -1028,6 +1037,11 @@ fn selection_rejection_debug_records(
                 DebugFallbackStage::Planning,
                 frame_plan_error_debug_records(error),
             ),
+            AutoAuthorityRejection::FrameRootScrollPlan { error } => (
+                "frame-root-scroll",
+                DebugFallbackStage::Planning,
+                property_scroll_plan_error_debug_records(error),
+            ),
             AutoAuthorityRejection::PropertyScrollPlan { error } => (
                 "property-scroll",
                 DebugFallbackStage::Planning,
@@ -1831,7 +1845,7 @@ fn select_retained_auto_authority_with_semantics(
         ) {
             Ok(scene) => return AutoAuthorityDecision::FrameRootScrollScene { scene, trace },
             Err(error) => {
-                trace.capture(|| AutoAuthorityRejection::PropertyScrollPlan { error });
+                trace.capture(|| AutoAuthorityRejection::FrameRootScrollPlan { error });
             }
         }
         match crate::view::paint::plan_and_validate_property_scroll_scene(

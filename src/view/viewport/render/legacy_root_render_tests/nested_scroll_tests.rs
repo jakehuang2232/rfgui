@@ -315,7 +315,7 @@ fn retained_auto_exact_scroll_selects_scene_and_never_baked_host() {
     };
     assert!(matches!(
         trace.rejections.as_slice(),
-        [AutoAuthorityRejection::PropertyScrollPlan { .. }]
+        [AutoAuthorityRejection::FrameRootScrollPlan { .. }]
     ));
     assert_eq!(properties.scrolls.len(), 1);
 }
