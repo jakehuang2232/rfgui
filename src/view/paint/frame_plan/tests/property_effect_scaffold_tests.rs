@@ -434,7 +434,7 @@ fn property_effect_scaffold_rejects_stale_live_generation_fingerprint() {
     .expect_err("stale generations cannot mint an artifact-input fingerprint");
     assert_eq!(
         error.reasons,
-        vec![FramePaintPlanRejection::InvalidPropertyScene("property-scene-artifact-invalid")]
+        vec![FramePaintPlanRejection::InvalidPropertyScene("property-effect-scene-scaffold")]
     );
 }
 
