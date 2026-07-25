@@ -5,6 +5,8 @@
 //! reads consistent while keeping [`crate::view::node_arena::NodeArena`] as an
 //! engine storage detail rather than the public document model.
 
+pub mod census;
+
 use std::collections::HashMap;
 
 use bitflags::bitflags;
@@ -204,6 +206,16 @@ pub enum DebugFallbackDetail {
     Code {
         code: &'static str,
     },
+    /// A code produced by one named authority candidate.
+    ///
+    /// `RetainedAuto` tries several candidates and each may reject for its own
+    /// reason. Without the candidate name, two grammars rejecting for the same
+    /// reason are indistinguishable, and a reason that names no node cannot be
+    /// traced back to the grammar that raised it.
+    CandidateCode {
+        candidate: &'static str,
+        code: &'static str,
+    },
     Boundary {
         reason: &'static str,
     },
@@ -279,6 +291,16 @@ pub struct DebugRetainedAutoStatistics {
     pub resident_commits: u64,
     pub resident_reuses: u64,
     pub resident_rerasterizations: u64,
+    /// Property-tree node counts for the attempt.
+    ///
+    /// These select which authority candidates are attempted at all, so they
+    /// explain candidate rejections that name no node. They count property
+    /// nodes, not styled hosts: an element carrying a scroll style that
+    /// produced no scroll property node is absent from `scroll_nodes` while
+    /// still reporting a `scroll-container` paint boundary.
+    pub transform_nodes: u64,
+    pub effect_nodes: u64,
+    pub scroll_nodes: u64,
 }
 
 #[non_exhaustive]

@@ -185,7 +185,9 @@ fn nested_scroll_receiver_geometry_rejects_empty_clip_and_aggregate_budget() {
             generous_budget(),
         )
         .err(),
-        Some(PropertyScrollScenePlanError::InvalidContract)
+        Some(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-receiver-geometry"
+        ))
     );
 }
 

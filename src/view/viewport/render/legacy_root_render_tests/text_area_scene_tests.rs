@@ -379,7 +379,9 @@ fn rejected_frame_root_scroll_candidate_is_observationally_pure_for_text_area_sc
                 wgpu::TextureFormat::Bgra8Unorm,
             )
             .err(),
-            Some(crate::view::paint::PropertyScrollScenePlanError::InvalidContract),
+            Some(crate::view::paint::PropertyScrollScenePlanError::InvalidContract(
+                "frame-root-scroll-scene"
+            )),
         );
     }
     assert!(

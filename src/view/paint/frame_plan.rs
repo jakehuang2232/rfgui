@@ -2805,7 +2805,11 @@ pub(crate) enum FramePaintPlanRejection {
     IsolationOuterScissor,
     InvalidIsolationEffect(NodeKey),
     InvalidScrollHost(NodeKey),
-    InvalidPropertyScene,
+    /// The property scene did not satisfy the planner's grammar.
+    ///
+    /// The payload names the invariant that failed. It describes the check,
+    /// never a source position.
+    InvalidPropertyScene(&'static str),
     InvalidClipChain(NodeKey),
     CoLocatedTransformEffect(NodeKey),
     UnsupportedPropertyInterleave(NodeKey),
@@ -3117,7 +3121,7 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
         let effect = property_trees.effects.get(&EffectNodeId(key));
         let mut push_boundary = |boundary, parent_boundary_ordinal, seeds: &mut Vec<Seed>| {
             let Ok(ordinal) = u32::try_from(seeds.len()) else {
-                push_unique(reasons, FramePaintPlanRejection::InvalidPropertyScene);
+                push_unique(reasons, FramePaintPlanRejection::InvalidPropertyScene("property-boundary-seed-ordinal-overflow"));
                 return None;
             };
             seeds.push(Seed {
@@ -5032,7 +5036,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                     },
                 };
                 let Ok(ordinal) = u32::try_from(boundaries.len()) else {
-                    push_unique(reasons, FramePaintPlanRejection::InvalidPropertyScene);
+                    push_unique(reasons, FramePaintPlanRejection::InvalidPropertyScene("scroll-boundary-ordinal-overflow"));
                     return;
                 };
                 let mut content_owners = FxHashSet::default();
@@ -5066,7 +5070,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                         continue;
                     }
                     let ClipGeometry::LogicalScissor(logical_scissor) = clip.geometry else {
-                        push_unique(reasons, FramePaintPlanRejection::InvalidPropertyScene);
+                        push_unique(reasons, FramePaintPlanRejection::InvalidPropertyScene("non-scissor-clip-geometry"));
                         continue;
                     };
                     let snapshot = ClipNodeSnapshot {
@@ -5231,7 +5235,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
             })
         })
     {
-        push_unique(&mut reasons, FramePaintPlanRejection::InvalidPropertyScene);
+        push_unique(&mut reasons, FramePaintPlanRejection::InvalidPropertyScene("unreferenced-clip-coverage"));
     }
     if !reasons.is_empty() {
         return Err(FramePaintPlanError { reasons });
@@ -9139,7 +9143,7 @@ fn validate_transform_property_scene_inputs(
         next_ordinal = match next_ordinal.checked_add(1) {
             Some(next) => next,
             None => {
-                push_unique(&mut reasons, FramePaintPlanRejection::InvalidPropertyScene);
+                push_unique(&mut reasons, FramePaintPlanRejection::InvalidPropertyScene("surface-ordinal-overflow"));
                 continue;
             }
         };
@@ -9579,7 +9583,7 @@ fn detach_ancestor_clip_chain(
 
 fn property_scene_error() -> FramePaintPlanError {
     FramePaintPlanError {
-        reasons: vec![FramePaintPlanRejection::InvalidPropertyScene],
+        reasons: vec![FramePaintPlanRejection::InvalidPropertyScene("property-scene-artifact-invalid")],
     }
 }
 

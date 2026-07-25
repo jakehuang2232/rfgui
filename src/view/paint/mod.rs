@@ -77,9 +77,9 @@ pub(crate) use compiler::{
 pub(crate) use compiler::{compile_artifact, take_artifact_compile_count};
 #[allow(unused_imports)]
 pub(crate) use coverage_manifest::{
-    CoverageRecordingMode, PaintCoverageItem, PaintCoverageManifest, PaintCoverageStats,
-    PaintCoverageValidationError, PlannedBoundary, PlannedBoundaryCutoutSet, PlannedBoundaryKind,
-    record_coverage_manifest,
+    CoverageOrder, CoverageRecordingMode, PaintCoverageItem, PaintCoverageManifest,
+    PaintCoverageStats, PaintCoverageValidationError, PlannedBoundary, PlannedBoundaryCutoutSet,
+    PlannedBoundaryKind, record_coverage_manifest,
 };
 #[cfg(test)]
 pub(crate) use frame_plan::tests::{native_scroll_forest_plan_fixture, nested_scroll_plan_fixture};

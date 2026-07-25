@@ -499,7 +499,9 @@ fn property_scroll_b0_rejects_unsupported_scene_contracts() {
     ] {
         assert_eq!(
             result.err(),
-            Some(PropertyScrollScenePlanError::InvalidContract)
+            Some(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-scaffold"
+            ))
         );
     }
 }

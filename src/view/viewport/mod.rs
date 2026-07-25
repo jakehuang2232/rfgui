@@ -13,6 +13,8 @@ mod incremental_tests;
 mod input;
 mod lifecycle;
 mod render;
+#[cfg(test)]
+mod retained_auto_census_tests;
 pub(crate) mod scene_helpers;
 #[cfg(any())]
 mod tests;
@@ -2922,6 +2924,37 @@ impl Viewport {
             },
             retained_auto,
         )
+    }
+
+    /// Aggregate the last captured `RetainedAuto` attempt into a fallback
+    /// census.
+    ///
+    /// Returns `None` when no attempt has been captured. Capture requires one
+    /// of `retained_auto_census`, `retained_auto_overlay`, or
+    /// `trace_render_time` in [`ViewportDebugOptions`]; the census-only flag
+    /// exists so the overlay does not cover the scene being censused.
+    ///
+    /// The result describes the last attempt known to the viewport, which is
+    /// independent from the frame currently on screen.
+    pub fn capture_retained_auto_census(
+        &self,
+    ) -> Option<crate::view::debug::census::DebugFallbackCensus> {
+        let options = crate::view::debug::DebugCaptureOptions {
+            include_arena: false,
+            include_layout: false,
+            include_style: false,
+            include_interaction: false,
+            include_dirty: false,
+            include_render: false,
+            include_retained_auto: true,
+            include_component: false,
+        };
+        self.capture_debug(options)
+            .document()
+            .viewport
+            .retained_auto
+            .as_ref()
+            .map(crate::view::debug::census::DebugFallbackCensus::from_snapshot)
     }
 
     pub fn msaa_sample_count(&self) -> u32 {

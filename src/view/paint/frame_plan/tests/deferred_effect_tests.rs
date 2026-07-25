@@ -482,8 +482,8 @@ fn native_nested_effect_geometry_identity_resource_and_topology_drift_fail_close
         error.reasons.iter().any(|reason| matches!(
             reason,
             FramePaintPlanRejection::TopologyMismatch(owner) if *owner == child
-        )) || error
-            .reasons
-            .contains(&FramePaintPlanRejection::InvalidPropertyScene)
+        )) || error.reasons.iter().any(|reason| {
+            matches!(reason, FramePaintPlanRejection::InvalidPropertyScene(_))
+        })
     );
 }

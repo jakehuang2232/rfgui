@@ -11,6 +11,13 @@ pub struct ViewportDebugOptions {
     pub trace_execute_detail: bool,
     pub geometry_overlay: bool,
     pub retained_auto_overlay: bool,
+    /// Captures the `RetainedAuto` authority attempt for
+    /// [`crate::view::debug::census`] without drawing the overlay.
+    ///
+    /// This is the same observational capture `retained_auto_overlay` and
+    /// `trace_render_time` already switch on; it exists so a census can be
+    /// taken without the overlay's colors covering the scene being censused.
+    pub retained_auto_census: bool,
     pub retained_auto_authority: bool,
     pub retained_auto_reuse_actions: bool,
     pub retained_auto_fallback_reasons: bool,
@@ -26,6 +33,7 @@ impl Default for ViewportDebugOptions {
             trace_execute_detail: false,
             geometry_overlay: false,
             retained_auto_overlay: false,
+            retained_auto_census: false,
             retained_auto_authority: true,
             retained_auto_reuse_actions: true,
             retained_auto_fallback_reasons: true,
@@ -43,6 +51,7 @@ impl ViewportDebugOptions {
             trace_execute_detail: std::env::var("RFGUI_TRACE_EXECUTE_DETAIL").is_ok(),
             geometry_overlay: std::env::var("RFGUI_DEBUG_GEOMETRY_OVERLAY").is_ok(),
             retained_auto_overlay: std::env::var("RFGUI_DEBUG_RETAINED_AUTO").is_ok(),
+            retained_auto_census: std::env::var("RFGUI_DEBUG_RETAINED_AUTO_CENSUS").is_ok(),
             ..Self::default()
         }
     }

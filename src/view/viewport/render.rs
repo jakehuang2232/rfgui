@@ -613,6 +613,30 @@ fn artifact_fallback_reason_owner(
     }
 }
 
+fn debug_artifact_fallback(
+    reason: &crate::view::paint::FrameArtifactFallbackReason,
+) -> (
+    crate::view::debug::DebugFallbackCategory,
+    crate::view::debug::DebugFallbackDetail,
+) {
+    use crate::view::debug::{DebugFallbackCategory as Category, DebugFallbackDetail as Detail};
+    use crate::view::paint::FrameArtifactFallbackReason as Reason;
+
+    let code = |code: &'static str| Detail::Code { code };
+    match reason {
+        Reason::RendererLegacy => (Category::Coverage, code("renderer-legacy")),
+        Reason::LegacyBoundary(reason) => debug_legacy_fallback(*reason),
+        Reason::PropertyBoundary(_) => (Category::PropertyTopology, code("property-boundary")),
+        Reason::RootCount(_) => (Category::Coverage, code("root-count")),
+        Reason::MissingRootEffect(_) => (Category::PropertyTopology, code("missing-root-effect")),
+        Reason::InvalidRootEffect(_) => (Category::PropertyTopology, code("invalid-root-effect")),
+        Reason::NestedEffect(_) => (Category::PropertyTopology, code("nested-effect")),
+        Reason::NonEffectProperty(_) => (Category::PropertyTopology, code("non-effect-property")),
+        Reason::DeferredBoundary(_) => (Category::DeferredPaint, code("deferred-boundary")),
+        Reason::Validation(_) => (Category::Validation, code("coverage-validation")),
+    }
+}
+
 fn debug_requested_mode(
     mode: ViewportPaintRendererMode,
 ) -> crate::view::debug::DebugPaintRequestedMode {
@@ -701,6 +725,382 @@ fn debug_legacy_fallback(
             reason: legacy_fallback_reason_label(reason),
         },
     )
+}
+
+/// One un-staged fallback record derived from a rejection payload.
+///
+/// `owner` is `None` for whole-scene rejections that name no node.
+type RejectionDebugRecord = (
+    Option<crate::view::node_arena::NodeKey>,
+    crate::view::debug::DebugFallbackCategory,
+    crate::view::debug::DebugFallbackDetail,
+);
+
+/// One observational fallback record derived from a candidate rejection.
+struct SelectionRejectionDebugRecord {
+    stage: crate::view::debug::DebugFallbackStage,
+    owner: Option<crate::view::node_arena::NodeKey>,
+    category: crate::view::debug::DebugFallbackCategory,
+    detail: crate::view::debug::DebugFallbackDetail,
+}
+
+/// Map one plan-level rejection onto a stable debug category and code.
+///
+/// Plan errors carry the node the planner rejected, so a whole-frame Legacy
+/// fallback that never reached the artifact candidate can still be attributed
+/// to a component instead of collapsing into an unattributed whole-frame
+/// record.
+fn frame_plan_rejection_debug(
+    rejection: &crate::view::paint::FramePaintPlanRejection,
+) -> RejectionDebugRecord {
+    use crate::view::debug::{DebugFallbackCategory as Category, DebugFallbackDetail as Detail};
+    use crate::view::paint::FramePaintPlanRejection as Rejection;
+
+    let code = |code: &'static str| Detail::Code { code };
+    match rejection {
+        Rejection::EmptyScene => (None, Category::Coverage, code("empty-scene")),
+        Rejection::DuplicateRoot(owner) => {
+            (Some(*owner), Category::Validation, code("duplicate-root"))
+        }
+        Rejection::RootCount(_) => (None, Category::Coverage, code("root-count")),
+        Rejection::MissingRoot(owner) => (Some(*owner), Category::Validation, code("missing-root")),
+        Rejection::UnknownRootHost(owner) => (
+            Some(*owner),
+            Category::UnsupportedHost,
+            code("unknown-root-host"),
+        ),
+        Rejection::RootHasParent(owner) => {
+            (Some(*owner), Category::Validation, code("root-has-parent"))
+        }
+        Rejection::TopologyMismatch(owner) => (
+            Some(*owner),
+            Category::Validation,
+            code("topology-mismatch"),
+        ),
+        Rejection::DuplicateNodeKey(owner) => (
+            Some(*owner),
+            Category::Validation,
+            code("duplicate-node-key"),
+        ),
+        Rejection::InvalidStableId(owner) => (
+            Some(*owner),
+            Category::Validation,
+            code("invalid-stable-id"),
+        ),
+        Rejection::DuplicateStableId(_) => {
+            (None, Category::Validation, code("duplicate-stable-id"))
+        }
+        Rejection::DeferredBoundary(owner) => (
+            Some(*owner),
+            Category::DeferredPaint,
+            code("deferred-boundary"),
+        ),
+        Rejection::LayoutTransition(owner) => (
+            Some(*owner),
+            Category::LayoutTransition,
+            code("layout-transition"),
+        ),
+        Rejection::PropertyTree(_) => (None, Category::Validation, code("property-tree")),
+        Rejection::TransformNodeCount(_) => (
+            None,
+            Category::PropertyTopology,
+            code("transform-node-count"),
+        ),
+        Rejection::MissingRootTransform(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("missing-root-transform"),
+        ),
+        Rejection::InvalidRootTransform(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("invalid-root-transform"),
+        ),
+        Rejection::NonAffineTransform(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("non-affine-transform"),
+        ),
+        Rejection::UnexpectedTransform(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("unexpected-transform"),
+        ),
+        Rejection::MissingPropertyState(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("missing-property-state"),
+        ),
+        Rejection::UnexpectedPropertyState(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("unexpected-property-state"),
+        ),
+        Rejection::WrongTransformBoundary(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("wrong-transform-boundary"),
+        ),
+        Rejection::ClipBoundary(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("clip-boundary"),
+        ),
+        Rejection::EffectBoundary(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("effect-boundary"),
+        ),
+        Rejection::ScrollBoundary(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("scroll-boundary"),
+        ),
+        Rejection::InvalidSurfaceGeometry(owner) => (
+            Some(*owner),
+            Category::Validation,
+            code("invalid-surface-geometry"),
+        ),
+        Rejection::NegativeSurfaceOrigin(owner) => (
+            Some(*owner),
+            Category::Validation,
+            code("negative-surface-origin"),
+        ),
+        Rejection::Coverage(reason) => {
+            let (category, detail) = debug_artifact_fallback(reason);
+            (artifact_fallback_reason_owner(reason), category, detail)
+        }
+        Rejection::InvalidSurfaceArtifact(owner) => (
+            Some(*owner),
+            Category::Validation,
+            code("invalid-surface-artifact"),
+        ),
+        Rejection::IsolationOuterScissor => (
+            None,
+            Category::PropertyTopology,
+            code("isolation-outer-scissor"),
+        ),
+        Rejection::InvalidIsolationEffect(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("invalid-isolation-effect"),
+        ),
+        Rejection::InvalidScrollHost(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("invalid-scroll-host"),
+        ),
+        Rejection::InvalidPropertyScene(invariant) => {
+            (None, Category::PropertyTopology, code(invariant))
+        }
+        Rejection::InvalidClipChain(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("invalid-clip-chain"),
+        ),
+        Rejection::CoLocatedTransformEffect(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("co-located-transform-effect"),
+        ),
+        Rejection::UnsupportedPropertyInterleave(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("unsupported-property-interleave"),
+        ),
+        Rejection::InvalidEffectChain(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("invalid-effect-chain"),
+        ),
+        Rejection::InvalidIsolationGeometry(owner) => (
+            Some(*owner),
+            Category::PropertyTopology,
+            code("invalid-isolation-geometry"),
+        ),
+    }
+}
+
+fn frame_plan_error_debug_records(
+    error: &crate::view::paint::FramePaintPlanError,
+) -> Vec<RejectionDebugRecord> {
+    error
+        .reasons
+        .iter()
+        .map(frame_plan_rejection_debug)
+        .collect()
+}
+
+fn property_scroll_plan_error_debug_records(
+    error: &crate::view::paint::PropertyScrollScenePlanError,
+) -> Vec<RejectionDebugRecord> {
+    use crate::view::debug::{DebugFallbackCategory as Category, DebugFallbackDetail as Detail};
+    use crate::view::paint::PropertyScrollScenePlanError as Error;
+
+    let code = |code: &'static str| Detail::Code { code };
+    match error {
+        Error::LiveSnapshotDrift => {
+            vec![(None, Category::Validation, code("live-snapshot-drift"))]
+        }
+        Error::Frame(error) => frame_plan_error_debug_records(error),
+        Error::InvalidContract(stage) => {
+            vec![(None, Category::Validation, Detail::Code { code: stage })]
+        }
+        Error::BackingBudget => vec![(None, Category::Capacity, code("scroll-backing-budget"))],
+    }
+}
+
+/// Fallback records the census coverage pass adds on top of what the artifact
+/// and planner paths already reported.
+///
+/// The artifact path reports its boundaries through `legacy_debug_boundaries`,
+/// and the coverage walk produces at most one boundary per node, so a node
+/// that already carries a record would otherwise be counted twice. Existing
+/// records win: they come from the authority that actually ran.
+fn census_coverage_fallback_additions(
+    items: &[crate::view::paint::PaintCoverageItem],
+    existing: &[crate::view::debug::DebugRetainedAutoFallbackCaptureInput],
+    identity: impl Fn(
+        crate::view::node_arena::NodeKey,
+    ) -> Option<(u64, &'static str, crate::view::debug::DebugRect)>,
+) -> Vec<crate::view::debug::DebugRetainedAutoFallbackCaptureInput> {
+    let mut additions: Vec<crate::view::debug::DebugRetainedAutoFallbackCaptureInput> = Vec::new();
+    for item in items {
+        let crate::view::paint::PaintCoverageItem::LegacyBoundary { root, reason, .. } = item
+        else {
+            continue;
+        };
+        let already_reported = existing
+            .iter()
+            .chain(additions.iter())
+            .any(|fallback| fallback.owner == Some(*root));
+        if already_reported {
+            continue;
+        }
+        let (category, detail) = debug_legacy_fallback(*reason);
+        let identity = identity(*root);
+        additions.push(crate::view::debug::DebugRetainedAutoFallbackCaptureInput {
+            stage: crate::view::debug::DebugFallbackStage::Recording,
+            category,
+            detail,
+            owner: Some(*root),
+            stable_id: identity.map(|identity| identity.0),
+            element_type: identity.map(|identity| identity.1),
+            bounds: identity.map(|identity| identity.2),
+        });
+    }
+    additions
+}
+
+/// Artifact eligibility reasons that are not already represented by exact
+/// `legacy_debug_boundaries`.
+fn artifact_rejection_debug_records(
+    eligibility: &crate::view::paint::FrameArtifactEligibility,
+) -> Vec<RejectionDebugRecord> {
+    use crate::view::paint::FrameArtifactFallbackReason;
+
+    eligibility
+        .reasons
+        .iter()
+        .filter(|reason| !matches!(reason, FrameArtifactFallbackReason::LegacyBoundary(_)))
+        .map(|reason| {
+            let (category, detail) = debug_artifact_fallback(reason);
+            (artifact_fallback_reason_owner(reason), category, detail)
+        })
+        .collect()
+}
+
+/// Observational fallback records for one candidate rejection.
+fn selection_rejection_debug_records(
+    rejection: &PaintAuthoritySelectionRejection,
+) -> Vec<SelectionRejectionDebugRecord> {
+    use crate::view::debug::DebugFallbackStage;
+
+    let (candidate, stage, mut records) = match rejection {
+        PaintAuthoritySelectionRejection::Auto(rejection) => match rejection {
+            AutoAuthorityRejection::Plan { authority, error } => (
+                authority.label(),
+                DebugFallbackStage::Planning,
+                frame_plan_error_debug_records(error),
+            ),
+            AutoAuthorityRejection::NativeScrollForestPlan { error } => (
+                "native-scroll-forest",
+                DebugFallbackStage::Planning,
+                frame_plan_error_debug_records(error),
+            ),
+            AutoAuthorityRejection::PropertyScrollPlan { error } => (
+                "property-scroll",
+                DebugFallbackStage::Planning,
+                property_scroll_plan_error_debug_records(error),
+            ),
+            AutoAuthorityRejection::PropertyBoundaryDagPlan { error } => (
+                "property-boundary-dag",
+                DebugFallbackStage::Planning,
+                property_scroll_plan_error_debug_records(error),
+            ),
+            AutoAuthorityRejection::NestedScrollPlan { error } => (
+                "nested-scroll",
+                DebugFallbackStage::Planning,
+                property_scroll_plan_error_debug_records(error),
+            ),
+            AutoAuthorityRejection::DirectScrollTransformPlan { error } => (
+                "direct-scroll-transform",
+                DebugFallbackStage::Planning,
+                property_scroll_plan_error_debug_records(error),
+            ),
+            AutoAuthorityRejection::TransformScrollPlan { error } => (
+                "transform-scroll",
+                DebugFallbackStage::Planning,
+                property_scroll_plan_error_debug_records(error),
+            ),
+            AutoAuthorityRejection::EffectScrollPlan { error } => (
+                "effect-scroll",
+                DebugFallbackStage::Planning,
+                property_scroll_plan_error_debug_records(error),
+            ),
+            AutoAuthorityRejection::TransformEffectScrollPlan { error } => (
+                "transform-effect-scroll",
+                DebugFallbackStage::Planning,
+                property_scroll_plan_error_debug_records(error),
+            ),
+            AutoAuthorityRejection::Artifact { eligibility } => (
+                "artifact",
+                DebugFallbackStage::Selection,
+                artifact_rejection_debug_records(eligibility),
+            ),
+        },
+        PaintAuthoritySelectionRejection::Plan { authority, error } => (
+            authority.label(),
+            DebugFallbackStage::Planning,
+            frame_plan_error_debug_records(error),
+        ),
+        PaintAuthoritySelectionRejection::Artifact(eligibility) => (
+            "artifact",
+            DebugFallbackStage::Selection,
+            artifact_rejection_debug_records(eligibility),
+        ),
+        PaintAuthoritySelectionRejection::NoTransform
+        | PaintAuthoritySelectionRejection::Shape { .. } => {
+            ("", DebugFallbackStage::Selection, Vec::new())
+        }
+    };
+    // Name the grammar that raised each code. Many plan reasons name no node,
+    // so the candidate is the only thing that distinguishes two grammars
+    // rejecting for the same reason.
+    for record in &mut records {
+        if let crate::view::debug::DebugFallbackDetail::Code { code } = record.2 {
+            record.2 = crate::view::debug::DebugFallbackDetail::CandidateCode { candidate, code };
+        }
+    }
+    records
+        .into_iter()
+        .map(|(owner, category, detail)| SelectionRejectionDebugRecord {
+            stage,
+            owner,
+            category,
+            detail,
+        })
+        .collect()
 }
 
 fn legacy_fallback_reason_label(reason: crate::view::paint::LegacyPaintReason) -> &'static str {
@@ -2514,6 +2914,39 @@ impl Viewport {
                 fallbacks.push(fallback);
             }
         }
+        // Plan-level candidate rejections. Several ladder paths return Legacy
+        // without ever reaching the artifact candidate, so without these the
+        // whole frame collapses into one unattributed record even though the
+        // planner named the rejected node. Exact artifact LegacyBoundary
+        // reasons came through `legacy_debug_boundaries` above; the remaining
+        // artifact eligibility reasons are emitted here.
+        if telemetry.final_authority_is_legacy() {
+            for rejection in &telemetry.selection_rejections {
+                for record in selection_rejection_debug_records(rejection) {
+                    let identity = record
+                        .owner
+                        .and_then(|owner| self.retained_auto_debug_identity(owner));
+                    let fallback = crate::view::debug::DebugRetainedAutoFallbackCaptureInput {
+                        stage: record.stage,
+                        category: record.category,
+                        detail: record.detail,
+                        owner: record.owner,
+                        stable_id: identity.map(|identity| identity.0),
+                        element_type: identity.map(|identity| identity.1),
+                        bounds: identity.map(|identity| identity.2),
+                    };
+                    if let Some(node) = record.owner.and_then(|owner| nodes.get_mut(&owner)) {
+                        if !node.coverage.contains(&Coverage::LegacyBoundary) {
+                            node.coverage.push(Coverage::LegacyBoundary);
+                        }
+                        node.fallbacks.push(fallback.clone());
+                    }
+                    fallbacks.push(fallback);
+                }
+            }
+        }
+        // Preserve a generic property-boundary record only when neither an
+        // exact artifact boundary nor a candidate rejection named the owner.
         for owner in telemetry.fallback_boundary_nodes() {
             if fallbacks
                 .iter()
@@ -2540,6 +2973,47 @@ impl Viewport {
                 node.fallbacks.push(fallback.clone());
             }
             fallbacks.push(fallback);
+        }
+        // Census-only coverage pass.
+        //
+        // Per-node blockers are produced by the coverage manifest walk, which
+        // only runs inside a candidate that gets far enough to record. Several
+        // ladder paths return Legacy before any candidate records, so a
+        // scroll-heavy scene yields candidate rejections and no per-node data
+        // at all. Re-running the walk here is the only way to attribute
+        // blockers to components on those frames.
+        //
+        // This is the one debug path that costs an extra traversal, so it is
+        // gated on the census flag alone and never on the overlay or trace
+        // options. The walk reads `&` state and calls the recording hooks the
+        // contract already requires to be pure and repeatable, so it cannot
+        // change authority, resources, or pixels — see
+        // `coverage_manifest::tests::recording_is_side_effect_free_and_deterministic`.
+        if self.debug_options.retained_auto_census && telemetry.final_authority_is_legacy() {
+            let manifest = crate::view::paint::record_coverage_manifest(
+                &self.scene.node_arena,
+                roots,
+                false,
+                true,
+                crate::view::paint::CoverageRecordingMode::MetadataOnly,
+                &self.compositor.property_trees,
+                &self.compositor.paint_generations,
+            );
+            let additions =
+                census_coverage_fallback_additions(&manifest.items, &fallbacks, |owner| {
+                    self.retained_auto_debug_identity(owner)
+                });
+            for fallback in additions {
+                if let Some(owner) = fallback.owner
+                    && let Some(node) = nodes.get_mut(&owner)
+                {
+                    if !node.coverage.contains(&Coverage::LegacyBoundary) {
+                        node.coverage.push(Coverage::LegacyBoundary);
+                    }
+                    node.fallbacks.push(fallback.clone());
+                }
+                fallbacks.push(fallback);
+            }
         }
         if telemetry.final_authority_is_legacy() && fallbacks.is_empty() {
             fallbacks.push(crate::view::debug::DebugRetainedAutoFallbackCaptureInput {
@@ -2604,6 +3078,9 @@ impl Viewport {
             resident_commits: 0,
             resident_reuses,
             resident_rerasterizations,
+            transform_nodes: self.compositor.property_trees.transforms.len() as u64,
+            effect_nodes: self.compositor.property_trees.effects.len() as u64,
+            scroll_nodes: self.compositor.property_trees.scrolls.len() as u64,
         };
         crate::view::debug::DebugRetainedAutoCaptureInput {
             frame: crate::view::debug::DebugRetainedAutoFrameCaptureInput {
@@ -2883,6 +3360,7 @@ impl Viewport {
         let root_keys_for_build = self.scene.ui_root_keys.clone();
         let capture_paint_authority_telemetry = self.debug_options.trace_render_time
             || self.debug_options.retained_auto_overlay
+            || self.debug_options.retained_auto_census
             || paint_authority_test_capture_enabled();
         let property_scroll_budget = crate::view::paint::production_single_texture_budget(self);
         let retained_auto_terminal_failure = self.retained_auto_terminal_failure;
@@ -5457,6 +5935,8 @@ impl Viewport {
 
 #[cfg(test)]
 mod legacy_root_render_tests;
+#[cfg(test)]
+mod selection_rejection_debug_tests;
 
 /// Flatten a Fragment-at-root into its children so multi-root reconcile
 /// sees the same arity as the arena (Fragment root → N arena roots).

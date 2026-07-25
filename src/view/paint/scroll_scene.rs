@@ -1447,7 +1447,13 @@ pub(crate) struct PropertyScrollScenePlan {
 pub(crate) enum PropertyScrollScenePlanError {
     LiveSnapshotDrift,
     Frame(FramePaintPlanError),
-    InvalidContract,
+    /// A scroll grammar rejected the scene.
+    ///
+    /// The payload names the planning or compilation stage that failed, so a
+    /// whole-frame fallback can be attributed to one grammar instead of
+    /// collapsing every scroll rejection into a single opaque code. It
+    /// describes the invariant group, never a source position.
+    InvalidContract(&'static str),
     BackingBudget,
 }
 
@@ -2292,7 +2298,9 @@ impl PropertyBoundaryDagCompiler {
         let grammar = plan
             .property_scroll_planning_scaffold()
             .and_then(|scaffold| scaffold.boundary_dag.existing_grammar())
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "property-boundary-dag-plan",
+            ))?;
         match grammar {
             super::frame_plan::PropertyBoundaryDagGrammar::FrameRootScroll => {
                 plan_and_validate_frame_root_scroll_scene(
@@ -2454,7 +2462,9 @@ fn plan_and_validate_scroll_content_effect_scene(
         || !property_trees.validation_errors.is_empty()
         || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "scroll-content-effect-scene",
+        ));
     }
     let context = super::TransformSurfacePlanContext::new(incoming_paint_offset, None);
     let frame_plan = super::frame_plan::plan_property_scroll_interleave_scaffold_with_context(
@@ -2465,9 +2475,9 @@ fn plan_and_validate_scroll_content_effect_scene(
         context,
     )
     .map_err(PropertyScrollScenePlanError::Frame)?;
-    let scaffold = frame_plan
-        .property_scroll_planning_scaffold()
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    let scaffold = frame_plan.property_scroll_planning_scaffold().ok_or(
+        PropertyScrollScenePlanError::InvalidContract("scroll-content-effect-scene"),
+    )?;
     if scaffold.roots.len() != roots.len()
         || scaffold.boundaries.len() != roots.len()
         || scaffold.scroll_content_effect_insertions.len() != roots.len()
@@ -2475,7 +2485,9 @@ fn plan_and_validate_scroll_content_effect_scene(
         || !scaffold.transform_effect_receiver_insertions.is_empty()
         || !scaffold.effect_transform_receiver_insertions.is_empty()
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "scroll-content-effect-scene",
+        ));
     }
     let coverage_error = |fallbacks: Vec<super::FrameArtifactFallbackReason>| {
         PropertyScrollScenePlanError::Frame(FramePaintPlanError {
@@ -2516,17 +2528,22 @@ fn plan_and_validate_scroll_content_effect_scene(
                     ..
                 },
             ] if outer_transform && transform == basis => (*boundary_ordinal, Some(*transform)),
-            _ => return Err(PropertyScrollScenePlanError::InvalidContract),
+            _ => {
+                return Err(PropertyScrollScenePlanError::InvalidContract(
+                    "scroll-content-effect-scene",
+                ));
+            }
         };
-        let boundary = scaffold
-            .boundaries
-            .get(boundary_ordinal as usize)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let boundary = scaffold.boundaries.get(boundary_ordinal as usize).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("scroll-content-effect-scene"),
+        )?;
         let insertion = scaffold
             .scroll_content_effect_insertions
             .iter()
             .find(|insertion| insertion.scene_root_ordinal == root.ordinal)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "scroll-content-effect-scene",
+            ))?;
         if insertion.scroll_boundary_ordinal != boundary.ordinal
             || scheduled_transform.is_some() != insertion.consumed_transform.is_some()
             || scheduled_transform
@@ -2535,7 +2552,9 @@ fn plan_and_validate_scroll_content_effect_scene(
                     .as_ref()
                     .map(|outer| outer.receiver.receiver)
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "scroll-content-effect-scene",
+            ));
         }
         let content_witness = PaintScrollContentWitness::new(
             boundary.scroll.owner,
@@ -2543,7 +2562,9 @@ fn plan_and_validate_scroll_content_effect_scene(
             boundary.scroll,
             boundary.contents_clip,
         )
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "scroll-content-effect-scene",
+        ))?;
         let receiver_steps =
             super::frame_recorder::record_scroll_content_effect_receiver_steps_for_plan(
                 arena,
@@ -2576,7 +2597,9 @@ fn plan_and_validate_scroll_content_effect_scene(
                 super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_) => Vec::new(),
             }),
         )
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "scroll-content-effect-scene",
+        ))?;
         let effect_normalized_owners = phase3_normalized_owner_witnesses(
             arena,
             paint_generations,
@@ -2586,7 +2609,9 @@ fn plan_and_validate_scroll_content_effect_scene(
                 .iter()
                 .map(|content| content.owner),
         )
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "scroll-content-effect-scene",
+        ))?;
         let receiver_program = super::compiler::validate_scroll_content_effect_receiver_steps(
             receiver_steps.clone(),
             insertion.content_root,
@@ -2595,14 +2620,18 @@ fn plan_and_validate_scroll_content_effect_scene(
             &insertion.artifact_contract,
             content_normalized_owners,
         )
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "scroll-content-effect-scene",
+        ))?;
         let scroll_content_marker = super::PlannedBoundary {
             root: boundary.scroll.owner,
             stable_id: arena
                 .get(boundary.scroll.owner)
                 .map(|node| node.element.stable_id())
                 .filter(|stable_id| *stable_id != 0)
-                .ok_or(PropertyScrollScenePlanError::InvalidContract)?,
+                .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                    "scroll-content-effect-scene",
+                ))?,
             kind: super::PlannedBoundaryKind::Scroll(boundary.scroll.id),
         };
         let scroll_host_steps =
@@ -2625,7 +2654,9 @@ fn plan_and_validate_scroll_content_effect_scene(
             boundary.scroll.owner,
             boundary.scroll,
         )
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "scroll-content-effect-scene",
+        ))?;
         let outer_steps = insertion
             .outer_transform
             .as_ref()
@@ -2649,7 +2680,9 @@ fn plan_and_validate_scroll_content_effect_scene(
             .zip(insertion.outer_transform.as_ref())
             .is_some_and(|(steps, outer)| !outer.receiver.validates_recorded_steps(steps))
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "scroll-content-effect-scene",
+            ));
         }
         let outer_program = outer_steps
             .as_ref()
@@ -2661,7 +2694,9 @@ fn plan_and_validate_scroll_content_effect_scene(
                     outer.receiver.receiver.owner,
                     outer.receiver.receiver.id,
                 )
-                .ok_or(PropertyScrollScenePlanError::InvalidContract)
+                .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                    "scroll-content-effect-scene",
+                ))
             })
             .transpose()?;
         validated_roots.push(ValidatedScrollContentEffectRoot {
@@ -2695,7 +2730,9 @@ fn plan_and_validate_scroll_content_effect_scene(
     scene
         .is_canonical()
         .then_some(scene)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "scroll-content-effect-scene",
+        ))
 }
 
 #[allow(dead_code)] // Used by the Phase3 pool freezer after the graph-inert checkpoint.
@@ -3055,8 +3092,7 @@ impl ValidatedTransformEffectScrollScene {
                             && same_owner.scroll == scroll.scroll
                             && same_owner.contents_clip == scroll.contents_clip
                             && same_owner.content_root == scroll.admission.child
-                            && same_owner.content_stable_id
-                                == scroll.admission.child_stable_id
+                            && same_owner.content_stable_id == scroll.admission.child_stable_id
                     }
                     None => {
                         root.outer_receiver.owner != inner.receiver.owner
@@ -7161,7 +7197,9 @@ pub(crate) fn plan_property_scroll_scene_scaffold(
         || outer_scissor_rect.is_some()
         || roots.len() != 1
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "property-scroll-scaffold",
+        ));
     }
     if !paint_generations.matches_live_snapshot(arena, roots, property_trees) {
         return Err(PropertyScrollScenePlanError::LiveSnapshotDrift);
@@ -7196,7 +7234,9 @@ fn property_scroll_plan_from_exact_scene(
     budget: ScrollSceneSingleTextureBudget,
 ) -> Result<PropertyScrollScenePlan, PropertyScrollScenePlanError> {
     if !scale_factor.is_finite() || scale_factor <= 0.0 {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "property-scroll-exact-scene",
+        ));
     }
     let ScrollScenePlan {
         boundary_root,
@@ -7265,7 +7305,9 @@ fn property_scroll_plan_from_exact_scene(
         || scroll != planned_scroll_witness
         || contents_clip != planned_clip_witness
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "property-scroll-exact-scene",
+        ));
     }
     if let ScrollSceneRecordedAuthority::AtomicProjectionSelectionTextArea(parts) = recorded {
         if !parts.is_canonical()
@@ -7288,21 +7330,25 @@ fn property_scroll_plan_from_exact_scene(
             || interactive_text_area_subtree_admission.is_some()
             || atomic_projection_text_area_subtree_admission.is_some()
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         }
-        let host_terminal = parts
-            .host_before_opaque_order_count()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
-        let content_terminal = parts
-            .content_opaque_order_count()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
-        let overlay_count = parts
-            .overlay_opaque_order_count()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let host_terminal = parts.host_before_opaque_order_count().ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
+        let content_terminal = parts.content_opaque_order_count().ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
+        let overlay_count = parts.overlay_opaque_order_count().ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
         let content_local_span = 0..content_terminal;
         let artifact_span = parts
             .content_artifact_span_stamp(0, content_local_span.clone())
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ))?;
         let content_bounds_bits = bounds_bits(content_zero_bounds(scroll));
         let content_identity = PropertyScrollContentRasterIdentity {
             content_root,
@@ -7324,11 +7370,16 @@ fn property_scroll_plan_from_exact_scene(
         if !matches!(backing, PropertyScrollBackingPlan::Single(_)) {
             return Err(PropertyScrollScenePlanError::BackingBudget);
         }
-        let local_clips = parts
-            .local_clip_snapshots()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let local_clips =
+            parts
+                .local_clip_snapshots()
+                .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                    "property-scroll-exact-scene",
+                ))?;
         if local_clips != [parts.resident().contents_clip] {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         }
         let boundary = SceneBoundaryId {
             ordinal: 0,
@@ -7353,9 +7404,9 @@ fn property_scroll_plan_from_exact_scene(
         };
         let identity = parts.identity();
         let authority = Arc::new(parts);
-        let parent_terminal = host_terminal
-            .checked_add(overlay_count)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let parent_terminal = host_terminal.checked_add(overlay_count).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
         let steps = vec![
             ScrollBoundaryStep::AtomicProjectionSelectionHostBefore {
                 authority: Arc::clone(&authority),
@@ -7380,8 +7431,9 @@ fn property_scroll_plan_from_exact_scene(
                 parent_span: host_terminal..parent_terminal,
             },
         ];
-        let steps_identity = property_scroll_step_identities(&steps)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let steps_identity = property_scroll_step_identities(&steps).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
         let joint_transaction = PropertySceneJointTransactionPlanningWitness {
             roots: vec![PropertySceneJointRootPlanningWitness {
                 ordinal: 0,
@@ -7432,10 +7484,9 @@ fn property_scroll_plan_from_exact_scene(
             budget,
         };
         let plan = PropertyScrollScenePlan { steps, seal };
-        return plan
-            .is_canonical()
-            .then_some(plan)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract);
+        return plan.is_canonical().then_some(plan).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        );
     }
     if let ScrollSceneRecordedAuthority::FocusedAtomicProjectionTextArea(parts) = recorded {
         if !parts.is_canonical()
@@ -7450,38 +7501,48 @@ fn property_scroll_plan_from_exact_scene(
             )
             || interactive_resident.is_some()
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         }
         let Some(focused_admission) =
             focused_atomic_projection_text_area_subtree_admission.as_ref()
         else {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         };
         let Some(resident) = atomic_projection_resident.as_ref() else {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         };
         if parts.text_area_root() != focused_admission.text_area_root
             || parts.resident() != resident
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         }
         let base_parts = parts.atomic_projection_base_for_scene_steps();
-        let host_terminal = base_parts
-            .host_before_opaque_order_count()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
-        let content_terminal = base_parts
-            .content_opaque_order_count()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
-        let overlay_count = base_parts
-            .overlay_opaque_order_count()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
-        let post_composite_delta = post_composite
-            .opaque_order_delta()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let host_terminal = base_parts.host_before_opaque_order_count().ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
+        let content_terminal = base_parts.content_opaque_order_count().ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
+        let overlay_count = base_parts.overlay_opaque_order_count().ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
+        let post_composite_delta = post_composite.opaque_order_delta().ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
         let content_local_span = 0..content_terminal;
         let artifact_span = base_parts
             .content_artifact_span_stamp(0, content_local_span.clone())
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ))?;
         let content_bounds_bits = bounds_bits(content_zero_bounds(scroll));
         let content_identity = PropertyScrollContentRasterIdentity {
             content_root,
@@ -7503,11 +7564,13 @@ fn property_scroll_plan_from_exact_scene(
         if !matches!(backing, PropertyScrollBackingPlan::Single(_)) {
             return Err(PropertyScrollScenePlanError::BackingBudget);
         }
-        let local_clips = base_parts
-            .local_clip_snapshots()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let local_clips = base_parts.local_clip_snapshots().ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
         if local_clips != [resident.contents_clip] {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         }
         let boundary = SceneBoundaryId {
             ordinal: 0,
@@ -7532,12 +7595,12 @@ fn property_scroll_plan_from_exact_scene(
         };
         let identity = base_parts.identity();
         let authority = Arc::new(base_parts);
-        let overlay_start = host_terminal
-            .checked_add(post_composite_delta)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
-        let parent_terminal = overlay_start
-            .checked_add(overlay_count)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let overlay_start = host_terminal.checked_add(post_composite_delta).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
+        let parent_terminal = overlay_start.checked_add(overlay_count).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
         let steps = vec![
             ScrollBoundaryStep::AtomicProjectionHostBefore {
                 authority: Arc::clone(&authority),
@@ -7562,8 +7625,9 @@ fn property_scroll_plan_from_exact_scene(
                 parent_span: overlay_start..parent_terminal,
             },
         ];
-        let steps_identity = property_scroll_step_identities(&steps)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let steps_identity = property_scroll_step_identities(&steps).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
         let joint_transaction = PropertySceneJointTransactionPlanningWitness {
             roots: vec![PropertySceneJointRootPlanningWitness {
                 ordinal: 0,
@@ -7615,10 +7679,9 @@ fn property_scroll_plan_from_exact_scene(
             budget,
         };
         let plan = PropertyScrollScenePlan { steps, seal };
-        return plan
-            .is_canonical()
-            .then_some(plan)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract);
+        return plan.is_canonical().then_some(plan).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        );
     }
     if let ScrollSceneRecordedAuthority::AtomicProjectionTextArea(parts) = recorded {
         if !parts.is_canonical()
@@ -7633,31 +7696,41 @@ fn property_scroll_plan_from_exact_scene(
             )
             || interactive_resident.is_some()
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         }
         let Some(atomic_admission) = atomic_projection_text_area_subtree_admission.as_ref() else {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         };
         let Some(resident) = atomic_projection_resident.as_ref() else {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         };
         if parts.text_area_root() != atomic_admission.text_area_root || parts.resident() != resident
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         }
-        let host_terminal = parts
-            .host_before_opaque_order_count()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
-        let content_terminal = parts
-            .content_opaque_order_count()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
-        let overlay_count = parts
-            .overlay_opaque_order_count()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let host_terminal = parts.host_before_opaque_order_count().ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
+        let content_terminal = parts.content_opaque_order_count().ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
+        let overlay_count = parts.overlay_opaque_order_count().ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
         let content_local_span = 0..content_terminal;
         let artifact_span = parts
             .content_artifact_span_stamp(0, content_local_span.clone())
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ))?;
         let content_bounds_bits = bounds_bits(content_zero_bounds(scroll));
         let content_identity = PropertyScrollContentRasterIdentity {
             content_root,
@@ -7679,11 +7752,16 @@ fn property_scroll_plan_from_exact_scene(
         if !matches!(backing, PropertyScrollBackingPlan::Single(_)) {
             return Err(PropertyScrollScenePlanError::BackingBudget);
         }
-        let local_clips = parts
-            .local_clip_snapshots()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let local_clips =
+            parts
+                .local_clip_snapshots()
+                .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                    "property-scroll-exact-scene",
+                ))?;
         if local_clips != [resident.contents_clip] {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         }
         let boundary = SceneBoundaryId {
             ordinal: 0,
@@ -7708,9 +7786,9 @@ fn property_scroll_plan_from_exact_scene(
         };
         let identity = parts.identity();
         let authority = Arc::new(parts);
-        let parent_terminal = host_terminal
-            .checked_add(overlay_count)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let parent_terminal = host_terminal.checked_add(overlay_count).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
         let steps = vec![
             ScrollBoundaryStep::AtomicProjectionHostBefore {
                 authority: Arc::clone(&authority),
@@ -7735,8 +7813,9 @@ fn property_scroll_plan_from_exact_scene(
                 parent_span: host_terminal..parent_terminal,
             },
         ];
-        let steps_identity = property_scroll_step_identities(&steps)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let steps_identity = property_scroll_step_identities(&steps).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        )?;
         let joint_transaction = PropertySceneJointTransactionPlanningWitness {
             roots: vec![PropertySceneJointRootPlanningWitness {
                 ordinal: 0,
@@ -7789,10 +7868,9 @@ fn property_scroll_plan_from_exact_scene(
             budget,
         };
         let plan = PropertyScrollScenePlan { steps, seal };
-        return plan
-            .is_canonical()
-            .then_some(plan)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract);
+        return plan.is_canonical().then_some(plan).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+        );
     }
     let ScrollSceneRecordedAuthority::Existing {
         host_before,
@@ -7812,12 +7890,16 @@ fn property_scroll_plan_from_exact_scene(
         boundary_root,
         host_bounds_bits,
     )
-    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+        "property-scroll-exact-scene",
+    ))?;
     let validated_content = if let Some(text_area_admission) =
         admission.text_area_subtree_snapshot()
     {
         let [local_clip] = content_local.clip_nodes.as_slice() else {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         };
         validate_scroll_scene_text_area_content_artifact(
             content_local.clone(),
@@ -7829,7 +7911,9 @@ fn property_scroll_plan_from_exact_scene(
         )
     } else if let Some(text_area_admission) = admission.interactive_text_area_subtree_snapshot() {
         let [local_clip] = content_local.clip_nodes.as_slice() else {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-exact-scene",
+            ));
         };
         let preedit = match interactive_resident.as_ref() {
             Some(RetainedInteractiveTextAreaResidentRasterSeal::FocusedPreeditGlyphs(seal)) => {
@@ -7846,7 +7930,9 @@ fn property_scroll_plan_from_exact_scene(
             *local_clip,
             content_bounds_bits,
         )
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "property-scroll-exact-scene",
+        ))?;
         let (content, resident) = validated.into_parts();
         (Some(&resident) == interactive_resident.as_ref()).then_some(content)
     } else {
@@ -7856,21 +7942,27 @@ fn property_scroll_plan_from_exact_scene(
             content_bounds_bits,
         )
     }
-    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+        "property-scroll-exact-scene",
+    ))?;
     let validated_overlay = validate_scroll_scene_overlay_artifact(
         overlay.clone(),
         boundary_root,
         scroll,
         host_bounds_bits,
     )
-    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+        "property-scroll-exact-scene",
+    ))?;
     let _ = (validated_host, validated_overlay);
     let artifact_span = validated_scroll_content_artifact_span_stamp(
         &validated_content,
         0,
         content_local_span.clone(),
     )
-    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+        "property-scroll-exact-scene",
+    ))?;
     let content_identity = PropertyScrollContentRasterIdentity {
         content_root,
         content_stable_id,
@@ -7902,10 +7994,12 @@ fn property_scroll_plan_from_exact_scene(
         owner: boundary_root,
         kind: SceneBoundaryKind::ScrollContents,
     };
-    let host_identity = PropertyScrollPhaseArtifactIdentity::from_artifact(&host_before)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
-    let overlay_identity = PropertyScrollPhaseArtifactIdentity::from_artifact(&overlay)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    let host_identity = PropertyScrollPhaseArtifactIdentity::from_artifact(&host_before).ok_or(
+        PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+    )?;
+    let overlay_identity = PropertyScrollPhaseArtifactIdentity::from_artifact(&overlay).ok_or(
+        PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+    )?;
     let composite = PropertyScrollCompositeDependency {
         basis: ScrollCompositeBasis::FrameRoot,
         source_bounds_bits: content_bounds_bits,
@@ -7945,8 +8039,9 @@ fn property_scroll_plan_from_exact_scene(
             parent_span: overlay_parent_span,
         },
     ];
-    let steps_identity = property_scroll_step_identities(&steps)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    let steps_identity = property_scroll_step_identities(&steps).ok_or(
+        PropertyScrollScenePlanError::InvalidContract("property-scroll-exact-scene"),
+    )?;
     let joint_transaction = PropertySceneJointTransactionPlanningWitness {
         roots: vec![PropertySceneJointRootPlanningWitness {
             ordinal: 0,
@@ -8003,7 +8098,9 @@ fn property_scroll_plan_from_exact_scene(
     let plan = PropertyScrollScenePlan { steps, seal };
     plan.is_canonical()
         .then_some(plan)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "property-scroll-exact-scene",
+        ))
 }
 
 fn property_scroll_compile_backing_stamp(
@@ -9847,7 +9944,9 @@ pub(crate) fn plan_and_validate_property_scroll_scene(
         || property_trees.clips.len() > roots.len().checked_mul(2).unwrap_or(usize::MAX)
         || property_trees.states.len() < roots.len().checked_mul(2).unwrap_or(usize::MAX)
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "property-scroll-scene",
+        ));
     }
     if !paint_generations.matches_live_snapshot(arena, roots, property_trees) {
         return Err(PropertyScrollScenePlanError::LiveSnapshotDrift);
@@ -9859,7 +9958,9 @@ pub(crate) fn plan_and_validate_property_scroll_scene(
     let mut boundaries = Vec::with_capacity(roots.len());
     for &root in roots {
         if !seen_roots.insert(root) || arena.parent_of(root).is_some() {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-scene",
+            ));
         }
         let scene = plan_exact_root_scroll_scene(
             arena,
@@ -9896,14 +9997,18 @@ pub(crate) fn plan_and_validate_property_scroll_scene(
                     1
                 },
             )
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-scene",
+            ))?;
         if !collect_exact_property_scroll_reachable_owners(
             arena,
             root,
             &mut reachable_owners,
             &mut reachable_stable_ids,
         ) {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "property-scroll-scene",
+            ));
         }
         let plan = property_scroll_plan_from_exact_scene(
             scene,
@@ -9913,8 +10018,9 @@ pub(crate) fn plan_and_validate_property_scroll_scene(
             budget,
         )?;
         boundaries.push(
-            validate_property_scroll_boundary_from_frozen_plan(plan)
-                .map_err(|_| PropertyScrollScenePlanError::InvalidContract)?,
+            validate_property_scroll_boundary_from_frozen_plan(plan).map_err(|_| {
+                PropertyScrollScenePlanError::InvalidContract("property-scroll-scene")
+            })?,
         );
     }
     if property_trees.clips.len() != expected_clip_count
@@ -9924,7 +10030,9 @@ pub(crate) fn plan_and_validate_property_scroll_scene(
             .keys()
             .any(|owner| !reachable_owners.contains(owner))
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "property-scroll-scene",
+        ));
     }
     if !paint_generations.matches_live_snapshot(arena, roots, property_trees) {
         return Err(PropertyScrollScenePlanError::LiveSnapshotDrift);
@@ -9935,7 +10043,9 @@ pub(crate) fn plan_and_validate_property_scroll_scene(
     scene
         .is_canonical()
         .then_some(scene)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "property-scroll-scene",
+        ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -10302,8 +10412,7 @@ fn plan_exact_same_owner_transform_scroll_boundary(
 #[allow(clippy::too_many_arguments)]
 fn plan_exact_same_owner_transform_effect_scroll_boundary(
     arena: &NodeArena,
-    insertion:
-        &super::frame_plan::PropertySameOwnerTransformEffectScrollReceiverInsertionContract,
+    insertion: &super::frame_plan::PropertySameOwnerTransformEffectScrollReceiverInsertionContract,
     boundary: &super::frame_plan::PropertyScrollBoundaryContract,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
@@ -10363,9 +10472,8 @@ fn plan_exact_same_owner_transform_effect_scroll_boundary(
     let consumed_transform =
         super::ConsumedSameOwnerTransformBoundaryWitness::new(boundary_root, transform.id)
             .ok_or_else(invalid)?;
-    let consumed_effect =
-        super::ConsumedSameOwnerEffectBoundaryWitness::new(boundary_root, effect)
-            .ok_or_else(invalid)?;
+    let consumed_effect = super::ConsumedSameOwnerEffectBoundaryWitness::new(boundary_root, effect)
+        .ok_or_else(invalid)?;
     let baked_witness = super::PaintBakedScrollHostWitness::new(
         boundary_root,
         admission.child,
@@ -10899,7 +11007,9 @@ pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
     outer_scissor_rect: Option<[u32; 4]>,
 ) -> Result<DirectScrollTransformSceneScaffold, PropertyScrollScenePlanError> {
     let [root] = roots else {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-scaffold",
+        ));
     };
     if !scale_factor.is_finite()
         || scale_factor <= 0.0
@@ -10914,19 +11024,27 @@ pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
         || arena.parent_of(*root).is_some()
         || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-scaffold",
+        ));
     }
     let root_node = arena
         .get(*root)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-scaffold",
+        ))?;
     let root_element = root_node
         .element
         .as_any()
         .downcast_ref::<crate::view::base_component::Element>()
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-scaffold",
+        ))?;
     let admission = root_element
         .exact_retained_scroll_transform_host_admission(*root, arena, scale_factor)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-scaffold",
+        ))?;
     let child = admission.transform_content;
     let scroll_id = ScrollNodeId(*root);
     let clip_id = ClipNodeId {
@@ -10934,16 +11052,18 @@ pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
         role: ClipNodeRole::ContentsClip,
     };
     let transform_id = TransformNodeId(child);
-    let scroll = property_trees
-        .scroll_snapshot_for(scroll_id)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    let scroll = property_trees.scroll_snapshot_for(scroll_id).ok_or(
+        PropertyScrollScenePlanError::InvalidContract("direct-scroll-transform-scaffold"),
+    )?;
     let contents_clip = property_trees
         .clip_snapshot_for(Some(clip_id))
         .and_then(|chain| (chain.len() == 1).then(|| chain[0]))
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
-    let transform = property_trees
-        .transform_snapshot_for(transform_id)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-scaffold",
+        ))?;
+    let transform = property_trees.transform_snapshot_for(transform_id).ok_or(
+        PropertyScrollScenePlanError::InvalidContract("direct-scroll-transform-scaffold"),
+    )?;
     let scroll_contents = PropertyTreeState {
         clip: Some(clip_id),
         scroll: Some(scroll_id),
@@ -10975,7 +11095,9 @@ pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
             state.paint != transformed_contents || state.descendants != transformed_contents
         })
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-scaffold",
+        ));
     }
     let insertion = super::PlannedBoundary {
         root: child,
@@ -10983,8 +11105,9 @@ pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
         kind: super::PlannedBoundaryKind::Transform(transform_id),
     };
     let host_witness =
-        super::PaintBakedScrollHostWitness::new(*root, child, scroll, contents_clip.id)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        super::PaintBakedScrollHostWitness::new(*root, child, scroll, contents_clip.id).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("direct-scroll-transform-scaffold"),
+        )?;
     let host_steps = super::frame_recorder::record_scroll_transform_host_steps_for_plan(
         arena,
         *root,
@@ -11003,7 +11126,9 @@ pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
         })
     })?;
     let content_witness = PaintScrollContentWitness::new(*root, child, scroll, contents_clip)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-scaffold",
+        ))?;
     let content_steps = super::frame_recorder::record_scroll_transform_content_steps_for_plan(
         arena,
         child,
@@ -11029,20 +11154,29 @@ pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
         super::frame_recorder::RecordedTransformSurfaceStep::Artifact(overlay_after),
     ] = host_steps.as_slice()
     else {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-scaffold",
+        ));
     };
     let [super::frame_recorder::RecordedTransformSurfaceStep::Artifact(content_artifact)] =
         content_steps.as_slice()
     else {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-scaffold",
+        ));
     };
     let host_before_identity = PropertyScrollPhaseArtifactIdentity::from_artifact(host_before)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-scaffold",
+        ))?;
     let overlay_after_identity = PropertyScrollPhaseArtifactIdentity::from_artifact(overlay_after)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-scaffold",
+        ))?;
     let content_identity =
-        super::frame_plan::property_scroll_receiver_artifact_identity(content_artifact)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        super::frame_plan::property_scroll_receiver_artifact_identity(content_artifact).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("direct-scroll-transform-scaffold"),
+        )?;
     let scaffold = DirectScrollTransformSceneScaffold {
         schedule: [
             DirectScrollTransformScheduledStep::ScrollContents {
@@ -11074,10 +11208,9 @@ pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
         planned_content_identity: content_identity,
         scale_factor_bits: scale_factor.to_bits(),
     };
-    scaffold
-        .is_canonical()
-        .then_some(scaffold)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)
+    scaffold.is_canonical().then_some(scaffold).ok_or(
+        PropertyScrollScenePlanError::InvalidContract("direct-scroll-transform-scaffold"),
+    )
 }
 
 fn direct_scroll_transform_artifact_raster_bounds(
@@ -11145,12 +11278,16 @@ pub(crate) fn plan_direct_scroll_transform_geometry(
         || budget.max_pair_bytes == 0
         || scaffold.admission.transform_content_stable_id == 0
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-geometry",
+        ));
     }
     let [super::frame_recorder::RecordedTransformSurfaceStep::Artifact(content_artifact)] =
         scaffold.content_steps.as_slice()
     else {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-geometry",
+        ));
     };
     if super::compiler::validate_transform_property_surface_artifact_for_plan(
         content_artifact,
@@ -11159,25 +11296,33 @@ pub(crate) fn plan_direct_scroll_transform_geometry(
     )
     .is_none()
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-geometry",
+        ));
     }
     let raster_bounds =
         direct_scroll_transform_artifact_raster_bounds(content_artifact, scaffold.transform.id)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "direct-scroll-transform-geometry",
+            ))?;
     let expected_bounds = content_zero_bounds(scaffold.scroll);
     if bounds_bits(raster_bounds) != bounds_bits(expected_bounds)
         || exact_dpr1_u32_bounds(raster_bounds).is_none()
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-geometry",
+        ));
     }
-    let content_node = arena
-        .get(scaffold.admission.transform_content)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    let content_node = arena.get(scaffold.admission.transform_content).ok_or(
+        PropertyScrollScenePlanError::InvalidContract("direct-scroll-transform-geometry"),
+    )?;
     let content_element = content_node
         .element
         .as_any()
         .downcast_ref::<crate::view::base_component::Element>()
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-geometry",
+        ))?;
     if content_element.stable_id() != scaffold.admission.transform_content_stable_id {
         return Err(PropertyScrollScenePlanError::LiveSnapshotDrift);
     }
@@ -11186,7 +11331,9 @@ pub(crate) fn plan_direct_scroll_transform_geometry(
             raster_bounds,
             None,
         )
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-geometry",
+        ))?;
     if transform_geometry
         .viewport_transform
         .to_cols_array()
@@ -11206,7 +11353,9 @@ pub(crate) fn plan_direct_scroll_transform_geometry(
         scaffold.scroll,
         scaffold.contents_clip,
     )
-    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+        "direct-scroll-transform-geometry",
+    ))?;
     let color_key = crate::view::base_component::transformed_layer_stable_key(
         scaffold.admission.transform_content_stable_id,
     );
@@ -11252,7 +11401,9 @@ pub(crate) fn plan_direct_scroll_transform_geometry(
     };
     plan.is_canonical()
         .then_some(plan)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-geometry",
+        ))
 }
 
 #[derive(Clone, Debug)]
@@ -11914,7 +12065,7 @@ fn prepare_nested_scroll_receiver_geometry(
             return Err(if unconstrained.is_some() {
                 PropertyScrollScenePlanError::BackingBudget
             } else {
-                PropertyScrollScenePlanError::InvalidContract
+                PropertyScrollScenePlanError::InvalidContract("nested-scroll-receiver-geometry")
             });
         }
     };
@@ -11923,10 +12074,9 @@ fn prepare_nested_scroll_receiver_geometry(
         compiled: witness.clone(),
         planned: witness,
     };
-    prepared
-        .is_canonical()
-        .then_some(prepared)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)
+    prepared.is_canonical().then_some(prepared).ok_or(
+        PropertyScrollScenePlanError::InvalidContract("nested-scroll-receiver-geometry"),
+    )
 }
 
 /// Dedicated graph-inert RetainedAuto candidate for exactly
@@ -12368,27 +12518,37 @@ pub(crate) fn compile_direct_scroll_transform_transaction(
     plan: DirectScrollTransformGeometryPlan,
 ) -> Result<ValidatedDirectScrollTransformTransaction, PropertyScrollScenePlanError> {
     if !plan.is_canonical() {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-compile",
+        ));
     }
     let [super::frame_recorder::RecordedTransformSurfaceStep::Artifact(content_artifact)] =
         plan.scaffold.content_steps.as_slice()
     else {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-compile",
+        ));
     };
     let validated = super::compiler::validate_transform_property_surface_artifact(
         content_artifact,
         plan.scaffold.admission.transform_content,
         plan.scaffold.transform.id,
     )
-    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+        "direct-scroll-transform-compile",
+    ))?;
     let content_opaque_terminal = checked_property_scroll_opaque_order_count(content_artifact)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-compile",
+        ))?;
     let artifact_span = super::compiler::validated_transform_property_surface_artifact_span_stamp(
         &validated,
         0,
         0..content_opaque_terminal,
     )
-    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+        "direct-scroll-transform-compile",
+    ))?;
     let target = RetainedSurfaceRasterInputs {
         color: plan.backing.color_desc.clone(),
         depth: plan.backing.depth_desc.clone(),
@@ -12406,7 +12566,9 @@ pub(crate) fn compile_direct_scroll_transform_transaction(
         )],
         0..content_opaque_terminal,
     )
-    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+        "direct-scroll-transform-compile",
+    ))?;
     let boundary = SceneBoundaryId {
         ordinal: 0,
         owner: plan.scaffold.admission.boundary_root,
@@ -12428,7 +12590,9 @@ pub(crate) fn compile_direct_scroll_transform_transaction(
         planned_artifact_span: artifact_span,
     };
     if !contract.validates_stamp(&stamp) {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "direct-scroll-transform-compile",
+        ));
     }
     let transaction = RetainedPropertyScrollSceneTransaction {
         seal: RetainedPropertyScrollJointSeal {
@@ -12458,10 +12622,9 @@ pub(crate) fn compile_direct_scroll_transform_transaction(
         transaction,
         content_opaque_terminal,
     };
-    validated
-        .is_canonical()
-        .then_some(validated)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)
+    validated.is_canonical().then_some(validated).ok_or(
+        PropertyScrollScenePlanError::InvalidContract("direct-scroll-transform-compile"),
+    )
 }
 
 /// Compiles the graph-inert exact nested-scroll scaffold into a residency
@@ -12472,11 +12635,13 @@ fn compile_nested_scroll_transaction(
     target_format: wgpu::TextureFormat,
     budget: ScrollSceneSingleTextureBudget,
 ) -> Result<ValidatedNestedScrollScene, PropertyScrollScenePlanError> {
-    let scaffold = plan
-        .nested_scroll_planning_scaffold()
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    let scaffold = plan.nested_scroll_planning_scaffold().ok_or(
+        PropertyScrollScenePlanError::InvalidContract("nested-scroll-transaction-compile"),
+    )?;
     let [outer, inner] = scaffold.boundaries.as_slice() else {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-transaction-compile",
+        ));
     };
     let [
         super::frame_plan::NestedScrollSceneScheduledStep::HostBefore {
@@ -12498,21 +12663,27 @@ fn compile_nested_scroll_transaction(
         },
     ] = scaffold.schedule.steps.as_slice()
     else {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-transaction-compile",
+        ));
     };
     let admission = scaffold.admission;
     if receiver.stable_id != admission.content_leaf_stable_id
         || receiver.witness.content_root() != admission.content_leaf
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-transaction-compile",
+        ));
     }
     let leaf_artifact = receiver.artifact.artifact();
-    let leaf_terminal = checked_property_scroll_opaque_order_count(leaf_artifact)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    let leaf_terminal = checked_property_scroll_opaque_order_count(leaf_artifact).ok_or(
+        PropertyScrollScenePlanError::InvalidContract("nested-scroll-transaction-compile"),
+    )?;
     let recorded_leaf_bounds_bits = bounds_bits(content_zero_bounds(inner.scroll));
     let leaf_source_bounds_bits = bounds_bits(
-        nested_receiver_local_content_bounds(admission.inner_source_bounds, inner.scroll)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?,
+        nested_receiver_local_content_bounds(admission.inner_source_bounds, inner.scroll).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("nested-scroll-transaction-compile"),
+        )?,
     );
     let leaf_artifact_span = super::compiler::validated_nested_scroll_content_artifact_span_stamp(
         leaf_artifact,
@@ -12524,7 +12695,9 @@ fn compile_nested_scroll_transaction(
         0,
         0..leaf_terminal,
     )
-    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+        "nested-scroll-transaction-compile",
+    ))?;
     let mut local_scroll = inner.scroll;
     local_scroll.layout_content_bounds_at_zero = crate::view::base_component::Rect {
         x: f32::from_bits(leaf_source_bounds_bits[0]),
@@ -12557,12 +12730,16 @@ fn compile_nested_scroll_transaction(
         leaf_artifact_span.clone(),
         0..leaf_terminal,
     )
-    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+        "nested-scroll-transaction-compile",
+    ))?;
     if leaf_stamp.identity.color_key != single.color_key
         || leaf_stamp.target.color != single.color_desc
         || leaf_stamp.target.depth != single.depth_desc
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-transaction-compile",
+        ));
     }
     let outer_boundary = SceneBoundaryId {
         ordinal: 0,
@@ -12574,8 +12751,9 @@ fn compile_nested_scroll_transaction(
         owner: admission.inner_boundary_root,
         kind: SceneBoundaryKind::ScrollContents,
     };
-    let content_bounds = exact_u32_bounds_from_bits(leaf_source_bounds_bits)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    let content_bounds = exact_u32_bounds_from_bits(leaf_source_bounds_bits).ok_or(
+        PropertyScrollScenePlanError::InvalidContract("nested-scroll-transaction-compile"),
+    )?;
     let group = RetainedPropertyScrollResidentGroup {
         boundary: inner_boundary,
         content_root: admission.content_leaf,
@@ -12591,7 +12769,9 @@ fn compile_nested_scroll_transaction(
         backing: RetainedPropertyScrollResidentBacking::Single(leaf_stamp.clone()),
     };
     if !group.is_canonical() {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-transaction-compile",
+        ));
     }
     let make_step = |phase, artifact: &PaintArtifact| {
         Some(NestedScrollCompilerStepContract {
@@ -12608,7 +12788,9 @@ fn compile_nested_scroll_transaction(
     ]
     .into_iter()
     .collect::<Option<Vec<_>>>()
-    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+        "nested-scroll-transaction-compile",
+    ))?;
     let witness = NestedScrollCompilerWitness {
         scene_root: admission.outer_boundary_root,
         scene_root_stable_id: admission.outer_stable_id,
@@ -12677,10 +12859,9 @@ fn compile_nested_scroll_transaction(
         leaf_stamp,
         transaction,
     };
-    validated
-        .is_canonical()
-        .then_some(validated)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)
+    validated.is_canonical().then_some(validated).ok_or(
+        PropertyScrollScenePlanError::InvalidContract("nested-scroll-transaction-compile"),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -13068,7 +13249,9 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
     macro_rules! invalid_frame_root {
         ($stage:literal) => {{
             let _ = $stage;
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "frame-root-scroll-scene",
+            ));
         }};
     }
     if roots.is_empty()
@@ -13094,9 +13277,9 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
         context,
     )
     .map_err(PropertyScrollScenePlanError::Frame)?;
-    let scaffold = frame_plan
-        .property_scroll_planning_scaffold()
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    let scaffold = frame_plan.property_scroll_planning_scaffold().ok_or(
+        PropertyScrollScenePlanError::InvalidContract("frame-root-scroll-scene"),
+    )?;
     if scaffold.roots.len() != roots.len()
         || scaffold.boundaries.len() != property_trees.scrolls.len()
         || scaffold.frame_receiver_insertions.len() != property_trees.scrolls.len()
@@ -13127,8 +13310,9 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
                 })
             })?;
             let receiver_compiler =
-                super::compiler::validate_frame_root_plain_receiver_steps(receiver_steps)
-                    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+                super::compiler::validate_frame_root_plain_receiver_steps(receiver_steps).ok_or(
+                    PropertyScrollScenePlanError::InvalidContract("frame-root-scroll-scene"),
+                )?;
             validated_roots.push(ValidatedFrameRootSceneRoot::Plain(
                 ValidatedFrameRootPlainRoot {
                     scene_root_ordinal: root.ordinal,
@@ -13149,15 +13333,16 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
         else {
             invalid_frame_root!("root-schedule");
         };
-        let boundary = scaffold
-            .boundaries
-            .get(*boundary_ordinal as usize)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let boundary = scaffold.boundaries.get(*boundary_ordinal as usize).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("frame-root-scroll-scene"),
+        )?;
         let insertion = scaffold
             .frame_receiver_insertions
             .iter()
             .find(|insertion| insertion.scene_root_ordinal == root.ordinal)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "frame-root-scroll-scene",
+            ))?;
         let cutouts = super::PlannedBoundaryCutoutSet::from_iter([(
             insertion.scroll_cutout.root,
             insertion.scroll_cutout,
@@ -13182,11 +13367,13 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
         if !insertion_matches {
             invalid_frame_root!("receiver-steps");
         }
-        let scroll_host = arena
-            .get(boundary.scroll.owner)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let scroll_host = arena.get(boundary.scroll.owner).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("frame-root-scroll-scene"),
+        )?;
         let [content_root] = scroll_host.element.children() else {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "frame-root-scroll-scene",
+            ));
         };
         let content_root = *content_root;
         let mut scroll_host_steps =
@@ -13210,16 +13397,20 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
                         .collect(),
                 })
             })?;
-        let scroll_host_parent = arena
-            .parent_of(boundary.scroll.owner)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let scroll_host_parent = arena.parent_of(boundary.scroll.owner).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("frame-root-scroll-scene"),
+        )?;
         for step in &mut scroll_host_steps {
             if let super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) = step {
                 let [owner] = artifact.owner_nodes.as_mut_slice() else {
-                    return Err(PropertyScrollScenePlanError::InvalidContract);
+                    return Err(PropertyScrollScenePlanError::InvalidContract(
+                        "frame-root-scroll-scene",
+                    ));
                 };
                 if owner.owner != boundary.scroll.owner || owner.parent.is_some() {
-                    return Err(PropertyScrollScenePlanError::InvalidContract);
+                    return Err(PropertyScrollScenePlanError::InvalidContract(
+                        "frame-root-scroll-scene",
+                    ));
                 }
                 owner.parent = Some(scroll_host_parent);
             }
@@ -13243,33 +13434,45 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
         ) else {
             invalid_frame_root!("scroll-host-receiver-compiler");
         };
-        let content_node = arena
-            .get(content_root)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let content_node =
+            arena
+                .get(content_root)
+                .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                    "frame-root-scroll-scene",
+                ))?;
         let content_element = content_node
             .element
             .as_any()
             .downcast_ref::<crate::view::base_component::Element>()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "frame-root-scroll-scene",
+            ))?;
         let required_paint_offset = content_element
             .exact_retained_scroll_content_subtree_recording_offset([
                 boundary.scroll.offset.x,
                 boundary.scroll.offset.y,
             ])
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "frame-root-scroll-scene",
+            ))?;
         let content_witness = PaintScrollContentWitness::new(
             boundary.scroll.owner,
             content_root,
             boundary.scroll,
             boundary.contents_clip,
         )
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "frame-root-scroll-scene",
+        ))?;
         let mut text_area_roots = Vec::new();
         let mut pending = content_node.element.children().to_vec();
         while let Some(descendant) = pending.pop() {
-            let descendant_node = arena
-                .get(descendant)
-                .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            let descendant_node =
+                arena
+                    .get(descendant)
+                    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                        "frame-root-scroll-scene",
+                    ))?;
             if descendant_node
                 .element
                 .as_any()
@@ -13277,7 +13480,9 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
             {
                 text_area_roots.push(descendant);
                 if text_area_roots.len() > 1 {
-                    return Err(PropertyScrollScenePlanError::InvalidContract);
+                    return Err(PropertyScrollScenePlanError::InvalidContract(
+                        "frame-root-scroll-scene",
+                    ));
                 }
             }
             pending.extend(descendant_node.element.children().iter().copied());
@@ -13286,14 +13491,16 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
             .first()
             .copied()
             .map(|text_area_root| {
-                let text_area_node = arena
-                    .get(text_area_root)
-                    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+                let text_area_node = arena.get(text_area_root).ok_or(
+                    PropertyScrollScenePlanError::InvalidContract("frame-root-scroll-scene"),
+                )?;
                 let text_area = text_area_node
                     .element
                     .as_any()
                     .downcast_ref::<crate::view::base_component::TextArea>()
-                    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+                    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                        "frame-root-scroll-scene",
+                    ))?;
                 let paint_grammar = if text_area.exact_retained_property_scroll_glyph_subtree(
                     text_area_root,
                     arena,
@@ -13307,25 +13514,35 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
                             arena,
                             required_paint_offset,
                         )
-                        .ok_or(PropertyScrollScenePlanError::InvalidContract)?
+                        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                            "frame-root-scroll-scene",
+                        ))?
                 };
                 let local_scissor = text_area
                     .retained_property_scroll_local_contents_scissor(
                         content_witness.normalization_paint_offset(),
                     )
-                    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+                    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                        "frame-root-scroll-scene",
+                    ))?;
                 let local_clip_id = ClipNodeId {
                     owner: text_area_root,
                     role: ClipNodeRole::ContentsClip,
                 };
                 let live_chain = property_trees
                     .clip_snapshot_for(Some(local_clip_id))
-                    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+                    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                        "frame-root-scroll-scene",
+                    ))?;
                 let [live_text_area_clip, live_outer_clip] = live_chain.as_slice() else {
-                    return Err(PropertyScrollScenePlanError::InvalidContract);
+                    return Err(PropertyScrollScenePlanError::InvalidContract(
+                        "frame-root-scroll-scene",
+                    ));
                 };
                 if *live_outer_clip != boundary.contents_clip {
-                    return Err(PropertyScrollScenePlanError::InvalidContract);
+                    return Err(PropertyScrollScenePlanError::InvalidContract(
+                        "frame-root-scroll-scene",
+                    ));
                 }
                 PaintScrollTextAreaSubtreeWitness::new(
                     content_witness,
@@ -13334,13 +13551,19 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
                     local_scissor,
                     paint_grammar,
                 )
-                .ok_or(PropertyScrollScenePlanError::InvalidContract)
+                .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                    "frame-root-scroll-scene",
+                ))
             })
             .transpose()?;
         match text_area_witness {
             Some(witness) if boundary.local_content_clips == [witness.live_contents_clip()] => {}
             None if boundary.local_content_clips.is_empty() => {}
-            _ => return Err(PropertyScrollScenePlanError::InvalidContract),
+            _ => {
+                return Err(PropertyScrollScenePlanError::InvalidContract(
+                    "frame-root-scroll-scene",
+                ));
+            }
         }
         let content_artifact =
             super::frame_recorder::record_generalized_scroll_content_artifact_for_plan(
@@ -13370,7 +13593,9 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
             content_root,
             text_area_witness,
         )
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "frame-root-scroll-scene",
+        ))?;
         validated_roots.push(ValidatedFrameRootSceneRoot::Scroll(
             ValidatedFrameRootScrollRoot {
                 scene_root_ordinal: root.ordinal,
@@ -13423,7 +13648,9 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
         || !property_trees.validation_errors.is_empty()
         || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "transform-scroll-scene",
+        ));
     }
     let context = super::TransformSurfacePlanContext::new(incoming_paint_offset, None);
     let frame_plan = super::frame_plan::plan_property_scroll_interleave_scaffold_with_context(
@@ -13434,9 +13661,9 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
         context,
     )
     .map_err(PropertyScrollScenePlanError::Frame)?;
-    let scaffold = frame_plan
-        .property_scroll_planning_scaffold()
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    let scaffold = frame_plan.property_scroll_planning_scaffold().ok_or(
+        PropertyScrollScenePlanError::InvalidContract("transform-scroll-scene"),
+    )?;
     if scaffold.roots.len() != roots.len()
         || scaffold.boundaries.len() != roots.len()
         || scaffold
@@ -13445,7 +13672,9 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
             .checked_add(scaffold.same_owner_transform_scroll_insertions.len())
             != Some(roots.len())
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "transform-scroll-scene",
+        ));
     }
     let mut validated_roots = Vec::with_capacity(roots.len());
     let mut seen_receivers = FxHashSet::default();
@@ -13463,12 +13692,13 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
             },
         ] = &scaffold.schedule.steps[root.step_span.clone()]
         else {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "transform-scroll-scene",
+            ));
         };
-        let boundary = scaffold
-            .boundaries
-            .get(*boundary_ordinal as usize)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let boundary = scaffold.boundaries.get(*boundary_ordinal as usize).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("transform-scroll-scene"),
+        )?;
         let generic_insertion = scaffold
             .receiver_insertions
             .iter()
@@ -13480,7 +13710,11 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
         let insertion = match (generic_insertion, same_owner_insertion) {
             (Some(insertion), None) => insertion,
             (None, Some(insertion)) => &insertion.receiver,
-            _ => return Err(PropertyScrollScenePlanError::InvalidContract),
+            _ => {
+                return Err(PropertyScrollScenePlanError::InvalidContract(
+                    "transform-scroll-scene",
+                ));
+            }
         };
         if *receiver != *basis
             || receiver.owner != root.root
@@ -13490,16 +13724,23 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
             || !seen_receivers.insert(receiver.owner)
             || !seen_boundaries.insert(boundary.scroll.owner)
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "transform-scroll-scene",
+            ));
         }
-        let receiver_node = arena
-            .get(receiver.owner)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let receiver_node =
+            arena
+                .get(receiver.owner)
+                .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                    "transform-scroll-scene",
+                ))?;
         let receiver_element = receiver_node
             .element
             .as_any()
             .downcast_ref::<crate::view::base_component::Element>()
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "transform-scroll-scene",
+            ))?;
         let receiver_steps = if let Some(same_owner) = same_owner_insertion {
             super::frame_recorder::record_same_owner_transform_scroll_receiver_steps_for_plan(
                 arena,
@@ -13547,7 +13788,9 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
                 }
             })
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "transform-scroll-scene",
+            ));
         }
         let scroll = if same_owner_insertion.is_some() {
             plan_exact_same_owner_transform_scroll_boundary(
@@ -13578,19 +13821,23 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
             budget,
         )?;
         let boundary = validate_property_scroll_boundary_from_frozen_plan(scroll)
-            .map_err(|_| PropertyScrollScenePlanError::InvalidContract)?;
+            .map_err(|_| PropertyScrollScenePlanError::InvalidContract("transform-scroll-scene"))?;
         let raster_bounds = transform_scroll_receiver_raster_bounds(
             &receiver_steps,
             boundary.planner.seal.admission.source_bounds,
         )
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "transform-scroll-scene",
+        ))?;
         let geometry = receiver_element
             .exact_transform_receiver_geometry_snapshot_for_raster_bounds(
                 raster_bounds,
                 incoming_paint_offset,
                 None,
             )
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "transform-scroll-scene",
+            ))?;
         if geometry
             .viewport_transform
             .to_cols_array()
@@ -13598,7 +13845,9 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
             != receiver.viewport_matrix.to_cols_array().map(f32::to_bits)
             || geometry.outer_scissor_rect.is_some()
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "transform-scroll-scene",
+            ));
         }
         validated_roots.push(ValidatedTransformScrollRoot {
             scene_root_ordinal: root.ordinal,
@@ -13625,7 +13874,9 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
     scene
         .is_canonical()
         .then_some(scene)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "transform-scroll-scene",
+        ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -13650,7 +13901,9 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
         || !property_trees.validation_errors.is_empty()
         || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "effect-scroll-scene-checkpoint",
+        ));
     }
     let context = super::TransformSurfacePlanContext::new(incoming_paint_offset, None);
     let frame_plan = super::frame_plan::plan_property_scroll_interleave_scaffold_with_context(
@@ -13661,9 +13914,9 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
         context,
     )
     .map_err(PropertyScrollScenePlanError::Frame)?;
-    let scaffold = frame_plan
-        .property_scroll_planning_scaffold()
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    let scaffold = frame_plan.property_scroll_planning_scaffold().ok_or(
+        PropertyScrollScenePlanError::InvalidContract("effect-scroll-scene-checkpoint"),
+    )?;
     if scaffold.roots.len() != roots.len()
         || scaffold.boundaries.len() != roots.len()
         || !scaffold.receiver_insertions.is_empty()
@@ -13671,7 +13924,9 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
             + scaffold.same_owner_effect_scroll_insertions.len()
             != roots.len()
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "effect-scroll-scene-checkpoint",
+        ));
     }
     let mut validated_roots = Vec::with_capacity(roots.len());
     let mut seen_receivers = FxHashSet::default();
@@ -13689,12 +13944,13 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
             },
         ] = &scaffold.schedule.steps[root.step_span.clone()]
         else {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "effect-scroll-scene-checkpoint",
+            ));
         };
-        let boundary = scaffold
-            .boundaries
-            .get(*boundary_ordinal as usize)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let boundary = scaffold.boundaries.get(*boundary_ordinal as usize).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("effect-scroll-scene-checkpoint"),
+        )?;
         let generic_insertion = scaffold
             .effect_receiver_insertions
             .iter()
@@ -13706,7 +13962,11 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
         let insertion = match (generic_insertion, same_owner_insertion) {
             (Some(insertion), None) => insertion,
             (None, Some(insertion)) => &insertion.receiver,
-            _ => return Err(PropertyScrollScenePlanError::InvalidContract),
+            _ => {
+                return Err(PropertyScrollScenePlanError::InvalidContract(
+                    "effect-scroll-scene-checkpoint",
+                ));
+            }
         };
         if *receiver != *basis
             || receiver.owner != root.root
@@ -13715,7 +13975,9 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
             || !seen_receivers.insert(receiver.owner)
             || !seen_boundaries.insert(boundary.scroll.owner)
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "effect-scroll-scene-checkpoint",
+            ));
         }
         let receiver_steps = if let Some(same_owner) = same_owner_insertion {
             super::frame_recorder::record_same_owner_effect_scroll_receiver_steps_for_plan(
@@ -13763,7 +14025,9 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
                 }
             })
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "effect-scroll-scene-checkpoint",
+            ));
         }
         let scroll = if let Some(same_owner) = same_owner_insertion {
             plan_exact_same_owner_effect_scroll_boundary(
@@ -13793,19 +14057,26 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
             target_format,
             budget,
         )?;
-        let boundary = validate_property_scroll_boundary_from_frozen_plan(scroll)
-            .map_err(|_| PropertyScrollScenePlanError::InvalidContract)?;
+        let boundary =
+            validate_property_scroll_boundary_from_frozen_plan(scroll).map_err(|_| {
+                PropertyScrollScenePlanError::InvalidContract("effect-scroll-scene-checkpoint")
+            })?;
         let actual_bounds = transform_scroll_receiver_raster_bounds(
             &receiver_steps,
             boundary.planner.seal.admission.source_bounds,
         )
         .map(bounds_bits)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "effect-scroll-scene-checkpoint",
+        ))?;
         if actual_bounds != insertion.raster_bounds_bits {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "effect-scroll-scene-checkpoint",
+            ));
         }
-        let composite = EffectScrollCompositeWitness::new(insertion, *receiver)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let composite = EffectScrollCompositeWitness::new(insertion, *receiver).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("effect-scroll-scene-checkpoint"),
+        )?;
         validated_roots.push(ValidatedEffectScrollRootCheckpoint {
             scene_root_ordinal: root.ordinal,
             receiver_root: receiver.owner,
@@ -13831,7 +14102,9 @@ pub(crate) fn plan_and_validate_effect_scroll_scene_checkpoint(
     scene
         .is_canonical()
         .then_some(scene)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "effect-scroll-scene-checkpoint",
+        ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -13855,7 +14128,9 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
         || !property_trees.validation_errors.is_empty()
         || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "transform-effect-scroll-scene",
+        ));
     }
     let context = super::TransformSurfacePlanContext::new(incoming_paint_offset, None);
     let frame_plan = super::frame_plan::plan_property_scroll_interleave_scaffold_with_context(
@@ -13866,9 +14141,9 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
         context,
     )
     .map_err(PropertyScrollScenePlanError::Frame)?;
-    let scaffold = frame_plan
-        .property_scroll_planning_scaffold()
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    let scaffold = frame_plan.property_scroll_planning_scaffold().ok_or(
+        PropertyScrollScenePlanError::InvalidContract("transform-effect-scroll-scene"),
+    )?;
     if scaffold.roots.len() != roots.len()
         || scaffold.boundaries.len() != roots.len()
         || !scaffold.receiver_insertions.is_empty()
@@ -13876,14 +14151,12 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
         || scaffold
             .transform_effect_receiver_insertions
             .len()
-            .checked_add(
-                scaffold
-                    .same_owner_transform_effect_scroll_insertions
-                    .len(),
-            )
+            .checked_add(scaffold.same_owner_transform_effect_scroll_insertions.len())
             != Some(roots.len())
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "transform-effect-scroll-scene",
+        ));
     }
     let coverage_error = |fallbacks: Vec<super::FrameArtifactFallbackReason>| {
         PropertyScrollScenePlanError::Frame(FramePaintPlanError {
@@ -13918,12 +14191,13 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
             },
         ] = &scaffold.schedule.steps[root.step_span.clone()]
         else {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "transform-effect-scroll-scene",
+            ));
         };
-        let boundary_contract = scaffold
-            .boundaries
-            .get(*boundary_ordinal as usize)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let boundary_contract = scaffold.boundaries.get(*boundary_ordinal as usize).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("transform-effect-scroll-scene"),
+        )?;
         let generic_insertion = scaffold
             .transform_effect_receiver_insertions
             .iter()
@@ -13935,7 +14209,11 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
         let insertion = match (generic_insertion, same_owner_insertion) {
             (Some(insertion), None) => insertion,
             (None, Some(insertion)) => &insertion.receiver,
-            _ => return Err(PropertyScrollScenePlanError::InvalidContract),
+            _ => {
+                return Err(PropertyScrollScenePlanError::InvalidContract(
+                    "transform-effect-scroll-scene",
+                ));
+            }
         };
         if outer.id != *parent
             || inner != basis
@@ -13947,7 +14225,9 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
             || !seen_effect_owners.insert(inner.owner)
             || !seen_scroll_owners.insert(boundary_contract.scroll.owner)
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "transform-effect-scroll-scene",
+            ));
         }
         let outer_steps = if same_owner_insertion.is_some() {
             super::frame_recorder::record_same_owner_transform_effect_scroll_outer_steps_for_plan(
@@ -13963,8 +14243,10 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
             )
             .map_err(&coverage_error)?
         } else {
-            let outer_cutouts =
-                super::PlannedBoundaryCutoutSet::from_iter([(inner.owner, insertion.effect_cutout)]);
+            let outer_cutouts = super::PlannedBoundaryCutoutSet::from_iter([(
+                inner.owner,
+                insertion.effect_cutout,
+            )]);
             super::frame_recorder::record_transform_property_surface_steps_for_plan(
                 arena,
                 outer.owner,
@@ -13993,7 +14275,9 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
         } else if same_owner {
             let consumed =
                 super::ConsumedSameOwnerTransformBoundaryWitness::new(outer.owner, outer.id)
-                    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+                    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                        "transform-effect-scroll-scene",
+                    ))?;
             super::frame_recorder::record_same_owner_transform_effect_surface_steps_for_plan(
                 arena,
                 property_trees,
@@ -14010,7 +14294,9 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
         } else {
             let consumed =
                 super::ConsumedAncestorTransformWitness::new(outer.owner, inner.owner, outer.id)
-                    .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+                    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                        "transform-effect-scroll-scene",
+                    ))?;
             super::frame_recorder::record_property_effect_scroll_receiver_steps_for_plan(
                 arena,
                 inner.owner,
@@ -14026,7 +14312,9 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
         if !insertion.validates_outer_recorded_steps(&outer_steps)
             || !insertion.inner.validates_recorded_steps(&inner_steps)
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "transform-effect-scroll-scene",
+            ));
         }
         let scroll = if let Some(same_owner_insertion) = same_owner_insertion {
             plan_exact_same_owner_transform_effect_scroll_boundary(
@@ -14044,7 +14332,9 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
                 boundary_contract.scroll.owner,
                 outer.id,
             )
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "transform-effect-scroll-scene",
+            ))?;
             plan_exact_effect_scroll_boundary_checkpoint(
                 arena,
                 *inner,
@@ -14063,19 +14353,26 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
             target_format,
             budget,
         )?;
-        let boundary = validate_property_scroll_boundary_from_frozen_plan(scroll)
-            .map_err(|_| PropertyScrollScenePlanError::InvalidContract)?;
+        let boundary =
+            validate_property_scroll_boundary_from_frozen_plan(scroll).map_err(|_| {
+                PropertyScrollScenePlanError::InvalidContract("transform-effect-scroll-scene")
+            })?;
         let actual_inner_bounds = transform_scroll_receiver_raster_bounds(
             &inner_steps,
             boundary.planner.seal.admission.source_bounds,
         )
         .map(bounds_bits)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "transform-effect-scroll-scene",
+        ))?;
         if actual_inner_bounds != insertion.inner.raster_bounds_bits {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "transform-effect-scroll-scene",
+            ));
         }
-        let composite = EffectScrollCompositeWitness::new(&insertion.inner, *inner)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let composite = EffectScrollCompositeWitness::new(&insertion.inner, *inner).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("transform-effect-scroll-scene"),
+        )?;
         validated_roots.push(ValidatedTransformEffectScrollRoot {
             scene_root_ordinal: root.ordinal,
             outer_receiver: *outer,
@@ -14102,7 +14399,9 @@ pub(crate) fn plan_and_validate_transform_effect_scroll_scene(
     scene
         .is_canonical()
         .then_some(scene)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "transform-effect-scroll-scene",
+        ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -14126,7 +14425,9 @@ pub(crate) fn plan_and_validate_effect_transform_scroll_scene(
         || !property_trees.validation_errors.is_empty()
         || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "effect-transform-scroll-scene",
+        ));
     }
     let context = super::TransformSurfacePlanContext::new(incoming_paint_offset, None);
     let frame_plan = super::frame_plan::plan_property_scroll_interleave_scaffold_with_context(
@@ -14137,9 +14438,9 @@ pub(crate) fn plan_and_validate_effect_transform_scroll_scene(
         context,
     )
     .map_err(PropertyScrollScenePlanError::Frame)?;
-    let scaffold = frame_plan
-        .property_scroll_planning_scaffold()
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+    let scaffold = frame_plan.property_scroll_planning_scaffold().ok_or(
+        PropertyScrollScenePlanError::InvalidContract("effect-transform-scroll-scene"),
+    )?;
     if scaffold.roots.len() != roots.len()
         || scaffold.boundaries.len() != roots.len()
         || scaffold.effect_transform_receiver_insertions.len() != roots.len()
@@ -14147,7 +14448,9 @@ pub(crate) fn plan_and_validate_effect_transform_scroll_scene(
         || !scaffold.effect_receiver_insertions.is_empty()
         || !scaffold.transform_effect_receiver_insertions.is_empty()
     {
-        return Err(PropertyScrollScenePlanError::InvalidContract);
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "effect-transform-scroll-scene",
+        ));
     }
     let coverage_error = |fallbacks: Vec<super::FrameArtifactFallbackReason>| {
         PropertyScrollScenePlanError::Frame(FramePaintPlanError {
@@ -14176,17 +14479,20 @@ pub(crate) fn plan_and_validate_effect_transform_scroll_scene(
             },
         ] = &scaffold.schedule.steps[root.step_span.clone()]
         else {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "effect-transform-scroll-scene",
+            ));
         };
-        let boundary_contract = scaffold
-            .boundaries
-            .get(*boundary_ordinal as usize)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        let boundary_contract = scaffold.boundaries.get(*boundary_ordinal as usize).ok_or(
+            PropertyScrollScenePlanError::InvalidContract("effect-transform-scroll-scene"),
+        )?;
         let insertion = scaffold
             .effect_transform_receiver_insertions
             .iter()
             .find(|insertion| insertion.scene_root_ordinal == root.ordinal)
-            .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "effect-transform-scroll-scene",
+            ))?;
         if outer.id != *parent
             || inner != basis
             || insertion.outer_receiver != *outer
@@ -14196,7 +14502,9 @@ pub(crate) fn plan_and_validate_effect_transform_scroll_scene(
             || !seen_owners.insert(inner.owner)
             || !seen_owners.insert(boundary_contract.scroll.owner)
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "effect-transform-scroll-scene",
+            ));
         }
         let outer_cutouts =
             super::PlannedBoundaryCutoutSet::from_iter([(inner.owner, insertion.transform_cutout)]);
@@ -14217,7 +14525,9 @@ pub(crate) fn plan_and_validate_effect_transform_scroll_scene(
             Some(outer.id),
             outer.parent,
         )
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "effect-transform-scroll-scene",
+        ))?;
         let inner_cutouts = super::PlannedBoundaryCutoutSet::from_iter([(
             boundary_contract.scroll.owner,
             insertion.inner.scroll_cutout,
@@ -14237,7 +14547,9 @@ pub(crate) fn plan_and_validate_effect_transform_scroll_scene(
         if !insertion.validates_outer_recorded_steps(&outer_steps)
             || !insertion.inner.validates_recorded_steps(&inner_steps)
         {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "effect-transform-scroll-scene",
+            ));
         }
         let scroll = plan_exact_transform_scroll_boundary(
             arena,
@@ -14256,16 +14568,22 @@ pub(crate) fn plan_and_validate_effect_transform_scroll_scene(
             target_format,
             budget,
         )?;
-        let boundary = validate_property_scroll_boundary_from_frozen_plan(scroll)
-            .map_err(|_| PropertyScrollScenePlanError::InvalidContract)?;
+        let boundary =
+            validate_property_scroll_boundary_from_frozen_plan(scroll).map_err(|_| {
+                PropertyScrollScenePlanError::InvalidContract("effect-transform-scroll-scene")
+            })?;
         let actual_inner_bounds = transform_scroll_receiver_raster_bounds(
             &inner_steps,
             boundary.planner.seal.admission.source_bounds,
         )
         .map(bounds_bits)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)?;
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "effect-transform-scroll-scene",
+        ))?;
         if actual_inner_bounds != bounds_bits(insertion.inner_geometry.source_bounds) {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "effect-transform-scroll-scene",
+            ));
         }
         let outer_composite = EffectScrollCompositeWitness {
             source_bounds_bits: insertion.outer_raster_bounds_bits,
@@ -14273,7 +14591,9 @@ pub(crate) fn plan_and_validate_effect_transform_scroll_scene(
             effect_generation: outer.generation,
         };
         if !outer_composite.matches_receiver(*outer) {
-            return Err(PropertyScrollScenePlanError::InvalidContract);
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "effect-transform-scroll-scene",
+            ));
         }
         validated_roots.push(ValidatedEffectTransformScrollRoot {
             scene_root_ordinal: root.ordinal,
@@ -14297,7 +14617,9 @@ pub(crate) fn plan_and_validate_effect_transform_scroll_scene(
     scene
         .is_canonical()
         .then_some(scene)
-        .ok_or(PropertyScrollScenePlanError::InvalidContract)
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "effect-transform-scroll-scene",
+        ))
 }
 
 fn exact_u32_bounds_from_bits(bits: [u32; 4]) -> Option<[u32; 4]> {

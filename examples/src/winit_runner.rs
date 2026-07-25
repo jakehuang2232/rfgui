@@ -139,6 +139,29 @@ impl Runner {
         window.request_redraw();
     }
 
+    /// Print the fallback census for the last `RetainedAuto` attempt.
+    ///
+    /// The first press switches the census capture on, which needs one more
+    /// frame before an attempt exists — so it asks for a redraw and reports
+    /// nothing yet.
+    fn dump_retained_auto_census(&mut self) {
+        let Some(viewport) = self.viewport.as_mut() else {
+            return;
+        };
+        let mut options = viewport.debug_options();
+        if !options.retained_auto_census {
+            options.retained_auto_census = true;
+            viewport.set_debug_options(options);
+            viewport.request_redraw();
+            println!("retained-auto census: capture enabled, press F9 again for the table");
+            return;
+        }
+        match viewport.capture_retained_auto_census() {
+            Some(census) => print!("{}", census.render_table()),
+            None => println!("retained-auto census: no authority attempt captured yet"),
+        }
+    }
+
     fn handle_keyboard(&mut self, event: KeyEvent) {
         // Snapshot ingest time first — winit does not carry a hardware event
         // timestamp, so we record the earliest moment the runner observes the
@@ -165,6 +188,12 @@ impl Runner {
             pressed,
             timestamp,
         };
+        // F9 dumps a RetainedAuto fallback census for the last authority
+        // attempt. Purely observational; it reads the capture the viewport
+        // already produced and never influences the next frame.
+        if pressed && !self.ime_composing && rf_key == rfgui::platform::input::Key::F9 {
+            self.dump_retained_auto_census();
+        }
         let app_event = AppEvent::Key(platform_event.clone());
         if let Some(viewport) = self.viewport.as_mut() {
             viewport.dispatch_app_event(
