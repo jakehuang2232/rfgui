@@ -4595,7 +4595,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
         });
     }
     if !paint_generations.matches_live_snapshot(arena, roots, property_trees) {
-        return Err(property_scene_error("property-scroll-interleave-scaffold"));
+        return Err(property_scene_error("property-scroll-interleave-live-snapshot"));
     }
     let mut reasons = property_trees
         .validation_errors
@@ -5394,7 +5394,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
     };
     property_scene_plan_is_sealed(&plan)
         .then_some(plan)
-        .ok_or_else(|| property_scene_error("property-scroll-interleave-scaffold"))
+        .ok_or_else(|| property_scene_error("property-scroll-interleave-plan-seal"))
 }
 
 fn property_scroll_root_schedule_is_supported(steps: &[PropertySceneScheduledStep]) -> bool {
