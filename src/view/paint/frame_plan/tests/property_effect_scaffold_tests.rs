@@ -20,7 +20,7 @@ fn property_effect_scaffold_rejects_unproven_multi_boundary_interleave() {
     .expect_err("unproven effect/transform interleave must fail closed");
     assert!(error.reasons.iter().any(|reason| matches!(
         reason,
-        FramePaintPlanRejection::UnsupportedPropertyInterleave(_)
+        FramePaintPlanRejection::UnsupportedPropertyInterleave(_, _)
     )));
 }
 
@@ -115,7 +115,7 @@ fn property_effect_scaffold_accepts_sealed_neutral_prefix_and_rejects_unproven_s
     .expect_err("neutral root prefix with an unsealed sibling must fail closed");
     assert!(error.reasons.iter().any(|reason| matches!(
         reason,
-        FramePaintPlanRejection::UnsupportedPropertyInterleave(_)
+        FramePaintPlanRejection::UnsupportedPropertyInterleave(_, _)
     )));
 
     let (mut arena, root, _, _, _, _, mut properties, mut generations) =
@@ -197,7 +197,7 @@ fn property_effect_scaffold_accepts_sealed_neutral_prefix_and_rejects_unproven_s
     .expect_err("finite perspective matrix is not the proven affine contract");
     assert!(error.reasons.iter().any(|reason| matches!(
         reason,
-        FramePaintPlanRejection::UnsupportedPropertyInterleave(_)
+        FramePaintPlanRejection::UnsupportedPropertyInterleave(_, _)
     )));
 }
 

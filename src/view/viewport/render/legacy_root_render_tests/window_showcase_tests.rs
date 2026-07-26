@@ -77,7 +77,7 @@ fn retained_auto_routes_nested_effects_and_reports_typed_plan_rejection_for_inte
     assert!(error.reasons.iter().any(|reason| matches!(
         reason,
         crate::view::paint::FramePaintPlanRejection::CoLocatedTransformEffect(_)
-            | crate::view::paint::FramePaintPlanRejection::UnsupportedPropertyInterleave(_)
+            | crate::view::paint::FramePaintPlanRejection::UnsupportedPropertyInterleave(_, _)
     )));
 }
 

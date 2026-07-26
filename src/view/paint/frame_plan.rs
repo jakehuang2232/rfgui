@@ -2812,7 +2812,12 @@ pub(crate) enum FramePaintPlanRejection {
     InvalidPropertyScene(&'static str),
     InvalidClipChain(NodeKey),
     CoLocatedTransformEffect(NodeKey),
-    UnsupportedPropertyInterleave(NodeKey),
+    /// Property boundaries interleave in a way no planner grammar admits.
+    ///
+    /// The payload names the rule that rejected. Eleven checks share this
+    /// variant, and a census that cannot tell them apart cannot say whether a
+    /// scene hits one rule many times or many rules once.
+    UnsupportedPropertyInterleave(NodeKey, &'static str),
     InvalidEffectChain(NodeKey),
     InvalidIsolationGeometry(NodeKey),
     /// The paint generation tracker no longer describes the live arena.
@@ -3411,7 +3416,7 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
                 .map_or(roots[0], |seed| seed.boundary.owner());
             push_unique(
                 &mut reasons,
-                FramePaintPlanRejection::UnsupportedPropertyInterleave(owner),
+                FramePaintPlanRejection::UnsupportedPropertyInterleave(owner, "effect-scene-scaffold-boundary"),
             );
         }
     }
@@ -4697,7 +4702,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 if transform.is_some() && effect.is_some() {
                     FramePaintPlanRejection::CoLocatedTransformEffect(key)
                 } else {
-                    FramePaintPlanRejection::UnsupportedPropertyInterleave(key)
+                    FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "multi-property-not-co-located")
                 },
             );
         }
@@ -4713,7 +4718,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
             {
                 push_unique(
                     reasons,
-                    FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
+                    FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "co-located-scroll-under-scroll-ancestor"),
                 );
             }
             let mut parent = path.iter().rev().find_map(|entry| match entry {
@@ -4781,7 +4786,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 if path_has_scroll {
                     push_unique(
                         reasons,
-                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
+                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "transform-effect-under-scroll-ancestor"),
                     );
                 }
                 let Some(transform) = property_trees.transform_snapshot_for(TransformNodeId(key))
@@ -4807,7 +4812,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 {
                     push_unique(
                         reasons,
-                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
+                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "transform-effect-boundary-identity"),
                     );
                 }
                 let parent = path.iter().rev().find_map(|entry| match entry {
@@ -4835,7 +4840,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 if path_has_scroll {
                     push_unique(
                         reasons,
-                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
+                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "transform-only-under-scroll-ancestor"),
                     );
                 }
                 let Some(snapshot) = property_trees.transform_snapshot_for(TransformNodeId(key))
@@ -4877,7 +4882,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 {
                     push_unique(
                         reasons,
-                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
+                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "effect-under-non-scroll-between-scroll"),
                     );
                 }
                 let snapshots = property_trees.effect_snapshot_for(Some(EffectNodeId(key)));
@@ -4977,7 +4982,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                         _ => {
                             push_unique(
                                 reasons,
-                                FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
+                                FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "ancestor-boundary-not-consumed"),
                             );
                             continue;
                         }
@@ -5016,7 +5021,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                         _ => {
                             push_unique(
                                 reasons,
-                                FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
+                                FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "receiver-ancestor-boundary-not-consumed"),
                             );
                         }
                     }
@@ -5024,7 +5029,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 if cursor != expected_receiver_state {
                     push_unique(
                         reasons,
-                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key),
+                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "receiver-state-cursor-mismatch"),
                     );
                 }
                 let consumed_properties = ConsumedPropertyStack {
@@ -5201,7 +5206,10 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
         {
             push_unique(
                 &mut reasons,
-                FramePaintPlanRejection::UnsupportedPropertyInterleave(root),
+                FramePaintPlanRejection::UnsupportedPropertyInterleave(
+                    root,
+                    "root-boundary-schedule-unsupported",
+                ),
             );
         }
         let stable_id = arena.get(root).map_or(0, |node| node.element.stable_id());

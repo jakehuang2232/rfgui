@@ -375,7 +375,7 @@ fn property_boundary_forest_rejects_non_alternating_roles() {
     .expect_err("E->E->T is not a strictly alternating property chain");
     assert!(error.reasons.iter().any(|reason| matches!(
         reason,
-        FramePaintPlanRejection::UnsupportedPropertyInterleave(owner)
+        FramePaintPlanRejection::UnsupportedPropertyInterleave(owner, _)
             if *owner == root || *owner == child
     )));
 }

@@ -915,11 +915,9 @@ fn frame_plan_rejection_debug(
             Category::PropertyTopology,
             code("co-located-transform-effect"),
         ),
-        Rejection::UnsupportedPropertyInterleave(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("unsupported-property-interleave"),
-        ),
+        Rejection::UnsupportedPropertyInterleave(owner, rule) => {
+            (Some(*owner), Category::PropertyTopology, code(rule))
+        }
         Rejection::InvalidEffectChain(owner) => (
             Some(*owner),
             Category::PropertyTopology,

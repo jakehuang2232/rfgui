@@ -134,7 +134,7 @@ fn property_scroll_interleave_scaffold_rejects_scroll_descendant_transform() {
     .expect_err("unsupported interleave must fail closed");
     assert!(error.reasons.iter().any(|reason| matches!(
         reason,
-        FramePaintPlanRejection::UnsupportedPropertyInterleave(_)
+        FramePaintPlanRejection::UnsupportedPropertyInterleave(_, _)
             | FramePaintPlanRejection::ScrollBoundary(_)
     )));
 }
@@ -428,4 +428,48 @@ fn property_scroll_receiver_insertion_seal_rejects_drop_duplicate_reorder_and_re
     wrong_receiver.owner = scaffold.boundaries[0].scroll.owner;
     scaffold.receiver_insertions[0].receiver = wrong_receiver;
     assert!(!property_scene_plan_is_sealed(&retargeted));
+}
+
+/// Eleven checks share `UnsupportedPropertyInterleave`, so a census can only
+/// tell one rule hit many times from many rules hit once if the codes differ.
+#[test]
+fn interleave_rule_codes_are_distinct_and_stable() {
+    use crate::view::paint::FramePaintPlanRejection;
+
+    let codes = [
+        "effect-scene-scaffold-boundary",
+        "multi-property-not-co-located",
+        "co-located-scroll-under-scroll-ancestor",
+        "transform-effect-under-scroll-ancestor",
+        "transform-effect-boundary-identity",
+        "transform-only-under-scroll-ancestor",
+        "effect-under-non-scroll-between-scroll",
+        "ancestor-boundary-not-consumed",
+        "receiver-ancestor-boundary-not-consumed",
+        "receiver-state-cursor-mismatch",
+        "root-boundary-schedule-unsupported",
+    ];
+
+    let mut unique = codes.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), codes.len(), "rule codes must be distinct");
+    assert!(
+        codes
+            .iter()
+            .all(|code| code.chars().all(|c| c.is_ascii_lowercase() || c == '-')),
+        "codes describe invariants in stable lowercase"
+    );
+
+    // The rule travels with the owner rather than replacing it.
+    let mut arena = crate::view::node_arena::NodeArena::new();
+    let owner = arena.insert(crate::view::node_arena::Node::new(Box::new(
+        crate::view::base_component::Element::new_with_id(1, 0.0, 0.0, 10.0, 10.0),
+    )));
+    let rejection = FramePaintPlanRejection::UnsupportedPropertyInterleave(owner, codes[0]);
+    let FramePaintPlanRejection::UnsupportedPropertyInterleave(reported, rule) = rejection else {
+        unreachable!()
+    };
+    assert_eq!(reported, owner);
+    assert_eq!(rule, codes[0]);
 }
