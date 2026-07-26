@@ -260,3 +260,91 @@ fn rendered_table_reports_property_node_counts() {
 
     assert!(table.contains("property-nodes transform=3 effect=0 scroll=1"));
 }
+
+fn owned_boundary(
+    element_type: Option<&'static str>,
+    reason: &'static str,
+    stable_id: u64,
+) -> DebugRetainedAutoFallbackSnapshot {
+    DebugRetainedAutoFallbackSnapshot {
+        stable_id: Some(stable_id),
+        ..boundary(element_type, reason)
+    }
+}
+
+#[test]
+fn owners_are_collected_sorted_and_deduplicated() {
+    let census = DebugFallbackCensus::from_snapshot(&snapshot(vec![
+        owned_boundary(Some(ELEMENT), "scroll-boundary", 30),
+        owned_boundary(Some(ELEMENT), "scroll-boundary", 10),
+        owned_boundary(Some(ELEMENT), "scroll-boundary", 30),
+        owned_boundary(Some(ELEMENT), "scroll-boundary", 20),
+    ]));
+
+    assert_eq!(census.entries.len(), 1);
+    assert_eq!(census.entries[0].owners, vec![10, 20, 30]);
+}
+
+#[test]
+fn owners_let_one_node_be_traced_across_several_rules() {
+    // The question this answers: are four rules four separate nodes, or one
+    // node tripping four consecutive checks?
+    let census = DebugFallbackCensus::from_snapshot(&snapshot(vec![
+        owned_boundary(Some(ELEMENT), "ancestor-boundary-not-consumed", 7),
+        owned_boundary(Some(ELEMENT), "receiver-state-cursor-mismatch", 7),
+        owned_boundary(Some(ELEMENT), "root-boundary-schedule-unsupported", 9),
+    ]));
+
+    let owners_for = |code: &str| {
+        census
+            .entries
+            .iter()
+            .find(|entry| fallback_detail_label(&entry.detail) == code)
+            .map(|entry| entry.owners.clone())
+            .expect("group is present")
+    };
+
+    assert_eq!(owners_for("ancestor-boundary-not-consumed"), vec![7]);
+    assert_eq!(owners_for("receiver-state-cursor-mismatch"), vec![7]);
+    assert_eq!(owners_for("root-boundary-schedule-unsupported"), vec![9]);
+}
+
+#[test]
+fn a_group_with_no_resolved_owner_reports_none() {
+    let census =
+        DebugFallbackCensus::from_snapshot(&snapshot(vec![boundary(None, "unknown-host")]));
+
+    assert!(census.entries[0].owners.is_empty());
+    assert!(census.render_table().contains(" -"));
+}
+
+#[test]
+fn rendered_owners_are_capped_with_a_remainder() {
+    let census = DebugFallbackCensus::from_snapshot(&snapshot(
+        (1..=9)
+            .map(|id| owned_boundary(Some(ELEMENT), "scroll-boundary", id))
+            .collect(),
+    ));
+
+    let table = census.render_table();
+    assert!(table.contains("#1 #2 #3 #4 #5 #6 +3"), "{table}");
+}
+
+#[test]
+fn owner_order_does_not_depend_on_snapshot_order() {
+    let ids = [5_u64, 2, 9];
+    let forward = DebugFallbackCensus::from_snapshot(&snapshot(
+        ids.iter()
+            .map(|id| owned_boundary(Some(ELEMENT), "scroll-boundary", *id))
+            .collect(),
+    ));
+    let reversed = DebugFallbackCensus::from_snapshot(&snapshot(
+        ids.iter()
+            .rev()
+            .map(|id| owned_boundary(Some(ELEMENT), "scroll-boundary", *id))
+            .collect(),
+    ));
+
+    assert_eq!(forward.entries, reversed.entries);
+    assert_eq!(forward.entries[0].owners, vec![2, 5, 9]);
+}

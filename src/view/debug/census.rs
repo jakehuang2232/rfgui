@@ -48,6 +48,13 @@ pub struct DebugFallbackCensusEntry {
     pub detail: DebugFallbackDetail,
     /// Number of fallbacks in this attempt that share the whole group key.
     pub count: u64,
+    /// Stable ids of the owners in this group, ascending and deduplicated.
+    ///
+    /// Empty when no owner identity resolved. Cross-referencing these tells a
+    /// reader whether several rules describe one node failing repeatedly or
+    /// separate nodes each failing once — a distinction the counts alone
+    /// cannot make.
+    pub owners: Vec<u64>,
 }
 
 impl DebugFallbackCensusEntry {
@@ -87,15 +94,25 @@ impl DebugFallbackCensus {
                     && entry.category == fallback.category
                     && entry.detail == fallback.detail
             }) {
-                Some(entry) => entry.count += 1,
+                Some(entry) => {
+                    entry.count += 1;
+                    if let Some(stable_id) = fallback.stable_id {
+                        entry.owners.push(stable_id);
+                    }
+                }
                 None => entries.push(DebugFallbackCensusEntry {
                     element_type,
                     stage: fallback.stage,
                     category: fallback.category,
                     detail: fallback.detail.clone(),
                     count: 1,
+                    owners: fallback.stable_id.into_iter().collect(),
                 }),
             }
+        }
+        for entry in &mut entries {
+            entry.owners.sort_unstable();
+            entry.owners.dedup();
         }
         entries.sort_by(|left, right| {
             right
@@ -201,17 +218,18 @@ impl DebugFallbackCensus {
                     fallback_stage_label(entry.stage).to_string(),
                     fallback_category_label(entry.category).to_string(),
                     fallback_detail_label(&entry.detail),
+                    render_owners(&entry.owners),
                 ]
             })
             .collect::<Vec<_>>();
-        let headers = ["count", "element", "stage", "category", "detail"];
+        let headers = ["count", "element", "stage", "category", "detail", "nodes"];
         let mut widths = headers.map(str::len);
         for row in &rows {
             for (width, cell) in widths.iter_mut().zip(row.iter()) {
                 *width = (*width).max(cell.len());
             }
         }
-        let mut push_row = |cells: [&str; 5]| {
+        let mut push_row = |cells: [&str; 6]| {
             out.push_str("  ");
             for (index, (cell, width)) in cells.iter().zip(widths.iter()).enumerate() {
                 if index + 1 == cells.len() {
@@ -224,9 +242,30 @@ impl DebugFallbackCensus {
         };
         push_row(headers);
         for row in &rows {
-            push_row([&row[0], &row[1], &row[2], &row[3], &row[4]]);
+            push_row([&row[0], &row[1], &row[2], &row[3], &row[4], &row[5]]);
         }
         out
+    }
+}
+
+/// Owner stable ids for one group, capped so a wide group stays readable.
+///
+/// The point of showing them is cross-referencing groups, which only needs
+/// enough ids to recognise a repeated set.
+fn render_owners(owners: &[u64]) -> String {
+    const SHOWN: usize = 6;
+    if owners.is_empty() {
+        return "-".to_string();
+    }
+    let head = owners
+        .iter()
+        .take(SHOWN)
+        .map(|id| format!("#{id}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    match owners.len().checked_sub(SHOWN) {
+        Some(rest) if rest > 0 => format!("{head} +{rest}"),
+        _ => head,
     }
 }
 
