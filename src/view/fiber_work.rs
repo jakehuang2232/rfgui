@@ -512,12 +512,18 @@ fn patch_to_fiber_work_with_rsx_at_root(
             // valid unmount: translate it to Delete so a conditional child
             // disappearing does not force a whole-scene cold rebuild.
             if descriptors.is_empty() {
-                let arena_path = arena_path_for(&path)?;
-                let (&arena_index, arena_parent_path) = arena_path.split_last()?;
-                let delete_parent = resolve_path(arena, root, arena_parent_path)?;
-                let key = *arena.children_of(delete_parent).get(arena_index)?;
+                // Resolve the target the same way the sibling `Update` arm
+                // does, then take its parent from the arena. Deriving the
+                // parent by splitting the translated path instead can name a
+                // different node than `parent_key`: `arena_path_for` is an
+                // rsx-to-arena translation that may not preserve length, so
+                // splitting after translating is not the same as translating
+                // the already-split parent. When the target is itself an
+                // arena root the split leaves an empty parent path, which
+                // resolves back to the root and selects one of its children.
+                let key = resolve_path(arena, root, &arena_path_for(&path)?)?;
                 return Some(FiberWork::Delete {
-                    parent: Some(delete_parent),
+                    parent: arena.parent_of(key),
                     key,
                 });
             }

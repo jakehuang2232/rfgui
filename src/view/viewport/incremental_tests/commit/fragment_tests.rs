@@ -1,5 +1,53 @@
 use super::*;
 
+use crate::ui::{State, component, use_mount, use_state};
+
+thread_local! {
+    static CONDITIONAL_UNMOUNT_MOUNTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static CONDITIONAL_UNMOUNT_CLEANUPS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static CONDITIONAL_UNMOUNT_OBSERVED_STATE: std::cell::RefCell<Vec<u32>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static CONDITIONAL_UNMOUNT_STATE: std::cell::RefCell<Option<State<u32>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[component]
+fn ConditionalUnmountLifecycleProbe() -> RsxNode {
+    let state = use_state(|| 7_u32);
+    CONDITIONAL_UNMOUNT_OBSERVED_STATE.with(|observed| observed.borrow_mut().push(state.get()));
+    CONDITIONAL_UNMOUNT_STATE.with(|captured| {
+        *captured.borrow_mut() = Some(state);
+    });
+    use_mount(|| {
+        CONDITIONAL_UNMOUNT_MOUNTS.with(|mounts| mounts.set(mounts.get() + 1));
+        || {
+            CONDITIONAL_UNMOUNT_CLEANUPS.with(|cleanups| cleanups.set(cleanups.get() + 1));
+        }
+    });
+    host_el()
+}
+
+#[component]
+fn ConditionalUnmountLifecycleBoundary(show: bool) -> RsxNode {
+    if !show {
+        return RsxNode::fragment(vec![]);
+    }
+    rsx! {
+        <HostElement>
+            <ConditionalUnmountLifecycleProbe />
+        </HostElement>
+    }
+}
+
+fn conditional_unmount_lifecycle_tree(show: bool) -> RsxNode {
+    rsx! {
+        <HostElement>
+            <HostElement />
+            <ConditionalUnmountLifecycleBoundary show={show} />
+        </HostElement>
+    }
+}
+
 /// 軌 1 #5: a Fragment-shaped InsertChild expands to N descriptors
 /// and commits as `FiberWork::CreateMany` — N consecutive
 /// `arena_insert_child` calls. Parent NodeKey survives.
@@ -145,6 +193,71 @@ fn incremental_commit_replace_node_with_empty_fragment_deletes_only_target() {
         viewport.scene.node_arena.get(removed_child_key).is_none(),
         "removed conditional subtree must not remain in the arena",
     );
+}
+
+#[test]
+fn incremental_empty_fragment_unmount_cleans_effect_and_remounts_fresh_state() {
+    CONDITIONAL_UNMOUNT_MOUNTS.with(|mounts| mounts.set(0));
+    CONDITIONAL_UNMOUNT_CLEANUPS.with(|cleanups| cleanups.set(0));
+    CONDITIONAL_UNMOUNT_OBSERVED_STATE.with(|observed| observed.borrow_mut().clear());
+    CONDITIONAL_UNMOUNT_STATE.with(|captured| *captured.borrow_mut() = None);
+
+    let mut viewport = Viewport::new();
+    viewport.set_use_incremental_commit(true);
+
+    let shown = conditional_unmount_lifecycle_tree(true);
+    viewport.render_rsx(&shown).expect("initial mount");
+    let parent_key = viewport.scene.ui_root_keys[0];
+    let children = viewport.scene.node_arena.children_of(parent_key);
+    let kept_sibling_key = children[0];
+    assert_eq!(children.len(), 2);
+    assert_eq!(CONDITIONAL_UNMOUNT_MOUNTS.with(std::cell::Cell::get), 1);
+    assert_eq!(CONDITIONAL_UNMOUNT_CLEANUPS.with(std::cell::Cell::get), 0);
+
+    CONDITIONAL_UNMOUNT_STATE.with(|captured| {
+        captured
+            .borrow()
+            .as_ref()
+            .expect("mounted probe state")
+            .set(41);
+        *captured.borrow_mut() = None;
+    });
+
+    let hidden = conditional_unmount_lifecycle_tree(false);
+    assert_eq!(
+        CONDITIONAL_UNMOUNT_CLEANUPS.with(std::cell::Cell::get),
+        1,
+        "effect cleanup must run when the child component leaves the live build",
+    );
+    viewport.render_rsx(&hidden).expect("incremental unmount");
+    assert_eq!(viewport.scene.ui_root_keys, vec![parent_key]);
+    assert_eq!(
+        viewport.scene.node_arena.children_of(parent_key),
+        vec![kept_sibling_key],
+    );
+
+    let remounted = conditional_unmount_lifecycle_tree(true);
+    assert_eq!(CONDITIONAL_UNMOUNT_MOUNTS.with(std::cell::Cell::get), 2);
+    assert_eq!(
+        CONDITIONAL_UNMOUNT_OBSERVED_STATE.with(|observed| observed.borrow().clone()),
+        vec![7, 7],
+        "remount must allocate fresh state instead of reviving the prior value 41",
+    );
+    viewport
+        .render_rsx(&remounted)
+        .expect("incremental remount");
+    assert_eq!(viewport.scene.ui_root_keys, vec![parent_key]);
+    assert_eq!(
+        viewport.scene.node_arena.children_of(parent_key)[0],
+        kept_sibling_key,
+        "unrelated sibling must survive the unmount/remount cycle",
+    );
+
+    let hidden_again = conditional_unmount_lifecycle_tree(false);
+    assert_eq!(CONDITIONAL_UNMOUNT_CLEANUPS.with(std::cell::Cell::get), 2);
+    viewport
+        .render_rsx(&hidden_again)
+        .expect("final incremental unmount");
 }
 
 /// Fragment root with N children → arena stores N roots. Re-rendering the
