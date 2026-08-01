@@ -82,6 +82,8 @@ pub(crate) use coverage_manifest::{
     PlannedBoundaryKind, record_coverage_manifest,
 };
 #[cfg(test)]
+pub(crate) use frame_plan::tests::nested_scroll_fixture as nested_scroll_fixture_for_test;
+#[cfg(test)]
 pub(crate) use frame_plan::tests::{native_scroll_forest_plan_fixture, nested_scroll_plan_fixture};
 #[allow(unused_imports)]
 pub(crate) use frame_plan::{

@@ -473,3 +473,111 @@ fn interleave_rule_codes_are_distinct_and_stable() {
     assert_eq!(reported, owner);
     assert_eq!(rule, codes[0]);
 }
+
+/// Baseline for nested scroll support. See
+/// `docs/design/nested-scroll-property-interleave.md`.
+///
+/// A scroll host whose ancestor path already holds a scroll host is rejected
+/// today. Pinning the exact owner-and-code set makes any change to that
+/// rejection observable, and records which of the reasons are consequences of
+/// one another rather than independent findings.
+#[test]
+fn nested_scroll_is_rejected_with_its_exact_owner_and_code_set() {
+    let (arena, root, inner, properties, generations) = nested_scroll_fixture();
+
+    let error = plan_property_scroll_interleave_scaffold_with_context(
+        &arena,
+        &[root],
+        &properties,
+        &generations,
+        TransformSurfacePlanContext::default(),
+    )
+    .expect_err("a scroll host under a scroll ancestor is not admitted today");
+
+    let mut observed = error
+        .reasons
+        .iter()
+        .map(|reason| match reason {
+            FramePaintPlanRejection::ScrollBoundary(owner) => (*owner, "scroll-boundary"),
+            FramePaintPlanRejection::InvalidScrollHost(owner) => (*owner, "invalid-scroll-host"),
+            FramePaintPlanRejection::UnsupportedPropertyInterleave(owner, rule) => (*owner, *rule),
+            other => panic!("unexpected nested-scroll rejection: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    observed.sort_unstable_by_key(|(_, code)| *code);
+
+    assert_eq!(
+        observed,
+        vec![
+            (inner, "ancestor-boundary-not-consumed"),
+            (inner, "invalid-scroll-host"),
+            (inner, "receiver-ancestor-boundary-not-consumed"),
+            (inner, "receiver-state-cursor-mismatch"),
+            (root, "root-boundary-schedule-unsupported"),
+            (inner, "scroll-boundary"),
+        ]
+    );
+    // Five of the six name the inner host. The sixth is the root's schedule
+    // span, which the census reports as its own group on other nodes — so it
+    // is a second consequence of nesting here, not an independent finding.
+    assert_eq!(
+        observed.iter().filter(|(owner, _)| *owner == inner).count(),
+        5
+    );
+}
+
+/// The outer scroll host on its own is admitted, so the rejection above is
+/// about nesting rather than about either host being malformed.
+#[test]
+fn the_outer_scroll_host_alone_is_not_the_reason_nested_scroll_fails() {
+    let (arena, root, inner, properties, generations) = nested_scroll_fixture();
+    let outer = arena
+        .parent_of(inner)
+        .expect("inner sits under the outer host");
+
+    let error = plan_property_scroll_interleave_scaffold_with_context(
+        &arena,
+        &[root],
+        &properties,
+        &generations,
+        TransformSurfacePlanContext::default(),
+    )
+    .expect_err("nested scroll is rejected");
+
+    assert!(
+        error.reasons.iter().all(|reason| !matches!(
+            reason,
+            FramePaintPlanRejection::ScrollBoundary(owner)
+                | FramePaintPlanRejection::InvalidScrollHost(owner)
+                if *owner == outer
+        )),
+        "the outer host is planned without complaint: {:?}",
+        error.reasons
+    );
+}
+
+/// The property tree already models the nesting the planner refuses, so the
+/// refusal is a grammar restriction rather than missing data.
+#[test]
+fn the_property_tree_already_chains_the_nested_scroll_hosts() {
+    use crate::view::compositor::property_tree::ScrollNodeId;
+
+    let (arena, _root, inner, properties, _generations) = nested_scroll_fixture();
+    let outer = arena
+        .parent_of(inner)
+        .expect("inner sits under the outer host");
+
+    let inner_scroll = properties
+        .scroll_snapshot_for(ScrollNodeId(inner))
+        .expect("inner is a scroll host");
+    let outer_scroll = properties
+        .scroll_snapshot_for(ScrollNodeId(outer))
+        .expect("outer is a scroll host");
+
+    assert_eq!(
+        inner_scroll.parent,
+        Some(outer_scroll.id),
+        "the scroll chain the planner needs is already present"
+    );
+    assert!(outer_scroll.parent.is_none());
+}

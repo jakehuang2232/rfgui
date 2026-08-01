@@ -311,6 +311,11 @@ enum ScrollInterleaveFixtureShape {
     EffectNeutralTransformNeutralScroll,
     ScrollTransform,
     CoLocatedTransformScroll,
+    /// A scroll host whose ancestor path already contains a scroll host.
+    ///
+    /// This is the shape every retained authority rejects in the example
+    /// scene. See `docs/design/nested-scroll-property-interleave.md`.
+    NestedScroll,
 }
 
 fn property_scroll_interleave_fixture(
@@ -474,6 +479,41 @@ fn property_scroll_interleave_fixture(
                 )));
             (scroll, content)
         }
+        ScrollInterleaveFixtureShape::NestedScroll => {
+            let outer = arena.insert(Node::new(Box::new(wrapper(0xb4_0002))));
+            let inner = arena.insert(Node::new(Box::new(wrapper(0xb4_0003))));
+            let content = arena.insert(Node::new(Box::new(Element::new_with_id(
+                0xb4_0010, 0.0, -20.0, 120.0, 240.0,
+            ))));
+            arena.set_parent(outer, Some(root));
+            arena.push_child(root, outer);
+            arena.set_parent(inner, Some(outer));
+            arena.push_child(outer, inner);
+            arena.set_parent(content, Some(inner));
+            arena.push_child(inner, content);
+            // The shared tail below turns `inner` into a scroll host. Make the
+            // outer wrapper one too, so `inner` plans with a scroll ancestor
+            // already on its path.
+            let mut outer_style = Style::new();
+            outer_style.insert(
+                PropertyId::ScrollDirection,
+                ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+            );
+            outer_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+            {
+                let mut element =
+                    crate::view::test_support::get_element_mut::<Element>(&arena, outer);
+                element.apply_style(outer_style);
+                element.layout_state.content_size = Size {
+                    width: 120.0,
+                    height: 240.0,
+                };
+                element.set_scroll_offset((0.0, 10.0));
+                element
+                    .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+            }
+            (inner, content)
+        }
         ScrollInterleaveFixtureShape::ScrollTransform => {
             let transform = arena.insert(Node::new(Box::new(Element::new_with_id(
                 0xb4_0002, 0.0, -20.0, 120.0, 240.0,
@@ -529,6 +569,7 @@ fn property_scroll_interleave_fixture(
                 )));
         }
         ScrollInterleaveFixtureShape::FrameRootScroll
+        | ScrollInterleaveFixtureShape::NestedScroll
         | ScrollInterleaveFixtureShape::ScrollTransform => {}
     }
     let mut style = Style::new();
@@ -595,6 +636,21 @@ fn property_scroll_interleave_fixture(
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &[root], &properties);
     (arena, root, properties, generations)
+}
+
+/// Two scroll hosts on one ancestor path, plus the inner host's key.
+pub(crate) fn nested_scroll_fixture() -> (
+    NodeArena,
+    NodeKey,
+    NodeKey,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
+    let (arena, root, properties, generations) =
+        property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::NestedScroll);
+    let outer = arena.children_of(root)[0];
+    let inner = arena.children_of(outer)[0];
+    (arena, root, inner, properties, generations)
 }
 
 pub(crate) fn same_owner_transform_scroll_fixture()

@@ -2221,6 +2221,7 @@ mod canary_tests;
 mod composite_dirty_tests;
 mod mode_and_failure_tests;
 mod native_authority_tests;
+mod nested_scroll_baseline_tests;
 mod nested_scroll_tests;
 mod production_artifact_tests;
 mod property_boundary_forest_branching_tests;
