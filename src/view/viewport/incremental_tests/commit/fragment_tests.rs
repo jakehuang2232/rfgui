@@ -103,6 +103,50 @@ fn incremental_commit_replace_node_with_fragment_expands_to_n_descriptors() {
     assert_eq!(children[3], kept_child_key, "kept sibling now at end");
 }
 
+/// A conditional component can preserve its authored identity while its
+/// rendered shape changes from an Element to an empty Fragment. That is an
+/// unmount of one child, not a reason to cold-rebuild every viewport root.
+#[test]
+fn incremental_commit_replace_node_with_empty_fragment_deletes_only_target() {
+    use crate::ui::RsxNodeIdentity;
+
+    let conditional_identity = RsxNodeIdentity::new("ConditionalChild", None);
+    let mut shown = host_el();
+    shown.set_identity(conditional_identity.clone());
+    let first = host_el().with_child(shown).with_child(host_el());
+
+    let mut hidden = RsxNode::fragment(vec![]);
+    hidden.set_identity(conditional_identity);
+    let second = host_el().with_child(hidden).with_child(host_el());
+
+    let mut viewport = Viewport::new();
+    viewport.set_use_incremental_commit(true);
+    viewport.render_rsx(&first).expect("cold render");
+    let parent_key = viewport.scene.ui_root_keys[0];
+    let children_before = viewport.scene.node_arena.children_of(parent_key);
+    let removed_child_key = children_before[0];
+    let kept_child_key = children_before[1];
+
+    viewport
+        .render_rsx(&second)
+        .expect("empty Fragment replacement must commit as a delete");
+
+    assert_eq!(
+        viewport.scene.ui_root_keys,
+        vec![parent_key],
+        "parent root must survive instead of being cold rebuilt",
+    );
+    assert_eq!(
+        viewport.scene.node_arena.children_of(parent_key),
+        vec![kept_child_key],
+        "only the conditional child should be removed",
+    );
+    assert!(
+        viewport.scene.node_arena.get(removed_child_key).is_none(),
+        "removed conditional subtree must not remain in the arena",
+    );
+}
+
 /// Fragment root with N children → arena stores N roots. Re-rendering the
 /// same tree must keep every arena root NodeKey stable (per-root reconcile
 /// emits zero patches thanks to ptr_eq).

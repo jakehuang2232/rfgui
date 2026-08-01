@@ -507,11 +507,19 @@ fn patch_to_fiber_work_with_rsx_at_root(
                     &inherited,
                 )
                 .ok()?;
-            // 軌 1 #5: Fragment new-node → N descriptors at the
-            // replaced slot. Empty result rejected (same rationale
-            // as ReplaceRoot).
+            // 軌 1 #5: Fragment new-node → N descriptors at the replaced
+            // slot. Unlike a root replacement, an empty Fragment here is a
+            // valid unmount: translate it to Delete so a conditional child
+            // disappearing does not force a whole-scene cold rebuild.
             if descriptors.is_empty() {
-                return None;
+                let arena_path = arena_path_for(&path)?;
+                let (&arena_index, arena_parent_path) = arena_path.split_last()?;
+                let delete_parent = resolve_path(arena, root, arena_parent_path)?;
+                let key = *arena.children_of(delete_parent).get(arena_index)?;
+                return Some(FiberWork::Delete {
+                    parent: Some(delete_parent),
+                    key,
+                });
             }
             Some(FiberWork::ReplaceNode {
                 parent: parent_key,
