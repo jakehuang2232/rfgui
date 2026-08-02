@@ -320,6 +320,740 @@ pub(super) struct PropertyScrollScheduleScaffold {
     planned_boundary_dag: PropertyBoundaryDag,
 }
 
+/// M7a graph-inert program forest for heterogeneous top-level roots.
+///
+/// This is deliberately a sibling of `PropertyScrollScheduleScaffold`: it is
+/// collected from live property-tree state and has its own exact seal.  No
+/// production selection, compiler, pool, or transaction consumes it yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyBoundaryProgramForestPlan {
+    pub(super) roots: Vec<PropertyBoundaryProgramRoot>,
+    pub(super) nodes: Vec<PropertyBoundaryProgramNode>,
+    pub(super) operations: Vec<PropertyBoundaryProgramOperation>,
+    pub(super) boundaries: Vec<PropertyBoundaryProgramBoundary>,
+    pub(super) residents: Vec<PropertyBoundaryProgramResident>,
+    planned_roots: Vec<PropertyBoundaryProgramRoot>,
+    planned_nodes: Vec<PropertyBoundaryProgramNode>,
+    planned_operations: Vec<PropertyBoundaryProgramOperation>,
+    planned_boundaries: Vec<PropertyBoundaryProgramBoundary>,
+    planned_residents: Vec<PropertyBoundaryProgramResident>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PropertyBoundaryProgramRootKind {
+    Empty,
+    FrameRootScroll,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyBoundaryProgramRoot {
+    pub(super) ordinal: u32,
+    pub(super) root: NodeKey,
+    pub(super) stable_id: u64,
+    pub(super) kind: PropertyBoundaryProgramRootKind,
+    pub(super) node_span: Range<usize>,
+    pub(super) operation_span: Range<usize>,
+    pub(super) boundary_span: Range<usize>,
+    pub(super) resident_span: Range<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct PropertyBoundaryProgramNodeId(pub(super) u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct PropertyBoundaryProgramOperationId(pub(super) u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct PropertyBoundaryProgramBoundaryId(pub(super) u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct PropertyBoundaryProgramResidentId(pub(super) u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PropertyBoundaryProgramReceiver {
+    FrameRoot { scene_root_ordinal: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyBoundaryProgramNode {
+    pub(super) id: PropertyBoundaryProgramNodeId,
+    pub(super) scene_root_ordinal: u32,
+    pub(super) owner: NodeKey,
+    pub(super) stable_id: u64,
+    pub(super) receiver: PropertyBoundaryProgramReceiver,
+    pub(super) boundary: PropertyBoundaryProgramBoundaryId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyBoundaryProgramOperation {
+    pub(super) id: PropertyBoundaryProgramOperationId,
+    pub(super) scene_root_ordinal: u32,
+    pub(super) node: PropertyBoundaryProgramNodeId,
+    pub(super) boundary: PropertyBoundaryProgramBoundaryId,
+    pub(super) resident: PropertyBoundaryProgramResidentId,
+    pub(super) receiver: PropertyBoundaryProgramReceiver,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyBoundaryProgramBoundary {
+    pub(super) id: PropertyBoundaryProgramBoundaryId,
+    pub(super) scene_root_ordinal: u32,
+    pub(super) owner: NodeKey,
+    pub(super) stable_id: u64,
+    pub(super) scroll: ScrollNodeSnapshot,
+    pub(super) contents_clip: ClipNodeSnapshot,
+}
+
+/// Planning-only resident intent.  It carries no graph/pool authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyBoundaryProgramResident {
+    pub(super) id: PropertyBoundaryProgramResidentId,
+    pub(super) scene_root_ordinal: u32,
+    pub(super) owner: NodeKey,
+    pub(super) stable_id: u64,
+    pub(super) node: PropertyBoundaryProgramNodeId,
+    pub(super) boundary: PropertyBoundaryProgramBoundaryId,
+    pub(super) receiver: PropertyBoundaryProgramReceiver,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PropertyBoundaryProgramUnsupportedKind {
+    Transform,
+    Effect,
+    Mixed,
+    NestedScroll,
+    Clip,
+    PropertyState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PropertyBoundaryProgramIdentityKind {
+    RootOrdinal,
+    Node,
+    Operation,
+    Boundary,
+    Resident,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PropertyBoundaryProgramRejection {
+    EmptyForest,
+    MissingRoot(NodeKey),
+    DuplicateRoot(NodeKey),
+    RootHasParent(NodeKey),
+    DuplicateNode(NodeKey),
+    TopologyMismatch(NodeKey),
+    MissingPropertyState(NodeKey),
+    ExtraPropertyState(NodeKey),
+    InvalidStableId(NodeKey),
+    DuplicateStableId {
+        stable_id: u64,
+        first: NodeKey,
+        duplicate: NodeKey,
+    },
+    IdentityOverflow {
+        kind: PropertyBoundaryProgramIdentityKind,
+        value: usize,
+    },
+    PropertyTreeValidation(PropertyTreeValidationError),
+    LiveSnapshotMismatch {
+        owner: Option<NodeKey>,
+        field: &'static str,
+    },
+    UnsupportedRoot {
+        root: NodeKey,
+        owner: NodeKey,
+        kind: PropertyBoundaryProgramUnsupportedKind,
+    },
+    PropertyCoverage(NodeKey),
+    InvalidSeal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyBoundaryProgramPlanError {
+    pub(super) reasons: Vec<PropertyBoundaryProgramRejection>,
+}
+
+fn property_boundary_program_checked_identity(
+    value: usize,
+    kind: PropertyBoundaryProgramIdentityKind,
+) -> Result<u32, PropertyBoundaryProgramRejection> {
+    u32::try_from(value).map_err(|_| PropertyBoundaryProgramRejection::IdentityOverflow {
+        kind,
+        value,
+    })
+}
+
+/// Collect the M7a `Empty | FrameRootScroll` forest directly from live state.
+/// Unsupported property kinds reject their owning root; one rejection rejects
+/// the whole forest.
+pub(super) fn plan_property_boundary_program_forest(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+) -> Result<PropertyBoundaryProgramForestPlan, PropertyBoundaryProgramPlanError> {
+    let mut reasons = Vec::new();
+    if roots.is_empty() {
+        reasons.push(PropertyBoundaryProgramRejection::EmptyForest);
+    }
+    for &error in &property_trees.validation_errors {
+        reasons.push(PropertyBoundaryProgramRejection::PropertyTreeValidation(error));
+    }
+    if let Some(mismatch) =
+        paint_generations.live_snapshot_mismatch(arena, roots, property_trees)
+    {
+        reasons.push(PropertyBoundaryProgramRejection::LiveSnapshotMismatch {
+            owner: mismatch.owner,
+            field: mismatch.field.code(),
+        });
+    }
+
+    let mut seen_roots = FxHashSet::default();
+    let mut seen_nodes = FxHashSet::default();
+    let mut stable_ids = FxHashMap::default();
+    let mut nodes_by_root = Vec::with_capacity(roots.len());
+    let mut root_ordinals = Vec::with_capacity(roots.len());
+    let mut owner_to_root = FxHashMap::default();
+    for (ordinal, &root) in roots.iter().enumerate() {
+        let root_ordinal =
+            property_boundary_program_checked_identity(
+                ordinal,
+                PropertyBoundaryProgramIdentityKind::RootOrdinal,
+            );
+        let root_ordinal = match root_ordinal {
+            Ok(root_ordinal) => {
+                root_ordinals.push(Some(root_ordinal));
+                root_ordinal
+            }
+            Err(reason) => {
+                reasons.push(reason);
+                root_ordinals.push(None);
+                nodes_by_root.push(Vec::new());
+                continue;
+            }
+        };
+        if !seen_roots.insert(root) {
+            reasons.push(PropertyBoundaryProgramRejection::DuplicateRoot(root));
+            nodes_by_root.push(Vec::new());
+            continue;
+        }
+        let Some(root_node) = arena.get(root) else {
+            reasons.push(PropertyBoundaryProgramRejection::MissingRoot(root));
+            nodes_by_root.push(Vec::new());
+            continue;
+        };
+        if root_node.parent().is_some() {
+            reasons.push(PropertyBoundaryProgramRejection::RootHasParent(root));
+        }
+        let mut root_nodes = Vec::new();
+        let mut pending = vec![root];
+        while let Some(owner) = pending.pop() {
+            if !seen_nodes.insert(owner) {
+                reasons.push(PropertyBoundaryProgramRejection::DuplicateNode(owner));
+                continue;
+            }
+            let Some(node) = arena.get(owner) else {
+                reasons.push(PropertyBoundaryProgramRejection::MissingRoot(owner));
+                continue;
+            };
+            if node.children() != node.element.children()
+                || node
+                    .children()
+                    .iter()
+                    .any(|child| arena.parent_of(*child) != Some(owner))
+            {
+                reasons.push(PropertyBoundaryProgramRejection::TopologyMismatch(owner));
+            }
+            let stable_id = node.element.stable_id();
+            if stable_id == 0 {
+                reasons.push(PropertyBoundaryProgramRejection::InvalidStableId(owner));
+            } else if let Some(first) = stable_ids.insert(stable_id, owner)
+                && first != owner
+            {
+                reasons.push(PropertyBoundaryProgramRejection::DuplicateStableId {
+                    stable_id,
+                    first,
+                    duplicate: owner,
+                });
+            }
+            if !property_trees.states.contains_key(&owner) {
+                reasons.push(PropertyBoundaryProgramRejection::MissingPropertyState(owner));
+            }
+            owner_to_root.insert(owner, root_ordinal);
+            root_nodes.push(owner);
+            pending.extend(node.children().iter().rev().copied());
+        }
+        nodes_by_root.push(root_nodes);
+    }
+
+    for owner in property_trees.states.keys().copied() {
+        if !seen_nodes.contains(&owner) {
+            reasons.push(PropertyBoundaryProgramRejection::ExtraPropertyState(owner));
+        }
+    }
+    let mut referenced_transforms = FxHashSet::default();
+    let mut referenced_effects = FxHashSet::default();
+    let mut referenced_scrolls = FxHashSet::default();
+    let mut referenced_clips = FxHashSet::default();
+    for (&owner, state) in &property_trees.states {
+        for value in [state.paint, state.descendants] {
+            if let Some(id) = value.transform {
+                referenced_transforms.insert(id);
+                if !property_trees.transforms.contains_key(&id) {
+                    reasons.push(PropertyBoundaryProgramRejection::PropertyCoverage(owner));
+                }
+            }
+            if let Some(id) = value.effect {
+                referenced_effects.insert(id);
+                if !property_trees.effects.contains_key(&id) {
+                    reasons.push(PropertyBoundaryProgramRejection::PropertyCoverage(owner));
+                }
+            }
+            if let Some(id) = value.scroll {
+                referenced_scrolls.insert(id);
+                if !property_trees.scrolls.contains_key(&id) {
+                    reasons.push(PropertyBoundaryProgramRejection::PropertyCoverage(owner));
+                }
+            }
+            if let Some(id) = value.clip {
+                referenced_clips.insert(id);
+                if !property_trees.clips.contains_key(&id) {
+                    reasons.push(PropertyBoundaryProgramRejection::PropertyCoverage(owner));
+                }
+            }
+        }
+    }
+    for owner in property_trees
+        .transforms
+        .keys()
+        .filter(|id| !referenced_transforms.contains(id))
+        .map(|id| id.0)
+        .chain(
+            property_trees
+                .effects
+                .keys()
+                .filter(|id| !referenced_effects.contains(id))
+                .map(|id| id.0),
+        )
+        .chain(
+            property_trees
+                .scrolls
+                .keys()
+                .filter(|id| !referenced_scrolls.contains(id))
+                .map(|id| id.0),
+        )
+        .chain(
+            property_trees
+                .clips
+                .keys()
+                .filter(|id| !referenced_clips.contains(id))
+                .map(|id| id.owner),
+        )
+    {
+        reasons.push(PropertyBoundaryProgramRejection::PropertyCoverage(owner));
+    }
+    for owner in property_trees
+        .transforms
+        .keys()
+        .map(|id| id.0)
+        .chain(property_trees.effects.keys().map(|id| id.0))
+        .chain(property_trees.scrolls.keys().map(|id| id.0))
+        .chain(property_trees.clips.keys().map(|id| id.owner))
+    {
+        if !owner_to_root.contains_key(&owner) {
+            reasons.push(PropertyBoundaryProgramRejection::PropertyCoverage(owner));
+        }
+    }
+
+    let mut planned_roots = Vec::with_capacity(roots.len());
+    let mut planned_nodes = Vec::new();
+    let mut planned_operations = Vec::new();
+    let mut planned_boundaries = Vec::new();
+    let mut planned_residents = Vec::new();
+    for ((&root, root_nodes), root_ordinal) in roots
+        .iter()
+        .zip(&nodes_by_root)
+        .zip(&root_ordinals)
+    {
+        let Some(root_ordinal) = *root_ordinal else {
+            continue;
+        };
+        let Some(root_node) = arena.get(root) else {
+            continue;
+        };
+        let stable_id = root_node.element.stable_id();
+        let transforms = root_nodes
+            .iter()
+            .copied()
+            .filter(|owner| property_trees.transforms.contains_key(&TransformNodeId(*owner)))
+            .map(TransformNodeId)
+            .collect::<Vec<_>>();
+        let effects = root_nodes
+            .iter()
+            .copied()
+            .filter(|owner| property_trees.effects.contains_key(&EffectNodeId(*owner)))
+            .map(EffectNodeId)
+            .collect::<Vec<_>>();
+        let scrolls = root_nodes
+            .iter()
+            .copied()
+            .filter(|owner| property_trees.scrolls.contains_key(&ScrollNodeId(*owner)))
+            .map(ScrollNodeId)
+            .collect::<Vec<_>>();
+        let clips = root_nodes
+            .iter()
+            .copied()
+            .flat_map(|owner| {
+                [ClipNodeRole::SelfClip, ClipNodeRole::ContentsClip]
+                    .into_iter()
+                    .map(move |role| ClipNodeId { owner, role })
+            })
+            .filter(|id| property_trees.clips.contains_key(id))
+            .collect::<Vec<_>>();
+        let mixed_owner = root_nodes
+            .iter()
+            .copied()
+            .find(|owner| {
+                property_trees
+                    .transforms
+                    .contains_key(&TransformNodeId(*owner))
+                    || property_trees.effects.contains_key(&EffectNodeId(*owner))
+                    || property_trees.scrolls.contains_key(&ScrollNodeId(*owner))
+            })
+            .unwrap_or(root);
+        let unsupported = match (
+            transforms.is_empty(),
+            effects.is_empty(),
+            scrolls.is_empty(),
+        ) {
+            (false, true, true) => Some((transforms[0].0, PropertyBoundaryProgramUnsupportedKind::Transform)),
+            (true, false, true) => Some((effects[0].0, PropertyBoundaryProgramUnsupportedKind::Effect)),
+            (false, _, _) | (_, false, false) => Some((mixed_owner, PropertyBoundaryProgramUnsupportedKind::Mixed)),
+            _ => None,
+        };
+        if let Some((owner, kind)) = unsupported {
+            reasons.push(PropertyBoundaryProgramRejection::UnsupportedRoot {
+                root,
+                owner,
+                kind,
+            });
+            continue;
+        }
+
+        let starts = (
+            planned_nodes.len(),
+            planned_operations.len(),
+            planned_boundaries.len(),
+            planned_residents.len(),
+        );
+        if scrolls.is_empty() {
+            if !clips.is_empty() {
+                reasons.push(PropertyBoundaryProgramRejection::UnsupportedRoot {
+                    root,
+                    owner: clips[0].owner,
+                    kind: PropertyBoundaryProgramUnsupportedKind::Clip,
+                });
+            }
+            for &owner in root_nodes {
+                if property_trees
+                    .node_state_for(owner)
+                    .is_some_and(|state| state.paint != PropertyTreeState::default()
+                        || state.descendants != PropertyTreeState::default())
+                {
+                    reasons.push(PropertyBoundaryProgramRejection::UnsupportedRoot {
+                        root,
+                        owner,
+                        kind: PropertyBoundaryProgramUnsupportedKind::PropertyState,
+                    });
+                    break;
+                }
+            }
+            planned_roots.push(PropertyBoundaryProgramRoot {
+                ordinal: root_ordinal,
+                root,
+                stable_id,
+                kind: PropertyBoundaryProgramRootKind::Empty,
+                node_span: starts.0..starts.0,
+                operation_span: starts.1..starts.1,
+                boundary_span: starts.2..starts.2,
+                resident_span: starts.3..starts.3,
+            });
+            continue;
+        }
+        if scrolls.len() != 1 || scrolls[0].0 != root {
+            let owner = scrolls.get(1).or(scrolls.first()).map_or(root, |id| id.0);
+            reasons.push(PropertyBoundaryProgramRejection::UnsupportedRoot {
+                root,
+                owner,
+                kind: PropertyBoundaryProgramUnsupportedKind::NestedScroll,
+            });
+            continue;
+        }
+        let scroll_id = ScrollNodeId(root);
+        let clip_id = ClipNodeId {
+            owner: root,
+            role: ClipNodeRole::ContentsClip,
+        };
+        let Some(scroll) = property_trees.scroll_snapshot_for(scroll_id) else {
+            reasons.push(PropertyBoundaryProgramRejection::PropertyCoverage(root));
+            continue;
+        };
+        let Some(clip_chain) = property_trees.clip_snapshot_for(Some(clip_id)) else {
+            reasons.push(PropertyBoundaryProgramRejection::PropertyCoverage(root));
+            continue;
+        };
+        let [contents_clip] = clip_chain.as_slice() else {
+            reasons.push(PropertyBoundaryProgramRejection::PropertyCoverage(root));
+            continue;
+        };
+        if clips.as_slice() != [clip_id]
+            || !scroll.has_canonical_geometry_with_contents_clip(*contents_clip)
+        {
+            reasons.push(PropertyBoundaryProgramRejection::PropertyCoverage(root));
+            continue;
+        }
+        let expected = PropertyTreeState {
+            transform: None,
+            clip: Some(clip_id),
+            effect: None,
+            scroll: Some(scroll_id),
+        };
+        let mut observed_pair = false;
+        for &owner in root_nodes {
+            let Some(state) = property_trees.node_state_for(owner) else {
+                continue;
+            };
+            for value in [state.paint, state.descendants] {
+                if value == expected {
+                    observed_pair = true;
+                } else if value != PropertyTreeState::default() {
+                    reasons.push(PropertyBoundaryProgramRejection::PropertyCoverage(owner));
+                }
+            }
+        }
+        if !observed_pair {
+            reasons.push(PropertyBoundaryProgramRejection::PropertyCoverage(root));
+            continue;
+        }
+        let identities = [
+            (
+                planned_nodes.len(),
+                PropertyBoundaryProgramIdentityKind::Node,
+            ),
+            (
+                planned_operations.len(),
+                PropertyBoundaryProgramIdentityKind::Operation,
+            ),
+            (
+                planned_boundaries.len(),
+                PropertyBoundaryProgramIdentityKind::Boundary,
+            ),
+            (
+                planned_residents.len(),
+                PropertyBoundaryProgramIdentityKind::Resident,
+            ),
+        ]
+        .map(|(value, kind)| property_boundary_program_checked_identity(value, kind));
+        let [Ok(node_identity), Ok(operation_identity), Ok(boundary_identity), Ok(resident_identity)] =
+            identities
+        else {
+            reasons.extend(identities.into_iter().filter_map(Result::err));
+            continue;
+        };
+        let node_id = PropertyBoundaryProgramNodeId(node_identity);
+        let operation_id = PropertyBoundaryProgramOperationId(operation_identity);
+        let boundary_id = PropertyBoundaryProgramBoundaryId(boundary_identity);
+        let resident_id = PropertyBoundaryProgramResidentId(resident_identity);
+        let receiver = PropertyBoundaryProgramReceiver::FrameRoot {
+            scene_root_ordinal: root_ordinal,
+        };
+        planned_nodes.push(PropertyBoundaryProgramNode {
+            id: node_id,
+            scene_root_ordinal: root_ordinal,
+            owner: root,
+            stable_id,
+            receiver,
+            boundary: boundary_id,
+        });
+        planned_operations.push(PropertyBoundaryProgramOperation {
+            id: operation_id,
+            scene_root_ordinal: root_ordinal,
+            node: node_id,
+            boundary: boundary_id,
+            resident: resident_id,
+            receiver,
+        });
+        planned_boundaries.push(PropertyBoundaryProgramBoundary {
+            id: boundary_id,
+            scene_root_ordinal: root_ordinal,
+            owner: root,
+            stable_id,
+            scroll,
+            contents_clip: *contents_clip,
+        });
+        planned_residents.push(PropertyBoundaryProgramResident {
+            id: resident_id,
+            scene_root_ordinal: root_ordinal,
+            owner: root,
+            stable_id,
+            node: node_id,
+            boundary: boundary_id,
+            receiver,
+        });
+        planned_roots.push(PropertyBoundaryProgramRoot {
+            ordinal: root_ordinal,
+            root,
+            stable_id,
+            kind: PropertyBoundaryProgramRootKind::FrameRootScroll,
+            node_span: starts.0..planned_nodes.len(),
+            operation_span: starts.1..planned_operations.len(),
+            boundary_span: starts.2..planned_boundaries.len(),
+            resident_span: starts.3..planned_residents.len(),
+        });
+    }
+
+    if !reasons.is_empty() {
+        return Err(PropertyBoundaryProgramPlanError { reasons });
+    }
+    let plan = PropertyBoundaryProgramForestPlan {
+        roots: planned_roots.clone(),
+        nodes: planned_nodes.clone(),
+        operations: planned_operations.clone(),
+        boundaries: planned_boundaries.clone(),
+        residents: planned_residents.clone(),
+        planned_roots,
+        planned_nodes,
+        planned_operations,
+        planned_boundaries,
+        planned_residents,
+    };
+    if !property_boundary_program_forest_is_canonical(&plan) {
+        return Err(PropertyBoundaryProgramPlanError {
+            reasons: vec![PropertyBoundaryProgramRejection::InvalidSeal],
+        });
+    }
+    Ok(plan)
+}
+
+pub(super) fn property_boundary_program_forest_is_canonical(
+    plan: &PropertyBoundaryProgramForestPlan,
+) -> bool {
+    if plan.roots.is_empty()
+        || plan.roots != plan.planned_roots
+        || plan.nodes != plan.planned_nodes
+        || plan.operations != plan.planned_operations
+        || plan.boundaries != plan.planned_boundaries
+        || plan.residents != plan.planned_residents
+    {
+        return false;
+    }
+    let mut stable_ids = FxHashSet::default();
+    let mut owners = FxHashSet::default();
+    let mut next = (0, 0, 0, 0);
+    for (ordinal, root) in plan.roots.iter().enumerate() {
+        if u32::try_from(ordinal).ok() != Some(root.ordinal)
+            || root.stable_id == 0
+            || !stable_ids.insert(root.stable_id)
+            || !owners.insert(root.root)
+            || root.node_span.start != next.0
+            || root.operation_span.start != next.1
+            || root.boundary_span.start != next.2
+            || root.resident_span.start != next.3
+        {
+            return false;
+        }
+        let lengths = (
+            root.node_span.len(),
+            root.operation_span.len(),
+            root.boundary_span.len(),
+            root.resident_span.len(),
+        );
+        let expected_lengths = match root.kind {
+            PropertyBoundaryProgramRootKind::Empty => (0, 0, 0, 0),
+            PropertyBoundaryProgramRootKind::FrameRootScroll => (1, 1, 1, 1),
+        };
+        if lengths != expected_lengths {
+            return false;
+        }
+        let Some(root_nodes) = plan.nodes.get(root.node_span.clone()) else {
+            return false;
+        };
+        let Some(root_operations) = plan.operations.get(root.operation_span.clone()) else {
+            return false;
+        };
+        let Some(root_boundaries) = plan.boundaries.get(root.boundary_span.clone()) else {
+            return false;
+        };
+        let Some(root_residents) = plan.residents.get(root.resident_span.clone()) else {
+            return false;
+        };
+        if let ([node], [operation], [boundary], [resident]) = (
+            root_nodes,
+            root_operations,
+            root_boundaries,
+            root_residents,
+        ) {
+            let receiver = PropertyBoundaryProgramReceiver::FrameRoot {
+                scene_root_ordinal: root.ordinal,
+            };
+            if node.id.0 as usize != root.node_span.start
+                || operation.id.0 as usize != root.operation_span.start
+                || boundary.id.0 as usize != root.boundary_span.start
+                || resident.id.0 as usize != root.resident_span.start
+                || node.scene_root_ordinal != root.ordinal
+                || operation.scene_root_ordinal != root.ordinal
+                || boundary.scene_root_ordinal != root.ordinal
+                || resident.scene_root_ordinal != root.ordinal
+                || node.owner != root.root
+                || boundary.owner != root.root
+                || resident.owner != root.root
+                || node.stable_id != root.stable_id
+                || boundary.stable_id != root.stable_id
+                || resident.stable_id != root.stable_id
+                || node.receiver != receiver
+                || operation.receiver != receiver
+                || resident.receiver != receiver
+                || node.boundary != boundary.id
+                || operation.node != node.id
+                || operation.boundary != boundary.id
+                || operation.resident != resident.id
+                || resident.node != node.id
+                || resident.boundary != boundary.id
+                || boundary.scroll.id != ScrollNodeId(root.root)
+                || boundary.scroll.owner != root.root
+                || boundary.scroll.parent.is_some()
+                || boundary.contents_clip.id
+                    != (ClipNodeId {
+                        owner: root.root,
+                        role: ClipNodeRole::ContentsClip,
+                    })
+                || boundary.contents_clip.parent.is_some()
+                || !boundary
+                    .scroll
+                    .has_canonical_geometry_with_contents_clip(boundary.contents_clip)
+            {
+                return false;
+            }
+        } else if root.kind != PropertyBoundaryProgramRootKind::Empty {
+            return false;
+        }
+        next = (
+            root.node_span.end,
+            root.operation_span.end,
+            root.boundary_span.end,
+            root.resident_span.end,
+        );
+    }
+    next
+        == (
+            plan.nodes.len(),
+            plan.operations.len(),
+            plan.boundaries.len(),
+            plan.residents.len(),
+        )
+}
+
 /// Typed projection of the already-admitted property/scroll path grammar.
 ///
 /// Unlike `PropertySceneSchedule`, receiver scope is explicit: a boundary may

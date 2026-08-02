@@ -2044,6 +2044,7 @@ mod property_boundary_forest_linear_tests;
 mod property_boundary_forest_multi_root_tests;
 mod property_boundary_forest_plain_root_tests;
 mod property_boundary_forest_tests;
+mod property_boundary_program_forest_tests;
 mod property_effect_scaffold_tests;
 mod property_effect_scene_tests;
 mod property_scene_tests;
