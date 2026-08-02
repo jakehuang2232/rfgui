@@ -19,6 +19,8 @@ fn nested_scroll_success_telemetry_names_segment_topology_depth_and_zero_residen
 fn retained_auto_nested_scroll_hard_cutover_selects_dag_and_emits_without_parent_target() {
     let ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let (arena, roots, properties, generations) = prepared_exact_nested_scroll_scene();
+    let outer = roots[0];
+    let inner = arena.children_of(outer)[0];
     let decision =
         select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
     let AutoAuthorityDecision::PropertyBoundaryDagScene { scene, trace } = decision else {
@@ -30,6 +32,46 @@ fn retained_auto_nested_scroll_hard_cutover_selects_dag_and_emits_without_parent
         rejection,
         AutoAuthorityRejection::NativeScrollForestPlan { .. }
     )));
+    let rejection_owner_codes = trace
+        .rejections
+        .iter()
+        .flat_map(|rejection| {
+            super::super::selection_rejection_debug_records(
+                &super::super::PaintAuthoritySelectionRejection::Auto(rejection.clone()),
+            )
+        })
+        .map(|record| {
+            (
+                record.owner,
+                crate::view::debug::census::fallback_detail_label(&record.detail),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (owner, code) in [
+        (inner, "property-boundary-dag:scroll-boundary"),
+        (inner, "property-boundary-dag:invalid-scroll-host"),
+        (
+            inner,
+            "property-boundary-dag:ancestor-boundary-not-consumed",
+        ),
+        (
+            inner,
+            "property-boundary-dag:receiver-ancestor-boundary-not-consumed",
+        ),
+        (
+            inner,
+            "property-boundary-dag:receiver-state-cursor-mismatch",
+        ),
+        (
+            outer,
+            "property-boundary-dag:root-boundary-schedule-unsupported",
+        ),
+    ] {
+        assert!(
+            !rejection_owner_codes.contains(&(Some(owner), code.to_string())),
+            "M0 target owner/code must disappear after nested DAG cutover: owner={owner:?} code={code} records={rejection_owner_codes:?}"
+        );
+    }
 
     let mut viewport = Viewport::new();
     let owner = viewport.begin_retained_surface_frame_stage().unwrap();
@@ -84,6 +126,7 @@ fn retained_auto_nested_scroll_hard_cutover_selects_dag_and_emits_without_parent
         PaintAuthorityKind::PropertyScene
     );
     assert!(telemetry.fallback_boundary_nodes().is_empty());
+    assert!(retained_auto_fallback_overlay_records(&telemetry, &roots).is_empty());
     let mut viewport = Viewport::new();
     viewport.scene.node_arena = arena;
     let capture = viewport.build_retained_auto_debug_capture(&telemetry, &roots, true, true);
@@ -95,6 +138,69 @@ fn retained_auto_nested_scroll_hard_cutover_selects_dag_and_emits_without_parent
         capture.frame.disposition,
         crate::view::debug::DebugFrameDisposition::Presented
     );
+}
+
+#[test]
+fn nested_scroll_m6_census_capture_preserves_authority_residency_and_actions() {
+    let ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+    let (arena, roots, properties, generations) = prepared_exact_nested_scroll_scene();
+    let captured =
+        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+    let uncaptured =
+        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, false);
+    let AutoAuthorityDecision::PropertyBoundaryDagScene {
+        scene: captured_scene,
+        ..
+    } = captured
+    else {
+        panic!("census capture must preserve nested DAG authority")
+    };
+    let AutoAuthorityDecision::PropertyBoundaryDagScene {
+        scene: uncaptured_scene,
+        trace: uncaptured_trace,
+    } = uncaptured
+    else {
+        panic!("capture-off must preserve nested DAG authority")
+    };
+    assert!(uncaptured_trace.rejections.is_empty());
+    assert_eq!(captured_scene.nested_scroll_chain_depth(), Some(2));
+    assert_eq!(uncaptured_scene.nested_scroll_chain_depth(), Some(2));
+    assert_eq!(
+        captured_scene.nested_scroll_persistent_leaf_target_for_test(),
+        uncaptured_scene.nested_scroll_persistent_leaf_target_for_test(),
+        "observational capture cannot change nested raster identity or descriptors"
+    );
+
+    let build = |scene| {
+        let mut viewport = Viewport::new();
+        let owner = viewport.begin_retained_surface_frame_stage().unwrap();
+        let mut graph = FrameGraph::new();
+        let prepared = crate::view::paint::prepare_property_boundary_dag_scene_from_pool(
+            &mut viewport,
+            scene,
+            &mut graph,
+            UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
+            [0.0, 0.0, 0.0, 1.0],
+            owner,
+        )
+        .expect("capture-neutral nested scene prepares");
+        let outcome = crate::view::paint::emit_prepared_property_boundary_dag_scene(prepared);
+        let (state, trace) = outcome.into_parts();
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
+        (
+            state.opaque_rect_order(),
+            trace.reraster_count,
+            trace.reuse_count,
+            graph.test_graphics_passes::<crate::view::frame_graph::ClearPass>().len(),
+            graph
+                .test_graphics_passes::<
+                    crate::view::render_pass::texture_composite_pass::TextureCompositePass,
+                >()
+                .len(),
+            graph.declared_persistent_texture_keys().count(),
+        )
+    };
+    assert_eq!(build(captured_scene), build(uncaptured_scene));
 }
 
 #[test]

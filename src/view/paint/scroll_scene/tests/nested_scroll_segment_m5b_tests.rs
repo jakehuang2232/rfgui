@@ -168,6 +168,38 @@ fn nested_scroll_m5b_leaf_authority_is_mutually_exclusive_and_direct_text_is_zer
 }
 
 #[test]
+fn nested_scroll_m6_repeated_compile_freezes_identical_artifact_store_identities() {
+    let (arena, root, _, _, properties, generations) =
+        crate::view::paint::frame_plan::tests::nested_scroll_plan_fixture();
+    let first = compile_m5b_scene(&arena, root, &properties, &generations, 1.0);
+    let second = compile_m5b_scene(&arena, root, &properties, &generations, 1.0);
+    let artifact_identities = |scene: &ValidatedNestedScrollSegmentScene| {
+        scene
+            .program
+            .iter()
+            .map(|step| {
+                let artifact = match step {
+                    NestedScrollSegmentProgramStep::HostBefore { artifact, .. }
+                    | NestedScrollSegmentProgramStep::LeafRaster { artifact, .. }
+                    | NestedScrollSegmentProgramStep::OverlayAfter { artifact, .. } => artifact,
+                };
+                PropertyScrollPhaseArtifactIdentity::from_artifact(artifact)
+                    .expect("compiler-consumed nested artifact store identity")
+            })
+            .collect::<Vec<_>>()
+    };
+
+    assert!(first.is_canonical());
+    assert!(second.is_canonical());
+    assert_eq!(artifact_identities(&first), artifact_identities(&second));
+    assert_eq!(
+        first.persistent_leaf_stamp_for_test(),
+        second.persistent_leaf_stamp_for_test(),
+        "repeated recording cannot drift payload/order/topology/resource identity"
+    );
+}
+
+#[test]
 fn nested_scroll_m5b_direct_text_is_not_gated_by_persistent_backing_budget() {
     let (arena, root, _, _, properties, generations) = nested_scroll_text_fixture();
     let scene = plan_and_validate_nested_scroll_segment_scene(
