@@ -1,59 +1,72 @@
 use super::*;
 
 #[test]
-fn retained_auto_nested_scroll_selects_and_emits_one_atomic_cold_scene() {
+fn nested_scroll_success_telemetry_names_segment_topology_depth_and_zero_residency() {
+    let (phase, topology, residency) =
+        super::super::property_boundary_dag_success_telemetry_grammar(Some(3), 0, 0);
+    assert_eq!(phase, "nested-scroll-segment");
+    assert_eq!(topology, " topology=linear-scroll-chain chain-depth=3");
+    assert_eq!(residency, " residency=zero");
+
+    let (phase, topology, residency) =
+        super::super::property_boundary_dag_success_telemetry_grammar(None, 1, 0);
+    assert_eq!(phase, "property-boundary-dag");
+    assert!(topology.is_empty());
+    assert!(residency.is_empty());
+}
+
+#[test]
+fn retained_auto_nested_scroll_hard_cutover_selects_dag_and_emits_without_parent_target() {
     let ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let (arena, roots, properties, generations) = prepared_exact_nested_scroll_scene();
     let decision =
         select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
-    let AutoAuthorityDecision::NestedScrollScene { prepared, trace } = decision else {
-        panic!("exact S0->S1->leaf must select the dedicated nested authority")
+    let AutoAuthorityDecision::PropertyBoundaryDagScene { scene, trace } = decision else {
+        panic!("exact S->S->leaf must select the property-boundary DAG nested segment")
     };
-    assert!(prepared.is_canonical());
-    assert!(trace.rejections.is_empty());
+    assert_eq!(scene.nested_scroll_chain_depth(), Some(2));
+    assert!(scene.is_canonical());
+    assert!(trace.rejections.iter().all(|rejection| !matches!(
+        rejection,
+        AutoAuthorityRejection::NativeScrollForestPlan { .. }
+    )));
 
     let mut viewport = Viewport::new();
     let owner = viewport.begin_retained_surface_frame_stage().unwrap();
     let mut graph = FrameGraph::new();
-    let graph_before = graph.build_state_snapshot_for_test();
-    let pool_before = viewport.retained_surface_transaction_shape_for_test();
-    assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
-    assert_eq!(
-        viewport.retained_surface_transaction_shape_for_test(),
-        pool_before
-    );
-    let (selection, outcome) = preflight_nested_scroll_selection(
+    let prepared = crate::view::paint::prepare_property_boundary_dag_scene_from_pool(
         &mut viewport,
+        scene,
         &mut graph,
         ctx,
         [0.0, 0.0, 0.0, 1.0],
-        Some(owner),
-        RetainedTransformCanarySelection::NestedScrollScenePlanned(prepared),
-    );
-    assert!(matches!(
-        selection,
-        RetainedTransformCanarySelection::NestedScrollScenePrepared
-    ));
-    let (state, build_trace) = outcome.unwrap().into_parts();
-    assert_eq!(state.opaque_rect_order(), 1);
+        owner,
+    )
+    .expect("selected nested segment prepares through the generic DAG facade");
+    let outcome = crate::view::paint::emit_prepared_property_boundary_dag_scene(prepared);
+    let (state, build_trace) = outcome.into_parts();
+    assert_eq!(state.opaque_rect_order(), 2);
     assert_eq!(build_trace.root_count, 1);
     assert_eq!(build_trace.generic_surface_count, 0);
     assert_eq!(build_trace.scroll_group_count, 1);
     assert_eq!(build_trace.reraster_count, 1);
     assert_eq!(build_trace.reuse_count, 0);
-    assert!(nested_scroll_success_trace(&build_trace).contains("topology=S0->S1->leaf"));
-    assert!(nested_scroll_success_trace(&build_trace).contains("a0=transient-keyless"));
     assert_eq!(graph.declared_persistent_texture_keys().count(), 2);
-    let clears = graph.test_graphics_passes::<crate::view::frame_graph::ClearPass>();
-    assert_eq!(clears.len(), 3, "root + A0 + cold R1 clears");
-    let root_target = clears[0].test_snapshot().output_target;
     assert_eq!(
-        clears
-            .iter()
-            .filter(|clear| clear.test_snapshot().output_target == root_target)
-            .count(),
+        graph
+            .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
+            .len(),
+        2,
+        "direct-to-frame segment owns only the frame and cold leaf clears"
+    );
+    assert_eq!(
+        graph
+            .test_graphics_passes::<
+                crate::view::render_pass::texture_composite_pass::TextureCompositePass,
+            >()
+            .len(),
         1,
-        "nested emit owns the root clear exactly once"
+        "persistent leaf composites directly to the frame"
     );
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
 
@@ -67,19 +80,26 @@ fn retained_auto_nested_scroll_selects_and_emits_one_atomic_cold_scene() {
         true,
     ));
     assert_eq!(
-        telemetry.snapshot().authority_label,
-        "retained-auto:property-scene"
+        telemetry.final_authority(),
+        PaintAuthorityKind::PropertyScene
+    );
+    assert!(telemetry.fallback_boundary_nodes().is_empty());
+    let mut viewport = Viewport::new();
+    viewport.scene.node_arena = arena;
+    let capture = viewport.build_retained_auto_debug_capture(&telemetry, &roots, true, true);
+    assert_eq!(
+        capture.frame.selected_authority,
+        crate::view::debug::DebugFramePaintAuthority::PropertyScene
+    );
+    assert_eq!(
+        capture.frame.disposition,
+        crate::view::debug::DebugFrameDisposition::Presented
     );
 }
 
 #[test]
-fn retained_auto_loading_image_nested_leaf_uses_typed_active_wrapper() {
-    let (arena, outer, properties, generations) =
-        crate::view::paint::nested_scroll_unready_media_fixture_for_test(
-            crate::view::paint::NestedMediaLeafKind::Image,
-        );
-    let roots = [outer];
-    assert_eq!(properties.scrolls.len(), 2);
+fn retained_auto_depth_three_linear_chain_selects_dag_before_native_forest() {
+    let (arena, roots, properties, generations) = prepared_exact_depth_three_nested_scroll_scene();
     let decision = select_retained_auto_authority(
         &arena,
         &roots,
@@ -88,32 +108,53 @@ fn retained_auto_loading_image_nested_leaf_uses_typed_active_wrapper() {
         &UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
         true,
     );
-    assert!(
-        matches!(decision, AutoAuthorityDecision::NestedScrollScene { .. }),
-        "a legal loading Image wrapper must stay retained"
-    );
+    let AutoAuthorityDecision::PropertyBoundaryDagScene { scene, trace } = decision else {
+        panic!(
+            "S->S->S->leaf must be claimed by the DAG before forest selection: {:?}",
+            auto_authority_trace(&decision).rejections
+        )
+    };
+    assert_eq!(scene.nested_scroll_chain_depth(), Some(3));
+    assert!(trace.rejections.iter().all(|rejection| !matches!(
+        rejection,
+        AutoAuthorityRejection::NativeScrollForestPlan { .. }
+    )));
 }
 
 #[test]
-fn retained_auto_loading_svg_nested_leaf_uses_typed_active_wrapper() {
-    let (arena, outer, properties, generations) =
-        crate::view::paint::nested_scroll_unready_media_fixture_for_test(
-            crate::view::paint::NestedMediaLeafKind::Svg,
+fn retained_auto_unready_nested_media_does_not_retry_the_retired_executor() {
+    for kind in [
+        crate::view::paint::NestedMediaLeafKind::Image,
+        crate::view::paint::NestedMediaLeafKind::Svg,
+    ] {
+        let (arena, outer, properties, generations) =
+            crate::view::paint::nested_scroll_unready_media_fixture_for_test(kind);
+        let roots = [outer];
+        assert!(
+            !super::super::native_scroll_forest_topology_is_branching_or_multi_root(
+                &roots,
+                &properties,
+            )
         );
-    let roots = [outer];
-    assert_eq!(properties.scrolls.len(), 2);
-    let decision = select_retained_auto_authority(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        &UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
-        true,
-    );
-    assert!(
-        matches!(decision, AutoAuthorityDecision::NestedScrollScene { .. }),
-        "a source transition with no exact SVG raster is a legal loading wrapper"
-    );
+        let decision = select_retained_auto_authority(
+            &arena,
+            &roots,
+            &properties,
+            &generations,
+            &UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
+            true,
+        );
+        let AutoAuthorityDecision::Legacy { trace } = decision else {
+            panic!(
+                "unready {kind:?} must fail closed after the hard cutover: {:?}",
+                auto_authority_trace(&decision).rejections
+            )
+        };
+        assert!(trace.rejections.iter().any(|rejection| matches!(
+            rejection,
+            AutoAuthorityRejection::PropertyBoundaryDagPlan { .. }
+        )));
+    }
 }
 
 #[test]
@@ -125,44 +166,12 @@ fn retained_auto_missing_and_inline_owned_text_nested_leafs_stay_whole_frame_leg
         let (arena, outer, properties, generations) =
             crate::view::paint::nested_scroll_unready_text_fixture_for_test(kind);
         let roots = [outer];
-        assert_eq!(properties.scrolls.len(), 2, "{kind:?} keeps exact topology");
-
-        let viewport = Viewport::new();
-        let graph = FrameGraph::new();
-        let graph_before = graph.build_state_snapshot_for_test();
-        let pool_before = viewport.retained_surface_transaction_shape_for_test();
-        let AutoAuthorityDecision::Legacy { trace } = select_retained_auto_authority(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
-            true,
-        ) else {
-            panic!("{kind:?} Text must remain whole-frame legacy")
-        };
-        assert!(matches!(
-            trace.rejections.first(),
-            Some(AutoAuthorityRejection::NestedScrollPlan { .. })
-        ));
-        assert_eq!(
-            graph.build_state_snapshot_for_test(),
-            graph_before,
-            "{kind:?}"
+        assert!(
+            !super::super::native_scroll_forest_topology_is_branching_or_multi_root(
+                &roots,
+                &properties,
+            )
         );
-        assert_eq!(
-            viewport.retained_surface_transaction_shape_for_test(),
-            pool_before,
-            "{kind:?}"
-        );
-        assert!(viewport.retained_property_scroll_scene_stage_is_available());
-    }
-}
-
-#[test]
-fn retained_auto_nested_scroll_preflight_failures_are_atomic() {
-    let select = || {
-        let (arena, roots, properties, generations) = prepared_exact_nested_scroll_scene();
         let decision = select_retained_auto_authority(
             &arena,
             &roots,
@@ -171,132 +180,17 @@ fn retained_auto_nested_scroll_preflight_failures_are_atomic() {
             &UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
             true,
         );
-        let AutoAuthorityDecision::NestedScrollScene { prepared, .. } = decision else {
-            panic!("exact nested fixture selects dedicated authority")
+        let AutoAuthorityDecision::Legacy { trace } = decision else {
+            panic!(
+                "{kind:?} Text must remain whole-frame legacy: {:?}",
+                auto_authority_trace(&decision).rejections
+            )
         };
-        prepared
-    };
-
-    let mut stage_viewport = Viewport::new();
-    let mut stage_graph = FrameGraph::new();
-    let stage_graph_before = stage_graph.build_state_snapshot_for_test();
-    let stage_pool_before = stage_viewport.retained_surface_transaction_shape_for_test();
-    let (selection, outcome) = preflight_nested_scroll_selection(
-        &mut stage_viewport,
-        &mut stage_graph,
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
-        [0.0; 4],
-        None,
-        RetainedTransformCanarySelection::NestedScrollScenePlanned(select()),
-    );
-    assert!(outcome.is_none());
-    assert!(matches!(
-        selection,
-        RetainedTransformCanarySelection::NestedScrollScenePrepareRejected(
-            crate::view::paint::RetainedPropertyScrollScenePrepareError::StageUnavailable
-        )
-    ));
-    assert_eq!(
-        stage_graph.build_state_snapshot_for_test(),
-        stage_graph_before
-    );
-    assert_eq!(
-        stage_viewport.retained_surface_transaction_shape_for_test(),
-        stage_pool_before
-    );
-
-    let mut context_viewport = Viewport::new();
-    let context_owner = context_viewport
-        .begin_retained_surface_frame_stage()
-        .unwrap();
-    let mut context_graph = FrameGraph::new();
-    let context_graph_before = context_graph.build_state_snapshot_for_test();
-    let context_pool_before = context_viewport.retained_surface_transaction_shape_for_test();
-    let mut bad_ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
-    bad_ctx.push_scissor_rect(Some([1, 2, 3, 4]));
-    let (selection, outcome) = preflight_nested_scroll_selection(
-        &mut context_viewport,
-        &mut context_graph,
-        bad_ctx,
-        [0.0; 4],
-        Some(context_owner),
-        RetainedTransformCanarySelection::NestedScrollScenePlanned(select()),
-    );
-    assert!(outcome.is_none());
-    assert!(matches!(
-        selection,
-        RetainedTransformCanarySelection::NestedScrollScenePrepareRejected(
-            crate::view::paint::RetainedPropertyScrollScenePrepareError::ContextMismatch
-        )
-    ));
-    assert_eq!(
-        context_graph.build_state_snapshot_for_test(),
-        context_graph_before
-    );
-    assert_eq!(
-        context_viewport.retained_surface_transaction_shape_for_test(),
-        context_pool_before
-    );
-    assert!(context_viewport.retained_surface_frame_stage_owner_is_active(context_owner));
-    assert!(
-        context_viewport
-            .finish_retained_surface_transaction_for_frame(Some(context_owner), false,)
-    );
-
-    let mut collision_viewport = Viewport::new();
-    let collision_owner = collision_viewport
-        .begin_retained_surface_frame_stage()
-        .unwrap();
-    let collision_prepared = select();
-    let (collision_key, collision_desc) = collision_prepared.leaf_target_for_test();
-    let mut collision_graph = FrameGraph::new();
-    let mut declaring_ctx =
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
-    let _ = declaring_ctx.allocate_persistent_target_with_desc(
-        &mut collision_graph,
-        collision_desc,
-        collision_key,
-    );
-    let collision_graph_before = collision_graph.build_state_snapshot_for_test();
-    let collision_pool_before =
-        collision_viewport.retained_surface_transaction_shape_for_test();
-    let (selection, outcome) = preflight_nested_scroll_selection(
-        &mut collision_viewport,
-        &mut collision_graph,
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
-        [0.0; 4],
-        Some(collision_owner),
-        RetainedTransformCanarySelection::NestedScrollScenePlanned(collision_prepared),
-    );
-    assert!(outcome.is_none());
-    assert!(matches!(
-        selection,
-        RetainedTransformCanarySelection::NestedScrollScenePrepareRejected(
-            crate::view::paint::RetainedPropertyScrollScenePrepareError::PersistentKeyAlreadyDeclared(key)
-        ) if key == collision_key
-    ));
-    assert_eq!(
-        collision_graph.build_state_snapshot_for_test(),
-        collision_graph_before
-    );
-    assert_eq!(
-        collision_viewport.retained_surface_transaction_shape_for_test(),
-        collision_pool_before
-    );
-    assert!(
-        collision_viewport
-            .finish_retained_surface_transaction_for_frame(Some(collision_owner), false,)
-    );
-
-    let (fallback, trace) = nested_scroll_prepare_rejection_dispatch(
-        &crate::view::paint::RetainedPropertyScrollScenePrepareError::StageUnavailable,
-    );
-    assert!(fallback);
-    assert!(trace.contains("nested-scroll-prepare-rejected=StageUnavailable"));
-    assert_eq!(
-        nested_scroll_prepare_rejection_fallback_stage(),
-        PaintAuthorityFallbackStage::Prepare
-    );
+        assert!(trace.rejections.iter().any(|rejection| matches!(
+            rejection,
+            AutoAuthorityRejection::PropertyBoundaryDagPlan { .. }
+        )));
+    }
 }
 
 #[test]

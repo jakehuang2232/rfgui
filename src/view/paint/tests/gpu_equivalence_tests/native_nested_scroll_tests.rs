@@ -157,9 +157,9 @@ fn native_production_nested_scroll_matches_legacy_and_reuses_real_r1() -> Result
     let cold_clear_count = cold_graph
         .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
         .len();
-    if cold_clear_count != 3 {
+    if cold_clear_count != 2 {
         return Err(format!(
-            "cold nested-scroll graph must clear root, transient A0, and R1: {cold_clear_count}"
+            "cold nested-scroll graph must clear root and direct-to-frame R1: {cold_clear_count}"
         ));
     }
     let cold_pixels = render_on_viewport(cold_graph, gpu, &mut viewport, 1.0, FORMAT)?;
@@ -206,9 +206,9 @@ fn native_production_nested_scroll_matches_legacy_and_reuses_real_r1() -> Result
     let warm_clear_count = warm_graph
         .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
         .len();
-    if warm_clear_count != 2 {
+    if warm_clear_count != 1 {
         return Err(format!(
-            "warm nested-scroll graph must clear only root and transient A0, not R1: {warm_clear_count}"
+            "warm nested-scroll graph must clear only root, not resident R1: {warm_clear_count}"
         ));
     }
     let warm_pixels = render_on_viewport(warm_graph, gpu, &mut viewport, 1.0, FORMAT)?;

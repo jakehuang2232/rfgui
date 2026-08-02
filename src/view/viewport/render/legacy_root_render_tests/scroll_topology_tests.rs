@@ -168,9 +168,9 @@ fn retained_auto_effect_scroll_selects_and_emits_one_atomic_scene() {
         3,
         "one root clear plus effect/content reraster clears"
     );
-    let composites = graph.test_graphics_passes::<
-        crate::view::render_pass::composite_layer_pass::CompositeLayerPass,
-    >();
+    let composites = graph
+        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
+        );
     assert_eq!(composites.len(), 1);
     assert_eq!(
         composites[0].test_snapshot().opacity_bits,
@@ -258,19 +258,29 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
         else {
             panic!("unsupported scroll topology must remain whole-frame legacy")
         };
-        let expected = matches!(
-            trace.rejections.as_slice(),
-            [
+        let expected_fixed_prefix = matches!(
+            trace.rejections.get(..5),
+            Some([
                 AutoAuthorityRejection::FrameRootScrollPlan { .. },
                 AutoAuthorityRejection::PropertyScrollPlan { .. },
                 AutoAuthorityRejection::TransformScrollPlan { .. },
                 AutoAuthorityRejection::EffectScrollPlan { .. },
-                AutoAuthorityRejection::TransformEffectScrollPlan { .. },
-                AutoAuthorityRejection::PropertyBoundaryDagPlan { .. },
-                AutoAuthorityRejection::DirectScrollTransformPlan { .. }
-            ]
+                AutoAuthorityRejection::TransformEffectScrollPlan { .. }
+            ])
         );
-        assert!(expected, "typed scroll rejection: {:?}", trace.rejections);
+        let expected_tail = matches!(
+            trace.rejections.get(5..),
+            Some([AutoAuthorityRejection::DirectScrollTransformPlan { .. }])
+                | Some([
+                    AutoAuthorityRejection::PropertyBoundaryDagPlan { .. },
+                    AutoAuthorityRejection::DirectScrollTransformPlan { .. }
+                ])
+        );
+        assert!(
+            expected_fixed_prefix && expected_tail,
+            "typed scroll rejection: {:?}",
+            trace.rejections
+        );
     };
 
     let (transform_arena, transform_roots, transform_properties, transform_generations) =
@@ -354,14 +364,13 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
     assert!(matches!(
         auto_authority_trace(&captured).rejections.as_slice(),
         [
-            AutoAuthorityRejection::NestedScrollPlan { .. },
             AutoAuthorityRejection::FrameRootScrollPlan { .. },
             AutoAuthorityRejection::PropertyScrollPlan { .. },
             AutoAuthorityRejection::TransformScrollPlan { .. },
             AutoAuthorityRejection::EffectScrollPlan { .. },
             AutoAuthorityRejection::TransformEffectScrollPlan { .. },
-            AutoAuthorityRejection::NativeScrollForestPlan { .. },
             AutoAuthorityRejection::PropertyBoundaryDagPlan { .. },
+            AutoAuthorityRejection::NativeScrollForestPlan { .. },
             AutoAuthorityRejection::DirectScrollTransformPlan { .. }
         ]
     ));
@@ -428,15 +437,14 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
     ));
 
     let (scroll_transform_arena, scroll_transform_roots, _, _) = prepared_exact_scroll_scene();
-    let scroll_transform_child =
-        scroll_transform_arena.children_of(scroll_transform_roots[0])[0];
+    let scroll_transform_child = scroll_transform_arena.children_of(scroll_transform_roots[0])[0];
     crate::view::test_support::get_element_mut::<Element>(
         &scroll_transform_arena,
         scroll_transform_child,
     )
-    .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-        glam::Vec3::new(3.0, 0.0, 0.0),
-    )));
+    .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
+        3.0, 0.0, 0.0,
+    ))));
     scroll_transform_arena.refresh_subtree_dirty_cache(scroll_transform_roots[0]);
     let (scroll_transform_properties, scroll_transform_generations) =
         synced_paint_state(&scroll_transform_arena, &scroll_transform_roots);
@@ -501,16 +509,14 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
     effect_scroll_arena.refresh_subtree_dirty_cache(effect_scroll_roots[0]);
     let (effect_scroll_properties, effect_scroll_generations) =
         synced_paint_state(&effect_scroll_arena, &effect_scroll_roots);
-    let AutoAuthorityDecision::EffectScrollScene { scene, trace } =
-        select_retained_auto_authority(
-            &effect_scroll_arena,
-            &effect_scroll_roots,
-            &effect_scroll_properties,
-            &effect_scroll_generations,
-            &ctx,
-            true,
-        )
-    else {
+    let AutoAuthorityDecision::EffectScrollScene { scene, trace } = select_retained_auto_authority(
+        &effect_scroll_arena,
+        &effect_scroll_roots,
+        &effect_scroll_properties,
+        &effect_scroll_generations,
+        &ctx,
+        true,
+    ) else {
         panic!("exact direct E->S must select the effect-scroll property scene")
     };
     assert!(scene.is_canonical());
@@ -570,16 +576,15 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
     let mut viewport = Viewport::new();
     let owner = viewport.begin_retained_surface_frame_stage().unwrap();
     let mut graph = FrameGraph::new();
-    let prepared =
-        crate::view::paint::prepare_retained_transform_effect_scroll_scene_from_pool(
-            &mut viewport,
-            scene,
-            &mut graph,
-            UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0),
-            [0.0, 0.0, 0.0, 1.0],
-            owner,
-        )
-        .unwrap();
+    let prepared = crate::view::paint::prepare_retained_transform_effect_scroll_scene_from_pool(
+        &mut viewport,
+        scene,
+        &mut graph,
+        UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0),
+        [0.0, 0.0, 0.0, 1.0],
+        owner,
+    )
+    .unwrap();
     let outcome =
         crate::view::paint::emit_prepared_retained_transform_effect_scroll_scene(prepared);
     let (_, trace) = outcome.into_parts();
@@ -607,8 +612,7 @@ fn retained_auto_selects_and_executes_effect_transform_scroll_boundary_dag() {
         let mut effect_style = Style::new();
         effect_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
         {
-            let mut element =
-                crate::view::test_support::get_element_mut::<Element>(&arena, effect);
+            let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, effect);
             element.apply_style(effect_style);
             element.set_opacity(0.625);
         }
@@ -641,14 +645,8 @@ fn retained_auto_selects_and_executes_effect_transform_scroll_boundary_dag() {
         arena.refresh_subtree_dirty_cache(effect);
         let roots = vec![effect];
         let (properties, generations) = synced_paint_state(&arena, &roots);
-        let decision = select_retained_auto_authority(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &ctx,
-            true,
-        );
+        let decision =
+            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
         let AutoAuthorityDecision::PropertyBoundaryDagScene { scene, .. } = decision else {
             panic!(
                 "exact E->T->S (neutral_wrappers={with_neutral_wrappers}) must select the production BoundaryDag authority"
@@ -750,7 +748,10 @@ fn retained_auto_does_not_treat_plain_overflow_as_an_authored_scroll_boundary() 
     let (measure, place) = constraints();
     measure_and_place(&mut arena, root, measure, place);
     assert!(arena.get(child).is_some());
-    assert!(!super::super::reachable_tree_has_scroll_container(&arena, &[root]));
+    assert!(!super::super::reachable_tree_has_scroll_container(
+        &arena,
+        &[root]
+    ));
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let decision = auto_decision(&arena, &[root], &ctx);
     assert!(!matches!(

@@ -1,8 +1,8 @@
 use super::*;
 
 use crate::style::{
-    Border, Color, Gradient, Layout, Length, ParsedValue, PropertyId, ScrollDirection,
-    SideOrCorner, Style, Transition, TransitionProperty, Transitions,
+    Color, Layout, Length, ParsedValue, PropertyId, ScrollDirection, Style, Transition,
+    TransitionProperty, Transitions,
 };
 use crate::view::base_component::{
     DirtyFlags, DirtyPassMask, Element, ElementTrait, EventTarget, Image, LayoutConstraints,
@@ -109,33 +109,24 @@ fn sampled_window_scroll_fixture(
 
 
 
-fn compile_nested_scroll_fixture_parts(
+fn compile_nested_scroll_segment_fixture_parts(
     arena: &NodeArena,
     outer: NodeKey,
     properties: &PropertyTrees,
     generations: &PaintGenerationTracker,
-) -> ValidatedNestedScrollScene {
-    let plan = super::super::frame_plan::plan_nested_scroll_scene_scaffold_with_context(
+) -> ValidatedNestedScrollSegmentScene {
+    plan_and_validate_nested_scroll_segment_scene(
         arena,
         &[outer],
         properties,
         generations,
         1.0,
-        super::super::frame_plan::TransformSurfacePlanContext::default(),
-    )
-    .unwrap();
-    compile_nested_scroll_transaction(
-        plan,
+        [0.0; 2],
+        None,
         wgpu::TextureFormat::Bgra8UnormSrgb,
         ScrollSceneSingleTextureBudget::new(u32::MAX, u64::MAX).unwrap(),
     )
     .unwrap()
-}
-
-fn compiled_nested_scroll_fixture() -> ValidatedNestedScrollScene {
-    let (arena, outer, _inner, _leaf, properties, generations) =
-        super::super::frame_plan::tests::nested_scroll_plan_fixture();
-    compile_nested_scroll_fixture_parts(&arena, outer, &properties, &generations)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -188,94 +179,6 @@ fn prepare_nested_media_leaf(arena: &mut NodeArena, leaf: NodeKey, frame_number:
     });
 }
 
-fn sync_nested_media_scene(
-    arena: &mut NodeArena,
-    outer: NodeKey,
-    leaf: NodeKey,
-    frame_number: u64,
-) -> ValidatedNestedScrollScene {
-    layout_nested_media_leaf(arena, leaf);
-    prepare_nested_media_leaf(arena, leaf, frame_number);
-    arena.refresh_subtree_dirty_cache(outer);
-    let mut properties = PropertyTrees::default();
-    properties.sync(arena, &[outer]);
-    let mut generations = PaintGenerationTracker::default();
-    generations.sync(arena, &[outer], &properties);
-    compile_nested_scroll_fixture_parts(arena, outer, &properties, &generations)
-}
-
-fn nested_media_payload_identity(
-    scene: &ValidatedNestedScrollScene,
-) -> (
-    crate::view::sampled_texture::SampledTextureId,
-    u64,
-    usize,
-    super::super::PaintPayloadIdentity,
-) {
-    let scaffold = scene.plan.nested_scroll_planning_scaffold().unwrap();
-    let super::super::frame_plan::NestedScrollSceneScheduledStep::ContentReceiver(receiver) =
-        &scaffold.schedule.steps[2]
-    else {
-        panic!("nested media fixture must retain one content receiver")
-    };
-    let artifact = receiver.artifact.artifact();
-    let (id, generation, pixel_ptr) = match artifact.ops.last().unwrap() {
-        super::super::PaintOp::PreparedImage(op) => (
-            op.upload.id,
-            op.upload.generation,
-            op.upload.pixels.as_ptr() as usize,
-        ),
-        super::super::PaintOp::PreparedSvg(op) => (
-            op.upload.id,
-            op.upload.generation,
-            op.upload.pixels.as_ptr() as usize,
-        ),
-        other => panic!("expected frozen media payload, got {other:?}"),
-    };
-    (
-        id,
-        generation,
-        pixel_ptr,
-        artifact.chunks[0].payload_identity.clone(),
-    )
-}
-
-fn execute_nested_media_frame(
-    viewport: &mut Viewport,
-    geometry: PreparedNestedScrollReceiverGeometry,
-    expected: RetainedSurfaceCompileAction,
-) {
-    let owner = viewport.begin_retained_surface_frame_stage().unwrap();
-    let mut graph = FrameGraph::new();
-    let mut prepared = prepare_nested_scroll_scene_from_pool(
-        viewport,
-        geometry,
-        &mut graph,
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
-        [0.0, 0.0, 0.0, 1.0],
-        owner,
-    )
-    .unwrap();
-    prepared.refresh_action_from_committed_test_pool();
-    assert_eq!(prepared.action_for_test(), expected);
-    let outcome = emit_prepared_nested_scroll_scene(prepared);
-    match expected {
-        RetainedSurfaceCompileAction::Reraster => {
-            assert_eq!(
-                (outcome.trace.reraster_count, outcome.trace.reuse_count),
-                (1, 0)
-            );
-        }
-        RetainedSurfaceCompileAction::Reuse => {
-            assert_eq!(
-                (outcome.trace.reraster_count, outcome.trace.reuse_count),
-                (0, 1)
-            );
-        }
-    }
-    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
-}
-
 fn nested_scroll_media_fixture(
     kind: NestedMediaLeafKind,
 ) -> (
@@ -291,8 +194,13 @@ fn nested_scroll_media_fixture(
     let stable_id = 0x1251_02;
     let mut media: Box<dyn ElementTrait> = match kind {
         NestedMediaLeafKind::Image => {
+            static NEXT_NESTED_MEDIA_IMAGE_FIXTURE: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(1);
+            let fixture_id = NEXT_NESTED_MEDIA_IMAGE_FIXTURE
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let marker = u8::try_from(fixture_id % 251 + 1).unwrap();
             let pixels: std::sync::Arc<[u8]> = std::sync::Arc::from([
-                255_u8, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+                marker, 0, 0, 255, 0, marker, 0, 255, 0, 0, marker, 255, marker, marker, 0, 255,
             ]);
             Box::new(Image::new_with_id(
                 stable_id,
@@ -482,29 +390,28 @@ pub(crate) fn nested_scroll_unready_media_fixture_for_test(
         nested_scroll_media_fixture(kind);
     match kind {
         NestedMediaLeafKind::Image => {
-            let scene = compile_nested_scroll_fixture_parts(
+            let scene = compile_nested_scroll_segment_fixture_parts(
                 &arena,
                 outer,
                 &ready_properties,
                 &ready_generations,
             );
-            let scaffold = scene.plan.nested_scroll_planning_scaffold().unwrap();
-            let super::super::frame_plan::NestedScrollSceneScheduledStep::ContentReceiver(
-                receiver,
-            ) = &scaffold.schedule.steps[2]
-            else {
-                unreachable!()
-            };
-            let asset_id = receiver
-                .artifact
-                .artifact()
-                .ops
+            let asset_id = scene
+                .program
                 .iter()
-                .find_map(|op| match op {
-                    super::super::PaintOp::PreparedImage(op) => match op.upload.id {
-                        crate::view::sampled_texture::SampledTextureId::Image(id) => Some(id),
-                        crate::view::sampled_texture::SampledTextureId::SvgRaster(_) => None,
-                    },
+                .find_map(|step| match step {
+                    NestedScrollSegmentProgramStep::LeafRaster { artifact, .. } => artifact
+                        .ops
+                        .iter()
+                        .find_map(|op| match op {
+                            super::super::PaintOp::PreparedImage(op) => match op.upload.id {
+                                crate::view::sampled_texture::SampledTextureId::Image(id) => {
+                                    Some(id)
+                                }
+                                crate::view::sampled_texture::SampledTextureId::SvgRaster(_) => None,
+                            },
+                            _ => None,
+                        }),
                     _ => None,
                 })
                 .expect("ready Image fixture owns one frozen upload");
@@ -528,21 +435,13 @@ pub(crate) fn nested_scroll_unready_media_fixture_for_test(
     // reachable S0 -> S1 topology rather than retained from the ready
     // fixture.
     layout_nested_media_leaf(&mut arena, leaf);
+    prepare_nested_media_leaf(&mut arena, leaf, 3);
     arena.refresh_subtree_dirty_cache(outer);
     let mut properties = PropertyTrees::default();
     properties.sync(&arena, &[outer]);
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &[outer], &properties);
     (arena, outer, properties, generations)
-}
-
-fn prepared_nested_scroll_geometry_fixture() -> PreparedNestedScrollReceiverGeometry {
-    prepare_nested_scroll_receiver_geometry(
-        compiled_nested_scroll_fixture(),
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-        generous_budget(),
-    )
-    .expect("exact nested fixture has canonical executable geometry")
 }
 
 fn set_nested_scroll_position(element: &mut Element, x: f32, y: f32) {
@@ -587,13 +486,6 @@ fn move_nested_scroll_fixture(
         host_origin[0],
         host_origin[1] - outer_offset_y - inner_offset_y,
     );
-}
-
-fn nested_scroll_test_gradient(start: &str, end: &str) -> Gradient {
-    Gradient::linear(SideOrCorner::Right)
-        .stop(Color::hex(start), Some(Length::percent(0.0)))
-        .stop(Color::hex(end), Some(Length::percent(100.0)))
-        .build()
 }
 
 
@@ -2093,13 +1985,12 @@ fn assert_dpr2_target(stamp: &RetainedSurfaceRasterStamp, logical_size: [u32; 2]
 }
 
 mod frame_root_scroll_tests;
-mod nested_scroll_corpus_tests;
-mod nested_scroll_localizer_tests;
-mod nested_scroll_executor_tests;
-mod nested_scroll_preflight_tests;
 mod scroll_content_effect_tests;
 mod scroll_content_effect_reuse_tests;
 mod property_boundary_dag_tests;
+mod nested_scroll_segment_m4_tests;
+mod nested_scroll_segment_m5a_tests;
+mod nested_scroll_segment_m5b_tests;
 mod transform_effect_scroll_plan_tests;
 mod transform_effect_scroll_prepare_tests;
 mod transform_effect_scroll_action_tests;
@@ -2114,5 +2005,4 @@ mod property_scroll_b2_tests;
 mod property_scroll_b4_tests;
 mod same_owner_scroll_tests;
 mod transform_scroll_action_tests;
-mod nested_scroll_receiver_geometry_tests;
 mod dpr2_device_target_tests;

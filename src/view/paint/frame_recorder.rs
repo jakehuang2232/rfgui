@@ -74,18 +74,17 @@ use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::coverage_manifest::{
-    NativeScrollContentReceiverCutout, NestedScrollContentReceiverCutout,
+    NativeScrollContentReceiverCutout,
     exact_deferred_viewport_self_clip_witness, record_retained_coverage_manifest_with_context,
     record_retained_coverage_manifest_with_native_scroll_receiver,
-    record_retained_coverage_manifest_with_nested_scroll_receiver,
     record_retained_coverage_manifest_with_property_authorities,
 };
 
 use super::{
     CoverageRecordingMode, EffectPropertySurfaceArtifactContract, LegacyPaintReason, PaintArtifact,
     PaintArtifactTarget, PaintBakedScrollHostWitness, PaintChunk, PaintCoverageItem,
-    PaintCoverageValidationError, PaintNestedScrollContentWitness, PaintOpacityAuthority,
-    PaintRecordingContext, PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
+    PaintCoverageValidationError, PaintOpacityAuthority, PaintRecordingContext,
+    PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
     PaintScrollAtomicProjectionTextAreaRecorderWitness as AtomicProjectionRecorderWitness,
     PaintScrollAtomicProjectionTextAreaSubtreeWitness, PaintScrollContentWitness,
     PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
@@ -5891,289 +5890,6 @@ pub(super) fn record_scroll_transform_host_steps_for_plan(
     })
 }
 
-/// Ordered outer scope for the exact `S0 -> S1 -> leaf` scene.  S1 is a
-/// genuine scroll boundary, so the existing typed planned-boundary machinery
-/// remains authoritative and the subtree is never traversed in this scope.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn record_nested_scroll_outer_host_steps_for_plan(
-    arena: &NodeArena,
-    outer_root: NodeKey,
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    witness: PaintBakedScrollHostWitness,
-    inner_cutout: super::PlannedBoundary,
-) -> Result<Vec<RecordedTransformSurfaceStep>, Vec<FrameArtifactFallbackReason>> {
-    if witness.boundary_root() != outer_root
-        || inner_cutout.root != witness.child()
-        || !matches!(
-            inner_cutout.kind,
-            super::PlannedBoundaryKind::Scroll(scroll) if scroll.0 == inner_cutout.root
-        )
-    {
-        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
-            inner_cutout.root,
-        )]);
-    }
-    let cutouts = super::PlannedBoundaryCutoutSet::from_iter([(inner_cutout.root, inner_cutout)]);
-    let steps = record_ordered_property_steps_for_plan(
-        arena,
-        &[outer_root],
-        property_trees,
-        paint_generations,
-        [0.0, 0.0],
-        &cutouts,
-        None,
-        None,
-        None,
-        PaintOpacityAuthority::Baked,
-        FrameArtifactAuthorityPolicy::ScrollTransformHost(witness, inner_cutout),
-        None,
-    )?;
-    let [
-        RecordedTransformSurfaceStep::Artifact(host_before),
-        RecordedTransformSurfaceStep::Boundary(marker),
-        RecordedTransformSurfaceStep::Artifact(overlay_after),
-    ] = steps.as_slice()
-    else {
-        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
-            inner_cutout.root,
-        )]);
-    };
-    (!host_before.chunks.is_empty() && *marker == inner_cutout && !overlay_after.chunks.is_empty())
-        .then_some(steps)
-        .ok_or_else(|| {
-            vec![FrameArtifactFallbackReason::PropertyBoundary(
-                inner_cutout.root,
-            )]
-        })
-}
-
-#[derive(Clone, Debug)]
-pub(super) enum RecordedNestedScrollHostStep {
-    Artifact(PaintArtifact),
-    ContentReceiver(NestedScrollContentReceiverCutout),
-}
-
-fn nested_scroll_witness_matches_live_properties(
-    arena: &NodeArena,
-    property_trees: &PropertyTrees,
-    witness: PaintNestedScrollContentWitness,
-) -> bool {
-    if arena.parent_of(witness.outer_boundary_root()).is_some()
-        || arena.parent_of(witness.boundary_root()) != Some(witness.outer_boundary_root())
-        || arena.parent_of(witness.content_root()) != Some(witness.boundary_root())
-    {
-        return false;
-    }
-    let Some(outer_scroll) = property_trees.scroll_snapshot_for(witness.outer_scroll()) else {
-        return false;
-    };
-    let Some(inner_scroll) = property_trees.scroll_snapshot_for(witness.inner_scroll()) else {
-        return false;
-    };
-    let Some(outer_clip) = property_trees
-        .clip_snapshot_for(Some(witness.outer_contents_clip()))
-        .and_then(|chain| chain.first().copied())
-    else {
-        return false;
-    };
-    let Some(inner_clip) = property_trees
-        .clip_snapshot_for(Some(witness.inner_contents_clip()))
-        .and_then(|chain| chain.first().copied())
-    else {
-        return false;
-    };
-    PaintNestedScrollContentWitness::new(
-        witness.outer_boundary_root(),
-        witness.boundary_root(),
-        witness.content_root(),
-        outer_scroll,
-        outer_clip,
-        inner_scroll,
-        inner_clip,
-    ) == Some(witness)
-}
-
-/// Inner host scope.  The already-owned S0/C0 pair is consumed before H1/O1
-/// recording, while the leaf is represented by a dedicated typed receiver
-/// marker in both metadata and full passes.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn record_nested_scroll_inner_host_steps_for_plan(
-    arena: &NodeArena,
-    inner_root: NodeKey,
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    inner_host: PaintBakedScrollHostWitness,
-    outer_content: PaintScrollContentWitness,
-    content_stable_id: u64,
-    content: PaintNestedScrollContentWitness,
-) -> Result<Vec<RecordedNestedScrollHostStep>, Vec<FrameArtifactFallbackReason>> {
-    if inner_host.boundary_root() != inner_root
-        || inner_host.child() != content.content_root()
-        || outer_content.content_root() != inner_root
-        || outer_content.boundary_root() != content.outer_boundary_root()
-        || outer_content.scroll_snapshot().id != content.outer_scroll()
-        || outer_content.contents_clip_snapshot().id != content.outer_contents_clip()
-        || content.boundary_root() != inner_root
-        || content_stable_id == 0
-        || !nested_scroll_witness_matches_live_properties(arena, property_trees, content)
-    {
-        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
-            inner_root,
-        )]);
-    }
-    let receiver = NestedScrollContentReceiverCutout {
-        stable_id: content_stable_id,
-        witness: content,
-    };
-    let context = PaintRecordingContext {
-        nested_scroll_host: Some(content),
-        baked_scroll_host: Some(inner_host),
-        ..PaintRecordingContext::default()
-    };
-    let record = |mode| {
-        record_retained_coverage_manifest_with_nested_scroll_receiver(
-            arena,
-            &[inner_root],
-            mode,
-            property_trees,
-            paint_generations,
-            context,
-            receiver,
-        )
-    };
-    let metadata = record(CoverageRecordingMode::MetadataOnly);
-    let full = record(CoverageRecordingMode::FullArtifact);
-    if !metadata.validation_errors.is_empty()
-        || !full.validation_errors.is_empty()
-        || !canonical_manifest_matches(&metadata, &full)
-    {
-        return Err(vec![FrameArtifactFallbackReason::Validation(
-            PaintCoverageValidationError::RecordingPassMismatch,
-        )]);
-    }
-    let exact = |manifest: &super::PaintCoverageManifest| {
-        let mut receiver_count = 0usize;
-        manifest.items.iter().all(|item| match item {
-            PaintCoverageItem::ArtifactChunk { chunk, .. } => {
-                chunk.owner == inner_root && chunk.properties == Default::default()
-            }
-            PaintCoverageItem::TransparentNode {
-                owner, properties, ..
-            }
-            | PaintCoverageItem::CulledSubtree {
-                owner, properties, ..
-            } => *owner == inner_root && *properties == Default::default(),
-            PaintCoverageItem::NestedScrollContentReceiver { cutout, .. } => {
-                receiver_count += 1;
-                *cutout == receiver
-            }
-            _ => false,
-        }) && receiver_count == 1
-    };
-    if !exact(&metadata) || !exact(&full) {
-        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
-            inner_root,
-        )]);
-    }
-    let receiver_index = full
-        .items
-        .iter()
-        .position(|item| matches!(item, PaintCoverageItem::NestedScrollContentReceiver { .. }))
-        .expect("exact nested host manifest has one receiver");
-    let mut before = full.clone();
-    before.items.truncate(receiver_index);
-    let mut after = full;
-    after.items.drain(..=receiver_index);
-    let before_steps = materialize_transform_surface_steps(before)?;
-    let [RecordedTransformSurfaceStep::Artifact(host_before)] = before_steps.as_slice() else {
-        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
-            inner_root,
-        )]);
-    };
-    let host_before = host_before.clone();
-    let after_steps = materialize_transform_surface_steps(after)?;
-    let [RecordedTransformSurfaceStep::Artifact(overlay_after)] = after_steps.as_slice() else {
-        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
-            inner_root,
-        )]);
-    };
-    Ok(vec![
-        RecordedNestedScrollHostStep::Artifact(host_before),
-        RecordedNestedScrollHostStep::ContentReceiver(receiver),
-        RecordedNestedScrollHostStep::Artifact(overlay_after.clone()),
-    ])
-}
-
-/// Leaf scope for nested scrolling.  Only S1/C1 is projected here; the
-/// resulting artifact intentionally retains S0/C0 for the outer receiver.
-pub(super) fn record_nested_scroll_content_artifact_for_plan(
-    arena: &NodeArena,
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    witness: PaintNestedScrollContentWitness,
-) -> Result<PaintArtifact, Vec<FrameArtifactFallbackReason>> {
-    let root = witness.content_root();
-    if !nested_scroll_witness_matches_live_properties(arena, property_trees, witness) {
-        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(root)]);
-    }
-    let expected = property_trees
-        .node_state_for(witness.boundary_root())
-        .map(|state| state.paint)
-        .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(root)])?;
-    let context = PaintRecordingContext {
-        paint_offset: witness.normalization_paint_offset(),
-        nested_scroll_content: Some(witness),
-        required_scroll_content_paint_offset_bits: Some(
-            witness.normalization_paint_offset().map(f32::to_bits),
-        ),
-        ..PaintRecordingContext::default()
-    };
-    let record = |mode| {
-        record_retained_coverage_manifest_with_context(
-            arena,
-            &[root],
-            false,
-            true,
-            mode,
-            property_trees,
-            paint_generations,
-            context,
-            None,
-            &Default::default(),
-        )
-    };
-    let metadata = record(CoverageRecordingMode::MetadataOnly);
-    let full = record(CoverageRecordingMode::FullArtifact);
-    let exact = |manifest: &super::PaintCoverageManifest| {
-        manifest.validation_errors.is_empty()
-            && manifest.items.iter().all(|item| match item {
-                PaintCoverageItem::ArtifactChunk { chunk, .. } => {
-                    chunk.owner == root && chunk.properties == expected
-                }
-                PaintCoverageItem::TransparentNode {
-                    owner, properties, ..
-                }
-                | PaintCoverageItem::CulledSubtree {
-                    owner, properties, ..
-                } => *owner == root && *properties == expected,
-                _ => false,
-            })
-    };
-    if !exact(&metadata) || !exact(&full) || !canonical_manifest_matches(&metadata, &full) {
-        return Err(vec![FrameArtifactFallbackReason::Validation(
-            PaintCoverageValidationError::RecordingPassMismatch,
-        )]);
-    }
-    let steps = materialize_transform_surface_steps(full)?;
-    let [RecordedTransformSurfaceStep::Artifact(artifact)] = steps.as_slice() else {
-        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(root)]);
-    };
-    (!artifact.chunks.is_empty())
-        .then(|| artifact.clone())
-        .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(root)])
-}
-
 #[derive(Clone, Debug)]
 pub(super) enum RecordedNativeScrollHostStep {
     Artifact(PaintArtifact),
@@ -7352,7 +7068,6 @@ fn materialize_transform_surface_steps(
             }
             PaintCoverageItem::ArtifactChunk { ops: None, .. }
             | PaintCoverageItem::LegacyBoundary { .. }
-            | PaintCoverageItem::NestedScrollContentReceiver { .. }
             | PaintCoverageItem::NativeScrollContentReceiver { .. } => unreachable!(
                 "eligible full transform-surface manifest has only chunks, transparent nodes, culled nodes, and planned boundaries"
             ),
@@ -8197,8 +7912,7 @@ fn assess_manifest(
                     }
                 }
             }
-            PaintCoverageItem::NestedScrollContentReceiver { .. }
-            | PaintCoverageItem::NativeScrollContentReceiver { .. } => {
+            PaintCoverageItem::NativeScrollContentReceiver { .. } => {
                 let reason = FrameArtifactFallbackReason::Validation(
                     PaintCoverageValidationError::RecordingPassMismatch,
                 );
@@ -8690,16 +8404,6 @@ pub(super) fn canonical_manifest_matches(
                 },
             ) => left_order == right_order && left_boundary == right_boundary,
             (
-                PaintCoverageItem::NestedScrollContentReceiver {
-                    order: left_order,
-                    cutout: left_cutout,
-                },
-                PaintCoverageItem::NestedScrollContentReceiver {
-                    order: right_order,
-                    cutout: right_cutout,
-                },
-            ) => left_order == right_order && left_cutout == right_cutout,
-            (
                 PaintCoverageItem::NativeScrollContentReceiver {
                     order: left_order,
                     cutout: left_cutout,
@@ -8712,9 +8416,6 @@ pub(super) fn canonical_manifest_matches(
             _ => false,
         })
 }
-
-#[cfg(test)]
-mod nested_scroll_tests;
 
 #[cfg(test)]
 mod scroll_host_tests;

@@ -548,30 +548,11 @@ pub(crate) struct RetainedScrollTransformHostAdmissionSnapshot {
     pub(crate) scroll: ScrollGeometrySnapshot,
 }
 
-/// Exact admission for the first bounded nested-scroll scene:
-/// `S0 -> S1 -> leaf`.  This remains a sibling of the single-scroll B0
-/// witness so neither the root oracle nor its untransformed-leaf meaning can
-/// be widened accidentally.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RetainedNestedScrollSceneAdmissionSnapshot {
-    pub(crate) outer_boundary_root: NodeKey,
-    pub(crate) outer_stable_id: u64,
-    pub(crate) inner_boundary_root: NodeKey,
-    pub(crate) inner_stable_id: u64,
-    pub(crate) content_leaf: NodeKey,
-    pub(crate) content_leaf_stable_id: u64,
-    pub(crate) outer_source_bounds: RetainedSurfaceBounds,
-    pub(crate) inner_source_bounds: RetainedSurfaceBounds,
-    pub(crate) outer_scroll: ScrollGeometrySnapshot,
-    pub(crate) inner_scroll: ScrollGeometrySnapshot,
-}
-
 /// Boundary-local admission used by the arbitrary-depth native scroll forest.
 ///
-/// Unlike `RetainedNestedScrollSceneAdmissionSnapshot`, this witness does not
-/// encode a fixed outer/inner pair.  The planner assigns dense boundary ids,
-/// discovers the nearest scroll ancestor through property-neutral wrappers,
-/// and seals the complete forest as one authority.
+/// The witness does not encode a fixed outer/inner pair. The planner assigns
+/// dense boundary ids, discovers the nearest scroll ancestor through
+/// property-neutral wrappers, and seals the complete forest as one authority.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RetainedScrollForestHostAdmissionSnapshot {
     pub(crate) boundary_root: NodeKey,
@@ -599,34 +580,6 @@ impl RetainedScrollForestHostAdmissionSnapshot {
         snapshot.id.0 == self.boundary_root
             && snapshot.owner == self.boundary_root
             && scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
-    }
-}
-
-impl RetainedNestedScrollSceneAdmissionSnapshot {
-    pub(crate) fn bitwise_eq(self, other: Self) -> bool {
-        self.outer_boundary_root == other.outer_boundary_root
-            && self.outer_stable_id == other.outer_stable_id
-            && self.inner_boundary_root == other.inner_boundary_root
-            && self.inner_stable_id == other.inner_stable_id
-            && self.content_leaf == other.content_leaf
-            && self.content_leaf_stable_id == other.content_leaf_stable_id
-            && scroll_geometry_snapshots_bitwise_equal(self.outer_scroll, other.outer_scroll)
-            && scroll_geometry_snapshots_bitwise_equal(self.inner_scroll, other.inner_scroll)
-            && composite_bounds_bitwise_equal(self.outer_source_bounds, other.outer_source_bounds)
-            && composite_bounds_bitwise_equal(self.inner_source_bounds, other.inner_source_bounds)
-    }
-
-    pub(crate) fn matches_scroll_nodes(
-        self,
-        outer: crate::view::compositor::property_tree::ScrollNodeSnapshot,
-        inner: crate::view::compositor::property_tree::ScrollNodeSnapshot,
-    ) -> bool {
-        outer.id.0 == self.outer_boundary_root
-            && outer.owner == self.outer_boundary_root
-            && inner.id.0 == self.inner_boundary_root
-            && inner.owner == self.inner_boundary_root
-            && scroll_geometry_snapshot_matches_scroll_node(self.outer_scroll, outer)
-            && scroll_geometry_snapshot_matches_scroll_node(self.inner_scroll, inner)
     }
 }
 
@@ -901,14 +854,14 @@ fn scroll_content_bounds_match(element: &dyn ElementTrait, scroll: ScrollGeometr
         && bounds.height.to_bits() == scroll.content_size[1].to_bits()
 }
 
-/// Closed production corpus for the exact nested-scroll receiver leaf.
+/// Closed production corpus for a native retained scroll-content leaf.
 ///
 /// `Element` keeps its private style/layout oracle. Image, SVG and standalone
 /// Text are admitted only as structurally neutral leaves whose component-owned
 /// recorder reports one exact payload. Inline-IFC-owned Text is rejected by
 /// the Text-owned oracle before the generic capability check. The later strict
 /// recorder/compiler pass remains final payload authority.
-fn is_exact_retained_nested_scroll_content_leaf(
+fn is_exact_retained_native_scroll_content_leaf(
     element: &dyn ElementTrait,
     arena: &NodeArena,
 ) -> bool {
@@ -955,8 +908,8 @@ fn is_exact_retained_nested_scroll_content_leaf(
 
 /// Closed native corpus used while sealing an arbitrary-depth scroll forest.
 /// Interior `Element`s are property-neutral wrappers; terminal component
-/// leaves reuse the same strict native payload admission as the fixed nested
-/// oracle. Scroll hosts themselves are admitted separately.
+/// leaves reuse the same strict native payload admission. Scroll hosts
+/// themselves are admitted separately.
 pub(crate) fn is_exact_retained_scroll_forest_content_node(
     element: &dyn ElementTrait,
     arena: &NodeArena,
@@ -965,7 +918,7 @@ pub(crate) fn is_exact_retained_scroll_forest_content_node(
         return element.is_exact_retained_scroll_content_leaf()
             || element.is_exact_retained_scroll_forest_neutral_wrapper();
     }
-    is_exact_retained_nested_scroll_content_leaf(element, arena)
+    is_exact_retained_native_scroll_content_leaf(element, arena)
 }
 
 /// Typed result of observing a declared scroll host.
@@ -1874,17 +1827,6 @@ impl UiBuildContext {
         stable_key: PersistentTextureKey,
     ) -> RenderTargetOut {
         self.next_persistent_target_with_desc(graph, desc, stable_key)
-    }
-
-    /// Declares one exact frame-local color/depth target pair without
-    /// creating a stable key. The shared descriptor helper remains the sole
-    /// authority for deriving the depth attachment.
-    pub(crate) fn allocate_transient_target_with_desc(
-        &mut self,
-        graph: &mut FrameGraph,
-        color_desc: TextureDesc,
-    ) -> RenderTargetOut {
-        self.next_target_with_desc(graph, color_desc)
     }
 
     pub(crate) fn allocate_persistent_full_viewport_target(
@@ -6247,51 +6189,6 @@ impl Element {
             transform_content_stable_id: child_element.stable_id(),
             source_bounds,
             scroll,
-        })
-    }
-
-    /// Strict foundation oracle for exactly two directly nested vertical
-    /// scroll hosts and one untransformed content leaf.  Property-tree parent
-    /// chains and execution context remain separate planner/compiler proof.
-    pub(crate) fn exact_retained_nested_scroll_scene_admission(
-        &self,
-        owner: NodeKey,
-        arena: &NodeArena,
-        scale_factor: f32,
-    ) -> Option<RetainedNestedScrollSceneAdmissionSnapshot> {
-        let (outer_source_bounds, outer_scroll, inner_boundary_root) =
-            self.exact_retained_scroll_host_shell(owner, arena, scale_factor, None)?;
-        let inner_node = arena.get(inner_boundary_root)?;
-        let inner_element = inner_node.element.as_any().downcast_ref::<Element>()?;
-        if !scroll_content_bounds_match(inner_element, outer_scroll) {
-            return None;
-        }
-        let (inner_source_bounds, inner_scroll, content_leaf) = inner_element
-            .exact_retained_scroll_host_shell(
-                inner_boundary_root,
-                arena,
-                scale_factor,
-                Some(owner),
-            )?;
-        let content_node = arena.get(content_leaf)?;
-        let content_element = content_node.element.as_ref();
-        if arena.parent_of(content_leaf) != Some(inner_boundary_root)
-            || !is_exact_retained_nested_scroll_content_leaf(content_element, arena)
-            || !scroll_content_bounds_match(content_element, inner_scroll)
-        {
-            return None;
-        }
-        Some(RetainedNestedScrollSceneAdmissionSnapshot {
-            outer_boundary_root: owner,
-            outer_stable_id: self.stable_id(),
-            inner_boundary_root,
-            inner_stable_id: inner_element.stable_id(),
-            content_leaf,
-            content_leaf_stable_id: content_element.stable_id(),
-            outer_source_bounds,
-            inner_source_bounds,
-            outer_scroll,
-            inner_scroll,
         })
     }
 

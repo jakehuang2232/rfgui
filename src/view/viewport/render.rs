@@ -1,4 +1,5 @@
 use super::*;
+use crate::view::paint::PropertyBoundaryDagCompiler;
 
 fn build_root_legacy(
     graph: &mut FrameGraph,
@@ -31,6 +32,51 @@ enum AutoAuthorityKind {
     Legacy,
 }
 
+fn property_boundary_dag_success_telemetry_grammar(
+    nested_scroll_depth: Option<usize>,
+    generic_surface_count: usize,
+    scroll_group_count: usize,
+) -> (&'static str, String, &'static str) {
+    let (phase, topology) = nested_scroll_depth.map_or_else(
+        || ("property-boundary-dag", String::new()),
+        |depth| {
+            (
+                "nested-scroll-segment",
+                format!(" topology=linear-scroll-chain chain-depth={depth}"),
+            )
+        },
+    );
+    let residency = if nested_scroll_depth.is_some()
+        && generic_surface_count == 0
+        && scroll_group_count == 0
+    {
+        " residency=zero"
+    } else {
+        ""
+    };
+    (phase, topology, residency)
+}
+
+fn native_scroll_forest_topology_is_branching_or_multi_root(
+    roots: &[crate::view::node_arena::NodeKey],
+    property_trees: &crate::view::compositor::PropertyTrees,
+) -> bool {
+    if roots.len() > 1 {
+        return true;
+    }
+    let mut seen_parent = FxHashSet::default();
+    let mut has_scroll_root = false;
+    for scroll in property_trees.scrolls.values() {
+        match scroll.parent {
+            Some(parent) if !seen_parent.insert(parent) => return true,
+            Some(_) => {}
+            None if has_scroll_root => return true,
+            None => has_scroll_root = true,
+        }
+    }
+    false
+}
+
 #[derive(Clone, Debug)]
 enum AutoAuthorityRejection {
     Plan {
@@ -50,9 +96,6 @@ enum AutoAuthorityRejection {
         error: crate::view::paint::FramePaintPlanError,
     },
     PropertyBoundaryDagPlan {
-        error: crate::view::paint::PropertyScrollScenePlanError,
-    },
-    NestedScrollPlan {
         error: crate::view::paint::PropertyScrollScenePlanError,
     },
     DirectScrollTransformPlan {
@@ -110,9 +153,6 @@ impl AutoAuthorityRejection {
             }
             Self::PropertyBoundaryDagPlan { error } => {
                 format!("plan(property-boundary-dag):{error:?}")
-            }
-            Self::NestedScrollPlan { error } => {
-                format!("plan(property-scene-nested-scroll):{error:?}")
             }
             Self::DirectScrollTransformPlan { error } => {
                 format!("plan(property-scene-scroll-transform):{error:?}")
@@ -1112,11 +1152,6 @@ fn selection_rejection_debug_records(
                 DebugFallbackStage::Planning,
                 property_scroll_plan_error_debug_records(error),
             ),
-            AutoAuthorityRejection::NestedScrollPlan { error } => (
-                "nested-scroll",
-                DebugFallbackStage::Planning,
-                property_scroll_plan_error_debug_records(error),
-            ),
             AutoAuthorityRejection::DirectScrollTransformPlan { error } => (
                 "direct-scroll-transform",
                 DebugFallbackStage::Planning,
@@ -1348,10 +1383,6 @@ enum AutoAuthorityDecision {
         scene: crate::view::paint::ValidatedPropertyBoundaryDagScene,
         trace: AutoAuthorityTrace,
     },
-    NestedScrollScene {
-        prepared: crate::view::paint::PreparedNestedScrollReceiverGeometry,
-        trace: AutoAuthorityTrace,
-    },
     DirectScrollTransformScene {
         scene: crate::view::paint::ValidatedDirectScrollTransformTransaction,
         trace: AutoAuthorityTrace,
@@ -1427,9 +1458,6 @@ enum RetainedTransformCanarySelection {
     FrameRootScrollScenePrepareRejected(
         crate::view::paint::RetainedPropertyScrollScenePrepareError,
     ),
-    NestedScrollScenePlanned(crate::view::paint::PreparedNestedScrollReceiverGeometry),
-    NestedScrollScenePrepared,
-    NestedScrollScenePrepareRejected(crate::view::paint::RetainedPropertyScrollScenePrepareError),
     DirectScrollTransformScenePlanned(
         crate::view::paint::ValidatedDirectScrollTransformTransaction,
     ),
@@ -1556,50 +1584,6 @@ fn preflight_direct_scroll_transform_selection(
     }
 }
 
-fn preflight_nested_scroll_selection(
-    viewport: &mut Viewport,
-    graph: &mut FrameGraph,
-    ctx: crate::view::base_component::UiBuildContext,
-    clear_rgba: [f32; 4],
-    frame_owner: Option<crate::view::viewport::RetainedSurfaceFrameStageOwner>,
-    selection: RetainedTransformCanarySelection,
-) -> (
-    RetainedTransformCanarySelection,
-    Option<crate::view::paint::RetainedPropertyScrollSceneBuildOutcome>,
-) {
-    let RetainedTransformCanarySelection::NestedScrollScenePlanned(prepared_geometry) = selection
-    else {
-        return (selection, None);
-    };
-    let Some(frame_owner) = frame_owner else {
-        return (
-            RetainedTransformCanarySelection::NestedScrollScenePrepareRejected(
-                crate::view::paint::RetainedPropertyScrollScenePrepareError::StageUnavailable,
-            ),
-            None,
-        );
-    };
-    match crate::view::paint::prepare_nested_scroll_scene_from_pool(
-        viewport,
-        prepared_geometry,
-        graph,
-        ctx,
-        clear_rgba,
-        frame_owner,
-    ) {
-        Ok(prepared) => (
-            RetainedTransformCanarySelection::NestedScrollScenePrepared,
-            Some(crate::view::paint::emit_prepared_nested_scroll_scene(
-                prepared,
-            )),
-        ),
-        Err(error) => (
-            RetainedTransformCanarySelection::NestedScrollScenePrepareRejected(error),
-            None,
-        ),
-    }
-}
-
 fn preflight_frame_root_scroll_selection(
     viewport: &mut Viewport,
     graph: &mut FrameGraph,
@@ -1700,35 +1684,6 @@ fn direct_scroll_transform_prepare_rejection_dispatch(
 
 fn direct_scroll_transform_prepare_rejection_fallback_stage() -> PaintAuthorityFallbackStage {
     PaintAuthorityFallbackStage::Prepare
-}
-
-fn nested_scroll_prepare_rejection_dispatch(
-    error: &crate::view::paint::RetainedPropertyScrollScenePrepareError,
-) -> (bool, String) {
-    (
-        true,
-        format!("retained-auto authority=legacy nested-scroll-prepare-rejected={error:?}"),
-    )
-}
-
-fn nested_scroll_prepare_rejection_fallback_stage() -> PaintAuthorityFallbackStage {
-    PaintAuthorityFallbackStage::Prepare
-}
-
-fn nested_scroll_success_trace(
-    trace: &crate::view::paint::RetainedPropertyScrollSceneBuildTrace,
-) -> String {
-    format!(
-        "retained-auto authority=property-scene phase=nested-scroll topology=S0->S1->leaf roots={} generic-surfaces={} scroll-groups={} backing={:?} tiles={} aggregate-pair-bytes={} reraster={} reuse={} a0=transient-keyless",
-        trace.root_count,
-        trace.generic_surface_count,
-        trace.scroll_group_count,
-        trace.backing,
-        trace.tile_count,
-        trace.content_pair_bytes,
-        trace.reraster_count,
-        trace.reuse_count,
-    )
 }
 
 fn transform_effect_scroll_prepare_rejection_dispatch(
@@ -1870,29 +1825,6 @@ fn select_retained_auto_authority_with_semantics(
 
     if scrolls != 0 || reachable_tree_has_scroll_container(arena, roots) {
         let viewport = ctx.viewport();
-        // Coarse shape only controls whether the dedicated candidate is
-        // attempted. The graph-inert planner/compiler/geometry chain below
-        // remains the sole authority for exact S0 -> S1 -> leaf admission.
-        if roots.len() == 1 && scrolls == 2 {
-            match crate::view::paint::plan_and_prepare_nested_scroll_scene(
-                arena,
-                roots,
-                property_trees,
-                paint_generations,
-                viewport.scale_factor(),
-                ctx.paint_offset(),
-                ctx.graphics_pass_context().scissor_rect,
-                viewport.target_format(),
-                scroll_budget,
-            ) {
-                Ok(prepared) => {
-                    return AutoAuthorityDecision::NestedScrollScene { prepared, trace };
-                }
-                Err(error) => {
-                    trace.capture(|| AutoAuthorityRejection::NestedScrollPlan { error });
-                }
-            }
-        }
         match crate::view::paint::plan_and_validate_frame_root_scroll_scene(
             arena,
             roots,
@@ -1976,7 +1908,9 @@ fn select_retained_auto_authority_with_semantics(
                 trace.capture(|| AutoAuthorityRejection::TransformEffectScrollPlan { error });
             }
         }
-        if scrolls >= 2 {
+        let forest_topology = scrolls >= 2
+            && native_scroll_forest_topology_is_branching_or_multi_root(roots, property_trees);
+        if forest_topology {
             let plan_context = crate::view::paint::TransformSurfacePlanContext::new(
                 ctx.paint_offset(),
                 ctx.graphics_pass_context().scissor_rect,
@@ -1997,22 +1931,36 @@ fn select_retained_auto_authority_with_semantics(
                 }
             }
         }
-        match crate::view::paint::PropertyBoundaryDagCompiler::plan_and_validate(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            viewport.scale_factor(),
-            ctx.paint_offset(),
-            ctx.graphics_pass_context().scissor_rect,
-            semantic_frame_time,
-            viewport.target_format(),
-            scroll_budget,
-        ) {
-            Ok(scene) => return AutoAuthorityDecision::PropertyBoundaryDagScene { scene, trace },
+        let boundary_dag = PropertyBoundaryDagCompiler::
+            plan_and_validate_after_fixed_grammar_cascade(
+                arena,
+                roots,
+                property_trees,
+                paint_generations,
+                viewport.scale_factor(),
+                ctx.paint_offset(),
+                ctx.graphics_pass_context().scissor_rect,
+                semantic_frame_time,
+                viewport.target_format(),
+                scroll_budget,
+            );
+        match boundary_dag {
+            Ok(Some(scene)) => {
+                return AutoAuthorityDecision::PropertyBoundaryDagScene { scene, trace };
+            }
+            Ok(None) => {}
             Err(error) => {
                 trace.capture(|| AutoAuthorityRejection::PropertyBoundaryDagPlan { error });
             }
+        }
+        if scrolls >= 2 && !forest_topology {
+            trace.capture(|| AutoAuthorityRejection::NativeScrollForestPlan {
+                error: crate::view::paint::FramePaintPlanError {
+                    reasons: vec![crate::view::paint::FramePaintPlanRejection::InvalidPropertyScene(
+                        "native-scroll-forest-linear-chain",
+                    )],
+                },
+            });
         }
         return match crate::view::paint::plan_and_validate_direct_scroll_transform_scene(
             arena,
@@ -3475,10 +3423,6 @@ impl Viewport {
                         RetainedTransformCanarySelection::PropertyBoundaryDagScenePlanned(scene),
                         Some((AutoAuthorityKind::PropertyScene, trace)),
                     ),
-                    AutoAuthorityDecision::NestedScrollScene { prepared, trace } => (
-                        RetainedTransformCanarySelection::NestedScrollScenePlanned(prepared),
-                        Some((AutoAuthorityKind::PropertyScene, trace)),
-                    ),
                     AutoAuthorityDecision::DirectScrollTransformScene { scene, trace } => (
                         RetainedTransformCanarySelection::DirectScrollTransformScenePlanned(scene),
                         Some((AutoAuthorityKind::PropertyScene, trace)),
@@ -3625,6 +3569,7 @@ impl Viewport {
                 }
             }
         }
+        let mut property_boundary_dag_nested_scroll_depth = None;
         let property_boundary_dag_owner = if matches!(
             retained_transform_selection,
             RetainedTransformCanarySelection::PropertyBoundaryDagScenePlanned(_)
@@ -3638,6 +3583,7 @@ impl Viewport {
             else {
                 unreachable!("boundary-DAG preflight extracts only its owned scene")
             };
+            property_boundary_dag_nested_scroll_depth = scene.nested_scroll_chain_depth();
             Some(scene)
         } else {
             None
@@ -3679,30 +3625,6 @@ impl Viewport {
                 }
             }
         }
-        let (selection, mut pre_emitted_nested_scroll) = if matches!(
-            retained_transform_selection,
-            RetainedTransformCanarySelection::NestedScrollScenePlanned(_)
-        ) {
-            let selection = std::mem::replace(
-                &mut retained_transform_selection,
-                RetainedTransformCanarySelection::NestedScrollScenePrepared,
-            );
-            let scroll_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                ctx.viewport(),
-                ctx.state_clone(),
-            );
-            preflight_nested_scroll_selection(
-                self,
-                &mut graph,
-                scroll_ctx,
-                clear_rgba,
-                retained_surface_frame_owner,
-                selection,
-            )
-        } else {
-            (retained_transform_selection, None)
-        };
-        retained_transform_selection = selection;
         let (selection, mut pre_emitted_direct_scroll_transform) = if matches!(
             retained_transform_selection,
             RetainedTransformCanarySelection::DirectScrollTransformScenePlanned(_)
@@ -3961,8 +3883,6 @@ impl Viewport {
                     | RetainedTransformCanarySelection::FrameRootScrollScenePlanned(_)
                     | RetainedTransformCanarySelection::FrameRootScrollScenePrepared
                     | RetainedTransformCanarySelection::FrameRootScrollScenePrepareRejected(_)
-                    | RetainedTransformCanarySelection::NestedScrollScenePlanned(_)
-                    | RetainedTransformCanarySelection::NestedScrollScenePrepared
                     | RetainedTransformCanarySelection::DirectScrollTransformScenePlanned(_)
                     | RetainedTransformCanarySelection::DirectScrollTransformScenePrepared
                     | RetainedTransformCanarySelection::TransformScrollScenePlanned(_)
@@ -3992,9 +3912,6 @@ impl Viewport {
                     RetainedTransformCanarySelection::DirectScrollTransformScenePrepareRejected(
                         _,
                     ) => Some(direct_scroll_transform_prepare_rejection_fallback_stage()),
-                    RetainedTransformCanarySelection::NestedScrollScenePrepareRejected(_) => {
-                        Some(nested_scroll_prepare_rejection_fallback_stage())
-                    }
                     RetainedTransformCanarySelection::NoTransform
                     | RetainedTransformCanarySelection::SingletonShapeRejected { .. }
                     | RetainedTransformCanarySelection::PlanRejected(_)
@@ -4028,7 +3945,6 @@ impl Viewport {
             .map(|_| self.retained_surface_release_log_for_test().len());
         if pre_emitted_property_boundary_dag.is_none()
             && pre_emitted_native_scroll_forest.is_none()
-            && pre_emitted_nested_scroll.is_none()
             && pre_emitted_direct_scroll_transform.is_none()
             && pre_emitted_frame_root_scroll.is_none()
             && pre_emitted_property_scroll.is_none()
@@ -4206,18 +4122,6 @@ impl Viewport {
                             .to_owned(),
                     )
                 }
-                RetainedTransformCanarySelection::NestedScrollScenePrepared => {
-                    let outcome = pre_emitted_nested_scroll
-                        .take()
-                        .expect("prepared nested-scroll selection emitted under its lease");
-                    let (state, trace) = outcome.into_parts();
-                    ctx.set_state(state);
-                    if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                        telemetry.note_property_scroll_content(&trace);
-                    }
-                    self.stage_root_effect_clear();
-                    (false, nested_scroll_success_trace(&trace))
-                }
                 RetainedTransformCanarySelection::PropertyBoundaryDagScenePrepared => {
                     let outcome = pre_emitted_property_boundary_dag
                         .take()
@@ -4228,10 +4132,16 @@ impl Viewport {
                         telemetry.note_property_scroll_content(&trace);
                     }
                     self.stage_root_effect_clear();
+                    let (phase, topology, residency) =
+                        property_boundary_dag_success_telemetry_grammar(
+                            property_boundary_dag_nested_scroll_depth,
+                            trace.generic_surface_count,
+                            trace.scroll_group_count,
+                        );
                     (
                         false,
                         format!(
-                            "retained-auto authority=property-scene phase=property-boundary-dag roots={} generic-surfaces={} effect-surfaces={} scroll-groups={} backing={:?} tiles={} pair-bytes={} reraster={} reuse={}",
+                            "retained-auto authority=property-scene phase={phase}{topology} roots={} generic-surfaces={} effect-surfaces={} scroll-groups={} backing={:?} tiles={} pair-bytes={} reraster={} reuse={}{residency}",
                             trace.root_count,
                             trace.generic_surface_count,
                             trace.effect_surface_count,
@@ -4436,11 +4346,6 @@ impl Viewport {
                         ),
                     )
                 }
-                RetainedTransformCanarySelection::NestedScrollScenePrepareRejected(error) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    nested_scroll_prepare_rejection_dispatch(&error)
-                }
                 RetainedTransformCanarySelection::DirectScrollTransformScenePrepareRejected(
                     error,
                 ) => {
@@ -4509,14 +4414,6 @@ impl Viewport {
                         true,
                         "retained-auto authority=legacy frame-root-scroll-preflight-missing"
                             .to_owned(),
-                    )
-                }
-                RetainedTransformCanarySelection::NestedScrollScenePlanned(_) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        "retained-auto authority=legacy nested-scroll-preflight-missing".to_owned(),
                     )
                 }
                 RetainedTransformCanarySelection::DirectScrollTransformScenePlanned(_) => {

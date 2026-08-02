@@ -166,26 +166,6 @@ impl Svg {
         crate::view::svg_resource::set_svg_document_error_for_test(self.source_key);
     }
 
-    #[cfg(test)]
-    pub(crate) fn replace_active_raster_generation_for_test(&self, fill: u8) -> u64 {
-        let key = self
-            .active_raster_key
-            .expect("ready SVG test fixture must own an active raster");
-        let request = self
-            .active_raster_request
-            .expect("ready SVG test fixture must own an active request");
-        crate::view::svg_resource::replace_svg_raster_ready_for_test(
-            key,
-            request.physical_width,
-            request.physical_height,
-            std::sync::Arc::from(vec![
-                fill;
-                (request.physical_width * request.physical_height * 4)
-                    as usize
-            ]),
-        )
-    }
-
     pub fn new_with_id(id: u64, source: SvgSource) -> Self {
         let mut element = Element::new_with_id(id, 0.0, 0.0, PLACEHOLDER_SIZE, PLACEHOLDER_SIZE);
         let mut base_style = Style::new();
@@ -810,10 +790,7 @@ impl Svg {
                     {
                         return Err(super::ShadowPaintBlocker::Transform);
                     }
-                    if properties.scroll.is_some()
-                        && !recording_context
-                            .authorizes_nested_scroll_content_properties(owner, properties)
-                    {
+                    if properties.scroll.is_some() {
                         return Err(super::ShadowPaintBlocker::ScrollContainer);
                     }
                 }
@@ -888,10 +865,7 @@ impl Svg {
                     {
                         return Err(super::ShadowPaintBlocker::Transform);
                     }
-                    if properties.scroll.is_some()
-                        && !recording_context
-                            .authorizes_nested_scroll_content_properties(owner, properties)
-                    {
+                    if properties.scroll.is_some() {
                         return Err(super::ShadowPaintBlocker::ScrollContainer);
                     }
                     if let Some(effect) = properties.effect

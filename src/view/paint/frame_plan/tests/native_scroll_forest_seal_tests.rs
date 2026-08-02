@@ -1,5 +1,163 @@
 use super::*;
 
+fn single_root_depth_three_linear_scroll_fixture() -> (
+    NodeArena,
+    Vec<NodeKey>,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
+    let (mut arena, outer, inner, third_scroll, _properties, _generations) =
+        nested_scroll_plan_fixture();
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::ScrollDirection,
+        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+    );
+    style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    {
+        let mut element =
+            crate::view::test_support::get_element_mut::<Element>(&arena, third_scroll);
+        element.apply_style(style);
+        element.layout_state.layout_position.x = 10.0;
+        element.layout_state.layout_position.y = 20.0;
+        element.layout_state.layout_size = Size {
+            width: 100.0,
+            height: 600.0,
+        };
+        element.layout_state.layout_inner_position.x = 10.0;
+        element.layout_state.layout_inner_position.y = 20.0;
+        element.layout_state.layout_inner_size = Size {
+            width: 100.0,
+            height: 600.0,
+        };
+        element.layout_state.content_size = Size {
+            width: 100.0,
+            height: 900.0,
+        };
+        element.set_scroll_offset((0.0, 0.0));
+        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+    }
+    let leaf = arena.insert(Node::new(Box::new(Element::new_with_id(
+        0x12f0_f0, 10.0, 20.0, 100.0, 900.0,
+    ))));
+    arena.set_parent(leaf, Some(third_scroll));
+    arena.push_child(third_scroll, leaf);
+    {
+        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, leaf);
+        element.layout_state.layout_position.x = 10.0;
+        element.layout_state.layout_position.y = 20.0;
+        element.layout_state.layout_size = Size {
+            width: 100.0,
+            height: 900.0,
+        };
+        element.layout_state.layout_inner_position.x = 10.0;
+        element.layout_state.layout_inner_position.y = 20.0;
+        element.layout_state.layout_inner_size = Size {
+            width: 100.0,
+            height: 900.0,
+        };
+        element.layout_state.content_size = Size {
+            width: 100.0,
+            height: 900.0,
+        };
+        element.set_background_color_value(Color::rgb(24, 48, 72));
+        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+    }
+    arena.refresh_subtree_dirty_cache(outer);
+    let roots = vec![outer];
+    let mut properties = PropertyTrees::default();
+    properties.sync(&arena, &roots);
+    let mut generations = PaintGenerationTracker::default();
+    generations.sync(&arena, &roots, &properties);
+    for owner in [outer, inner, third_scroll] {
+        let element = crate::view::test_support::get_element::<Element>(&arena, owner);
+        let admission = element
+            .exact_retained_scroll_forest_host_admission(owner, &arena, 1.0)
+            .unwrap_or_else(|| panic!("depth-three fixture host admission: {owner:?}"));
+        let scroll = properties
+            .scroll_snapshot_for(ScrollNodeId(owner))
+            .unwrap_or_else(|| panic!("depth-three fixture scroll snapshot: {owner:?}"));
+        assert!(
+            admission.matches_scroll_node(scroll),
+            "depth-three fixture admission drift: {owner:?}"
+        );
+    }
+    (arena, roots, properties, generations)
+}
+
+#[test]
+fn depth_three_linear_chain_is_admitted_by_dag_before_forest_selection() {
+    let (arena, roots, properties, generations) = single_root_depth_three_linear_scroll_fixture();
+    assert_eq!(properties.scrolls.len(), 3);
+    let scene = crate::view::paint::PropertyBoundaryDagCompiler::plan_and_validate(
+        &arena,
+        &roots,
+        &properties,
+        &generations,
+        1.0,
+        [0.0; 2],
+        None,
+        crate::time::Instant::now(),
+        wgpu::TextureFormat::Bgra8UnormSrgb,
+        crate::view::paint::ScrollSceneSingleTextureBudget::new(
+            wgpu::Limits::default().max_texture_dimension_2d,
+            128 * 1024 * 1024,
+        )
+        .unwrap(),
+    )
+    .expect("DAG compiler owns the exact depth-three linear chain");
+    assert_eq!(scene.nested_scroll_chain_depth(), Some(3));
+}
+
+#[test]
+fn native_scroll_forest_keeps_single_root_branching_and_multi_root_authority() {
+    let (arena, roots, _properties, _generations) = native_scroll_forest_plan_fixture();
+    let single_root = vec![roots[0]];
+    let mut properties = PropertyTrees::default();
+    properties.sync(&arena, &single_root);
+    let mut generations = PaintGenerationTracker::default();
+    generations.sync(&arena, &single_root, &properties);
+    let single = plan_native_scroll_forest_scaffold_with_context(
+        &arena,
+        &single_root,
+        &properties,
+        &generations,
+        1.0,
+        TransformSurfacePlanContext::default(),
+    )
+    .expect("single-root branching scroll tree remains a native forest");
+    let single = single.native_scroll_forest_planning_scaffold().unwrap();
+    assert_eq!(single.roots.len(), 1);
+    assert_eq!(single.boundaries.len(), 4);
+    assert_eq!(
+        single
+            .boundaries
+            .iter()
+            .map(|boundary| boundary.parent)
+            .collect::<Vec<_>>(),
+        [
+            None,
+            Some(NativeScrollBoundaryId(0)),
+            Some(NativeScrollBoundaryId(1)),
+            Some(NativeScrollBoundaryId(1)),
+        ]
+    );
+
+    let (arena, roots, properties, generations) = native_scroll_forest_plan_fixture();
+    assert!(
+        plan_native_scroll_forest_scaffold_with_context(
+            &arena,
+            &roots,
+            &properties,
+            &generations,
+            1.0,
+            TransformSurfacePlanContext::default(),
+        )
+        .is_ok(),
+        "multi-root forest remains owned by NativeScrollForest"
+    );
+}
+
 #[test]
 fn native_scroll_forest_scaffold_seals_dense_dfs_parent_edges_and_dpr() {
     for scale_factor in [1.0, 2.0] {
@@ -112,9 +270,8 @@ fn native_scroll_forest_scaffold_seals_dense_dfs_parent_edges_and_dpr() {
             None,
             wgpu::TextureFormat::Bgra8UnormSrgb,
         );
-        let (color, depth) = crate::view::base_component::persistent_target_texture_descriptors(
-            color, color_key,
-        );
+        let (color, depth) =
+            crate::view::base_component::persistent_target_texture_descriptors(color, color_key);
         let stamp =
             crate::view::paint::compiler::validated_native_scroll_forest_content_raster_stamp(
                 forest.boundaries[1].admission.content_root,
@@ -135,12 +292,12 @@ fn native_scroll_forest_scaffold_seals_dense_dfs_parent_edges_and_dpr() {
                 0..rounded_parent.content_program_opaque_terminal,
             )
             .expect("typed native forest content raster stamp");
-        assert!(crate::view::paint::compiler::native_scroll_forest_content_raster_stamp_is_canonical(
-            &stamp
-        ));
         assert!(
-            !crate::view::paint::compiler::retained_surface_raster_stamp_is_canonical(&stamp)
+            crate::view::paint::compiler::native_scroll_forest_content_raster_stamp_is_canonical(
+                &stamp
+            )
         );
+        assert!(!crate::view::paint::compiler::retained_surface_raster_stamp_is_canonical(&stamp));
         for boundary in &forest.boundaries {
             let expected = boundary
                 .parent

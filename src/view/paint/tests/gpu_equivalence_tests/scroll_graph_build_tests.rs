@@ -158,7 +158,7 @@ fn production_nested_scroll_graph_builds_without_adapter() -> Result<(), String>
     assert_eq!(trace.reuse_count, 0);
     assert!(!viewport.has_compatible_persistent_render_target_pair(leaf_key, &leaf_desc));
     let clears = graph.test_graphics_passes::<crate::view::frame_graph::ClearPass>();
-    assert_eq!(clears.len(), 3, "root + transient A0 + cold R1");
+    assert_eq!(clears.len(), 2, "root + cold direct-to-frame R1");
     assert_eq!(
         clears[0].test_snapshot().color_bits,
         [0.0_f32.to_bits(); 4],
@@ -174,7 +174,7 @@ fn production_nested_scroll_graph_builds_without_adapter() -> Result<(), String>
     let composites = graph.test_graphics_passes::<
         crate::view::render_pass::texture_composite_pass::TextureCompositePass,
     >();
-    assert_eq!(composites.len(), 2, "R1 -> A0 -> root");
+    assert_eq!(composites.len(), 1, "R1 composites directly to root");
     assert!(
         composites
             .iter()

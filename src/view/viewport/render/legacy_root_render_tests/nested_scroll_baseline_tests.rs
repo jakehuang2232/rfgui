@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::view::debug::census::fallback_detail_label;
-use crate::view::paint::FramePaintPlanRejection;
+use crate::view::paint::{FrameArtifactFallbackReason, FramePaintPlanRejection, LegacyPaintReason};
 
 fn nested_scroll_scene() -> (
     NodeArena,
@@ -41,7 +41,7 @@ fn nested_scroll_falls_back_to_whole_frame_legacy() {
 }
 
 #[test]
-fn the_property_boundary_dag_candidate_reports_the_nested_host() {
+fn the_property_boundary_dag_candidate_reaches_artifact_preflight() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, inner, properties, generations) = nested_scroll_scene();
 
@@ -61,16 +61,18 @@ fn the_property_boundary_dag_candidate_reports_the_nested_host() {
         .expect("the property boundary DAG candidate is the general path and must report");
 
     let crate::view::paint::PropertyScrollScenePlanError::Frame(frame) = dag else {
-        panic!("the DAG candidate delegates to the frame planner: {dag:?}")
+        panic!("M4 should pass DAG grammar classification: {dag:?}")
     };
     assert!(
         frame.reasons.iter().any(|reason| matches!(
             reason,
-            FramePaintPlanRejection::ScrollBoundary(owner) if *owner == inner
+            FramePaintPlanRejection::Coverage(FrameArtifactFallbackReason::LegacyBoundary(
+                LegacyPaintReason::MissingPreparedInlineRoot
+            ))
         )),
-        "the nested host is named: {:?}",
-        frame.reasons
+        "the lightweight M0 fixture now stops at artifact readiness, not nested grammar: {frame:?}"
     );
+    assert_ne!(inner, roots[0], "fixture still contains the nested host");
 }
 
 #[test]
@@ -97,16 +99,23 @@ fn the_reported_codes_are_the_ones_a_census_would_show() {
     codes.sort();
     codes.dedup();
 
-    for expected in [
-        "property-boundary-dag:scroll-boundary",
-        "property-boundary-dag:invalid-scroll-host",
-        "property-boundary-dag:ancestor-boundary-not-consumed",
-        "property-boundary-dag:receiver-ancestor-boundary-not-consumed",
-        "property-boundary-dag:receiver-state-cursor-mismatch",
-    ] {
-        assert!(
-            codes.contains(&expected.to_string()),
-            "missing {expected} in {codes:?}"
-        );
-    }
+    assert!(
+        codes.contains(&"missing-inline-root".to_string()),
+        "M4 reaches artifact preflight for the lightweight M0 fixture: {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"property-boundary-dag:property-boundary-dag-plan".to_string()),
+        "the nested DAG compiler grammar must no longer be the rejection: {codes:?}"
+    );
+    assert!(
+        codes.iter().all(|code| !matches!(
+            code.as_str(),
+            "property-boundary-dag:scroll-boundary"
+                | "property-boundary-dag:invalid-scroll-host"
+                | "property-boundary-dag:ancestor-boundary-not-consumed"
+                | "property-boundary-dag:receiver-ancestor-boundary-not-consumed"
+                | "property-boundary-dag:receiver-state-cursor-mismatch"
+        )),
+        "M0 planner consequences must disappear once M3 seals the typed DAG: {codes:?}"
+    );
 }

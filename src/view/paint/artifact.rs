@@ -171,16 +171,9 @@ pub(crate) struct PaintRecordingContext {
     /// witness remains with coverage; component hooks only receive this
     /// target-scoped, Copy projection capability.
     pub(crate) property_forest_projection: Option<PropertyForestProjectionToken>,
-    /// Exact bounded `S0 -> S1 -> leaf` content projection.  This is kept
-    /// separate from the generic ancestor stack: two scroll boundaries may
-    /// not be smuggled through the single-scroll stack invariant.
-    pub(crate) nested_scroll_content: Option<PaintNestedScrollContentWitness>,
-    /// Inner-host half of the bounded nested scene.  It projects S0/C0 from
-    /// H1/O1 self paint while preserving S1/C1 on the receiver edge.
-    pub(crate) nested_scroll_host: Option<PaintNestedScrollContentWitness>,
-    /// Boundary-local arbitrary-depth counterpart of `nested_scroll_host`.
-    /// It projects the parent S/C pair from host self paint while preserving
-    /// this boundary's own S/C pair on descendants.
+    /// Boundary-local arbitrary-depth host projection. It projects the parent
+    /// S/C pair from host self paint while preserving this boundary's own S/C
+    /// pair on descendants.
     pub(crate) scroll_forest_host: Option<PaintScrollForestEdgeWitness>,
     /// C1-only proof which consumes one outer Scroll/ContentsClip pair while
     /// preserving the exact TextArea-local ContentsClip in detached geometry.
@@ -347,12 +340,6 @@ impl PaintRecordingContext {
         self,
         live: PropertyTreeState,
     ) -> Option<PropertyTreeState> {
-        if let Some(witness) = self.nested_scroll_content {
-            return witness.project_for(self.recording_owner?, live);
-        }
-        if let Some(witness) = self.nested_scroll_host {
-            return witness.project_host_for(self.recording_owner?, live);
-        }
         if let Some(witness) = self.scroll_forest_host {
             return witness.project_host_for(self.recording_owner?, live);
         }
@@ -446,9 +433,7 @@ impl PaintRecordingContext {
         if self.recording_owner != Some(owner) {
             return false;
         }
-        self.nested_scroll_content
-            .is_some_and(|witness| witness.is_canonical_for(owner))
-            || matches!(
+        matches!(
                 self.consumed_ancestor_property,
                 Some(ConsumedAncestorProperty::ScrollContents(witness))
                     if witness.is_canonical_for(owner)
@@ -537,26 +522,6 @@ impl PaintRecordingContext {
                     }))
     }
 
-    /// Exact media-leaf exception for the bounded nested-scroll recorder. The
-    /// leaf artifact has consumed S1/C1 but deliberately retains outer S0/C0
-    /// until the R1 -> A0 composite. No generic/single-scroll authority can
-    /// satisfy this predicate.
-    pub(crate) fn authorizes_nested_scroll_content_properties(
-        self,
-        owner: NodeKey,
-        properties: PropertyTreeState,
-    ) -> bool {
-        self.recording_owner == Some(owner)
-            && self.nested_scroll_content.is_some_and(|witness| {
-                witness.is_canonical_for(owner)
-                    && properties
-                        == (PropertyTreeState {
-                            clip: Some(witness.outer_contents_clip()),
-                            scroll: Some(witness.outer_scroll()),
-                            ..PropertyTreeState::default()
-                        })
-            })
-    }
 }
 
 /// Recorder-owned C3a property capability.  The full source grammar is kept
@@ -2044,190 +2009,6 @@ impl PaintScrollInteractiveTextAreaSubtreeWitness {
         }
         (live == [self.live_contents_clip, self.outer.contents_clip_snapshot()])
             .then(|| vec![self.local_contents_clip])
-    }
-}
-
-/// Recorder-owned witness for the leaf of exactly two nested scroll hosts.
-/// The inner boundary is consumed in this recorder scope and projects to the
-/// still-live outer boundary.  A separate outer scope consumes that remaining
-/// boundary, preserving the generic stack's one-scroll invariant.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PaintNestedScrollContentWitness {
-    outer_boundary_root: NodeKey,
-    inner_boundary_root: NodeKey,
-    content_root: NodeKey,
-    outer_scroll: ScrollNodeId,
-    outer_contents_clip: ClipNodeId,
-    inner_scroll: ScrollNodeId,
-    inner_contents_clip: ClipNodeId,
-    normalization_offset_bits: [u32; 2],
-}
-
-impl PaintNestedScrollContentWitness {
-    #[cfg(test)]
-    pub(crate) fn for_layerizer_test(
-        outer_boundary_root: NodeKey,
-        inner_boundary_root: NodeKey,
-        content_root: NodeKey,
-    ) -> Option<Self> {
-        (outer_boundary_root != inner_boundary_root
-            && outer_boundary_root != content_root
-            && inner_boundary_root != content_root)
-            .then_some(Self {
-                outer_boundary_root,
-                inner_boundary_root,
-                content_root,
-                outer_scroll: ScrollNodeId(outer_boundary_root),
-                outer_contents_clip: ClipNodeId {
-                    owner: outer_boundary_root,
-                    role: ClipNodeRole::ContentsClip,
-                },
-                inner_scroll: ScrollNodeId(inner_boundary_root),
-                inner_contents_clip: ClipNodeId {
-                    owner: inner_boundary_root,
-                    role: ClipNodeRole::ContentsClip,
-                },
-                normalization_offset_bits: [0.0_f32.to_bits(); 2],
-            })
-    }
-
-    pub(crate) fn new(
-        outer_boundary_root: NodeKey,
-        inner_boundary_root: NodeKey,
-        content_root: NodeKey,
-        outer_scroll: ScrollNodeSnapshot,
-        outer_contents_clip: ClipNodeSnapshot,
-        inner_scroll: ScrollNodeSnapshot,
-        inner_contents_clip: ClipNodeSnapshot,
-    ) -> Option<Self> {
-        let outer_clip = outer_contents_clip.id;
-        let inner_clip = inner_contents_clip.id;
-        let normalization_offset = [inner_scroll.offset.x, inner_scroll.offset.y];
-        (outer_boundary_root != inner_boundary_root
-            && outer_boundary_root != content_root
-            && inner_boundary_root != content_root
-            && outer_scroll.id == ScrollNodeId(outer_boundary_root)
-            && outer_scroll.owner == outer_boundary_root
-            && outer_scroll.parent.is_none()
-            && outer_scroll.generation != 0
-            && outer_clip.owner == outer_boundary_root
-            && outer_clip.role == ClipNodeRole::ContentsClip
-            && outer_contents_clip.owner == outer_boundary_root
-            && outer_contents_clip.parent.is_none()
-            && outer_contents_clip.generation != 0
-            && inner_scroll.id == ScrollNodeId(inner_boundary_root)
-            && inner_scroll.owner == inner_boundary_root
-            && inner_scroll.parent == Some(outer_scroll.id)
-            && inner_scroll.generation != 0
-            && inner_clip.owner == inner_boundary_root
-            && inner_clip.role == ClipNodeRole::ContentsClip
-            && inner_contents_clip.owner == inner_boundary_root
-            && inner_contents_clip.parent == Some(outer_clip)
-            && inner_contents_clip.generation != 0
-            && outer_scroll.has_canonical_vertical_geometry_with_contents_clip(outer_contents_clip)
-            && inner_scroll.has_canonical_nested_vertical_geometry_with_contents_clip(
-                inner_contents_clip,
-                outer_scroll,
-                outer_contents_clip,
-            )
-            && normalization_offset.into_iter().all(f32::is_finite))
-        .then_some(Self {
-            outer_boundary_root,
-            inner_boundary_root,
-            content_root,
-            outer_scroll: outer_scroll.id,
-            outer_contents_clip: outer_clip,
-            inner_scroll: inner_scroll.id,
-            inner_contents_clip: inner_clip,
-            normalization_offset_bits: normalization_offset.map(f32::to_bits),
-        })
-    }
-
-    pub(crate) fn boundary_root(self) -> NodeKey {
-        self.inner_boundary_root
-    }
-
-    pub(crate) fn outer_boundary_root(self) -> NodeKey {
-        self.outer_boundary_root
-    }
-
-    pub(crate) fn content_root(self) -> NodeKey {
-        self.content_root
-    }
-
-    pub(crate) fn inner_scroll(self) -> ScrollNodeId {
-        self.inner_scroll
-    }
-
-    pub(crate) fn outer_scroll(self) -> ScrollNodeId {
-        self.outer_scroll
-    }
-
-    pub(crate) fn outer_contents_clip(self) -> ClipNodeId {
-        self.outer_contents_clip
-    }
-
-    pub(crate) fn inner_contents_clip(self) -> ClipNodeId {
-        self.inner_contents_clip
-    }
-
-    pub(crate) fn normalization_paint_offset(self) -> [f32; 2] {
-        self.normalization_offset_bits.map(f32::from_bits)
-    }
-
-    fn is_canonical_for(self, owner: NodeKey) -> bool {
-        self.outer_boundary_root != self.inner_boundary_root
-            && self.outer_boundary_root != self.content_root
-            && self.inner_boundary_root != self.content_root
-            && owner == self.content_root
-            && self.outer_scroll == ScrollNodeId(self.outer_boundary_root)
-            && self.outer_contents_clip.owner == self.outer_boundary_root
-            && self.outer_contents_clip.role == ClipNodeRole::ContentsClip
-            && self.inner_scroll == ScrollNodeId(self.inner_boundary_root)
-            && self.inner_contents_clip.owner == self.inner_boundary_root
-            && self.inner_contents_clip.role == ClipNodeRole::ContentsClip
-    }
-
-    fn project_for(self, owner: NodeKey, live: PropertyTreeState) -> Option<PropertyTreeState> {
-        (self.is_canonical_for(owner)
-            && live
-                == (PropertyTreeState {
-                    clip: Some(self.inner_contents_clip),
-                    scroll: Some(self.inner_scroll),
-                    ..PropertyTreeState::default()
-                }))
-        .then_some(PropertyTreeState {
-            clip: Some(self.outer_contents_clip),
-            scroll: Some(self.outer_scroll),
-            ..PropertyTreeState::default()
-        })
-    }
-
-    fn project_host_for(
-        self,
-        owner: NodeKey,
-        live: PropertyTreeState,
-    ) -> Option<PropertyTreeState> {
-        if owner != self.inner_boundary_root {
-            return None;
-        }
-        let outer = PropertyTreeState {
-            clip: Some(self.outer_contents_clip),
-            scroll: Some(self.outer_scroll),
-            ..PropertyTreeState::default()
-        };
-        let inner = PropertyTreeState {
-            clip: Some(self.inner_contents_clip),
-            scroll: Some(self.inner_scroll),
-            ..PropertyTreeState::default()
-        };
-        if live == outer {
-            Some(PropertyTreeState::default())
-        } else if live == inner {
-            Some(inner)
-        } else {
-            None
-        }
     }
 }
 

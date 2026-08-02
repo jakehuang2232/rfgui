@@ -75,12 +75,10 @@ fn property_transform_effect_scroll_insertion_freezes_nested_receivers_and_stack
     let [insertion] = scaffold.transform_effect_receiver_insertions.as_slice() else {
         panic!("exact T->E->S owns one nested insertion")
     };
-    assert!(
-        crate::view::paint::compiler::direct_translation_bits(
-            insertion.outer_geometry.viewport_transform
-        )
-        .is_some()
-    );
+    assert!(crate::view::paint::compiler::direct_translation_bits(
+        insertion.outer_geometry.viewport_transform
+    )
+    .is_some());
     assert!(
         insertion.outer_geometry.source_bounds.width
             > f32::from_bits(insertion.inner.raster_bounds_bits[2])
@@ -141,9 +139,8 @@ fn property_scroll_interleave_scaffold_rejects_scroll_descendant_transform() {
 
 #[test]
 fn property_scroll_interleave_scaffold_seals_same_owner_transform_scroll_roles() {
-    let (arena, root, properties, generations) = property_scroll_interleave_fixture(
-        ScrollInterleaveFixtureShape::CoLocatedTransformScroll,
-    );
+    let (arena, root, properties, generations) =
+        property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::CoLocatedTransformScroll);
     let plan = plan_property_scroll_interleave_scaffold_with_context(
         &arena,
         &[root],
@@ -325,15 +322,12 @@ fn property_scroll_receiver_insertion_seal_rejects_drop_duplicate_reorder_and_re
             .scroll_schedule_scaffold
             .as_mut()
             .unwrap();
-        let [
-            PropertySceneScheduledStep::RetainedSurface {
-                boundary: PropertyScheduledSurfaceBoundary::Transform(receiver),
-                ..
-            },
-            PropertySceneScheduledStep::ScrollBoundary {
-                boundary_ordinal, ..
-            },
-        ] = scaffold.schedule.steps.as_slice()
+        let [PropertySceneScheduledStep::RetainedSurface {
+            boundary: PropertyScheduledSurfaceBoundary::Transform(receiver),
+            ..
+        }, PropertySceneScheduledStep::ScrollBoundary {
+            boundary_ordinal, ..
+        }] = scaffold.schedule.steps.as_slice()
         else {
             panic!("T->S schedule")
         };
@@ -444,6 +438,7 @@ fn interleave_rule_codes_are_distinct_and_stable() {
         "transform-effect-boundary-identity",
         "transform-only-under-scroll-ancestor",
         "effect-under-non-scroll-between-scroll",
+        "scroll-under-non-scroll-between-scroll",
         "ancestor-boundary-not-consumed",
         "receiver-ancestor-boundary-not-consumed",
         "receiver-state-cursor-mismatch",
@@ -474,90 +469,196 @@ fn interleave_rule_codes_are_distinct_and_stable() {
     assert_eq!(rule, codes[0]);
 }
 
-/// Baseline for nested scroll support. See
+/// Typed nested-scroll grammar. See
 /// `docs/design/nested-scroll-property-interleave.md`.
-///
-/// A scroll host whose ancestor path already holds a scroll host is rejected
-/// today. Pinning the exact owner-and-code set makes any change to that
-/// rejection observable, and records which of the reasons are consequences of
-/// one another rather than independent findings.
 #[test]
-fn nested_scroll_is_rejected_with_its_exact_owner_and_code_set() {
-    let (arena, root, inner, properties, generations) = nested_scroll_fixture();
-
-    let error = plan_property_scroll_interleave_scaffold_with_context(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        TransformSurfacePlanContext::default(),
-    )
-    .expect_err("a scroll host under a scroll ancestor is not admitted today");
-
-    let mut observed = error
-        .reasons
-        .iter()
-        .map(|reason| match reason {
-            FramePaintPlanRejection::ScrollBoundary(owner) => (*owner, "scroll-boundary"),
-            FramePaintPlanRejection::InvalidScrollHost(owner) => (*owner, "invalid-scroll-host"),
-            FramePaintPlanRejection::UnsupportedPropertyInterleave(owner, rule) => (*owner, *rule),
-            other => panic!("unexpected nested-scroll rejection: {other:?}"),
-        })
-        .collect::<Vec<_>>();
-    observed.sort_unstable_by_key(|(_, code)| *code);
-
-    assert_eq!(
-        observed,
-        vec![
-            (inner, "ancestor-boundary-not-consumed"),
-            (inner, "invalid-scroll-host"),
-            (inner, "receiver-ancestor-boundary-not-consumed"),
-            (inner, "receiver-state-cursor-mismatch"),
-            (root, "root-boundary-schedule-unsupported"),
-            (inner, "scroll-boundary"),
-        ]
-    );
-    // Five of the six name the inner host. The sixth is the root's schedule
-    // span, which the census reports as its own group on other nodes — so it
-    // is a second consequence of nesting here, not an independent finding.
-    assert_eq!(
-        observed.iter().filter(|(owner, _)| *owner == inner).count(),
-        5
-    );
-}
-
-/// The outer scroll host on its own is admitted, so the rejection above is
-/// about nesting rather than about either host being malformed.
-#[test]
-fn the_outer_scroll_host_alone_is_not_the_reason_nested_scroll_fails() {
+fn nested_scroll_seals_a_linear_boundary_dag_with_parent_generation() {
     let (arena, root, inner, properties, generations) = nested_scroll_fixture();
     let outer = arena
         .parent_of(inner)
-        .expect("inner sits under the outer host");
+        .expect("inner sits directly under the outer scroll host");
 
-    let error = plan_property_scroll_interleave_scaffold_with_context(
+    let plan = plan_property_scroll_interleave_scaffold_with_context(
         &arena,
         &[root],
         &properties,
         &generations,
         TransformSurfacePlanContext::default(),
     )
-    .expect_err("nested scroll is rejected");
-
-    assert!(
-        error.reasons.iter().all(|reason| !matches!(
-            reason,
-            FramePaintPlanRejection::ScrollBoundary(owner)
-                | FramePaintPlanRejection::InvalidScrollHost(owner)
-                if *owner == outer
-        )),
-        "the outer host is planned without complaint: {:?}",
-        error.reasons
+    .expect("nested scroll should produce the M3 typed scaffold");
+    let scaffold = plan.property_scroll_planning_scaffold().unwrap();
+    let [schedule_root] = scaffold.roots.as_slice() else {
+        panic!("one scene root")
+    };
+    assert_eq!(schedule_root.step_span, 0..2);
+    assert_eq!(schedule_root.boundary_span, 0..2);
+    let [outer_boundary, inner_boundary] = scaffold.boundaries.as_slice() else {
+        panic!("one outer and one inner scroll boundary")
+    };
+    assert_eq!(outer_boundary.scroll.id, ScrollNodeId(outer));
+    assert_eq!(outer_boundary.basis, ScrollCompositeBasis::FrameRoot);
+    assert_eq!(outer_boundary.scroll_content_basis_generation, None);
+    assert_eq!(inner_boundary.scroll.id, ScrollNodeId(inner));
+    assert_eq!(inner_boundary.scroll.parent, Some(outer_boundary.scroll.id));
+    assert_eq!(
+        inner_boundary.contents_clip.parent,
+        Some(outer_boundary.contents_clip.id)
     );
+    assert_eq!(
+        inner_boundary.basis,
+        ScrollCompositeBasis::ScrollContent(outer_boundary.scroll.id)
+    );
+    assert_eq!(
+        inner_boundary.scroll_content_basis_generation,
+        Some(outer_boundary.scroll.generation)
+    );
+    assert_eq!(
+        inner_boundary.consumed_properties.projected_output.clip,
+        Some(outer_boundary.contents_clip.id)
+    );
+    assert!(outer_boundary.is_canonical());
+    assert!(inner_boundary.is_canonical());
+    let [outer_node, inner_node] = scaffold.boundary_dag.nodes.as_slice() else {
+        panic!("the boundary DAG preserves both scroll nodes")
+    };
+    assert!(matches!(
+        outer_node.receiver,
+        PropertyBoundaryReceiverScope::FrameRoot {
+            scene_root_ordinal: 0
+        }
+    ));
+    assert_eq!(
+        inner_node.receiver,
+        PropertyBoundaryReceiverScope::ScrollContent(outer_node.id)
+    );
+    assert!(property_boundary_dag_is_canonical(scaffold));
+    assert!(property_scene_plan_is_sealed(&plan));
 }
 
-/// The property tree already models the nesting the planner refuses, so the
-/// refusal is a grammar restriction rather than missing data.
+#[test]
+fn nested_scroll_seal_rejects_span_generation_and_receiver_tampering() {
+    let (arena, root, _inner, properties, generations) = nested_scroll_fixture();
+    let build = || {
+        plan_property_scroll_interleave_scaffold_with_context(
+            &arena,
+            &[root],
+            &properties,
+            &generations,
+            TransformSurfacePlanContext::default(),
+        )
+        .expect("sealed nested-scroll scaffold")
+    };
+
+    let mut span = build();
+    let scaffold = span
+        .property_scene_seal
+        .as_mut()
+        .unwrap()
+        .scroll_schedule_scaffold
+        .as_mut()
+        .unwrap();
+    scaffold.roots[0].boundary_span = 0..1;
+    scaffold.planned_roots[0].boundary_span = 0..1;
+    assert!(!property_scene_plan_is_sealed(&span));
+
+    let mut generation = build();
+    let scaffold = generation
+        .property_scene_seal
+        .as_mut()
+        .unwrap()
+        .scroll_schedule_scaffold
+        .as_mut()
+        .unwrap();
+    let wrong_generation = scaffold.boundaries[0].scroll.generation.saturating_add(1);
+    scaffold.boundaries[1].scroll_content_basis_generation = Some(wrong_generation);
+    scaffold.planned_boundaries[1].scroll_content_basis_generation = Some(wrong_generation);
+    assert!(!property_scene_plan_is_sealed(&generation));
+
+    let mut receiver = build();
+    let scaffold = receiver
+        .property_scene_seal
+        .as_mut()
+        .unwrap()
+        .scroll_schedule_scaffold
+        .as_mut()
+        .unwrap();
+    let wrong_receiver = PropertyBoundaryReceiverScope::FrameRoot {
+        scene_root_ordinal: 0,
+    };
+    scaffold.boundary_dag.nodes[1].receiver = wrong_receiver;
+    scaffold.planned_boundary_dag.nodes[1].receiver = wrong_receiver;
+    assert!(!property_scene_plan_is_sealed(&receiver));
+}
+
+#[test]
+fn nested_scroll_grammar_is_not_capped_at_two_boundaries() {
+    let (mut arena, root, inner, mut properties, mut generations) = nested_scroll_fixture();
+    let third = arena.insert(Node::new(Box::new(Element::new_with_id(
+        0xb4_0011, 0.0, 0.0, 120.0, 120.0,
+    ))));
+    let leaf = arena.insert(Node::new(Box::new(Element::new_with_id(
+        0xb4_0012, 0.0, -30.0, 120.0, 480.0,
+    ))));
+    arena.set_parent(third, Some(inner));
+    arena.push_child(inner, third);
+    arena.set_parent(leaf, Some(third));
+    arena.push_child(third, leaf);
+    {
+        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, leaf);
+        element.set_background_color_value(Color::rgb(48, 72, 96));
+        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+    }
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::ScrollDirection,
+        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+    );
+    style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    {
+        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, third);
+        element.apply_style(style);
+        element.layout_state.content_size = Size {
+            width: 120.0,
+            height: 480.0,
+        };
+        element.set_scroll_offset((0.0, 30.0));
+        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+    }
+    arena.refresh_subtree_dirty_cache(root);
+    properties.sync(&arena, &[root]);
+    generations.sync(&arena, &[root], &properties);
+
+    let plan = plan_property_scroll_interleave_scaffold_with_context(
+        &arena,
+        &[root],
+        &properties,
+        &generations,
+        TransformSurfacePlanContext::default(),
+    )
+    .expect("the typed grammar narrows by chain shape rather than depth");
+    let scaffold = plan.property_scroll_planning_scaffold().unwrap();
+    for boundary in &scaffold.boundaries {
+        assert!(boundary.is_canonical());
+    }
+    assert!(property_boundary_dag_is_canonical(scaffold));
+    assert_eq!(scaffold.roots[0].step_span, 0..3);
+    assert_eq!(scaffold.roots[0].boundary_span, 0..3);
+    assert_eq!(scaffold.boundaries.len(), 3);
+    assert_eq!(scaffold.boundary_dag.nodes.len(), 3);
+    for index in 1..3 {
+        assert_eq!(
+            scaffold.boundaries[index].basis,
+            ScrollCompositeBasis::ScrollContent(scaffold.boundaries[index - 1].scroll.id)
+        );
+        assert_eq!(
+            scaffold.boundary_dag.nodes[index].receiver,
+            PropertyBoundaryReceiverScope::ScrollContent(scaffold.boundary_dag.nodes[index - 1].id)
+        );
+    }
+    assert!(property_scene_plan_is_sealed(&plan));
+}
+
+/// The property tree already models the nesting consumed by the M3 grammar.
 #[test]
 fn the_property_tree_already_chains_the_nested_scroll_hosts() {
     use crate::view::compositor::property_tree::ScrollNodeId;

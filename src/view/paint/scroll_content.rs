@@ -1,7 +1,9 @@
 #![allow(dead_code)] // E2A0 contract scaffold; production scene dispatch lands in E2A3.
 
-use crate::view::base_component::TransformSurfaceGeometrySnapshot;
-use crate::view::base_component::{RetainedSurfaceBounds, scroll_content_layer_stable_key};
+use crate::view::base_component::{
+    RetainedSurfaceBounds, TransformSurfaceGeometrySnapshot, exact_logical_scissor_for_rect,
+    scroll_content_layer_stable_key,
+};
 use crate::view::compositor::property_tree::{
     ClipNodeSnapshot, ScrollNodeSnapshot, TransformNodeSnapshot,
 };
@@ -177,6 +179,99 @@ pub(crate) struct PreparedScrollContentCompositeGeometry {
 }
 
 impl PreparedScrollContentCompositeGeometry {
+    /// Freezes the one direct-to-frame composite for an already-resolved
+    /// nested-scroll chain. Descendant layout and clip snapshots are current
+    /// world-space values, so ancestor offsets must not be applied again.
+    /// Canonical source and zero-offset world origins remain non-negative;
+    /// only the final destination after applying scroll and paint offsets may
+    /// have a signed origin.
+    pub(crate) fn from_nested_segment_chain(
+        stamp: &super::RetainedSurfaceRasterStamp,
+        boundaries: &[(ScrollNodeSnapshot, ClipNodeSnapshot)],
+        incoming_paint_offset: [f32; 2],
+        outer_scissor: Option<[u32; 4]>,
+    ) -> Option<Self> {
+        if boundaries.len() < 2
+            || !super::compiler::native_scroll_forest_content_raster_stamp_is_canonical(stamp)
+            || stamp.identity.role != super::RetainedSurfaceRasterRole::ScrollContent
+            || stamp.identity.stable_id == 0
+            || stamp.identity.color_key != scroll_content_layer_stable_key(stamp.identity.stable_id)
+        {
+            return None;
+        }
+        let mut composite_scissor = outer_scissor;
+        for (index, (scroll, clip)) in boundaries.iter().copied().enumerate() {
+            let parent_scroll = index
+                .checked_sub(1)
+                .map(|parent| boundaries[parent].0.id);
+            let parent_clip = index
+                .checked_sub(1)
+                .map(|parent| boundaries[parent].1.id);
+            if !scroll.has_canonical_geometry_with_contents_clip_parent_ids(
+                clip,
+                parent_scroll,
+                parent_clip,
+            ) || exact_logical_scissor_for_rect(scroll.viewport) != Some(clip.logical_scissor)
+            {
+                return None;
+            }
+            composite_scissor = Some(match composite_scissor {
+                None => clip.logical_scissor,
+                Some(current) => intersect_nonempty_scissors(current, clip.logical_scissor)?,
+            });
+        }
+        let (leaf_scroll, _) = boundaries.last().copied()?;
+        let source = stamp.target.source_bounds_bits.map(f32::from_bits);
+        let world = [
+            leaf_scroll.layout_content_bounds_at_zero.x,
+            leaf_scroll.layout_content_bounds_at_zero.y,
+            leaf_scroll.layout_content_bounds_at_zero.width,
+            leaf_scroll.layout_content_bounds_at_zero.height,
+        ];
+        if source.into_iter().chain(world).any(|value| !value.is_finite())
+            || source[0] < 0.0
+            || source[1] < 0.0
+            || source[2] <= 0.0
+            || source[3] <= 0.0
+            || !(source[0] + source[2]).is_finite()
+            || !(source[1] + source[3]).is_finite()
+            || world[0] < 0.0
+            || world[1] < 0.0
+            || !(world[0] + world[2]).is_finite()
+            || !(world[1] + world[3]).is_finite()
+            || source[2].to_bits() != world[2].to_bits()
+            || source[3].to_bits() != world[3].to_bits()
+            || incoming_paint_offset.into_iter().any(|value| !value.is_finite())
+            || !leaf_scroll.offset.x.is_finite()
+            || !leaf_scroll.offset.y.is_finite()
+        {
+            return None;
+        }
+        let destination = [
+            world[0] - leaf_scroll.offset.x + incoming_paint_offset[0],
+            world[1] - leaf_scroll.offset.y + incoming_paint_offset[1],
+            world[2],
+            world[3],
+        ];
+        if destination.into_iter().any(|value| !value.is_finite()) {
+            return None;
+        }
+        Some(Self {
+            source_key: stamp.identity.color_key,
+            source_bounds_bits: stamp.target.source_bounds_bits,
+            params: TextureCompositeParams {
+                bounds: destination,
+                quad_positions: None,
+                uv_bounds: Some(source),
+                mask_uv_bounds: None,
+                use_mask: false,
+                source_is_premultiplied: true,
+                opacity: 1.0,
+                scissor_rect: composite_scissor,
+            },
+        })
+    }
+
     pub(crate) fn from_validated_native_scroll_forest_content_stamp(
         stamp: &super::RetainedSurfaceRasterStamp,
         scroll: ScrollNodeSnapshot,
@@ -412,6 +507,18 @@ impl PreparedScrollContentCompositeGeometry {
     ) -> TextureCompositePass {
         TextureCompositePass::new(self.params, input, output)
     }
+}
+
+fn intersect_nonempty_scissors(left: [u32; 4], right: [u32; 4]) -> Option<[u32; 4]> {
+    let left_right = left[0].checked_add(left[2])?;
+    let left_bottom = left[1].checked_add(left[3])?;
+    let right_right = right[0].checked_add(right[2])?;
+    let right_bottom = right[1].checked_add(right[3])?;
+    let x = left[0].max(right[0]);
+    let y = left[1].max(right[1]);
+    let max_x = left_right.min(right_right);
+    let max_y = left_bottom.min(right_bottom);
+    (max_x > x && max_y > y).then_some([x, y, max_x - x, max_y - y])
 }
 
 /// Frozen compositor geometry for one tile of an offset-zero scroll-content

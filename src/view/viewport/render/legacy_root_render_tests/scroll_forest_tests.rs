@@ -23,6 +23,13 @@ fn retained_auto_native_scroll_forest_is_final_retained_authority_without_red_fa
         _ => panic!("six-boundary native forest must select its dedicated authority"),
     };
     assert!(
+        trace.rejections.iter().all(|rejection| !matches!(
+            rejection,
+            AutoAuthorityRejection::PropertyBoundaryDagPlan { .. }
+        )),
+        "branching forest must be selected without paying for DAG planning"
+    );
+    assert!(
         matches!(uncaptured, AutoAuthorityDecision::NativeScrollForest { .. }),
         "uncaptured selection must own the same forest plan family"
     );
@@ -190,22 +197,10 @@ fn retained_auto_malformed_native_scroll_forests_stay_atomic_legacy() {
         let graph_before = graph.build_state_snapshot_for_test();
         let viewport = Viewport::new();
         let pool_before = viewport.retained_surface_transaction_shape_for_test();
-        let captured = select_retained_auto_authority(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &ctx,
-            true,
-        );
-        let uncaptured = select_retained_auto_authority(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &ctx,
-            false,
-        );
+        let captured =
+            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        let uncaptured =
+            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, false);
         assert!(
             matches!(&captured, AutoAuthorityDecision::Legacy { .. }),
             "{tamper} must fail closed before forest preparation"
@@ -234,8 +229,7 @@ fn retained_auto_malformed_native_scroll_forests_stay_atomic_legacy() {
         assert_eq!(telemetry.final_authority(), PaintAuthorityKind::Legacy);
         let mut viewport = viewport;
         viewport.scene.node_arena = arena;
-        let capture =
-            viewport.build_retained_auto_debug_capture(&telemetry, &roots, true, true);
+        let capture = viewport.build_retained_auto_debug_capture(&telemetry, &roots, true, true);
         assert_eq!(
             capture.frame.selected_authority,
             crate::view::debug::DebugFramePaintAuthority::Legacy
@@ -252,17 +246,12 @@ fn retained_auto_native_scroll_forest_prepare_tamper_preserves_warm_pool_atomica
     let (arena, roots, properties, generations) =
         crate::view::paint::native_scroll_forest_plan_fixture();
     let ctx = UiBuildContext::new(700, 700, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
-    let base_plan = match select_retained_auto_authority(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        &ctx,
-        true,
-    ) {
-        AutoAuthorityDecision::NativeScrollForest { plan, .. } => plan,
-        _ => panic!("native forest baseline selection"),
-    };
+    let base_plan =
+        match select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true)
+        {
+            AutoAuthorityDecision::NativeScrollForest { plan, .. } => plan,
+            _ => panic!("native forest baseline selection"),
+        };
     let mut viewport = Viewport::new();
     let baseline_owner = viewport
         .begin_retained_surface_frame_stage()
@@ -274,8 +263,7 @@ fn retained_auto_native_scroll_forest_prepare_tamper_preserves_warm_pool_atomica
     )
     .unwrap();
     let mut baseline_graph = FrameGraph::new();
-    let mut baseline_ctx =
-        UiBuildContext::new(700, 700, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+    let mut baseline_ctx = UiBuildContext::new(700, 700, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let target = baseline_ctx.allocate_target(&mut baseline_graph);
     baseline_ctx.set_current_target(target);
     baseline_graph.add_graphics_pass(crate::view::render_pass::ClearPass::new(
@@ -333,9 +321,9 @@ fn retained_auto_native_scroll_forest_prepare_tamper_preserves_warm_pool_atomica
             )
             .expect("rejected tamper cannot poison the committed forest pool");
         assert!(
-            warm.actions_for_test().values().all(
-                |action| *action == crate::view::paint::RetainedSurfaceCompileAction::Reuse
-            )
+            warm.actions_for_test()
+                .values()
+                .all(|action| *action == crate::view::paint::RetainedSurfaceCompileAction::Reuse)
         );
     }
 }
@@ -352,14 +340,8 @@ fn retained_auto_scroll_content_effect_final_authority_is_retained_and_not_red()
             );
         let roots = vec![root];
         let ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
-        let decision = select_retained_auto_authority(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &ctx,
-            true,
-        );
+        let decision =
+            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
         assert!(
             matches!(
                 decision,
@@ -380,8 +362,7 @@ fn retained_auto_scroll_content_effect_final_authority_is_retained_and_not_red()
 
         let mut viewport = Viewport::new();
         viewport.scene.node_arena = arena;
-        let capture =
-            viewport.build_retained_auto_debug_capture(&telemetry, &roots, true, true);
+        let capture = viewport.build_retained_auto_debug_capture(&telemetry, &roots, true, true);
         assert_eq!(
             capture.frame.selected_authority,
             crate::view::debug::DebugFramePaintAuthority::PropertyScene
@@ -455,22 +436,10 @@ fn retained_auto_scroll_content_effect_tamper_and_custom_fail_closed_atomically(
         let pool_before = viewport.compositor.retained_surfaces.clone();
         let graph = FrameGraph::new();
         let graph_before = graph.build_state_snapshot_for_test();
-        let captured = select_retained_auto_authority(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &ctx,
-            true,
-        );
-        let uncaptured = select_retained_auto_authority(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &ctx,
-            false,
-        );
+        let captured =
+            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        let uncaptured =
+            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, false);
         assert!(
             matches!(captured, AutoAuthorityDecision::Legacy { .. }),
             "{tamper}"

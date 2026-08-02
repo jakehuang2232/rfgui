@@ -6,9 +6,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::Key;
 
 use crate::view::base_component::{
-    Element, ElementTrait, RetainedNestedScrollSceneAdmissionSnapshot,
-    RetainedScrollForestHostAdmissionSnapshot, RetainedScrollHostAdmissionSnapshot,
-    TransformSurfaceGeometrySnapshot, is_exact_retained_scroll_forest_content_node,
+    Element, ElementTrait, RetainedScrollForestHostAdmissionSnapshot,
+    RetainedScrollHostAdmissionSnapshot, TransformSurfaceGeometrySnapshot,
+    is_exact_retained_scroll_forest_content_node,
 };
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipGeometry, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId,
@@ -89,13 +89,9 @@ struct PropertyScenePlanSeal {
     /// Presence of this scaffold deliberately disables every production
     /// property-scene getter until the joint scene transaction lands.
     scroll_schedule_scaffold: Option<PropertyScrollScheduleScaffold>,
-    /// Planning-only exact `S0 -> S1 -> leaf` authority. This is deliberately
-    /// separate from B4's one-scroll grammar and cannot mint a transaction,
-    /// pool action or frame-graph handle.
-    nested_scroll_scaffold: Option<NestedScrollSceneScaffold>,
     /// Arbitrary-depth/multi-root native scroll forest.  This remains a
-    /// graph-inert sibling of the fixed two-boundary oracle until its joint
-    /// compiler/pool transaction is materialized.
+    /// graph-inert authority until its joint compiler/pool transaction is
+    /// materialized.
     native_scroll_forest_scaffold: Option<NativeScrollForestScaffold>,
 }
 
@@ -263,54 +259,6 @@ pub(super) enum NativeScrollForestContentProgramStep {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct NestedScrollSceneScaffold {
-    pub(super) context: TransformSurfacePlanContext,
-    pub(super) admission: RetainedNestedScrollSceneAdmissionSnapshot,
-    pub(super) boundaries: Vec<NestedScrollBoundaryContract>,
-    pub(super) schedule: NestedScrollSceneSchedule,
-    planned_context: TransformSurfacePlanContext,
-    planned_admission: RetainedNestedScrollSceneAdmissionSnapshot,
-    planned_boundaries: Vec<NestedScrollBoundaryContract>,
-    planned_schedule: NestedScrollSceneSchedule,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum NestedScrollBoundarySlot {
-    Outer,
-    Inner,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct NestedScrollBoundaryContract {
-    pub(super) slot: NestedScrollBoundarySlot,
-    pub(super) boundary_root: NodeKey,
-    pub(super) stable_id: u64,
-    pub(super) parent: Option<NestedScrollBoundarySlot>,
-    pub(super) scroll: ScrollNodeSnapshot,
-    pub(super) contents_clip: ClipNodeSnapshot,
-    pub(super) content_state: PropertyTreeState,
-    pub(super) projected_receiver_state: PropertyTreeState,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct NestedScrollSceneSchedule {
-    pub(super) steps: Vec<NestedScrollSceneScheduledStep>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum NestedScrollSceneScheduledStep {
-    HostBefore {
-        boundary: NestedScrollBoundarySlot,
-        artifact: NestedScrollArtifactSeal,
-    },
-    ContentReceiver(NestedScrollContentReceiverIdentity),
-    OverlayAfter {
-        boundary: NestedScrollBoundarySlot,
-        artifact: NestedScrollArtifactSeal,
-    },
-}
-
-#[derive(Clone, Debug)]
 pub(super) struct NestedScrollArtifactSeal {
     recorded_artifact: PaintArtifact,
     pub(super) identity: PropertyScrollReceiverArtifactIdentity,
@@ -328,15 +276,6 @@ impl NestedScrollArtifactSeal {
     pub(super) fn artifact(&self) -> &PaintArtifact {
         &self.recorded_artifact
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct NestedScrollContentReceiverIdentity {
-    pub(super) stable_id: u64,
-    pub(super) witness: super::PaintNestedScrollContentWitness,
-    pub(super) live_input: PropertyTreeState,
-    pub(super) projected_output: PropertyTreeState,
-    pub(super) artifact: NestedScrollArtifactSeal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -385,9 +324,9 @@ pub(super) struct PropertyScrollScheduleScaffold {
 ///
 /// Unlike `PropertySceneSchedule`, receiver scope is explicit: a boundary may
 /// target the frame, another retained surface, or (for a later grammar slice)
-/// a scroll boundary's detached-content scope. Phase 0 projects only the
-/// existing S, T->S, E->S and T->E->S shapes; `ScrollContent` is sealed now so
-/// adding a post-scroll property later cannot silently reuse `FrameRoot`.
+/// a scroll boundary's detached-content scope. `ScrollContent` keeps a nested
+/// scroll receiver distinct from `FrameRoot`, whether or not a later compiler
+/// slice has admitted that exact DAG shape.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PropertyBoundaryDag {
     pub(super) roots: Vec<PropertyBoundaryDagRoot>,
@@ -397,6 +336,7 @@ pub(super) struct PropertyBoundaryDag {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PropertyBoundaryDagGrammar {
     FrameRootScroll,
+    NestedScrollChain,
     TransformScroll,
     EffectScroll,
     TransformEffectScroll,
@@ -406,16 +346,46 @@ pub(super) enum PropertyBoundaryDagGrammar {
 }
 
 impl PropertyBoundaryDag {
-    /// Classifies only the four grammars already executable before the DAG
-    /// projection. Empty roots are accepted solely as siblings of the
-    /// frame-root S grammar; every surface grammar remains exact and
-    /// homogeneous across the forest.
+    /// Classifies fixed executable grammars plus the M4 graph-inert linear
+    /// nested-scroll chain. Empty roots are accepted solely as siblings of the
+    /// frame-root S grammar; every other grammar remains exact and homogeneous
+    /// across the forest.
     pub(super) fn existing_grammar(&self) -> Option<PropertyBoundaryDagGrammar> {
         let mut grammar = None;
         let mut saw_empty_root = false;
         for root in &self.roots {
             let nodes = self.nodes.get(root.node_span.clone())?;
-            let root_grammar = match nodes {
+            let nested_scroll_chain = (nodes.len() >= 2)
+                .then(|| {
+                    let mut previous = None;
+                    nodes.iter().enumerate().all(|(index, node)| {
+                        let receiver_matches = match (index, node.receiver, previous) {
+                            (
+                                0,
+                                PropertyBoundaryReceiverScope::FrameRoot {
+                                    scene_root_ordinal,
+                                },
+                                None,
+                            ) => scene_root_ordinal == root.scene_root_ordinal,
+                            (
+                                _,
+                                PropertyBoundaryReceiverScope::ScrollContent(receiver),
+                                Some(parent),
+                            ) => receiver == parent,
+                            _ => false,
+                        };
+                        let PropertyBoundaryDagNodeKind::Scroll(_) = &node.kind else {
+                            return false;
+                        };
+                        previous = Some(node.id);
+                        receiver_matches
+                    })
+                })
+                .unwrap_or(false);
+            let root_grammar = if nested_scroll_chain {
+                PropertyBoundaryDagGrammar::NestedScrollChain
+            } else {
+                match nodes {
                 [] => {
                     saw_empty_root = true;
                     continue;
@@ -529,7 +499,8 @@ impl PropertyBoundaryDag {
                 ] if receiver == transform_id && content_receiver == scroll_id => {
                     PropertyBoundaryDagGrammar::TransformScrollEffect
                 }
-                _ => return None,
+                    _ => return None,
+                }
             };
             if grammar
                 .replace(root_grammar)
@@ -1138,6 +1109,7 @@ pub(super) struct PropertyScrollScheduleRoot {
     pub(super) root: NodeKey,
     pub(super) stable_id: u64,
     pub(super) step_span: Range<usize>,
+    pub(super) boundary_span: Range<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1198,6 +1170,10 @@ pub(super) struct PropertyScrollBoundaryContract {
     /// AnchorParent child-mask handles on either side of the scroll cutout.
     pub(super) receiver_clips: Vec<ClipNodeSnapshot>,
     pub(super) basis: ScrollCompositeBasis,
+    /// The parent scroll generation frozen for an id-only `ScrollContent`
+    /// basis. Keeping it outside the basis avoids embedding the parent's
+    /// offset-bearing snapshot in the child's plan identity.
+    pub(super) scroll_content_basis_generation: Option<u64>,
     pub(super) phase: PropertyScrollPhaseSchedule,
     pub(super) consumed_properties: ConsumedPropertyStack,
 }
@@ -1208,17 +1184,43 @@ impl PropertyScrollBoundaryContract {
     /// portion of `property_scroll_schedule_scaffold_is_canonical` so a later
     /// prepare step never has to trust planner-only clip/scroll geometry.
     pub(super) fn is_canonical(&self) -> bool {
+        let expected_scroll_parent = match self.basis {
+            ScrollCompositeBasis::ScrollContent(parent) => {
+                if self
+                    .scroll_content_basis_generation
+                    .is_none_or(|generation| generation == 0)
+                    || self.scroll.parent != Some(parent)
+                    || self.contents_clip.parent
+                        != Some(ClipNodeId {
+                            owner: parent.0,
+                            role: ClipNodeRole::ContentsClip,
+                        })
+                {
+                    return false;
+                }
+                Some(parent)
+            }
+            ScrollCompositeBasis::FrameRoot
+            | ScrollCompositeBasis::Transform(_)
+            | ScrollCompositeBasis::Effect(_) => {
+                if self.scroll_content_basis_generation.is_some() || self.scroll.parent.is_some() {
+                    return false;
+                }
+                None
+            }
+        };
         if self.scroll.owner != self.scroll.id.0
-            || self.scroll.parent.is_some()
             || self.scroll.generation == 0
             || self.contents_clip.id.owner != self.scroll.owner
             || self.contents_clip.id.role != ClipNodeRole::ContentsClip
             || self.contents_clip.owner != self.scroll.owner
             || self.contents_clip.behavior != ClipBehavior::Intersect
             || self.contents_clip.generation == 0
-            || !self
-                .scroll
-                .is_canonical_with_ancestor_contents_clip(self.contents_clip)
+            || !self.scroll.has_canonical_geometry_with_contents_clip_parent_ids(
+                self.contents_clip,
+                expected_scroll_parent,
+                self.contents_clip.parent,
+            )
         {
             return false;
         }
@@ -1241,10 +1243,21 @@ impl PropertyScrollBoundaryContract {
         if !clip_ids.insert(self.contents_clip.id) {
             return false;
         }
+        // `ancestor_composite_clips` is leaf-to-root, so its exact parent
+        // chain is proven above rather than by requiring a parent to have
+        // appeared first. That latter ordering would accidentally cap a
+        // nested scroll chain at two boundaries.
+        for clip in &self.ancestor_composite_clips {
+            if !clip_ids.insert(clip.id)
+                || clip.owner != clip.id.owner
+                || clip.generation == 0
+            {
+                return false;
+            }
+        }
         for clip in self
-            .ancestor_composite_clips
+            .local_content_clips
             .iter()
-            .chain(&self.local_content_clips)
             .chain(&self.receiver_clips)
         {
             if !clip_ids.insert(clip.id)
@@ -1328,6 +1341,14 @@ pub(super) enum ScrollCompositeBasis {
     FrameRoot,
     Transform(TransformNodeSnapshot),
     Effect(EffectNodeSnapshot),
+    /// The child composite is expressed in an ancestor scroll-content
+    /// coordinate/clip basis. This is not render-target ownership: the later
+    /// executor may emit the child backing directly to the frame target.
+    ///
+    /// Only the id belongs here. `ScrollNodeSnapshot::eq` includes offset, so
+    /// embedding the snapshot would make a parent scroll change the child's
+    /// identity. The matching generation is frozen on the boundary contract.
+    ScrollContent(ScrollNodeId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2201,7 +2222,6 @@ impl FramePaintPlan {
         }
         let seal = self.property_scene_seal.as_ref()?;
         if seal.scroll_schedule_scaffold.is_some()
-            || seal.nested_scroll_scaffold.is_some()
             || seal.native_scroll_forest_scaffold.is_some()
         {
             return None;
@@ -2385,7 +2405,6 @@ impl FramePaintPlan {
             .then(|| {
                 self.property_scene_seal.as_ref().and_then(|seal| {
                     (seal.scroll_schedule_scaffold.is_none()
-                        && seal.nested_scroll_scaffold.is_none()
                         && seal.native_scroll_forest_scaffold.is_none()
                         && seal
                             .effect_scaffold
@@ -2442,16 +2461,6 @@ impl FramePaintPlan {
         self.property_scene_seal
             .as_ref()?
             .scroll_schedule_scaffold
-            .as_ref()
-    }
-
-    /// Exact nested-scroll planner seal. It is intentionally graph-inert;
-    /// callers receive only frozen structural and artifact identities.
-    pub(super) fn nested_scroll_planning_scaffold(&self) -> Option<&NestedScrollSceneScaffold> {
-        property_scene_plan_is_sealed(self).then_some(())?;
-        self.property_scene_seal
-            .as_ref()?
-            .nested_scroll_scaffold
             .as_ref()
     }
 
@@ -2752,7 +2761,7 @@ impl TransformSurfacePlanContext {
         }
     }
 
-    fn paint_offset(self) -> [f32; 2] {
+    pub(super) fn paint_offset(self) -> [f32; 2] {
         self.paint_offset_bits.map(f32::from_bits)
     }
 
@@ -2998,7 +3007,6 @@ pub(crate) fn plan_transform_property_scene_with_context(
             surfaces: contracts,
             effect_scaffold: None,
             scroll_schedule_scaffold: None,
-            nested_scroll_scaffold: None,
             native_scroll_forest_scaffold: None,
         }),
     };
@@ -3727,7 +3735,6 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
             surfaces: FxHashMap::default(),
             effect_scaffold: Some(scaffold),
             scroll_schedule_scaffold: None,
-            nested_scroll_scaffold: None,
             native_scroll_forest_scaffold: None,
         }),
     };
@@ -4243,7 +4250,6 @@ pub(crate) fn plan_native_scroll_forest_scaffold_with_context(
             surfaces: FxHashMap::default(),
             effect_scaffold: None,
             scroll_schedule_scaffold: None,
-            nested_scroll_scaffold: None,
             native_scroll_forest_scaffold: Some(scaffold),
         }),
     };
@@ -4252,348 +4258,6 @@ pub(crate) fn plan_native_scroll_forest_scaffold_with_context(
         .ok_or_else(|| property_scene_error("native-scroll-forest-scaffold"))
 }
 
-/// Planning-only exact `S0 -> S1 -> leaf` scene. The bounded admission and
-/// three recorder scopes are all revalidated here, but the result deliberately
-/// contains no executable transaction or frame-graph/pool authority.
-pub(crate) fn plan_nested_scroll_scene_scaffold_with_context(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    scale_factor: f32,
-    context: TransformSurfacePlanContext,
-) -> Result<FramePaintPlan, FramePaintPlanError> {
-    if roots.len() != 1 {
-        return Err(FramePaintPlanError {
-            reasons: if roots.is_empty() {
-                vec![FramePaintPlanRejection::EmptyScene]
-            } else {
-                vec![FramePaintPlanRejection::RootCount(roots.len())]
-            },
-        });
-    }
-    let root = roots[0];
-    if scale_factor.to_bits() != 1.0_f32.to_bits()
-        || context.paint_offset_bits != [0.0_f32.to_bits(); 2]
-        || context.outer_scissor_rect().is_some()
-        || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
-        || !property_trees.validation_errors.is_empty()
-        || arena.parent_of(root).is_some()
-    {
-        return Err(property_scene_error("nested-scroll-scene-scaffold"));
-    }
-    let root_node = arena.get(root).ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    let root_element = root_node
-        .element
-        .as_any()
-        .downcast_ref::<Element>()
-        .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    let admission = root_element
-        .exact_retained_nested_scroll_scene_admission(root, arena, scale_factor)
-        .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    let inner = admission.inner_boundary_root;
-    let leaf = admission.content_leaf;
-    let exact_keys = FxHashSet::from_iter([root, inner, leaf]);
-    if root_node.children() != [inner]
-        || root_node.element.children() != [inner]
-        || arena.parent_of(inner) != Some(root)
-        || arena.parent_of(leaf) != Some(inner)
-        || arena
-            .get(inner)
-            .is_none_or(|node| node.children() != [leaf] || node.element.children() != [leaf])
-        || arena
-            .get(leaf)
-            .is_none_or(|node| !node.children().is_empty() || !node.element.children().is_empty())
-        || property_trees.states.len() != 3
-        || property_trees
-            .states
-            .keys()
-            .any(|key| !exact_keys.contains(key))
-        || property_trees.scrolls.len() != 2
-        || property_trees
-            .scrolls
-            .values()
-            .any(|node| !exact_keys.contains(&node.owner) || node.owner == leaf)
-        || property_trees.clips.len() != 2
-        || property_trees
-            .clips
-            .values()
-            .any(|node| !exact_keys.contains(&node.owner) || node.owner == leaf)
-        || !property_trees.transforms.is_empty()
-        || !property_trees.effects.is_empty()
-    {
-        return Err(property_scene_error("nested-scroll-scene-scaffold"));
-    }
-    for key in [root, inner, leaf] {
-        let node = arena.get(key).ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-        if node.element.stable_id() == 0
-            || node.element.is_deferred_to_root_viewport_render()
-            || node
-                .element
-                .placement_eligibility_metadata()
-                .contains_runtime_layout_state
-        {
-            return Err(property_scene_error("nested-scroll-scene-scaffold"));
-        }
-    }
-    if admission.outer_stable_id == admission.inner_stable_id
-        || admission.outer_stable_id == admission.content_leaf_stable_id
-        || admission.inner_stable_id == admission.content_leaf_stable_id
-    {
-        return Err(property_scene_error("nested-scroll-scene-scaffold"));
-    }
-
-    let outer_scroll = property_trees
-        .scroll_snapshot_for(ScrollNodeId(root))
-        .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    let inner_scroll = property_trees
-        .scroll_snapshot_for(ScrollNodeId(inner))
-        .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    let outer_clip_id = ClipNodeId {
-        owner: root,
-        role: ClipNodeRole::ContentsClip,
-    };
-    let inner_clip_id = ClipNodeId {
-        owner: inner,
-        role: ClipNodeRole::ContentsClip,
-    };
-    let outer_clip = property_trees
-        .clip_snapshot_for(Some(outer_clip_id))
-        .and_then(|chain| chain.first().copied())
-        .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    let inner_clip = property_trees
-        .clip_snapshot_for(Some(inner_clip_id))
-        .and_then(|chain| chain.first().copied())
-        .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    if !admission.matches_scroll_nodes(outer_scroll, inner_scroll)
-        || !outer_scroll.has_canonical_vertical_geometry_with_contents_clip(outer_clip)
-        || !inner_scroll.has_canonical_nested_vertical_geometry_with_contents_clip(
-            inner_clip,
-            outer_scroll,
-            outer_clip,
-        )
-    {
-        return Err(property_scene_error("nested-scroll-scene-scaffold"));
-    }
-    let outer_content_state = PropertyTreeState {
-        clip: Some(outer_clip.id),
-        scroll: Some(outer_scroll.id),
-        ..PropertyTreeState::default()
-    };
-    let inner_content_state = PropertyTreeState {
-        clip: Some(inner_clip.id),
-        scroll: Some(inner_scroll.id),
-        ..PropertyTreeState::default()
-    };
-    let outer_state = property_trees
-        .node_state_for(root)
-        .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    let inner_state = property_trees
-        .node_state_for(inner)
-        .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    let leaf_state = property_trees
-        .node_state_for(leaf)
-        .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    if outer_state.paint != PropertyTreeState::default()
-        || outer_state.descendants != outer_content_state
-        || inner_state.paint != outer_content_state
-        || inner_state.descendants != inner_content_state
-        || leaf_state.paint != inner_content_state
-        || leaf_state.descendants != inner_content_state
-    {
-        return Err(property_scene_error("nested-scroll-scene-scaffold"));
-    }
-
-    let outer_host =
-        super::PaintBakedScrollHostWitness::new(root, inner, outer_scroll, outer_clip.id)
-            .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    let inner_cutout = super::PlannedBoundary {
-        root: inner,
-        stable_id: admission.inner_stable_id,
-        kind: super::PlannedBoundaryKind::Scroll(inner_scroll.id),
-    };
-    let outer_recorded = super::frame_recorder::record_nested_scroll_outer_host_steps_for_plan(
-        arena,
-        root,
-        property_trees,
-        paint_generations,
-        outer_host,
-        inner_cutout,
-    )
-    .map_err(|reasons| FramePaintPlanError {
-        reasons: reasons
-            .into_iter()
-            .map(FramePaintPlanRejection::Coverage)
-            .collect(),
-    })?;
-    let [
-        super::frame_recorder::RecordedTransformSurfaceStep::Artifact(outer_before),
-        super::frame_recorder::RecordedTransformSurfaceStep::Boundary(recorded_cutout),
-        super::frame_recorder::RecordedTransformSurfaceStep::Artifact(outer_after),
-    ] = outer_recorded.as_slice()
-    else {
-        return Err(property_scene_error("nested-scroll-scene-scaffold"));
-    };
-    if *recorded_cutout != inner_cutout {
-        return Err(property_scene_error("nested-scroll-scene-scaffold"));
-    }
-
-    let outer_content =
-        super::PaintScrollContentWitness::new(root, inner, outer_scroll, outer_clip)
-            .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    let inner_host =
-        super::PaintBakedScrollHostWitness::new(inner, leaf, inner_scroll, inner_clip.id)
-            .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    let witness = super::PaintNestedScrollContentWitness::new(
-        root,
-        inner,
-        leaf,
-        outer_scroll,
-        outer_clip,
-        inner_scroll,
-        inner_clip,
-    )
-    .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?;
-    let inner_recorded = super::frame_recorder::record_nested_scroll_inner_host_steps_for_plan(
-        arena,
-        inner,
-        property_trees,
-        paint_generations,
-        inner_host,
-        outer_content,
-        admission.content_leaf_stable_id,
-        witness,
-    )
-    .map_err(|reasons| FramePaintPlanError {
-        reasons: reasons
-            .into_iter()
-            .map(FramePaintPlanRejection::Coverage)
-            .collect(),
-    })?;
-    let [
-        super::frame_recorder::RecordedNestedScrollHostStep::Artifact(inner_before),
-        super::frame_recorder::RecordedNestedScrollHostStep::ContentReceiver(receiver),
-        super::frame_recorder::RecordedNestedScrollHostStep::Artifact(inner_after),
-    ] = inner_recorded.as_slice()
-    else {
-        return Err(property_scene_error("nested-scroll-scene-scaffold"));
-    };
-    if receiver.stable_id != admission.content_leaf_stable_id || receiver.witness != witness {
-        return Err(property_scene_error("nested-scroll-scene-scaffold"));
-    }
-    let content = super::frame_recorder::record_nested_scroll_content_artifact_for_plan(
-        arena,
-        property_trees,
-        paint_generations,
-        witness,
-    )
-    .map_err(|reasons| FramePaintPlanError {
-        reasons: reasons
-            .into_iter()
-            .map(FramePaintPlanRejection::Coverage)
-            .collect(),
-    })?;
-    let artifact_seal = |artifact: &PaintArtifact| {
-        Ok::<_, FramePaintPlanError>(NestedScrollArtifactSeal {
-            recorded_artifact: artifact.clone(),
-            identity: property_scroll_receiver_artifact_identity(artifact)
-                .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))?,
-        })
-    };
-    let boundaries = vec![
-        NestedScrollBoundaryContract {
-            slot: NestedScrollBoundarySlot::Outer,
-            boundary_root: root,
-            stable_id: admission.outer_stable_id,
-            parent: None,
-            scroll: outer_scroll,
-            contents_clip: outer_clip,
-            content_state: outer_content_state,
-            projected_receiver_state: PropertyTreeState::default(),
-        },
-        NestedScrollBoundaryContract {
-            slot: NestedScrollBoundarySlot::Inner,
-            boundary_root: inner,
-            stable_id: admission.inner_stable_id,
-            parent: Some(NestedScrollBoundarySlot::Outer),
-            scroll: inner_scroll,
-            contents_clip: inner_clip,
-            content_state: inner_content_state,
-            projected_receiver_state: outer_content_state,
-        },
-    ];
-    let schedule = NestedScrollSceneSchedule {
-        steps: vec![
-            NestedScrollSceneScheduledStep::HostBefore {
-                boundary: NestedScrollBoundarySlot::Outer,
-                artifact: artifact_seal(outer_before)?,
-            },
-            NestedScrollSceneScheduledStep::HostBefore {
-                boundary: NestedScrollBoundarySlot::Inner,
-                artifact: artifact_seal(inner_before)?,
-            },
-            NestedScrollSceneScheduledStep::ContentReceiver(NestedScrollContentReceiverIdentity {
-                stable_id: receiver.stable_id,
-                witness,
-                live_input: inner_content_state,
-                projected_output: outer_content_state,
-                artifact: artifact_seal(&content)?,
-            }),
-            NestedScrollSceneScheduledStep::OverlayAfter {
-                boundary: NestedScrollBoundarySlot::Inner,
-                artifact: artifact_seal(inner_after)?,
-            },
-            NestedScrollSceneScheduledStep::OverlayAfter {
-                boundary: NestedScrollBoundarySlot::Outer,
-                artifact: artifact_seal(outer_after)?,
-            },
-        ],
-    };
-    let root_witness = PropertySceneRootWitness {
-        ordinal: 0,
-        root,
-        stable_id: admission.outer_stable_id,
-        owner: PaintOwnerSnapshot {
-            owner: root,
-            parent: None,
-        },
-        top_level_step_span: 0..0,
-    };
-    let scaffold = NestedScrollSceneScaffold {
-        context,
-        admission,
-        boundaries: boundaries.clone(),
-        schedule: schedule.clone(),
-        planned_context: context,
-        planned_admission: admission,
-        planned_boundaries: boundaries,
-        planned_schedule: schedule,
-    };
-    let plan = FramePaintPlan {
-        steps: Vec::new(),
-        property_scene_roots: Some(vec![root_witness.clone()]),
-        property_scene_seal: Some(PropertyScenePlanSeal {
-            roots: vec![root_witness],
-            context,
-            outer_scissor_rect: None,
-            aggregate_opaque_order_span: 0..0,
-            surface_count: 0,
-            scene_artifact_validation: Vec::new(),
-            surfaces: FxHashMap::default(),
-            effect_scaffold: None,
-            scroll_schedule_scaffold: None,
-            nested_scroll_scaffold: Some(scaffold),
-            native_scroll_forest_scaffold: None,
-        }),
-    };
-    property_scene_plan_is_sealed(&plan)
-        .then_some(plan)
-        .ok_or_else(|| property_scene_error("nested-scroll-scene-scaffold"))
-}
-
-/// M12B4-0 planning-only schedule for the first property/scroll interleave
-/// grammar. This freezes ordering, composite basis and property consumption,
-/// but intentionally cannot mint a production transaction or context token.
 pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
     arena: &NodeArena,
     roots: &[NodeKey],
@@ -4924,8 +4588,20 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 1
             }
             (None, None, Some(_)) => {
-                if path_has_scroll {
-                    push_unique(reasons, FramePaintPlanRejection::ScrollBoundary(key));
+                let parent_scroll = path.iter().rev().find_map(|entry| match entry {
+                    PathBoundary::Scroll(id) => Some(*id),
+                    _ => None,
+                });
+                if parent_scroll.is_some()
+                    && !matches!(path.last(), Some(PathBoundary::Scroll(id)) if Some(*id) == parent_scroll)
+                {
+                    push_unique(
+                        reasons,
+                        FramePaintPlanRejection::UnsupportedPropertyInterleave(
+                            key,
+                            "scroll-under-non-scroll-between-scroll",
+                        ),
+                    );
                 }
                 let Some(scroll) = property_trees.scroll_snapshot_for(ScrollNodeId(key)) else {
                     push_unique(reasons, FramePaintPlanRejection::InvalidScrollHost(key));
@@ -4944,8 +4620,15 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                     push_unique(reasons, FramePaintPlanRejection::InvalidScrollHost(key));
                     return;
                 };
-                if scroll.parent.is_some()
-                    || !scroll.is_canonical_with_ancestor_contents_clip(contents_clip)
+                let expected_parent_clip = parent_scroll.map(|parent| ClipNodeId {
+                    owner: parent.0,
+                    role: ClipNodeRole::ContentsClip,
+                });
+                if !scroll.has_canonical_geometry_with_contents_clip_parent_ids(
+                    contents_clip,
+                    parent_scroll,
+                    expected_parent_clip,
+                )
                     || state.descendants.scroll != Some(scroll.id)
                     || state.descendants.clip != Some(contents_clip.id)
                 {
@@ -4962,7 +4645,15 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                         .and_then(|nodes| nodes.first().copied())
                         .map(ScrollCompositeBasis::Effect)
                         .unwrap_or(ScrollCompositeBasis::FrameRoot),
-                    Some(PathBoundary::Scroll(_)) => ScrollCompositeBasis::FrameRoot,
+                    Some(PathBoundary::Scroll(id)) => ScrollCompositeBasis::ScrollContent(id),
+                };
+                let scroll_content_basis_generation = match basis {
+                    ScrollCompositeBasis::ScrollContent(parent) => property_trees
+                        .scroll_snapshot_for(parent)
+                        .map(|snapshot| snapshot.generation),
+                    ScrollCompositeBasis::FrameRoot
+                    | ScrollCompositeBasis::Transform(_)
+                    | ScrollCompositeBasis::Effect(_) => None,
                 };
 
                 let live_input = state.descendants;
@@ -4979,6 +4670,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                             cursor.effect = None;
                             ConsumedPropertyBoundary::Effect(id)
                         }
+                        PathBoundary::Scroll(_) => continue,
                         _ => {
                             push_unique(
                                 reasons,
@@ -5018,6 +4710,12 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                         PathBoundary::Effect(id) if expected_receiver_state.effect == Some(id) => {
                             expected_receiver_state.effect = None;
                         }
+                        PathBoundary::Scroll(id)
+                            if expected_receiver_state.scroll == Some(id) =>
+                        {
+                            expected_receiver_state.scroll = None;
+                        }
+                        PathBoundary::Scroll(_) => {}
                         _ => {
                             push_unique(
                                 reasons,
@@ -5127,6 +4825,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                     local_content_clips,
                     receiver_clips,
                     basis: basis.clone(),
+                    scroll_content_basis_generation,
                     phase: phase.clone(),
                     consumed_properties,
                 });
@@ -5199,9 +4898,8 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
         );
         let span = start..schedule_steps.len();
         let root_boundary_count = boundaries.len().saturating_sub(boundary_start);
-        if root_boundary_count > 1
-            || (root_boundary_count == 1
-                && !property_scroll_root_schedule_is_supported(&schedule_steps[span.clone()]))
+        if (root_boundary_count > 0
+            && !property_scroll_root_schedule_is_supported(&schedule_steps[span.clone()]))
             || (root_boundary_count == 0 && !schedule_steps[span.clone()].is_empty())
         {
             push_unique(
@@ -5218,6 +4916,8 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
             root,
             stable_id,
             step_span: span,
+            boundary_span: u32::try_from(boundary_start).unwrap_or(u32::MAX)
+                ..u32::try_from(boundaries.len()).unwrap_or(u32::MAX),
         };
         schedule_roots.push(root_witness);
         plan_roots.push(PropertySceneRootWitness {
@@ -5412,7 +5112,6 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
             surfaces: FxHashMap::default(),
             effect_scaffold: None,
             scroll_schedule_scaffold: Some(scaffold),
-            nested_scroll_scaffold: None,
             native_scroll_forest_scaffold: None,
         }),
     };
@@ -5422,6 +5121,24 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
 }
 
 fn property_scroll_root_schedule_is_supported(steps: &[PropertySceneScheduledStep]) -> bool {
+    if steps.len() >= 2 {
+        let mut previous_scroll = None;
+        let nested_chain = steps.iter().enumerate().all(|(index, step)| {
+            let PropertySceneScheduledStep::ScrollBoundary { scroll, basis, .. } = step else {
+                return false;
+            };
+            let basis_matches = if index == 0 {
+                matches!(basis, ScrollCompositeBasis::FrameRoot)
+            } else {
+                matches!(basis, ScrollCompositeBasis::ScrollContent(parent) if Some(*parent) == previous_scroll)
+            };
+            previous_scroll = Some(*scroll);
+            basis_matches
+        });
+        if nested_chain {
+            return true;
+        }
+    }
     match steps {
         [] => true,
         [
@@ -5632,22 +5349,109 @@ fn project_property_boundary_dag(
     scroll_content_effect_insertions: &[PropertyScrollContentEffectInsertionContract],
 ) -> Result<PropertyBoundaryDag, FramePaintPlanError> {
     let mut dag_roots = Vec::with_capacity(roots.len());
-    let mut nodes = Vec::new();
+    let mut nodes: Vec<PropertyBoundaryDagNode> = Vec::new();
     for root in roots {
         let node_start = nodes.len();
         let root_steps = schedule
             .steps
             .get(root.step_span.clone())
             .ok_or_else(|| property_scene_error("property-boundary-dag"))?;
-        let root_boundary = boundaries
-            .iter()
-            .find(|boundary| boundary.scene_root_ordinal == root.ordinal);
+        let root_boundaries = boundaries
+            .get(root.boundary_span.start as usize..root.boundary_span.end as usize)
+            .ok_or_else(|| property_scene_error("property-boundary-dag"))?;
         if root_steps.is_empty() {
-            if root_boundary.is_some() {
+            if !root_boundaries.is_empty() {
                 return Err(property_scene_error("property-boundary-dag"));
             }
+        } else if root_steps.len() >= 2
+            && root_steps.len() == root_boundaries.len()
+            && root_steps
+                .iter()
+                .all(|step| matches!(step, PropertySceneScheduledStep::ScrollBoundary { .. }))
+        {
+            let mut receiver = PropertyBoundaryReceiverScope::FrameRoot {
+                scene_root_ordinal: root.ordinal,
+            };
+            let mut receiver_owner = root.root;
+            for (index, (step, boundary)) in root_steps.iter().zip(root_boundaries).enumerate() {
+                let PropertySceneScheduledStep::ScrollBoundary {
+                    boundary_ordinal,
+                    scroll,
+                    basis,
+                    phase,
+                } = step
+                else {
+                    unreachable!()
+                };
+                if boundary.scene_root_ordinal != root.ordinal
+                    || boundary.ordinal != *boundary_ordinal
+                    || boundary.scroll.id != *scroll
+                    || boundary.basis != *basis
+                    || boundary.phase != *phase
+                {
+                    return Err(property_scene_error("property-boundary-dag"));
+                }
+                match (index, basis, receiver) {
+                    (
+                        0,
+                        ScrollCompositeBasis::FrameRoot,
+                        PropertyBoundaryReceiverScope::FrameRoot { .. },
+                    ) => {}
+                    (
+                        _,
+                        ScrollCompositeBasis::ScrollContent(parent),
+                        PropertyBoundaryReceiverScope::ScrollContent(parent_node),
+                    ) if nodes.get(parent_node.0 as usize).is_some_and(|node| {
+                        matches!(
+                            &node.kind,
+                            PropertyBoundaryDagNodeKind::Scroll(parent_boundary)
+                                if parent_boundary.scroll.id == *parent
+                        )
+                    }) => {}
+                    _ => return Err(property_scene_error("property-boundary-dag")),
+                }
+                let marker = super::PlannedBoundary {
+                    root: boundary.scroll.owner,
+                    stable_id: arena
+                        .get(boundary.scroll.owner)
+                        .map(|node| node.element.stable_id())
+                        .filter(|stable_id| *stable_id != 0)
+                        .ok_or_else(|| property_scene_error("property-boundary-dag"))?,
+                    kind: super::PlannedBoundaryKind::Scroll(boundary.scroll.id),
+                };
+                let consumption = property_boundary_consumption(
+                    boundary,
+                    ConsumedPropertyBoundary::ScrollContents {
+                        scroll: boundary.scroll.id,
+                        contents_clip: boundary.contents_clip.id,
+                    },
+                )
+                .ok_or_else(|| property_scene_error("property-boundary-dag"))?;
+                let node = push_property_boundary_dag_node(
+                    arena,
+                    &mut nodes,
+                    root.ordinal,
+                    receiver,
+                    PropertyBoundaryDagNodeKind::Scroll(boundary.clone()),
+                    consumption,
+                    PropertyBoundaryDagPlacement::Cutout {
+                        marker,
+                        neutral_path: property_boundary_neutral_path(
+                            arena,
+                            receiver_owner,
+                            boundary.scroll.owner,
+                        )
+                        .ok_or_else(|| property_scene_error("property-boundary-dag"))?,
+                        sealed: None,
+                    },
+                )?;
+                receiver = PropertyBoundaryReceiverScope::ScrollContent(node);
+                receiver_owner = boundary.scroll.owner;
+            }
         } else {
-            let boundary = root_boundary.ok_or_else(|| property_scene_error("property-boundary-dag"))?;
+            let [boundary] = root_boundaries else {
+                return Err(property_scene_error("property-boundary-dag"));
+            };
             let scroll_marker = super::PlannedBoundary {
                 root: boundary.scroll.owner,
                 stable_id: arena
@@ -10649,6 +10453,14 @@ fn property_boundary_dag_is_canonical(scaffold: &PropertyScrollScheduleScaffold)
                         };
                         PropertyBoundaryReceiverScope::Surface(receiver.id)
                     }
+                    ScrollCompositeBasis::ScrollContent(scroll) => {
+                        let Some(receiver) = dag_nodes[..local_index].iter().find(|candidate| {
+                            matches!(&candidate.kind, PropertyBoundaryDagNodeKind::Scroll(candidate) if candidate.scroll.id == *scroll)
+                        }) else {
+                            return false;
+                        };
+                        PropertyBoundaryReceiverScope::ScrollContent(receiver.id)
+                    }
                 },
                 PropertySceneScheduledStep::ScrollContentSurface { scroll, .. } => {
                     let Some(receiver) = dag_nodes[..local_index].iter().find(|candidate| {
@@ -10783,7 +10595,6 @@ fn property_scroll_schedule_scaffold_is_canonical(
         || scaffold.boundary_dag != scaffold.planned_boundary_dag
         || scaffold.roots.is_empty()
         || scaffold.boundaries.is_empty()
-        || scaffold.boundaries.len() > scaffold.roots.len()
     {
         return false;
     }
@@ -10794,6 +10605,7 @@ fn property_scroll_schedule_scaffold_is_canonical(
         return false;
     }
     let mut next_step = 0usize;
+    let mut next_boundary = 0u32;
     let mut root_keys = FxHashSet::default();
     let mut stable_ids = FxHashSet::default();
     let mut scroll_ids = FxHashSet::default();
@@ -10808,6 +10620,9 @@ fn property_scroll_schedule_scaffold_is_canonical(
             || root.step_span.start != next_step
             || root.step_span.end < root.step_span.start
             || root.step_span.end > scaffold.schedule.steps.len()
+            || root.boundary_span.start != next_boundary
+            || root.boundary_span.end < root.boundary_span.start
+            || root.boundary_span.end as usize > scaffold.boundaries.len()
             || plan_root.ordinal != root.ordinal
             || plan_root.root != root.root
             || plan_root.stable_id != root.stable_id
@@ -10824,158 +10639,102 @@ fn property_scroll_schedule_scaffold_is_canonical(
         {
             return false;
         }
-        let root_boundaries = scaffold
-            .boundaries
-            .iter()
-            .filter(|boundary| boundary.scene_root_ordinal as usize == ordinal)
-            .collect::<Vec<_>>();
+        let Some(root_boundaries) = scaffold.boundaries.get(
+            root.boundary_span.start as usize..root.boundary_span.end as usize,
+        ) else {
+            return false;
+        };
         if root.step_span.is_empty() {
             if !root_boundaries.is_empty() {
                 return false;
             }
             next_step = root.step_span.end;
+            next_boundary = root.boundary_span.end;
             continue;
         }
-        let [boundary] = root_boundaries.as_slice() else {
-            return false;
-        };
-        if boundary.ordinal as usize >= scaffold.boundaries.len()
-            || scaffold.boundaries.get(boundary.ordinal as usize) != Some(*boundary)
-            || !scroll_ids.insert(boundary.scroll.id)
+        if root_boundaries.is_empty()
+            || scaffold.schedule.steps[root.step_span.clone()]
+                .iter()
+                .filter(|step| {
+                    matches!(step, PropertySceneScheduledStep::ScrollBoundary { .. })
+                })
+                .count()
+                != root_boundaries.len()
         {
             return false;
         }
-        let Some(scroll_step) = scaffold.schedule.steps[root.step_span.clone()]
-            .iter()
-            .find(|step| matches!(step, PropertySceneScheduledStep::ScrollBoundary { .. }))
-        else {
-            return false;
-        };
-        let PropertySceneScheduledStep::ScrollBoundary {
-            boundary_ordinal,
-            scroll,
-            basis,
-            phase,
-        } = scroll_step
-        else {
-            return false;
-        };
-        if *boundary_ordinal != boundary.ordinal
-            || *scroll != boundary.scroll.id
-            || basis != &boundary.basis
-            || phase != &boundary.phase
-            || boundary.scroll.owner != boundary.scroll.id.0
-            || boundary.scroll.parent.is_some()
-            || boundary.scroll.generation == 0
-            || boundary.contents_clip.id.owner != boundary.scroll.owner
-            || boundary.contents_clip.id.role != ClipNodeRole::ContentsClip
-            || boundary.contents_clip.owner != boundary.scroll.owner
-            || boundary.contents_clip.behavior != ClipBehavior::Intersect
-            || boundary.contents_clip.generation == 0
-            || !boundary
-                .scroll
-                .is_canonical_with_ancestor_contents_clip(boundary.contents_clip)
-        {
-            return false;
-        }
-        let mut expected_parent = boundary.contents_clip.parent;
-        for ancestor in &boundary.ancestor_composite_clips {
-            if Some(ancestor.id) != expected_parent
-                || ancestor.owner != ancestor.id.owner
-                || ancestor.generation == 0
+        for (local_boundary_index, boundary) in root_boundaries.iter().enumerate() {
+            if boundary.ordinal
+                != root
+                    .boundary_span
+                    .start
+                    .saturating_add(local_boundary_index as u32)
+                || boundary.scene_root_ordinal != root.ordinal
+                || scaffold.boundaries.get(boundary.ordinal as usize) != Some(boundary)
+                || !scroll_ids.insert(boundary.scroll.id)
+                || !boundary.is_canonical()
             {
                 return false;
             }
-            expected_parent = ancestor.parent;
-        }
-        if expected_parent.is_some() {
-            return false;
-        }
-        let mut clip_ids = FxHashSet::default();
-        let extra_clips = boundary
-            .ancestor_composite_clips
-            .iter()
-            .chain(&boundary.local_content_clips)
-            .chain(&boundary.receiver_clips)
-            .collect::<Vec<_>>();
-        if !clip_ids.insert(boundary.contents_clip.id)
-            || extra_clips.iter().any(|clip| !clip_ids.insert(clip.id))
-            || extra_clips.iter().any(|clip| {
-                clip.owner != clip.id.owner
-                    || clip.generation == 0
-                    || clip
-                        .parent
-                        .is_some_and(|parent| !clip_ids.contains(&parent))
-            })
-        {
-            return false;
-        }
-        let stack = &boundary.consumed_properties;
-        if stack.target_owner != boundary.scroll.owner
-            || stack.entries.is_empty()
-            || stack.entries.first().map(|entry| entry.expected_before) != Some(stack.live_input)
-            || stack.entries.last().map(|entry| entry.projected_after)
-                != Some(stack.projected_output)
-            || stack.projected_output.clip != boundary.contents_clip.parent
-            || stack.projected_output.transform.is_some()
-            || stack.projected_output.effect.is_some()
-            || stack.projected_output.scroll.is_some()
-        {
-            return false;
-        }
-        let mut cursor = stack.live_input;
-        for entry in &stack.entries {
-            if entry.expected_before != cursor {
+            let Some(scroll_step) = scaffold.schedule.steps[root.step_span.clone()]
+                .iter()
+                .find(|step| {
+                    matches!(
+                        step,
+                        PropertySceneScheduledStep::ScrollBoundary {
+                            boundary_ordinal,
+                            ..
+                        } if *boundary_ordinal == boundary.ordinal
+                    )
+                })
+            else {
+                return false;
+            };
+            let PropertySceneScheduledStep::ScrollBoundary {
+                scroll,
+                basis,
+                phase,
+                ..
+            } = scroll_step
+            else {
+                return false;
+            };
+            if *scroll != boundary.scroll.id
+                || basis != &boundary.basis
+                || phase != &boundary.phase
+            {
                 return false;
             }
-            match entry.boundary {
-                ConsumedPropertyBoundary::Transform(id) if cursor.transform == Some(id) => {
-                    cursor.transform = None;
+            match boundary.basis {
+                ScrollCompositeBasis::ScrollContent(parent) => {
+                    let Some(parent_boundary) = local_boundary_index
+                        .checked_sub(1)
+                        .and_then(|index| root_boundaries.get(index))
+                    else {
+                        return false;
+                    };
+                    if parent_boundary.scroll.id != parent
+                        || boundary.scroll.parent != Some(parent)
+                        || boundary.contents_clip.parent != Some(parent_boundary.contents_clip.id)
+                        || boundary.scroll_content_basis_generation
+                            != Some(parent_boundary.scroll.generation)
+                    {
+                        return false;
+                    }
                 }
-                ConsumedPropertyBoundary::Effect(id) if cursor.effect == Some(id) => {
-                    cursor.effect = None;
+                ScrollCompositeBasis::FrameRoot
+                | ScrollCompositeBasis::Transform(_)
+                | ScrollCompositeBasis::Effect(_) => {
+                    if local_boundary_index != 0
+                        || boundary.scroll_content_basis_generation.is_some()
+                    {
+                        return false;
+                    }
                 }
-                ConsumedPropertyBoundary::ScrollContents {
-                    scroll,
-                    contents_clip,
-                } if cursor.scroll == Some(scroll)
-                    && cursor.clip == Some(contents_clip)
-                    && scroll == boundary.scroll.id
-                    && contents_clip == boundary.contents_clip.id =>
-                {
-                    cursor.scroll = None;
-                    cursor.clip = boundary.contents_clip.parent;
-                }
-                _ => return false,
             }
-            if entry.projected_after != cursor {
-                return false;
-            }
-        }
-        if cursor != stack.projected_output
-            || boundary.phase.host_before
-                != (PropertyScrollPhaseSlot {
-                    owner: boundary.scroll.owner,
-                    phase: PropertyScrollPhaseKind::HostBeforeChildren,
-                    receiver_state: cursor,
-                })
-            || boundary.phase.content_gap
-                != (PropertyScrollContentPhase {
-                    owner: boundary.scroll.owner,
-                    phase: PropertyScrollPhaseKind::DetachedContentComposite,
-                    content_state: stack.live_input,
-                    projected_receiver_state: cursor,
-                })
-            || boundary.phase.overlay_after
-                != (PropertyScrollPhaseSlot {
-                    owner: boundary.scroll.owner,
-                    phase: PropertyScrollPhaseKind::OverlayAfterChildren,
-                    receiver_state: cursor,
-                })
-        {
-            return false;
         }
         next_step = root.step_span.end;
+        next_boundary = root.boundary_span.end;
     }
     let eligible_receiver_insertions = scaffold
         .roots
@@ -11261,6 +11020,7 @@ fn property_scroll_schedule_scaffold_is_canonical(
                 && property_scroll_content_effect_insertion_is_canonical(scaffold, insertion)
         });
     next_step == scaffold.schedule.steps.len()
+        && next_boundary as usize == scaffold.boundaries.len()
         && scaffold
             .boundaries
             .iter()
@@ -12398,24 +12158,15 @@ fn property_scene_plan_is_sealed(plan: &FramePaintPlan) -> bool {
     if let Some(scaffold) = &seal.native_scroll_forest_scaffold {
         return seal.effect_scaffold.is_none()
             && seal.scroll_schedule_scaffold.is_none()
-            && seal.nested_scroll_scaffold.is_none()
             && native_scroll_forest_scaffold_is_canonical(plan, seal, scaffold);
-    }
-    if let Some(scaffold) = &seal.nested_scroll_scaffold {
-        return seal.effect_scaffold.is_none()
-            && seal.scroll_schedule_scaffold.is_none()
-            && seal.native_scroll_forest_scaffold.is_none()
-            && nested_scroll_scene_scaffold_is_canonical(plan, seal, scaffold);
     }
     if let Some(scaffold) = &seal.scroll_schedule_scaffold {
         return seal.effect_scaffold.is_none()
-            && seal.nested_scroll_scaffold.is_none()
             && seal.native_scroll_forest_scaffold.is_none()
             && property_scroll_schedule_scaffold_is_canonical(plan, seal, scaffold);
     }
     if let Some(scaffold) = &seal.effect_scaffold {
-        return seal.nested_scroll_scaffold.is_none()
-            && seal.native_scroll_forest_scaffold.is_none()
+        return seal.native_scroll_forest_scaffold.is_none()
             && property_effect_scaffold_is_canonical(plan, seal, scaffold);
     }
     let Some(plan_roots) = &plan.property_scene_roots else {
@@ -13020,214 +12771,6 @@ fn native_scroll_forest_scaffold_is_canonical(
         && receivers.iter().all(|(_, stable_id)| {
             !root_stable_ids.contains(stable_id) && !boundary_stable_ids.contains(stable_id)
         })
-}
-
-fn nested_scroll_scene_scaffold_is_canonical(
-    plan: &FramePaintPlan,
-    seal: &PropertyScenePlanSeal,
-    scaffold: &NestedScrollSceneScaffold,
-) -> bool {
-    if !plan.steps.is_empty()
-        || seal.surface_count != 0
-        || !seal.surfaces.is_empty()
-        || !seal.scene_artifact_validation.is_empty()
-        || seal.aggregate_opaque_order_span != (0..0)
-        || seal.context != scaffold.context
-        || seal.outer_scissor_rect.is_some()
-        || scaffold.context != scaffold.planned_context
-        || scaffold.context != TransformSurfacePlanContext::default()
-        || !scaffold.admission.bitwise_eq(scaffold.planned_admission)
-        || scaffold.boundaries != scaffold.planned_boundaries
-        || scaffold.schedule != scaffold.planned_schedule
-    {
-        return false;
-    }
-    let Some(plan_roots) = &plan.property_scene_roots else {
-        return false;
-    };
-    let [plan_root] = plan_roots.as_slice() else {
-        return false;
-    };
-    let [seal_root] = seal.roots.as_slice() else {
-        return false;
-    };
-    let admission = scaffold.admission;
-    if plan_root != seal_root
-        || plan_root.ordinal != 0
-        || plan_root.root != admission.outer_boundary_root
-        || plan_root.stable_id != admission.outer_stable_id
-        || plan_root.owner
-            != (PaintOwnerSnapshot {
-                owner: admission.outer_boundary_root,
-                parent: None,
-            })
-        || plan_root.top_level_step_span != (0..0)
-        || admission.outer_stable_id == 0
-        || admission.inner_stable_id == 0
-        || admission.content_leaf_stable_id == 0
-        || admission.outer_stable_id == admission.inner_stable_id
-        || admission.outer_stable_id == admission.content_leaf_stable_id
-        || admission.inner_stable_id == admission.content_leaf_stable_id
-        || admission.outer_boundary_root == admission.inner_boundary_root
-        || admission.outer_boundary_root == admission.content_leaf
-        || admission.inner_boundary_root == admission.content_leaf
-    {
-        return false;
-    }
-    for bounds in [admission.outer_source_bounds, admission.inner_source_bounds] {
-        if [bounds.x, bounds.y, bounds.width, bounds.height]
-            .into_iter()
-            .any(|value| !value.is_finite())
-            || bounds.width <= 0.0
-            || bounds.height <= 0.0
-            || bounds.x < 0.0
-            || bounds.y < 0.0
-            || bounds.x.fract() != 0.0
-            || bounds.y.fract() != 0.0
-            || (bounds.x + bounds.width).fract() != 0.0
-            || (bounds.y + bounds.height).fract() != 0.0
-            || bounds.corner_radii.map(f32::to_bits) != [0; 4]
-        {
-            return false;
-        }
-    }
-    let [outer, inner] = scaffold.boundaries.as_slice() else {
-        return false;
-    };
-    let outer_state = PropertyTreeState {
-        clip: Some(outer.contents_clip.id),
-        scroll: Some(outer.scroll.id),
-        ..PropertyTreeState::default()
-    };
-    let inner_state = PropertyTreeState {
-        clip: Some(inner.contents_clip.id),
-        scroll: Some(inner.scroll.id),
-        ..PropertyTreeState::default()
-    };
-    if outer.slot != NestedScrollBoundarySlot::Outer
-        || outer.boundary_root != admission.outer_boundary_root
-        || outer.stable_id != admission.outer_stable_id
-        || outer.parent.is_some()
-        || outer.scroll.id != ScrollNodeId(outer.boundary_root)
-        || outer.scroll.owner != outer.boundary_root
-        || outer.scroll.parent.is_some()
-        || outer.scroll.generation == 0
-        || outer.contents_clip.id
-            != (ClipNodeId {
-                owner: outer.boundary_root,
-                role: ClipNodeRole::ContentsClip,
-            })
-        || outer.contents_clip.owner != outer.boundary_root
-        || outer.contents_clip.parent.is_some()
-        || outer.contents_clip.generation == 0
-        || outer.contents_clip.behavior != ClipBehavior::Intersect
-        || !outer
-            .scroll
-            .has_canonical_vertical_geometry_with_contents_clip(outer.contents_clip)
-        || outer.content_state != outer_state
-        || outer.projected_receiver_state != PropertyTreeState::default()
-        || inner.slot != NestedScrollBoundarySlot::Inner
-        || inner.boundary_root != admission.inner_boundary_root
-        || inner.stable_id != admission.inner_stable_id
-        || inner.parent != Some(NestedScrollBoundarySlot::Outer)
-        || inner.scroll.id != ScrollNodeId(inner.boundary_root)
-        || inner.scroll.owner != inner.boundary_root
-        || inner.scroll.parent != Some(outer.scroll.id)
-        || inner.scroll.generation == 0
-        || inner.contents_clip.id
-            != (ClipNodeId {
-                owner: inner.boundary_root,
-                role: ClipNodeRole::ContentsClip,
-            })
-        || inner.contents_clip.owner != inner.boundary_root
-        || inner.contents_clip.parent != Some(outer.contents_clip.id)
-        || inner.contents_clip.generation == 0
-        || inner.contents_clip.behavior != ClipBehavior::Intersect
-        || !inner
-            .scroll
-            .has_canonical_nested_vertical_geometry_with_contents_clip(
-                inner.contents_clip,
-                outer.scroll,
-                outer.contents_clip,
-            )
-        || inner.content_state != inner_state
-        || inner.projected_receiver_state != outer_state
-        || !admission.matches_scroll_nodes(outer.scroll, inner.scroll)
-    {
-        return false;
-    }
-    let [
-        NestedScrollSceneScheduledStep::HostBefore {
-            boundary: NestedScrollBoundarySlot::Outer,
-            artifact: outer_before,
-        },
-        NestedScrollSceneScheduledStep::HostBefore {
-            boundary: NestedScrollBoundarySlot::Inner,
-            artifact: inner_before,
-        },
-        NestedScrollSceneScheduledStep::ContentReceiver(receiver),
-        NestedScrollSceneScheduledStep::OverlayAfter {
-            boundary: NestedScrollBoundarySlot::Inner,
-            artifact: inner_after,
-        },
-        NestedScrollSceneScheduledStep::OverlayAfter {
-            boundary: NestedScrollBoundarySlot::Outer,
-            artifact: outer_after,
-        },
-    ] = scaffold.schedule.steps.as_slice()
-    else {
-        return false;
-    };
-    let rebuilt_witness = super::PaintNestedScrollContentWitness::new(
-        admission.outer_boundary_root,
-        admission.inner_boundary_root,
-        admission.content_leaf,
-        outer.scroll,
-        outer.contents_clip,
-        inner.scroll,
-        inner.contents_clip,
-    );
-    receiver.stable_id == admission.content_leaf_stable_id
-        && rebuilt_witness == Some(receiver.witness)
-        && receiver.witness.outer_boundary_root() == admission.outer_boundary_root
-        && receiver.witness.boundary_root() == admission.inner_boundary_root
-        && receiver.witness.content_root() == admission.content_leaf
-        && receiver.witness.outer_scroll() == outer.scroll.id
-        && receiver.witness.inner_scroll() == inner.scroll.id
-        && receiver.witness.outer_contents_clip() == outer.contents_clip.id
-        && receiver.witness.inner_contents_clip() == inner.contents_clip.id
-        && receiver.live_input == inner_state
-        && receiver.projected_output == outer_state
-        && nested_scroll_artifact_identity_is_canonical(
-            outer_before,
-            admission.outer_boundary_root,
-            PropertyTreeState::default(),
-            &[],
-        )
-        && nested_scroll_artifact_identity_is_canonical(
-            inner_before,
-            admission.inner_boundary_root,
-            PropertyTreeState::default(),
-            &[],
-        )
-        && nested_scroll_artifact_identity_is_canonical(
-            &receiver.artifact,
-            admission.content_leaf,
-            outer_state,
-            &[outer.contents_clip],
-        )
-        && nested_scroll_artifact_identity_is_canonical(
-            inner_after,
-            admission.inner_boundary_root,
-            PropertyTreeState::default(),
-            &[],
-        )
-        && nested_scroll_artifact_identity_is_canonical(
-            outer_after,
-            admission.outer_boundary_root,
-            PropertyTreeState::default(),
-            &[],
-        )
 }
 
 /// Builds an owning, arena-independent plan for the first exact transform

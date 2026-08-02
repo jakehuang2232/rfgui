@@ -109,7 +109,8 @@ fn property_scroll_scene_transaction_is_pool_canonical(
         }
     }
 
-    !ordered.is_empty() && source_keys.len() == ordered.len()
+    (!ordered.is_empty() || transaction.is_exact_zero_resident_nested_text())
+        && source_keys.len() == ordered.len()
 }
 
 fn scroll_tile_content_group(
@@ -316,6 +317,15 @@ impl Viewport {
                     .sum::<usize>(),
             pending,
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn property_scroll_active_resident_count_for_test(&self) -> usize {
+        self.compositor
+            .retained_surfaces
+            .property_scroll
+            .active
+            .len()
     }
 
     #[cfg(test)]

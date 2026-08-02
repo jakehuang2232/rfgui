@@ -358,10 +358,7 @@ impl Image {
                     {
                         return Err(super::ShadowPaintBlocker::Transform);
                     }
-                    if properties.scroll.is_some()
-                        && !recording_context
-                            .authorizes_nested_scroll_content_properties(owner, properties)
-                    {
+                    if properties.scroll.is_some() {
                         return Err(super::ShadowPaintBlocker::ScrollContainer);
                     }
                 }
@@ -408,10 +405,7 @@ impl Image {
                     {
                         return Err(super::ShadowPaintBlocker::Transform);
                     }
-                    if properties.scroll.is_some()
-                        && !recording_context
-                            .authorizes_nested_scroll_content_properties(owner, properties)
-                    {
+                    if properties.scroll.is_some() {
                         return Err(super::ShadowPaintBlocker::ScrollContainer);
                     }
                 }

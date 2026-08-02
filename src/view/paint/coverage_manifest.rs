@@ -74,12 +74,6 @@ pub(crate) enum PlannedBoundaryKind {
 pub(crate) type PlannedBoundaryCutoutSet = FxHashMap<NodeKey, PlannedBoundary>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct NestedScrollContentReceiverCutout {
-    pub(super) stable_id: u64,
-    pub(super) witness: super::PaintNestedScrollContentWitness,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NativeScrollContentReceiverCutout {
     pub(super) stable_id: u64,
     pub(super) witness: super::PaintScrollForestEdgeWitness,
@@ -118,10 +112,6 @@ pub(crate) enum PaintCoverageItem {
     PlannedBoundary {
         order: CoverageOrder,
         boundary: PlannedBoundary,
-    },
-    NestedScrollContentReceiver {
-        order: CoverageOrder,
-        cutout: NestedScrollContentReceiverCutout,
     },
     NativeScrollContentReceiver {
         order: CoverageOrder,
@@ -177,25 +167,6 @@ pub(crate) struct PaintCoverageManifest {
     legacy_coverage: FxHashMap<LegacyPaintReason, FxHashSet<NodeKey>>,
 }
 
-#[cfg(test)]
-pub(crate) fn nested_scroll_receiver_manifest_for_layerizer_test(
-    outer: NodeKey,
-    inner: NodeKey,
-    content: NodeKey,
-    stable_id: u64,
-) -> PaintCoverageManifest {
-    let witness = super::PaintNestedScrollContentWitness::for_layerizer_test(outer, inner, content)
-        .expect("layerizer receiver test uses pairwise-distinct roots");
-    PaintCoverageManifest {
-        items: vec![PaintCoverageItem::NestedScrollContentReceiver {
-            order: CoverageOrder::node(0, &[]),
-            cutout: NestedScrollContentReceiverCutout { stable_id, witness },
-        }],
-        covered_nodes: FxHashSet::from_iter([outer, inner, content]),
-        ..PaintCoverageManifest::default()
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PaintCoverageStats {
     pub(crate) total_nodes: usize,
@@ -244,9 +215,6 @@ impl PaintCoverageManifest {
                 }
                 PaintCoverageItem::PlannedBoundary { boundary, .. } => {
                     nodes.insert(boundary.root);
-                }
-                PaintCoverageItem::NestedScrollContentReceiver { cutout, .. } => {
-                    nodes.insert(cutout.witness.content_root());
                 }
                 PaintCoverageItem::NativeScrollContentReceiver { cutout, .. } => {
                     nodes.insert(cutout.witness.content_root());
@@ -483,7 +451,6 @@ pub(super) fn record_coverage_manifest_with_property_authorities(
         None,
         planned_boundary_cutouts,
         None,
-        None,
     )
 }
 
@@ -515,7 +482,6 @@ pub(super) fn record_retained_coverage_manifest_with_property_forest_authorities
         effect_surface_authority,
         Some(property_forest_ancestor_chain),
         planned_boundary_cutouts,
-        None,
         None,
     )
 }
@@ -550,55 +516,6 @@ pub(super) fn record_retained_coverage_manifest_with_property_authorities(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn record_coverage_manifest_with_nested_scroll_receiver(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    recording_mode: CoverageRecordingMode,
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    initial_recording_context: PaintRecordingContext,
-    receiver: NestedScrollContentReceiverCutout,
-) -> PaintCoverageManifest {
-    record_coverage_manifest_with_property_authorities_impl(
-        arena,
-        roots,
-        false,
-        true,
-        recording_mode,
-        property_trees,
-        paint_generations,
-        initial_recording_context,
-        None,
-        None,
-        None,
-        &PlannedBoundaryCutoutSet::default(),
-        Some(receiver),
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn record_retained_coverage_manifest_with_nested_scroll_receiver(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    recording_mode: CoverageRecordingMode,
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    initial_recording_context: PaintRecordingContext,
-    receiver: NestedScrollContentReceiverCutout,
-) -> PaintCoverageManifest {
-    record_coverage_manifest_with_nested_scroll_receiver(
-        arena,
-        roots,
-        recording_mode,
-        property_trees,
-        paint_generations,
-        initial_recording_context,
-        receiver,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(super) fn record_retained_coverage_manifest_with_native_scroll_receiver(
     arena: &NodeArena,
     roots: &[NodeKey],
@@ -621,7 +538,6 @@ pub(super) fn record_retained_coverage_manifest_with_native_scroll_receiver(
         None,
         None,
         &PlannedBoundaryCutoutSet::default(),
-        None,
         Some(receiver),
     )
 }
@@ -640,7 +556,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
     effect_surface_authority: Option<&super::EffectPropertySurfaceArtifactContract>,
     property_forest_ancestor_chain: Option<&super::ConsumedPropertyForestAncestorChainWitness>,
     planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
-    nested_scroll_receiver: Option<NestedScrollContentReceiverCutout>,
     native_scroll_receiver: Option<NativeScrollContentReceiverCutout>,
 ) -> PaintCoverageManifest {
     let mut manifest = PaintCoverageManifest::default();
@@ -724,8 +639,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
         baked_scroll_host_authority: Option<super::PaintBakedScrollHostWitness>,
         consumed_ancestor_property: Option<super::ConsumedAncestorProperty>,
         consumed_ancestor_property_stack: Option<super::ConsumedAncestorPropertyStackWitness>,
-        nested_scroll_content: Option<super::PaintNestedScrollContentWitness>,
-        nested_scroll_host: Option<super::PaintNestedScrollContentWitness>,
         scroll_forest_host: Option<super::PaintScrollForestEdgeWitness>,
         scroll_text_area_subtree: Option<super::PaintScrollTextAreaSubtreeWitness>,
         baked_scroll_text_area_subtree: Option<super::PaintScrollTextAreaSubtreeWitness>,
@@ -740,7 +653,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
         required_scroll_content_paint_offset_bits: Option<[u32; 2]>,
         opacity_authority: super::PaintOpacityAuthority,
         planned_boundary_cutouts: &'a PlannedBoundaryCutoutSet,
-        nested_scroll_receiver: Option<NestedScrollContentReceiverCutout>,
         native_scroll_receiver: Option<NativeScrollContentReceiverCutout>,
         items: &'a mut Vec<PaintCoverageItem>,
         validation_errors: &'a mut Vec<PaintCoverageValidationError>,
@@ -814,22 +726,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
             }
             let stable_id = node.element.stable_id();
             let order = CoverageOrder::node(root_index, path);
-            if let Some(cutout) = self.nested_scroll_receiver
-                && key == cutout.witness.content_root()
-            {
-                if cutout.stable_id != stable_id
-                    || self.owner_parents.get(&key).copied().flatten()
-                        != Some(cutout.witness.boundary_root())
-                    || !node.element.children().is_empty()
-                {
-                    self.validation_errors
-                        .push(PaintCoverageValidationError::InvalidPlannedBoundary(key));
-                    return;
-                }
-                self.items
-                    .push(PaintCoverageItem::NestedScrollContentReceiver { order, cutout });
-                return;
-            }
             if let Some(cutout) = self.native_scroll_receiver
                 && key == cutout.witness.content_root()
             {
@@ -954,8 +850,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
             recording_context.property_forest_projection = self
                 .property_forest_ancestor_chain
                 .and_then(|witness| witness.projection_for_target(key));
-            recording_context.nested_scroll_content = self.nested_scroll_content;
-            recording_context.nested_scroll_host = self.nested_scroll_host;
             recording_context.scroll_forest_host = self.scroll_forest_host;
             recording_context.scroll_text_area_subtree = self
                 .scroll_text_area_subtree
@@ -1615,8 +1509,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
         consumed_ancestor_property: initial_recording_context.consumed_ancestor_property,
         consumed_ancestor_property_stack: initial_recording_context
             .consumed_ancestor_property_stack,
-        nested_scroll_content: initial_recording_context.nested_scroll_content,
-        nested_scroll_host: initial_recording_context.nested_scroll_host,
         scroll_forest_host: initial_recording_context.scroll_forest_host,
         scroll_text_area_subtree: initial_recording_context.scroll_text_area_subtree,
         baked_scroll_text_area_subtree: initial_recording_context.baked_scroll_text_area_subtree,
@@ -1632,7 +1524,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
             .required_scroll_content_paint_offset_bits,
         opacity_authority: initial_recording_context.opacity_authority,
         planned_boundary_cutouts,
-        nested_scroll_receiver,
         native_scroll_receiver,
         items: &mut manifest.items,
         validation_errors: &mut manifest.validation_errors,
@@ -1658,17 +1549,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
         }
     }
     drop(recorder);
-    if let Some(receiver) = nested_scroll_receiver
-        && !manifest.items.iter().any(|item| {
-            matches!(item, PaintCoverageItem::NestedScrollContentReceiver { cutout, .. } if *cutout == receiver)
-        })
-    {
-        manifest
-            .validation_errors
-            .push(PaintCoverageValidationError::InvalidPlannedBoundary(
-                receiver.witness.content_root(),
-            ));
-    }
     if let Some(receiver) = native_scroll_receiver
         && !manifest.items.iter().any(|item| {
             matches!(item, PaintCoverageItem::NativeScrollContentReceiver { cutout, .. } if *cutout == receiver)

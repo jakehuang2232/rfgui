@@ -70,8 +70,7 @@ fn same_owner_transform_effect_descendant_scroll_prepares_reuses_and_fails_atomi
 
     let sampled_at = crate::time::Instant::now();
     for scale_factor in [1.0, 2.0] {
-        let (arena, root, properties, generations) =
-            same_owner_transform_effect_scroll_fixture();
+        let (arena, root, properties, generations) = same_owner_transform_effect_scroll_fixture();
         let mut viewport = Viewport::new();
         let first_owner = viewport.begin_retained_surface_frame_stage().unwrap();
         let mut first_graph = FrameGraph::new();
@@ -108,9 +107,7 @@ fn same_owner_transform_effect_descendant_scroll_prepares_reuses_and_fails_atomi
         );
         let outcome = emit_prepared_retained_transform_effect_scroll_scene(first);
         assert_eq!(outcome.trace.reraster_count, 3);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true));
 
         let warm_owner = viewport.begin_retained_surface_frame_stage().unwrap();
         let mut warm_graph = FrameGraph::new();
@@ -155,12 +152,7 @@ fn same_owner_transform_effect_descendant_scroll_prepares_reuses_and_fails_atomi
                 &mut viewport,
                 tampered,
                 &mut tamper_graph,
-                UiBuildContext::new(
-                    640,
-                    480,
-                    wgpu::TextureFormat::Bgra8UnormSrgb,
-                    scale_factor,
-                ),
+                UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, scale_factor,),
                 [0.0; 4],
                 tamper_owner,
             )
@@ -172,10 +164,53 @@ fn same_owner_transform_effect_descendant_scroll_prepares_reuses_and_fails_atomi
             viewport.retained_surface_transaction_shape_for_test(),
             pool_before
         );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(tamper_owner), false));
+    }
+}
+
+#[test]
+fn property_boundary_dag_production_continuation_skips_fixed_cascade_grammars() {
+    fn assert_skipped(
+        arena: &NodeArena,
+        roots: &[NodeKey],
+        properties: &PropertyTrees,
+        generations: &PaintGenerationTracker,
+    ) {
+        let candidate = PropertyBoundaryDagCompiler::plan_and_validate_after_fixed_grammar_cascade(
+            arena,
+            roots,
+            properties,
+            generations,
+            1.0,
+            [0.0; 2],
+            None,
+            crate::time::Instant::now(),
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            generous_budget(),
+        )
+        .expect("fixed grammar remains classifiable");
         assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(tamper_owner), false)
+            candidate.is_none(),
+            "production continuation must not invoke an already-attempted compiler"
         );
     }
+
+    let (arena, roots) = crate::view::paint::tests::window_like_native_showcase_fixture();
+    let mut properties = PropertyTrees::default();
+    properties.sync(&arena, &roots);
+    let mut generations = PaintGenerationTracker::default();
+    generations.sync(&arena, &roots, &properties);
+    assert_skipped(&arena, &roots, &properties, &generations);
+
+    let (arena, root, _, _, properties, generations) =
+        transform_scroll_fixture(glam::Mat4::from_translation(glam::Vec3::new(7.0, 3.0, 0.0)));
+    assert_skipped(&arena, &[root], &properties, &generations);
+
+    let (arena, root, _, properties, generations) = same_owner_effect_scroll_fixture();
+    assert_skipped(&arena, &[root], &properties, &generations);
+
+    let (arena, root, properties, generations) = transform_effect_scroll_fixture();
+    assert_skipped(&arena, &[root], &properties, &generations);
 }
 
 #[test]
@@ -499,8 +534,7 @@ fn property_boundary_dag_joint_prepare_failures_leave_graph_pool_and_stage_prist
         .unwrap();
     let mut descriptor_graph = FrameGraph::new();
     let descriptor_graph_before = descriptor_graph.build_state_snapshot_for_test();
-    let descriptor_pool_before =
-        descriptor_viewport.retained_surface_transaction_shape_for_test();
+    let descriptor_pool_before = descriptor_viewport.retained_surface_transaction_shape_for_test();
     assert_eq!(
         prepare_property_boundary_dag_scene_from_pool(
             &mut descriptor_viewport,
@@ -530,9 +564,7 @@ fn property_boundary_dag_joint_prepare_failures_leave_graph_pool_and_stage_prist
     let stale_scene = make_scene(generous_budget()).unwrap();
     let mut stale_viewport = Viewport::new();
     let stale_owner = stale_viewport.begin_retained_surface_frame_stage().unwrap();
-    assert!(
-        stale_viewport.finish_retained_surface_transaction_for_frame(Some(stale_owner), false)
-    );
+    assert!(stale_viewport.finish_retained_surface_transaction_for_frame(Some(stale_owner), false));
     let mut stale_graph = FrameGraph::new();
     let stale_graph_before = stale_graph.build_state_snapshot_for_test();
     let stale_pool_before = stale_viewport.retained_surface_transaction_shape_for_test();
@@ -559,13 +591,11 @@ fn property_boundary_dag_joint_prepare_failures_leave_graph_pool_and_stage_prist
     assert!(stale_viewport.retained_property_scroll_scene_stage_is_available());
 
     let collision_scene = make_scene(generous_budget()).unwrap();
-    let ValidatedPropertyBoundaryDagScene::TransformEffectScroll(scene) = &collision_scene
-    else {
+    let ValidatedPropertyBoundaryDagScene::TransformEffectScroll(scene) = &collision_scene else {
         unreachable!("fixture remains exact T->E->S")
     };
-    let outer_key = crate::view::base_component::transformed_layer_stable_key(
-        scene.roots[0].outer_stable_id,
-    );
+    let outer_key =
+        crate::view::base_component::transformed_layer_stable_key(scene.roots[0].outer_stable_id);
     let outer_desc = texture_desc_for_logical_bounds(
         scene.roots[0].outer_geometry.source_bounds,
         1.0,
@@ -585,8 +615,7 @@ fn property_boundary_dag_joint_prepare_failures_leave_graph_pool_and_stage_prist
         outer_key,
     );
     let collision_graph_before = collision_graph.build_state_snapshot_for_test();
-    let collision_pool_before =
-        collision_viewport.retained_surface_transaction_shape_for_test();
+    let collision_pool_before = collision_viewport.retained_surface_transaction_shape_for_test();
     assert_eq!(
         prepare_property_boundary_dag_scene_from_pool(
             &mut collision_viewport,

@@ -1298,7 +1298,7 @@ enum NestedScrollGpuLeafKind {
 }
 
 impl NestedScrollGpuLeafKind {
-    const GPU_CLOSURE: [Self; 3] = [Self::Image, Self::Svg, Self::Text];
+    const GPU_CLOSURE: [Self; 2] = [Self::Image, Self::Svg];
 
     fn label(self) -> &'static str {
         match self {
@@ -1598,7 +1598,7 @@ fn production_nested_scroll_leaf_graph(
         nested_scroll_gpu_leaf_fixture(kind, outer_offset_y, inner_offset_y);
     let mut ctx = UiBuildContext::new(WIDTH, HEIGHT, FORMAT, 1.0);
     ctx.push_scissor_rect(outer_scissor);
-    let geometry = plan_and_prepare_nested_scroll_scene(
+    let scene = PropertyBoundaryDagCompiler::plan_and_validate(
         &arena,
         &[outer],
         &properties,
@@ -1606,6 +1606,7 @@ fn production_nested_scroll_leaf_graph(
         1.0,
         ctx.paint_offset(),
         ctx.graphics_pass_context().scissor_rect,
+        crate::time::Instant::now(),
         FORMAT,
         ScrollSceneSingleTextureBudget::new(
             wgpu::Limits::default().max_texture_dimension_2d,
@@ -1615,18 +1616,20 @@ fn production_nested_scroll_leaf_graph(
     )
     .map_err(|error| {
         format!(
-            "nested-scroll {} production wrapper rejected: {error:?}",
+            "nested-scroll {} production DAG rejected: {error:?}",
             kind.label()
         )
     })?;
-    let (leaf_key, leaf_desc) = geometry.leaf_target_for_test();
+    let (leaf_key, leaf_desc) = scene
+        .nested_scroll_persistent_leaf_target_for_test()
+        .ok_or_else(|| format!("nested-scroll {} has no persistent leaf", kind.label()))?;
     let owner = viewport
         .begin_retained_surface_frame_stage()
         .ok_or_else(|| "nested-scroll retained stage is unavailable".to_string())?;
     let mut graph = FrameGraph::new();
-    let prepared = prepare_nested_scroll_scene_from_pool(
+    let prepared = prepare_property_boundary_dag_scene_from_pool(
         viewport,
-        geometry,
+        scene,
         &mut graph,
         ctx,
         [0.0, 0.0, 0.0, 0.0],
@@ -1638,7 +1641,7 @@ fn production_nested_scroll_leaf_graph(
             kind.label()
         )
     })?;
-    let outcome = emit_prepared_nested_scroll_scene(prepared);
+    let outcome = emit_prepared_property_boundary_dag_scene(prepared);
     let (state, trace) = outcome.into_parts();
     let target = state
         .current_target()
@@ -1654,7 +1657,7 @@ fn production_nested_scroll_leaf_graph(
         .collect::<rustc_hash::FxHashSet<_>>();
     if declared != expected {
         return Err(format!(
-            "nested-scroll must persist only R1 color/depth; A0 must remain transient: declared={declared:?} expected={expected:?}"
+            "nested-scroll must persist only the leaf color/depth pair: declared={declared:?} expected={expected:?}"
         ));
     }
     add_present(&mut graph, &target)?;
@@ -1669,7 +1672,7 @@ fn validate_nested_scroll_leaf_graph_shape(
     let clear_count = graph
         .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
         .len();
-    let expected_clears = if cold { 3 } else { 2 };
+    let expected_clears = if cold { 2 } else { 1 };
     if clear_count != expected_clears {
         return Err(format!(
             "nested-scroll {} {} graph clears={clear_count}, expected={expected_clears}",
@@ -1682,9 +1685,9 @@ fn validate_nested_scroll_leaf_graph_shape(
         )
         .len();
     let expected_composites = if cold {
-        kind.expected_cold_composite_count()
+        kind.expected_cold_composite_count().saturating_sub(1)
     } else {
-        2
+        1
     };
     if composite_count != expected_composites {
         return Err(format!(
@@ -3797,6 +3800,7 @@ mod native_scroll_scene_pixel_tests;
 mod native_scroll_forest_tests;
 mod native_transform_surface_tests;
 mod native_nested_scroll_tests;
+mod native_nested_scroll_segment_tests;
 mod native_scroll_boundary_tests;
 mod native_root_effect_tests;
 mod native_svg_pixel_tests;

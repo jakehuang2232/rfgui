@@ -1,11 +1,12 @@
 #![allow(dead_code)]
 
-use crate::view::base_component::{AncestorClipContext, BuildState, UiBuildContext};
+use crate::view::base_component::{AncestorClipContext, BuildState, Text, UiBuildContext};
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
     PropertyTreeState, ScrollNodeId, ScrollNodeSnapshot, TransformNodeId,
 };
 use crate::view::frame_graph::FrameGraph;
+use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::render_pass::composite_layer_pass::{
     CompositeLayerInput, CompositeLayerOutput, CompositeLayerParams, CompositeLayerPass, LayerIn,
 };
@@ -789,6 +790,309 @@ pub(crate) struct ValidatedNativeScrollForestBoundaryProgram {
     overlay_after: PaintArtifact,
     content_program_opaque_terminal: u32,
     stamp: NativeScrollForestCompilerStamp,
+}
+
+/// One M5a direct-frame boundary program. Host/content/overlay are validated
+/// together because child-mask begin/end chunks cross the detached content
+/// marker; exposing independent artifact tokens would lose that LIFO proof.
+pub(crate) struct ValidatedDirectNestedScrollSegmentBoundaryProgram {
+    host_before: PaintArtifact,
+    overlay_after: PaintArtifact,
+}
+
+/// Planner-owned snapshot of the exact Legacy recording context inherited by
+/// one standalone Text leaf.  Scroll offsets are deliberately absent: they are
+/// composition state and never participate in Legacy Text parameter creation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DirectNestedScrollTextPaintWitness {
+    pub(crate) content_root: NodeKey,
+    pub(crate) content_stable_id: u64,
+    pub(crate) bounds_bits: [u32; 4],
+    pub(crate) paint_offset_bits: [u32; 2],
+    pub(crate) actual_origin_bits: [u32; 2],
+}
+
+impl DirectNestedScrollTextPaintWitness {
+    pub(crate) fn is_canonical(self) -> bool {
+        if self.content_root.is_null() || self.content_stable_id == 0 {
+            return false;
+        }
+        let bounds = self.bounds_bits.map(f32::from_bits);
+        let paint_offset = self.paint_offset_bits.map(f32::from_bits);
+        let actual_origin = self.actual_origin_bits.map(f32::from_bits);
+        bounds
+            .into_iter()
+            .chain(paint_offset)
+            .chain(actual_origin)
+            .all(f32::is_finite)
+            && bounds[2] > 0.0
+            && bounds[3] > 0.0
+            && [
+                bounds[0] + paint_offset[0],
+                bounds[1] + paint_offset[1],
+            ]
+            .map(f32::to_bits)
+                == self.actual_origin_bits
+    }
+}
+
+/// Replays the same node/child context hooks used by Legacy build and retained
+/// coverage.  Every arena edge is revalidated while walking the unique
+/// scene-root-to-leaf path; no scroll geometry is consulted or folded in.
+pub(crate) fn plan_direct_nested_scroll_text_paint_witness(
+    arena: &NodeArena,
+    scene_root: NodeKey,
+    content_root: NodeKey,
+    content_stable_id: u64,
+    incoming_paint_offset: [f32; 2],
+) -> Option<DirectNestedScrollTextPaintWitness> {
+    if scene_root.is_null()
+        || content_root.is_null()
+        || content_stable_id == 0
+        || incoming_paint_offset
+            .into_iter()
+            .any(|value| !value.is_finite())
+    {
+        return None;
+    }
+    let mut reversed_path = Vec::new();
+    let mut seen = FxHashSet::default();
+    let mut cursor = content_root;
+    loop {
+        if !seen.insert(cursor) {
+            return None;
+        }
+        reversed_path.push(cursor);
+        if cursor == scene_root {
+            break;
+        }
+        cursor = arena.parent_of(cursor)?;
+    }
+    reversed_path.reverse();
+
+    let mut parent_context = super::PaintRecordingContext {
+        paint_offset: incoming_paint_offset,
+        ..Default::default()
+    };
+    for (index, &owner) in reversed_path.iter().enumerate() {
+        let node = arena.get(owner)?;
+        let recording_context = node
+            .element
+            .shadow_paint_recording_context(parent_context);
+        let Some(&child) = reversed_path.get(index + 1) else {
+            let text = node.element.as_any().downcast_ref::<Text>()?;
+            if node.element.stable_id() != content_stable_id
+                || !text.is_exact_standalone_retained_text_leaf()
+                || !node.element.children().is_empty()
+                || recording_context
+                    != (super::PaintRecordingContext {
+                        paint_offset: recording_context.paint_offset,
+                        ..Default::default()
+                    })
+            {
+                return None;
+            }
+            let bounds = node.element.box_model_snapshot();
+            let witness = DirectNestedScrollTextPaintWitness {
+                content_root,
+                content_stable_id,
+                bounds_bits: [bounds.x, bounds.y, bounds.width, bounds.height].map(f32::to_bits),
+                paint_offset_bits: recording_context.paint_offset.map(f32::to_bits),
+                actual_origin_bits: [
+                    bounds.x + recording_context.paint_offset[0],
+                    bounds.y + recording_context.paint_offset[1],
+                ]
+                .map(f32::to_bits),
+            };
+            return witness.is_canonical().then_some(witness);
+        };
+        if arena.parent_of(child) != Some(owner)
+            || !node.element.children().contains(&child)
+        {
+            return None;
+        }
+        parent_context = node.element.shadow_paint_recording_context_for_child(
+            child,
+            arena,
+            recording_context,
+        );
+    }
+    None
+}
+
+/// Compiler proof for the browser-style nested Text path. The recorded Text is
+/// rebuilt with the exact leaf paint origin produced by the planner's Legacy
+/// recording-context traversal; it never becomes a resident leaf artifact.
+pub(crate) struct ValidatedDirectNestedScrollTextRun {
+    content: ValidatedScrollSceneContentArtifact,
+    resolved_scissor: [u32; 4],
+    expected_mask_depth: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_direct_nested_scroll_segment_boundary_program(
+    boundary_root: crate::view::node_arena::NodeKey,
+    content_root: crate::view::node_arena::NodeKey,
+    scroll: ScrollNodeSnapshot,
+    source_bounds_bits: [u32; 4],
+    host_before: PaintArtifact,
+    content_steps: &[super::frame_recorder::RecordedTransformSurfaceStep],
+    child_cutouts: &[super::PlannedBoundary],
+    overlay_after: PaintArtifact,
+    expected_stamp: &NativeScrollForestCompilerStamp,
+) -> Option<ValidatedDirectNestedScrollSegmentBoundaryProgram> {
+    let rebuilt = compile_native_scroll_forest_boundary_program_for_plan(
+        boundary_root,
+        content_root,
+        scroll,
+        source_bounds_bits,
+        &host_before,
+        content_steps,
+        child_cutouts,
+        &overlay_after,
+    )?;
+    (rebuilt == *expected_stamp).then_some(
+        ValidatedDirectNestedScrollSegmentBoundaryProgram {
+            host_before,
+            overlay_after,
+        },
+    )
+}
+
+impl ValidatedDirectNestedScrollSegmentBoundaryProgram {
+    pub(crate) fn emit_host_before(
+        &self,
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        masks: &mut NativeScrollForestEmissionMaskStack,
+    ) {
+        compile_validated_artifact_segment(
+            &self.host_before,
+            vec![ResolvedClip::Unclipped; self.host_before.chunks.len()],
+            graph,
+            ctx,
+            &mut masks.0,
+        );
+    }
+
+    pub(crate) fn emit_overlay_after(
+        &self,
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        masks: &mut NativeScrollForestEmissionMaskStack,
+    ) {
+        compile_validated_artifact_segment(
+            &self.overlay_after,
+            vec![ResolvedClip::Unclipped; self.overlay_after.chunks.len()],
+            graph,
+            ctx,
+            &mut masks.0,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_direct_nested_scroll_text_run(
+    artifact: PaintArtifact,
+    paint: DirectNestedScrollTextPaintWitness,
+    recorded_bounds_bits: [u32; 4],
+    resolved_scissor: [u32; 4],
+    expected_mask_depth: usize,
+) -> Option<ValidatedDirectNestedScrollTextRun> {
+    let recorded = recorded_bounds_bits.map(f32::from_bits);
+    let legacy_origin = paint.actual_origin_bits.map(f32::from_bits);
+    if expected_mask_depth < 2
+        || !paint.is_canonical()
+        || recorded_bounds_bits[2..] != paint.bounds_bits[2..]
+        || recorded
+            .into_iter()
+            .chain(legacy_origin)
+            .any(|value| !value.is_finite())
+        || resolved_scissor[2] == 0
+        || resolved_scissor[3] == 0
+    {
+        return None;
+    }
+    let raw = validate_direct_nested_scroll_segment_artifact(
+        artifact,
+        paint.content_root,
+        recorded_bounds_bits,
+        recorded_bounds_bits,
+    )?;
+    let mut artifact = raw.artifact;
+    let [PaintOp::PreparedText(prepared)] = artifact.ops.as_slice() else {
+        return None;
+    };
+    let mut params = prepared.params.clone();
+    let [fragment] = params.fragments.as_mut_slice() else {
+        return None;
+    };
+    fragment.origin = legacy_origin;
+    for glyph in &mut params.staging_input.glyphs {
+        glyph.final_paint_pos = [
+            legacy_origin[0] + glyph.paint.local_pos[0],
+            legacy_origin[1] + glyph.paint.local_pos[1],
+        ];
+    }
+    artifact.ops = vec![PaintOp::PreparedText(PreparedTextOp::new(params)?)];
+    let [chunk] = artifact.chunks.as_mut_slice() else {
+        return None;
+    };
+    chunk.bounds.x = legacy_origin[0];
+    chunk.bounds.y = legacy_origin[1];
+    chunk.payload_identity = PaintPayloadIdentity::prepared_texts(
+        artifact.ops.iter().filter_map(|op| match op {
+            PaintOp::PreparedText(prepared) => Some(prepared),
+            _ => None,
+        }),
+    );
+    let legacy_bounds_bits = [
+        paint.actual_origin_bits[0],
+        paint.actual_origin_bits[1],
+        recorded_bounds_bits[2],
+        recorded_bounds_bits[3],
+    ];
+    let content = validate_direct_nested_scroll_segment_artifact(
+        artifact,
+        paint.content_root,
+        legacy_bounds_bits,
+        legacy_bounds_bits,
+    )?;
+    Some(ValidatedDirectNestedScrollTextRun {
+        content,
+        resolved_scissor,
+        expected_mask_depth,
+    })
+}
+
+impl ValidatedDirectNestedScrollTextRun {
+    pub(super) fn emitted_artifact(&self) -> &PaintArtifact {
+        &self.content.artifact
+    }
+
+    pub(super) fn resolved_scissor(&self) -> [u32; 4] {
+        self.resolved_scissor
+    }
+
+    pub(crate) fn emit(
+        &self,
+        graph: &mut FrameGraph,
+        ctx: &mut UiBuildContext,
+        masks: &mut NativeScrollForestEmissionMaskStack,
+    ) {
+        assert_eq!(masks.0.len(), self.expected_mask_depth);
+        assert_eq!(
+            ctx.graphics_pass_context().scissor_rect,
+            Some(self.resolved_scissor)
+        );
+        compile_validated_artifact_segment(
+            &self.content.artifact,
+            vec![ResolvedClip::Scissor(self.resolved_scissor)],
+            graph,
+            ctx,
+            &mut masks.0,
+        );
+    }
 }
 
 enum ValidatedNativeScrollForestContentStep {
@@ -10731,11 +11035,9 @@ pub(crate) fn validate_scroll_scene_interactive_text_area_content_artifact(
     })
 }
 
-/// Dedicated validator for the localized nested R1 leaf corpus. The original
-/// single-scroll content authority above intentionally remains restricted to
-/// `SelfDecoration`; widening that authority would silently expand unrelated
-/// production paths.
-fn validate_localized_nested_scroll_content_artifact(
+/// Validates the localized leaf corpus emitted by the direct nested-scroll
+/// segment compiler without widening the single-scroll content authority.
+fn validate_localized_direct_nested_scroll_segment_artifact(
     artifact: PaintArtifact,
     content_root: crate::view::node_arena::NodeKey,
     expected_bounds_bits: [u32; 4],
@@ -11069,25 +11371,39 @@ pub(super) fn exact_nested_scroll_payload_identity(
     }
 }
 
-/// Localizes the exact nested-scroll leaf into its persistent R1 coordinate
-/// space and returns the same owned content token used by emission. The raw
-/// recorder artifact must retain precisely outer S0/C0; S1/C1 is represented
-/// only by the later R1 -> A0 composite.
-pub(crate) fn validate_nested_scroll_content_artifact(
+/// Localizes an M4 direct-to-frame leaf segment after the native forest
+/// recorder has already consumed every scroll/clip edge. Unlike the older
+/// two-level assembly validator above, the raw artifact is therefore expected
+/// to carry the default property state; the composite chain remains on the
+/// nested segment compiler contract rather than entering raster identity.
+pub(crate) fn validated_direct_nested_scroll_segment_artifact_span_stamp(
     artifact: &PaintArtifact,
     content_root: crate::view::node_arena::NodeKey,
-    outer_scroll: ScrollNodeId,
-    outer_clip: ClipNodeSnapshot,
+    recorded_bounds_bits: [u32; 4],
+    local_bounds_bits: [u32; 4],
+    step_index: usize,
+    opaque_order_span: Range<u32>,
+) -> Option<RetainedSurfaceArtifactSpanStamp> {
+    let localized = validate_direct_nested_scroll_segment_artifact(
+        artifact.clone(),
+        content_root,
+        recorded_bounds_bits,
+        local_bounds_bits,
+    )?;
+    validated_scroll_content_artifact_span_stamp(&localized, step_index, opaque_order_span)
+}
+
+/// Owning counterpart to the M4 span bridge. M5 preparation consumes this
+/// token directly, so the exact localized artifact validated for raster
+/// identity is also the artifact emitted into the offset-zero leaf backing.
+pub(crate) fn validate_direct_nested_scroll_segment_artifact(
+    artifact: PaintArtifact,
+    content_root: crate::view::node_arena::NodeKey,
     recorded_bounds_bits: [u32; 4],
     local_bounds_bits: [u32; 4],
 ) -> Option<ValidatedScrollSceneContentArtifact> {
     let [chunk] = artifact.chunks.as_slice() else {
         return None;
-    };
-    let expected_properties = PropertyTreeState {
-        clip: Some(outer_clip.id),
-        scroll: Some(outer_scroll),
-        ..PropertyTreeState::default()
     };
     if chunk.owner != content_root
         || chunk.id.owner != content_root
@@ -11097,7 +11413,7 @@ pub(crate) fn validate_nested_scroll_content_artifact(
         || !is_exact_nested_scroll_leaf_role(chunk.id.role)
         || chunk.op_range.start != 0
         || chunk.op_range.end != artifact.ops.len()
-        || chunk.properties != expected_properties
+        || chunk.properties != Default::default()
         || chunk_bounds_bits(chunk) != recorded_bounds_bits
         || matches!(
             chunk.payload_identity,
@@ -11108,7 +11424,7 @@ pub(crate) fn validate_nested_scroll_content_artifact(
                 owner: content_root,
                 parent: None,
             }]
-        || artifact.clip_nodes.as_slice() != [outer_clip]
+        || !artifact.clip_nodes.is_empty()
         || !artifact.effect_nodes.is_empty()
         || !validate_exact_nested_scroll_leaf_ops(
             chunk.id.role,
@@ -11130,16 +11446,14 @@ pub(crate) fn validate_nested_scroll_content_artifact(
     {
         return None;
     }
-
-    let mut localized = artifact.clone();
-    localized.ops = artifact
+    let localized_ops = artifact
         .ops
         .iter()
         .map(|op| localize_exact_nested_scroll_leaf_op(op, delta))
         .collect::<Option<Vec<_>>>()?;
+    let mut localized = artifact;
+    localized.ops = localized_ops;
     for chunk in &mut localized.chunks {
-        chunk.properties.clip = None;
-        chunk.properties.scroll = None;
         let [x, y, width, height] = local_bounds_bits.map(f32::from_bits);
         chunk.bounds = crate::view::base_component::Rect {
             x,
@@ -11152,31 +11466,11 @@ pub(crate) fn validate_nested_scroll_content_artifact(
             &localized.ops[chunk.op_range.clone()],
         )?;
     }
-    localized.clip_nodes.clear();
-    validate_localized_nested_scroll_content_artifact(localized, content_root, local_bounds_bits)
-}
-
-/// Exact nested-scroll leaf span derived from the same localized artifact
-/// token that production emission consumes.
-pub(crate) fn validated_nested_scroll_content_artifact_span_stamp(
-    artifact: &PaintArtifact,
-    content_root: crate::view::node_arena::NodeKey,
-    outer_scroll: ScrollNodeId,
-    outer_clip: ClipNodeSnapshot,
-    recorded_bounds_bits: [u32; 4],
-    local_bounds_bits: [u32; 4],
-    step_index: usize,
-    opaque_order_span: Range<u32>,
-) -> Option<RetainedSurfaceArtifactSpanStamp> {
-    let localized = validate_nested_scroll_content_artifact(
-        artifact,
+    validate_localized_direct_nested_scroll_segment_artifact(
+        localized,
         content_root,
-        outer_scroll,
-        outer_clip,
-        recorded_bounds_bits,
         local_bounds_bits,
-    )?;
-    validated_scroll_content_artifact_span_stamp(&localized, step_index, opaque_order_span)
+    )
 }
 
 pub(crate) fn validated_scroll_host_before_artifact_span_stamp(

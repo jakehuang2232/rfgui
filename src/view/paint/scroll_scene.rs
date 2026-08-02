@@ -12,7 +12,7 @@ use crate::view::base_component::{
     RetainedScrollTextAreaSubtreeAdmissionSnapshot, RetainedScrollTransformHostAdmissionSnapshot,
     RetainedSurfaceBounds, UiBuildContext, persistent_target_texture_descriptors,
     scroll_content_layer_stable_key, text_area::FocusedAtomicCaretSourcePaintSeal,
-    texture_desc_for_logical_bounds, transient_target_texture_descriptors,
+    texture_desc_for_logical_bounds,
 };
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeSnapshot,
@@ -30,8 +30,7 @@ use crate::view::render_pass::draw_rect_pass::{
     DrawRectInput, DrawRectOutput, DrawRectPass, RenderTargetOut,
 };
 use crate::view::render_pass::texture_composite_pass::{
-    TextureCompositeInput, TextureCompositeOutput, TextureCompositeParams, TextureCompositePass,
-    TextureCompositeSourceIn,
+    TextureCompositeInput, TextureCompositeOutput, TextureCompositePass, TextureCompositeSourceIn,
 };
 use crate::view::viewport::{RetainedSurfaceFrameStageOwner, Viewport};
 
@@ -57,7 +56,7 @@ use super::compiler::{
     prepare_validated_scroll_scene_atomic_projection_text_area_emission,
     reuse_validated_scroll_scene_atomic_projection_selection_text_area_content,
     reuse_validated_scroll_scene_atomic_projection_text_area_content,
-    validate_nested_scroll_content_artifact, validate_scroll_scene_content_artifact,
+    validate_scroll_scene_content_artifact,
     validate_scroll_scene_host_before_artifact,
     validate_scroll_scene_interactive_text_area_content_artifact,
     validate_scroll_scene_overlay_artifact, validate_scroll_scene_text_area_content_artifact,
@@ -2236,12 +2235,234 @@ impl ValidatedScrollContentEffectScene {
     }
 }
 
+#[derive(Clone, Debug)]
+enum NestedScrollSegmentProgramStep {
+    HostBefore {
+        boundary: SceneBoundaryId,
+        artifact: PaintArtifact,
+    },
+    LeafRaster {
+        boundary: SceneBoundaryId,
+        artifact: PaintArtifact,
+    },
+    OverlayAfter {
+        boundary: SceneBoundaryId,
+        artifact: PaintArtifact,
+    },
+}
+
+/// M4 graph-inert authority for a linear nested-scroll chain. Host and overlay
+/// artifacts remain ordered direct segments; only the normalized leaf content
+/// owns a persistent raster. No executor capability is exposed until M5.
+#[derive(Clone, Debug)]
+pub(crate) struct ValidatedNestedScrollSegmentScene {
+    plan: super::FramePaintPlan,
+    program: Vec<NestedScrollSegmentProgramStep>,
+    leaf_authority: NestedScrollSegmentLeafAuthority,
+    transaction: RetainedPropertyScrollSceneTransaction,
+}
+
+impl ValidatedNestedScrollSegmentScene {
+    fn is_canonical(&self) -> bool {
+        let Some(scaffold) = self.plan.property_scroll_planning_scaffold() else {
+            return false;
+        };
+        let RetainedPropertyScrollGenericAuthority::NestedScrollSegmentCompiler(contract) =
+            &self.transaction.generic_authority
+        else {
+            return false;
+        };
+        let identities = self
+            .program
+            .iter()
+            .map(|step| match step {
+                NestedScrollSegmentProgramStep::HostBefore { boundary, artifact } => {
+                    Some(NestedScrollSegmentStepContract {
+                        phase: NestedScrollSegmentPhase::HostBefore,
+                        boundary: *boundary,
+                        artifact: PropertyScrollPhaseArtifactIdentity::from_artifact(artifact)?,
+                    })
+                }
+                NestedScrollSegmentProgramStep::LeafRaster { boundary, artifact } => {
+                    Some(NestedScrollSegmentStepContract {
+                        phase: NestedScrollSegmentPhase::LeafRaster,
+                        boundary: *boundary,
+                        artifact: PropertyScrollPhaseArtifactIdentity::from_artifact(artifact)?,
+                    })
+                }
+                NestedScrollSegmentProgramStep::OverlayAfter { boundary, artifact } => {
+                    Some(NestedScrollSegmentStepContract {
+                        phase: NestedScrollSegmentPhase::OverlayAfter,
+                        boundary: *boundary,
+                        artifact: PropertyScrollPhaseArtifactIdentity::from_artifact(artifact)?,
+                    })
+                }
+            })
+            .collect::<Option<Vec<_>>>();
+        self.transaction.is_canonical()
+            && contract.compiled.steps == identities.unwrap_or_default()
+            && contract.compiled.leaf_authority == self.leaf_authority
+            && match &contract.compiled.leaf_authority {
+                NestedScrollSegmentLeafAuthority::Persistent(_) => true,
+                NestedScrollSegmentLeafAuthority::DirectText(direct) => {
+                    direct.context == scaffold.context
+                        && direct.boundary_chain
+                            == scaffold
+                                .boundaries
+                                .iter()
+                                .enumerate()
+                                .map(|(index, boundary)| SceneBoundaryId {
+                                    ordinal: u32::try_from(index).unwrap_or(u32::MAX),
+                                    owner: boundary.scroll.owner,
+                                    kind: SceneBoundaryKind::ScrollContents,
+                                })
+                                .collect::<Vec<_>>()
+                }
+            }
+            && contract.compiled.boundaries.len() == scaffold.boundaries.len()
+            && contract
+                .compiled
+                .boundaries
+                .iter()
+                .zip(&scaffold.boundaries)
+                .all(|(compiled, planned)| {
+                    compiled.boundary.ordinal == planned.ordinal
+                        && compiled.boundary.owner == planned.scroll.owner
+                        && compiled.scroll == planned.scroll
+                        && compiled.contents_clip == planned.contents_clip
+                })
+            && match &self.leaf_authority {
+                NestedScrollSegmentLeafAuthority::Persistent(stamp) => {
+                    self.transaction.generic_stamps().is_empty()
+                        && self.transaction.scroll_groups().len() == 1
+                        && self.transaction.ordered_stamps() == [stamp]
+                }
+                NestedScrollSegmentLeafAuthority::DirectText(_) => {
+                    self.transaction.generic_stamps().is_empty()
+                        && self.transaction.scroll_groups().is_empty()
+                        && self.transaction.ordered_stamps().is_empty()
+                }
+            }
+    }
+
+    #[cfg(test)]
+    fn program_shape_for_test(&self) -> (usize, usize, usize, usize) {
+        let hosts = self
+            .program
+            .iter()
+            .filter(|step| matches!(step, NestedScrollSegmentProgramStep::HostBefore { .. }))
+            .count();
+        let rasters = self
+            .program
+            .iter()
+            .filter(|step| matches!(step, NestedScrollSegmentProgramStep::LeafRaster { .. }))
+            .count();
+        let overlays = self
+            .program
+            .iter()
+            .filter(|step| matches!(step, NestedScrollSegmentProgramStep::OverlayAfter { .. }))
+            .count();
+        (self.program.len(), hosts, rasters, overlays)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn legacy_leaf_origin_for_test(&self) -> Option<[f32; 2]> {
+        match &self.leaf_authority {
+            NestedScrollSegmentLeafAuthority::DirectText(contract) => Some(
+                contract
+                    .paint
+                    .actual_origin_bits
+                    .map(f32::from_bits),
+            ),
+            NestedScrollSegmentLeafAuthority::Persistent(_) => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn text_coordinates_for_test(
+        &self,
+    ) -> Option<(
+        [f32; 2],
+        [f32; 2],
+        [f32; 2],
+        [f32; 2],
+        [f32; 2],
+        [f32; 4],
+        (u32, u32),
+        [f32; 4],
+    )> {
+        let NestedScrollSegmentLeafAuthority::DirectText(direct) = &self.leaf_authority else {
+            return None;
+        };
+        let artifact = self.program.iter().find_map(|step| match step {
+            NestedScrollSegmentProgramStep::LeafRaster { artifact, .. } => Some(artifact),
+            _ => None,
+        })?;
+        let chunk = artifact.chunks.first()?;
+        let recorded_bounds_bits = [
+            chunk.bounds.x.to_bits(),
+            chunk.bounds.y.to_bits(),
+            chunk.bounds.width.to_bits(),
+            chunk.bounds.height.to_bits(),
+        ];
+        let [super::PaintOp::PreparedText(raw)] = artifact.ops.as_slice() else {
+            return None;
+        };
+        let raw_fragment = raw.params.fragments.first()?;
+        let raw_glyph = raw.params.staging_input.glyphs.first()?;
+        let emitted = super::compiler::validate_direct_nested_scroll_text_run(
+            artifact.clone(),
+            direct.paint,
+            recorded_bounds_bits,
+            direct.final_scissor,
+            usize::try_from(direct.mask_depth).ok()?,
+        )?;
+        let [super::PaintOp::PreparedText(local)] =
+            emitted.emitted_artifact().ops.as_slice()
+        else {
+            return None;
+        };
+        let local_fragment = local.params.fragments.first()?;
+        let local_glyph = local.params.staging_input.glyphs.first()?;
+        let scaffold = self.plan.property_scroll_planning_scaffold()?;
+        let leaf_scroll = scaffold.boundaries.last()?.scroll;
+        let incoming_paint_offset = scaffold.context.paint_offset();
+        let destination = [
+            leaf_scroll.layout_content_bounds_at_zero.x - leaf_scroll.offset.x
+                + incoming_paint_offset[0],
+            leaf_scroll.layout_content_bounds_at_zero.y - leaf_scroll.offset.y
+                + incoming_paint_offset[1],
+            leaf_scroll.layout_content_bounds_at_zero.width,
+            leaf_scroll.layout_content_bounds_at_zero.height,
+        ];
+        Some((
+            raw_fragment.origin,
+            raw_glyph.final_paint_pos,
+            local_fragment.origin,
+            local_glyph.final_paint_pos,
+            raw_glyph.paint.local_pos,
+            destination,
+            (0, 0),
+            direct.paint.bounds_bits.map(f32::from_bits),
+        ))
+    }
+
+    #[cfg(test)]
+    fn persistent_leaf_stamp_for_test(&self) -> &RetainedSurfaceRasterStamp {
+        let NestedScrollSegmentLeafAuthority::Persistent(stamp) = &self.leaf_authority else {
+            panic!("direct Text leaf has no persistent stamp")
+        };
+        stamp
+    }
+}
+
 /// Graph-inert Phase1 authority selected from the typed boundary DAG. Each
 /// variant owns the pre-existing exact compiler token; the facade cannot
 /// construct a token for a grammar that the Phase0 DAG classifier rejects.
 #[allow(dead_code)] // Phase1 authority remains graph-inert until an explicit production cutover.
 pub(crate) enum ValidatedPropertyBoundaryDagScene {
     FrameRootScroll(ValidatedFrameRootScrollScene),
+    NestedScrollChain(ValidatedNestedScrollSegmentScene),
     TransformScroll(ValidatedTransformScrollScene),
     EffectScroll(ValidatedEffectScrollSceneCheckpoint),
     TransformEffectScroll(ValidatedTransformEffectScrollScene),
@@ -2255,12 +2476,36 @@ impl ValidatedPropertyBoundaryDagScene {
     pub(crate) fn is_canonical(&self) -> bool {
         match self {
             Self::FrameRootScroll(scene) => scene.is_canonical(),
+            Self::NestedScrollChain(scene) => scene.is_canonical(),
             Self::TransformScroll(scene) => scene.is_canonical(),
             Self::EffectScroll(scene) => scene.is_canonical(),
             Self::TransformEffectScroll(scene) => scene.is_canonical(),
             Self::EffectTransformScroll(scene) => scene.is_canonical(),
             Self::ScrollEffect(scene) | Self::TransformScrollEffect(scene) => scene.is_canonical(),
         }
+    }
+
+    pub(crate) fn nested_scroll_chain_depth(&self) -> Option<usize> {
+        match self {
+            Self::NestedScrollChain(scene) => scene
+                .plan
+                .property_scroll_planning_scaffold()
+                .map(|scaffold| scaffold.boundaries.len()),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn nested_scroll_persistent_leaf_target_for_test(
+        &self,
+    ) -> Option<(PersistentTextureKey, TextureDesc)> {
+        let Self::NestedScrollChain(scene) = self else {
+            return None;
+        };
+        let NestedScrollSegmentLeafAuthority::Persistent(stamp) = &scene.leaf_authority else {
+            return None;
+        };
+        Some((stamp.identity.color_key, stamp.target.color.clone()))
     }
 }
 
@@ -2286,7 +2531,73 @@ impl PropertyBoundaryDagCompiler {
         target_format: wgpu::TextureFormat,
         budget: ScrollSceneSingleTextureBudget,
     ) -> Result<ValidatedPropertyBoundaryDagScene, PropertyScrollScenePlanError> {
-        let context = super::TransformSurfacePlanContext::new(incoming_paint_offset, None);
+        Self::plan_and_validate_with_fixed_cascade_grammars(
+            arena,
+            roots,
+            property_trees,
+            paint_generations,
+            scale_factor,
+            incoming_paint_offset,
+            outer_scissor_rect,
+            semantic_frame_time,
+            target_format,
+            budget,
+            true,
+        )?
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "property-boundary-dag-plan",
+        ))
+    }
+
+    /// Production continuation after the fixed-grammar cascade. A grammar
+    /// already attempted by that cascade is reported as `None` instead of
+    /// invoking the same compiler a second time with identical inputs.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn plan_and_validate_after_fixed_grammar_cascade(
+        arena: &NodeArena,
+        roots: &[NodeKey],
+        property_trees: &PropertyTrees,
+        paint_generations: &PaintGenerationTracker,
+        scale_factor: f32,
+        incoming_paint_offset: [f32; 2],
+        outer_scissor_rect: Option<[u32; 4]>,
+        semantic_frame_time: crate::time::Instant,
+        target_format: wgpu::TextureFormat,
+        budget: ScrollSceneSingleTextureBudget,
+    ) -> Result<Option<ValidatedPropertyBoundaryDagScene>, PropertyScrollScenePlanError> {
+        Self::plan_and_validate_with_fixed_cascade_grammars(
+            arena,
+            roots,
+            property_trees,
+            paint_generations,
+            scale_factor,
+            incoming_paint_offset,
+            outer_scissor_rect,
+            semantic_frame_time,
+            target_format,
+            budget,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn plan_and_validate_with_fixed_cascade_grammars(
+        arena: &NodeArena,
+        roots: &[NodeKey],
+        property_trees: &PropertyTrees,
+        paint_generations: &PaintGenerationTracker,
+        scale_factor: f32,
+        incoming_paint_offset: [f32; 2],
+        outer_scissor_rect: Option<[u32; 4]>,
+        semantic_frame_time: crate::time::Instant,
+        target_format: wgpu::TextureFormat,
+        budget: ScrollSceneSingleTextureBudget,
+        include_fixed_cascade_grammars: bool,
+    ) -> Result<Option<ValidatedPropertyBoundaryDagScene>, PropertyScrollScenePlanError> {
+        let context = super::TransformSurfacePlanContext::new(
+            incoming_paint_offset,
+            outer_scissor_rect,
+        );
         let plan = super::frame_plan::plan_property_scroll_interleave_scaffold_with_context(
             arena,
             roots,
@@ -2301,7 +2612,18 @@ impl PropertyBoundaryDagCompiler {
             .ok_or(PropertyScrollScenePlanError::InvalidContract(
                 "property-boundary-dag-plan",
             ))?;
-        match grammar {
+        if !include_fixed_cascade_grammars
+            && matches!(
+                grammar,
+                super::frame_plan::PropertyBoundaryDagGrammar::FrameRootScroll
+                    | super::frame_plan::PropertyBoundaryDagGrammar::TransformScroll
+                    | super::frame_plan::PropertyBoundaryDagGrammar::EffectScroll
+                    | super::frame_plan::PropertyBoundaryDagGrammar::TransformEffectScroll
+            )
+        {
+            return Ok(None);
+        }
+        let scene = match grammar {
             super::frame_plan::PropertyBoundaryDagGrammar::FrameRootScroll => {
                 plan_and_validate_frame_root_scroll_scene(
                     arena,
@@ -2314,6 +2636,19 @@ impl PropertyBoundaryDagCompiler {
                     target_format,
                 )
                 .map(ValidatedPropertyBoundaryDagScene::FrameRootScroll)
+            }
+            super::frame_plan::PropertyBoundaryDagGrammar::NestedScrollChain => {
+                compile_nested_scroll_segment_scene(
+                    arena,
+                    roots,
+                    property_trees,
+                    paint_generations,
+                    scale_factor,
+                    target_format,
+                    budget,
+                    plan,
+                )
+                .map(ValidatedPropertyBoundaryDagScene::NestedScrollChain)
             }
             super::frame_plan::PropertyBoundaryDagGrammar::TransformScroll => {
                 plan_and_validate_transform_scroll_scene(
@@ -2407,8 +2742,646 @@ impl PropertyBoundaryDagCompiler {
                 )
                 .map(ValidatedPropertyBoundaryDagScene::TransformScrollEffect)
             }
+        }?;
+        Ok(Some(scene))
+    }
+}
+
+/// M4 graph-inert entry point. Production authority selection deliberately
+/// keeps the matching DAG variant closed until M5 can consume this token.
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // M4 proof entry; production facade opens it in M5.
+pub(crate) fn plan_and_validate_nested_scroll_segment_scene(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    scale_factor: f32,
+    incoming_paint_offset: [f32; 2],
+    outer_scissor_rect: Option<[u32; 4]>,
+    target_format: wgpu::TextureFormat,
+    budget: ScrollSceneSingleTextureBudget,
+) -> Result<ValidatedNestedScrollSegmentScene, PropertyScrollScenePlanError> {
+    let plan = super::frame_plan::plan_property_scroll_interleave_scaffold_with_context(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        super::TransformSurfacePlanContext::new(incoming_paint_offset, outer_scissor_rect),
+    )
+    .map_err(PropertyScrollScenePlanError::Frame)?;
+    let nested = plan
+        .property_scroll_planning_scaffold()
+        .and_then(|scaffold| scaffold.boundary_dag.existing_grammar())
+        == Some(super::frame_plan::PropertyBoundaryDagGrammar::NestedScrollChain);
+    if !nested {
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-segment-plan",
+        ));
+    }
+    compile_nested_scroll_segment_scene(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        scale_factor,
+        target_format,
+        budget,
+        plan,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_nested_scroll_segment_scene(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    scale_factor: f32,
+    target_format: wgpu::TextureFormat,
+    budget: ScrollSceneSingleTextureBudget,
+    plan: super::FramePaintPlan,
+) -> Result<ValidatedNestedScrollSegmentScene, PropertyScrollScenePlanError> {
+    let invalid = || {
+        PropertyScrollScenePlanError::InvalidContract("nested-scroll-segment-compile")
+    };
+    let coverage_error = |fallbacks: Vec<super::FrameArtifactFallbackReason>| {
+        PropertyScrollScenePlanError::Frame(FramePaintPlanError {
+            reasons: fallbacks
+                .into_iter()
+                .map(FramePaintPlanRejection::Coverage)
+                .collect(),
+        })
+    };
+    if roots.len() != 1
+        || !scale_factor.is_finite()
+        || scale_factor <= 0.0
+        || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
+    {
+        return Err(invalid());
+    }
+    let scaffold = plan
+        .property_scroll_planning_scaffold()
+        .ok_or_else(invalid)?;
+    let [root] = scaffold.roots.as_slice() else {
+        return Err(invalid());
+    };
+    let boundaries = scaffold
+        .boundaries
+        .get(root.boundary_span.start as usize..root.boundary_span.end as usize)
+        .ok_or_else(invalid)?;
+    if boundaries.len() < 2 || boundaries.len() != scaffold.boundaries.len() {
+        return Err(invalid());
+    }
+    for (index, boundary) in boundaries.iter().enumerate() {
+        let expected_ancestors = boundaries[..index]
+            .iter()
+            .rev()
+            .map(|ancestor| ancestor.contents_clip)
+            .collect::<Vec<_>>();
+        if boundary.ancestor_composite_clips != expected_ancestors {
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "nested-scroll-segment-ancestor-clips",
+            ));
+        }
+        let expected_local_clip_ids = boundaries[index + 1..]
+            .iter()
+            .map(|descendant| descendant.contents_clip.id)
+            .collect::<FxHashSet<_>>();
+        if boundary.local_content_clips.len() != expected_local_clip_ids.len()
+            || boundary.local_content_clips.iter().any(|clip| {
+                !expected_local_clip_ids.contains(&clip.id)
+                    || boundaries[index + 1..]
+                        .iter()
+                        .find(|descendant| descendant.contents_clip.id == clip.id)
+                        .is_none_or(|descendant| descendant.contents_clip != *clip)
+            })
+        {
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "nested-scroll-segment-local-clips",
+            ));
+        }
+        if !boundary.receiver_clips.is_empty() {
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "nested-scroll-segment-receiver-clips",
+            ));
         }
     }
+
+    let boundary_ids = boundaries
+        .iter()
+        .enumerate()
+        .map(|(index, boundary)| {
+            Some(SceneBoundaryId {
+                ordinal: u32::try_from(index).ok()?,
+                owner: boundary.scroll.owner,
+                kind: SceneBoundaryKind::ScrollContents,
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(invalid)?;
+    let boundary_stable_ids = boundaries
+        .iter()
+        .map(|boundary| {
+            arena
+                .get(boundary.scroll.owner)
+                .map(|node| node.element.stable_id())
+                .filter(|stable_id| *stable_id != 0)
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(invalid)?;
+    let outer_cutout = super::PlannedBoundary {
+        root: boundaries[0].scroll.owner,
+        stable_id: boundary_stable_ids[0],
+        kind: super::PlannedBoundaryKind::Scroll(boundaries[0].scroll.id),
+    };
+    let root_steps = super::frame_recorder::record_property_scene_steps_for_plan(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        scaffold.context.paint_offset(),
+        &super::PlannedBoundaryCutoutSet::from_iter([(
+            outer_cutout.root,
+            outer_cutout,
+        )]),
+    )
+    .map_err(coverage_error)?;
+    let [super::frame_recorder::RecordedTransformSurfaceStep::Boundary(root_cutout)] =
+        root_steps.as_slice()
+    else {
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-segment-root-order",
+        ));
+    };
+    if root_cutout.to_owned() != outer_cutout {
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-segment-root-order",
+        ));
+    }
+
+    let mut host_artifacts = Vec::with_capacity(boundaries.len());
+    let mut overlay_artifacts = Vec::with_capacity(boundaries.len());
+    let mut boundary_source_bounds_bits = Vec::with_capacity(boundaries.len());
+    let mut boundary_compiler_stamps = Vec::with_capacity(boundaries.len());
+    let mut leaf_artifact = None;
+    let mut leaf_compiler_stamp = None;
+    let mut leaf_content_root = None;
+    let mut leaf_content_stable_id = None;
+    let mut leaf_receiver_source = None;
+    for (index, boundary) in boundaries.iter().enumerate() {
+        let node = arena.get(boundary.scroll.owner).ok_or_else(invalid)?;
+        let admission = node
+            .element
+            .as_any()
+            .downcast_ref::<crate::view::base_component::Element>()
+            .and_then(|element| {
+                element.exact_retained_scroll_forest_host_admission(
+                    boundary.scroll.owner,
+                    arena,
+                    scale_factor,
+                )
+            })
+            .filter(|admission| admission.matches_scroll_node(boundary.scroll))
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "nested-scroll-segment-admission",
+            ))?;
+        let [content_root] = node.element.children() else {
+            return Err(invalid());
+        };
+        let content_root = *content_root;
+        if admission.content_root != content_root {
+            return Err(invalid());
+        }
+        let expected_child = boundary_ids.get(index + 1).copied();
+        if expected_child.is_some_and(|child| child.owner != content_root)
+            || expected_child.is_none()
+                && property_trees
+                    .scrolls
+                    .contains_key(&ScrollNodeId(content_root))
+        {
+            return Err(invalid());
+        }
+        let content_stable_id = arena
+            .get(content_root)
+            .map(|node| node.element.stable_id())
+            .filter(|stable_id| *stable_id != 0)
+            .ok_or_else(invalid)?;
+        let parent_scroll = index.checked_sub(1).map(|parent| boundaries[parent].scroll.id);
+        let parent_clip = index
+            .checked_sub(1)
+            .map(|parent| boundaries[parent].contents_clip.id);
+        let edge = super::PaintScrollForestEdgeWitness::new(
+            boundary.scroll.owner,
+            content_root,
+            boundary.scroll,
+            boundary.contents_clip,
+            parent_scroll,
+            parent_clip,
+        )
+        .ok_or_else(invalid)?;
+        let host = super::PaintBakedScrollHostWitness::new(
+            boundary.scroll.owner,
+            content_root,
+            boundary.scroll,
+            boundary.contents_clip.id,
+        )
+        .ok_or_else(invalid)?;
+        let consumed_parent = index
+            .checked_sub(1)
+            .map(|parent| {
+                super::ConsumedAncestorScrollContentsWitness::new(
+                    boundaries[parent].scroll.owner,
+                    boundary.scroll.owner,
+                    boundaries[parent].scroll.id,
+                    boundaries[parent].contents_clip.id,
+                )
+                .ok_or_else(invalid)
+            })
+            .transpose()?;
+        let host_steps = super::frame_recorder::record_native_scroll_forest_host_steps_for_plan(
+            arena,
+            boundary.scroll.owner,
+            property_trees,
+            paint_generations,
+            host,
+            edge,
+            consumed_parent,
+            content_stable_id,
+        )
+        .map_err(coverage_error)?;
+        let [
+            super::frame_recorder::RecordedNativeScrollHostStep::Artifact(host_before),
+            super::frame_recorder::RecordedNativeScrollHostStep::ContentReceiver(receiver),
+            super::frame_recorder::RecordedNativeScrollHostStep::Artifact(overlay_after),
+        ] = host_steps.as_slice()
+        else {
+            return Err(invalid());
+        };
+        if receiver.stable_id != content_stable_id || receiver.witness != edge {
+            return Err(invalid());
+        }
+        let child_cutouts = expected_child
+            .map(|child| {
+                vec![super::PlannedBoundary {
+                    root: child.owner,
+                    stable_id: boundary_stable_ids[index + 1],
+                    kind: super::PlannedBoundaryKind::Scroll(boundaries[index + 1].scroll.id),
+                }]
+            })
+            .unwrap_or_default();
+        let content_steps =
+            super::frame_recorder::record_native_scroll_forest_content_steps_for_plan(
+                arena,
+                property_trees,
+                paint_generations,
+                edge,
+                &child_cutouts,
+            )
+            .map_err(coverage_error)?;
+        match (expected_child, content_steps.as_slice()) {
+            (
+                Some(_),
+                [super::frame_recorder::RecordedTransformSurfaceStep::Boundary(marker)],
+            ) if child_cutouts.as_slice() == [marker.to_owned()] => {}
+            (
+                None,
+                [super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact)],
+            ) => {
+                leaf_artifact = Some(artifact.clone());
+                leaf_content_root = Some(content_root);
+                leaf_content_stable_id = Some(content_stable_id);
+                leaf_receiver_source = Some(admission.source_bounds);
+            }
+            _ => {
+                return Err(PropertyScrollScenePlanError::InvalidContract(
+                    "nested-scroll-segment-content-order",
+                ));
+            }
+        }
+        let source = admission.source_bounds;
+        boundary_source_bounds_bits.push(bounds_bits(source));
+        let compiler_stamp =
+            super::compiler::compile_native_scroll_forest_boundary_program_for_plan(
+                boundary.scroll.owner,
+                content_root,
+                boundary.scroll,
+                [
+                    source.x.to_bits(),
+                    source.y.to_bits(),
+                    source.width.to_bits(),
+                    source.height.to_bits(),
+                ],
+                &host_before,
+                &content_steps,
+                &child_cutouts,
+                &overlay_after,
+            )
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "nested-scroll-segment-boundary-program",
+            ))?;
+        if expected_child.is_none() {
+            leaf_compiler_stamp = Some(compiler_stamp.clone());
+        }
+        boundary_compiler_stamps.push(compiler_stamp);
+        host_artifacts.push(host_before.clone());
+        overlay_artifacts.push(overlay_after.clone());
+    }
+
+    let leaf_artifact = leaf_artifact.ok_or_else(invalid)?;
+    let leaf_compiler_stamp = leaf_compiler_stamp.ok_or_else(invalid)?;
+    let leaf_content_root = leaf_content_root.ok_or_else(invalid)?;
+    let leaf_content_stable_id = leaf_content_stable_id.ok_or_else(invalid)?;
+    let leaf_boundary = *boundary_ids.last().ok_or_else(invalid)?;
+    let leaf_node = arena.get(leaf_content_root).ok_or_else(invalid)?;
+    let [leaf_chunk] = leaf_artifact.chunks.as_slice() else {
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-segment-leaf-admission",
+        ));
+    };
+    let leaf_is_exact_standalone_text = leaf_node
+        .element
+        .as_any()
+        .downcast_ref::<crate::view::base_component::Text>()
+        .is_some_and(crate::view::base_component::Text::is_exact_standalone_retained_text_leaf);
+    let leaf_component_matches_artifact =
+        if leaf_node.element.as_any().is::<crate::view::base_component::Element>() {
+            leaf_chunk.id.role == super::PaintChunkRole::SelfDecoration
+        } else if leaf_node.element.as_any().is::<crate::view::base_component::Image>() {
+            leaf_chunk.id.role == super::PaintChunkRole::ImageContent
+        } else if leaf_node.element.as_any().is::<crate::view::base_component::Svg>() {
+            leaf_chunk.id.role == super::PaintChunkRole::SvgContent
+        } else {
+            leaf_is_exact_standalone_text
+                && leaf_chunk.id.role == super::PaintChunkRole::TextGlyphs
+        };
+    if !leaf_component_matches_artifact {
+        return Err(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-segment-leaf-admission",
+        ));
+    }
+
+    // DirectText is a zero-residency primitive. Keep every persistent target,
+    // budget, stamp, and group decision out of that authority branch.
+    let persistent_leaf = if leaf_is_exact_standalone_text {
+        None
+    } else {
+        let leaf_receiver_source = leaf_receiver_source.ok_or_else(invalid)?;
+        let leaf_scroll = boundaries.last().ok_or_else(invalid)?.scroll;
+        let recorded_source = content_zero_bounds(leaf_scroll);
+        let source = nested_receiver_local_content_bounds(leaf_receiver_source, leaf_scroll)
+            .ok_or_else(invalid)?;
+        let source_bounds_bits = bounds_bits(source);
+        let content_bounds = exact_u32_bounds_from_bits(source_bounds_bits).ok_or_else(invalid)?;
+        let color_key = scroll_content_layer_stable_key(leaf_content_stable_id);
+        let color = texture_desc_for_logical_bounds(source, scale_factor, None, target_format);
+        let (color, depth) = persistent_target_texture_descriptors(color, color_key);
+        let pair_bytes = canonical_pair_bytes(&color, &depth).ok_or_else(invalid)?;
+        let backing_budget = property_scroll_budget(budget);
+        if pair_bytes > backing_budget.max_active_pair_bytes
+            || [color.width(), color.height(), depth.width(), depth.height()]
+                .into_iter()
+                .any(|dimension| dimension == 0 || dimension > backing_budget.max_dimension_2d)
+        {
+            return Err(PropertyScrollScenePlanError::BackingBudget);
+        }
+        let localized_leaf_span =
+            super::compiler::validated_direct_nested_scroll_segment_artifact_span_stamp(
+                &leaf_artifact,
+                leaf_content_root,
+                bounds_bits(recorded_source),
+                source_bounds_bits,
+                0,
+                0..leaf_compiler_stamp.content_opaque_count,
+            )
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "nested-scroll-segment-leaf-localization",
+            ))?;
+        let leaf_stamp = super::compiler::validated_native_scroll_forest_content_raster_stamp(
+            leaf_content_root,
+            leaf_content_stable_id,
+            RetainedSurfaceRasterInputs {
+                color,
+                depth,
+                scale_factor_bits: scale_factor.to_bits(),
+                source_bounds_bits,
+            },
+            localized_leaf_span,
+            Vec::new(),
+            0..leaf_compiler_stamp.content_opaque_count,
+        )
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-segment-leaf-stamp",
+        ))?;
+        let group = RetainedPropertyScrollResidentGroup {
+            boundary: leaf_boundary,
+            content_root: leaf_content_root,
+            content_stable_id: leaf_content_stable_id,
+            signature: RetainedPropertyScrollGroupSignature {
+                content_bounds,
+                tile_edge: SCROLL_CONTENT_TILE_EDGE,
+                gutter: SCROLL_CONTENT_TILE_GUTTER,
+                overscan: 0,
+                scale_factor_bits: scale_factor.to_bits(),
+                color_format: target_format,
+            },
+            backing: RetainedPropertyScrollResidentBacking::Single(leaf_stamp.clone()),
+        };
+        if !group.is_native_scroll_forest_canonical() {
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "nested-scroll-segment-group",
+            ));
+        }
+        Some((leaf_stamp, group))
+    };
+
+    let compiled_boundaries = boundaries
+        .iter()
+        .enumerate()
+        .map(|(index, boundary)| NestedScrollSegmentBoundaryContract {
+            boundary: boundary_ids[index],
+            parent: index.checked_sub(1).map(|parent| boundary_ids[parent]),
+            stable_id: boundary_stable_ids[index],
+            source_bounds_bits: boundary_source_bounds_bits[index],
+            compiler_stamp: boundary_compiler_stamps[index].clone(),
+            scroll: boundary.scroll,
+            contents_clip: boundary.contents_clip,
+        })
+        .collect::<Vec<_>>();
+    let mut program = Vec::with_capacity(boundaries.len() * 2 + 1);
+    for (index, artifact) in host_artifacts.into_iter().enumerate() {
+        program.push(NestedScrollSegmentProgramStep::HostBefore {
+            boundary: boundary_ids[index],
+            artifact,
+        });
+    }
+    program.push(NestedScrollSegmentProgramStep::LeafRaster {
+        boundary: leaf_boundary,
+        artifact: leaf_artifact.clone(),
+    });
+    for (index, artifact) in overlay_artifacts.into_iter().enumerate().rev() {
+        program.push(NestedScrollSegmentProgramStep::OverlayAfter {
+            boundary: boundary_ids[index],
+            artifact,
+        });
+    }
+    let steps = program
+        .iter()
+        .map(|step| match step {
+            NestedScrollSegmentProgramStep::HostBefore { boundary, artifact } => {
+                Some(NestedScrollSegmentStepContract {
+                    phase: NestedScrollSegmentPhase::HostBefore,
+                    boundary: *boundary,
+                    artifact: PropertyScrollPhaseArtifactIdentity::from_artifact(artifact)?,
+                })
+            }
+            NestedScrollSegmentProgramStep::LeafRaster { boundary, artifact } => {
+                Some(NestedScrollSegmentStepContract {
+                    phase: NestedScrollSegmentPhase::LeafRaster,
+                    boundary: *boundary,
+                    artifact: PropertyScrollPhaseArtifactIdentity::from_artifact(artifact)?,
+                })
+            }
+            NestedScrollSegmentProgramStep::OverlayAfter { boundary, artifact } => {
+                Some(NestedScrollSegmentStepContract {
+                    phase: NestedScrollSegmentPhase::OverlayAfter,
+                    boundary: *boundary,
+                    artifact: PropertyScrollPhaseArtifactIdentity::from_artifact(artifact)?,
+                })
+            }
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(invalid)?;
+    let leaf_authority = if leaf_is_exact_standalone_text {
+        let paint = super::compiler::plan_direct_nested_scroll_text_paint_witness(
+            arena,
+            root.root,
+            leaf_content_root,
+            leaf_content_stable_id,
+            scaffold.context.paint_offset(),
+        )
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-segment-direct-text-context",
+        ))?;
+        let recorded_bounds_bits = leaf_artifact
+            .chunks
+            .first()
+            .map(|chunk| {
+                [
+                    chunk.bounds.x,
+                    chunk.bounds.y,
+                    chunk.bounds.width,
+                    chunk.bounds.height,
+                ]
+                .map(f32::to_bits)
+            })
+            .ok_or_else(invalid)?;
+        if recorded_bounds_bits[2..] != paint.bounds_bits[2..] {
+            return Err(PropertyScrollScenePlanError::InvalidContract(
+                "nested-scroll-segment-direct-text-bounds",
+            ));
+        }
+        let final_scissor = boundaries
+            .iter()
+            .try_fold(scaffold.context.outer_scissor_rect(), |scissor, boundary| {
+                nested_segment_scissor_intersection(
+                    scissor,
+                    boundary.contents_clip.logical_scissor,
+                )
+                .map(Some)
+            })
+            .flatten()
+            .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                "nested-scroll-segment-direct-text-scissor",
+            ))?;
+        let mask_depth = u32::try_from(boundaries.len()).map_err(|_| invalid())?;
+        let direct = super::compiler::validate_direct_nested_scroll_text_run(
+            leaf_artifact.clone(),
+            paint,
+            recorded_bounds_bits,
+            final_scissor,
+            boundaries.len(),
+        )
+        .ok_or(PropertyScrollScenePlanError::InvalidContract(
+            "nested-scroll-segment-direct-text-artifact",
+        ))?;
+        NestedScrollSegmentLeafAuthority::DirectText(NestedScrollSegmentDirectTextContract {
+            paint,
+            source_artifact: PropertyScrollPhaseArtifactIdentity::from_artifact(&leaf_artifact)
+                .ok_or_else(invalid)?,
+            emitted_artifact: PropertyScrollPhaseArtifactIdentity::from_artifact(
+                direct.emitted_artifact(),
+            )
+            .ok_or_else(invalid)?,
+            scale_factor_bits: scale_factor.to_bits(),
+            target_format,
+            final_scissor,
+            mask_depth,
+            boundary_chain: boundary_ids.clone(),
+            context: scaffold.context,
+        })
+    } else {
+        NestedScrollSegmentLeafAuthority::Persistent(
+            persistent_leaf
+                .as_ref()
+                .map(|(stamp, _)| stamp.clone())
+                .ok_or_else(invalid)?,
+        )
+    };
+    let witness = NestedScrollSegmentCompilerWitness {
+        scene_root: root.root,
+        scene_root_stable_id: root.stable_id,
+        boundaries: compiled_boundaries,
+        steps,
+        leaf_boundary,
+        leaf_content_root,
+        leaf_content_stable_id,
+        leaf_authority: leaf_authority.clone(),
+    };
+    let contract = NestedScrollSegmentCompilerContract {
+        compiled: witness.clone(),
+        planned: witness,
+    };
+    let (scroll_bindings, scroll_groups) = match (&leaf_authority, persistent_leaf) {
+        (NestedScrollSegmentLeafAuthority::Persistent(_), Some((_, group))) => (
+            vec![RetainedPropertyScrollGroupBindingStamp {
+                boundary: leaf_boundary,
+                content_root: group.content_root,
+                content_stable_id: group.content_stable_id,
+                backing_rank: group.backing_rank(),
+                ordered_resident_keys: group.active_resident_keys(),
+            }],
+            vec![group],
+        ),
+        (NestedScrollSegmentLeafAuthority::DirectText(_), None) => (Vec::new(), Vec::new()),
+        _ => return Err(invalid()),
+    };
+    let transaction = RetainedPropertyScrollSceneTransaction {
+        seal: RetainedPropertyScrollJointSeal {
+            roots: vec![RetainedPropertyScrollJointRootStamp {
+                ordinal: 0,
+                root: root.root,
+                stable_id: root.stable_id,
+                boundary_span: 0..u32::try_from(boundary_ids.len()).map_err(|_| invalid())?,
+            }],
+            ordered_boundaries: boundary_ids,
+            generic_bindings: Vec::new(),
+            scroll_bindings,
+        },
+        generic_authority:
+            RetainedPropertyScrollGenericAuthority::NestedScrollSegmentCompiler(contract),
+        generic_full_set: Vec::new(),
+        scroll_groups,
+    };
+    let scene = ValidatedNestedScrollSegmentScene {
+        plan,
+        program,
+        leaf_authority,
+        transaction,
+    };
+    scene.is_canonical().then_some(scene).ok_or(
+        PropertyScrollScenePlanError::InvalidContract("nested-scroll-segment-seal"),
+    )
 }
 
 fn phase3_normalized_owner_witnesses(
@@ -3407,67 +4380,71 @@ enum RetainedPropertyScrollGenericAuthority {
     ScrollContentEffectCompiler(Vec<super::EffectPropertySurfaceArtifactContract>),
     TransformScrollContentEffectCompiler(Vec<TransformScrollContentEffectCompilerContract>),
     ScrollTransformDirectCompiler(ScrollTransformDirectCompilerContract),
-    NestedScrollCompiler(NestedScrollCompilerContract),
+    NestedScrollSegmentCompiler(NestedScrollSegmentCompilerContract),
     #[cfg(test)]
     CanonicalTest,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NestedScrollCompilerPhase {
-    OuterHostBefore,
-    InnerHostBefore,
-    LeafContent,
-    InnerOverlayAfter,
-    OuterOverlayAfter,
+enum NestedScrollSegmentPhase {
+    HostBefore,
+    LeafRaster,
+    OverlayAfter,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct NestedScrollCompilerStepContract {
-    phase: NestedScrollCompilerPhase,
+struct NestedScrollSegmentStepContract {
+    phase: NestedScrollSegmentPhase,
+    boundary: SceneBoundaryId,
     artifact: PropertyScrollPhaseArtifactIdentity,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct NestedScrollCompilerBoundaryContract {
+struct NestedScrollSegmentBoundaryContract {
     boundary: SceneBoundaryId,
     parent: Option<SceneBoundaryId>,
     stable_id: u64,
+    source_bounds_bits: [u32; 4],
+    compiler_stamp: super::compiler::NativeScrollForestCompilerStamp,
     scroll: ScrollNodeSnapshot,
     contents_clip: ClipNodeSnapshot,
-    source_bounds_bits: [u32; 4],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct NestedScrollAssemblyBindingContract {
-    outer: SceneBoundaryId,
-    child: SceneBoundaryId,
+struct NestedScrollSegmentDirectTextContract {
+    paint: super::compiler::DirectNestedScrollTextPaintWitness,
+    source_artifact: PropertyScrollPhaseArtifactIdentity,
+    emitted_artifact: PropertyScrollPhaseArtifactIdentity,
+    scale_factor_bits: u32,
+    target_format: wgpu::TextureFormat,
+    final_scissor: [u32; 4],
+    mask_depth: u32,
+    boundary_chain: Vec<SceneBoundaryId>,
+    context: super::TransformSurfacePlanContext,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct NestedScrollResidentBindingContract {
-    boundary: SceneBoundaryId,
-    content_root: NodeKey,
-    content_stable_id: u64,
+enum NestedScrollSegmentLeafAuthority {
+    Persistent(RetainedSurfaceRasterStamp),
+    DirectText(NestedScrollSegmentDirectTextContract),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct NestedScrollCompilerWitness {
+struct NestedScrollSegmentCompilerWitness {
     scene_root: NodeKey,
     scene_root_stable_id: u64,
-    boundaries: Vec<NestedScrollCompilerBoundaryContract>,
-    assembly_binding: NestedScrollAssemblyBindingContract,
-    resident_binding: NestedScrollResidentBindingContract,
-    steps: Vec<NestedScrollCompilerStepContract>,
-    leaf_recorded_bounds_bits: [u32; 4],
-    leaf_source_bounds_bits: [u32; 4],
-    leaf_artifact_span: super::RetainedSurfaceArtifactSpanStamp,
-    leaf_stamp: RetainedSurfaceRasterStamp,
+    boundaries: Vec<NestedScrollSegmentBoundaryContract>,
+    steps: Vec<NestedScrollSegmentStepContract>,
+    leaf_boundary: SceneBoundaryId,
+    leaf_content_root: NodeKey,
+    leaf_content_stable_id: u64,
+    leaf_authority: NestedScrollSegmentLeafAuthority,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct NestedScrollCompilerContract {
-    compiled: NestedScrollCompilerWitness,
-    planned: NestedScrollCompilerWitness,
+struct NestedScrollSegmentCompilerContract {
+    compiled: NestedScrollSegmentCompilerWitness,
+    planned: NestedScrollSegmentCompilerWitness,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3514,237 +4491,182 @@ impl ScrollTransformDirectCompilerContract {
     }
 }
 
-impl NestedScrollCompilerContract {
+impl NestedScrollSegmentCompilerContract {
+    fn validates_common(&self) -> bool {
+        let witness = &self.compiled;
+        let boundary_count = witness.boundaries.len();
+        if self.compiled != self.planned
+            || boundary_count < 2
+            || witness.steps.len() != boundary_count.saturating_mul(2).saturating_add(1)
+        {
+            return false;
+        }
+        let boundaries_are_linear = witness.boundaries.iter().enumerate().all(|(index, boundary)| {
+            let expected_parent = index.checked_sub(1).map(|parent| witness.boundaries[parent].boundary);
+            let expected_parent_scroll = index
+                .checked_sub(1)
+                .map(|parent| witness.boundaries[parent].scroll.id);
+            let expected_parent_clip = index
+                .checked_sub(1)
+                .map(|parent| witness.boundaries[parent].contents_clip.id);
+            boundary.boundary.ordinal == u32::try_from(index).unwrap_or(u32::MAX)
+                && boundary.boundary.owner == boundary.scroll.owner
+                && boundary.boundary.kind == SceneBoundaryKind::ScrollContents
+                && boundary.parent == expected_parent
+                && boundary.stable_id != 0
+                && boundary.scroll.id.0 == boundary.boundary.owner
+                && boundary.scroll.parent == expected_parent_scroll
+                && boundary.contents_clip.id.owner == boundary.boundary.owner
+                && boundary.contents_clip.parent == expected_parent_clip
+                && boundary.scroll.generation != 0
+                && boundary.contents_clip.generation != 0
+                && boundary
+                    .scroll
+                    .has_canonical_geometry_with_contents_clip_parent_ids(
+                        boundary.contents_clip,
+                        expected_parent_scroll,
+                        expected_parent_clip,
+                    )
+        });
+        let hosts_are_ordered = witness.steps[..boundary_count]
+            .iter()
+            .zip(&witness.boundaries)
+            .all(|(step, boundary)| {
+                step.phase == NestedScrollSegmentPhase::HostBefore
+                    && step.boundary == boundary.boundary
+                    && step
+                        .artifact
+                        .chunks
+                        .as_slice()
+                        .first()
+                        .is_some_and(|chunk| chunk.bounds_bits == boundary.source_bounds_bits)
+            });
+        let leaf = witness.boundaries.last().map(|boundary| boundary.boundary);
+        let leaf_is_ordered = witness.steps.get(boundary_count).is_some_and(|step| {
+            step.phase == NestedScrollSegmentPhase::LeafRaster
+                && Some(step.boundary) == leaf
+                && step.boundary == witness.leaf_boundary
+        });
+        let overlays_are_ordered = witness.steps[boundary_count + 1..]
+            .iter()
+            .zip(witness.boundaries.iter().rev())
+            .all(|(step, boundary)| {
+                step.phase == NestedScrollSegmentPhase::OverlayAfter
+                    && step.boundary == boundary.boundary
+                    && step
+                        .artifact
+                        .chunks
+                        .as_slice()
+                        .last()
+                        .is_some_and(|chunk| chunk.bounds_bits == boundary.source_bounds_bits)
+            });
+        let leaf_authority_is_canonical = match &witness.leaf_authority {
+            NestedScrollSegmentLeafAuthority::Persistent(stamp) => {
+                stamp.identity.boundary_root == witness.leaf_content_root
+                    && stamp.identity.stable_id == witness.leaf_content_stable_id
+                    && stamp.identity.role == RetainedSurfaceRasterRole::ScrollContent
+                    && stamp.identity.scroll_content_tile.is_none()
+                    && super::compiler::native_scroll_forest_content_raster_stamp_is_canonical(
+                        stamp,
+                    )
+            }
+            NestedScrollSegmentLeafAuthority::DirectText(direct) => {
+                let expected_chain = witness
+                    .boundaries
+                    .iter()
+                    .map(|boundary| boundary.boundary)
+                    .collect::<Vec<_>>();
+                let expected_scissor = witness.boundaries.iter().try_fold(
+                    direct.context.outer_scissor_rect(),
+                    |scissor, boundary| {
+                        nested_segment_scissor_intersection(
+                            scissor,
+                            boundary.contents_clip.logical_scissor,
+                        )
+                        .map(Some)
+                    },
+                );
+                let [source_chunk] = direct.source_artifact.chunks.as_slice() else {
+                    return false;
+                };
+                let [emitted_chunk] = direct.emitted_artifact.chunks.as_slice() else {
+                    return false;
+                };
+                direct.paint.is_canonical()
+                    && direct.paint.content_root == witness.leaf_content_root
+                    && direct.paint.content_stable_id == witness.leaf_content_stable_id
+                    && direct.scale_factor_bits != 0
+                    && f32::from_bits(direct.scale_factor_bits).is_finite()
+                    && f32::from_bits(direct.scale_factor_bits) > 0.0
+                    && usize::try_from(direct.mask_depth).ok() == Some(boundary_count)
+                    && direct.boundary_chain == expected_chain
+                    && expected_scissor == Some(Some(direct.final_scissor))
+                    && witness.steps.get(boundary_count).is_some_and(|step| {
+                        step.artifact == direct.source_artifact
+                            && step.boundary == witness.leaf_boundary
+                    })
+                    && direct.source_artifact.owner_topology
+                        == [PaintOwnerSnapshot {
+                            owner: witness.leaf_content_root,
+                            parent: None,
+                        }]
+                    && direct.source_artifact.clip_nodes.is_empty()
+                    && direct.source_artifact.effect_nodes.is_empty()
+                    && direct.source_artifact.op_count == 1
+                    && source_chunk.owner == witness.leaf_content_root
+                    && source_chunk.id.owner == witness.leaf_content_root
+                    && source_chunk.id.role == super::PaintChunkRole::TextGlyphs
+                    && source_chunk.op_count == 1
+                    && source_chunk.bounds_bits[2..] == direct.paint.bounds_bits[2..]
+                    && direct.emitted_artifact.owner_topology
+                        == direct.source_artifact.owner_topology
+                    && direct.emitted_artifact.clip_nodes.is_empty()
+                    && direct.emitted_artifact.effect_nodes.is_empty()
+                    && direct.emitted_artifact.op_count == 1
+                    && emitted_chunk.id == source_chunk.id
+                    && emitted_chunk.owner == source_chunk.owner
+                    && emitted_chunk.properties == source_chunk.properties
+                    && emitted_chunk.content_revision == source_chunk.content_revision
+                    && emitted_chunk.op_count == 1
+                    && emitted_chunk.bounds_bits
+                        == [
+                            direct.paint.actual_origin_bits[0],
+                            direct.paint.actual_origin_bits[1],
+                            source_chunk.bounds_bits[2],
+                            source_chunk.bounds_bits[3],
+                        ]
+            }
+        };
+        boundaries_are_linear
+            && hosts_are_ordered
+            && leaf_is_ordered
+            && overlays_are_ordered
+            && !witness.scene_root.is_null()
+            && witness.scene_root_stable_id != 0
+            && witness.leaf_content_stable_id != 0
+            && leaf_authority_is_canonical
+    }
+
     fn validates_group(&self, group: &RetainedPropertyScrollResidentGroup) -> bool {
         let witness = &self.compiled;
-        let [outer, inner] = witness.boundaries.as_slice() else {
+        let NestedScrollSegmentLeafAuthority::Persistent(stamp) = &witness.leaf_authority else {
             return false;
         };
-        let [h0, h1, leaf, o1, o0] = witness.steps.as_slice() else {
-            return false;
-        };
-        let [inner_x, inner_y, inner_width, inner_height] =
-            inner.source_bounds_bits.map(f32::from_bits);
-        let inner_source = RetainedSurfaceBounds {
-            x: inner_x,
-            y: inner_y,
-            width: inner_width,
-            height: inner_height,
-            corner_radii: [0.0; 4],
-        };
-        let expected_local_bounds =
-            nested_receiver_local_content_bounds(inner_source, inner.scroll).map(bounds_bits);
-        let expected_outer_state = crate::view::compositor::property_tree::PropertyTreeState {
-            clip: Some(outer.contents_clip.id),
-            scroll: Some(outer.scroll.id),
-            ..Default::default()
-        };
-        let step_is = |step: &NestedScrollCompilerStepContract,
-                       phase,
-                       owner,
-                       properties,
-                       clips: &[ClipNodeSnapshot],
-                       bounds_bits,
-                       chunk_phase,
-                       role| {
-            let [chunk] = step.artifact.chunks.as_slice() else {
-                return false;
-            };
-            step.phase == phase
-                && step.artifact.owner_topology
-                    == [PaintOwnerSnapshot {
-                        owner,
-                        parent: None,
-                    }]
-                && step.artifact.clip_nodes == clips
-                && step.artifact.effect_nodes.is_empty()
-                && step.artifact.op_count == chunk.op_count
-                && chunk.id.owner == owner
-                && chunk.owner == owner
-                && chunk.id.scope == super::PaintPropertyScope::SelfPaint
-                && chunk.id.phase == chunk_phase
-                && chunk.id.slot == 0
-                && chunk.id.role == role
-                && chunk.properties == properties
-                && chunk.bounds_bits == bounds_bits
-        };
-        self.compiled == self.planned
-            && witness.scene_root == outer.boundary.owner
-            && witness.scene_root_stable_id == outer.stable_id
-            && witness.scene_root_stable_id != 0
-            && outer.boundary.ordinal == 0
-            && outer.boundary.kind == SceneBoundaryKind::ScrollContents
-            && outer.parent.is_none()
-            && outer.scroll.id.0 == outer.boundary.owner
-            && outer.scroll.owner == outer.boundary.owner
-            && outer.scroll.parent.is_none()
-            && outer.scroll.generation != 0
-            && outer.contents_clip.id.owner == outer.boundary.owner
-            && outer.contents_clip.parent.is_none()
-            && outer.contents_clip.generation != 0
-            && outer
-                .scroll
-                .has_canonical_vertical_geometry_with_contents_clip(outer.contents_clip)
-            && inner.boundary.ordinal == 1
-            && inner.boundary.kind == SceneBoundaryKind::ScrollContents
-            && inner.parent == Some(outer.boundary)
-            && inner.stable_id != 0
-            && inner.scroll.id.0 == inner.boundary.owner
-            && inner.scroll.owner == inner.boundary.owner
-            && inner.scroll.parent == Some(outer.scroll.id)
-            && inner.scroll.generation != 0
-            && inner.contents_clip.id.owner == inner.boundary.owner
-            && inner.contents_clip.parent == Some(outer.contents_clip.id)
-            && inner.contents_clip.generation != 0
-            && inner
-                .scroll
-                .has_canonical_nested_vertical_geometry_with_contents_clip(
-                    inner.contents_clip,
-                    outer.scroll,
-                    outer.contents_clip,
-                )
-            && witness.assembly_binding
-                == (NestedScrollAssemblyBindingContract {
-                    outer: outer.boundary,
-                    child: inner.boundary,
-                })
-            && witness.resident_binding.boundary == inner.boundary
-            && witness.resident_binding.content_root == group.content_root
-            && witness.resident_binding.content_stable_id == group.content_stable_id
-            && group.boundary == inner.boundary
-            && group.ordered_stamps() == [witness.leaf_stamp.clone()]
-            && witness.leaf_recorded_bounds_bits == bounds_bits(content_zero_bounds(inner.scroll))
-            && expected_local_bounds == Some(witness.leaf_source_bounds_bits)
-            && witness.leaf_stamp.target.source_bounds_bits == witness.leaf_source_bounds_bits
-            && witness.leaf_artifact_span.clip_nodes.is_empty()
-            && matches!(witness.leaf_artifact_span.chunks.as_slice(), [chunk]
-                if chunk.bounds_bits == witness.leaf_source_bounds_bits && chunk.clip.is_none())
-            && witness.leaf_stamp.ordered_steps.as_slice()
-                == [super::RetainedSurfaceRasterStepStamp::ArtifactSpan(
-                    witness.leaf_artifact_span.clone(),
-                )]
-            && super::retained_surface_raster_stamp_is_canonical(&witness.leaf_stamp)
-            && step_is(
-                h0,
-                NestedScrollCompilerPhase::OuterHostBefore,
-                outer.boundary.owner,
-                Default::default(),
-                &[],
-                outer.source_bounds_bits,
-                super::PaintNodePhase::BeforeChildren,
-                super::PaintChunkRole::SelfDecoration,
-            )
-            && step_is(
-                h1,
-                NestedScrollCompilerPhase::InnerHostBefore,
-                inner.boundary.owner,
-                Default::default(),
-                &[],
-                inner.source_bounds_bits,
-                super::PaintNodePhase::BeforeChildren,
-                super::PaintChunkRole::SelfDecoration,
-            )
-            && step_is(
-                leaf,
-                NestedScrollCompilerPhase::LeafContent,
-                witness.resident_binding.content_root,
-                expected_outer_state,
-                &[outer.contents_clip],
-                witness.leaf_recorded_bounds_bits,
-                super::PaintNodePhase::BeforeChildren,
-                match leaf.artifact.chunks.as_slice() {
-                    [chunk]
-                        if matches!(
-                            chunk.id.role,
-                            super::PaintChunkRole::SelfDecoration
-                                | super::PaintChunkRole::ImageContent
-                                | super::PaintChunkRole::SvgContent
-                                | super::PaintChunkRole::TextGlyphs
-                        ) =>
-                    {
-                        chunk.id.role
-                    }
-                    _ => return false,
-                },
-            )
-            && step_is(
-                o1,
-                NestedScrollCompilerPhase::InnerOverlayAfter,
-                inner.boundary.owner,
-                Default::default(),
-                &[],
-                inner.source_bounds_bits,
-                super::PaintNodePhase::AfterChildren,
-                super::PaintChunkRole::ScrollbarOverlay,
-            )
-            && step_is(
-                o0,
-                NestedScrollCompilerPhase::OuterOverlayAfter,
-                outer.boundary.owner,
-                Default::default(),
-                &[],
-                outer.source_bounds_bits,
-                super::PaintNodePhase::AfterChildren,
-                super::PaintChunkRole::ScrollbarOverlay,
+        self.validates_common()
+            && group.boundary == witness.leaf_boundary
+            && group.content_root == witness.leaf_content_root
+            && group.content_stable_id == witness.leaf_content_stable_id
+            && group.ordered_stamps() == [stamp.clone()]
+            && group.is_nested_scroll_segment_canonical()
+    }
+
+    fn validates_direct_text(&self) -> bool {
+        self.validates_common()
+            && matches!(
+                self.compiled.leaf_authority,
+                NestedScrollSegmentLeafAuthority::DirectText(_)
             )
     }
-}
-
-#[allow(dead_code)] // Consumed through the validated token before prepare lands.
-fn nested_scroll_compiler_witness_matches_scaffold(
-    witness: &NestedScrollCompilerWitness,
-    scaffold: &super::frame_plan::NestedScrollSceneScaffold,
-) -> bool {
-    let [outer, inner] = scaffold.boundaries.as_slice() else {
-        return false;
-    };
-    let [
-        super::frame_plan::NestedScrollSceneScheduledStep::HostBefore { artifact: h0, .. },
-        super::frame_plan::NestedScrollSceneScheduledStep::HostBefore { artifact: h1, .. },
-        super::frame_plan::NestedScrollSceneScheduledStep::ContentReceiver(receiver),
-        super::frame_plan::NestedScrollSceneScheduledStep::OverlayAfter { artifact: o1, .. },
-        super::frame_plan::NestedScrollSceneScheduledStep::OverlayAfter { artifact: o0, .. },
-    ] = scaffold.schedule.steps.as_slice()
-    else {
-        return false;
-    };
-    let make_step = |phase, artifact: &PaintArtifact| {
-        Some(NestedScrollCompilerStepContract {
-            phase,
-            artifact: PropertyScrollPhaseArtifactIdentity::from_artifact(artifact)?,
-        })
-    };
-    let expected_steps = [
-        make_step(NestedScrollCompilerPhase::OuterHostBefore, h0.artifact()),
-        make_step(NestedScrollCompilerPhase::InnerHostBefore, h1.artifact()),
-        make_step(
-            NestedScrollCompilerPhase::LeafContent,
-            receiver.artifact.artifact(),
-        ),
-        make_step(NestedScrollCompilerPhase::InnerOverlayAfter, o1.artifact()),
-        make_step(NestedScrollCompilerPhase::OuterOverlayAfter, o0.artifact()),
-    ]
-    .into_iter()
-    .collect::<Option<Vec<_>>>();
-    let admission = scaffold.admission;
-    let [compiled_outer, compiled_inner] = witness.boundaries.as_slice() else {
-        return false;
-    };
-    witness.scene_root == admission.outer_boundary_root
-        && witness.scene_root_stable_id == admission.outer_stable_id
-        && compiled_outer.boundary.owner == admission.outer_boundary_root
-        && compiled_outer.stable_id == admission.outer_stable_id
-        && compiled_outer.scroll == outer.scroll
-        && compiled_outer.contents_clip == outer.contents_clip
-        && compiled_outer.source_bounds_bits == bounds_bits(admission.outer_source_bounds)
-        && compiled_inner.boundary.owner == admission.inner_boundary_root
-        && compiled_inner.stable_id == admission.inner_stable_id
-        && compiled_inner.scroll == inner.scroll
-        && compiled_inner.contents_clip == inner.contents_clip
-        && compiled_inner.source_bounds_bits == bounds_bits(admission.inner_source_bounds)
-        && witness.resident_binding.content_root == admission.content_leaf
-        && witness.resident_binding.content_stable_id == admission.content_leaf_stable_id
-        && expected_steps.as_ref() == Some(&witness.steps)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3826,6 +4748,12 @@ impl RetainedPropertyScrollResidentGroup {
     }
 
     fn is_native_scroll_forest_canonical(&self) -> bool {
+        self.is_canonical_with(|stamp| {
+            super::compiler::native_scroll_forest_content_raster_stamp_is_canonical(stamp)
+        })
+    }
+
+    fn is_nested_scroll_segment_canonical(&self) -> bool {
         self.is_canonical_with(|stamp| {
             super::compiler::native_scroll_forest_content_raster_stamp_is_canonical(stamp)
         })
@@ -3933,9 +4861,19 @@ impl RetainedPropertyScrollSceneTransaction {
             self.generic_authority,
             RetainedPropertyScrollGenericAuthority::ScrollTransformDirectCompiler(_)
         );
+        let is_direct_nested_text = matches!(
+            &self.generic_authority,
+            RetainedPropertyScrollGenericAuthority::NestedScrollSegmentCompiler(contract)
+                if matches!(
+                    contract.compiled.leaf_authority,
+                    NestedScrollSegmentLeafAuthority::DirectText(_)
+                )
+        );
         if self.seal.roots.is_empty()
             || self.seal.ordered_boundaries.is_empty()
-            || (!is_direct_scroll_transform && self.scroll_groups.is_empty())
+            || (!is_direct_scroll_transform
+                && !is_direct_nested_text
+                && self.scroll_groups.is_empty())
             || self.seal.generic_bindings.len() != self.generic_full_set.len()
             || self.seal.scroll_bindings.len() != self.scroll_groups.len()
         {
@@ -4107,12 +5045,26 @@ impl RetainedPropertyScrollSceneTransaction {
                     return false;
                 }
             }
-            RetainedPropertyScrollGenericAuthority::NestedScrollCompiler(contract) => {
-                let [group] = self.scroll_groups.as_slice() else {
-                    return false;
-                };
-                if !self.generic_full_set.is_empty() || !contract.validates_group(group) {
-                    return false;
+            RetainedPropertyScrollGenericAuthority::NestedScrollSegmentCompiler(contract) => {
+                match &contract.compiled.leaf_authority {
+                    NestedScrollSegmentLeafAuthority::Persistent(_) => {
+                        let [group] = self.scroll_groups.as_slice() else {
+                            return false;
+                        };
+                        if !self.generic_full_set.is_empty() || !contract.validates_group(group) {
+                            return false;
+                        }
+                    }
+                    NestedScrollSegmentLeafAuthority::DirectText(_) => {
+                        if !self.generic_full_set.is_empty()
+                            || !self.scroll_groups.is_empty()
+                            || !self.seal.generic_bindings.is_empty()
+                            || !self.seal.scroll_bindings.is_empty()
+                            || !contract.validates_direct_text()
+                        {
+                            return false;
+                        }
+                    }
                 }
             }
             #[cfg(test)]
@@ -4155,8 +5107,9 @@ impl RetainedPropertyScrollSceneTransaction {
             };
             for boundary in &self.seal.ordered_boundaries[start..end] {
                 let canonical_owner =
-                    if let RetainedPropertyScrollGenericAuthority::NestedScrollCompiler(contract) =
-                        &self.generic_authority
+                    if let RetainedPropertyScrollGenericAuthority::NestedScrollSegmentCompiler(
+                        contract,
+                    ) = &self.generic_authority
                     {
                         contract.compiled.scene_root == root.root
                             && contract
@@ -4334,6 +5287,9 @@ impl RetainedPropertyScrollSceneTransaction {
                     RetainedPropertyScrollGenericAuthority::NativeScrollForest => {
                         group.is_native_scroll_forest_canonical()
                     }
+                    RetainedPropertyScrollGenericAuthority::NestedScrollSegmentCompiler(_) => {
+                        group.is_nested_scroll_segment_canonical()
+                    }
                     _ => group.is_canonical(),
                 };
                 boundary_set.contains(&binding.boundary)
@@ -4377,40 +5333,56 @@ impl RetainedPropertyScrollSceneTransaction {
                 return false;
             }
         }
-        if let RetainedPropertyScrollGenericAuthority::NestedScrollCompiler(contract) =
+        if let RetainedPropertyScrollGenericAuthority::NestedScrollSegmentCompiler(contract) =
             &self.generic_authority
         {
-            let ([root], [outer, inner], [], [binding], [group]) = (
-                self.seal.roots.as_slice(),
-                self.seal.ordered_boundaries.as_slice(),
-                self.seal.generic_bindings.as_slice(),
-                self.seal.scroll_bindings.as_slice(),
-                self.scroll_groups.as_slice(),
-            ) else {
-                return false;
-            };
-            let [contract_outer, contract_inner] = contract.compiled.boundaries.as_slice() else {
+            let [root] = self.seal.roots.as_slice() else {
                 return false;
             };
             if root.ordinal != 0
-                || root.boundary_span != (0..2)
+                || root.boundary_span
+                    != (0..u32::try_from(contract.compiled.boundaries.len())
+                        .unwrap_or(u32::MAX))
+                || self.seal.ordered_boundaries
+                    != contract
+                        .compiled
+                        .boundaries
+                        .iter()
+                        .map(|boundary| boundary.boundary)
+                        .collect::<Vec<_>>()
                 || root.root != contract.compiled.scene_root
                 || root.stable_id != contract.compiled.scene_root_stable_id
-                || *outer != contract_outer.boundary
-                || *inner != contract_inner.boundary
-                || contract_outer.parent.is_some()
-                || contract_inner.parent != Some(*outer)
-                || contract.compiled.assembly_binding.outer != *outer
-                || contract.compiled.assembly_binding.child != *inner
-                || contract.compiled.resident_binding.boundary != *inner
-                || binding.boundary != *inner
-                || binding.content_root != contract.compiled.resident_binding.content_root
-                || binding.content_stable_id != contract.compiled.resident_binding.content_stable_id
-                || group.boundary != *inner
-                || group.content_root != binding.content_root
-                || group.content_stable_id != binding.content_stable_id
             {
                 return false;
+            }
+            match &contract.compiled.leaf_authority {
+                NestedScrollSegmentLeafAuthority::Persistent(_) => {
+                    let ([], [binding], [group]) = (
+                        self.seal.generic_bindings.as_slice(),
+                        self.seal.scroll_bindings.as_slice(),
+                        self.scroll_groups.as_slice(),
+                    ) else {
+                        return false;
+                    };
+                    if binding.boundary != contract.compiled.leaf_boundary
+                        || binding.content_root != contract.compiled.leaf_content_root
+                        || binding.content_stable_id != contract.compiled.leaf_content_stable_id
+                        || group.boundary != binding.boundary
+                        || group.content_root != binding.content_root
+                        || group.content_stable_id != binding.content_stable_id
+                    {
+                        return false;
+                    }
+                }
+                NestedScrollSegmentLeafAuthority::DirectText(_) => {
+                    if !self.seal.generic_bindings.is_empty()
+                        || !self.seal.scroll_bindings.is_empty()
+                        || !self.scroll_groups.is_empty()
+                        || !self.generic_full_set.is_empty()
+                    {
+                        return false;
+                    }
+                }
             }
         }
         if matches!(
@@ -4654,6 +5626,19 @@ impl RetainedPropertyScrollSceneTransaction {
             .collect()
     }
 
+    pub(crate) fn is_exact_zero_resident_nested_text(&self) -> bool {
+        self.is_canonical()
+            && self.generic_full_set.is_empty()
+            && self.scroll_groups.is_empty()
+            && self.seal.generic_bindings.is_empty()
+            && self.seal.scroll_bindings.is_empty()
+            && matches!(
+                &self.generic_authority,
+                RetainedPropertyScrollGenericAuthority::NestedScrollSegmentCompiler(contract)
+                    if contract.validates_direct_text()
+            )
+    }
+
     #[cfg(test)]
     pub(crate) fn new_for_pool_test(
         generic_full_set: Vec<RetainedSurfaceRasterStamp>,
@@ -4864,6 +5849,131 @@ pub(crate) struct PreparedNativeScrollForestTransaction {
     programs: Vec<super::compiler::ValidatedNativeScrollForestBoundaryProgram>,
     geometries: Vec<PreparedScrollContentCompositeGeometry>,
     root_boundaries: Vec<super::frame_plan::NativeScrollBoundaryId>,
+}
+
+/// M4 read-only pool closure for the ordered nested-scroll segment program.
+/// It owns no graph or frame-stage lease, so M5 remains the only place that
+/// can turn this proof into render passes.
+#[allow(dead_code)] // M4 proof token; production consumption begins with M5.
+pub(crate) struct PreparedNestedScrollSegmentTransaction {
+    scene: ValidatedNestedScrollSegmentScene,
+    actions: FxHashMap<super::RetainedSurfaceResidentKey, RetainedSurfaceCompileAction>,
+}
+
+#[allow(dead_code)] // M5a focused executor; production authority remains closed through M5b-1.
+struct PreparedNestedScrollSegmentDirectBoundary {
+    program: super::compiler::ValidatedDirectNestedScrollSegmentBoundaryProgram,
+    paint_offset: [f32; 2],
+    host_scissor: Option<[u32; 4]>,
+    host_frame_span: Range<u32>,
+    overlay_scissor: Option<[u32; 4]>,
+    overlay_frame_span: Range<u32>,
+}
+
+enum PreparedNestedScrollSegmentLeaf {
+    Persistent {
+        artifact: ValidatedScrollSceneContentArtifact,
+        stamp: RetainedSurfaceRasterStamp,
+        terminal: u32,
+        geometry: PreparedScrollContentCompositeGeometry,
+    },
+    DirectText {
+        run: super::compiler::ValidatedDirectNestedScrollTextRun,
+    },
+}
+
+/// M5a's exclusive pre-mutation authority. All direct frame segments, the
+/// localized leaf, direct-composite geometry, cursor spans and the one pool
+/// action are sealed before this token borrows graph and viewport mutation.
+#[allow(dead_code)] // M5a focused executor; production authority remains closed through M5b-1.
+pub(crate) struct PreparedNestedScrollSegmentScene<'a> {
+    viewport: &'a mut Viewport,
+    graph: &'a mut FrameGraph,
+    parent_ctx: UiBuildContext,
+    boundaries: Vec<PreparedNestedScrollSegmentDirectBoundary>,
+    leaf: PreparedNestedScrollSegmentLeaf,
+    actions: FxHashMap<super::RetainedSurfaceResidentKey, RetainedSurfaceCompileAction>,
+    transaction: RetainedPropertyScrollSceneTransaction,
+    frame_opaque_terminal: u32,
+    clear_rgba_bits: [u32; 4],
+    frame_owner: RetainedSurfaceFrameStageOwner,
+    trace: RetainedPropertyScrollSceneBuildTrace,
+}
+
+#[cfg(test)]
+impl PreparedNestedScrollSegmentScene<'_> {
+    fn persistent_leaf_parts_for_test(
+        &self,
+    ) -> (
+        &RetainedSurfaceRasterStamp,
+        &PreparedScrollContentCompositeGeometry,
+        u32,
+    ) {
+        let PreparedNestedScrollSegmentLeaf::Persistent {
+            stamp,
+            geometry,
+            terminal,
+            ..
+        } = &self.leaf
+        else {
+            panic!("direct Text leaf has no persistent prepared parts")
+        };
+        (stamp, geometry, *terminal)
+    }
+
+    fn refresh_action_from_committed_test_pool(&mut self) {
+        assert!(matches!(self.leaf, PreparedNestedScrollSegmentLeaf::Persistent { .. }));
+        self.actions = self
+            .viewport
+            .freeze_retained_property_scroll_scene_compile_actions_for_forced_test(
+                &self.transaction,
+            )
+            .expect("M5a committed test pool retains the canonical leaf transaction");
+        self.trace.reraster_count = self
+            .actions
+            .values()
+            .filter(|action| **action == RetainedSurfaceCompileAction::Reraster)
+            .count();
+        self.trace.reuse_count = self.actions.len() - self.trace.reraster_count;
+    }
+}
+
+#[allow(dead_code)]
+impl PreparedNestedScrollSegmentTransaction {
+    fn is_canonical(&self) -> bool {
+        let expected = match &self.scene.leaf_authority {
+            NestedScrollSegmentLeafAuthority::Persistent(stamp) => {
+                [stamp.identity.resident_key()]
+                    .into_iter()
+                    .collect::<FxHashSet<_>>()
+            }
+            NestedScrollSegmentLeafAuthority::DirectText(_) => FxHashSet::default(),
+        };
+        self.scene.is_canonical()
+            && self.actions.keys().copied().collect::<FxHashSet<_>>() == expected
+    }
+
+    #[cfg(test)]
+    fn action_for_test(&self) -> RetainedSurfaceCompileAction {
+        let NestedScrollSegmentLeafAuthority::Persistent(stamp) = &self.scene.leaf_authority else {
+            panic!("direct Text transaction has no resident action")
+        };
+        self.actions[&stamp.identity.resident_key()]
+    }
+
+    #[cfg(test)]
+    fn stamp_for_test(&self) -> &RetainedSurfaceRasterStamp {
+        let NestedScrollSegmentLeafAuthority::Persistent(stamp) = &self.scene.leaf_authority else {
+            panic!("direct Text transaction has no resident stamp")
+        };
+        stamp
+    }
+
+    #[cfg(test)]
+    fn transaction_is_canonical_for_test(&self) -> bool {
+        self.scene.transaction.is_canonical()
+    }
+
 }
 
 #[cfg(test)]
@@ -5256,6 +6366,7 @@ impl PreparedRetainedScrollContentEffectScene<'_> {
 #[allow(dead_code)] // Phase1 joint lease is test-sealed before production selection changes.
 pub(crate) enum PreparedPropertyBoundaryDagScene<'a> {
     FrameRootScroll(PreparedFrameRootScrollScene<'a>),
+    NestedScrollChain(PreparedNestedScrollSegmentScene<'a>),
     TransformScroll(PreparedRetainedTransformScrollScene<'a>),
     EffectScroll(PreparedRetainedEffectScrollScene<'a>),
     TransformEffectScroll(PreparedRetainedTransformEffectScrollScene<'a>),
@@ -5269,6 +6380,7 @@ impl PreparedPropertyBoundaryDagScene<'_> {
     fn graph_build_state_snapshot_for_test(&self) -> crate::view::frame_graph::TopologySignature {
         match self {
             Self::FrameRootScroll(prepared) => prepared.graph.build_state_snapshot_for_test(),
+            Self::NestedScrollChain(prepared) => prepared.graph.build_state_snapshot_for_test(),
             Self::TransformScroll(prepared) => prepared.graph.build_state_snapshot_for_test(),
             Self::EffectScroll(prepared) => prepared.graph.build_state_snapshot_for_test(),
             Self::TransformEffectScroll(prepared) => prepared.graph.build_state_snapshot_for_test(),
@@ -5282,6 +6394,9 @@ impl PreparedPropertyBoundaryDagScene<'_> {
     fn refresh_actions_from_committed_test_pool(&mut self) {
         match self {
             Self::FrameRootScroll(prepared) => prepared.refresh_actions_from_committed_test_pool(),
+            Self::NestedScrollChain(prepared) => {
+                prepared.refresh_action_from_committed_test_pool()
+            }
             Self::TransformScroll(prepared) => prepared.refresh_actions_from_committed_test_pool(),
             Self::EffectScroll(prepared) => prepared.refresh_actions_from_committed_test_pool(),
             Self::TransformEffectScroll(prepared) => {
@@ -5299,6 +6414,7 @@ impl PreparedPropertyBoundaryDagScene<'_> {
     fn action_set_is_exact_for_test(&self) -> bool {
         let (actions, transaction) = match self {
             Self::FrameRootScroll(prepared) => (&prepared.actions, &prepared.transaction),
+            Self::NestedScrollChain(prepared) => (&prepared.actions, &prepared.transaction),
             Self::TransformScroll(prepared) => (&prepared.actions, &prepared.transaction),
             Self::EffectScroll(prepared) => (&prepared.actions, &prepared.transaction),
             Self::TransformEffectScroll(prepared) => (&prepared.actions, &prepared.transaction),
@@ -5319,6 +6435,7 @@ impl PreparedPropertyBoundaryDagScene<'_> {
     fn rejects_action_set_mismatch_for_test(&self) -> bool {
         let (actions, transaction) = match self {
             Self::FrameRootScroll(prepared) => (&prepared.actions, &prepared.transaction),
+            Self::NestedScrollChain(prepared) => (&prepared.actions, &prepared.transaction),
             Self::TransformScroll(prepared) => (&prepared.actions, &prepared.transaction),
             Self::EffectScroll(prepared) => (&prepared.actions, &prepared.transaction),
             Self::TransformEffectScroll(prepared) => (&prepared.actions, &prepared.transaction),
@@ -11607,913 +12724,6 @@ impl ValidatedDirectScrollTransformTransaction {
     }
 }
 
-#[derive(Clone, Debug)]
-struct ValidatedNestedScrollScene {
-    plan: super::frame_plan::FramePaintPlan,
-    leaf_stamp: RetainedSurfaceRasterStamp,
-    transaction: RetainedPropertyScrollSceneTransaction,
-}
-
-impl ValidatedNestedScrollScene {
-    fn is_canonical(&self) -> bool {
-        let Some(scaffold) = self.plan.nested_scroll_planning_scaffold() else {
-            return false;
-        };
-        let RetainedPropertyScrollGenericAuthority::NestedScrollCompiler(contract) =
-            &self.transaction.generic_authority
-        else {
-            return false;
-        };
-        self.transaction.is_canonical()
-            && nested_scroll_compiler_witness_matches_scaffold(&contract.compiled, scaffold)
-            && contract.compiled.leaf_stamp == self.leaf_stamp
-            && self.transaction.generic_stamps().is_empty()
-            && self.transaction.scroll_groups().len() == 1
-            && self.transaction.ordered_stamps() == [&self.leaf_stamp]
-            && scaffold.boundaries.len() == 2
-    }
-
-    #[cfg(test)]
-    fn transaction_shape_for_test(&self) -> [usize; 6] {
-        [
-            self.transaction.seal.roots.len(),
-            self.transaction.seal.ordered_boundaries.len(),
-            self.transaction.generic_full_set.len(),
-            self.transaction.seal.generic_bindings.len(),
-            self.transaction.scroll_groups.len(),
-            self.transaction.seal.scroll_bindings.len(),
-        ]
-    }
-
-    #[cfg(test)]
-    fn action_keys_for_test(&self) -> FxHashSet<super::RetainedSurfaceResidentKey> {
-        self.transaction
-            .ordered_stamps()
-            .into_iter()
-            .map(|stamp| stamp.identity.resident_key())
-            .collect()
-    }
-}
-
-/// One exact world-space placement replayed into the frame-local A0 target.
-/// Draw and text passes already subtract the target descriptor origin, so the
-/// compiler must not manually apply S0 a second time.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct NestedScrollHostPlacementGeometry {
-    source_bounds_bits: [u32; 4],
-    target_origin: [u32; 2],
-    scissor: [u32; 4],
-}
-
-/// Bitwise-frozen texture composite geometry. Bounds are in the destination
-/// target's global logical coordinate space; TextureDesc origins perform the
-/// world-to-target localization at record time.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct NestedScrollCompositeGeometry {
-    source_bounds_bits: [u32; 4],
-    destination_bounds_bits: [u32; 4],
-    uv_bounds_bits: [u32; 4],
-    scissor: [u32; 4],
-}
-
-impl NestedScrollCompositeGeometry {
-    fn params(&self) -> TextureCompositeParams {
-        TextureCompositeParams {
-            bounds: self.destination_bounds_bits.map(f32::from_bits),
-            quad_positions: None,
-            uv_bounds: Some(self.uv_bounds_bits.map(f32::from_bits)),
-            mask_uv_bounds: None,
-            use_mask: false,
-            source_is_premultiplied: true,
-            opacity: 1.0,
-            scissor_rect: Some(self.scissor),
-        }
-    }
-}
-
-/// Sized, keyless A0 descriptor pair. This token is graph-inert: it budgets
-/// the descriptors allocated during emission, but owns no handle, stable key,
-/// pool action or frame-stage capability.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct NestedScrollAssemblyTargetGeometry {
-    visible_world_bounds_bits: [u32; 4],
-    color_desc: TextureDesc,
-    depth_desc: TextureDesc,
-    pair_bytes: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct NestedScrollReceiverGeometryWitness {
-    outer_scroll: ScrollNodeSnapshot,
-    outer_clip: ClipNodeSnapshot,
-    inner_scroll: ScrollNodeSnapshot,
-    inner_clip: ClipNodeSnapshot,
-    receiver_world_bounds_bits: [u32; 4],
-    leaf_local_bounds_bits: [u32; 4],
-    assembly: NestedScrollAssemblyTargetGeometry,
-    inner_host_before: NestedScrollHostPlacementGeometry,
-    inner_overlay_after: NestedScrollHostPlacementGeometry,
-    leaf_to_assembly: NestedScrollCompositeGeometry,
-    assembly_to_root: NestedScrollCompositeGeometry,
-    resident_pair_bytes: u64,
-    aggregate_pair_bytes: u64,
-    budget: PropertyScrollBackingBudget,
-}
-
-/// Graph-inert prepare checkpoint for the exact S0 -> S1 -> leaf compiler.
-/// The production executor borrows the viewport and graph only after this
-/// complete geometry witness has been validated.
-#[derive(Clone, Debug)]
-pub(crate) struct PreparedNestedScrollReceiverGeometry {
-    scene: ValidatedNestedScrollScene,
-    compiled: NestedScrollReceiverGeometryWitness,
-    planned: NestedScrollReceiverGeometryWitness,
-}
-
-/// Exclusive pre-mutation lease for the exact `S0 -> S1 -> leaf` executor.
-/// Every artifact, descriptor, action, cursor and staging capability is
-/// validated before this value can borrow the viewport and graph.
-pub(crate) struct PreparedNestedScrollScene<'a> {
-    viewport: &'a mut Viewport,
-    graph: &'a mut FrameGraph,
-    parent_ctx: UiBuildContext,
-    outer_host_before: ValidatedScrollSceneHostBeforeArtifact,
-    inner_host_before: ValidatedScrollSceneHostBeforeArtifact,
-    leaf: ValidatedScrollSceneContentArtifact,
-    inner_overlay_after: ValidatedScrollSceneOverlayArtifact,
-    outer_overlay_after: ValidatedScrollSceneOverlayArtifact,
-    geometry: NestedScrollReceiverGeometryWitness,
-    leaf_stamp: RetainedSurfaceRasterStamp,
-    actions: FxHashMap<super::RetainedSurfaceResidentKey, RetainedSurfaceCompileAction>,
-    transaction: RetainedPropertyScrollSceneTransaction,
-    outer_host_terminal: u32,
-    inner_host_terminal: u32,
-    leaf_terminal: u32,
-    inner_terminal: u32,
-    parent_terminal: u32,
-    clear_rgba_bits: [u32; 4],
-    frame_owner: RetainedSurfaceFrameStageOwner,
-    trace: RetainedPropertyScrollSceneBuildTrace,
-}
-
-#[cfg(test)]
-impl PreparedNestedScrollScene<'_> {
-    fn action_for_test(&self) -> RetainedSurfaceCompileAction {
-        self.actions[&self.leaf_stamp.identity.resident_key()]
-    }
-
-    fn transaction_shape_for_test(&self) -> [usize; 6] {
-        [
-            self.transaction.seal.roots.len(),
-            self.transaction.seal.ordered_boundaries.len(),
-            self.transaction.generic_full_set.len(),
-            self.transaction.seal.generic_bindings.len(),
-            self.transaction.scroll_groups.len(),
-            self.transaction.seal.scroll_bindings.len(),
-        ]
-    }
-
-    fn terminals_for_test(&self) -> [u32; 5] {
-        [
-            self.outer_host_terminal,
-            self.inner_host_terminal,
-            self.leaf_terminal,
-            self.inner_terminal,
-            self.parent_terminal,
-        ]
-    }
-
-    fn graph_is_pristine_for_test(&self) -> bool {
-        self.graph.pass_descriptors().is_empty()
-            && self
-                .graph
-                .declared_persistent_texture_keys()
-                .next()
-                .is_none()
-    }
-
-    fn pool_shape_for_test(&self) -> (usize, Option<usize>) {
-        self.viewport.retained_surface_transaction_shape_for_test()
-    }
-
-    fn refresh_action_from_committed_test_pool(&mut self) {
-        self.actions = self
-            .viewport
-            .freeze_retained_property_scroll_scene_compile_actions_for_forced_test(
-                &self.transaction,
-            )
-            .expect("prepared nested transaction remains canonical for the test pool");
-        assert_eq!(self.actions.len(), 1);
-        let action = self.action_for_test();
-        self.trace.reraster_count = usize::from(action == RetainedSurfaceCompileAction::Reraster);
-        self.trace.reuse_count = usize::from(action == RetainedSurfaceCompileAction::Reuse);
-    }
-}
-
-impl PreparedNestedScrollReceiverGeometry {
-    pub(crate) fn is_canonical(&self) -> bool {
-        self.scene.is_canonical()
-            && self.compiled == self.planned
-            && nested_scroll_receiver_geometry_witness(
-                &self.scene,
-                self.compiled.assembly.color_desc.format(),
-                ScrollSceneSingleTextureBudget {
-                    max_dimension_2d: self.compiled.budget.max_dimension_2d,
-                    max_pair_bytes: self.compiled.budget.max_active_pair_bytes,
-                },
-            )
-            .as_ref()
-                == Some(&self.compiled)
-    }
-
-    #[cfg(test)]
-    fn composite_params_for_test(&self) -> [TextureCompositeParams; 2] {
-        [
-            self.compiled.leaf_to_assembly.params(),
-            self.compiled.assembly_to_root.params(),
-        ]
-    }
-
-    #[cfg(test)]
-    fn descriptor_shape_for_test(&self) -> [(u32, u32); 3] {
-        [
-            self.compiled.assembly.color_desc.origin(),
-            (
-                self.compiled.assembly.color_desc.width(),
-                self.compiled.assembly.color_desc.height(),
-            ),
-            self.compiled.assembly.depth_desc.origin(),
-        ]
-    }
-
-    #[cfg(test)]
-    fn pair_bytes_for_test(&self) -> [u64; 3] {
-        [
-            self.compiled.resident_pair_bytes,
-            self.compiled.assembly.pair_bytes,
-            self.compiled.aggregate_pair_bytes,
-        ]
-    }
-
-    #[cfg(test)]
-    pub(crate) fn leaf_target_for_test(&self) -> (PersistentTextureKey, TextureDesc) {
-        (
-            self.scene.leaf_stamp.identity.color_key,
-            self.scene.leaf_stamp.target.color.clone(),
-        )
-    }
-}
-
-fn finite_positive_rect(bits: [u32; 4]) -> Option<[f32; 4]> {
-    let rect = bits.map(f32::from_bits);
-    (rect.into_iter().all(f32::is_finite) && rect[2] > 0.0 && rect[3] > 0.0).then_some(rect)
-}
-
-fn intersect_continuous_rect_with_scissor(bounds: [f32; 4], scissor: [u32; 4]) -> Option<[f32; 4]> {
-    let right = bounds[0] + bounds[2];
-    let bottom = bounds[1] + bounds[3];
-    let scissor_right = scissor[0].checked_add(scissor[2])? as f32;
-    let scissor_bottom = scissor[1].checked_add(scissor[3])? as f32;
-    let left = bounds[0].max(scissor[0] as f32);
-    let top = bounds[1].max(scissor[1] as f32);
-    let right = right.min(scissor_right);
-    let bottom = bottom.min(scissor_bottom);
-    let result = [left, top, right - left, bottom - top];
-    (result.into_iter().all(f32::is_finite) && result[2] > 0.0 && result[3] > 0.0).then_some(result)
-}
-
-fn intersect_nonempty_scissors(left: [u32; 4], right: [u32; 4]) -> Option<[u32; 4]> {
-    let left_right = left[0].checked_add(left[2])?;
-    let left_bottom = left[1].checked_add(left[3])?;
-    let right_right = right[0].checked_add(right[2])?;
-    let right_bottom = right[1].checked_add(right[3])?;
-    let x = left[0].max(right[0]);
-    let y = left[1].max(right[1]);
-    let max_x = left_right.min(right_right);
-    let max_y = left_bottom.min(right_bottom);
-    (max_x > x && max_y > y).then_some([x, y, max_x - x, max_y - y])
-}
-
-fn nested_scroll_receiver_geometry_witness(
-    scene: &ValidatedNestedScrollScene,
-    target_format: wgpu::TextureFormat,
-    budget: ScrollSceneSingleTextureBudget,
-) -> Option<NestedScrollReceiverGeometryWitness> {
-    scene.is_canonical().then_some(())?;
-    let scaffold = scene.plan.nested_scroll_planning_scaffold()?;
-    let [outer, inner] = scaffold.boundaries.as_slice() else {
-        return None;
-    };
-    let contract = match &scene.transaction.generic_authority {
-        RetainedPropertyScrollGenericAuthority::NestedScrollCompiler(contract) => contract,
-        _ => return None,
-    };
-    let admission = scaffold.admission;
-    let receiver_world = finite_positive_rect(bounds_bits(admission.inner_source_bounds))?;
-    let outer_zero = outer.scroll.layout_content_bounds_at_zero;
-    let derived_receiver_world = [
-        outer_zero.x - outer.scroll.offset.x,
-        outer_zero.y - outer.scroll.offset.y,
-        outer_zero.width,
-        outer_zero.height,
-    ];
-    if derived_receiver_world.map(f32::to_bits) != receiver_world.map(f32::to_bits)
-        || [
-            outer.scroll.offset.x,
-            outer.scroll.offset.y,
-            inner.scroll.offset.x,
-            inner.scroll.offset.y,
-        ]
-        .into_iter()
-        .any(|value| !value.is_finite())
-    {
-        return None;
-    }
-
-    let leaf_local = finite_positive_rect(contract.compiled.leaf_source_bounds_bits)?;
-    if scene.leaf_stamp.target.source_bounds_bits != leaf_local.map(f32::to_bits)
-        || inner.scroll.layout_content_bounds_at_zero.width.to_bits() != leaf_local[2].to_bits()
-        || inner.scroll.layout_content_bounds_at_zero.height.to_bits() != leaf_local[3].to_bits()
-        || (receiver_world[0] + leaf_local[0]).to_bits()
-            != inner.scroll.layout_content_bounds_at_zero.x.to_bits()
-        || (receiver_world[1] + leaf_local[1]).to_bits()
-            != inner.scroll.layout_content_bounds_at_zero.y.to_bits()
-    {
-        return None;
-    }
-
-    let c0 = outer.contents_clip.logical_scissor;
-    let c1 = inner.contents_clip.logical_scissor;
-    let resolved_leaf_clip = intersect_nonempty_scissors(c0, c1)?;
-    let visible_world = intersect_continuous_rect_with_scissor(receiver_world, c0)?;
-    let visible_world_bits = visible_world.map(f32::to_bits);
-    let assembly_color = texture_desc_for_logical_bounds(
-        RetainedSurfaceBounds {
-            x: visible_world[0],
-            y: visible_world[1],
-            width: visible_world[2],
-            height: visible_world[3],
-            corner_radii: [0.0; 4],
-        },
-        1.0,
-        None,
-        target_format,
-    )
-    .with_label("Nested Scroll Assembly A0");
-    let (assembly_color, assembly_depth) = transient_target_texture_descriptors(assembly_color);
-    let assembly_pair_bytes = canonical_pair_bytes(&assembly_color, &assembly_depth)?;
-    let resident_pair_bytes = canonical_pair_bytes(
-        &scene.leaf_stamp.target.color,
-        &scene.leaf_stamp.target.depth,
-    )?;
-    let aggregate_pair_bytes = resident_pair_bytes.checked_add(assembly_pair_bytes)?;
-    let budget = property_scroll_budget(budget);
-    if scene.leaf_stamp.target.color.format() != target_format
-        || [
-            scene.leaf_stamp.target.color.width(),
-            scene.leaf_stamp.target.color.height(),
-            scene.leaf_stamp.target.depth.width(),
-            scene.leaf_stamp.target.depth.height(),
-            assembly_color.width(),
-            assembly_color.height(),
-            assembly_depth.width(),
-            assembly_depth.height(),
-        ]
-        .into_iter()
-        .any(|dimension| dimension == 0 || dimension > budget.max_dimension_2d)
-        || aggregate_pair_bytes > budget.max_active_pair_bytes
-        || assembly_color.sample_count() != 1
-        || assembly_depth.sample_count() != 1
-        || assembly_color.origin()
-            != (
-                visible_world[0].floor().max(0.0) as u32,
-                visible_world[1].floor().max(0.0) as u32,
-            )
-        || assembly_depth.origin() != (0, 0)
-    {
-        return None;
-    }
-
-    let leaf_destination = [
-        receiver_world[0] + leaf_local[0] - inner.scroll.offset.x,
-        receiver_world[1] + leaf_local[1] - inner.scroll.offset.y,
-        leaf_local[2],
-        leaf_local[3],
-    ];
-    if leaf_destination.into_iter().any(|value| !value.is_finite()) {
-        return None;
-    }
-    let target_origin = assembly_color.origin();
-    Some(NestedScrollReceiverGeometryWitness {
-        outer_scroll: outer.scroll,
-        outer_clip: outer.contents_clip,
-        inner_scroll: inner.scroll,
-        inner_clip: inner.contents_clip,
-        receiver_world_bounds_bits: receiver_world.map(f32::to_bits),
-        leaf_local_bounds_bits: leaf_local.map(f32::to_bits),
-        assembly: NestedScrollAssemblyTargetGeometry {
-            visible_world_bounds_bits: visible_world_bits,
-            color_desc: assembly_color,
-            depth_desc: assembly_depth,
-            pair_bytes: assembly_pair_bytes,
-        },
-        inner_host_before: NestedScrollHostPlacementGeometry {
-            source_bounds_bits: receiver_world.map(f32::to_bits),
-            target_origin: [target_origin.0, target_origin.1],
-            scissor: c0,
-        },
-        inner_overlay_after: NestedScrollHostPlacementGeometry {
-            source_bounds_bits: receiver_world.map(f32::to_bits),
-            target_origin: [target_origin.0, target_origin.1],
-            scissor: c0,
-        },
-        leaf_to_assembly: NestedScrollCompositeGeometry {
-            source_bounds_bits: leaf_local.map(f32::to_bits),
-            destination_bounds_bits: leaf_destination.map(f32::to_bits),
-            uv_bounds_bits: leaf_local.map(f32::to_bits),
-            scissor: resolved_leaf_clip,
-        },
-        assembly_to_root: NestedScrollCompositeGeometry {
-            source_bounds_bits: visible_world_bits,
-            destination_bounds_bits: visible_world_bits,
-            uv_bounds_bits: visible_world_bits,
-            scissor: c0,
-        },
-        resident_pair_bytes,
-        aggregate_pair_bytes,
-        budget,
-    })
-}
-
-/// Freezes nested receiver-local placement and the sized transient A0 pair.
-/// No graph or viewport is accepted, so successful preparation cannot allocate
-/// a target, mutate the pool or stage a resident set.
-fn prepare_nested_scroll_receiver_geometry(
-    scene: ValidatedNestedScrollScene,
-    target_format: wgpu::TextureFormat,
-    budget: ScrollSceneSingleTextureBudget,
-) -> Result<PreparedNestedScrollReceiverGeometry, PropertyScrollScenePlanError> {
-    let witness = match nested_scroll_receiver_geometry_witness(&scene, target_format, budget) {
-        Some(witness) => witness,
-        None => {
-            let unconstrained = nested_scroll_receiver_geometry_witness(
-                &scene,
-                target_format,
-                ScrollSceneSingleTextureBudget::new(u32::MAX, u64::MAX)
-                    .expect("maximal nested geometry budget is non-zero"),
-            );
-            return Err(if unconstrained.is_some() {
-                PropertyScrollScenePlanError::BackingBudget
-            } else {
-                PropertyScrollScenePlanError::InvalidContract("nested-scroll-receiver-geometry")
-            });
-        }
-    };
-    let prepared = PreparedNestedScrollReceiverGeometry {
-        scene,
-        compiled: witness.clone(),
-        planned: witness,
-    };
-    prepared.is_canonical().then_some(prepared).ok_or(
-        PropertyScrollScenePlanError::InvalidContract("nested-scroll-receiver-geometry"),
-    )
-}
-
-/// Dedicated graph-inert RetainedAuto candidate for exactly
-/// `S0 -> S1 -> leaf`. Returning only the receiver-geometry token prevents
-/// callers from routing the nested `FramePaintPlan` through the standard
-/// property-scene executor or layerizer.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn plan_and_prepare_nested_scroll_scene(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    scale_factor: f32,
-    incoming_paint_offset: [f32; 2],
-    outer_scissor_rect: Option<[u32; 4]>,
-    target_format: wgpu::TextureFormat,
-    budget: ScrollSceneSingleTextureBudget,
-) -> Result<PreparedNestedScrollReceiverGeometry, PropertyScrollScenePlanError> {
-    let plan = super::frame_plan::plan_nested_scroll_scene_scaffold_with_context(
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        scale_factor,
-        super::TransformSurfacePlanContext::new(incoming_paint_offset, outer_scissor_rect),
-    )
-    .map_err(PropertyScrollScenePlanError::Frame)?;
-    let scene = compile_nested_scroll_transaction(plan, target_format, budget)?;
-    prepare_nested_scroll_receiver_geometry(scene, target_format, budget)
-}
-
-/// Completes every fallible nested-scroll check and freezes the sole R1 pool
-/// action before the graph can be mutated.
-pub(crate) fn prepare_nested_scroll_scene_from_pool<'a>(
-    viewport: &'a mut Viewport,
-    prepared_geometry: PreparedNestedScrollReceiverGeometry,
-    graph: &'a mut FrameGraph,
-    ctx: UiBuildContext,
-    clear_rgba: [f32; 4],
-    frame_owner: RetainedSurfaceFrameStageOwner,
-) -> Result<PreparedNestedScrollScene<'a>, RetainedPropertyScrollScenePrepareError> {
-    if !prepared_geometry.is_canonical() {
-        return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
-    }
-    validate_parent_target(graph, &ctx)
-        .map_err(|_| RetainedPropertyScrollScenePrepareError::ParentTarget)?;
-    let target_format = prepared_geometry.compiled.assembly.color_desc.format();
-    if ctx.viewport().scale_factor().to_bits() != 1.0_f32.to_bits()
-        || ctx.paint_offset().map(f32::to_bits) != [0.0_f32.to_bits(); 2]
-        || ctx.graphics_pass_context().scissor_rect.is_some()
-        || ctx.opaque_rect_order() != 0
-        || ctx.current_render_transform().is_some()
-        || ctx.viewport().target_format() != target_format
-        || prepared_geometry.scene.leaf_stamp.target.color.format() != target_format
-        || clear_rgba.iter().any(|component| !component.is_finite())
-    {
-        return Err(RetainedPropertyScrollScenePrepareError::ContextMismatch);
-    }
-    if !viewport.retained_property_scroll_scene_stage_is_available()
-        || !viewport.retained_surface_frame_stage_owner_is_active(frame_owner)
-    {
-        return Err(RetainedPropertyScrollScenePrepareError::StageUnavailable);
-    }
-
-    let leaf_stamp = &prepared_geometry.scene.leaf_stamp;
-    let color_key = leaf_stamp.identity.color_key;
-    let depth_key = color_key
-        .depth_stencil()
-        .ok_or(RetainedPropertyScrollScenePrepareError::DescriptorPair)?;
-    if graph
-        .declared_persistent_texture_keys()
-        .any(|key| key == color_key || key == depth_key)
-    {
-        return Err(
-            RetainedPropertyScrollScenePrepareError::PersistentKeyAlreadyDeclared(color_key),
-        );
-    }
-    let expected_leaf_pair =
-        persistent_target_texture_descriptors(leaf_stamp.target.color.clone(), color_key);
-    let expected_assembly_pair = transient_target_texture_descriptors(
-        prepared_geometry.compiled.assembly.color_desc.clone(),
-    );
-    if expected_leaf_pair.0 != leaf_stamp.target.color
-        || expected_leaf_pair.1 != leaf_stamp.target.depth
-        || expected_assembly_pair.0 != prepared_geometry.compiled.assembly.color_desc
-        || expected_assembly_pair.1 != prepared_geometry.compiled.assembly.depth_desc
-        || canonical_pair_bytes(&leaf_stamp.target.color, &leaf_stamp.target.depth)
-            != Some(prepared_geometry.compiled.resident_pair_bytes)
-        || canonical_pair_bytes(&expected_assembly_pair.0, &expected_assembly_pair.1)
-            != Some(prepared_geometry.compiled.assembly.pair_bytes)
-        || prepared_geometry.compiled.aggregate_pair_bytes
-            != prepared_geometry
-                .compiled
-                .resident_pair_bytes
-                .checked_add(prepared_geometry.compiled.assembly.pair_bytes)
-                .ok_or(RetainedPropertyScrollScenePrepareError::DescriptorPair)?
-        || prepared_geometry.compiled.aggregate_pair_bytes
-            > prepared_geometry.compiled.budget.max_active_pair_bytes
-        || [
-            leaf_stamp.target.color.width(),
-            leaf_stamp.target.color.height(),
-            leaf_stamp.target.depth.width(),
-            leaf_stamp.target.depth.height(),
-            expected_assembly_pair.0.width(),
-            expected_assembly_pair.0.height(),
-            expected_assembly_pair.1.width(),
-            expected_assembly_pair.1.height(),
-        ]
-        .into_iter()
-        .any(|dimension| {
-            dimension == 0 || dimension > prepared_geometry.compiled.budget.max_dimension_2d
-        })
-    {
-        return Err(RetainedPropertyScrollScenePrepareError::DescriptorPair);
-    }
-
-    let scaffold = prepared_geometry
-        .scene
-        .plan
-        .nested_scroll_planning_scaffold()
-        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-    let [outer, inner] = scaffold.boundaries.as_slice() else {
-        return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
-    };
-    let RetainedPropertyScrollGenericAuthority::NestedScrollCompiler(compiler_contract) =
-        &prepared_geometry.scene.transaction.generic_authority
-    else {
-        return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
-    };
-    let [
-        super::frame_plan::NestedScrollSceneScheduledStep::HostBefore {
-            boundary: super::frame_plan::NestedScrollBoundarySlot::Outer,
-            artifact: outer_host,
-        },
-        super::frame_plan::NestedScrollSceneScheduledStep::HostBefore {
-            boundary: super::frame_plan::NestedScrollBoundarySlot::Inner,
-            artifact: inner_host,
-        },
-        super::frame_plan::NestedScrollSceneScheduledStep::ContentReceiver(receiver),
-        super::frame_plan::NestedScrollSceneScheduledStep::OverlayAfter {
-            boundary: super::frame_plan::NestedScrollBoundarySlot::Inner,
-            artifact: inner_overlay,
-        },
-        super::frame_plan::NestedScrollSceneScheduledStep::OverlayAfter {
-            boundary: super::frame_plan::NestedScrollBoundarySlot::Outer,
-            artifact: outer_overlay,
-        },
-    ] = scaffold.schedule.steps.as_slice()
-    else {
-        return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
-    };
-    let outer_bounds_bits = bounds_bits(scaffold.admission.outer_source_bounds);
-    let inner_bounds_bits = bounds_bits(scaffold.admission.inner_source_bounds);
-    if inner_bounds_bits != prepared_geometry.compiled.receiver_world_bounds_bits
-        || outer.scroll != prepared_geometry.compiled.outer_scroll
-        || outer.contents_clip != prepared_geometry.compiled.outer_clip
-        || inner.scroll != prepared_geometry.compiled.inner_scroll
-        || inner.contents_clip != prepared_geometry.compiled.inner_clip
-    {
-        return Err(RetainedPropertyScrollScenePrepareError::GeometryContract);
-    }
-    let outer_host_artifact = outer_host.artifact().clone();
-    let inner_host_artifact = inner_host.artifact().clone();
-    let leaf_artifact = receiver.artifact.artifact();
-    let inner_overlay_artifact = inner_overlay.artifact().clone();
-    let outer_overlay_artifact = outer_overlay.artifact().clone();
-    let outer_host_terminal = checked_property_scroll_opaque_order_count(&outer_host_artifact)
-        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-    let inner_host_terminal = checked_property_scroll_opaque_order_count(&inner_host_artifact)
-        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-    let leaf_terminal = checked_property_scroll_opaque_order_count(leaf_artifact)
-        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-    let inner_overlay_count = checked_property_scroll_opaque_order_count(&inner_overlay_artifact)
-        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-    let outer_overlay_count = checked_property_scroll_opaque_order_count(&outer_overlay_artifact)
-        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-    let inner_terminal = inner_host_terminal
-        .checked_add(inner_overlay_count)
-        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-    let parent_terminal = outer_host_terminal
-        .checked_add(outer_overlay_count)
-        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-
-    let outer_host_before = validate_scroll_scene_host_before_artifact(
-        outer_host_artifact,
-        scaffold.admission.outer_boundary_root,
-        outer_bounds_bits,
-    )
-    .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-    let inner_host_before = validate_scroll_scene_host_before_artifact(
-        inner_host_artifact,
-        scaffold.admission.inner_boundary_root,
-        inner_bounds_bits,
-    )
-    .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-    let leaf = validate_nested_scroll_content_artifact(
-        leaf_artifact,
-        scaffold.admission.content_leaf,
-        outer.scroll.id,
-        outer.contents_clip,
-        compiler_contract.compiled.leaf_recorded_bounds_bits,
-        prepared_geometry.compiled.leaf_local_bounds_bits,
-    )
-    .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-    let localized_span = validated_scroll_content_artifact_span_stamp(&leaf, 0, 0..leaf_terminal)
-        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-    if leaf_stamp.ordered_steps.as_slice()
-        != [super::RetainedSurfaceRasterStepStamp::ArtifactSpan(
-            localized_span,
-        )]
-        || leaf_stamp.opaque_order_span != (0..leaf_terminal)
-    {
-        return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
-    }
-    let inner_overlay_after = validate_scroll_scene_overlay_artifact(
-        inner_overlay_artifact,
-        scaffold.admission.inner_boundary_root,
-        inner.scroll,
-        inner_bounds_bits,
-    )
-    .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-    let outer_overlay_after = validate_scroll_scene_overlay_artifact(
-        outer_overlay_artifact,
-        scaffold.admission.outer_boundary_root,
-        outer.scroll,
-        outer_bounds_bits,
-    )
-    .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
-
-    let actions = viewport
-        .freeze_retained_property_scroll_scene_compile_actions_from_pool(
-            &prepared_geometry.scene.transaction,
-        )
-        .ok_or(RetainedPropertyScrollScenePrepareError::PoolContract)?;
-    let expected_key = leaf_stamp.identity.resident_key();
-    if actions.len() != 1 || actions.keys().copied().next() != Some(expected_key) {
-        return Err(RetainedPropertyScrollScenePrepareError::PoolContract);
-    }
-    let action = actions[&expected_key];
-    let trace = RetainedPropertyScrollSceneBuildTrace {
-        root_count: 1,
-        generic_surface_count: 0,
-        effect_surface_count: 0,
-        scroll_group_count: 1,
-        backing: ScrollSceneBackingKind::Single,
-        tile_count: 1,
-        reraster_count: usize::from(action == RetainedSurfaceCompileAction::Reraster),
-        reuse_count: usize::from(action == RetainedSurfaceCompileAction::Reuse),
-        content_pair_bytes: prepared_geometry.compiled.aggregate_pair_bytes,
-    };
-    Ok(PreparedNestedScrollScene {
-        viewport,
-        graph,
-        parent_ctx: ctx,
-        outer_host_before,
-        inner_host_before,
-        leaf,
-        inner_overlay_after,
-        outer_overlay_after,
-        geometry: prepared_geometry.compiled,
-        leaf_stamp: prepared_geometry.scene.leaf_stamp,
-        actions,
-        transaction: prepared_geometry.scene.transaction,
-        outer_host_terminal,
-        inner_host_terminal,
-        leaf_terminal,
-        inner_terminal,
-        parent_terminal,
-        clear_rgba_bits: clear_rgba.map(f32::to_bits),
-        frame_owner,
-        trace,
-    })
-}
-
-/// Emits the compiler-sealed nested scene in its fixed three-cursor order.
-/// The prepared lease makes every operation below infallible.
-pub(crate) fn emit_prepared_nested_scroll_scene(
-    prepared: PreparedNestedScrollScene<'_>,
-) -> RetainedPropertyScrollSceneBuildOutcome {
-    let PreparedNestedScrollScene {
-        viewport,
-        graph,
-        mut parent_ctx,
-        outer_host_before,
-        inner_host_before,
-        leaf,
-        inner_overlay_after,
-        outer_overlay_after,
-        geometry,
-        leaf_stamp,
-        mut actions,
-        transaction,
-        outer_host_terminal,
-        inner_host_terminal,
-        leaf_terminal,
-        inner_terminal,
-        parent_terminal,
-        clear_rgba_bits,
-        frame_owner,
-        trace,
-    } = prepared;
-    assert!(viewport.retained_surface_frame_stage_owner_is_active(frame_owner));
-    assert!(viewport.retained_property_scroll_scene_stage_is_available());
-    assert_eq!(parent_ctx.opaque_rect_order(), 0);
-
-    let parent_target = parent_ctx
-        .current_target()
-        .unwrap_or_else(|| parent_ctx.allocate_target(graph));
-    parent_ctx.set_current_target(parent_target);
-    graph.add_graphics_pass(ClearPass::new(
-        crate::view::render_pass::clear_pass::ClearParams::new(clear_rgba_bits.map(f32::from_bits)),
-        crate::view::render_pass::clear_pass::ClearInput {
-            pass_context: parent_ctx.graphics_pass_context(),
-            clear_depth_stencil: true,
-        },
-        crate::view::render_pass::clear_pass::ClearOutput {
-            render_target: parent_target,
-        },
-    ));
-    if let Some(handle) = parent_target.handle() {
-        parent_ctx.set_color_target(Some(handle));
-    }
-    emit_validated_scroll_scene_host_before_artifact(outer_host_before, graph, &mut parent_ctx);
-    assert_eq!(parent_ctx.opaque_rect_order(), outer_host_terminal);
-
-    let mut assembly_ctx = UiBuildContext::from_parts(
-        parent_ctx.viewport(),
-        parent_ctx.layer_subtree_state_with_ancestor_clip(AncestorClipContext::default()),
-    );
-    let assembly_target = assembly_ctx
-        .allocate_transient_target_with_desc(graph, geometry.assembly.color_desc.clone());
-    assembly_ctx.set_current_target(assembly_target);
-    graph.add_graphics_pass(ClearPass::new(
-        crate::view::render_pass::clear_pass::ClearParams::new([0.0; 4]),
-        crate::view::render_pass::clear_pass::ClearInput {
-            pass_context: assembly_ctx.graphics_pass_context(),
-            clear_depth_stencil: true,
-        },
-        crate::view::render_pass::clear_pass::ClearOutput {
-            render_target: assembly_target,
-        },
-    ));
-    assert_eq!(
-        assembly_ctx.push_scissor_rect(Some(geometry.outer_clip.logical_scissor)),
-        None
-    );
-    emit_validated_scroll_scene_host_before_artifact(inner_host_before, graph, &mut assembly_ctx);
-    assert_eq!(assembly_ctx.opaque_rect_order(), inner_host_terminal);
-
-    let mut leaf_ctx = UiBuildContext::from_parts(
-        parent_ctx.viewport(),
-        parent_ctx.layer_subtree_state_with_ancestor_clip(AncestorClipContext::default()),
-    );
-    let leaf_target = leaf_ctx.allocate_persistent_target_with_desc(
-        graph,
-        leaf_stamp.target.color.clone(),
-        leaf_stamp.identity.color_key,
-    );
-    leaf_ctx.set_current_target(leaf_target);
-    let action = actions
-        .remove(&leaf_stamp.identity.resident_key())
-        .expect("prepared nested leaf action is frozen");
-    match action {
-        RetainedSurfaceCompileAction::Reraster => {
-            graph.add_graphics_pass(ClearPass::new(
-                crate::view::render_pass::clear_pass::ClearParams::new([0.0; 4]),
-                crate::view::render_pass::clear_pass::ClearInput {
-                    pass_context: leaf_ctx.graphics_pass_context(),
-                    clear_depth_stencil: true,
-                },
-                crate::view::render_pass::clear_pass::ClearOutput {
-                    render_target: leaf_target,
-                },
-            ));
-            emit_validated_scroll_scene_content_artifact(&leaf, graph, &mut leaf_ctx);
-        }
-        RetainedSurfaceCompileAction::Reuse => {
-            leaf_ctx.replay_opaque_rect_order_exact(0, leaf_terminal);
-        }
-    }
-    assert_eq!(leaf_ctx.graphics_pass_context().scissor_rect, None);
-    assert_eq!(leaf_ctx.opaque_rect_order(), leaf_terminal);
-    assembly_ctx.merge_child_target_pairs(&leaf_ctx.into_state());
-    assert_eq!(assembly_ctx.opaque_rect_order(), inner_host_terminal);
-    assembly_ctx.set_current_target(assembly_target);
-    graph.add_graphics_pass(TextureCompositePass::new(
-        geometry.leaf_to_assembly.params(),
-        TextureCompositeInput::from_render_target(
-            TextureCompositeSourceIn::with_handle(
-                leaf_target
-                    .handle()
-                    .expect("prepared nested leaf target has a handle"),
-            ),
-            Default::default(),
-            assembly_ctx.graphics_pass_context(),
-        ),
-        TextureCompositeOutput {
-            render_target: assembly_target,
-        },
-    ));
-    emit_validated_scroll_scene_overlay_artifact(inner_overlay_after, graph, &mut assembly_ctx);
-    assert_eq!(assembly_ctx.opaque_rect_order(), inner_terminal);
-
-    parent_ctx.merge_child_target_pairs(&assembly_ctx.into_state());
-    assert_eq!(parent_ctx.opaque_rect_order(), outer_host_terminal);
-    parent_ctx.set_current_target(parent_target);
-    graph.add_graphics_pass(TextureCompositePass::new(
-        geometry.assembly_to_root.params(),
-        TextureCompositeInput::from_render_target(
-            TextureCompositeSourceIn::with_handle(
-                assembly_target
-                    .handle()
-                    .expect("prepared nested assembly target has a handle"),
-            ),
-            Default::default(),
-            parent_ctx.graphics_pass_context(),
-        ),
-        TextureCompositeOutput {
-            render_target: parent_target,
-        },
-    ));
-    emit_validated_scroll_scene_overlay_artifact(outer_overlay_after, graph, &mut parent_ctx);
-    assert_eq!(parent_ctx.opaque_rect_order(), parent_terminal);
-    assert!(actions.is_empty());
-    assert!(
-        viewport.stage_retained_property_scroll_scene(transaction),
-        "prepared nested scene stages its joint transaction exactly once"
-    );
-    RetainedPropertyScrollSceneBuildOutcome {
-        state: parent_ctx.into_state(),
-        trace,
-    }
-}
-
-/// S3a compiles the S2 plan into the existing joint residency transaction
-/// vocabulary, but with an authority-specific exact shape: one S boundary,
-/// one generic T resident, and no scroll group.
 pub(crate) fn compile_direct_scroll_transform_transaction(
     plan: DirectScrollTransformGeometryPlan,
 ) -> Result<ValidatedDirectScrollTransformTransaction, PropertyScrollScenePlanError> {
@@ -12627,242 +12837,6 @@ pub(crate) fn compile_direct_scroll_transform_transaction(
     )
 }
 
-/// Compiles the graph-inert exact nested-scroll scaffold into a residency
-/// transaction. Only the leaf content becomes persistent; the outer assembly
-/// edge remains a keyless compiler contract through prepare.
-fn compile_nested_scroll_transaction(
-    plan: super::frame_plan::FramePaintPlan,
-    target_format: wgpu::TextureFormat,
-    budget: ScrollSceneSingleTextureBudget,
-) -> Result<ValidatedNestedScrollScene, PropertyScrollScenePlanError> {
-    let scaffold = plan.nested_scroll_planning_scaffold().ok_or(
-        PropertyScrollScenePlanError::InvalidContract("nested-scroll-transaction-compile"),
-    )?;
-    let [outer, inner] = scaffold.boundaries.as_slice() else {
-        return Err(PropertyScrollScenePlanError::InvalidContract(
-            "nested-scroll-transaction-compile",
-        ));
-    };
-    let [
-        super::frame_plan::NestedScrollSceneScheduledStep::HostBefore {
-            boundary: super::frame_plan::NestedScrollBoundarySlot::Outer,
-            artifact: h0,
-        },
-        super::frame_plan::NestedScrollSceneScheduledStep::HostBefore {
-            boundary: super::frame_plan::NestedScrollBoundarySlot::Inner,
-            artifact: h1,
-        },
-        super::frame_plan::NestedScrollSceneScheduledStep::ContentReceiver(receiver),
-        super::frame_plan::NestedScrollSceneScheduledStep::OverlayAfter {
-            boundary: super::frame_plan::NestedScrollBoundarySlot::Inner,
-            artifact: o1,
-        },
-        super::frame_plan::NestedScrollSceneScheduledStep::OverlayAfter {
-            boundary: super::frame_plan::NestedScrollBoundarySlot::Outer,
-            artifact: o0,
-        },
-    ] = scaffold.schedule.steps.as_slice()
-    else {
-        return Err(PropertyScrollScenePlanError::InvalidContract(
-            "nested-scroll-transaction-compile",
-        ));
-    };
-    let admission = scaffold.admission;
-    if receiver.stable_id != admission.content_leaf_stable_id
-        || receiver.witness.content_root() != admission.content_leaf
-    {
-        return Err(PropertyScrollScenePlanError::InvalidContract(
-            "nested-scroll-transaction-compile",
-        ));
-    }
-    let leaf_artifact = receiver.artifact.artifact();
-    let leaf_terminal = checked_property_scroll_opaque_order_count(leaf_artifact).ok_or(
-        PropertyScrollScenePlanError::InvalidContract("nested-scroll-transaction-compile"),
-    )?;
-    let recorded_leaf_bounds_bits = bounds_bits(content_zero_bounds(inner.scroll));
-    let leaf_source_bounds_bits = bounds_bits(
-        nested_receiver_local_content_bounds(admission.inner_source_bounds, inner.scroll).ok_or(
-            PropertyScrollScenePlanError::InvalidContract("nested-scroll-transaction-compile"),
-        )?,
-    );
-    let leaf_artifact_span = super::compiler::validated_nested_scroll_content_artifact_span_stamp(
-        leaf_artifact,
-        admission.content_leaf,
-        outer.scroll.id,
-        outer.contents_clip,
-        recorded_leaf_bounds_bits,
-        leaf_source_bounds_bits,
-        0,
-        0..leaf_terminal,
-    )
-    .ok_or(PropertyScrollScenePlanError::InvalidContract(
-        "nested-scroll-transaction-compile",
-    ))?;
-    let mut local_scroll = inner.scroll;
-    local_scroll.layout_content_bounds_at_zero = crate::view::base_component::Rect {
-        x: f32::from_bits(leaf_source_bounds_bits[0]),
-        y: f32::from_bits(leaf_source_bounds_bits[1]),
-        width: f32::from_bits(leaf_source_bounds_bits[2]),
-        height: f32::from_bits(leaf_source_bounds_bits[3]),
-    };
-    let backing = plan_property_scroll_backing(
-        admission.content_leaf_stable_id,
-        local_scroll,
-        inner.contents_clip,
-        1.0,
-        target_format,
-        property_scroll_budget(budget),
-    )
-    .ok_or(PropertyScrollScenePlanError::BackingBudget)?;
-    let PropertyScrollBackingPlan::Single(single) = backing else {
-        return Err(PropertyScrollScenePlanError::BackingBudget);
-    };
-    let target = RetainedSurfaceRasterInputs {
-        color: single.color_desc.clone(),
-        depth: single.depth_desc.clone(),
-        scale_factor_bits: 1.0_f32.to_bits(),
-        source_bounds_bits: leaf_source_bounds_bits,
-    };
-    let leaf_stamp = validated_scroll_content_raster_stamp(
-        admission.content_leaf,
-        admission.content_leaf_stable_id,
-        target,
-        leaf_artifact_span.clone(),
-        0..leaf_terminal,
-    )
-    .ok_or(PropertyScrollScenePlanError::InvalidContract(
-        "nested-scroll-transaction-compile",
-    ))?;
-    if leaf_stamp.identity.color_key != single.color_key
-        || leaf_stamp.target.color != single.color_desc
-        || leaf_stamp.target.depth != single.depth_desc
-    {
-        return Err(PropertyScrollScenePlanError::InvalidContract(
-            "nested-scroll-transaction-compile",
-        ));
-    }
-    let outer_boundary = SceneBoundaryId {
-        ordinal: 0,
-        owner: admission.outer_boundary_root,
-        kind: SceneBoundaryKind::ScrollContents,
-    };
-    let inner_boundary = SceneBoundaryId {
-        ordinal: 1,
-        owner: admission.inner_boundary_root,
-        kind: SceneBoundaryKind::ScrollContents,
-    };
-    let content_bounds = exact_u32_bounds_from_bits(leaf_source_bounds_bits).ok_or(
-        PropertyScrollScenePlanError::InvalidContract("nested-scroll-transaction-compile"),
-    )?;
-    let group = RetainedPropertyScrollResidentGroup {
-        boundary: inner_boundary,
-        content_root: admission.content_leaf,
-        content_stable_id: admission.content_leaf_stable_id,
-        signature: RetainedPropertyScrollGroupSignature {
-            content_bounds,
-            tile_edge: single.budget.tile_edge,
-            gutter: single.budget.gutter,
-            overscan: single.budget.overscan,
-            scale_factor_bits: 1.0_f32.to_bits(),
-            color_format: target_format,
-        },
-        backing: RetainedPropertyScrollResidentBacking::Single(leaf_stamp.clone()),
-    };
-    if !group.is_canonical() {
-        return Err(PropertyScrollScenePlanError::InvalidContract(
-            "nested-scroll-transaction-compile",
-        ));
-    }
-    let make_step = |phase, artifact: &PaintArtifact| {
-        Some(NestedScrollCompilerStepContract {
-            phase,
-            artifact: PropertyScrollPhaseArtifactIdentity::from_artifact(artifact)?,
-        })
-    };
-    let steps = vec![
-        make_step(NestedScrollCompilerPhase::OuterHostBefore, h0.artifact()),
-        make_step(NestedScrollCompilerPhase::InnerHostBefore, h1.artifact()),
-        make_step(NestedScrollCompilerPhase::LeafContent, leaf_artifact),
-        make_step(NestedScrollCompilerPhase::InnerOverlayAfter, o1.artifact()),
-        make_step(NestedScrollCompilerPhase::OuterOverlayAfter, o0.artifact()),
-    ]
-    .into_iter()
-    .collect::<Option<Vec<_>>>()
-    .ok_or(PropertyScrollScenePlanError::InvalidContract(
-        "nested-scroll-transaction-compile",
-    ))?;
-    let witness = NestedScrollCompilerWitness {
-        scene_root: admission.outer_boundary_root,
-        scene_root_stable_id: admission.outer_stable_id,
-        boundaries: vec![
-            NestedScrollCompilerBoundaryContract {
-                boundary: outer_boundary,
-                parent: None,
-                stable_id: admission.outer_stable_id,
-                scroll: outer.scroll,
-                contents_clip: outer.contents_clip,
-                source_bounds_bits: bounds_bits(admission.outer_source_bounds),
-            },
-            NestedScrollCompilerBoundaryContract {
-                boundary: inner_boundary,
-                parent: Some(outer_boundary),
-                stable_id: admission.inner_stable_id,
-                scroll: inner.scroll,
-                contents_clip: inner.contents_clip,
-                source_bounds_bits: bounds_bits(admission.inner_source_bounds),
-            },
-        ],
-        assembly_binding: NestedScrollAssemblyBindingContract {
-            outer: outer_boundary,
-            child: inner_boundary,
-        },
-        resident_binding: NestedScrollResidentBindingContract {
-            boundary: inner_boundary,
-            content_root: admission.content_leaf,
-            content_stable_id: admission.content_leaf_stable_id,
-        },
-        steps,
-        leaf_recorded_bounds_bits: recorded_leaf_bounds_bits,
-        leaf_source_bounds_bits,
-        leaf_artifact_span: leaf_artifact_span.clone(),
-        leaf_stamp: leaf_stamp.clone(),
-    };
-    let contract = NestedScrollCompilerContract {
-        compiled: witness.clone(),
-        planned: witness,
-    };
-    let binding = RetainedPropertyScrollGroupBindingStamp {
-        boundary: inner_boundary,
-        content_root: group.content_root,
-        content_stable_id: group.content_stable_id,
-        backing_rank: group.backing_rank(),
-        ordered_resident_keys: group.active_resident_keys(),
-    };
-    let transaction = RetainedPropertyScrollSceneTransaction {
-        seal: RetainedPropertyScrollJointSeal {
-            roots: vec![RetainedPropertyScrollJointRootStamp {
-                ordinal: 0,
-                root: admission.outer_boundary_root,
-                stable_id: admission.outer_stable_id,
-                boundary_span: 0..2,
-            }],
-            ordered_boundaries: vec![outer_boundary, inner_boundary],
-            generic_bindings: Vec::new(),
-            scroll_bindings: vec![binding],
-        },
-        generic_authority: RetainedPropertyScrollGenericAuthority::NestedScrollCompiler(contract),
-        generic_full_set: Vec::new(),
-        scroll_groups: vec![group],
-    };
-    let validated = ValidatedNestedScrollScene {
-        plan,
-        leaf_stamp,
-        transaction,
-    };
-    validated.is_canonical().then_some(validated).ok_or(
-        PropertyScrollScenePlanError::InvalidContract("nested-scroll-transaction-compile"),
-    )
-}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_and_validate_direct_scroll_transform_scene(
@@ -16018,6 +15992,549 @@ pub(crate) fn prepare_native_scroll_forest_transaction_from_pool(
     prepare_native_scroll_forest_transaction_with_pool_policy(viewport, plan, target_format, false)
 }
 
+/// Freezes the exact leaf-resident action set for the M4 segment program.
+/// This is intentionally read-only and does not borrow a frame graph.
+#[allow(dead_code)] // Exercised by M4 tests before the M5 executor cutover.
+pub(crate) fn prepare_nested_scroll_segment_transaction_from_pool(
+    viewport: &Viewport,
+    scene: ValidatedNestedScrollSegmentScene,
+) -> Result<PreparedNestedScrollSegmentTransaction, RetainedPropertyScrollScenePrepareError> {
+    if !scene.is_canonical() {
+        return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+    }
+    let actions = viewport
+        .freeze_retained_property_scroll_scene_compile_actions_from_pool(&scene.transaction)
+        .ok_or(RetainedPropertyScrollScenePrepareError::PoolContract)?;
+    let prepared = PreparedNestedScrollSegmentTransaction { scene, actions };
+    prepared
+        .is_canonical()
+        .then_some(prepared)
+        .ok_or(RetainedPropertyScrollScenePrepareError::PoolContract)
+}
+
+#[allow(dead_code)] // M5a focused executor; production authority remains closed through M5b-1.
+fn nested_segment_scissor_intersection(
+    left: Option<[u32; 4]>,
+    right: [u32; 4],
+) -> Option<[u32; 4]> {
+    let Some(left) = left else {
+        return (right[2] != 0
+            && right[3] != 0
+            && right[0].checked_add(right[2]).is_some()
+            && right[1].checked_add(right[3]).is_some())
+        .then_some(right);
+    };
+    let left_right = left[0].checked_add(left[2])?;
+    let left_bottom = left[1].checked_add(left[3])?;
+    let right_right = right[0].checked_add(right[2])?;
+    let right_bottom = right[1].checked_add(right[3])?;
+    let x = left[0].max(right[0]);
+    let y = left[1].max(right[1]);
+    let max_x = left_right.min(right_right);
+    let max_y = left_bottom.min(right_bottom);
+    (max_x > x && max_y > y).then_some([x, y, max_x - x, max_y - y])
+}
+
+/// Completes every fallible M5a check without declaring a graph target or
+/// staging the resident transaction. Production DAG selection remains closed
+/// until pixel/reuse parity authorizes the hard cutover.
+#[allow(dead_code)] // M5a focused executor; production authority remains closed through M5b-1.
+pub(crate) fn prepare_nested_scroll_segment_scene_from_pool<'a>(
+    viewport: &'a mut Viewport,
+    scene: ValidatedNestedScrollSegmentScene,
+    graph: &'a mut FrameGraph,
+    ctx: UiBuildContext,
+    clear_rgba: [f32; 4],
+    frame_owner: RetainedSurfaceFrameStageOwner,
+) -> Result<PreparedNestedScrollSegmentScene<'a>, RetainedPropertyScrollScenePrepareError> {
+    if !scene.is_canonical() {
+        return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+    }
+    validate_parent_target(graph, &ctx)
+        .map_err(|_| RetainedPropertyScrollScenePrepareError::ParentTarget)?;
+    let scaffold = scene
+        .plan
+        .property_scroll_planning_scaffold()
+        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+    let (leaf_scale_factor_bits, leaf_target_format) = match &scene.leaf_authority {
+        NestedScrollSegmentLeafAuthority::Persistent(stamp) => {
+            (stamp.target.scale_factor_bits, stamp.target.color.format())
+        }
+        NestedScrollSegmentLeafAuthority::DirectText(direct) => {
+            (direct.scale_factor_bits, direct.target_format)
+        }
+    };
+    if !scaffold.context.matches_ui_context(&ctx)
+        || ctx.opaque_rect_order() != 0
+        || ctx.current_render_transform().is_some()
+        || ctx.viewport().scale_factor().to_bits() != leaf_scale_factor_bits
+        || ctx.viewport().target_format() != leaf_target_format
+        || clear_rgba.iter().any(|component| !component.is_finite())
+    {
+        return Err(RetainedPropertyScrollScenePrepareError::ContextMismatch);
+    }
+    if !viewport.retained_property_scroll_scene_stage_is_available()
+        || !viewport.retained_surface_frame_stage_owner_is_active(frame_owner)
+    {
+        return Err(RetainedPropertyScrollScenePrepareError::StageUnavailable);
+    }
+    if let NestedScrollSegmentLeafAuthority::Persistent(stamp) = &scene.leaf_authority {
+        let color_key = stamp.identity.color_key;
+        let depth_key = color_key
+            .depth_stencil()
+            .ok_or(RetainedPropertyScrollScenePrepareError::DescriptorPair)?;
+        if graph
+            .declared_persistent_texture_keys()
+            .any(|key| key == color_key || key == depth_key)
+        {
+            return Err(
+                RetainedPropertyScrollScenePrepareError::PersistentKeyAlreadyDeclared(color_key),
+            );
+        }
+        let expected_pair =
+            persistent_target_texture_descriptors(stamp.target.color.clone(), color_key);
+        if expected_pair.0 != stamp.target.color || expected_pair.1 != stamp.target.depth {
+            return Err(RetainedPropertyScrollScenePrepareError::DescriptorPair);
+        }
+    }
+
+    let boundary_chain = scaffold
+        .boundaries
+        .iter()
+        .map(|boundary| (boundary.scroll, boundary.contents_clip))
+        .collect::<Vec<_>>();
+    let RetainedPropertyScrollGenericAuthority::NestedScrollSegmentCompiler(contract) =
+        &scene.transaction.generic_authority
+    else {
+        return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+    };
+    let boundary_source_bounds_bits = contract
+        .compiled
+        .boundaries
+        .iter()
+        .map(|boundary| boundary.source_bounds_bits)
+        .collect::<Vec<_>>();
+    let mut host_artifacts = (0..boundary_chain.len())
+        .map(|_| None)
+        .collect::<Vec<Option<PaintArtifact>>>();
+    let mut overlay_artifacts = (0..boundary_chain.len())
+        .map(|_| None)
+        .collect::<Vec<Option<PaintArtifact>>>();
+    let mut leaf_artifact = None;
+    for step in scene.program {
+        match step {
+            NestedScrollSegmentProgramStep::HostBefore { boundary, artifact } => {
+                let index = usize::try_from(boundary.ordinal)
+                    .map_err(|_| RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+                let Some(slot) = host_artifacts.get_mut(index) else {
+                    return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+                };
+                if boundary_chain[index].0.owner != boundary.owner || slot.replace(artifact).is_some() {
+                    return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+                }
+            }
+            NestedScrollSegmentProgramStep::LeafRaster { boundary, artifact } => {
+                if boundary != *scene.transaction.seal.ordered_boundaries.last().ok_or(
+                    RetainedPropertyScrollScenePrepareError::BoundaryDrift,
+                )? || leaf_artifact.replace(artifact).is_some()
+                {
+                    return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+                }
+            }
+            NestedScrollSegmentProgramStep::OverlayAfter { boundary, artifact } => {
+                let index = usize::try_from(boundary.ordinal)
+                    .map_err(|_| RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+                let Some(slot) = overlay_artifacts.get_mut(index) else {
+                    return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+                };
+                if boundary_chain[index].0.owner != boundary.owner || slot.replace(artifact).is_some() {
+                    return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+                }
+            }
+        }
+    }
+    let leaf_artifact = leaf_artifact.ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+    let recorded_leaf_bounds = leaf_artifact
+        .chunks
+        .first()
+        .map(|chunk| {
+            [
+                chunk.bounds.x.to_bits(),
+                chunk.bounds.y.to_bits(),
+                chunk.bounds.width.to_bits(),
+                chunk.bounds.height.to_bits(),
+            ]
+        })
+        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+    let prepared_leaf = match &scene.leaf_authority {
+        NestedScrollSegmentLeafAuthority::Persistent(stamp) => {
+            let terminal = checked_property_scroll_opaque_order_count(&leaf_artifact)
+                .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+            let artifact = super::compiler::validate_direct_nested_scroll_segment_artifact(
+                leaf_artifact.clone(),
+                stamp.identity.boundary_root,
+                recorded_leaf_bounds,
+                stamp.target.source_bounds_bits,
+            )
+            .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+            let leaf_span = super::compiler::validated_scroll_content_artifact_span_stamp(
+                &artifact,
+                0,
+                0..terminal,
+            )
+            .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+            if stamp.ordered_steps.as_slice()
+                != [super::RetainedSurfaceRasterStepStamp::ArtifactSpan(leaf_span)]
+                || stamp.opaque_order_span != (0..terminal)
+            {
+                return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+            }
+            let geometry = PreparedScrollContentCompositeGeometry::from_nested_segment_chain(
+                stamp,
+                &boundary_chain,
+                scaffold.context.paint_offset(),
+                scaffold.context.outer_scissor_rect(),
+            )
+            .ok_or(RetainedPropertyScrollScenePrepareError::GeometryContract)?;
+            PreparedNestedScrollSegmentLeaf::Persistent {
+                artifact,
+                stamp: stamp.clone(),
+                terminal,
+                geometry,
+            }
+        }
+        NestedScrollSegmentLeafAuthority::DirectText(direct) => {
+            if direct.context != scaffold.context
+                || direct.boundary_chain != scene.transaction.seal.ordered_boundaries
+                || usize::try_from(direct.mask_depth).ok() != Some(boundary_chain.len())
+                || PropertyScrollPhaseArtifactIdentity::from_artifact(&leaf_artifact)
+                    .as_ref()
+                    != Some(&direct.source_artifact)
+            {
+                return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+            }
+            let run = super::compiler::validate_direct_nested_scroll_text_run(
+                leaf_artifact.clone(),
+                direct.paint,
+                recorded_leaf_bounds,
+                direct.final_scissor,
+                boundary_chain.len(),
+            )
+            .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+            if PropertyScrollPhaseArtifactIdentity::from_artifact(run.emitted_artifact())
+                .as_ref()
+                != Some(&direct.emitted_artifact)
+            {
+                return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+            }
+            PreparedNestedScrollSegmentLeaf::DirectText { run }
+        }
+    };
+
+    let boundary_contracts = &contract.compiled.boundaries;
+    let mut frame_cursor = 0_u32;
+    let mut host_spans = Vec::with_capacity(boundary_chain.len());
+    for boundary in boundary_contracts {
+        let terminal = frame_cursor
+            .checked_add(boundary.compiler_stamp.host_opaque_count)
+            .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+        host_spans.push(frame_cursor..terminal);
+        frame_cursor = terminal;
+    }
+    let mut overlay_spans = (0..boundary_chain.len())
+        .map(|_| 0..0)
+        .collect::<Vec<_>>();
+    for index in (0..boundary_chain.len()).rev() {
+        let terminal = frame_cursor
+            .checked_add(boundary_contracts[index].compiler_stamp.overlay_opaque_count)
+            .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+        overlay_spans[index] = frame_cursor..terminal;
+        frame_cursor = terminal;
+    }
+
+    let mut prepared_boundaries = Vec::with_capacity(boundary_chain.len());
+    for index in 0..boundary_chain.len() {
+        let boundary = &boundary_contracts[index];
+        let child_cutouts = boundary_contracts
+            .get(index + 1)
+            .map(|child| {
+                vec![super::PlannedBoundary {
+                    root: child.boundary.owner,
+                    stable_id: child.stable_id,
+                    kind: super::PlannedBoundaryKind::Scroll(child.scroll.id),
+                }]
+            })
+            .unwrap_or_default();
+        let content_steps = if child_cutouts.is_empty() {
+            vec![super::frame_recorder::RecordedTransformSurfaceStep::Artifact(
+                leaf_artifact.clone(),
+            )]
+        } else {
+            vec![super::frame_recorder::RecordedTransformSurfaceStep::Boundary(
+                child_cutouts[0],
+            )]
+        };
+        let content_root = boundary_contracts
+            .get(index + 1)
+            .map_or(contract.compiled.leaf_content_root, |child| child.boundary.owner);
+        let program = super::compiler::validate_direct_nested_scroll_segment_boundary_program(
+            boundary.boundary.owner,
+            content_root,
+            boundary.scroll,
+            boundary_source_bounds_bits[index],
+            host_artifacts[index]
+                .take()
+                .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?,
+            &content_steps,
+            &child_cutouts,
+            overlay_artifacts[index]
+                .take()
+                .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?,
+            &boundary.compiler_stamp,
+        )
+        .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+        let mut scissor = scaffold.context.outer_scissor_rect();
+        for (_, clip) in &boundary_chain[..index] {
+            scissor = Some(
+                nested_segment_scissor_intersection(scissor, clip.logical_scissor)
+                    .ok_or(RetainedPropertyScrollScenePrepareError::GeometryContract)?,
+            );
+        }
+        prepared_boundaries.push(PreparedNestedScrollSegmentDirectBoundary {
+            program,
+            paint_offset: scaffold.context.paint_offset(),
+            host_scissor: scissor,
+            host_frame_span: host_spans[index].clone(),
+            overlay_scissor: scissor,
+            overlay_frame_span: overlay_spans[index].clone(),
+        });
+    }
+
+    let actions = viewport
+        .freeze_retained_property_scroll_scene_compile_actions_from_pool(&scene.transaction)
+        .ok_or(RetainedPropertyScrollScenePrepareError::PoolContract)?;
+    let trace = match &scene.leaf_authority {
+        NestedScrollSegmentLeafAuthority::Persistent(stamp) => {
+            let expected_key = stamp.identity.resident_key();
+            if actions.len() != 1 || actions.keys().copied().next() != Some(expected_key) {
+                return Err(RetainedPropertyScrollScenePrepareError::PoolContract);
+            }
+            let action = actions[&expected_key];
+            RetainedPropertyScrollSceneBuildTrace {
+                root_count: 1,
+                generic_surface_count: 0,
+                effect_surface_count: 0,
+                scroll_group_count: 1,
+                backing: ScrollSceneBackingKind::Single,
+                tile_count: 1,
+                reraster_count: usize::from(action == RetainedSurfaceCompileAction::Reraster),
+                reuse_count: usize::from(action == RetainedSurfaceCompileAction::Reuse),
+                content_pair_bytes: canonical_pair_bytes(&stamp.target.color, &stamp.target.depth)
+                    .ok_or(RetainedPropertyScrollScenePrepareError::DescriptorPair)?,
+            }
+        }
+        NestedScrollSegmentLeafAuthority::DirectText(_) => {
+            if !actions.is_empty() || !scene.transaction.is_exact_zero_resident_nested_text() {
+                return Err(RetainedPropertyScrollScenePrepareError::PoolContract);
+            }
+            RetainedPropertyScrollSceneBuildTrace {
+                root_count: 1,
+                generic_surface_count: 0,
+                effect_surface_count: 0,
+                scroll_group_count: 0,
+                backing: ScrollSceneBackingKind::Single,
+                tile_count: 0,
+                reraster_count: 0,
+                reuse_count: 0,
+                content_pair_bytes: 0,
+            }
+        }
+    };
+    Ok(PreparedNestedScrollSegmentScene {
+        viewport,
+        graph,
+        parent_ctx: ctx,
+        boundaries: prepared_boundaries,
+        leaf: prepared_leaf,
+        actions,
+        transaction: scene.transaction,
+        frame_opaque_terminal: frame_cursor,
+        clear_rgba_bits: clear_rgba.map(f32::to_bits),
+        frame_owner,
+        trace,
+    })
+}
+
+/// Emits the M5a program directly into the frame. The leaf is the only
+/// backing; host/overlay segments never enter a parent-scroll target and the
+/// leaf cursor is never merged into the frame opaque cursor.
+#[allow(dead_code)] // M5a focused executor; production authority remains closed through M5b-1.
+pub(crate) fn emit_prepared_nested_scroll_segment_scene(
+    prepared: PreparedNestedScrollSegmentScene<'_>,
+) -> RetainedPropertyScrollSceneBuildOutcome {
+    let PreparedNestedScrollSegmentScene {
+        viewport,
+        graph,
+        mut parent_ctx,
+        boundaries,
+        leaf,
+        mut actions,
+        transaction,
+        frame_opaque_terminal,
+        clear_rgba_bits,
+        frame_owner,
+        trace,
+    } = prepared;
+    assert!(viewport.retained_surface_frame_stage_owner_is_active(frame_owner));
+    assert!(viewport.retained_property_scroll_scene_stage_is_available());
+    assert_eq!(parent_ctx.opaque_rect_order(), 0);
+
+    let parent_target = parent_ctx
+        .current_target()
+        .unwrap_or_else(|| parent_ctx.allocate_target(graph));
+    parent_ctx.set_current_target(parent_target);
+    graph.add_graphics_pass(ClearPass::new(
+        crate::view::render_pass::clear_pass::ClearParams::new(clear_rgba_bits.map(f32::from_bits)),
+        crate::view::render_pass::clear_pass::ClearInput {
+            pass_context: parent_ctx.graphics_pass_context(),
+            clear_depth_stencil: true,
+        },
+        crate::view::render_pass::clear_pass::ClearOutput {
+            render_target: parent_target,
+        },
+    ));
+    if let Some(handle) = parent_target.handle() {
+        parent_ctx.set_color_target(Some(handle));
+    }
+
+    let mut masks = super::compiler::NativeScrollForestEmissionMaskStack::new();
+    for boundary in &boundaries {
+        assert_eq!(parent_ctx.opaque_rect_order(), boundary.host_frame_span.start);
+        parent_ctx.set_current_target(parent_target);
+        parent_ctx.set_paint_offset(boundary.paint_offset);
+        parent_ctx.replace_scissor_rect(boundary.host_scissor);
+        boundary
+            .program
+            .emit_host_before(graph, &mut parent_ctx, &mut masks);
+        assert_eq!(parent_ctx.opaque_rect_order(), boundary.host_frame_span.end);
+    }
+
+    match leaf {
+        PreparedNestedScrollSegmentLeaf::Persistent {
+            artifact,
+            stamp,
+            terminal,
+            geometry,
+        } => {
+            assert_eq!(geometry.source_key(), stamp.identity.color_key);
+            assert_eq!(geometry.source_bounds_bits(), stamp.target.source_bounds_bits);
+            let mut leaf_ctx = UiBuildContext::from_parts(
+                parent_ctx.viewport(),
+                parent_ctx.layer_subtree_state_with_ancestor_clip(AncestorClipContext::default()),
+            );
+            leaf_ctx.set_paint_offset([0.0; 2]);
+            leaf_ctx.replace_scissor_rect(None);
+            let leaf_target = leaf_ctx.allocate_persistent_target_with_desc(
+                graph,
+                stamp.target.color.clone(),
+                stamp.identity.color_key,
+            );
+            leaf_ctx.set_current_target(leaf_target);
+            let action = actions
+                .remove(&stamp.identity.resident_key())
+                .expect("prepared nested-segment leaf action is frozen");
+            match action {
+                RetainedSurfaceCompileAction::Reraster => {
+                    graph.add_graphics_pass(ClearPass::new(
+                        crate::view::render_pass::clear_pass::ClearParams::new([0.0; 4]),
+                        crate::view::render_pass::clear_pass::ClearInput {
+                            pass_context: leaf_ctx.graphics_pass_context(),
+                            clear_depth_stencil: true,
+                        },
+                        crate::view::render_pass::clear_pass::ClearOutput {
+                            render_target: leaf_target,
+                        },
+                    ));
+                    emit_validated_scroll_scene_content_artifact(
+                        &artifact,
+                        graph,
+                        &mut leaf_ctx,
+                    );
+                }
+                RetainedSurfaceCompileAction::Reuse => {
+                    leaf_ctx.replay_opaque_rect_order_exact(0, terminal);
+                }
+            }
+            assert_eq!(leaf_ctx.opaque_rect_order(), terminal);
+            let frame_before_composite = parent_ctx.opaque_rect_order();
+            parent_ctx.merge_child_target_pairs(&leaf_ctx.into_state());
+            assert_eq!(parent_ctx.opaque_rect_order(), frame_before_composite);
+            parent_ctx.set_current_target(parent_target);
+            parent_ctx.replace_scissor_rect(None);
+            graph.add_graphics_pass(geometry.into_texture_composite_pass(
+                TextureCompositeInput::from_render_target(
+                    TextureCompositeSourceIn::with_handle(
+                        leaf_target
+                            .handle()
+                            .expect("prepared nested-segment leaf target has a handle"),
+                    ),
+                    Default::default(),
+                    parent_ctx.graphics_pass_context(),
+                ),
+                TextureCompositeOutput {
+                    render_target: parent_target,
+                },
+            ));
+            assert_eq!(parent_ctx.opaque_rect_order(), frame_before_composite);
+        }
+        PreparedNestedScrollSegmentLeaf::DirectText { run } => {
+            let frame_before_text = parent_ctx.opaque_rect_order();
+            parent_ctx.set_current_target(parent_target);
+            parent_ctx.replace_scissor_rect(Some(run.resolved_scissor()));
+            run.emit(graph, &mut parent_ctx, &mut masks);
+            assert_eq!(parent_ctx.opaque_rect_order(), frame_before_text);
+        }
+    }
+
+    for boundary in boundaries.iter().rev() {
+        assert_eq!(
+            parent_ctx.opaque_rect_order(),
+            boundary.overlay_frame_span.start
+        );
+        parent_ctx.set_current_target(parent_target);
+        parent_ctx.set_paint_offset(boundary.paint_offset);
+        parent_ctx.replace_scissor_rect(boundary.overlay_scissor);
+        boundary
+            .program
+            .emit_overlay_after(graph, &mut parent_ctx, &mut masks);
+        assert_eq!(
+            parent_ctx.opaque_rect_order(),
+            boundary.overlay_frame_span.end
+        );
+    }
+    assert!(masks.is_empty(), "nested segment closes every boundary mask");
+    assert_eq!(parent_ctx.opaque_rect_order(), frame_opaque_terminal);
+    assert!(actions.is_empty());
+    assert!(viewport.stage_retained_property_scroll_scene(transaction));
+    RetainedPropertyScrollSceneBuildOutcome {
+        state: parent_ctx.into_state(),
+        trace,
+    }
+}
+
+/// Compatibility wrapper for the focused Metal gate. The production-shaped
+/// emitter now owns the DirectText branch and stages its exact zero-resident
+/// transaction through the normal frame lifecycle.
+#[cfg(test)]
+pub(crate) fn emit_prepared_nested_scroll_segment_text_direct_scene_for_test(
+    prepared: PreparedNestedScrollSegmentScene<'_>,
+) -> Result<BuildState, &'static str> {
+    if !matches!(prepared.leaf, PreparedNestedScrollSegmentLeaf::DirectText { .. }) {
+        return Err("nested segment is not an exact Text run");
+    }
+    Ok(emit_prepared_nested_scroll_segment_scene(prepared).state)
+}
+
 #[cfg(test)]
 pub(crate) fn prepare_native_scroll_forest_transaction_with_forced_pool_for_test(
     viewport: &Viewport,
@@ -19052,6 +19569,17 @@ pub(crate) fn prepare_property_boundary_dag_scene_from_pool<'a>(
             prepare_frame_root_scroll_scene(viewport, scene, graph, ctx, clear_rgba, frame_owner)
                 .map(PreparedPropertyBoundaryDagScene::FrameRootScroll)
         }
+        ValidatedPropertyBoundaryDagScene::NestedScrollChain(scene) => {
+            prepare_nested_scroll_segment_scene_from_pool(
+                viewport,
+                scene,
+                graph,
+                ctx,
+                clear_rgba,
+                frame_owner,
+            )
+            .map(PreparedPropertyBoundaryDagScene::NestedScrollChain)
+        }
         ValidatedPropertyBoundaryDagScene::TransformScroll(scene) => {
             prepare_retained_transform_scroll_scene_from_pool(
                 viewport,
@@ -20794,6 +21322,9 @@ pub(crate) fn emit_prepared_property_boundary_dag_scene(
             PropertyBoundaryDagEmitNode::Scroll,
             PropertyBoundaryDagPreparedBackend::FrameRootScroll(prepared),
         ),
+        PreparedPropertyBoundaryDagScene::NestedScrollChain(prepared) => {
+            return emit_prepared_nested_scroll_segment_scene(prepared);
+        }
         PreparedPropertyBoundaryDagScene::TransformScroll(prepared) => (
             PropertyBoundaryDagEmitNode::Surface {
                 kind: PropertyBoundaryDagEmitSurface::Transform,

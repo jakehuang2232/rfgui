@@ -80,10 +80,8 @@ use super::{
     begin_paint_authority_telemetry_attempt, build_root_legacy, debug_legacy_fallback,
     direct_scroll_transform_prepare_rejection_dispatch,
     direct_scroll_transform_prepare_rejection_fallback_stage, enable_paint_authority_test_capture,
-    finish_frame_dirty_lifecycle, frame_disposition, nested_scroll_prepare_rejection_dispatch,
-    nested_scroll_prepare_rejection_fallback_stage, nested_scroll_success_trace,
-    paint_authority_test_capture_enabled, preflight_direct_scroll_transform_selection,
-    preflight_nested_scroll_selection, preflight_transform_effect_scroll_selection,
+    finish_frame_dirty_lifecycle, frame_disposition, paint_authority_test_capture_enabled,
+    preflight_direct_scroll_transform_selection, preflight_transform_effect_scroll_selection,
     retained_auto_circuit_breaker_selection, retained_auto_fallback_overlay_records,
     retained_auto_overlay_label, retained_auto_terminal_fallback_stage,
     select_retained_auto_authority, select_retained_transform_canary, should_store_compile_cache,
@@ -1455,6 +1453,75 @@ fn prepared_exact_nested_scroll_scene() -> (
     (arena, vec![outer], properties, generations)
 }
 
+fn prepared_exact_depth_three_nested_scroll_scene() -> (
+    NodeArena,
+    Vec<NodeKey>,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
+    let (mut arena, outer, _inner, third_scroll, _properties, _generations) =
+        crate::view::paint::nested_scroll_plan_fixture();
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::ScrollDirection,
+        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+    );
+    style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    {
+        let mut element =
+            crate::view::test_support::get_element_mut::<Element>(&arena, third_scroll);
+        element.apply_style(style);
+        element.layout_state.layout_position.x = 10.0;
+        element.layout_state.layout_position.y = 20.0;
+        element.layout_state.layout_size = Size {
+            width: 100.0,
+            height: 600.0,
+        };
+        element.layout_state.layout_inner_position.x = 10.0;
+        element.layout_state.layout_inner_position.y = 20.0;
+        element.layout_state.layout_inner_size = Size {
+            width: 100.0,
+            height: 600.0,
+        };
+        element.layout_state.content_size = Size {
+            width: 100.0,
+            height: 900.0,
+        };
+        element.set_scroll_offset((0.0, 0.0));
+        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+    }
+    let leaf = arena.insert(Node::new(Box::new(Element::new_with_id(
+        0xe2_b3f0, 10.0, 20.0, 100.0, 900.0,
+    ))));
+    arena.set_parent(leaf, Some(third_scroll));
+    arena.push_child(third_scroll, leaf);
+    {
+        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, leaf);
+        element.layout_state.layout_position.x = 10.0;
+        element.layout_state.layout_position.y = 20.0;
+        element.layout_state.layout_size = Size {
+            width: 100.0,
+            height: 900.0,
+        };
+        element.layout_state.layout_inner_position.x = 10.0;
+        element.layout_state.layout_inner_position.y = 20.0;
+        element.layout_state.layout_inner_size = Size {
+            width: 100.0,
+            height: 900.0,
+        };
+        element.layout_state.content_size = Size {
+            width: 100.0,
+            height: 900.0,
+        };
+        element.set_background_color_value(Color::rgb(24, 48, 72));
+        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+    }
+    arena.refresh_subtree_dirty_cache(outer);
+    let roots = vec![outer];
+    let (properties, generations) = synced_paint_state(&arena, &roots);
+    (arena, roots, properties, generations)
+}
+
 fn prepared_exact_multi_scroll_scene() -> (
     NodeArena,
     Vec<NodeKey>,
@@ -1547,11 +1614,6 @@ fn telemetry_for_auto_decision(decision: AutoAuthorityDecision) -> PaintAuthorit
             AutoAuthorityKind::PropertyScene,
             trace,
         ),
-        AutoAuthorityDecision::NestedScrollScene { prepared, trace } => (
-            RetainedTransformCanarySelection::NestedScrollScenePlanned(prepared),
-            AutoAuthorityKind::PropertyScene,
-            trace,
-        ),
         AutoAuthorityDecision::DirectScrollTransformScene { scene, trace } => (
             RetainedTransformCanarySelection::DirectScrollTransformScenePlanned(scene),
             AutoAuthorityKind::PropertyScene,
@@ -1609,7 +1671,6 @@ fn auto_authority_kind(decision: &AutoAuthorityDecision) -> AutoAuthorityKind {
     match decision {
         AutoAuthorityDecision::NativeScrollForest { .. } => AutoAuthorityKind::NativeScrollForest,
         AutoAuthorityDecision::PropertyBoundaryDagScene { .. } => AutoAuthorityKind::PropertyScene,
-        AutoAuthorityDecision::NestedScrollScene { .. } => AutoAuthorityKind::PropertyScene,
         AutoAuthorityDecision::DirectScrollTransformScene { .. } => {
             AutoAuthorityKind::PropertyScene
         }
@@ -1630,7 +1691,6 @@ fn auto_authority_trace(decision: &AutoAuthorityDecision) -> &super::AutoAuthori
     match decision {
         AutoAuthorityDecision::NativeScrollForest { trace, .. }
         | AutoAuthorityDecision::PropertyBoundaryDagScene { trace, .. }
-        | AutoAuthorityDecision::NestedScrollScene { trace, .. }
         | AutoAuthorityDecision::DirectScrollTransformScene { trace, .. }
         | AutoAuthorityDecision::PropertyScrollScene { trace, .. }
         | AutoAuthorityDecision::FrameRootScrollScene { trace, .. }

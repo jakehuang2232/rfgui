@@ -4,7 +4,6 @@
 use crate::view::base_component::{BuildState, Renderable, UiBuildContext};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::NodeArena;
-use crate::view::render_pass::DrawRectPass;
 use crate::view::render_pass::draw_rect_pass::{
     DrawRectInput, DrawRectOutput, RectPassParams, RectRenderMode,
 };
@@ -12,10 +11,11 @@ use crate::view::render_pass::text_pass::TextPreparedInputPass;
 use crate::view::render_pass::text_pass::{
     TextInput, TextOutput, TextPassPreparedFragment, TextPassPreparedParams,
 };
+use crate::view::render_pass::DrawRectPass;
 
 use super::super::ShadowPaintBlocker;
-use super::Text;
 use super::hit_test::current_text_area_selection_render_context;
+use super::Text;
 use crate::view::inline_text_pass_adapter::{
     inline_ifc_paint_input_to_text_pass_staging_input,
     inline_ifc_paint_input_to_text_pass_staging_input_with_color,
@@ -83,7 +83,7 @@ impl Renderable for Text {
 }
 
 impl Text {
-    /// Closed admission oracle for the bounded nested-scroll R1 Text slice.
+    /// Closed admission oracle for the nested-scroll direct Text primitive.
     /// Inline-IFC-owned geometry and zero-op/unprepared standalone payloads
     /// remain outside this authority even though the general Text recorder can
     /// represent them in other frame-artifact paths.
