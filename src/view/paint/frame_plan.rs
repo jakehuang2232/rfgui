@@ -343,6 +343,7 @@ pub(super) struct PropertyBoundaryProgramForestPlan {
 pub(super) enum PropertyBoundaryProgramRootKind {
     Empty,
     FrameRootScroll,
+    FrameRootTransformContent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -400,9 +401,21 @@ pub(super) struct PropertyBoundaryProgramBoundary {
     pub(super) scene_root_ordinal: u32,
     pub(super) owner: NodeKey,
     pub(super) stable_id: u64,
-    pub(super) scroll: ScrollNodeSnapshot,
-    pub(super) contents_clip: ClipNodeSnapshot,
+    pub(super) kind: PropertyBoundaryProgramBoundaryKind,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum PropertyBoundaryProgramBoundaryKind {
+    Scroll {
+        scroll: ScrollNodeSnapshot,
+        contents_clip: ClipNodeSnapshot,
+    },
+    TransformContent {
+        transform: TransformNodeSnapshot,
+    },
+}
+
+impl Eq for PropertyBoundaryProgramBoundaryKind {}
 
 /// Planning-only resident intent.  It carries no graph/pool authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -727,7 +740,7 @@ pub(super) fn plan_property_boundary_program_forest(
             effects.is_empty(),
             scrolls.is_empty(),
         ) {
-            (false, true, true) => Some((transforms[0].0, PropertyBoundaryProgramUnsupportedKind::Transform)),
+            (false, true, true) => None,
             (true, false, true) => Some((effects[0].0, PropertyBoundaryProgramUnsupportedKind::Effect)),
             (false, _, _) | (_, false, false) => Some((mixed_owner, PropertyBoundaryProgramUnsupportedKind::Mixed)),
             _ => None,
@@ -747,6 +760,145 @@ pub(super) fn plan_property_boundary_program_forest(
             planned_boundaries.len(),
             planned_residents.len(),
         );
+        if !transforms.is_empty() {
+            let transform_id = transforms[0];
+            let snapshot = property_trees.transform_snapshot_for(transform_id);
+            let expected = PropertyTreeState {
+                transform: Some(transform_id),
+                clip: None,
+                effect: None,
+                scroll: None,
+            };
+            let content_owner_is_exact = |owner| {
+                arena.get(owner).is_some_and(|node| {
+                    !node.element.is_deferred_to_root_viewport_render()
+                        && sampled_layout_transition_is_exact(node.element.as_ref())
+                        && (owner == root
+                            || is_exact_retained_scroll_forest_content_node(
+                                node.element.as_ref(),
+                                arena,
+                            ))
+                }) && property_trees.node_state_for(owner).is_some_and(|state| {
+                    state.paint == expected && state.descendants == expected
+                })
+            };
+            let invalid_content_owner = root_nodes
+                .iter()
+                .copied()
+                .find(|owner| !content_owner_is_exact(*owner));
+            let rejection_owner = transforms
+                .iter()
+                .find(|transform| transform.0 != root)
+                .map(|transform| transform.0)
+                .or(invalid_content_owner)
+                .unwrap_or(transform_id.0);
+            let Some(snapshot) = snapshot else {
+                reasons.push(PropertyBoundaryProgramRejection::UnsupportedRoot {
+                    root,
+                    owner: rejection_owner,
+                    kind: PropertyBoundaryProgramUnsupportedKind::Transform,
+                });
+                continue;
+            };
+            let exact_root_transform = transforms.len() == 1
+                && transform_id.0 == root
+                && clips.is_empty()
+                && snapshot.id == transform_id
+                && snapshot.owner == root
+                && snapshot.parent.is_none()
+                && snapshot.generation != 0
+                && matrix_is_finite_affine(snapshot.viewport_matrix)
+                && root_node.element.has_retained_transform_surface()
+                && root_node
+                    .element
+                    .compositor_viewport_transform_snapshot()
+                    .is_some_and(|live| {
+                        live.to_cols_array().map(f32::to_bits)
+                            == snapshot.viewport_matrix.to_cols_array().map(f32::to_bits)
+                    });
+            if !exact_root_transform || invalid_content_owner.is_some() {
+                reasons.push(PropertyBoundaryProgramRejection::UnsupportedRoot {
+                    root,
+                    owner: rejection_owner,
+                    kind: PropertyBoundaryProgramUnsupportedKind::Transform,
+                });
+                continue;
+            }
+            let identities = [
+                (planned_nodes.len(), PropertyBoundaryProgramIdentityKind::Node),
+                (
+                    planned_operations.len(),
+                    PropertyBoundaryProgramIdentityKind::Operation,
+                ),
+                (
+                    planned_boundaries.len(),
+                    PropertyBoundaryProgramIdentityKind::Boundary,
+                ),
+                (
+                    planned_residents.len(),
+                    PropertyBoundaryProgramIdentityKind::Resident,
+                ),
+            ]
+            .map(|(value, kind)| property_boundary_program_checked_identity(value, kind));
+            let [Ok(node_identity), Ok(operation_identity), Ok(boundary_identity), Ok(resident_identity)] =
+                identities
+            else {
+                reasons.extend(identities.into_iter().filter_map(Result::err));
+                continue;
+            };
+            let node_id = PropertyBoundaryProgramNodeId(node_identity);
+            let operation_id = PropertyBoundaryProgramOperationId(operation_identity);
+            let boundary_id = PropertyBoundaryProgramBoundaryId(boundary_identity);
+            let resident_id = PropertyBoundaryProgramResidentId(resident_identity);
+            let receiver = PropertyBoundaryProgramReceiver::FrameRoot {
+                scene_root_ordinal: root_ordinal,
+            };
+            planned_nodes.push(PropertyBoundaryProgramNode {
+                id: node_id,
+                scene_root_ordinal: root_ordinal,
+                owner: root,
+                stable_id,
+                receiver,
+                boundary: boundary_id,
+            });
+            planned_operations.push(PropertyBoundaryProgramOperation {
+                id: operation_id,
+                scene_root_ordinal: root_ordinal,
+                node: node_id,
+                boundary: boundary_id,
+                resident: resident_id,
+                receiver,
+            });
+            planned_boundaries.push(PropertyBoundaryProgramBoundary {
+                id: boundary_id,
+                scene_root_ordinal: root_ordinal,
+                owner: root,
+                stable_id,
+                kind: PropertyBoundaryProgramBoundaryKind::TransformContent {
+                    transform: snapshot,
+                },
+            });
+            planned_residents.push(PropertyBoundaryProgramResident {
+                id: resident_id,
+                scene_root_ordinal: root_ordinal,
+                owner: root,
+                stable_id,
+                node: node_id,
+                boundary: boundary_id,
+                receiver,
+            });
+            planned_roots.push(PropertyBoundaryProgramRoot {
+                ordinal: root_ordinal,
+                root,
+                stable_id,
+                kind: PropertyBoundaryProgramRootKind::FrameRootTransformContent,
+                node_span: starts.0..planned_nodes.len(),
+                operation_span: starts.1..planned_operations.len(),
+                boundary_span: starts.2..planned_boundaries.len(),
+                resident_span: starts.3..planned_residents.len(),
+            });
+            continue;
+        }
         if scrolls.is_empty() {
             if !clips.is_empty() {
                 reasons.push(PropertyBoundaryProgramRejection::UnsupportedRoot {
@@ -889,8 +1041,10 @@ pub(super) fn plan_property_boundary_program_forest(
             scene_root_ordinal: root_ordinal,
             owner: root,
             stable_id,
-            scroll,
-            contents_clip: *contents_clip,
+            kind: PropertyBoundaryProgramBoundaryKind::Scroll {
+                scroll,
+                contents_clip: *contents_clip,
+            },
         });
         planned_residents.push(PropertyBoundaryProgramResident {
             id: resident_id,
@@ -971,7 +1125,8 @@ pub(super) fn property_boundary_program_forest_is_canonical(
         );
         let expected_lengths = match root.kind {
             PropertyBoundaryProgramRootKind::Empty => (0, 0, 0, 0),
-            PropertyBoundaryProgramRootKind::FrameRootScroll => (1, 1, 1, 1),
+            PropertyBoundaryProgramRootKind::FrameRootScroll
+            | PropertyBoundaryProgramRootKind::FrameRootTransformContent => (1, 1, 1, 1),
         };
         if lengths != expected_lengths {
             return false;
@@ -1020,19 +1175,41 @@ pub(super) fn property_boundary_program_forest_is_canonical(
                 || operation.resident != resident.id
                 || resident.node != node.id
                 || resident.boundary != boundary.id
-                || boundary.scroll.id != ScrollNodeId(root.root)
-                || boundary.scroll.owner != root.root
-                || boundary.scroll.parent.is_some()
-                || boundary.contents_clip.id
-                    != (ClipNodeId {
-                        owner: root.root,
-                        role: ClipNodeRole::ContentsClip,
-                    })
-                || boundary.contents_clip.parent.is_some()
-                || !boundary
-                    .scroll
-                    .has_canonical_geometry_with_contents_clip(boundary.contents_clip)
             {
+                return false;
+            }
+            let kind_is_canonical = match (root.kind, boundary.kind) {
+                (
+                    PropertyBoundaryProgramRootKind::FrameRootScroll,
+                    PropertyBoundaryProgramBoundaryKind::Scroll {
+                        scroll,
+                        contents_clip,
+                    },
+                ) => {
+                    scroll.id == ScrollNodeId(root.root)
+                        && scroll.owner == root.root
+                        && scroll.parent.is_none()
+                        && contents_clip.id
+                            == (ClipNodeId {
+                                owner: root.root,
+                                role: ClipNodeRole::ContentsClip,
+                            })
+                        && contents_clip.parent.is_none()
+                        && scroll.has_canonical_geometry_with_contents_clip(contents_clip)
+                }
+                (
+                    PropertyBoundaryProgramRootKind::FrameRootTransformContent,
+                    PropertyBoundaryProgramBoundaryKind::TransformContent { transform },
+                ) => {
+                    transform.id == TransformNodeId(root.root)
+                        && transform.owner == root.root
+                        && transform.parent.is_none()
+                        && transform.generation != 0
+                        && matrix_is_finite_affine(transform.viewport_matrix)
+                }
+                _ => false,
+            };
+            if !kind_is_canonical {
                 return false;
             }
         } else if root.kind != PropertyBoundaryProgramRootKind::Empty {
@@ -14693,7 +14870,7 @@ pub(crate) fn plan_single_root_scroll_host_surface(
     })
 }
 
-fn exact_surface_geometry_for_plan(
+pub(super) fn exact_surface_geometry_for_plan(
     element: &dyn ElementTrait,
     arena: &NodeArena,
     root: NodeKey,

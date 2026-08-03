@@ -1260,6 +1260,77 @@ pub(crate) fn validate_property_boundary_program_root_for_emission(
     })
 }
 
+/// Owning compiler capability for one pure Component transform-content
+/// program. The viewport matrix is intentionally absent: it belongs to the
+/// composite geometry, not the reusable raster identity.
+pub(crate) struct ValidatedComponentTransformContentProgram {
+    artifact: PaintArtifact,
+    resolved_clips: Vec<ResolvedClip>,
+    fingerprint: super::frame_plan::PropertyScrollReceiverArtifactIdentity,
+    opaque_terminal: u32,
+}
+
+pub(crate) fn validate_component_transform_content_program(
+    artifact: PaintArtifact,
+    root: crate::view::node_arena::NodeKey,
+    transform: TransformNodeId,
+) -> Option<ValidatedComponentTransformContentProgram> {
+    let validated = validate_artifact_store_with_policy(
+        &artifact,
+        ArtifactStoreValidationPolicy::TransformSurface { root, transform },
+    )?;
+    let ValidatedArtifactTarget::CurrentTarget = validated.target else {
+        return None;
+    };
+    let fingerprint = super::frame_plan::property_scroll_receiver_artifact_identity(&artifact)?;
+    let opaque_terminal = super::frame_plan::opaque_order_count(&artifact);
+    Some(ValidatedComponentTransformContentProgram {
+        artifact,
+        resolved_clips: validated.resolved_clips,
+        fingerprint,
+        opaque_terminal,
+    })
+}
+
+impl ValidatedComponentTransformContentProgram {
+    pub(crate) fn matches(
+        &self,
+        fingerprint: &super::frame_plan::PropertyScrollReceiverArtifactIdentity,
+        opaque_terminal: u32,
+    ) -> bool {
+        self.fingerprint == *fingerprint && self.opaque_terminal == opaque_terminal
+    }
+
+    pub(crate) fn opaque_terminal(&self) -> u32 {
+        self.opaque_terminal
+    }
+
+    pub(crate) fn validated_raster_stamp(
+        &self,
+        root: crate::view::node_arena::NodeKey,
+        stable_id: u64,
+        target: RetainedSurfaceRasterInputs,
+    ) -> Option<RetainedSurfaceRasterStamp> {
+        validated_retained_surface_raster_stamp(
+            &self.artifact,
+            root,
+            stable_id,
+            TransformNodeId(root),
+            target,
+            0..self.opaque_terminal,
+        )
+    }
+
+    pub(crate) fn emit(self, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
+        compile_validated_artifact(&self.artifact, self.resolved_clips, graph, ctx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_for_test(&mut self) {
+        self.opaque_terminal = self.opaque_terminal.saturating_add(1);
+    }
+}
+
 impl ValidatedNativeScrollForestBoundaryProgram {
     pub(crate) fn boundary(&self) -> super::frame_plan::NativeScrollBoundaryId {
         self.boundary

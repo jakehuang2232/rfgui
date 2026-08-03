@@ -329,7 +329,7 @@ fn identity_cross_references_and_cross_root_receivers_are_sealed() {
 }
 
 #[test]
-fn transform_mixed_and_nested_scroll_roots_have_owner_scoped_rejections() {
+fn affine_transform_is_typed_while_mixed_and_nested_scroll_roots_reject() {
     let (arena, roots, _, _) = program_forest_fixture(&[RootShape::Empty]);
     crate::view::test_support::get_element_mut::<Element>(&arena, roots[0])
         .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::X)));
@@ -338,15 +338,13 @@ fn transform_mixed_and_nested_scroll_roots_have_owner_scoped_rejections() {
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &roots, &properties);
     let transform =
-        plan_property_boundary_program_forest(&arena, &roots, &properties, &generations);
-    assert!(has_reason(&transform, |reason| matches!(
-        reason,
-        PropertyBoundaryProgramRejection::UnsupportedRoot {
-            root,
-            owner,
-            kind: PropertyBoundaryProgramUnsupportedKind::Transform,
-        } if root == owner
-    )));
+        plan_property_boundary_program_forest(&arena, &roots, &properties, &generations)
+            .expect("pure affine frame-root transform");
+    assert_eq!(
+        transform.roots[0].kind,
+        PropertyBoundaryProgramRootKind::FrameRootTransformContent
+    );
+    assert!(property_boundary_program_forest_is_canonical(&transform));
 
     let (arena, roots, _, _) = program_forest_fixture(&[RootShape::Scroll]);
     crate::view::test_support::get_element_mut::<Element>(&arena, roots[0])
