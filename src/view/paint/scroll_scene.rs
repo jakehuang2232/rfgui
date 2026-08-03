@@ -4,7 +4,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::Key;
 
 use crate::view::base_component::{
-    AncestorClipContext, BuildState,
+    AncestorClipContext, BuildState, Element,
     RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
@@ -1816,6 +1816,608 @@ pub(crate) struct ValidatedFrameRootScrollScene {
     roots: Vec<ValidatedFrameRootSceneRoot>,
     scale_factor_bits: u32,
     target_format: wgpu::TextureFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Graph-inert M7b compiler seal.
+enum PropertyBoundaryProgramCompilerRootSeal {
+    Empty {
+        ordinal: u32,
+        root: NodeKey,
+        stable_id: u64,
+        artifacts: Vec<super::frame_plan::PropertyScrollReceiverArtifactIdentity>,
+        opaque_terminal: u32,
+    },
+    FrameRootScroll {
+        ordinal: u32,
+        root: NodeKey,
+        stable_id: u64,
+        node: super::frame_plan::PropertyBoundaryProgramNodeId,
+        operation: super::frame_plan::PropertyBoundaryProgramOperationId,
+        boundary: super::frame_plan::PropertyBoundaryProgramBoundaryId,
+        resident: super::frame_plan::PropertyBoundaryProgramResidentId,
+        receiver: super::frame_plan::PropertyBoundaryProgramReceiver,
+        content_root: NodeKey,
+        content_stable_id: u64,
+        source_bounds_bits: [u32; 4],
+        scroll: ScrollNodeSnapshot,
+        contents_clip: ClipNodeSnapshot,
+        host: super::frame_plan::PropertyScrollReceiverArtifactIdentity,
+        content: Vec<super::frame_plan::PropertyScrollReceiverArtifactIdentity>,
+        overlay: super::frame_plan::PropertyScrollReceiverArtifactIdentity,
+        compiler_stamp: super::compiler::NativeScrollForestCompilerStamp,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Graph-inert M7b compiler seal.
+struct PropertyBoundaryProgramCompilerSeal {
+    plan_roots: Vec<super::frame_plan::PropertyBoundaryProgramRoot>,
+    roots: Vec<PropertyBoundaryProgramCompilerRootSeal>,
+    scale_factor_bits: u32,
+    target_format: wgpu::TextureFormat,
+}
+
+#[allow(dead_code)] // Graph-inert M7b compiler token.
+enum ValidatedPropertyBoundaryProgramRoot {
+    Empty {
+        receiver: super::compiler::ValidatedFrameRootScrollReceiver,
+    },
+    FrameRootScroll {
+        content_root: NodeKey,
+        content_stable_id: u64,
+        program: super::compiler::ValidatedNativeScrollForestBoundaryProgram,
+    },
+}
+
+/// M7b compiler-sealed heterogeneous forest.  This token has no graph, pool,
+/// selector, or authority-cascade integration.
+pub(crate) struct ValidatedPropertyBoundaryProgramForestScene {
+    plan: super::frame_plan::PropertyBoundaryProgramForestPlan,
+    roots: Vec<ValidatedPropertyBoundaryProgramRoot>,
+    seal: PropertyBoundaryProgramCompilerSeal,
+    planned_seal: PropertyBoundaryProgramCompilerSeal,
+}
+
+impl ValidatedPropertyBoundaryProgramForestScene {
+    fn is_canonical(&self) -> bool {
+        if !super::frame_plan::property_boundary_program_forest_is_canonical(&self.plan)
+            || self.seal != self.planned_seal
+            || self.roots.len() != self.plan.roots.len()
+            || self.seal.plan_roots != self.plan.roots
+            || self.seal.roots.len() != self.plan.roots.len()
+        {
+            return false;
+        }
+        let scale_factor = f32::from_bits(self.seal.scale_factor_bits);
+        if !scale_factor.is_finite() || scale_factor <= 0.0 {
+            return false;
+        }
+        self.plan
+            .roots
+            .iter()
+            .zip(&self.seal.roots)
+            .zip(&self.roots)
+            .all(|((root, contract), token)| match (root.kind, contract, token) {
+                (
+                    super::frame_plan::PropertyBoundaryProgramRootKind::Empty,
+                    PropertyBoundaryProgramCompilerRootSeal::Empty {
+                        ordinal,
+                        root: sealed_root,
+                        stable_id,
+                        artifacts,
+                        opaque_terminal,
+                    },
+                    ValidatedPropertyBoundaryProgramRoot::Empty { receiver },
+                ) => {
+                    *ordinal == root.ordinal
+                        && *sealed_root == root.root
+                        && *stable_id == root.stable_id
+                        && root.node_span.is_empty()
+                        && root.operation_span.is_empty()
+                        && root.boundary_span.is_empty()
+                        && root.resident_span.is_empty()
+                        && receiver.matches_plain_artifact_fingerprint(
+                            artifacts,
+                            *opaque_terminal,
+                        )
+                }
+                (
+                    super::frame_plan::PropertyBoundaryProgramRootKind::FrameRootScroll,
+                    PropertyBoundaryProgramCompilerRootSeal::FrameRootScroll {
+                        ordinal,
+                        root: sealed_root,
+                        stable_id,
+                        node,
+                        operation,
+                        boundary,
+                        resident,
+                        receiver,
+                        content_root,
+                        content_stable_id,
+                        source_bounds_bits,
+                        scroll,
+                        contents_clip,
+                        host: _,
+                        content: _,
+                        overlay: _,
+                        compiler_stamp,
+                    },
+                    ValidatedPropertyBoundaryProgramRoot::FrameRootScroll {
+                        content_root: token_content_root,
+                        content_stable_id: token_content_stable_id,
+                        program,
+                    },
+                ) => {
+                    let (Some(plan_node), Some(plan_operation), Some(plan_boundary), Some(plan_resident)) = (
+                        self.plan.nodes.get(root.node_span.start),
+                        self.plan.operations.get(root.operation_span.start),
+                        self.plan.boundaries.get(root.boundary_span.start),
+                        self.plan.residents.get(root.resident_span.start),
+                    ) else {
+                        return false;
+                    };
+                    *ordinal == root.ordinal
+                        && *sealed_root == root.root
+                        && *stable_id == root.stable_id
+                        && *node == plan_node.id
+                        && *operation == plan_operation.id
+                        && *boundary == plan_boundary.id
+                        && *resident == plan_resident.id
+                        && *receiver == plan_node.receiver
+                        && *content_root == *token_content_root
+                        && *content_stable_id == *token_content_stable_id
+                        && *content_stable_id != 0
+                        && source_bounds_bits
+                            .map(f32::from_bits)
+                            .into_iter()
+                            .all(f32::is_finite)
+                        && *scroll == plan_boundary.scroll
+                        && *contents_clip == plan_boundary.contents_clip
+                        && scroll.generation != 0
+                        && contents_clip.generation != 0
+                        && compiler_stamp.boundary_root == root.root
+                        && program.boundary()
+                            == super::frame_plan::NativeScrollBoundaryId(boundary.0)
+                        && program.matches_compiler_stamp(compiler_stamp)
+                }
+                _ => false,
+            })
+    }
+}
+
+#[cfg(test)]
+impl ValidatedPropertyBoundaryProgramForestScene {
+    fn tamper_for_test(&mut self, kind: &str) {
+        match kind {
+            "plan" => self.plan.roots.swap(0, 1),
+            "seal" => self.seal.roots.swap(0, 1),
+            "token" => {
+                let Some(ValidatedPropertyBoundaryProgramRoot::FrameRootScroll {
+                    program,
+                    ..
+                }) = self
+                    .roots
+                    .iter_mut()
+                    .find(|root| matches!(root, ValidatedPropertyBoundaryProgramRoot::FrameRootScroll { .. }))
+                else {
+                    panic!("token tamper requires a scroll root")
+                };
+                program.tamper_compiler_stamp_for_test();
+            }
+            "empty-token" => {
+                let Some(ValidatedPropertyBoundaryProgramRoot::Empty { receiver }) = self
+                    .roots
+                    .iter_mut()
+                    .find(|root| matches!(root, ValidatedPropertyBoundaryProgramRoot::Empty { .. }))
+                else {
+                    panic!("empty-token tamper requires an Empty root")
+                };
+                assert!(receiver.tamper_plain_artifact_fingerprint_for_test());
+            }
+            "span" => {
+                let root = self
+                    .plan
+                    .roots
+                    .iter_mut()
+                    .find(|root| !root.boundary_span.is_empty())
+                    .expect("span tamper requires a scroll root");
+                root.boundary_span.end = root.boundary_span.start;
+            }
+            "receiver" => {
+                let node = self.plan.nodes.first_mut().expect("receiver tamper node");
+                node.receiver = super::frame_plan::PropertyBoundaryProgramReceiver::FrameRoot {
+                    scene_root_ordinal: node.scene_root_ordinal.saturating_add(1),
+                };
+            }
+            "generation" => {
+                self.plan
+                    .boundaries
+                    .last_mut()
+                    .expect("generation tamper boundary")
+                    .scroll
+                    .generation = 0;
+            }
+            _ => panic!("unknown M7b tamper"),
+        }
+    }
+
+    fn force_cumulative_cursor_overflow_for_test(&mut self) -> bool {
+        let Some((index, _)) = self
+            .seal
+            .roots
+            .iter()
+            .enumerate()
+            .find(|(_, root)| matches!(root, PropertyBoundaryProgramCompilerRootSeal::FrameRootScroll { .. }))
+        else {
+            return false;
+        };
+        let PropertyBoundaryProgramCompilerRootSeal::FrameRootScroll {
+            compiler_stamp,
+            ..
+        } = &mut self.seal.roots[index]
+        else {
+            unreachable!()
+        };
+        compiler_stamp.host_opaque_count = u32::MAX;
+        let PropertyBoundaryProgramCompilerRootSeal::FrameRootScroll {
+            compiler_stamp,
+            ..
+        } = &mut self.planned_seal.roots[index]
+        else {
+            unreachable!()
+        };
+        compiler_stamp.host_opaque_count = u32::MAX;
+        let ValidatedPropertyBoundaryProgramRoot::FrameRootScroll { program, .. } =
+            &mut self.roots[index]
+        else {
+            unreachable!()
+        };
+        program.set_host_opaque_count_for_test(u32::MAX);
+        self.is_canonical()
+    }
+
+    fn resource_declarations_for_test(&self) -> Vec<(PersistentTextureKey, TextureDesc)> {
+        self.seal
+            .roots
+            .iter()
+            .filter_map(|root| {
+                let PropertyBoundaryProgramCompilerRootSeal::FrameRootScroll {
+                    content_stable_id,
+                    scroll,
+                    ..
+                } = root
+                else {
+                    return None;
+                };
+                let key = scroll_content_layer_stable_key(*content_stable_id);
+                let color = texture_desc_for_logical_bounds(
+                    content_zero_bounds(*scroll),
+                    f32::from_bits(self.seal.scale_factor_bits),
+                    None,
+                    self.seal.target_format,
+                );
+                let (color, _) = persistent_target_texture_descriptors(color, key);
+                Some((key, color))
+            })
+            .collect()
+    }
+
+    fn duplicate_second_resource_for_test(&mut self) -> bool {
+        let Some(first) = self
+            .seal
+            .roots
+            .iter()
+            .find_map(|root| match root {
+                PropertyBoundaryProgramCompilerRootSeal::FrameRootScroll {
+                    content_stable_id,
+                    ..
+                } => Some(*content_stable_id),
+                PropertyBoundaryProgramCompilerRootSeal::Empty { .. } => None,
+            })
+        else {
+            return false;
+        };
+        let Some((index, _)) = self
+            .seal
+            .roots
+            .iter()
+            .enumerate()
+            .filter(|(_, root)| matches!(root, PropertyBoundaryProgramCompilerRootSeal::FrameRootScroll { .. }))
+            .nth(1)
+        else {
+            return false;
+        };
+        let PropertyBoundaryProgramCompilerRootSeal::FrameRootScroll {
+            content_stable_id,
+            ..
+        } = &mut self.seal.roots[index]
+        else {
+            unreachable!()
+        };
+        *content_stable_id = first;
+        let PropertyBoundaryProgramCompilerRootSeal::FrameRootScroll {
+            content_stable_id,
+            ..
+        } = &mut self.planned_seal.roots[index]
+        else {
+            unreachable!()
+        };
+        *content_stable_id = first;
+        let ValidatedPropertyBoundaryProgramRoot::FrameRootScroll {
+            content_stable_id,
+            ..
+        } = &mut self.roots[index]
+        else {
+            unreachable!()
+        };
+        *content_stable_id = first;
+        self.is_canonical()
+    }
+}
+
+/// Compiler-seals every M7a root before any graph or pool is observed.  Empty
+/// roots retain a plain frame receiver token; frame-root scroll roots retain a
+/// standalone native H/C/O compiler token with no child-boundary callback.
+#[allow(dead_code)] // Graph-inert M7b foundation; production selection remains closed.
+pub(crate) fn compile_property_boundary_program_forest_scene(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    plan: super::frame_plan::PropertyBoundaryProgramForestPlan,
+    scale_factor: f32,
+    target_format: wgpu::TextureFormat,
+) -> Result<ValidatedPropertyBoundaryProgramForestScene, PropertyScrollScenePlanError> {
+    let invalid = || {
+        PropertyScrollScenePlanError::InvalidContract("property-boundary-program-forest")
+    };
+    if !super::frame_plan::property_boundary_program_forest_is_canonical(&plan)
+        || roots != plan.roots.iter().map(|root| root.root).collect::<Vec<_>>()
+        || !scale_factor.is_finite()
+        || scale_factor <= 0.0
+        || !paint_generations.matches_live_snapshot(arena, roots, property_trees)
+    {
+        return Err(invalid());
+    }
+    let mut validated_roots = Vec::with_capacity(plan.roots.len());
+    let mut compiler_roots = Vec::with_capacity(plan.roots.len());
+    for root in &plan.roots {
+        let arena_root = arena.get(root.root).ok_or_else(invalid)?;
+        if arena_root.element.stable_id() != root.stable_id {
+            return Err(invalid());
+        }
+        match root.kind {
+            super::frame_plan::PropertyBoundaryProgramRootKind::Empty => {
+                let recorded = super::frame_recorder::record_property_scene_steps_for_plan(
+                    arena,
+                    &[root.root],
+                    property_trees,
+                    paint_generations,
+                    [0.0, 0.0],
+                    &super::PlannedBoundaryCutoutSet::default(),
+                )
+                .map_err(|_| invalid())?;
+                if recorded.iter().any(|step| {
+                    matches!(
+                        step,
+                        super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_)
+                    )
+                }) {
+                    return Err(invalid());
+                }
+                let artifacts = recorded
+                    .iter()
+                    .map(|step| match step {
+                        super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                            super::frame_plan::property_scroll_receiver_artifact_identity(artifact)
+                        }
+                        super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_) => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(invalid)?;
+                let opaque_terminal = recorded.iter().try_fold(0_u32, |cursor, step| match step {
+                    super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                        cursor.checked_add(opaque_order_count(artifact))
+                    }
+                    super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_) => None,
+                }).ok_or_else(invalid)?;
+                let receiver = super::compiler::validate_frame_root_plain_receiver_steps(recorded)
+                    .ok_or_else(invalid)?;
+                compiler_roots.push(PropertyBoundaryProgramCompilerRootSeal::Empty {
+                    ordinal: root.ordinal,
+                    root: root.root,
+                    stable_id: root.stable_id,
+                    artifacts,
+                    opaque_terminal,
+                });
+                validated_roots.push(ValidatedPropertyBoundaryProgramRoot::Empty { receiver });
+            }
+            super::frame_plan::PropertyBoundaryProgramRootKind::FrameRootScroll => {
+                let node = plan.nodes.get(root.node_span.start).ok_or_else(invalid)?;
+                let operation = plan
+                    .operations
+                    .get(root.operation_span.start)
+                    .ok_or_else(invalid)?;
+                let boundary = plan
+                    .boundaries
+                    .get(root.boundary_span.start)
+                    .ok_or_else(invalid)?;
+                let resident = plan
+                    .residents
+                    .get(root.resident_span.start)
+                    .ok_or_else(invalid)?;
+                let element = arena_root
+                    .element
+                    .as_any()
+                    .downcast_ref::<Element>()
+                    .ok_or_else(invalid)?;
+                let admission = element
+                    .exact_retained_scroll_forest_host_admission(
+                        root.root,
+                        arena,
+                        scale_factor,
+                    )
+                    .ok_or_else(invalid)?;
+                if admission.boundary_root != root.root
+                    || admission.stable_id != root.stable_id
+                    || !admission.matches_scroll_node(boundary.scroll)
+                    || boundary.scroll.parent.is_some()
+                    || boundary.contents_clip.parent.is_some()
+                {
+                    return Err(invalid());
+                }
+                let content_root = admission.content_root;
+                let content_stable_id = arena
+                    .get(content_root)
+                    .map(|node| node.element.stable_id())
+                    .filter(|stable_id| *stable_id != 0)
+                    .ok_or_else(invalid)?;
+                let edge = super::PaintScrollForestEdgeWitness::new(
+                    root.root,
+                    content_root,
+                    boundary.scroll,
+                    boundary.contents_clip,
+                    None,
+                    None,
+                )
+                .ok_or_else(invalid)?;
+                let host = super::PaintBakedScrollHostWitness::new(
+                    root.root,
+                    content_root,
+                    boundary.scroll,
+                    boundary.contents_clip.id,
+                )
+                .ok_or_else(invalid)?;
+                let host_steps =
+                    super::frame_recorder::record_native_scroll_forest_host_steps_for_plan(
+                        arena,
+                        root.root,
+                        property_trees,
+                        paint_generations,
+                        host,
+                        edge,
+                        None,
+                        content_stable_id,
+                    )
+                    .map_err(|_| invalid())?;
+                let [
+                    super::frame_recorder::RecordedNativeScrollHostStep::Artifact(host_before),
+                    super::frame_recorder::RecordedNativeScrollHostStep::ContentReceiver(receiver),
+                    super::frame_recorder::RecordedNativeScrollHostStep::Artifact(overlay_after),
+                ] = host_steps.as_slice()
+                else {
+                    return Err(invalid());
+                };
+                if receiver.stable_id != content_stable_id || receiver.witness != edge {
+                    return Err(invalid());
+                }
+                let content_steps =
+                    super::frame_recorder::record_native_scroll_forest_content_steps_for_plan(
+                        arena,
+                        property_trees,
+                        paint_generations,
+                        edge,
+                        &[],
+                    )
+                    .map_err(|_| invalid())?;
+                if content_steps.is_empty()
+                    || content_steps.iter().any(|step| {
+                        matches!(
+                            step,
+                            super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_)
+                        )
+                    })
+                {
+                    return Err(invalid());
+                }
+                let source_bounds_bits = bounds_bits(admission.source_bounds);
+                let compiler_stamp =
+                    super::compiler::compile_native_scroll_forest_boundary_program_for_plan(
+                        root.root,
+                        content_root,
+                        boundary.scroll,
+                        source_bounds_bits,
+                        host_before,
+                        &content_steps,
+                        &[],
+                        overlay_after,
+                    )
+                    .ok_or_else(invalid)?;
+                let host_identity =
+                    super::frame_plan::property_scroll_receiver_artifact_identity(host_before)
+                        .ok_or_else(invalid)?;
+                let content_identity = content_steps
+                    .iter()
+                    .map(|step| match step {
+                        super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                            super::frame_plan::property_scroll_receiver_artifact_identity(artifact)
+                        }
+                        super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_) => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(invalid)?;
+                let overlay_identity =
+                    super::frame_plan::property_scroll_receiver_artifact_identity(overlay_after)
+                        .ok_or_else(invalid)?;
+                let native_boundary = super::frame_plan::NativeScrollBoundaryId(boundary.id.0);
+                let program =
+                    super::compiler::validate_property_boundary_program_root_for_emission(
+                        native_boundary,
+                        root.root,
+                        content_root,
+                        boundary.scroll,
+                        source_bounds_bits,
+                        host_before.clone(),
+                        content_steps,
+                        overlay_after.clone(),
+                        &compiler_stamp,
+                    )
+                    .ok_or_else(invalid)?;
+                compiler_roots.push(
+                    PropertyBoundaryProgramCompilerRootSeal::FrameRootScroll {
+                        ordinal: root.ordinal,
+                        root: root.root,
+                        stable_id: root.stable_id,
+                        node: node.id,
+                        operation: operation.id,
+                        boundary: boundary.id,
+                        resident: resident.id,
+                        receiver: node.receiver,
+                        content_root,
+                        content_stable_id,
+                        source_bounds_bits,
+                        scroll: boundary.scroll,
+                        contents_clip: boundary.contents_clip,
+                        host: host_identity,
+                        content: content_identity,
+                        overlay: overlay_identity,
+                        compiler_stamp,
+                    },
+                );
+                validated_roots.push(
+                    ValidatedPropertyBoundaryProgramRoot::FrameRootScroll {
+                        content_root,
+                        content_stable_id,
+                        program,
+                    },
+                );
+            }
+        }
+    }
+    let seal = PropertyBoundaryProgramCompilerSeal {
+        plan_roots: plan.roots.clone(),
+        roots: compiler_roots,
+        scale_factor_bits: scale_factor.to_bits(),
+        target_format,
+    };
+    let scene = ValidatedPropertyBoundaryProgramForestScene {
+        plan,
+        roots: validated_roots,
+        seal: seal.clone(),
+        planned_seal: seal,
+    };
+    scene.is_canonical().then_some(scene).ok_or_else(invalid)
 }
 
 impl ValidatedFrameRootScrollScene {
@@ -4364,6 +4966,28 @@ pub(crate) struct RetainedPropertyScrollSceneTransaction {
     scroll_groups: Vec<RetainedPropertyScrollResidentGroup>,
 }
 
+/// Typed replacement of the unified property/scroll resident scene with the
+/// exact empty set. This is independent of any planner grammar: unlike the
+/// broad retained-surface `Clear`, it means a successful frame commits an
+/// empty property/scroll active set through the normal atomic stage/finish
+/// lifecycle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RetainedPropertyScrollSceneEmptyReplacement {
+    exact_empty_set: bool,
+}
+
+impl RetainedPropertyScrollSceneEmptyReplacement {
+    fn new() -> Self {
+        Self {
+            exact_empty_set: true,
+        }
+    }
+
+    pub(crate) fn is_canonical(self) -> bool {
+        self.exact_empty_set
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(dead_code)] // Generic compiler authority is consumed by the next joint-scene admission slice.
 enum RetainedPropertyScrollGenericAuthority {
@@ -5849,6 +6473,41 @@ pub(crate) struct PreparedNativeScrollForestTransaction {
     programs: Vec<super::compiler::ValidatedNativeScrollForestBoundaryProgram>,
     geometries: Vec<PreparedScrollContentCompositeGeometry>,
     root_boundaries: Vec<super::frame_plan::NativeScrollBoundaryId>,
+}
+
+enum PreparedPropertyBoundaryProgramRoot {
+    Empty {
+        receiver: super::compiler::ValidatedFrameRootScrollReceiver,
+        frame_opaque_span: Range<u32>,
+    },
+    FrameRootScroll {
+        program: super::compiler::ValidatedNativeScrollForestBoundaryProgram,
+        stamp: RetainedSurfaceRasterStamp,
+        geometry: PreparedScrollContentCompositeGeometry,
+        host_frame_opaque_span: Range<u32>,
+        overlay_frame_opaque_span: Range<u32>,
+    },
+}
+
+enum PreparedPropertyBoundaryProgramResidentStage {
+    Replace(RetainedPropertyScrollSceneTransaction),
+    ReplaceEmpty(RetainedPropertyScrollSceneEmptyReplacement),
+}
+
+/// M7b's exclusive all-or-nothing mutation capability.  Every compiler token,
+/// descriptor, collision check, pool action, geometry and joint transaction
+/// is frozen before this token borrows graph and viewport mutation.
+#[allow(dead_code)] // Graph-inert M7b foundation; production selection remains closed.
+pub(crate) struct PreparedPropertyBoundaryProgramForest<'a> {
+    viewport: &'a mut Viewport,
+    graph: &'a mut FrameGraph,
+    parent_ctx: UiBuildContext,
+    roots: Vec<PreparedPropertyBoundaryProgramRoot>,
+    actions: FxHashMap<super::RetainedSurfaceResidentKey, RetainedSurfaceCompileAction>,
+    resident_stage: PreparedPropertyBoundaryProgramResidentStage,
+    compiler_seal: PropertyBoundaryProgramCompilerSeal,
+    clear_rgba_bits: [u32; 4],
+    frame_owner: RetainedSurfaceFrameStageOwner,
 }
 
 /// M4 read-only pool closure for the ordered nested-scroll segment program.
@@ -16744,6 +17403,267 @@ fn prepare_native_scroll_forest_transaction_with_pool_policy(
     })
 }
 
+/// Completes every fallible M7b check before graph or pool mutation.  The
+/// returned token exclusively borrows both mutable authorities so emission
+/// cannot observe a substituted graph or a changed frame-stage slot.
+#[allow(dead_code)] // Graph-inert M7b foundation; production selection remains closed.
+pub(crate) fn prepare_property_boundary_program_forest_from_pool<'a>(
+    viewport: &'a mut Viewport,
+    graph: &'a mut FrameGraph,
+    ctx: UiBuildContext,
+    scene: ValidatedPropertyBoundaryProgramForestScene,
+    clear_rgba: [f32; 4],
+    frame_owner: RetainedSurfaceFrameStageOwner,
+) -> Result<PreparedPropertyBoundaryProgramForest<'a>, RetainedPropertyScrollScenePrepareError> {
+    if !scene.is_canonical() {
+        return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+    }
+    validate_parent_target(graph, &ctx)
+        .map_err(|_| RetainedPropertyScrollScenePrepareError::ParentTarget)?;
+    if ctx.viewport().scale_factor().to_bits() != scene.seal.scale_factor_bits
+        || ctx.viewport().target_format() != scene.seal.target_format
+        || ctx.paint_offset().map(f32::to_bits) != [0.0_f32.to_bits(); 2]
+        || ctx.graphics_pass_context().scissor_rect.is_some()
+        || ctx.current_clip_id() != 0
+        || ctx.current_render_transform().is_some()
+        || ctx.opaque_rect_order() != 0
+        || clear_rgba.iter().any(|component| !component.is_finite())
+    {
+        return Err(RetainedPropertyScrollScenePrepareError::ContextMismatch);
+    }
+    if !viewport.retained_property_scroll_scene_stage_is_available()
+        || !viewport.retained_surface_frame_stage_owner_is_active(frame_owner)
+    {
+        return Err(RetainedPropertyScrollScenePrepareError::StageUnavailable);
+    }
+    let graph_keys = graph
+        .declared_persistent_texture_keys()
+        .collect::<FxHashSet<_>>();
+    let mut declared = FxHashSet::default();
+    let mut prepared_roots = Vec::with_capacity(scene.roots.len());
+    let mut groups = Vec::new();
+    let mut frame_opaque_cursor = 0_u32;
+    let scale_factor = f32::from_bits(scene.seal.scale_factor_bits);
+    for ((root, contract), token) in scene
+        .plan
+        .roots
+        .iter()
+        .zip(&scene.seal.roots)
+        .zip(scene.roots)
+    {
+        match (contract, token) {
+            (
+                PropertyBoundaryProgramCompilerRootSeal::Empty {
+                    opaque_terminal, ..
+                },
+                ValidatedPropertyBoundaryProgramRoot::Empty { receiver },
+            ) => {
+                let frame_opaque_end = frame_opaque_cursor
+                    .checked_add(*opaque_terminal)
+                    .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+                prepared_roots.push(PreparedPropertyBoundaryProgramRoot::Empty {
+                    receiver,
+                    frame_opaque_span: frame_opaque_cursor..frame_opaque_end,
+                });
+                frame_opaque_cursor = frame_opaque_end;
+            }
+            (
+                PropertyBoundaryProgramCompilerRootSeal::FrameRootScroll {
+                    boundary,
+                    content_root,
+                    content_stable_id,
+                    scroll,
+                    contents_clip,
+                    compiler_stamp,
+                    ..
+                },
+                ValidatedPropertyBoundaryProgramRoot::FrameRootScroll {
+                    content_root: token_content_root,
+                    content_stable_id: token_content_stable_id,
+                    program,
+                },
+            ) => {
+                if *content_root != token_content_root
+                    || *content_stable_id != token_content_stable_id
+                    || program.boundary()
+                        != super::frame_plan::NativeScrollBoundaryId(boundary.0)
+                {
+                    return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+                }
+                let source = content_zero_bounds(*scroll);
+                let source_bounds_bits = bounds_bits(source);
+                let content_bounds = exact_u32_bounds_from_bits(source_bounds_bits)
+                    .ok_or(RetainedPropertyScrollScenePrepareError::GeometryContract)?;
+                let color_key = scroll_content_layer_stable_key(*content_stable_id);
+                let depth_key = color_key
+                    .depth_stencil()
+                    .ok_or(RetainedPropertyScrollScenePrepareError::DescriptorPair)?;
+                if graph_keys.contains(&color_key)
+                    || graph_keys.contains(&depth_key)
+                    || !declared.insert(color_key)
+                    || !declared.insert(depth_key)
+                {
+                    return Err(
+                        RetainedPropertyScrollScenePrepareError::PersistentKeyAlreadyDeclared(
+                            color_key,
+                        ),
+                    );
+                }
+                let color =
+                    texture_desc_for_logical_bounds(source, scale_factor, None, scene.seal.target_format);
+                let (color, depth) = persistent_target_texture_descriptors(color, color_key);
+                let stamp =
+                    super::compiler::validated_native_scroll_forest_content_raster_stamp(
+                        *content_root,
+                        *content_stable_id,
+                        RetainedSurfaceRasterInputs {
+                            color,
+                            depth,
+                            scale_factor_bits: scene.seal.scale_factor_bits,
+                            source_bounds_bits,
+                        },
+                        compiler_stamp.content_artifact_span.clone(),
+                        Vec::new(),
+                        0..program.content_program_opaque_terminal(),
+                    )
+                    .ok_or(RetainedPropertyScrollScenePrepareError::DescriptorPair)?;
+                let geometry = PreparedScrollContentCompositeGeometry::from_validated_native_scroll_forest_content_stamp(
+                    &stamp,
+                    *scroll,
+                    *contents_clip,
+                )
+                .ok_or(RetainedPropertyScrollScenePrepareError::GeometryContract)?;
+                if geometry.source_key() != color_key
+                    || geometry.source_bounds_bits() != source_bounds_bits
+                {
+                    return Err(RetainedPropertyScrollScenePrepareError::GeometryContract);
+                }
+                let group = RetainedPropertyScrollResidentGroup {
+                    boundary: SceneBoundaryId {
+                        ordinal: boundary.0,
+                        owner: root.root,
+                        kind: SceneBoundaryKind::ScrollContents,
+                    },
+                    content_root: *content_root,
+                    content_stable_id: *content_stable_id,
+                    signature: RetainedPropertyScrollGroupSignature {
+                        content_bounds,
+                        tile_edge: SCROLL_CONTENT_TILE_EDGE,
+                        gutter: SCROLL_CONTENT_TILE_GUTTER,
+                        overscan: 0,
+                        scale_factor_bits: scene.seal.scale_factor_bits,
+                        color_format: scene.seal.target_format,
+                    },
+                    backing: RetainedPropertyScrollResidentBacking::Single(stamp.clone()),
+                };
+                if !group.is_native_scroll_forest_canonical() {
+                    return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+                }
+                let host_frame_opaque_end = frame_opaque_cursor
+                    .checked_add(compiler_stamp.host_opaque_count)
+                    .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+                let overlay_frame_opaque_end = host_frame_opaque_end
+                    .checked_add(compiler_stamp.overlay_opaque_count)
+                    .ok_or(RetainedPropertyScrollScenePrepareError::BoundaryDrift)?;
+                prepared_roots.push(
+                    PreparedPropertyBoundaryProgramRoot::FrameRootScroll {
+                        program,
+                        stamp,
+                        geometry,
+                        host_frame_opaque_span: frame_opaque_cursor..host_frame_opaque_end,
+                        overlay_frame_opaque_span:
+                            host_frame_opaque_end..overlay_frame_opaque_end,
+                    },
+                );
+                frame_opaque_cursor = overlay_frame_opaque_end;
+                groups.push(group);
+            }
+            _ => return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift),
+        }
+    }
+    let roots = scene
+        .plan
+        .roots
+        .iter()
+        .map(|root| {
+            Ok(RetainedPropertyScrollJointRootStamp {
+                ordinal: root.ordinal,
+                root: root.root,
+                stable_id: root.stable_id,
+                boundary_span: u32::try_from(root.boundary_span.start)
+                    .map_err(|_| RetainedPropertyScrollScenePrepareError::BoundaryDrift)?
+                    ..u32::try_from(root.boundary_span.end)
+                        .map_err(|_| RetainedPropertyScrollScenePrepareError::BoundaryDrift)?,
+            })
+        })
+        .collect::<Result<Vec<_>, RetainedPropertyScrollScenePrepareError>>()?;
+    let ordered_boundaries = groups.iter().map(|group| group.boundary).collect();
+    let scroll_bindings = groups
+        .iter()
+        .map(|group| RetainedPropertyScrollGroupBindingStamp {
+            boundary: group.boundary,
+            content_root: group.content_root,
+            content_stable_id: group.content_stable_id,
+            backing_rank: group.backing_rank(),
+            ordered_resident_keys: group.active_resident_keys(),
+        })
+        .collect();
+    let resident_stage = if groups.is_empty() {
+        PreparedPropertyBoundaryProgramResidentStage::ReplaceEmpty(
+            RetainedPropertyScrollSceneEmptyReplacement::new(),
+        )
+    } else {
+        let transaction = RetainedPropertyScrollSceneTransaction {
+            seal: RetainedPropertyScrollJointSeal {
+                roots,
+                ordered_boundaries,
+                generic_bindings: Vec::new(),
+                scroll_bindings,
+            },
+            generic_authority: RetainedPropertyScrollGenericAuthority::Empty,
+            generic_full_set: Vec::new(),
+            scroll_groups: groups,
+        };
+        if !transaction.is_canonical() {
+            return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+        }
+        PreparedPropertyBoundaryProgramResidentStage::Replace(transaction)
+    };
+    let actions = match &resident_stage {
+        PreparedPropertyBoundaryProgramResidentStage::Replace(transaction) => viewport
+            .freeze_retained_property_scroll_scene_compile_actions_from_pool(transaction)
+            .ok_or(RetainedPropertyScrollScenePrepareError::PoolContract)?,
+        PreparedPropertyBoundaryProgramResidentStage::ReplaceEmpty(replacement) => {
+            if !replacement.is_canonical() {
+                return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
+            }
+            FxHashMap::default()
+        }
+    };
+    let expected = match &resident_stage {
+        PreparedPropertyBoundaryProgramResidentStage::Replace(transaction) => transaction
+            .ordered_stamps()
+            .into_iter()
+            .map(|stamp| stamp.identity.resident_key())
+            .collect::<FxHashSet<_>>(),
+        PreparedPropertyBoundaryProgramResidentStage::ReplaceEmpty(_) => FxHashSet::default(),
+    };
+    if actions.keys().copied().collect::<FxHashSet<_>>() != expected {
+        return Err(RetainedPropertyScrollScenePrepareError::PoolContract);
+    }
+    Ok(PreparedPropertyBoundaryProgramForest {
+        viewport,
+        graph,
+        parent_ctx: ctx,
+        roots: prepared_roots,
+        actions,
+        resident_stage,
+        compiler_seal: scene.seal,
+        clear_rgba_bits: clear_rgba.map(f32::to_bits),
+        frame_owner,
+    })
+}
+
 fn consume_reused_native_scroll_forest_descendants(
     boundary: super::frame_plan::NativeScrollBoundaryId,
     programs: &[super::compiler::ValidatedNativeScrollForestBoundaryProgram],
@@ -16930,6 +17850,166 @@ pub(crate) fn emit_prepared_native_scroll_forest_transaction(
         viewport.stage_retained_property_scroll_scene(transaction),
         "native forest stages its joint transaction exactly once"
     );
+    parent_ctx.into_state()
+}
+
+/// Infallible consume of the exclusive M7b token.  Emission consults no live
+/// arena/property state and stages the joint resident transaction only after
+/// every ordered root has emitted into the one frozen frame target.
+#[allow(dead_code)] // Graph-inert M7b foundation; production selection remains closed.
+pub(crate) fn emit_prepared_property_boundary_program_forest(
+    prepared: PreparedPropertyBoundaryProgramForest<'_>,
+) -> BuildState {
+    let PreparedPropertyBoundaryProgramForest {
+        viewport,
+        graph,
+        mut parent_ctx,
+        roots,
+        mut actions,
+        resident_stage,
+        compiler_seal,
+        clear_rgba_bits,
+        frame_owner,
+    } = prepared;
+    assert!(viewport.retained_surface_frame_stage_owner_is_active(frame_owner));
+    assert!(viewport.retained_property_scroll_scene_stage_is_available());
+    assert_eq!(roots.len(), compiler_seal.roots.len());
+    let parent_target = parent_ctx
+        .current_target()
+        .unwrap_or_else(|| parent_ctx.allocate_target(graph));
+    parent_ctx.set_current_target(parent_target);
+    graph.add_graphics_pass(ClearPass::new(
+        crate::view::render_pass::clear_pass::ClearParams::new(
+            clear_rgba_bits.map(f32::from_bits),
+        ),
+        crate::view::render_pass::clear_pass::ClearInput {
+            pass_context: parent_ctx.graphics_pass_context(),
+            clear_depth_stencil: true,
+        },
+        crate::view::render_pass::clear_pass::ClearOutput {
+            render_target: parent_target,
+        },
+    ));
+    if let Some(handle) = parent_target.handle() {
+        parent_ctx.set_color_target(Some(handle));
+    }
+    for root in roots {
+        match root {
+            PreparedPropertyBoundaryProgramRoot::Empty {
+                receiver,
+                frame_opaque_span,
+            } => {
+                assert_eq!(parent_ctx.opaque_rect_order(), frame_opaque_span.start);
+                super::compiler::emit_validated_frame_root_scroll_receiver(
+                    receiver,
+                    graph,
+                    &mut parent_ctx,
+                    |_, _, _| unreachable!("M7b Empty root has no boundary"),
+                );
+                assert_eq!(parent_ctx.opaque_rect_order(), frame_opaque_span.end);
+            }
+            PreparedPropertyBoundaryProgramRoot::FrameRootScroll {
+                program,
+                stamp,
+                geometry,
+                host_frame_opaque_span,
+                overlay_frame_opaque_span,
+            } => {
+                assert_eq!(
+                    parent_ctx.opaque_rect_order(),
+                    host_frame_opaque_span.start
+                );
+                assert_eq!(host_frame_opaque_span.end, overlay_frame_opaque_span.start);
+                let mut parent_masks =
+                    super::compiler::NativeScrollForestEmissionMaskStack::new();
+                program.emit_host_before(graph, &mut parent_ctx, &mut parent_masks);
+                assert_eq!(parent_ctx.opaque_rect_order(), host_frame_opaque_span.end);
+                let action = actions
+                    .remove(&stamp.identity.resident_key())
+                    .expect("prepared M7b resident action is frozen");
+                let mut content_ctx = UiBuildContext::from_parts(
+                    parent_ctx.viewport(),
+                    parent_ctx
+                        .layer_subtree_state_with_ancestor_clip(AncestorClipContext::default()),
+                );
+                content_ctx.set_current_render_transform(None);
+                let content_target = content_ctx.allocate_persistent_target_with_desc(
+                    graph,
+                    stamp.target.color.clone(),
+                    stamp.identity.color_key,
+                );
+                content_ctx.set_current_target(content_target);
+                match action {
+                    RetainedSurfaceCompileAction::Reraster => {
+                        graph.add_graphics_pass(ClearPass::new(
+                            crate::view::render_pass::clear_pass::ClearParams::new([0.0; 4]),
+                            crate::view::render_pass::clear_pass::ClearInput {
+                                pass_context: content_ctx.graphics_pass_context(),
+                                clear_depth_stencil: true,
+                            },
+                            crate::view::render_pass::clear_pass::ClearOutput {
+                                render_target: content_target,
+                            },
+                        ));
+                        let mut content_masks =
+                            super::compiler::NativeScrollForestEmissionMaskStack::new();
+                        program.emit_content_steps(
+                            graph,
+                            &mut content_ctx,
+                            &mut content_masks,
+                            |_, _, _, _| {
+                                unreachable!("M7b FrameRootScroll has no nested boundary")
+                            },
+                        );
+                        assert!(content_masks.is_empty());
+                    }
+                    RetainedSurfaceCompileAction::Reuse => {
+                        content_ctx.replay_opaque_rect_order_exact(
+                            0,
+                            program.content_program_opaque_terminal(),
+                        );
+                    }
+                }
+                assert_eq!(
+                    content_ctx.opaque_rect_order(),
+                    program.content_program_opaque_terminal()
+                );
+                parent_ctx.merge_child_target_pairs(&content_ctx.into_state());
+                parent_ctx.set_current_target(parent_target);
+                graph.add_graphics_pass(
+                    geometry.into_texture_composite_pass(
+                        TextureCompositeInput::from_render_target(
+                            TextureCompositeSourceIn::with_handle(
+                                content_target
+                                    .handle()
+                                    .expect("prepared M7b persistent content target handle"),
+                            ),
+                            Default::default(),
+                            parent_ctx.graphics_pass_context(),
+                        ),
+                        TextureCompositeOutput {
+                            render_target: parent_target,
+                        },
+                    ),
+                );
+                assert_eq!(parent_ctx.opaque_rect_order(), overlay_frame_opaque_span.start);
+                program.emit_overlay_after(graph, &mut parent_ctx, &mut parent_masks);
+                assert!(parent_masks.is_empty());
+                assert_eq!(parent_ctx.opaque_rect_order(), overlay_frame_opaque_span.end);
+            }
+        }
+    }
+    assert!(actions.is_empty());
+    match resident_stage {
+        PreparedPropertyBoundaryProgramResidentStage::Replace(transaction) => assert!(
+            viewport.stage_retained_property_scroll_scene(transaction),
+            "prepared M7b forest stages exactly one joint transaction"
+        ),
+        PreparedPropertyBoundaryProgramResidentStage::ReplaceEmpty(replacement) => assert!(
+            viewport.stage_retained_property_scroll_scene_empty_replacement(replacement),
+            "prepared M7b empty forest stages one exact zero-set replacement"
+        ),
+    }
     parent_ctx.into_state()
 }
 

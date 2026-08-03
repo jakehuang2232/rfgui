@@ -1205,6 +1205,61 @@ pub(crate) fn validate_native_scroll_forest_boundary_program_for_emission(
     })
 }
 
+/// M7b compiler capability for one standalone frame-root scroll program.
+/// The caller supplies the M7a boundary identity, but every artifact and the
+/// compiler stamp are rebuilt and compared before the owning token exists.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_property_boundary_program_root_for_emission(
+    boundary: super::frame_plan::NativeScrollBoundaryId,
+    boundary_root: NodeKey,
+    content_root: NodeKey,
+    scroll: ScrollNodeSnapshot,
+    source_bounds_bits: [u32; 4],
+    host_before: PaintArtifact,
+    content_steps: Vec<super::frame_recorder::RecordedTransformSurfaceStep>,
+    overlay_after: PaintArtifact,
+    expected_stamp: &NativeScrollForestCompilerStamp,
+) -> Option<ValidatedNativeScrollForestBoundaryProgram> {
+    if content_steps.iter().any(|step| {
+        matches!(
+            step,
+            super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_)
+        )
+    }) {
+        return None;
+    }
+    let rebuilt = compile_native_scroll_forest_boundary_program_for_plan(
+        boundary_root,
+        content_root,
+        scroll,
+        source_bounds_bits,
+        &host_before,
+        &content_steps,
+        &[],
+        &overlay_after,
+    )?;
+    if rebuilt != *expected_stamp || !rebuilt.child_markers.is_empty() {
+        return None;
+    }
+    let content_steps = content_steps
+        .into_iter()
+        .map(|step| match step {
+            super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
+                Some(ValidatedNativeScrollForestContentStep::Artifact(artifact))
+            }
+            super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_) => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(ValidatedNativeScrollForestBoundaryProgram {
+        boundary,
+        host_before,
+        content_steps,
+        overlay_after,
+        content_program_opaque_terminal: rebuilt.content_opaque_count,
+        stamp: rebuilt,
+    })
+}
+
 impl ValidatedNativeScrollForestBoundaryProgram {
     pub(crate) fn boundary(&self) -> super::frame_plan::NativeScrollBoundaryId {
         self.boundary
@@ -1225,6 +1280,21 @@ impl ValidatedNativeScrollForestBoundaryProgram {
 
     pub(crate) fn content_program_opaque_terminal(&self) -> u32 {
         self.content_program_opaque_terminal
+    }
+
+    pub(crate) fn matches_compiler_stamp(&self, expected: &NativeScrollForestCompilerStamp) -> bool {
+        self.stamp == *expected
+            && self.content_program_opaque_terminal == expected.content_opaque_count
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_compiler_stamp_for_test(&mut self) {
+        self.stamp.content_op_count = self.stamp.content_op_count.saturating_add(1);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_host_opaque_count_for_test(&mut self, count: u32) {
+        self.stamp.host_opaque_count = count;
     }
 
     pub(crate) fn emit_host_before(
@@ -1424,8 +1494,50 @@ impl ValidatedFrameRootScrollReceiver {
     }
 }
 
+impl ValidatedFrameRootScrollReceiver {
+    /// Cross-checks a plain-root receiver against the compiler seal without
+    /// exposing its private emission payload. Both the ordered artifact
+    /// fingerprints and the cumulative opaque cursor are derived again from
+    /// the token, so a copied seal cannot bless a substituted receiver.
+    pub(crate) fn matches_plain_artifact_fingerprint(
+        &self,
+        expected_artifacts: &[super::frame_plan::PropertyScrollReceiverArtifactIdentity],
+        expected_opaque_terminal: u32,
+    ) -> bool {
+        if self.expected_boundary.is_some()
+            || self.scroll_host.is_some()
+            || self.scroll.is_some()
+            || self.artifact_boundary_root.is_some()
+        {
+            return false;
+        }
+        let mut opaque_terminal = 0_u32;
+        let artifacts = self
+            .steps
+            .iter()
+            .map(|step| {
+                let ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } = step else {
+                    return None;
+                };
+                opaque_terminal = opaque_terminal
+                    .checked_add(super::frame_plan::opaque_order_count(artifact))?;
+                super::frame_plan::property_scroll_receiver_artifact_identity(artifact)
+            })
+            .collect::<Option<Vec<_>>>();
+        artifacts.as_deref() == Some(expected_artifacts)
+            && opaque_terminal == expected_opaque_terminal
+    }
+}
+
 #[cfg(test)]
 impl ValidatedFrameRootScrollReceiver {
+    pub(crate) fn tamper_plain_artifact_fingerprint_for_test(&mut self) -> bool {
+        if self.expected_boundary.is_some() {
+            return false;
+        }
+        self.steps.pop().is_some()
+    }
+
     pub(crate) fn has_sealed_scroll_host_phase_order(&self) -> bool {
         let (Some(boundary), Some(root), Some(scroll)) =
             (self.expected_boundary, self.scroll_host, self.scroll)

@@ -303,6 +303,9 @@ impl Viewport {
                     PendingRetainedSurfaceTransaction::CommitPropertyScrollScene {
                         transaction,
                     } => transaction.ordered_stamps().len(),
+                    PendingRetainedSurfaceTransaction::CommitPropertyScrollSceneEmpty {
+                        ..
+                    } => 0,
                 });
         (
             self.compositor.retained_surfaces.entries.len()
@@ -1122,6 +1125,21 @@ impl Viewport {
         )
     }
 
+    /// Stages an exact empty replacement for the unified property/scroll
+    /// resident set. The active set is unchanged until a successful matching
+    /// frame finish commits this typed capability.
+    pub(crate) fn stage_retained_property_scroll_scene_empty_replacement(
+        &mut self,
+        replacement: crate::view::paint::RetainedPropertyScrollSceneEmptyReplacement,
+    ) -> bool {
+        if !replacement.is_canonical() {
+            return false;
+        }
+        self.try_stage_retained_surface_transaction(
+            PendingRetainedSurfaceTransaction::CommitPropertyScrollSceneEmpty { replacement },
+        )
+    }
+
     /// Read-only preflight used by the exclusive prepared-scene lease. Once
     /// that lease owns `&mut Viewport`, no caller can consume this slot before
     /// emission stages its compiler-sealed transaction.
@@ -1523,6 +1541,24 @@ impl Viewport {
                 self.compositor
                     .retained_surface_pair_witnesses
                     .extend(protected_color_keys);
+                self.evict_inactive_property_scroll_residents();
+            }
+            Some(PendingRetainedSurfaceTransaction::CommitPropertyScrollSceneEmpty {
+                replacement,
+            }) => {
+                if !replacement.is_canonical() {
+                    self.compositor.pending_retained_surfaces = Some(
+                        PendingRetainedSurfaceTransaction::CommitPropertyScrollSceneEmpty {
+                            replacement,
+                        },
+                    );
+                    self.invalidate_retained_surfaces();
+                    return;
+                }
+                let no_protected_colors = FxHashSet::default();
+                self.clear_scroll_tile_resident_cache_preserving_pairs(&no_protected_colors);
+                self.clear_generic_retained_surface_residents();
+                self.compositor.retained_surfaces.property_scroll.active.clear();
                 self.evict_inactive_property_scroll_residents();
             }
             Some(PendingRetainedSurfaceTransaction::Clear) | None => {

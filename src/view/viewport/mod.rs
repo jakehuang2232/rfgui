@@ -736,6 +736,13 @@ enum PendingRetainedSurfaceTransaction {
     CommitPropertyScrollScene {
         transaction: crate::view::paint::RetainedPropertyScrollSceneTransaction,
     },
+    /// Typed exact-empty replacement for the unified property/scroll scene.
+    /// This is narrower than `Clear`: it participates in the same atomic
+    /// frame-owner lifecycle without pretending an empty resident forest is a
+    /// canonical non-empty property-scroll transaction.
+    CommitPropertyScrollSceneEmpty {
+        replacement: crate::view::paint::RetainedPropertyScrollSceneEmptyReplacement,
+    },
     Clear,
 }
 

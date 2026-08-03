@@ -1988,6 +1988,7 @@ mod frame_root_scroll_tests;
 mod scroll_content_effect_tests;
 mod scroll_content_effect_reuse_tests;
 mod property_boundary_dag_tests;
+mod property_boundary_program_forest_m7b_tests;
 mod nested_scroll_segment_m4_tests;
 mod nested_scroll_segment_m5a_tests;
 mod nested_scroll_segment_m5b_tests;
