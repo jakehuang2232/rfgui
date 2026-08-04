@@ -528,6 +528,20 @@ fn focused_atomic_projection_scroll_fixture(
     PropertyTrees,
     PaintGenerationTracker,
 ) {
+    focused_atomic_projection_scroll_fixture_with_state(caret_visible, None, "projected")
+}
+
+fn focused_atomic_projection_scroll_fixture_with_state(
+    caret_visible: bool,
+    preedit: Option<&str>,
+    projected_content: &'static str,
+) -> (
+    NodeArena,
+    NodeKey,
+    NodeKey,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
     let width = 132.0;
     let scroll_y = 0.0;
     let mut text_component = TextArea::new();
@@ -536,9 +550,17 @@ fn focused_atomic_projection_scroll_fixture(
     text_component.line_height = 1.25;
     text_component.is_focused = true;
     text_component.caret_visible = caret_visible;
-    text_component.cursor_char = 0;
-    text_component.on_render_handler = Some(crate::ui::on_text_area_render(|render| {
-        render.range(7..16, |_text_area| crate::ui::RsxNode::text("projected"));
+    text_component.cursor_char = usize::from(preedit.is_some()) * 8;
+    if let Some(preedit) = preedit {
+        text_component.ime_preedit = preedit.to_string();
+        text_component.ime_preedit_cursor = Some((0, preedit.len()));
+        text_component.children_dirty = true;
+        text_component.bump_unified_ifc_source_revision();
+    }
+    text_component.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
+        render.range(7..16, move |_text_area| {
+            crate::ui::RsxNode::text(projected_content)
+        });
     }));
 
     let mut arena = NodeArena::new();

@@ -16,8 +16,7 @@ fn property_scroll_b2_single_preclear_emit_commit_and_reuse_are_one_transaction(
     };
     let mut viewport = Viewport::new();
     let mut first_graph = FrameGraph::new();
-    let mut preclear_ctx =
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+    let mut preclear_ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let parent = preclear_ctx.allocate_target(&mut first_graph);
     preclear_ctx.set_current_target(parent);
     let first = prepare_retained_property_scroll_scene_from_pool(
@@ -113,10 +112,105 @@ fn property_scroll_b2_focused_atomic_projection_prepares_and_emits_post_composit
             1
         );
         assert_eq!(graph.test_graphics_passes::<ClearPass>().len(), 2);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true));
     }
+}
+
+#[test]
+fn property_scroll_b2_focused_atomic_post_composite_state_preserves_resident_reuse() {
+    let sampled_at = crate::time::Instant::now();
+    let make_scene = |caret_visible, preedit, projected_content| {
+        let (arena, root, _, properties, generations) =
+            focused_atomic_projection_scroll_fixture_with_state(
+                caret_visible,
+                preedit,
+                projected_content,
+            );
+        plan_and_validate_property_scroll_scene(
+            &arena,
+            &[root],
+            &properties,
+            &generations,
+            1.0,
+            [0.0; 2],
+            None,
+            sampled_at,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            generous_budget(),
+        )
+        .expect("focused atomic projection state must remain compiler-sealed")
+    };
+    let prepare_emit = |viewport: &mut Viewport,
+                        scene: ValidatedPropertyScrollScene|
+     -> (
+        RetainedSurfaceRasterStamp,
+        RetainedPropertyScrollSceneBuildTrace,
+    ) {
+        let owner = viewport.begin_retained_surface_frame_stage().unwrap();
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+        let parent = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(parent);
+        let mut prepared = prepare_retained_property_scroll_forest_from_pool(
+            viewport, scene, &mut graph, ctx, [0.0; 4], owner,
+        )
+        .expect("focused atomic projection frame prepares atomically");
+        prepared.refresh_actions_from_committed_test_pool();
+        let stamps = prepared.scroll_content_stamps_for_test();
+        let [stamp] = stamps.as_slice() else {
+            panic!("focused atomic projection owns one resident stamp")
+        };
+        let stamp = stamp.clone();
+        let outcome = emit_prepared_retained_property_scroll_forest(prepared);
+        let (_, trace) = outcome.into_parts();
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
+        (stamp, trace)
+    };
+
+    let mut viewport = Viewport::new();
+    let (cold_stamp, cold) = prepare_emit(&mut viewport, make_scene(true, None, "projected"));
+    assert_eq!((cold.reraster_count, cold.reuse_count), (1, 0));
+
+    let (caret_stamp, caret) = prepare_emit(&mut viewport, make_scene(false, None, "projected"));
+    assert_eq!(
+        caret_stamp, cold_stamp,
+        "caret visibility is post-composite"
+    );
+    assert_eq!((caret.reraster_count, caret.reuse_count), (0, 1));
+
+    let (preedit_stamp, preedit) =
+        prepare_emit(&mut viewport, make_scene(true, Some("中"), "projected"));
+    assert_eq!(
+        preedit_stamp.identity.resident_key(),
+        cold_stamp.identity.resident_key(),
+        "entering preedit keeps the resident allocation key",
+    );
+    assert_ne!(
+        preedit_stamp, cold_stamp,
+        "entering preedit changes the resident glyph payload",
+    );
+    assert_eq!((preedit.reraster_count, preedit.reuse_count), (1, 0));
+
+    let (warm_preedit_stamp, warm_preedit) =
+        prepare_emit(&mut viewport, make_scene(true, Some("中"), "projected"));
+    assert_eq!(
+        warm_preedit_stamp, preedit_stamp,
+        "stable preedit glyphs preserve the resident raster stamp",
+    );
+    assert_eq!(
+        (warm_preedit.reraster_count, warm_preedit.reuse_count),
+        (0, 1),
+    );
+
+    let (content_stamp, content) =
+        prepare_emit(&mut viewport, make_scene(true, None, "projection"));
+    assert_eq!(
+        content_stamp.identity.resident_key(),
+        cold_stamp.identity.resident_key(),
+        "content changes keep the resident allocation key",
+    );
+    assert_ne!(content_stamp, cold_stamp, "content enters raster identity");
+    assert_eq!((content.reraster_count, content.reuse_count), (1, 0));
 }
 
 #[test]
@@ -134,8 +228,7 @@ fn property_scroll_b2_tiled_preclear_freezes_row_major_actions_and_emits_each_ti
     );
     let mut viewport = Viewport::new();
     let mut graph = FrameGraph::new();
-    let mut preclear_ctx =
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+    let mut preclear_ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let parent = preclear_ctx.allocate_target(&mut graph);
     preclear_ctx.set_current_target(parent);
     let prepared = prepare_retained_property_scroll_scene_from_pool(
@@ -168,8 +261,7 @@ fn property_scroll_b2_tiled_preclear_freezes_row_major_actions_and_emits_each_ti
 fn property_scroll_b2_offset_and_alpha_only_changes_reuse_content_residents() {
     fn commit_boundary(viewport: &mut Viewport, boundary: ValidatedPropertyScrollBoundary) {
         let mut graph = FrameGraph::new();
-        let mut preclear =
-            UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+        let mut preclear = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
         let parent = preclear.allocate_target(&mut graph);
         preclear.set_current_target(parent);
         let prepared = prepare_retained_property_scroll_scene_from_pool(
@@ -203,13 +295,9 @@ fn property_scroll_b2_offset_and_alpha_only_changes_reuse_content_residents() {
     commit_boundary(&mut viewport, offset_a);
     let mut graph = FrameGraph::new();
     let ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
-    let mut offset_b = prepare_retained_property_scroll_scene_from_pool(
-        &mut viewport,
-        offset_b,
-        &mut graph,
-        ctx,
-    )
-    .unwrap();
+    let mut offset_b =
+        prepare_retained_property_scroll_scene_from_pool(&mut viewport, offset_b, &mut graph, ctx)
+            .unwrap();
     offset_b.refresh_actions_from_committed_test_pool();
     let offset_actions = offset_b.actions.clone();
     assert!(
@@ -287,8 +375,7 @@ fn property_scroll_b2_preclear_mismatch_preserves_graph_pool_and_pending() {
     let graph_before = graph.build_state_snapshot_for_test();
     let pool_before = viewport.retained_surface_transaction_shape_for_test();
     let mut invalid = boundary;
-    let PropertyScrollCompiledStep::DetachedContent { parent_after, .. } =
-        &mut invalid.steps[1]
+    let PropertyScrollCompiledStep::DetachedContent { parent_after, .. } = &mut invalid.steps[1]
     else {
         unreachable!();
     };
@@ -330,13 +417,9 @@ fn property_scroll_b2_exclusive_lease_is_graph_inert_until_consumed() {
     ctx.set_current_target(parent);
     let graph_before = graph.build_state_snapshot_for_test();
     let pool_before = viewport.retained_surface_transaction_shape_for_test();
-    let prepared = prepare_retained_property_scroll_scene_from_pool(
-        &mut viewport,
-        boundary,
-        &mut graph,
-        ctx,
-    )
-    .unwrap();
+    let prepared =
+        prepare_retained_property_scroll_scene_from_pool(&mut viewport, boundary, &mut graph, ctx)
+            .unwrap();
     assert_eq!(prepared.trace.reraster_count, 1);
     drop(prepared);
     assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
@@ -370,10 +453,8 @@ fn property_scroll_b3_auto_consume_owns_root_clear_under_exclusive_lease() {
         UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
     )
     .expect("Auto prepares before the common target and clear");
-    let first = emit_prepared_retained_property_scroll_scene_with_root_clear(
-        first,
-        [0.25, 0.5, 0.75, 1.0],
-    );
+    let first =
+        emit_prepared_retained_property_scroll_scene_with_root_clear(first, [0.25, 0.5, 0.75, 1.0]);
     assert_eq!(first.trace.reraster_count, 1);
     assert_eq!(first.trace.reuse_count, 0);
     assert_eq!(first_graph.test_graphics_passes::<ClearPass>().len(), 2);
@@ -496,11 +577,7 @@ fn property_scroll_b2_preclear_rejects_graph_context_target_and_time_drift() {
             collision_ctx,
         )
         .err(),
-        Some(
-            RetainedPropertyScrollScenePrepareError::PersistentKeyAlreadyDeclared(
-                collision_key
-            )
-        )
+        Some(RetainedPropertyScrollScenePrepareError::PersistentKeyAlreadyDeclared(collision_key))
     );
     assert_eq!(
         collision_graph.build_state_snapshot_for_test(),
@@ -508,8 +585,7 @@ fn property_scroll_b2_preclear_rejects_graph_context_target_and_time_drift() {
     );
 
     let mut source_graph = FrameGraph::new();
-    let mut foreign_ctx =
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+    let mut foreign_ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let foreign_target = foreign_ctx.allocate_target(&mut source_graph);
     foreign_ctx.set_current_target(foreign_target);
     let mut target_graph = FrameGraph::new();
