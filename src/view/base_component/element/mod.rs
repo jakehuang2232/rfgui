@@ -2967,35 +2967,6 @@ pub enum RetainedAbsoluteClipModeWitness {
     AnchorParentEscape,
 }
 
-/// Common contract implemented by every arena-backed UI component.
-///
-/// `ElementTrait` participates in layout, input, Legacy rendering, retained
-/// observation, dirty tracking, resource preparation, and engine-owned child
-/// traversal. Implementations must keep [`Self::stable_id`],
-/// [`Self::box_model_snapshot`], and [`Self::children`] coherent with the
-/// current arena node. `stable_id` is immutable cross-frame identity; the
-/// arena's `NodeKey` and child order remain authoritative for the current
-/// frame.
-///
-/// Under `RetainedAuto`, one authority owns the whole frame. A host may opt
-/// into the narrow property-neutral custom grammar through
-/// [`Self::record_custom_leaf_paint`] or
-/// [`Self::record_custom_wrapper_paint`]. Unsupported or malformed output
-/// selects whole-frame Legacy before artifact emission. Arbitrary GPU hosts
-/// should keep a complete [`Renderable::build`] implementation and leave both
-/// retained hooks at their defaults.
-///
-/// Retained hooks may be invoked repeatedly for capability, metadata, and full
-/// recording. They must be observationally pure and deterministic: do not
-/// mutate state, consume queues, poll newer resources, read wall-clock time,
-/// traverse children, or vary output with debug/inspector state. Animation
-/// uses the engine-supplied tick time; paint resources are frozen after final
-/// layout by [`Layoutable::prepare_paint_resources`]. Every visible mutation
-/// must invalidate all dependent dirty/property/topology state.
-///
-/// See `docs/design/retained-auto-mode-contract.md` and
-/// `docs/guides/custom-retained-components.md` for the complete v1 contract
-/// and integration guide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RetainedScrollNormalizedPaintKind {
     Element,
@@ -3028,6 +2999,31 @@ impl RetainedScrollNormalizedPaintCapability {
     }
 }
 
+/// Common contract implemented by every arena-backed UI component.
+///
+/// `ElementTrait` participates in layout, input, Legacy rendering, retained
+/// observation, dirty tracking, resource preparation, and engine-owned child
+/// traversal. Implementations must keep [`Self::stable_id`],
+/// [`Self::box_model_snapshot`], and [`Self::children`] coherent with the
+/// current arena node. `stable_id` is immutable cross-frame identity; the
+/// arena's `NodeKey` and child order remain authoritative for the current
+/// frame.
+///
+/// Under `RetainedAuto`, one authority owns the whole frame. A host may opt
+/// into the current property-neutral adapter through
+/// [`Self::record_custom_leaf_paint`] or
+/// [`Self::record_custom_wrapper_paint`]. Unsupported or malformed output
+/// selects whole-frame Legacy before artifact emission. Arbitrary GPU hosts
+/// should keep a complete [`Renderable::build`] implementation and leave both
+/// retained hooks at their defaults.
+///
+/// Retained hooks may be invoked repeatedly for capability, metadata, and full
+/// recording. They must be observationally pure and deterministic: do not
+/// mutate state, consume queues, poll newer resources, read wall-clock time,
+/// traverse children, or vary output with debug/inspector state. Animation
+/// uses the engine-supplied tick time; paint resources are frozen after final
+/// layout by [`Layoutable::prepare_paint_resources`]. Every visible mutation
+/// must invalidate all dependent dirty/property/topology state.
 pub trait ElementTrait:
     Layoutable + EventTarget + Renderable + ElementTypeName + std::any::Any
 {

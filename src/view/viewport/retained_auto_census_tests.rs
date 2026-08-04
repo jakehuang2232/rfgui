@@ -101,8 +101,8 @@ fn census_reports_retained_success_without_inspecting_candidate_rejections() {
 
 #[test]
 fn census_capture_flag_does_not_enable_the_debug_overlay() {
-    // Contract section 8: debug capture is observational. The census-only flag
-    // exists so a scene can be censused without the overlay painting over it.
+    // Debug capture is observational. The census-only flag exists so a scene
+    // can be censused without the overlay painting over it.
     let mut viewport = Viewport::new();
     let mut options = viewport.debug_options();
     options.retained_auto_census = true;

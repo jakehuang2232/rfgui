@@ -5,8 +5,7 @@
 //! *which* native component to work on next needs the same data aggregated by
 //! `(element type, stage, category, detail)`.
 //!
-//! This module is purely observational, in the sense of the RetainedAuto
-//! contract's debug section: it reads a finished
+//! This module is purely observational: it reads a finished
 //! [`DebugRetainedAutoSnapshot`] and never touches authority selection,
 //! artifacts, resources, or resident actions.
 //!
@@ -23,7 +22,7 @@
 //! [`DebugRetainedAutoStatistics`] is not a coverage measurement.
 //! `legacy_nodes` is the whole arena whenever the frame fell back, and
 //! `covered_nodes` counts the nodes that reached the debug capture — the
-//! contract keeps debug capture free of any RetainedAuto-only traversal, so
+//! debug capture performs no RetainedAuto-only traversal, so
 //! neither number is a per-node coverage census. Read
 //! [`DebugFallbackCensus::entries`] for the actionable data.
 
