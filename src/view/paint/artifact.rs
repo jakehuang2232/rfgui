@@ -3433,70 +3433,53 @@ pub(crate) struct PreparedDrawRectIdentity {
     params: PreparedDrawRectParamsIdentity,
 }
 
-/// Exact semantic and raster identity for C2a's selection underlay.
+/// Component-independent semantic and raster identity for a text selection
+/// underlay.
 ///
 /// The character range is intentionally duplicated beside the exact ordered
-/// rectangle identities. That makes the payload itself prove which admitted
-/// selection produced it; changing only the grammar cannot leave a canonical
-/// retained stamp behind.
+/// rectangle identities. The payload validates its own range, color, and draw
+/// operations; no component-owned grammar is needed to make it canonical.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RetainedTextAreaSelectionRasterSeal {
+pub(crate) struct TextSelectionPayloadIdentity {
     pub(crate) start_char: usize,
     pub(crate) end_char: usize,
     pub(crate) color_rgba_bits: [u32; 4],
     pub(crate) rects: Arc<[PreparedDrawRectIdentity]>,
 }
 
-impl RetainedTextAreaSelectionRasterSeal {
-    pub(crate) fn is_canonical_for_text_area(
-        &self,
-        grammar: crate::view::base_component::text_area::RetainedTextAreaPaintGrammar,
-    ) -> bool {
-        let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-            start_char,
-            end_char,
-            color_rgba_bits,
-        } = grammar
-        else {
-            return false;
-        };
-        self.start_char == start_char
-            && self.end_char == end_char
-            && self.color_rgba_bits == color_rgba_bits
+impl TextSelectionPayloadIdentity {
+    pub(crate) fn is_canonical(&self) -> bool {
+        self.start_char < self.end_char
+            && self
+                .color_rgba_bits
+                .map(f32::from_bits)
+                .into_iter()
+                .all(|channel| channel.is_finite() && (0.0..=1.0).contains(&channel))
             && !self.rects.is_empty()
             && self.rects.iter().all(|rect| {
                 rect.mode == RectRenderMode::FillOnly
-                    && rect.params.fill_color_bits == color_rgba_bits
+                    && rect.params.fill_color_bits == self.color_rgba_bits
                     && rect.params.opacity_bits == 1.0_f32.to_bits()
             })
     }
 
-    pub(crate) fn is_canonical_for_interactive(
+    pub(crate) fn matches_source(
         &self,
-        grammar: crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar,
+        start_char: usize,
+        end_char: usize,
+        color_rgba_bits: [u32; 4],
     ) -> bool {
-        let crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs {
-            start_char,
-            end_char,
-            color_rgba_bits,
-        } = grammar
-        else {
-            return false;
-        };
-        self.is_canonical_for_text_area(
-            crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-                start_char,
-                end_char,
-                color_rgba_bits,
-            },
-        )
+        self.is_canonical()
+            && self.start_char == start_char
+            && self.end_char == end_char
+            && self.color_rgba_bits == color_rgba_bits
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RetainedInteractiveTextAreaResidentRasterSeal {
     FocusedGlyphs,
-    FocusedSelectionGlyphs(RetainedTextAreaSelectionRasterSeal),
+    FocusedSelectionGlyphs(TextSelectionPayloadIdentity),
     FocusedPreeditGlyphs(RetainedTextAreaPreeditRasterSeal),
 }
 
@@ -3530,9 +3513,14 @@ impl RetainedInteractiveTextAreaResidentRasterSeal {
                 Self::FocusedGlyphs,
                 crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedGlyphs,
             ) => true,
-            (Self::FocusedSelectionGlyphs(seal), grammar) => {
-                seal.is_canonical_for_interactive(grammar)
-            }
+            (
+                Self::FocusedSelectionGlyphs(seal),
+                crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs {
+                    start_char,
+                    end_char,
+                    color_rgba_bits,
+                },
+            ) => seal.matches_source(start_char, end_char, color_rgba_bits),
             (
                 Self::FocusedPreeditGlyphs(seal),
                 crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedPreeditGlyphs,
@@ -3699,7 +3687,7 @@ pub(crate) enum PaintPayloadIdentity {
     ),
     PreparedTexts(Arc<[PreparedTextIdentity]>),
     PreparedRects(Arc<[PreparedDrawRectIdentity]>),
-    RetainedTextAreaSelection(RetainedTextAreaSelectionRasterSeal),
+    TextSelection(TextSelectionPayloadIdentity),
     PreparedScrollbarOverlay(PreparedScrollbarOverlayIdentity),
     InlineIfcDecorations(
         Arc<[PreparedShadowIdentity]>,
@@ -4172,37 +4160,39 @@ fn caret_bounds_intersect_live_clip_chain(
 }
 
 impl PaintPayloadIdentity {
-    pub(crate) fn retained_text_area_selection_seal(
+    pub(crate) fn text_selection_identity(
         &self,
-    ) -> Option<RetainedTextAreaSelectionRasterSeal> {
-        let Self::RetainedTextAreaSelection(seal) = self else {
+    ) -> Option<TextSelectionPayloadIdentity> {
+        let Self::TextSelection(seal) = self else {
             return None;
         };
         Some(seal.clone())
     }
 
-    pub(crate) fn retained_text_area_selection_grammar(
+    pub(crate) fn matches_text_selection_source(
         &self,
-    ) -> Option<crate::view::base_component::text_area::RetainedTextAreaPaintGrammar> {
-        let Self::RetainedTextAreaSelection(seal) = self else {
-            return None;
-        };
-        let grammar =
-            crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-                start_char: seal.start_char,
-                end_char: seal.end_char,
-                color_rgba_bits: seal.color_rgba_bits,
-            };
-        grammar.is_canonical().then_some(grammar)
+        start_char: usize,
+        end_char: usize,
+        color_rgba_bits: [u32; 4],
+    ) -> bool {
+        matches!(self, Self::TextSelection(selection)
+            if selection.matches_source(start_char, end_char, color_rgba_bits))
     }
 
-    pub(crate) fn matches_exact_text_area_selection_ops<'a>(
+    pub(crate) fn matches_exact_text_selection_ops<'a>(
         &self,
         rects: impl IntoIterator<Item = &'a DrawRectOp>,
     ) -> bool {
-        self.retained_text_area_selection_grammar()
-            .and_then(|grammar| Self::prepared_text_area_selection(grammar, rects))
-            .as_ref()
+        let Self::TextSelection(selection) = self else {
+            return false;
+        };
+        Self::prepared_text_selection(
+            selection.start_char,
+            selection.end_char,
+            selection.color_rgba_bits,
+            rects,
+        )
+        .as_ref()
             == Some(self)
     }
 
@@ -4237,62 +4227,34 @@ impl PaintPayloadIdentity {
         (Self::prepared_rects(ops.iter()).as_ref() == Some(self)).then_some(ops)
     }
 
-    pub(crate) fn prepared_text_area_selection<'a>(
-        grammar: crate::view::base_component::text_area::RetainedTextAreaPaintGrammar,
+    pub(crate) fn prepared_text_selection<'a>(
+        start_char: usize,
+        end_char: usize,
+        color_rgba_bits: [u32; 4],
         rects: impl IntoIterator<Item = &'a DrawRectOp>,
     ) -> Option<Self> {
-        let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+        let rects = Self::draw_rect_identities(rects)?;
+        let selection = TextSelectionPayloadIdentity {
             start_char,
             end_char,
             color_rgba_bits,
-        } = grammar
-        else {
-            return None;
+            rects,
         };
-        if !grammar.is_canonical() {
-            return None;
-        }
-        let rects = Self::draw_rect_identities(rects)?;
-        if rects.is_empty()
-            || rects.iter().any(|rect| {
-                rect.mode != RectRenderMode::FillOnly
-                    || rect.params.fill_color_bits != color_rgba_bits
-                    || rect.params.opacity_bits != 1.0_f32.to_bits()
-            })
-        {
-            return None;
-        }
-        Some(Self::RetainedTextAreaSelection(
-            RetainedTextAreaSelectionRasterSeal {
-                start_char,
-                end_char,
-                color_rgba_bits,
-                rects,
-            },
-        ))
+        selection.is_canonical().then_some(Self::TextSelection(selection))
     }
 
-    pub(crate) fn matches_exact_text_area_selection(
+    pub(crate) fn matches_exact_text_selection(
         &self,
-        grammar: crate::view::base_component::text_area::RetainedTextAreaPaintGrammar,
+        start_char: usize,
+        end_char: usize,
+        color_rgba_bits: [u32; 4],
         op_count: usize,
         bounds_bits: [u32; 4],
     ) -> bool {
-        let Self::RetainedTextAreaSelection(seal) = self else {
+        let Self::TextSelection(seal) = self else {
             return false;
         };
-        let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-            start_char,
-            end_char,
-            color_rgba_bits,
-        } = grammar
-        else {
-            return false;
-        };
-        if !grammar.is_canonical()
-            || seal.start_char != start_char
-            || seal.end_char != end_char
-            || seal.color_rgba_bits != color_rgba_bits
+        if !seal.matches_source(start_char, end_char, color_rgba_bits)
             || seal.rects.len() != op_count
         {
             return false;
@@ -4682,3 +4644,5 @@ impl PreparedSvgIdentity {
 
 #[cfg(test)]
 mod consumed_ancestor_property_tests;
+#[cfg(test)]
+mod text_selection_payload_identity_tests;

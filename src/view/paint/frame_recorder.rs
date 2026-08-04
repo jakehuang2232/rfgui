@@ -226,7 +226,15 @@ fn normalize_atomic_projection_selection_chunk(
     oracle: &mut RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     chunk_index: usize,
     grammar: crate::view::base_component::text_area::RetainedTextAreaPaintGrammar,
-) -> Option<super::artifact::RetainedTextAreaSelectionRasterSeal> {
+) -> Option<super::artifact::TextSelectionPayloadIdentity> {
+    let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+        start_char,
+        end_char,
+        color_rgba_bits,
+    } = grammar
+    else {
+        return None;
+    };
     let chunk = artifact.chunks.get_mut(chunk_index)?;
     let oracle_chunk = oracle.chunks.get_mut(chunk_index)?;
     let rects = artifact.ops[chunk.op_range.clone()]
@@ -237,14 +245,18 @@ fn normalize_atomic_projection_selection_chunk(
         })
         .collect::<Option<Vec<_>>>()?;
     let generic = super::PaintPayloadIdentity::prepared_rects(rects.iter().copied())?;
-    let sealed =
-        super::PaintPayloadIdentity::prepared_text_area_selection(grammar, rects.iter().copied())?;
+    let sealed = super::PaintPayloadIdentity::prepared_text_selection(
+        start_char,
+        end_char,
+        color_rgba_bits,
+        rects.iter().copied(),
+    )?;
     if (chunk.payload_identity != generic && chunk.payload_identity != sealed)
         || oracle_chunk.payload_identity != generic
     {
         return None;
     }
-    let seal = sealed.retained_text_area_selection_seal()?;
+    let seal = sealed.text_selection_identity()?;
     chunk.payload_identity = sealed.clone();
     oracle_chunk.payload_identity = sealed;
     Some(seal)
@@ -456,7 +468,7 @@ enum AtomicProjectionSelectionPostCompositeContract {
 pub(super) struct ValidatedRecordedAtomicProjectionSelectionTextAreaAuthority {
     host: RecordedRetainedAtomicProjectionSelectionTextAreaHost,
     local: RecordedRetainedAtomicProjectionSelectionTextAreaSubtree,
-    selection: super::artifact::RetainedTextAreaSelectionRasterSeal,
+    selection: super::artifact::TextSelectionPayloadIdentity,
     backing: AtomicProjectionSelectionBackingContract,
     post_composite: AtomicProjectionSelectionPostCompositeContract,
     opaque_parent_delta: u8,
@@ -592,16 +604,21 @@ impl ValidatedRecordedAtomicProjectionSelectionTextAreaAuthority {
                 .raster_oracle
                 .matches_artifact(&self.local.artifact)
             && self.local.raster_oracle.source_grammar.is_canonical()
-            && self
-                .selection
-                .is_canonical_for_text_area(self.local.raster_oracle.source_grammar.selection)
+            && match self.local.raster_oracle.source_grammar.selection {
+                crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+                    start_char,
+                    end_char,
+                    color_rgba_bits,
+                } => self.selection.matches_source(start_char, end_char, color_rgba_bits),
+                _ => false,
+            }
             && host_selection
                 .payload_identity
-                .retained_text_area_selection_seal()
+                .text_selection_identity()
                 .is_some()
             && local_selection
                 .payload_identity
-                .retained_text_area_selection_seal()
+                .text_selection_identity()
                 .as_ref()
                 == Some(&self.selection)
             && self.backing == AtomicProjectionSelectionBackingContract::Single
@@ -632,7 +649,7 @@ impl ValidatedRecordedAtomicProjectionSelectionTextAreaAuthority {
             .find(|chunk| chunk.id.role == super::PaintChunkRole::SelectionUnderlay)
             .unwrap()
             .payload_identity
-            .retained_text_area_selection_seal();
+            .text_selection_identity();
         let local = self
             .local
             .artifact
@@ -641,7 +658,7 @@ impl ValidatedRecordedAtomicProjectionSelectionTextAreaAuthority {
             .find(|chunk| chunk.id.role == super::PaintChunkRole::SelectionUnderlay)
             .unwrap()
             .payload_identity
-            .retained_text_area_selection_seal();
+            .text_selection_identity();
         host.is_some() && local.is_some() && host != local
     }
 }
@@ -968,18 +985,24 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
     };
     let selection = local_selection
         .payload_identity
-        .retained_text_area_selection_seal()?;
+        .text_selection_identity()?;
     host_selection
         .payload_identity
-        .retained_text_area_selection_seal()?;
-    if host_selection
+        .text_selection_identity()?;
+    let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+        start_char,
+        end_char,
+        color_rgba_bits,
+    } = grammar.selection
+    else {
+        return None;
+    };
+    if !host_selection
         .payload_identity
-        .retained_text_area_selection_grammar()
-        != Some(grammar.selection)
-        || local_selection
+        .matches_text_selection_source(start_char, end_char, color_rgba_bits)
+        || !local_selection
             .payload_identity
-            .retained_text_area_selection_grammar()
-            != Some(grammar.selection)
+            .matches_text_selection_source(start_char, end_char, color_rgba_bits)
     {
         return None;
     }
@@ -1012,8 +1035,10 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
                 },
             ))?
         } else if host_chunk.id.role == super::PaintChunkRole::SelectionUnderlay {
-            super::PaintPayloadIdentity::prepared_text_area_selection(
-                grammar.selection,
+            super::PaintPayloadIdentity::prepared_text_selection(
+                start_char,
+                end_char,
+                color_rgba_bits,
                 localized.iter().filter_map(|op| match op {
                     super::PaintOp::DrawRect(rect) => Some(rect),
                     _ => None,
@@ -1551,14 +1576,10 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
             })
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| invalid(admission.text_area_root))?;
-        let grammar =
-            crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-                start_char,
-                end_char,
-                color_rgba_bits,
-            };
-        selection.payload_identity = super::PaintPayloadIdentity::prepared_text_area_selection(
-            grammar,
+        selection.payload_identity = super::PaintPayloadIdentity::prepared_text_selection(
+            start_char,
+            end_char,
+            color_rgba_bits,
             rects.into_iter(),
         )
         .ok_or_else(|| invalid(admission.text_area_root))?;
@@ -1723,13 +1744,10 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
             } = admission.paint_grammar else {
                 return false;
             };
-            let grammar = crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+            chunk.payload_identity.matches_exact_text_selection(
                 start_char,
                 end_char,
                 color_rgba_bits,
-            };
-            chunk.payload_identity.matches_exact_text_area_selection(
-                grammar,
                 rects.len(),
                 [
                     chunk.bounds.x,
@@ -1740,7 +1758,7 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
                 .map(f32::to_bits),
             ) && chunk
                 .payload_identity
-                .matches_exact_text_area_selection_ops(rects.into_iter())
+                .matches_exact_text_selection_ops(rects.into_iter())
         }
     };
     let underline = |chunk: &super::PaintChunk| {
@@ -2826,12 +2844,23 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
             && chunk.id.slot == 1
             && chunk.id.role == super::PaintChunkRole::TextGlyphs
     };
+    let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+        start_char,
+        end_char,
+        color_rgba_bits,
+    } = recorder_witness.selection
+    else {
+        return Err(invalid(admission.text_area_root));
+    };
     let selection_exact = matches!(&artifact.ops[selection.op_range.clone()], ops
     if !ops.is_empty()
         && ops.iter().all(|op| matches!(op, super::PaintOp::DrawRect(_)))
-        && selection.payload_identity.retained_text_area_selection_grammar()
-            == Some(recorder_witness.selection)
-        && selection.payload_identity.matches_exact_text_area_selection_ops(
+        && selection.payload_identity.matches_text_selection_source(
+            start_char,
+            end_char,
+            color_rgba_bits,
+        )
+        && selection.payload_identity.matches_exact_text_selection_ops(
             ops.iter().filter_map(|op| match op { super::PaintOp::DrawRect(rect) => Some(rect), _ => None })
         ));
     if artifact.owner_nodes != owners
@@ -3517,10 +3546,12 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
             chunk.content_revision = normalized_revision;
         }
     }
-    if matches!(
-        admission.paint_grammar,
-        crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs { .. }
-    ) {
+    if let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+        start_char,
+        end_char,
+        color_rgba_bits,
+    } = admission.paint_grammar
+    {
         let mut selection_indices =
             artifact
                 .chunks
@@ -3550,8 +3581,10 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
         if selection.payload_identity != generic_identity {
             return Err(invalid(text_area_root));
         }
-        let sealed_identity = super::PaintPayloadIdentity::prepared_text_area_selection(
-            admission.paint_grammar,
+        let sealed_identity = super::PaintPayloadIdentity::prepared_text_selection(
+            start_char,
+            end_char,
+            color_rgba_bits,
             rects.iter().copied(),
         )
         .ok_or_else(|| invalid(text_area_root))?;
@@ -3586,8 +3619,9 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
     };
     let selection_matches = |chunk: &super::PaintChunk| {
         let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+            start_char,
+            end_char,
             color_rgba_bits,
-            ..
         } = admission.paint_grammar
         else {
             return false;
@@ -3637,8 +3671,10 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
             ]
             .map(f32::to_bits)
                 == [left, top, right - left, bottom - top].map(f32::to_bits)
-            && super::PaintPayloadIdentity::prepared_text_area_selection(
-                admission.paint_grammar,
+            && super::PaintPayloadIdentity::prepared_text_selection(
+                start_char,
+                end_char,
+                color_rgba_bits,
                 rects.into_iter(),
             )
             .as_ref()
@@ -4803,11 +4839,23 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
             && chunk.id.role == super::PaintChunkRole::TextGlyphs
             && chunk.properties.legacy_boundary_eq(local_state)
     };
+    let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+        start_char,
+        end_char,
+        color_rgba_bits,
+    } = recorder_witness.selection
+    else {
+        return Err(invalid(text_area_root));
+    };
     let selection_exact = matches!(&artifact.ops[selection.op_range.clone()], ops
     if !ops.is_empty()
         && ops.iter().all(|op| matches!(op, super::PaintOp::DrawRect(_)))
-        && selection.payload_identity.retained_text_area_selection_grammar() == Some(recorder_witness.selection)
-        && selection.payload_identity.matches_exact_text_area_selection_ops(
+        && selection.payload_identity.matches_text_selection_source(
+            start_char,
+            end_char,
+            color_rgba_bits,
+        )
+        && selection.payload_identity.matches_exact_text_selection_ops(
             ops.iter().filter_map(|op| match op { super::PaintOp::DrawRect(rect) => Some(rect), _ => None })
         ));
     if !matches!(artifact.target, PaintArtifactTarget::CurrentTarget)
@@ -5254,15 +5302,11 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
             })
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| invalid(text_area_root))?;
-        let selection_grammar =
-            crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+        artifact.chunks[selection_index].payload_identity =
+            super::PaintPayloadIdentity::prepared_text_selection(
                 start_char,
                 end_char,
                 color_rgba_bits,
-            };
-        artifact.chunks[selection_index].payload_identity =
-            super::PaintPayloadIdentity::prepared_text_area_selection(
-                selection_grammar,
                 rects.into_iter(),
             )
             .ok_or_else(|| invalid(text_area_root))?;

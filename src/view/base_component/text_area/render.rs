@@ -2192,12 +2192,18 @@ impl TextArea {
         let paint_is_exact = match (paint_grammar, payload.selection.as_ref()) {
             (super::RetainedTextAreaPaintGrammar::GlyphOnly, None) => true,
             (
-                selection_grammar @ super::RetainedTextAreaPaintGrammar::SelectionGlyphs { .. },
+                super::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+                    start_char,
+                    end_char,
+                    color_rgba_bits,
+                },
                 Some(selection),
             ) => {
                 !selection.ops.is_empty()
-                    && crate::view::paint::PaintPayloadIdentity::prepared_text_area_selection(
-                        selection_grammar,
+                    && crate::view::paint::PaintPayloadIdentity::prepared_text_selection(
+                        start_char,
+                        end_char,
+                        color_rgba_bits,
                         selection.ops.iter(),
                     )
                     .is_some()

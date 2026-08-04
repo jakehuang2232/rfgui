@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use super::artifact::{
     RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION, RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    RetainedInteractiveTextAreaResidentRasterSeal, RetainedTextAreaSelectionRasterSeal,
+    RetainedInteractiveTextAreaResidentRasterSeal, TextSelectionPayloadIdentity,
 };
 use super::{
     EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactTarget, PaintChunkRole,
@@ -7020,10 +7020,10 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                     None,
                 ) => matches!(text_area_chunks.as_slice(), [glyphs] if glyph_matches(glyphs)),
                 (
-                    Some(paint_grammar @ crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+                    Some(crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
                         start_char,
                         end_char,
-                        ..
+                        color_rgba_bits,
                     }),
                     None,
                 ) => {
@@ -7038,8 +7038,10 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                                     && selection.id.slot == 0
                                     && selection.id.role == PaintChunkRole::SelectionUnderlay
                                     && selection.clip == Some(clip.id)
-                                    && selection.payload_identity.matches_exact_text_area_selection(
-                                        paint_grammar,
+                                    && selection.payload_identity.matches_exact_text_selection(
+                                        start_char,
+                                        end_char,
+                                        color_rgba_bits,
                                         selection.op_count,
                                         selection.bounds_bits,
                                     )
@@ -7295,7 +7297,7 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                 && selection.op_count == resident.selection.rects.len()
                 && selection
                     .payload_identity
-                    .retained_text_area_selection_seal()
+                    .text_selection_identity()
                     .as_ref()
                     == Some(&resident.selection)
                 && chunk_matches_seal(text_area_glyph, &resident.text_area_glyph_chunk)
@@ -8473,7 +8475,7 @@ struct ValidatedScrollSceneAtomicProjectionSelectionTextAreaContentArtifact {
     artifact: PaintArtifact,
     resolved_clips: Vec<ResolvedClip>,
     resident: RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal,
-    selection: RetainedTextAreaSelectionRasterSeal,
+    selection: TextSelectionPayloadIdentity,
 }
 
 #[derive(Clone, Debug)]
@@ -8498,7 +8500,7 @@ pub(crate) struct AtomicProjectionSelectionTextAreaPlanIdentity {
     overlay_store: ArtifactPlanStoreWitness,
     overlay_resolved_clips: Vec<ResolvedClip>,
     resident: RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal,
-    selection: RetainedTextAreaSelectionRasterSeal,
+    selection: TextSelectionPayloadIdentity,
     opaque_order_counts: [u32; 3],
     content_span: RetainedSurfaceArtifactSpanStamp,
 }
@@ -8519,7 +8521,7 @@ pub(crate) struct ValidatedScrollSceneAtomicProjectionSelectionTextAreaPlanParts
     content: ValidatedScrollSceneAtomicProjectionSelectionTextAreaContentArtifact,
     overlay: ValidatedScrollSceneAtomicProjectionSelectionTextAreaOverlayArtifact,
     resident: RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal,
-    selection: RetainedTextAreaSelectionRasterSeal,
+    selection: TextSelectionPayloadIdentity,
     opaque_order_counts: [u32; 3],
     content_span: RetainedSurfaceArtifactSpanStamp,
     local_raster_oracle:
@@ -9429,7 +9431,7 @@ struct RetainedAtomicProjectionSelectionTextAreaFrozenResidentRasterIdentity {
     text_area_root: crate::view::node_arena::NodeKey,
     source_grammar:
         crate::view::base_component::text_area::RetainedAtomicProjectionSelectionTextAreaPaintGrammar,
-    selection: RetainedTextAreaSelectionRasterSeal,
+    selection: TextSelectionPayloadIdentity,
     contents_clip: ClipNodeSnapshot,
     owner_topology: Arc<[PaintOwnerSnapshot]>,
     wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
@@ -9447,7 +9449,7 @@ pub(crate) struct RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal {
     pub(crate) text_area_root: crate::view::node_arena::NodeKey,
     pub(crate) source_grammar:
         crate::view::base_component::text_area::RetainedAtomicProjectionSelectionTextAreaPaintGrammar,
-    pub(crate) selection: RetainedTextAreaSelectionRasterSeal,
+    pub(crate) selection: TextSelectionPayloadIdentity,
     pub(crate) contents_clip: ClipNodeSnapshot,
     pub(crate) owner_topology: Arc<[PaintOwnerSnapshot]>,
     pub(crate) wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
@@ -9464,7 +9466,7 @@ impl RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal {
         content_root: crate::view::node_arena::NodeKey,
         text_area_root: crate::view::node_arena::NodeKey,
         source_grammar: crate::view::base_component::text_area::RetainedAtomicProjectionSelectionTextAreaPaintGrammar,
-        selection: RetainedTextAreaSelectionRasterSeal,
+        selection: TextSelectionPayloadIdentity,
         contents_clip: ClipNodeSnapshot,
         owner_topology: Arc<[PaintOwnerSnapshot]>,
         wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
@@ -9503,9 +9505,14 @@ impl RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal {
 
     pub(crate) fn is_canonical(&self) -> bool {
         self.source_grammar.is_canonical()
-            && self
-                .selection
-                .is_canonical_for_text_area(self.source_grammar.selection)
+            && match self.source_grammar.selection {
+                crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+                    start_char,
+                    end_char,
+                    color_rgba_bits,
+                } => self.selection.matches_source(start_char, end_char, color_rgba_bits),
+                _ => false,
+            }
             && self.contents_clip.id.owner == self.text_area_root
             && self.contents_clip.owner == self.text_area_root
             && self.contents_clip.id.role == ClipNodeRole::ContentsClip
@@ -9538,7 +9545,7 @@ impl RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal {
 struct RetainedAtomicProjectionSelectionTextAreaFrozenRasterDependencyIdentity {
     content_root: crate::view::node_arena::NodeKey,
     text_area_root: crate::view::node_arena::NodeKey,
-    selection: RetainedTextAreaSelectionRasterSeal,
+    selection: TextSelectionPayloadIdentity,
     contents_clip: ClipNodeSnapshot,
     owner_topology: Arc<[PaintOwnerSnapshot]>,
     wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
@@ -9551,7 +9558,7 @@ struct RetainedAtomicProjectionSelectionTextAreaFrozenRasterDependencyIdentity {
 pub(crate) struct RetainedAtomicProjectionSelectionTextAreaRasterDependencySeal {
     pub(crate) content_root: crate::view::node_arena::NodeKey,
     pub(crate) text_area_root: crate::view::node_arena::NodeKey,
-    pub(crate) selection: RetainedTextAreaSelectionRasterSeal,
+    pub(crate) selection: TextSelectionPayloadIdentity,
     pub(crate) contents_clip: ClipNodeSnapshot,
     pub(crate) owner_topology: Arc<[PaintOwnerSnapshot]>,
     pub(crate) wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
@@ -9863,8 +9870,9 @@ pub(crate) fn validate_scroll_scene_text_area_content_artifact(
     };
     let selection_matches = |selection: &super::PaintChunk| {
         let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+            start_char,
+            end_char,
             color_rgba_bits,
-            ..
         } = paint_grammar
         else {
             return false;
@@ -9877,8 +9885,10 @@ pub(crate) fn validate_scroll_scene_text_area_content_artifact(
             && selection.id.slot == 0
             && selection.id.role == PaintChunkRole::SelectionUnderlay
             && selection.properties.legacy_boundary_eq(local_state)
-            && PaintPayloadIdentity::prepared_text_area_selection(
-                paint_grammar,
+            && PaintPayloadIdentity::prepared_text_selection(
+                start_char,
+                end_char,
+                color_rgba_bits,
                 ops.iter().filter_map(|op| match op {
                     PaintOp::DrawRect(rect) => Some(rect),
                     _ => None,
@@ -10146,7 +10156,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact
 fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_parts(
     artifact: PaintArtifact,
     raster_oracle: super::frame_recorder::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
-    selection: RetainedTextAreaSelectionRasterSeal,
+    selection: TextSelectionPayloadIdentity,
 ) -> Option<ValidatedScrollSceneAtomicProjectionSelectionTextAreaContentArtifact> {
     if !raster_oracle.matches_artifact(&artifact) || !matches!(raster_oracle.chunks().len(), 4 | 6)
     {
@@ -10155,13 +10165,21 @@ fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_
     let content_root = raster_oracle.content_root();
     let text_area_root = raster_oracle.text_area_root();
     let source_grammar = raster_oracle.source_grammar().clone();
+    let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+        start_char,
+        end_char,
+        color_rgba_bits,
+    } = source_grammar.selection
+    else {
+        return None;
+    };
     let [contents_clip] = raster_oracle.clip_nodes() else {
         return None;
     };
     let contents_clip = *contents_clip;
     if content_root == text_area_root
         || !source_grammar.is_canonical()
-        || !selection.is_canonical_for_text_area(source_grammar.selection)
+        || !selection.matches_source(start_char, end_char, color_rgba_bits)
         || contents_clip.id.owner != text_area_root
         || contents_clip.id.role != ClipNodeRole::ContentsClip
         || contents_clip.owner != text_area_root
@@ -10239,11 +10257,13 @@ fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_
         && selection_chunk.properties.legacy_boundary_eq(local_state)
         && selection_chunk
             .payload_identity
-            .retained_text_area_selection_seal()
+            .text_selection_identity()
             .as_ref()
             == Some(&selection)
-        && PaintPayloadIdentity::prepared_text_area_selection(
-            source_grammar.selection,
+        && PaintPayloadIdentity::prepared_text_selection(
+            start_char,
+            end_char,
+            color_rgba_bits,
             selection_ops.iter().filter_map(|op| match op {
                 PaintOp::DrawRect(rect) => Some(rect),
                 _ => None,
@@ -10846,7 +10866,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
     host_local_contents_clip: ClipNodeSnapshot,
     local_artifact: PaintArtifact,
     local_raster_oracle: super::frame_recorder::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
-    selection: RetainedTextAreaSelectionRasterSeal,
+    selection: TextSelectionPayloadIdentity,
 ) -> Option<ValidatedScrollSceneAtomicProjectionSelectionTextAreaPlanParts> {
     if !host_raster_oracle.matches_artifact(&host_artifact)
         || !local_raster_oracle.matches_artifact(&local_artifact)
@@ -10866,9 +10886,17 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
     let content_root = local_raster_oracle.content_root();
     let text_area_root = local_raster_oracle.text_area_root();
     let source_grammar = local_raster_oracle.source_grammar().clone();
+    let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+        start_char,
+        end_char,
+        color_rgba_bits,
+    } = source_grammar.selection
+    else {
+        return None;
+    };
     let atomic_source = &source_grammar.atomic_source;
     let boundary_root = outer_scroll.owner;
-    if !selection.is_canonical_for_text_area(source_grammar.selection) {
+    if !selection.matches_source(start_char, end_char, color_rgba_bits) {
         return None;
     }
     super::PaintScrollContentWitness::new(
@@ -10952,7 +10980,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
     };
     if local_selection
         .payload_identity
-        .retained_text_area_selection_seal()
+        .text_selection_identity()
         .as_ref()
         != Some(&selection)
     {
@@ -10979,8 +11007,10 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
             .map(|op| localize_exact_nested_scroll_leaf_op(op, delta))
             .collect::<Option<Vec<_>>>()?;
         let payload = if host.id.role == PaintChunkRole::SelectionUnderlay {
-            PaintPayloadIdentity::prepared_text_area_selection(
-                source_grammar.selection,
+            PaintPayloadIdentity::prepared_text_selection(
+                start_char,
+                end_char,
+                color_rgba_bits,
                 localized.iter().filter_map(|op| match op {
                     PaintOp::DrawRect(rect) => Some(rect),
                     _ => None,
@@ -11237,10 +11267,18 @@ pub(crate) fn validate_scroll_scene_interactive_text_area_content_artifact(
             && validate_text_glyph_ops(ops, &glyphs.payload_identity)
     };
     let selection_resident = |selection: &super::PaintChunk| {
+        let crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs {
+            start_char,
+            end_char,
+            color_rgba_bits,
+        } = paint_grammar
+        else {
+            return None;
+        };
         let ops = &artifact.ops[selection.op_range.clone()];
         let seal = selection
             .payload_identity
-            .retained_text_area_selection_seal()?;
+            .text_selection_identity()?;
         (selection.owner == text_area_root
             && selection.id.owner == text_area_root
             && selection.id.scope == PaintPropertyScope::Contents
@@ -11248,10 +11286,10 @@ pub(crate) fn validate_scroll_scene_interactive_text_area_content_artifact(
             && selection.id.slot == 0
             && selection.id.role == PaintChunkRole::SelectionUnderlay
             && selection.properties.legacy_boundary_eq(local_state)
-            && seal.is_canonical_for_interactive(paint_grammar)
+            && seal.matches_source(start_char, end_char, color_rgba_bits)
             && selection
                 .payload_identity
-                .matches_exact_text_area_selection_ops(ops.iter().filter_map(|op| match op {
+                .matches_exact_text_selection_ops(ops.iter().filter_map(|op| match op {
                     PaintOp::DrawRect(rect) => Some(rect),
                     _ => None,
                 }))
@@ -12081,7 +12119,7 @@ fn validate_artifact_store_with_policy(
                                         == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
                             )
                         })
-                        && chunk.payload_identity.matches_exact_text_area_selection_ops(
+                        && chunk.payload_identity.matches_exact_text_selection_ops(
                             ops.iter().filter_map(|op| match op {
                                 PaintOp::DrawRect(rect) => Some(rect),
                                 _ => None,
