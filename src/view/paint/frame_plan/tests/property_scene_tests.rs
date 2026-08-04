@@ -113,7 +113,8 @@ fn property_scene_seal_rejects_topology_identity_reference_and_witness_drift() {
         .find(|contract| contract.id.owner == fixture.inner_a)
         .unwrap()
         .transform
-        .viewport_matrix = glam::Mat4::from_translation(glam::Vec3::new(99.0, 1.0, 0.0));
+        .owner_viewport_transform =
+        glam::Mat4::from_translation(glam::Vec3::new(99.0, 1.0, 0.0));
     assert!(!property_scene_plan_is_sealed(&matrix));
 
     let mut generation = base.clone();

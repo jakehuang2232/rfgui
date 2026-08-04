@@ -42,7 +42,7 @@ fn classify_optional_child_mask_semantics<'a>(
             && chunk.id.phase == phase
             && chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT
             && chunk.id.role == super::PaintChunkRole::SelfDecoration
-            && chunk.properties == mask_properties
+            && chunk.properties.legacy_boundary_eq(mask_properties)
             && mask.mode == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
             && mask.params.position == [chunk.bounds.x, chunk.bounds.y]
             && mask.params.size == [chunk.bounds.width, chunk.bounds.height]
@@ -67,8 +67,9 @@ use crate::view::base_component::{
     RetainedScrollTextAreaSubtreeAdmissionSnapshot,
 };
 use crate::view::compositor::property_tree::{
-    ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot, ScrollNodeSnapshot,
-    TransformNodeSnapshot,
+    ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot, LayoutPositionNodeId,
+    LayoutPositionNodeSnapshot, ScrollNodeId, ScrollNodeSnapshot, TransformNodeId,
+    TransformNodeSnapshot, VisualOffsetNodeId, VisualOffsetNodeSnapshot,
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
@@ -1077,7 +1078,7 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
         || root_before.id.phase != super::PaintNodePhase::BeforeChildren
         || root_before.id.slot != 0
         || root_before.id.role != super::PaintChunkRole::SelfDecoration
-        || root_before.properties != Default::default()
+        || root_before.properties.legacy_boundary_dimensions() != Default::default()
         || [
             root_before.bounds.x,
             root_before.bounds.y,
@@ -1086,14 +1087,18 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
         ]
         .map(f32::to_bits)
             != host.source_bounds_bits
-        || host_wrapper.properties != outer_state
-        || host_selection.properties != host_local_state
-        || host_root_glyph.properties != host_local_state
-        || host_projection_glyph.properties != host_local_state
-        || local_wrapper.properties != Default::default()
-        || local_selection.properties != local_state
-        || local_root_glyph.properties != local_state
-        || local_projection_glyph.properties != local_state
+        || !host_wrapper.properties.legacy_boundary_eq(outer_state)
+        || !host_selection.properties.legacy_boundary_eq(host_local_state)
+        || !host_root_glyph.properties.legacy_boundary_eq(host_local_state)
+        || !host_projection_glyph
+            .properties
+            .legacy_boundary_eq(host_local_state)
+        || local_wrapper.properties.legacy_boundary_dimensions() != Default::default()
+        || !local_selection.properties.legacy_boundary_eq(local_state)
+        || !local_root_glyph.properties.legacy_boundary_eq(local_state)
+        || !local_projection_glyph
+            .properties
+            .legacy_boundary_eq(local_state)
         || [
             local_wrapper.bounds.x,
             local_wrapper.bounds.y,
@@ -1112,7 +1117,7 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
         || overlay.id.phase != super::PaintNodePhase::AfterChildren
         || overlay.id.slot != 0
         || overlay.id.role != super::PaintChunkRole::ScrollbarOverlay
-        || overlay.properties != Default::default()
+        || overlay.properties.legacy_boundary_dimensions() != Default::default()
         || [
             overlay.bounds.x,
             overlay.bounds.y,
@@ -1582,7 +1587,7 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
                 && chunk.id.phase == phase
                 && chunk.id.slot == slot
                 && chunk.id.role == role
-                && chunk.properties == properties
+                && chunk.properties.legacy_boundary_eq(properties)
                 && chunk.op_range.end <= artifact.ops.len()
         };
     let exact_self_decoration = |chunk: &super::PaintChunk| {
@@ -1657,7 +1662,7 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
             && chunk.id.phase == phase
             && chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT
             && chunk.id.role == super::PaintChunkRole::SelfDecoration
-            && chunk.properties == outer_state
+            && chunk.properties.legacy_boundary_eq(outer_state)
             && mask.mode == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
             && mask.params.position == [chunk.bounds.x, chunk.bounds.y]
             && mask.params.size == [chunk.bounds.width, chunk.bounds.height]
@@ -2294,7 +2299,7 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
             && chunk.id.phase == super::PaintNodePhase::BeforeChildren
             && chunk.id.slot == 1
             && chunk.id.role == super::PaintChunkRole::TextGlyphs
-            && chunk.properties == glyph_state
+            && chunk.properties.legacy_boundary_eq(glyph_state)
     };
     if artifact.owner_nodes != owners
         || !artifact.effect_nodes.is_empty()
@@ -2316,7 +2321,7 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
         || wrapper_chunk.id.phase != super::PaintNodePhase::BeforeChildren
         || wrapper_chunk.id.slot != 0
         || wrapper_chunk.id.role != super::PaintChunkRole::SelfDecoration
-        || wrapper_chunk.properties != outer_state
+        || !wrapper_chunk.properties.legacy_boundary_eq(outer_state)
         || !glyph_exact(
             root_glyph,
             admission.text_area_root,
@@ -3197,7 +3202,8 @@ pub(super) fn record_scroll_content_local_artifact_for_plan(
             .placement_eligibility_metadata()
             .contains_runtime_layout_state
             || property_trees.states.get(&key).is_none_or(|state| {
-                state.paint != exact_property || state.descendants != exact_property
+                !state.paint.legacy_boundary_eq(exact_property)
+                    || !state.descendants.legacy_boundary_eq(exact_property)
             })
         {
             return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(key)]);
@@ -3255,7 +3261,7 @@ pub(super) fn record_scroll_content_local_artifact_for_plan(
         || artifact
             .chunks
             .iter()
-            .any(|chunk| chunk.properties != Default::default())
+            .any(|chunk| chunk.properties.legacy_boundary_dimensions() != Default::default())
         || artifact.chunks.iter().any(|chunk| {
             chunk.id.role == super::PaintChunkRole::ScrollbarOverlay || chunk.owner == boundary_root
         })
@@ -3562,7 +3568,7 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
             && chunk.id.phase == super::PaintNodePhase::BeforeChildren
             && chunk.id.slot == 0
             && chunk.id.role == super::PaintChunkRole::SelfDecoration
-            && chunk.properties == Default::default()
+            && chunk.properties.legacy_boundary_dimensions() == Default::default()
     };
     let glyph_matches = |chunk: &super::PaintChunk| {
         let [super::PaintOp::PreparedText(prepared)] = &artifact.ops[chunk.op_range.clone()] else {
@@ -3574,7 +3580,7 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
             && chunk.id.phase == super::PaintNodePhase::BeforeChildren
             && chunk.id.slot == 1
             && chunk.id.role == super::PaintChunkRole::TextGlyphs
-            && chunk.properties == local_state
+            && chunk.properties.legacy_boundary_eq(local_state)
             && prepared.has_canonical_identity()
             && chunk.payload_identity == super::PaintPayloadIdentity::prepared_texts([prepared])
     };
@@ -3618,7 +3624,7 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
             && chunk.id.phase == super::PaintNodePhase::BeforeChildren
             && chunk.id.slot == 0
             && chunk.id.role == super::PaintChunkRole::SelectionUnderlay
-            && chunk.properties == local_state
+            && chunk.properties.legacy_boundary_eq(local_state)
             && rects.iter().all(|rect| {
                 rect.params.fill_color.map(f32::to_bits) == color_rgba_bits
                     && rect.params.opacity.to_bits() == 1.0_f32.to_bits()
@@ -3965,7 +3971,8 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
             || node.element.is_deferred_to_root_viewport_render()
             || node.element.has_active_animator()
             || property_trees.states.get(&seal.owner).is_none_or(|state| {
-                (state.paint, state.descendants) != (text_area_state, text_area_state)
+                !state.paint.legacy_boundary_eq(text_area_state)
+                    || !state.descendants.legacy_boundary_eq(text_area_state)
             })
         {
             return Err(invalid(seal.owner));
@@ -3994,7 +4001,8 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
                         .is::<crate::view::base_component::Text>()
                     || !text_node.element.children().is_empty()
                     || property_trees.states.get(&text).is_none_or(|state| {
-                        (state.paint, state.descendants) != (text_area_state, text_area_state)
+                        !state.paint.legacy_boundary_eq(text_area_state)
+                            || !state.descendants.legacy_boundary_eq(text_area_state)
                     })
                 {
                     return Err(invalid(text));
@@ -4114,7 +4122,7 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
             && chunk.id.phase == super::PaintNodePhase::BeforeChildren
             && chunk.id.slot == 1
             && chunk.id.role == super::PaintChunkRole::TextGlyphs
-            && chunk.properties == local_state
+            && chunk.properties.legacy_boundary_eq(local_state)
     };
     if !matches!(artifact.target, PaintArtifactTarget::CurrentTarget)
         || !artifact.effect_nodes.is_empty()
@@ -4126,7 +4134,7 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         || wrapper.id.phase != super::PaintNodePhase::BeforeChildren
         || wrapper.id.slot != 0
         || wrapper.id.role != super::PaintChunkRole::SelfDecoration
-        || wrapper.properties != Default::default()
+        || wrapper.properties.legacy_boundary_dimensions() != Default::default()
         || !glyph_exact(
             root_glyph,
             text_area_root,
@@ -4277,7 +4285,8 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
             || node.element.is_deferred_to_root_viewport_render()
             || node.element.has_active_animator()
             || property_trees.states.get(&seal.owner).is_none_or(|state| {
-                (state.paint, state.descendants) != (text_area_state, text_area_state)
+                !state.paint.legacy_boundary_eq(text_area_state)
+                    || !state.descendants.legacy_boundary_eq(text_area_state)
             })
         {
             return Err(invalid(seal.owner));
@@ -4306,7 +4315,8 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
                         .is::<crate::view::base_component::Text>()
                     || !text_node.element.children().is_empty()
                     || property_trees.states.get(&text).is_none_or(|state| {
-                        (state.paint, state.descendants) != (text_area_state, text_area_state)
+                        !state.paint.legacy_boundary_eq(text_area_state)
+                            || !state.descendants.legacy_boundary_eq(text_area_state)
                     })
                 {
                     return Err(invalid(text));
@@ -4435,7 +4445,7 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
             && chunk.id.phase == super::PaintNodePhase::BeforeChildren
             && chunk.id.slot == 1
             && chunk.id.role == super::PaintChunkRole::TextGlyphs
-            && chunk.properties == local_state
+            && chunk.properties.legacy_boundary_eq(local_state)
     };
     let underline_exact = |chunk: &super::PaintChunk| {
         let Some(preedit) = source_after.preedit.as_ref() else {
@@ -4457,7 +4467,7 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
             && chunk.id.phase == super::PaintNodePhase::AfterChildren
             && chunk.id.slot == 0
             && chunk.id.role == super::PaintChunkRole::TextDecoration
-            && chunk.properties == local_state
+            && chunk.properties.legacy_boundary_eq(local_state)
             && chunk.payload_identity == preedit.underline_identity
             && [
                 chunk.bounds.x,
@@ -4480,7 +4490,7 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
         && wrapper.id.phase == super::PaintNodePhase::BeforeChildren
         && wrapper.id.slot == 0
         && wrapper.id.role == super::PaintChunkRole::SelfDecoration
-        && wrapper.properties == Default::default()
+        && wrapper.properties.legacy_boundary_dimensions() == Default::default()
         && glyph_exact(
             root_glyph,
             text_area_root,
@@ -4630,7 +4640,8 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
             || node.element.is_deferred_to_root_viewport_render()
             || node.element.has_active_animator()
             || property_trees.states.get(&seal.owner).is_none_or(|state| {
-                (state.paint, state.descendants) != (text_area_state, text_area_state)
+                !state.paint.legacy_boundary_eq(text_area_state)
+                    || !state.descendants.legacy_boundary_eq(text_area_state)
             })
         {
             return Err(invalid(seal.owner));
@@ -4652,7 +4663,8 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
                     .is::<crate::view::base_component::Text>()
                 || !text_node.element.children().is_empty()
                 || property_trees.states.get(&text).is_none_or(|state| {
-                    (state.paint, state.descendants) != (text_area_state, text_area_state)
+                    !state.paint.legacy_boundary_eq(text_area_state)
+                        || !state.descendants.legacy_boundary_eq(text_area_state)
                 })
             {
                 return Err(invalid(text));
@@ -4789,7 +4801,7 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
             && chunk.id.phase == super::PaintNodePhase::BeforeChildren
             && chunk.id.slot == 1
             && chunk.id.role == super::PaintChunkRole::TextGlyphs
-            && chunk.properties == local_state
+            && chunk.properties.legacy_boundary_eq(local_state)
     };
     let selection_exact = matches!(&artifact.ops[selection.op_range.clone()], ops
     if !ops.is_empty()
@@ -4804,13 +4816,13 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         || artifact.owner_nodes != expected_owners
         || wrapper.owner != content_root
         || wrapper.id.role != super::PaintChunkRole::SelfDecoration
-        || wrapper.properties != Default::default()
+        || wrapper.properties.legacy_boundary_dimensions() != Default::default()
         || selection.owner != text_area_root
         || selection.id.scope != super::PaintPropertyScope::Contents
         || selection.id.phase != super::PaintNodePhase::BeforeChildren
         || selection.id.slot != 0
         || selection.id.role != super::PaintChunkRole::SelectionUnderlay
-        || selection.properties != local_state
+        || !selection.properties.legacy_boundary_eq(local_state)
         || !selection_exact
         || !glyph_exact(
             root_glyph,
@@ -5110,7 +5122,7 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
             && chunk.id.phase == super::PaintNodePhase::BeforeChildren
             && chunk.id.slot == 0
             && chunk.id.role == super::PaintChunkRole::SelfDecoration
-            && chunk.properties == Default::default()
+            && chunk.properties.legacy_boundary_dimensions() == Default::default()
     };
     let glyph_matches = |chunk: &super::PaintChunk| {
         let [super::PaintOp::PreparedText(prepared)] = &artifact.ops[chunk.op_range.clone()] else {
@@ -5122,7 +5134,7 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
             && chunk.id.phase == super::PaintNodePhase::BeforeChildren
             && chunk.id.slot == 1
             && chunk.id.role == super::PaintChunkRole::TextGlyphs
-            && chunk.properties == local_state
+            && chunk.properties.legacy_boundary_eq(local_state)
             && prepared.has_canonical_identity()
             && chunk.payload_identity == super::PaintPayloadIdentity::prepared_texts([prepared])
     };
@@ -5151,7 +5163,7 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
             && chunk.id.phase == phase
             && chunk.id.slot == slot
             && chunk.id.role == role
-            && chunk.properties == local_state
+            && chunk.properties.legacy_boundary_eq(local_state)
             && super::PaintPayloadIdentity::prepared_rects(rects.into_iter()).as_ref()
                 == Some(&chunk.payload_identity)
     };
@@ -5336,7 +5348,7 @@ pub(super) fn record_scroll_content_local_artifact_with_stack_for_plan(
         || artifact
             .chunks
             .iter()
-            .any(|chunk| chunk.properties != Default::default())
+            .any(|chunk| chunk.properties.legacy_boundary_dimensions() != Default::default())
     {
         return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
             content_root,
@@ -5402,7 +5414,7 @@ pub(super) fn record_effect_scroll_content_local_artifact_with_stack_for_plan(
         || artifact
             .chunks
             .iter()
-            .any(|chunk| chunk.properties != Default::default())
+            .any(|chunk| chunk.properties.legacy_boundary_dimensions() != Default::default())
     {
         return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
             content_root,
@@ -5638,8 +5650,8 @@ pub(super) fn record_frame_root_scroll_host_steps_for_plan(
     if consumed_transform.is_some_and(|transform| {
         transform.parent_boundary != transform.transform.0
             || transform.child_boundary != boundary_root
-    }) || state.paint != expected_paint
-        || state.descendants != expected_live_contents
+    }) || !state.paint.legacy_boundary_eq(expected_paint)
+        || !state.descendants.legacy_boundary_eq(expected_live_contents)
     {
         return Err(invalid());
     }
@@ -5957,14 +5969,18 @@ pub(super) fn record_native_scroll_forest_host_steps_for_plan(
         let mut receiver_count = 0usize;
         manifest.items.iter().all(|item| match item {
             PaintCoverageItem::ArtifactChunk { chunk, .. } => {
-                chunk.owner == boundary_root && chunk.properties == Default::default()
+                chunk.owner == boundary_root
+                    && chunk.properties.legacy_boundary_dimensions() == Default::default()
             }
             PaintCoverageItem::TransparentNode {
                 owner, properties, ..
             }
             | PaintCoverageItem::CulledSubtree {
                 owner, properties, ..
-            } => *owner == boundary_root && *properties == Default::default(),
+            } => {
+                *owner == boundary_root
+                    && properties.legacy_boundary_dimensions() == Default::default()
+            }
             PaintCoverageItem::NativeScrollContentReceiver { cutout, .. } => {
                 receiver_count += 1;
                 *cutout == receiver
@@ -6952,6 +6968,82 @@ where
     }
 }
 
+/// V2 candidate preflight. This is deliberately not called by the existing
+/// retained recorder: a missing spatial contract must reject the future V2
+/// candidate without changing the current retained authority before cutover.
+/// On success the artifact owns every transitive spatial snapshot needed by a
+/// sealed layerizer plan and no later stage needs the arena.
+fn populate_referenced_property_snapshots(
+    artifact: &mut PaintArtifact,
+    property_trees: &PropertyTrees,
+) -> Result<(), Vec<FrameArtifactFallbackReason>> {
+    artifact.transform_nodes.clear();
+    artifact.layout_position_nodes.clear();
+    artifact.visual_offset_nodes.clear();
+    artifact.scroll_nodes.clear();
+
+    let mut transforms = FxHashMap::<TransformNodeId, TransformNodeSnapshot>::default();
+    let mut positions = FxHashMap::<LayoutPositionNodeId, LayoutPositionNodeSnapshot>::default();
+    let mut visuals = FxHashMap::<VisualOffsetNodeId, VisualOffsetNodeSnapshot>::default();
+    let mut scrolls = FxHashMap::<ScrollNodeId, ScrollNodeSnapshot>::default();
+    for chunk in &artifact.chunks {
+        let invalid = || vec![FrameArtifactFallbackReason::PropertyBoundary(chunk.owner)];
+        for snapshot in property_trees
+            .transform_snapshot_chain_for(chunk.properties.transform)
+            .ok_or_else(invalid)?
+        {
+            match merge_snapshot(&mut transforms, snapshot.id, snapshot) {
+                SnapshotMerge::Inserted => artifact.transform_nodes.push(snapshot),
+                SnapshotMerge::Identical => {}
+                SnapshotMerge::Conflict => return Err(invalid()),
+            }
+        }
+        for snapshot in property_trees
+            .layout_position_snapshot_chain_for(chunk.properties.layout_position)
+            .ok_or_else(invalid)?
+        {
+            if let Some(scroll) = snapshot.reference_scroll {
+                for scroll_snapshot in property_trees
+                    .scroll_snapshot_chain_for(Some(scroll))
+                    .ok_or_else(invalid)?
+                {
+                    match merge_snapshot(&mut scrolls, scroll_snapshot.id, scroll_snapshot) {
+                        SnapshotMerge::Inserted => artifact.scroll_nodes.push(scroll_snapshot),
+                        SnapshotMerge::Identical => {}
+                        SnapshotMerge::Conflict => return Err(invalid()),
+                    }
+                }
+            }
+            match merge_snapshot(&mut positions, snapshot.id, snapshot) {
+                SnapshotMerge::Inserted => artifact.layout_position_nodes.push(snapshot),
+                SnapshotMerge::Identical => {}
+                SnapshotMerge::Conflict => return Err(invalid()),
+            }
+        }
+        for snapshot in property_trees
+            .visual_offset_snapshot_chain_for(chunk.properties.visual_offset)
+            .ok_or_else(invalid)?
+        {
+            match merge_snapshot(&mut visuals, snapshot.id, snapshot) {
+                SnapshotMerge::Inserted => artifact.visual_offset_nodes.push(snapshot),
+                SnapshotMerge::Identical => {}
+                SnapshotMerge::Conflict => return Err(invalid()),
+            }
+        }
+        for snapshot in property_trees
+            .scroll_snapshot_chain_for(chunk.properties.scroll)
+            .ok_or_else(invalid)?
+        {
+            match merge_snapshot(&mut scrolls, snapshot.id, snapshot) {
+                SnapshotMerge::Inserted => artifact.scroll_nodes.push(snapshot),
+                SnapshotMerge::Identical => {}
+                SnapshotMerge::Conflict => return Err(invalid()),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn materialize_transform_surface_steps(
     manifest: super::PaintCoverageManifest,
 ) -> Result<Vec<RecordedTransformSurfaceStep>, Vec<FrameArtifactFallbackReason>> {
@@ -7439,7 +7531,7 @@ fn assess_manifest(
                 chunk_count = chunk_count.saturating_add(1);
                 op_count = op_count.saturating_add(ops.as_ref().map_or(0, Vec::len));
                 if policy == FrameArtifactAuthorityPolicy::PropertyNeutral
-                    && chunk.properties != Default::default()
+                    && chunk.properties.legacy_boundary_dimensions() != Default::default()
                 {
                     let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
                     if !reasons.contains(&reason) {
@@ -7452,7 +7544,9 @@ fn assess_manifest(
                             chunk.properties,
                             witness,
                         ),
-                        None => chunk.properties != Default::default(),
+                        None => {
+                            chunk.properties.legacy_boundary_dimensions() != Default::default()
+                        }
                     }
                 {
                     let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
@@ -7464,7 +7558,7 @@ fn assess_manifest(
                     policy,
                     FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
                         | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_)
-                ) && chunk.properties != Default::default()
+                ) && chunk.properties.legacy_boundary_dimensions() != Default::default()
                 {
                     let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
                     if !reasons.contains(&reason) {
@@ -7637,7 +7731,9 @@ fn assess_manifest(
                             *properties,
                             witness,
                         ),
-                        None => *properties != Default::default(),
+                        None => {
+                            properties.legacy_boundary_dimensions() != Default::default()
+                        }
                     }
                 {
                     let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
@@ -7649,7 +7745,7 @@ fn assess_manifest(
                     policy,
                     FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
                         | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_)
-                ) && *properties != Default::default()
+                ) && properties.legacy_boundary_dimensions() != Default::default()
                 {
                     let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
                     if !reasons.contains(&reason) {
@@ -7839,13 +7935,13 @@ fn assess_manifest(
                         !scroll_text_area_subtree_local_properties_are_exact(*properties, witness)
                     }
                     FrameArtifactAuthorityPolicy::ScrollContentLocal(_, None) => {
-                        *properties != Default::default()
+                        properties.legacy_boundary_dimensions() != Default::default()
                     }
                     FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _) => {
-                        *properties != Default::default()
+                        properties.legacy_boundary_dimensions() != Default::default()
                     }
                     FrameArtifactAuthorityPolicy::NativeScrollForestContent(_) => {
-                        *properties != Default::default()
+                        properties.legacy_boundary_dimensions() != Default::default()
                     }
                     FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(witness) => {
                         !scroll_text_area_subtree_local_properties_are_exact(*properties, witness)
@@ -7967,6 +8063,7 @@ fn baked_scroll_host_properties_are_exact(
     properties: crate::view::compositor::property_tree::PropertyTreeState,
     witness: PaintBakedScrollHostWitness,
 ) -> bool {
+    let properties = properties.legacy_boundary_dimensions();
     if owner == witness.boundary_root() {
         properties == Default::default()
     } else if owner == witness.child() {
@@ -7985,6 +8082,7 @@ fn baked_scroll_text_area_subtree_properties_are_exact(
     baked: PaintBakedScrollHostWitness,
     text_area: PaintScrollTextAreaSubtreeWitness,
 ) -> bool {
+    let properties = properties.legacy_boundary_dimensions();
     if text_area.outer().boundary_root() != baked.boundary_root()
         || text_area.outer().content_root() != baked.child()
         || text_area.outer().scroll_snapshot().id != baked.scroll()
@@ -8015,6 +8113,7 @@ fn scroll_text_area_subtree_local_properties_are_exact(
     properties: crate::view::compositor::property_tree::PropertyTreeState,
     witness: PaintScrollTextAreaSubtreeWitness,
 ) -> bool {
+    let properties = properties.legacy_boundary_dimensions();
     properties == Default::default()
         || properties
             == crate::view::compositor::property_tree::PropertyTreeState {
@@ -8029,6 +8128,7 @@ fn baked_scroll_atomic_projection_text_area_subtree_properties_are_exact(
     baked: PaintBakedScrollHostWitness,
     text_area: PaintScrollAtomicProjectionTextAreaSubtreeWitness,
 ) -> bool {
+    let properties = properties.legacy_boundary_dimensions();
     if text_area.outer().boundary_root() != baked.boundary_root()
         || text_area.outer().content_root() != baked.child()
         || text_area.outer().scroll_snapshot().id != baked.scroll()
@@ -8059,6 +8159,7 @@ fn scroll_atomic_projection_text_area_subtree_local_properties_are_exact(
     properties: crate::view::compositor::property_tree::PropertyTreeState,
     witness: PaintScrollAtomicProjectionTextAreaSubtreeWitness,
 ) -> bool {
+    let properties = properties.legacy_boundary_dimensions();
     properties == Default::default()
         || properties
             == crate::view::compositor::property_tree::PropertyTreeState {
@@ -8073,6 +8174,7 @@ fn baked_scroll_interactive_text_area_subtree_properties_are_exact(
     baked: PaintBakedScrollHostWitness,
     text_area: PaintScrollInteractiveTextAreaSubtreeWitness,
 ) -> bool {
+    let properties = properties.legacy_boundary_dimensions();
     if text_area.outer().boundary_root() != baked.boundary_root()
         || text_area.outer().content_root() != baked.child()
         || text_area.outer().scroll_snapshot().id != baked.scroll()
@@ -8103,6 +8205,7 @@ fn scroll_interactive_text_area_subtree_local_properties_are_exact(
     properties: crate::view::compositor::property_tree::PropertyTreeState,
     witness: PaintScrollInteractiveTextAreaSubtreeWitness,
 ) -> bool {
+    let properties = properties.legacy_boundary_dimensions();
     properties == Default::default()
         || properties
             == crate::view::compositor::property_tree::PropertyTreeState {
@@ -8228,7 +8331,7 @@ fn production_property_boundary_reasons(
                 .into_iter()
                 .any(|properties| match policy {
                     FrameArtifactAuthorityPolicy::PropertyNeutral => {
-                        properties != Default::default()
+                        properties.legacy_boundary_dimensions() != Default::default()
                     }
                     FrameArtifactAuthorityPolicy::ClipEnabled => {
                         properties.transform.is_some()

@@ -65,7 +65,9 @@ fn effect_geometry(
         PropertyBoundaryForestRole::Transform => {
             PropertyEffectCompositeBasisStamp::ParentTransform {
                 transform: TransformNodeId(parent.owner),
-                viewport_matrix_bits: Mat4::IDENTITY.to_cols_array().map(f32::to_bits),
+                surface_composite_matrix_bits: Mat4::IDENTITY
+                    .to_cols_array()
+                    .map(f32::to_bits),
             }
         }
         PropertyBoundaryForestRole::Effect => {
@@ -106,8 +108,12 @@ fn linear_compiler_fixture(
                     id: TransformNodeId(owners[ordinal]),
                     owner: owners[ordinal],
                     parent: latest_transform,
-                    viewport_matrix: Mat4::IDENTITY,
+                    local_matrix: Mat4::IDENTITY,
+                    local_origin: glam::Vec3::ZERO,
+                    local_generation: 51 + ordinal as u64,
                     generation: 51 + ordinal as u64,
+                    owner_viewport_position: glam::Vec2::ZERO,
+                    owner_viewport_transform: Mat4::IDENTITY,
                 };
                 latest_transform = Some(snapshot.id);
                 transform_snapshots[ordinal] = Some(snapshot);

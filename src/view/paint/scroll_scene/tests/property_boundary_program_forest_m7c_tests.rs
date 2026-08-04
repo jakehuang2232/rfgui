@@ -382,8 +382,16 @@ fn projective_and_descendant_transform_fail_closed_at_the_owner() {
         crate::view::compositor::property_tree::TransformNode {
             owner: child,
             parent: Some(parent),
-            viewport_matrix: glam::Mat4::from_scale(glam::Vec3::splat(1.2)),
+            local_matrix: glam::Mat4::from_scale(glam::Vec3::splat(1.2)),
+            local_origin: glam::Vec3::ZERO,
+            local_generation: 1,
             generation: 1,
+            derived_projection: Some(
+                crate::view::compositor::property_tree::DerivedSpatialProjection {
+                    owner_viewport_position: glam::Vec2::ZERO,
+                    owner_viewport_transform: glam::Mat4::from_scale(glam::Vec3::splat(1.2)),
+                },
+            ),
         },
     );
     let rejected = crate::view::paint::frame_plan::plan_property_boundary_program_forest(

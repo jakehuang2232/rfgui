@@ -162,8 +162,11 @@ fn planner_explicitly_rejects_transformed_descendant_before_execution() {
         crate::view::compositor::property_tree::TransformNode {
             owner: child,
             parent: Some(TransformNodeId(root)),
-            viewport_matrix: root_transform.viewport_matrix,
+            local_matrix: root_transform.local_matrix,
+            local_origin: root_transform.local_origin,
+            local_generation: 1,
             generation: 1,
+            derived_projection: root_transform.derived_projection,
         },
     );
     properties
@@ -196,7 +199,10 @@ fn planner_rejects_nonfinite_parented_and_wrong_transform_boundaries() {
         .transforms
         .get_mut(&TransformNodeId(root))
         .expect("root transform")
-        .viewport_matrix = glam::Mat4::from_cols_array(&[
+        .derived_projection
+        .as_mut()
+        .expect("derived transform")
+        .owner_viewport_transform = glam::Mat4::from_cols_array(&[
         f32::NAN,
         0.0,
         0.0,

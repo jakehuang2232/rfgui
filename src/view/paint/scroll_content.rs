@@ -50,12 +50,12 @@ impl PreparedScrollTransformContentCompositeGeometry {
             || transform.id.0 != transform.owner
             || transform.parent.is_some()
             || transform.generation == 0
-            || transform.viewport_matrix.to_cols_array().map(f32::to_bits)
+            || transform.owner_viewport_transform.to_cols_array().map(f32::to_bits)
                 != transform_geometry
                     .viewport_transform
                     .to_cols_array()
                     .map(f32::to_bits)
-            || super::compiler::direct_translation_bits(transform.viewport_matrix).is_none()
+            || super::compiler::direct_translation_bits(transform.owner_viewport_transform).is_none()
             || transform_geometry.outer_scissor_rect.is_some()
             || !scroll.has_canonical_vertical_geometry_with_contents_clip(contents_clip)
             || scroll.owner != scroll.id.0

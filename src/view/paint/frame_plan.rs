@@ -765,9 +765,7 @@ pub(super) fn plan_property_boundary_program_forest(
             let snapshot = property_trees.transform_snapshot_for(transform_id);
             let expected = PropertyTreeState {
                 transform: Some(transform_id),
-                clip: None,
-                effect: None,
-                scroll: None,
+                ..Default::default()
             };
             let content_owner_is_exact = |owner| {
                 arena.get(owner).is_some_and(|node| {
@@ -779,7 +777,8 @@ pub(super) fn plan_property_boundary_program_forest(
                                 arena,
                             ))
                 }) && property_trees.node_state_for(owner).is_some_and(|state| {
-                    state.paint == expected && state.descendants == expected
+                    state.paint.legacy_boundary_dimensions() == expected
+                        && state.descendants.legacy_boundary_dimensions() == expected
                 })
             };
             let invalid_content_owner = root_nodes
@@ -807,15 +806,12 @@ pub(super) fn plan_property_boundary_program_forest(
                 && snapshot.owner == root
                 && snapshot.parent.is_none()
                 && snapshot.generation != 0
-                && matrix_is_finite_affine(snapshot.viewport_matrix)
+                && matrix_is_finite_affine(snapshot.owner_viewport_transform)
                 && root_node.element.has_retained_transform_surface()
-                && root_node
-                    .element
-                    .compositor_viewport_transform_snapshot()
-                    .is_some_and(|live| {
-                        live.to_cols_array().map(f32::to_bits)
-                            == snapshot.viewport_matrix.to_cols_array().map(f32::to_bits)
-                    });
+                && element_local_transform_matches_snapshot(
+                    root_node.element.as_ref(),
+                    snapshot,
+                );
             if !exact_root_transform || invalid_content_owner.is_some() {
                 reasons.push(PropertyBoundaryProgramRejection::UnsupportedRoot {
                     root,
@@ -910,8 +906,12 @@ pub(super) fn plan_property_boundary_program_forest(
             for &owner in root_nodes {
                 if property_trees
                     .node_state_for(owner)
-                    .is_some_and(|state| state.paint != PropertyTreeState::default()
-                        || state.descendants != PropertyTreeState::default())
+                    .is_some_and(|state| {
+                        state.paint.legacy_boundary_dimensions()
+                            != PropertyTreeState::default()
+                            || state.descendants.legacy_boundary_dimensions()
+                                != PropertyTreeState::default()
+                    })
                 {
                     reasons.push(PropertyBoundaryProgramRejection::UnsupportedRoot {
                         root,
@@ -966,10 +966,9 @@ pub(super) fn plan_property_boundary_program_forest(
             continue;
         }
         let expected = PropertyTreeState {
-            transform: None,
             clip: Some(clip_id),
-            effect: None,
             scroll: Some(scroll_id),
+            ..Default::default()
         };
         let mut observed_pair = false;
         for &owner in root_nodes {
@@ -977,6 +976,7 @@ pub(super) fn plan_property_boundary_program_forest(
                 continue;
             };
             for value in [state.paint, state.descendants] {
+                let value = value.legacy_boundary_dimensions();
                 if value == expected {
                     observed_pair = true;
                 } else if value != PropertyTreeState::default() {
@@ -1205,7 +1205,7 @@ pub(super) fn property_boundary_program_forest_is_canonical(
                         && transform.owner == root.root
                         && transform.parent.is_none()
                         && transform.generation != 0
-                        && matrix_is_finite_affine(transform.viewport_matrix)
+                        && matrix_is_finite_affine(transform.owner_viewport_transform)
                 }
                 _ => false,
             };
@@ -2542,7 +2542,7 @@ impl PropertyBoundaryForest {
                                 && transform.owner == parent_node.owner
                                 && transform.generation != 0
                                 && transform
-                                    .viewport_matrix
+                                    .owner_viewport_transform
                                     .to_cols_array()
                                     .into_iter()
                                     .all(f32::is_finite)
@@ -2912,7 +2912,7 @@ pub(super) enum PropertyIsolationCompositeBasis {
     ParentEffect(EffectNodeId),
     ParentTransform {
         transform: TransformNodeId,
-        viewport_matrix_bits: [u32; 16],
+        surface_composite_matrix_bits: [u32; 16],
     },
 }
 
@@ -2999,7 +2999,10 @@ pub(crate) struct PropertySceneTransactionSurfaceWitness {
     pub(crate) parent_surface: Option<NodeKey>,
     pub(crate) scene_root: NodeKey,
     pub(crate) kind: PropertySceneTransactionSurfaceKind,
-    pub(crate) transform_viewport_matrix_bits: Option<[u32; 16]>,
+    /// Matrix consumed only while compositing this detached surface into its
+    /// receiver. It is excluded from raster identity and is not property-tree
+    /// transform source data.
+    pub(crate) surface_composite_matrix_bits: Option<[u32; 16]>,
     pub(crate) effect_composite: Option<PropertySceneEffectCompositeWitness>,
 }
 
@@ -3172,7 +3175,7 @@ impl FramePaintPlan {
                     let (
                         kind,
                         persistent_color_key,
-                        transform_viewport_matrix_bits,
+                        surface_composite_matrix_bits,
                         effect_composite,
                     ) = match contract.boundary {
                         PropertyBoundaryId::Transform(id) => (
@@ -3182,7 +3185,7 @@ impl FramePaintPlan {
                             ),
                             match &contract.kind {
                                 PropertyEffectSurfaceKind::Transform { snapshot, .. } => {
-                                    Some(snapshot.viewport_matrix.to_cols_array().map(f32::to_bits))
+                                    Some(snapshot.owner_viewport_transform.to_cols_array().map(f32::to_bits))
                                 }
                                 PropertyEffectSurfaceKind::Isolation(_) => return None,
                             },
@@ -3223,7 +3226,7 @@ impl FramePaintPlan {
                             .get(contract.scene_root_ordinal as usize)?
                             .root,
                         kind,
-                        transform_viewport_matrix_bits,
+                        surface_composite_matrix_bits,
                         effect_composite,
                     })
                 })
@@ -3241,10 +3244,10 @@ impl FramePaintPlan {
                     parent_surface: contract.parent.map(PropertySurfaceId::owner),
                     scene_root: contract.scene_root,
                     kind: PropertySceneTransactionSurfaceKind::Transform(contract.id.transform),
-                    transform_viewport_matrix_bits: Some(
+                    surface_composite_matrix_bits: Some(
                         contract
                             .transform
-                            .viewport_matrix
+                            .owner_viewport_transform
                             .to_cols_array()
                             .map(f32::to_bits),
                     ),
@@ -4019,8 +4022,8 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
             let state = property_trees.node_state_for(key)?;
             let clip = property_trees.clips.get(&clip_id)?;
             let effect = property_trees.effects.get(&effect_id)?;
-            (state.paint == exact_state
-                && state.descendants == exact_state
+            (state.paint.legacy_boundary_eq(exact_state)
+                && state.descendants.legacy_boundary_eq(exact_state)
                 && clip.owner == key
                 && clip.parent.is_none()
                 && clip.behavior == ClipBehavior::Replace
@@ -4230,7 +4233,7 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
                         if snapshot.owner != id.0
                             || snapshot.generation == 0
                             || snapshot.parent != expected_parent
-                            || !matrix_is_finite_affine(snapshot.viewport_matrix)
+                            || !matrix_is_finite_affine(snapshot.owner_viewport_transform)
                         {
                             return false;
                         }
@@ -4408,7 +4411,7 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
                             context,
                             property_trees
                                 .transform_snapshot_for(TransformNodeId(owner))
-                                .map(|snapshot| snapshot.viewport_matrix),
+                                .map(|snapshot| snapshot.owner_viewport_transform),
                         )?
                         .source_bounds
                     }
@@ -4478,8 +4481,8 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
                                 .ok_or_else(|| property_scene_error("property-effect-scene-scaffold"))?;
                             PropertyIsolationCompositeBasis::ParentTransform {
                                 transform: parent.id,
-                                viewport_matrix_bits: parent
-                                    .viewport_matrix
+                                surface_composite_matrix_bits: parent
+                                    .owner_viewport_transform
                                     .to_cols_array()
                                     .map(f32::to_bits),
                             }
@@ -4737,8 +4740,8 @@ fn collect_native_scroll_forest_node(
             || scroll.generation == 0
             || contents_clip.generation == 0
             || !geometry_is_canonical
-            || state.paint != projected_output
-            || state.descendants != live_input
+            || !state.paint.legacy_boundary_eq(projected_output)
+            || !state.descendants.legacy_boundary_eq(live_input)
         {
             return Err(invalid());
         }
@@ -4794,7 +4797,7 @@ fn collect_native_scroll_forest_node(
         .and_then(|id| boundaries.get(id.0 as usize))
         .map(|boundary| boundary.projection.live_input)
         .unwrap_or_default();
-    if state.paint != expected || state.descendants != expected {
+    if !state.paint.legacy_boundary_eq(expected) || !state.descendants.legacy_boundary_eq(expected) {
         return Err(invalid());
     }
     if node.children().is_empty() {
@@ -5311,7 +5314,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 };
                 if snapshot.owner != key
                     || snapshot.generation == 0
-                    || !matrix_is_finite_affine(snapshot.viewport_matrix)
+                    || !matrix_is_finite_affine(snapshot.owner_viewport_transform)
                 {
                     push_unique(reasons, FramePaintPlanRejection::InvalidRootTransform(key));
                 }
@@ -5378,7 +5381,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 };
                 if transform.owner != key
                     || transform.generation == 0
-                    || !matrix_is_finite_affine(transform.viewport_matrix)
+                    || !matrix_is_finite_affine(transform.owner_viewport_transform)
                     || effect.owner != key
                     || effect.parent.is_some()
                     || effect.generation == 0
@@ -5425,7 +5428,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 };
                 if snapshot.owner != key
                     || snapshot.generation == 0
-                    || !matrix_is_finite_affine(snapshot.viewport_matrix)
+                    || !matrix_is_finite_affine(snapshot.owner_viewport_transform)
                 {
                     push_unique(reasons, FramePaintPlanRejection::InvalidRootTransform(key));
                 }
@@ -7967,7 +7970,7 @@ fn plan_same_owner_transform_effect_scroll_receiver_insertions(
             .viewport_transform
             .to_cols_array()
             .map(f32::to_bits)
-            != transform.viewport_matrix.to_cols_array().map(f32::to_bits)
+            != transform.owner_viewport_transform.to_cols_array().map(f32::to_bits)
             || super::compiler::direct_translation_bits(outer_geometry.viewport_transform).is_none()
             || outer_geometry.outer_scissor_rect.is_some()
         {
@@ -8346,10 +8349,10 @@ fn plan_property_scroll_content_effect_insertions(
                     || transform.owner != root.root
                     || transform.parent.is_some()
                     || transform.generation == 0
-                    || transform.viewport_matrix.to_cols_array().map(f32::to_bits)
+                    || transform.owner_viewport_transform.to_cols_array().map(f32::to_bits)
                         != property_trees
                             .transform_snapshot_for(transform.id)
-                            .map(|live| live.viewport_matrix.to_cols_array().map(f32::to_bits))
+                            .map(|live| live.owner_viewport_transform.to_cols_array().map(f32::to_bits))
                             .ok_or_else(|| property_scene_error("property-scroll-content-effect-insertions"))?
                 {
                     return Err(property_scene_error("property-scroll-content-effect-insertions"));
@@ -8409,7 +8412,7 @@ fn plan_property_scroll_content_effect_insertions(
                     .viewport_transform
                     .to_cols_array()
                     .map(f32::to_bits)
-                    != transform.viewport_matrix.to_cols_array().map(f32::to_bits)
+                    != transform.owner_viewport_transform.to_cols_array().map(f32::to_bits)
                 {
                     return Err(property_scene_error("property-scroll-content-effect-insertions"));
                 }
@@ -8570,9 +8573,8 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
             effect: same_owner.then_some(inner.id),
             ..Default::default()
         };
-        if outer_state.paint != expected_outer_state
-            || inner_state.paint
-                != (PropertyTreeState {
+        if !outer_state.paint.legacy_boundary_eq(expected_outer_state)
+            || !inner_state.paint.legacy_boundary_eq(PropertyTreeState {
                     transform: Some(outer.id),
                     effect: Some(inner.id),
                     ..Default::default()
@@ -8772,7 +8774,7 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
             .viewport_transform
             .to_cols_array()
             .map(f32::to_bits)
-            != outer.viewport_matrix.to_cols_array().map(f32::to_bits)
+            != outer.owner_viewport_transform.to_cols_array().map(f32::to_bits)
             || super::compiler::direct_translation_bits(outer_geometry.viewport_transform).is_none()
             || outer_geometry.outer_scissor_rect.is_some()
         {
@@ -8879,7 +8881,7 @@ fn plan_property_effect_transform_scroll_receiver_insertions(
             || !(0.0..=1.0).contains(&outer.opacity)
             || inner.parent.is_some()
             || inner.generation == 0
-            || super::compiler::direct_translation_bits(inner.viewport_matrix).is_none()
+            || super::compiler::direct_translation_bits(inner.owner_viewport_transform).is_none()
             || boundary.scroll.id != *scroll
             || property_boundary_neutral_path(arena, outer.owner, inner.owner).is_none()
             || property_boundary_neutral_path(arena, inner.owner, boundary.scroll.owner).is_none()
@@ -9420,7 +9422,7 @@ fn materialize_property_effect_surface(
                 arena,
                 owner,
                 scaffold.context,
-                Some(snapshot.viewport_matrix),
+                Some(snapshot.owner_viewport_transform),
             )?;
             let witness = PaintTransformSurfaceWitness::canonical_root(owner);
             let forest_node = scaffold
@@ -9854,16 +9856,13 @@ fn validate_transform_property_scene_inputs(
         let valid = snapshot.owner == key
             && snapshot.id == id
             && snapshot.generation != 0
-            && matrix_is_finite_affine(snapshot.viewport_matrix)
+            && matrix_is_finite_affine(snapshot.owner_viewport_transform)
             && arena.get(key).is_some_and(|node| {
                 node.element.has_retained_transform_surface()
-                    && node
-                        .element
-                        .compositor_viewport_transform_snapshot()
-                        .is_some_and(|live| {
-                            live.to_cols_array().map(f32::to_bits)
-                                == snapshot.viewport_matrix.to_cols_array().map(f32::to_bits)
-                        })
+                    && element_local_transform_matches_snapshot(
+                        node.element.as_ref(),
+                        snapshot,
+                    )
             });
         if !valid {
             push_unique(
@@ -10010,7 +10009,7 @@ fn plan_transform_property_surface(
         arena,
         id.owner,
         surface_context,
-        Some(transform.viewport_matrix),
+        Some(transform.owner_viewport_transform),
     )?;
     let direct_children = index.direct_children.get(&id).cloned().unwrap_or_default();
     let cutouts = planned_transform_cutouts(arena, direct_children.iter().copied())?;
@@ -10693,7 +10692,7 @@ fn property_effect_scaffold_is_canonical(
                     || snapshot.owner != id.0
                     || snapshot.generation == 0
                     || snapshot.parent != expected_transform_parent
-                    || !matrix_is_finite_affine(snapshot.viewport_matrix)
+                    || !matrix_is_finite_affine(snapshot.owner_viewport_transform)
                 {
                     return false;
                 }
@@ -10792,8 +10791,8 @@ fn property_effect_scaffold_is_canonical(
                         PropertyEffectSurfaceKind::Transform { snapshot, .. } => {
                             PropertyIsolationCompositeBasis::ParentTransform {
                                 transform: snapshot.id,
-                                viewport_matrix_bits: snapshot
-                                    .viewport_matrix
+                                surface_composite_matrix_bits: snapshot
+                                    .owner_viewport_transform
                                     .to_cols_array()
                                     .map(f32::to_bits),
                             }
@@ -12219,7 +12218,7 @@ fn property_effect_transform_scroll_receiver_insertion_is_canonical(
             != insertion
                 .inner
                 .receiver
-                .viewport_matrix
+                .owner_viewport_transform
                 .to_cols_array()
                 .map(f32::to_bits)
         || super::compiler::direct_translation_bits(insertion.inner_geometry.viewport_transform)
@@ -12233,7 +12232,11 @@ fn property_effect_transform_scroll_receiver_insertion_is_canonical(
         || boundary.scroll.id != *scroll
         || boundary.contents_clip.id.owner != boundary.scroll.owner
         || boundary.consumed_properties.target_owner != boundary.scroll.owner
-        || boundary.consumed_properties.projected_output != PropertyTreeState::default()
+        || boundary
+            .consumed_properties
+            .projected_output
+            .legacy_boundary_dimensions()
+            != PropertyTreeState::default()
         || !matches!(
             boundary.consumed_properties.entries.as_slice(),
             [
@@ -12454,7 +12457,7 @@ fn property_transform_effect_scroll_receiver_insertion_is_canonical(
             .map(f32::to_bits)
             != insertion
                 .outer_receiver
-                .viewport_matrix
+                .owner_viewport_transform
                 .to_cols_array()
                 .map(f32::to_bits)
         || super::compiler::direct_translation_bits(insertion.outer_geometry.viewport_transform)
@@ -12467,7 +12470,11 @@ fn property_transform_effect_scroll_receiver_insertion_is_canonical(
         || boundary.scroll.id != *scroll
         || boundary.contents_clip.id.owner != boundary.scroll.owner
         || boundary.consumed_properties.target_owner != boundary.scroll.owner
-        || boundary.consumed_properties.projected_output != PropertyTreeState::default()
+        || boundary
+            .consumed_properties
+            .projected_output
+            .legacy_boundary_dimensions()
+            != PropertyTreeState::default()
         || !matches!(
             boundary.consumed_properties.entries.as_slice(),
             [
@@ -13023,7 +13030,7 @@ fn property_scroll_content_outer_transform_insertion_is_canonical(
             .viewport_transform
             .to_cols_array()
             .map(f32::to_bits)
-            != expected.viewport_matrix.to_cols_array().map(f32::to_bits)
+            != expected.owner_viewport_transform.to_cols_array().map(f32::to_bits)
         || insertion.geometry.outer_scissor_rect != context.outer_scissor_rect
     {
         return false;
@@ -13788,8 +13795,8 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
             FramePaintPlanRejection::TransformNodeCount(property_trees.transforms.len()),
         );
     }
-    let root_transform = property_trees.transforms.get(&transform);
-    match root_transform {
+    let root_transform = property_trees.transform_snapshot_for(transform);
+    match root_transform.as_ref() {
         None => push_unique(
             &mut reasons,
             FramePaintPlanRejection::MissingRootTransform(*root),
@@ -13799,7 +13806,7 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
                 || snapshot.parent.is_some()
                 || snapshot.generation == 0
                 || snapshot
-                    .viewport_matrix
+                    .owner_viewport_transform
                     .to_cols_array()
                     .iter()
                     .any(|value| !value.is_finite()) =>
@@ -13811,18 +13818,19 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
         }
         Some(_) => {}
     }
-    if let Some(snapshot) = root_transform
-        && !matrix_is_finite_affine(snapshot.viewport_matrix)
+    if let Some(snapshot) = root_transform.as_ref()
+        && !matrix_is_finite_affine(snapshot.owner_viewport_transform)
     {
         push_unique(
             &mut reasons,
             FramePaintPlanRejection::NonAffineTransform(*root),
         );
     }
-    let nested_transform = property_trees
-        .transforms
-        .iter()
-        .find_map(|(&id, snapshot)| (id != transform).then_some((id, *snapshot)));
+    let nested_transform = property_trees.transforms.keys().find_map(|&id| {
+        (id != transform)
+            .then(|| property_trees.transform_snapshot_for(id).map(|snapshot| (id, snapshot)))
+            .flatten()
+    });
     let nested_root = nested_transform.map(|(_, snapshot)| snapshot.owner);
     if let Some((nested_id, snapshot)) = nested_transform {
         let nested_element = arena.get(snapshot.owner).filter(|node| {
@@ -13832,28 +13840,23 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
         if nested_element.is_none()
             || nested_id != TransformNodeId(snapshot.owner)
             || snapshot.parent != Some(transform)
-            || snapshot.generation == 0
         {
             push_unique(
                 &mut reasons,
                 FramePaintPlanRejection::UnexpectedTransform(snapshot.owner),
             );
         }
-        if nested_element.is_some_and(|node| {
-            !node
-                .element
-                .compositor_viewport_transform_snapshot()
-                .is_some_and(|live| {
-                    live.to_cols_array().map(f32::to_bits)
-                        == snapshot.viewport_matrix.to_cols_array().map(f32::to_bits)
-                })
-        }) {
+        if snapshot.generation == 0
+            || nested_element.is_some_and(|node| {
+                !element_local_transform_matches_snapshot(node.element.as_ref(), snapshot)
+            })
+        {
             push_unique(
                 &mut reasons,
                 FramePaintPlanRejection::InvalidRootTransform(snapshot.owner),
             );
         }
-        if !matrix_is_finite_affine(snapshot.viewport_matrix) {
+        if !matrix_is_finite_affine(snapshot.owner_viewport_transform) {
             push_unique(
                 &mut reasons,
                 FramePaintPlanRejection::NonAffineTransform(snapshot.owner),
@@ -13958,7 +13961,7 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
             arena,
             *root,
             context,
-            root_transform.map(|snapshot| snapshot.viewport_matrix),
+            root_transform.map(|snapshot| snapshot.owner_viewport_transform),
         )?;
         let child_node = arena.get(child_root).ok_or_else(|| FramePaintPlanError {
             reasons: vec![FramePaintPlanRejection::MissingRoot(child_root)],
@@ -13985,9 +13988,8 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
             child_root,
             child_context,
             property_trees
-                .transforms
-                .get(&child_transform)
-                .map(|snapshot| snapshot.viewport_matrix),
+                .transform_snapshot_for(child_transform)
+                .map(|snapshot| snapshot.owner_viewport_transform),
         )?;
         let boundary = super::PlannedBoundary {
             root: child_root,
@@ -14137,7 +14139,7 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
             arena,
             *root,
             context,
-            root_transform.map(|snapshot| snapshot.viewport_matrix),
+            root_transform.map(|snapshot| snapshot.owner_viewport_transform),
         )?;
         let opaque_count = opaque_order_count(&raster_artifact);
         RetainedSurfacePlan {
@@ -14247,7 +14249,7 @@ pub(crate) fn plan_single_root_transform_child_isolation_surface_with_context(
         );
     }
 
-    let root_transform = property_trees.transforms.get(&transform).copied();
+    let root_transform = property_trees.transform_snapshot_for(transform);
     match root_transform {
         None => push_unique(
             &mut reasons,
@@ -14257,7 +14259,7 @@ pub(crate) fn plan_single_root_transform_child_isolation_surface_with_context(
             if snapshot.owner != *root
                 || snapshot.parent.is_some()
                 || snapshot.generation == 0
-                || !matrix_is_finite_affine(snapshot.viewport_matrix) =>
+                || !matrix_is_finite_affine(snapshot.owner_viewport_transform) =>
         {
             push_unique(
                 &mut reasons,
@@ -14408,7 +14410,7 @@ pub(crate) fn plan_single_root_transform_child_isolation_surface_with_context(
         arena,
         *root,
         context,
-        root_transform.map(|snapshot| snapshot.viewport_matrix),
+        root_transform.map(|snapshot| snapshot.owner_viewport_transform),
     )?;
     let child_paint_offset = root_element
         .retained_child_paint_offset(context.paint_offset())
@@ -14802,10 +14804,12 @@ pub(crate) fn plan_single_root_scroll_host_surface(
         || contents_clip.behavior
             != crate::view::compositor::property_tree::ClipBehavior::Intersect
         || root_state.is_none_or(|state| {
-            state.paint != PropertyTreeState::default() || state.descendants != expected_contents
+            state.paint.legacy_boundary_dimensions() != PropertyTreeState::default()
+                || !state.descendants.legacy_boundary_eq(expected_contents)
         })
         || child_state.is_none_or(|state| {
-            state.paint != expected_contents || state.descendants != expected_contents
+            !state.paint.legacy_boundary_eq(expected_contents)
+                || !state.descendants.legacy_boundary_eq(expected_contents)
         });
     if invalid {
         return Err(FramePaintPlanError {
@@ -14875,19 +14879,18 @@ pub(super) fn exact_surface_geometry_for_plan(
     arena: &NodeArena,
     root: NodeKey,
     context: TransformSurfacePlanContext,
-    expected_viewport_matrix: Option<glam::Mat4>,
+    expected_owner_viewport_transform: Option<glam::Mat4>,
 ) -> Result<TransformSurfaceGeometrySnapshot, FramePaintPlanError> {
     let source_bounds = element
         .retained_transform_surface_bounds(arena, context.paint_offset())
         .ok_or_else(|| FramePaintPlanError {
             reasons: vec![FramePaintPlanRejection::InvalidSurfaceGeometry(root)],
         })?;
-    let viewport_transform = element
-        .compositor_viewport_transform_snapshot()
-        .map(|snapshot| glam::Mat4::from_cols_array(&snapshot.to_cols_array()))
-        .ok_or_else(|| FramePaintPlanError {
+    let viewport_transform = expected_owner_viewport_transform.ok_or_else(|| {
+        FramePaintPlanError {
             reasons: vec![FramePaintPlanRejection::InvalidRootTransform(root)],
-        })?;
+        }
+    })?;
     let visual_bounds = crate::view::viewport::scene_helpers::paint_snapped_retained_surface_bounds(
         element,
         source_bounds,
@@ -14907,13 +14910,12 @@ pub(super) fn exact_surface_geometry_for_plan(
             reasons: vec![FramePaintPlanRejection::NegativeSurfaceOrigin(root)],
         });
     }
-    if expected_viewport_matrix.is_some_and(|expected| {
-        expected.to_cols_array().map(f32::to_bits)
-            != geometry
-                .viewport_transform
-                .to_cols_array()
-                .map(f32::to_bits)
-    }) {
+    if viewport_transform.to_cols_array().map(f32::to_bits)
+        != geometry
+            .viewport_transform
+            .to_cols_array()
+            .map(f32::to_bits)
+    {
         return Err(FramePaintPlanError {
             reasons: vec![FramePaintPlanRejection::InvalidRootTransform(root)],
         });
@@ -14979,6 +14981,20 @@ fn matrix_is_finite_affine(matrix: glam::Mat4) -> bool {
         && values[7] == 0.0
         && values[11] == 0.0
         && values[15] == 1.0
+}
+
+pub(super) fn element_local_transform_matches_snapshot(
+    element: &dyn ElementTrait,
+    snapshot: TransformNodeSnapshot,
+) -> bool {
+    element
+        .compositor_local_transform_snapshot()
+        .is_some_and(|live| {
+            live.to_cols_array().map(f32::to_bits)
+                == snapshot.local_matrix.to_cols_array().map(f32::to_bits)
+                && live.origin().map(f32::to_bits)
+                    == snapshot.local_origin.to_array().map(f32::to_bits)
+        })
 }
 
 pub(super) fn opaque_order_count(artifact: &PaintArtifact) -> u32 {

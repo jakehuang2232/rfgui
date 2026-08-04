@@ -436,9 +436,16 @@ impl Element {
         let mut target_rel_x = self.core.position.x;
         let mut target_rel_y = self.core.position.y;
         let is_absolute = self.computed_style.position.mode() == PositionMode::Absolute;
+        let mut spatial_reference =
+            SpatialPositionReferenceSnapshot::LayoutParent(self.core.parent_id);
+        let mut spatial_reference_origin = Position {
+            x: parent_x,
+            y: parent_y,
+        };
         let mut absolute_clip_rect: Option<Rect> = None;
         if is_absolute {
             let fallback_anchor = AnchorSnapshot {
+                stable_id: self.core.parent_id,
                 x: parent_x,
                 y: parent_y,
                 width: proposal.width.max(0.0),
@@ -446,6 +453,25 @@ impl Element {
                 parent_clip_rect,
             };
             let anchor = self.resolve_anchor_snapshot(fallback_anchor);
+            if let Some(anchor_ref) = self.computed_style.position.anchor_ref() {
+                match anchor_ref {
+                    crate::style::Anchor::Viewport => {
+                        spatial_reference = SpatialPositionReferenceSnapshot::Viewport;
+                        spatial_reference_origin = Position { x: 0.0, y: 0.0 };
+                    }
+                    crate::style::Anchor::Name(_)
+                    | crate::style::Anchor::Parent
+                    | crate::style::Anchor::Ancestor(_) => {
+                        if let Some(stable_id) = anchor.stable_id {
+                            spatial_reference = SpatialPositionReferenceSnapshot::Anchor(stable_id);
+                            spatial_reference_origin = Position {
+                                x: anchor.x,
+                                y: anchor.y,
+                            };
+                        }
+                    }
+                }
+            }
             let left = self.computed_style.position.left_inset().and_then(|v| {
                 resolve_signed_px_with_base(
                     v,
@@ -691,9 +717,22 @@ impl Element {
             .layout_transition_override_height
             .unwrap_or(target_height)
             .max(0.0);
-        self.layout_state.layout_flow_position = Position {
+        let flow_position = Position {
             x: parent_x + frame_rel_x,
             y: parent_y + frame_rel_y,
+        };
+        // Freeze the local layout edge while the relative target and its
+        // reference are still available. `layout_flow_position` is not an
+        // admissible source here: its absolute value has already absorbed
+        // ancestor scroll projection. For a layout-parent edge the parent
+        // origin cancels, leaving the scroll-zero relative placement.
+        let translation_at_scroll_zero = Position {
+            x: flow_position.x - spatial_reference_origin.x,
+            y: flow_position.y - spatial_reference_origin.y,
+        };
+        self.layout_state.layout_flow_position = Position {
+            x: flow_position.x,
+            y: flow_position.y,
         };
         let frame = LayoutFrame {
             x: self.layout_state.layout_flow_position.x
@@ -709,6 +748,22 @@ impl Element {
             x: frame.x,
             y: frame.y,
         };
+        self.spatial_placement_snapshot = Some(SpatialPlacementSnapshot::new(
+            spatial_reference,
+            [
+                translation_at_scroll_zero.x,
+                translation_at_scroll_zero.y,
+            ],
+            [flow_position.x, flow_position.y],
+            [
+                self.layout_transition_visual_offset_x,
+                self.layout_transition_visual_offset_y,
+            ],
+            [
+                self.layout_state.layout_position.x,
+                self.layout_state.layout_position.y,
+            ],
+        ));
         self.layout_state.layout_size = Size {
             width: frame.width,
             height: frame.height,
@@ -1029,6 +1084,10 @@ impl Element {
             placement.parent_x += dx;
             placement.parent_y += dy;
         }
+        if let Some(spatial) = self.spatial_placement_snapshot.as_mut() {
+            spatial.compatibility_viewport_position[0] += dx;
+            spatial.compatibility_viewport_position[1] += dy;
+        }
         // The resolved transform bakes the absolute layout origin (see
         // `compute_transform_matrix`), so refresh it after the shift. Cheap
         // no-op when the node has no `transform`.
@@ -1142,6 +1201,7 @@ impl Element {
             height: 0.0,
         });
         let snapshot = AnchorSnapshot {
+            stable_id: Some(self.core.id),
             x: self.layout_state.layout_position.x,
             y: self.layout_state.layout_position.y,
             width: self.layout_state.layout_size.width.max(0.0),
@@ -1178,6 +1238,7 @@ impl Element {
                         runtime.ancestor_stack.first().copied().unwrap_or(fallback)
                     } else {
                         AnchorSnapshot {
+                            stable_id: None,
                             x: 0.0,
                             y: 0.0,
                             width: vw,
@@ -1215,6 +1276,7 @@ impl Element {
             height: 0.0,
         });
         let snapshot = AnchorSnapshot {
+            stable_id: Some(self.core.id),
             x: self.layout_state.layout_position.x,
             y: self.layout_state.layout_position.y,
             width: self.layout_state.layout_size.width.max(0.0),

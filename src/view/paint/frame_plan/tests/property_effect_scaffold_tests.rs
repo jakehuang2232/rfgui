@@ -77,6 +77,30 @@ fn property_effect_scaffold_accepts_sealed_neutral_prefix_and_rejects_unproven_s
         &mut arena,
         Box::new(Element::new_with_id(0xea_3001, 0.0, 0.0, 160.0, 120.0)),
     );
+    measure_and_place(
+        &mut arena,
+        wrapper,
+        LayoutConstraints {
+            max_width: 160.0,
+            max_height: 120.0,
+            viewport_width: 160.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(160.0),
+            percent_base_height: Some(120.0),
+        },
+        LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 160.0,
+            available_height: 120.0,
+            viewport_width: 160.0,
+            viewport_height: 120.0,
+            percent_base_width: Some(160.0),
+            percent_base_height: Some(120.0),
+        },
+    );
     arena.set_parent(root, Some(wrapper));
     arena.set_children(wrapper, vec![root]);
     properties.sync(&arena, &[wrapper]);
@@ -184,7 +208,10 @@ fn property_effect_scaffold_accepts_sealed_neutral_prefix_and_rejects_unproven_s
         .transforms
         .get_mut(&TransformNodeId(root))
         .expect("transform")
-        .viewport_matrix = glam::Mat4::from_cols_array(&[
+        .derived_projection
+        .as_mut()
+        .expect("derived transform")
+        .owner_viewport_transform = glam::Mat4::from_cols_array(&[
         1.0, 0.0, 0.0, 0.25, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]);
     let error = plan_property_effect_scene_scaffold_with_context(

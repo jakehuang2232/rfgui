@@ -974,7 +974,7 @@ impl DirectScrollTransformSceneScaffold {
                 crate::view::base_component::ScrollbarPaintStateWitness::HiddenNow
                     | crate::view::base_component::ScrollbarPaintStateWitness::NotPaintable
             ) || self.overlay_after_identity.op_count == 0)
-            && super::compiler::direct_translation_bits(self.transform.viewport_matrix).is_some()
+            && super::compiler::direct_translation_bits(self.transform.owner_viewport_transform).is_some()
     }
 
     #[cfg(test)]
@@ -2608,13 +2608,10 @@ pub(crate) fn compile_property_boundary_program_forest_scene(
                     || transform.id != TransformNodeId(root.root)
                     || transform.parent.is_some()
                     || transform.generation == 0
-                    || arena_root
-                        .element
-                        .compositor_viewport_transform_snapshot()
-                        .is_none_or(|live| {
-                            live.to_cols_array().map(f32::to_bits)
-                                != transform.viewport_matrix.to_cols_array().map(f32::to_bits)
-                        })
+                    || !super::frame_plan::element_local_transform_matches_snapshot(
+                        arena_root.element.as_ref(),
+                        transform,
+                    )
                 {
                     return Err(invalid());
                 }
@@ -2635,7 +2632,7 @@ pub(crate) fn compile_property_boundary_program_forest_scene(
                     arena,
                     root.root,
                     super::frame_plan::TransformSurfacePlanContext::default(),
-                    Some(transform.viewport_matrix),
+                    Some(transform.owner_viewport_transform),
                 )
                 .map_err(|_| invalid())?;
                 let geometry_stamp =
@@ -3036,7 +3033,8 @@ impl ValidatedScrollContentEffectScene {
                 super::frame_recorder::RecordedTransformSurfaceStep::Artifact(artifact) => {
                     matches!(artifact.target, super::PaintArtifactTarget::CurrentTarget)
                         && artifact.chunks.iter().all(|chunk| {
-                            chunk.properties == crate::view::compositor::property_tree::PropertyTreeState::default()
+                            chunk.properties.legacy_boundary_dimensions()
+                                == crate::view::compositor::property_tree::PropertyTreeState::default()
                         })
                         && artifact.effect_nodes.is_empty()
                 }
@@ -4858,7 +4856,7 @@ impl ValidatedEffectTransformScrollScene {
                 && inner.scene_root_ordinal == root.scene_root_ordinal
                 && inner.receiver.parent.is_none()
                 && inner.receiver.generation != 0
-                && super::compiler::direct_translation_bits(inner.receiver.viewport_matrix)
+                && super::compiler::direct_translation_bits(inner.receiver.owner_viewport_transform)
                     .is_some()
                 && insertion.inner_geometry.matches_rebuilt_contract()
                 && insertion
@@ -4866,7 +4864,7 @@ impl ValidatedEffectTransformScrollScene {
                     .viewport_transform
                     .to_cols_array()
                     .map(f32::to_bits)
-                    == inner.receiver.viewport_matrix.to_cols_array().map(f32::to_bits)
+                    == inner.receiver.owner_viewport_transform.to_cols_array().map(f32::to_bits)
                 && inner.validates_recorded_steps(&root.inner_steps)
                 && root.outer_composite.source_bounds_bits == insertion.outer_raster_bounds_bits
                 && root.outer_composite.matches_receiver(insertion.outer_receiver)
@@ -4912,7 +4910,7 @@ impl ValidatedTransformEffectScrollScene {
                 && root.outer_receiver.owner == root.outer_receiver.id.0
                 && root.outer_receiver.parent.is_none()
                 && root.outer_receiver.generation != 0
-                && super::compiler::direct_translation_bits(root.outer_receiver.viewport_matrix)
+                && super::compiler::direct_translation_bits(root.outer_receiver.owner_viewport_transform)
                     .is_some()
                 && root.outer_stable_id != 0
                 && root.outer_geometry.matches_rebuilt_contract()
@@ -4923,7 +4921,7 @@ impl ValidatedTransformEffectScrollScene {
                     .map(f32::to_bits)
                     == root
                         .outer_receiver
-                        .viewport_matrix
+                        .owner_viewport_transform
                         .to_cols_array()
                         .map(f32::to_bits)
                 && root.insertion.scene_root_ordinal == root.scene_root_ordinal
@@ -5106,7 +5104,7 @@ impl ValidatedTransformScrollScene {
                 && root.receiver_stable_id != 0
                 && root.receiver.generation != 0
                 && root.receiver.parent.is_none()
-                && super::compiler::direct_translation_bits(root.receiver.viewport_matrix).is_some()
+                && super::compiler::direct_translation_bits(root.receiver.owner_viewport_transform).is_some()
                 && root
                     .geometry
                     .viewport_transform
@@ -5114,7 +5112,7 @@ impl ValidatedTransformScrollScene {
                     .map(f32::to_bits)
                     == root
                         .receiver
-                        .viewport_matrix
+                        .owner_viewport_transform
                         .to_cols_array()
                         .map(f32::to_bits)
                 && root.geometry.outer_scissor_rect.is_none()
@@ -9244,10 +9242,12 @@ fn property_scroll_plan_matches_exact_live_inputs(
         && contents_clip.generation != 0
         && contents_clip.behavior == crate::view::compositor::property_tree::ClipBehavior::Intersect
         && root_state.is_some_and(|state| {
-            state.paint == Default::default() && state.descendants == expected_contents
+            state.paint.legacy_boundary_dimensions() == Default::default()
+                && state.descendants.legacy_boundary_eq(expected_contents)
         })
         && child_state.is_some_and(|state| {
-            state.paint == expected_contents && state.descendants == expected_contents
+            state.paint.legacy_boundary_eq(expected_contents)
+                && state.descendants.legacy_boundary_eq(expected_contents)
         })
 }
 
@@ -13362,12 +13362,14 @@ pub(crate) fn plan_direct_scroll_transform_scene_scaffold(
         || transform.owner != child
         || transform.parent.is_some()
         || transform.generation == 0
-        || super::compiler::direct_translation_bits(transform.viewport_matrix).is_none()
+        || super::compiler::direct_translation_bits(transform.owner_viewport_transform).is_none()
         || property_trees.states.get(root).is_none_or(|state| {
-            state.paint != PropertyTreeState::default() || state.descendants != scroll_contents
+            state.paint.legacy_boundary_dimensions() != PropertyTreeState::default()
+                || !state.descendants.legacy_boundary_eq(scroll_contents)
         })
         || property_trees.states.get(&child).is_none_or(|state| {
-            state.paint != transformed_contents || state.descendants != transformed_contents
+            !state.paint.legacy_boundary_eq(transformed_contents)
+                || !state.descendants.legacy_boundary_eq(transformed_contents)
         })
     {
         return Err(PropertyScrollScenePlanError::InvalidContract(
@@ -13615,7 +13617,7 @@ pub(crate) fn plan_direct_scroll_transform_geometry(
         .map(f32::to_bits)
         != scaffold
             .transform
-            .viewport_matrix
+            .owner_viewport_transform
             .to_cols_array()
             .map(f32::to_bits)
     {
@@ -14851,7 +14853,7 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
         if *receiver != *basis
             || receiver.owner != root.root
             || receiver.parent.is_some()
-            || super::compiler::direct_translation_bits(receiver.viewport_matrix).is_none()
+            || super::compiler::direct_translation_bits(receiver.owner_viewport_transform).is_none()
             || insertion.scroll_boundary_ordinal != *boundary_ordinal
             || !seen_receivers.insert(receiver.owner)
             || !seen_boundaries.insert(boundary.scroll.owner)
@@ -14974,7 +14976,7 @@ pub(crate) fn plan_and_validate_transform_scroll_scene(
             .viewport_transform
             .to_cols_array()
             .map(f32::to_bits)
-            != receiver.viewport_matrix.to_cols_array().map(f32::to_bits)
+            != receiver.owner_viewport_transform.to_cols_array().map(f32::to_bits)
             || geometry.outer_scissor_rect.is_some()
         {
             return Err(PropertyScrollScenePlanError::InvalidContract(
@@ -23550,6 +23552,10 @@ fn extract_root_scene_chunk(
         ops,
         clip_nodes: Vec::new(),
         effect_nodes: Vec::new(),
+        transform_nodes: Vec::new(),
+        layout_position_nodes: Vec::new(),
+        visual_offset_nodes: Vec::new(),
+        scroll_nodes: Vec::new(),
         owner_nodes: vec![PaintOwnerSnapshot {
             owner: root,
             parent: None,
@@ -23729,13 +23735,15 @@ fn plan_exact_root_scroll_scene(
         || contents_clip.behavior != ClipBehavior::Intersect
         || contents_clip.generation == 0
         || property_trees.states.get(&root).is_none_or(|state| {
-            state.paint != PropertyTreeState::default() || state.descendants != expected_contents
+            state.paint.legacy_boundary_dimensions() != PropertyTreeState::default()
+                || !state.descendants.legacy_boundary_eq(expected_contents)
         })
         || property_trees
             .states
             .get(&admission.child)
             .is_none_or(|state| {
-                state.paint != expected_contents || state.descendants != expected_contents
+                !state.paint.legacy_boundary_eq(expected_contents)
+                    || !state.descendants.legacy_boundary_eq(expected_contents)
             })
     {
         return Err(invalid());

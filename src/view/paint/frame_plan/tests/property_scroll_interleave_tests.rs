@@ -112,7 +112,10 @@ fn property_transform_effect_scroll_insertion_freezes_nested_receivers_and_stack
         ]
     ));
     assert_eq!(
-        boundary.consumed_properties.projected_output,
+        boundary
+            .consumed_properties
+            .projected_output
+            .legacy_boundary_dimensions(),
         PropertyTreeState::default()
     );
     assert!(property_scene_plan_is_sealed(&plan));

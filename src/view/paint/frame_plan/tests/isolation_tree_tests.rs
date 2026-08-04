@@ -49,7 +49,10 @@ fn nested_exact_transform_builds_ordered_owning_stream_and_absolute_matrix_golde
     assert_eq!(nested.aggregate_opaque_order_span, 0..2);
     assert_eq!(parent.aggregate_opaque_order_span, 0..3);
 
-    let expected_child_matrix = properties.transforms[&TransformNodeId(child)].viewport_matrix;
+    let expected_child_matrix = properties.transforms[&TransformNodeId(child)]
+        .derived_projection
+        .expect("derived child transform")
+        .owner_viewport_transform;
     assert_eq!(
         nested
             .geometry()
@@ -66,7 +69,9 @@ fn nested_exact_transform_builds_ordered_owning_stream_and_absolute_matrix_golde
             .to_cols_array()
             .map(f32::to_bits),
         properties.transforms[&TransformNodeId(root)]
-            .viewport_matrix
+            .derived_projection
+            .expect("derived root transform")
+            .owner_viewport_transform
             .to_cols_array()
             .map(f32::to_bits)
     );

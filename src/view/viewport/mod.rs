@@ -1275,7 +1275,7 @@ mod retained_surface_state_tests {
                     kind: crate::view::paint::PropertySceneTransactionSurfaceKind::Transform(
                         crate::view::compositor::property_tree::TransformNodeId(root),
                     ),
-                    transform_viewport_matrix_bits: Some(
+                    surface_composite_matrix_bits: Some(
                         glam::Mat4::IDENTITY.to_cols_array().map(f32::to_bits),
                     ),
                     effect_composite: None,
@@ -2225,7 +2225,7 @@ mod retained_surface_state_tests {
                         kind: crate::view::paint::PropertySceneTransactionSurfaceKind::Transform(
                             crate::view::compositor::property_tree::TransformNodeId(first_root),
                         ),
-                        transform_viewport_matrix_bits: Some(
+                        surface_composite_matrix_bits: Some(
                             glam::Mat4::IDENTITY.to_cols_array().map(f32::to_bits),
                         ),
                         effect_composite: None,
@@ -2241,7 +2241,7 @@ mod retained_surface_state_tests {
                         kind: crate::view::paint::PropertySceneTransactionSurfaceKind::Transform(
                             crate::view::compositor::property_tree::TransformNodeId(child_root),
                         ),
-                        transform_viewport_matrix_bits: Some(
+                        surface_composite_matrix_bits: Some(
                             glam::Mat4::IDENTITY.to_cols_array().map(f32::to_bits),
                         ),
                         effect_composite: None,
@@ -2259,7 +2259,7 @@ mod retained_surface_state_tests {
                                 grandchild_root,
                             ),
                         ),
-                        transform_viewport_matrix_bits: Some(
+                        surface_composite_matrix_bits: Some(
                             glam::Mat4::IDENTITY.to_cols_array().map(f32::to_bits),
                         ),
                         effect_composite: None,
@@ -2275,7 +2275,7 @@ mod retained_surface_state_tests {
                         kind: crate::view::paint::PropertySceneTransactionSurfaceKind::Transform(
                             crate::view::compositor::property_tree::TransformNodeId(second_root),
                         ),
-                        transform_viewport_matrix_bits: Some(
+                        surface_composite_matrix_bits: Some(
                             glam::Mat4::IDENTITY.to_cols_array().map(f32::to_bits),
                         ),
                         effect_composite: None,

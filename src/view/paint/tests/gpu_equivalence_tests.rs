@@ -1896,6 +1896,10 @@ fn root_group_overlap_artifact(opacity: f32) -> PaintArtifact {
             opacity,
             generation: 1,
         }],
+        transform_nodes: Vec::new(),
+        layout_position_nodes: Vec::new(),
+        visual_offset_nodes: Vec::new(),
+        scroll_nodes: Vec::new(),
         owner_nodes: vec![
             PaintOwnerSnapshot {
                 owner: root,

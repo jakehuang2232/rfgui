@@ -490,7 +490,10 @@ fn direct_native_media_transform_geometry_and_identity_drift_fail_closed() {
         .transforms
         .get_mut(&TransformNodeId(root))
         .expect("transform snapshot")
-        .viewport_matrix *= glam::Mat4::from_translation(glam::vec3(1.0, 0.0, 0.0));
+        .derived_projection
+        .as_mut()
+        .expect("derived transform")
+        .owner_viewport_transform *= glam::Mat4::from_translation(glam::vec3(1.0, 0.0, 0.0));
     let error = plan_transform_property_scene_with_context(
         &arena,
         &[root],

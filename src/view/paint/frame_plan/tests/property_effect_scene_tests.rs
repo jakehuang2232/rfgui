@@ -246,7 +246,7 @@ fn property_effect_transaction_rejects_forged_terminal_shape_basis_and_scissor()
         .zip([root, child])
     {
         surface.kind = PropertySceneTransactionSurfaceKind::Transform(TransformNodeId(owner));
-        surface.transform_viewport_matrix_bits =
+        surface.surface_composite_matrix_bits =
             Some(glam::Mat4::IDENTITY.to_cols_array().map(f32::to_bits));
         surface.effect_composite = None;
     }

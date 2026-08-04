@@ -68,7 +68,7 @@ fn text_style_transform_lifecycle_resolves_and_resets_real_state() {
     assert_eq!(text.transform().as_slice().len(), 1);
     assert_eq!(text.transform_origin(), TransformOrigin::px(3.0, 5.0));
     let matrix = text
-        .compositor_viewport_transform_snapshot()
+        .compositor_local_transform_snapshot()
         .expect("resolved Text transform")
         .to_cols_array();
     assert_eq!(matrix[12].to_bits(), 7.0_f32.to_bits());
@@ -77,7 +77,7 @@ fn text_style_transform_lifecycle_resolves_and_resets_real_state() {
     text.apply_style_incremental(None, &inherited);
     assert!(text.transform().as_slice().is_empty());
     assert_eq!(text.transform_origin(), TransformOrigin::center());
-    assert!(text.compositor_viewport_transform_snapshot().is_none());
+    assert!(text.compositor_local_transform_snapshot().is_none());
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn text_rotate_matrix_and_nonfinite_transform_observations_fail_closed() {
         1.0,
     ])]));
     assert!(text.has_retained_transform_surface());
-    assert!(text.compositor_viewport_transform_snapshot().is_some());
+    assert!(text.compositor_local_transform_snapshot().is_some());
     assert!(
         text.retained_transform_output_bounds(&arena, [0.0, 0.0])
             .is_none(),

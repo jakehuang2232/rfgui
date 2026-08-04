@@ -3,7 +3,9 @@
 use crate::view::base_component::{AncestorClipContext, BuildState, Text, UiBuildContext};
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
-    PropertyTreeState, ScrollNodeId, ScrollNodeSnapshot, TransformNodeId,
+    LayoutPositionNodeId, LayoutPositionNodeSnapshot, PropertyTreeState, ScrollNodeId,
+    ScrollNodeSnapshot, TransformNodeId, TransformNodeSnapshot, VisualOffsetNodeId,
+    VisualOffsetNodeSnapshot,
 };
 use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::{NodeArena, NodeKey};
@@ -418,12 +420,20 @@ fn validate_ordered_receiver_steps(
         ops: Vec::new(),
         clip_nodes: Vec::new(),
         effect_nodes: Vec::new(),
+        transform_nodes: Vec::new(),
+        layout_position_nodes: Vec::new(),
+        visual_offset_nodes: Vec::new(),
+        scroll_nodes: Vec::new(),
         owner_nodes: Vec::new(),
     };
     let mut boundary_count = 0usize;
     let mut owner_nodes = FxHashMap::default();
     let mut clip_nodes = FxHashMap::default();
     let mut effect_nodes = FxHashMap::default();
+    let mut transform_nodes = FxHashMap::default();
+    let mut layout_position_nodes = FxHashMap::default();
+    let mut visual_offset_nodes = FxHashMap::default();
+    let mut scroll_nodes = FxHashMap::default();
     for step in &steps {
         match step {
             super::frame_recorder::RecordedTransformSurfaceStep::Boundary(boundary) => {
@@ -475,6 +485,14 @@ fn validate_ordered_receiver_steps(
                         }
                     }
                 }
+                append_property_snapshot_stores(
+                    &mut combined,
+                    artifact,
+                    &mut transform_nodes,
+                    &mut layout_position_nodes,
+                    &mut visual_offset_nodes,
+                    &mut scroll_nodes,
+                )?;
             }
         }
     }
@@ -558,7 +576,7 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
         && host_chunk.id.phase == super::PaintNodePhase::BeforeChildren
         && host_chunk.id.slot == 0
         && host_chunk.id.role == PaintChunkRole::SelfDecoration
-        && host_chunk.properties == Default::default()
+        && host_chunk.properties.legacy_boundary_dimensions() == Default::default()
         && chunk_bounds_bits(host_chunk) == expected_bounds_bits;
     let exact_overlay_chunk = overlay_chunk.owner == boundary_root
         && overlay_chunk.id.owner == boundary_root
@@ -566,7 +584,7 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
         && overlay_chunk.id.phase == super::PaintNodePhase::AfterChildren
         && overlay_chunk.id.slot == 0
         && overlay_chunk.id.role == PaintChunkRole::ScrollbarOverlay
-        && overlay_chunk.properties == Default::default()
+        && overlay_chunk.properties.legacy_boundary_dimensions() == Default::default()
         && chunk_bounds_bits(overlay_chunk) == expected_bounds_bits;
     let exact_mask_half = |chunk: &super::PaintChunk, phase: super::PaintNodePhase| {
         chunk.owner == boundary_root
@@ -575,7 +593,7 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
             && chunk.id.phase == phase
             && chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT
             && chunk.id.role == PaintChunkRole::SelfDecoration
-            && chunk.properties == Default::default()
+            && chunk.properties.legacy_boundary_dimensions() == Default::default()
     };
     let mask_pair = match (host_tail, overlay_head) {
         ([], []) => true,
@@ -615,6 +633,10 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
         ops: Vec::new(),
         clip_nodes: Vec::new(),
         effect_nodes: Vec::new(),
+        transform_nodes: Vec::new(),
+        layout_position_nodes: Vec::new(),
+        visual_offset_nodes: Vec::new(),
+        scroll_nodes: Vec::new(),
         owner_nodes: Vec::new(),
     };
     let mut content_only = PaintArtifact {
@@ -623,11 +645,23 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
         ops: Vec::new(),
         clip_nodes: Vec::new(),
         effect_nodes: Vec::new(),
+        transform_nodes: Vec::new(),
+        layout_position_nodes: Vec::new(),
+        visual_offset_nodes: Vec::new(),
+        scroll_nodes: Vec::new(),
         owner_nodes: Vec::new(),
     };
     let mut owner_nodes = FxHashMap::default();
     let mut clip_nodes = FxHashMap::default();
     let mut effect_nodes = FxHashMap::default();
+    let mut transform_nodes = FxHashMap::default();
+    let mut layout_position_nodes = FxHashMap::default();
+    let mut visual_offset_nodes = FxHashMap::default();
+    let mut scroll_nodes = FxHashMap::default();
+    let mut content_transform_nodes = FxHashMap::default();
+    let mut content_layout_position_nodes = FxHashMap::default();
+    let mut content_visual_offset_nodes = FxHashMap::default();
+    let mut content_scroll_nodes = FxHashMap::default();
     let mut child_markers = Vec::new();
     let mut content_opaque_count = 0_u32;
     append_native_scroll_forest_artifact(
@@ -636,6 +670,10 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
         &mut owner_nodes,
         &mut clip_nodes,
         &mut effect_nodes,
+        &mut transform_nodes,
+        &mut layout_position_nodes,
+        &mut visual_offset_nodes,
+        &mut scroll_nodes,
     )?;
     for step in content_steps {
         match step {
@@ -651,6 +689,10 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
                     &mut owner_nodes,
                     &mut clip_nodes,
                     &mut effect_nodes,
+                    &mut transform_nodes,
+                    &mut layout_position_nodes,
+                    &mut visual_offset_nodes,
+                    &mut scroll_nodes,
                 )?;
                 let mut content_owners = content_only
                     .owner_nodes
@@ -665,6 +707,10 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
                     &mut content_owners,
                     &mut content_clips,
                     &mut content_effects,
+                    &mut content_transform_nodes,
+                    &mut content_layout_position_nodes,
+                    &mut content_visual_offset_nodes,
+                    &mut content_scroll_nodes,
                 )?;
             }
         }
@@ -675,13 +721,17 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
         &mut owner_nodes,
         &mut clip_nodes,
         &mut effect_nodes,
+        &mut transform_nodes,
+        &mut layout_position_nodes,
+        &mut visual_offset_nodes,
+        &mut scroll_nodes,
     )?;
     if child_markers != expected_children
         || combined.chunks.is_empty()
         || combined
             .chunks
             .iter()
-            .any(|chunk| chunk.properties != Default::default())
+            .any(|chunk| chunk.properties.legacy_boundary_dimensions() != Default::default())
         || !combined.clip_nodes.is_empty()
         || !combined.effect_nodes.is_empty()
     {
@@ -735,6 +785,10 @@ fn append_native_scroll_forest_artifact(
     owner_nodes: &mut FxHashMap<crate::view::node_arena::NodeKey, PaintOwnerSnapshot>,
     clip_nodes: &mut FxHashMap<ClipNodeId, ClipNodeSnapshot>,
     effect_nodes: &mut FxHashMap<EffectNodeId, EffectNodeSnapshot>,
+    transform_nodes: &mut FxHashMap<TransformNodeId, TransformNodeSnapshot>,
+    layout_position_nodes: &mut FxHashMap<LayoutPositionNodeId, LayoutPositionNodeSnapshot>,
+    visual_offset_nodes: &mut FxHashMap<VisualOffsetNodeId, VisualOffsetNodeSnapshot>,
+    scroll_nodes: &mut FxHashMap<ScrollNodeId, ScrollNodeSnapshot>,
 ) -> Option<()> {
     if artifact.target != PaintArtifactTarget::CurrentTarget {
         return None;
@@ -777,7 +831,75 @@ fn append_native_scroll_forest_artifact(
             }
         }
     }
+    append_property_snapshot_stores(
+        combined,
+        artifact,
+        transform_nodes,
+        layout_position_nodes,
+        visual_offset_nodes,
+        scroll_nodes,
+    )?;
     Some(())
+}
+
+fn append_snapshot_store<K, V, F>(
+    destination: &mut Vec<V>,
+    source: &[V],
+    seen: &mut FxHashMap<K, V>,
+    key: F,
+) -> Option<()>
+where
+    K: Copy + Eq + std::hash::Hash,
+    V: Copy + PartialEq,
+    F: Fn(&V) -> K,
+{
+    for snapshot in source {
+        let snapshot_key = key(snapshot);
+        match seen.get(&snapshot_key) {
+            Some(old) if old != snapshot => return None,
+            Some(_) => {}
+            None => {
+                seen.insert(snapshot_key, *snapshot);
+                destination.push(*snapshot);
+            }
+        }
+    }
+    Some(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_property_snapshot_stores(
+    destination: &mut PaintArtifact,
+    source: &PaintArtifact,
+    transforms: &mut FxHashMap<TransformNodeId, TransformNodeSnapshot>,
+    positions: &mut FxHashMap<LayoutPositionNodeId, LayoutPositionNodeSnapshot>,
+    visuals: &mut FxHashMap<VisualOffsetNodeId, VisualOffsetNodeSnapshot>,
+    scrolls: &mut FxHashMap<ScrollNodeId, ScrollNodeSnapshot>,
+) -> Option<()> {
+    append_snapshot_store(
+        &mut destination.transform_nodes,
+        &source.transform_nodes,
+        transforms,
+        |snapshot| snapshot.id,
+    )?;
+    append_snapshot_store(
+        &mut destination.layout_position_nodes,
+        &source.layout_position_nodes,
+        positions,
+        |snapshot| snapshot.id,
+    )?;
+    append_snapshot_store(
+        &mut destination.visual_offset_nodes,
+        &source.visual_offset_nodes,
+        visuals,
+        |snapshot| snapshot.id,
+    )?;
+    append_snapshot_store(
+        &mut destination.scroll_nodes,
+        &source.scroll_nodes,
+        scrolls,
+        |snapshot| snapshot.id,
+    )
 }
 
 /// Owning compiler capability for one native forest boundary. Artifacts stay
@@ -2111,6 +2233,10 @@ pub(crate) enum RetainedSurfaceRasterRole {
     ScrollContent,
 }
 
+/// Stable resident identity only. Transform matrices and generations, layout
+/// or receiver-space position, scroll offset, and transition visual offset are
+/// composition state and must not be added here. Surface-local raster geometry
+/// belongs to [`RetainedSurfaceRasterInputs`] or the sealed raster stamp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RetainedSurfaceRasterIdentity {
     pub(crate) boundary_root: crate::view::node_arena::NodeKey,
@@ -4070,7 +4196,9 @@ pub(crate) enum PropertyEffectCompositeBasisStamp {
     ParentEffect(EffectNodeId),
     ParentTransform {
         transform: TransformNodeId,
-        viewport_matrix_bits: [u32; 16],
+        /// Composite-side matrix for placing a detached surface into its
+        /// receiver. It never participates in resident raster identity.
+        surface_composite_matrix_bits: [u32; 16],
     },
 }
 
@@ -4649,10 +4777,10 @@ pub(crate) fn property_effect_composite_geometry_stamp_is_canonical(
         && match basis {
             PropertyEffectCompositeBasisStamp::ParentTransform {
                 transform,
-                viewport_matrix_bits,
+                surface_composite_matrix_bits,
             } => {
                 !transform.0.is_null()
-                    && viewport_matrix_bits
+                    && surface_composite_matrix_bits
                         .iter()
                         .copied()
                         .map(f32::from_bits)
@@ -7809,8 +7937,7 @@ fn exact_self_clip_shadow_prefix_len(
             generation: clip.generation,
         })
         || clip.generation == 0
-        || chunk.properties
-            != (PropertyTreeState {
+        || !chunk.properties.legacy_boundary_eq(PropertyTreeState {
                 clip: Some(self_clip),
                 ..Default::default()
             })
@@ -9583,7 +9710,7 @@ fn classify_optional_child_mask_semantics<'a>(
             && chunk.id.phase == phase
             && chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT
             && chunk.id.role == PaintChunkRole::SelfDecoration
-            && chunk.properties == mask_properties
+            && chunk.properties.legacy_boundary_eq(mask_properties)
             && mask.mode == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
             && mask.params.position == [chunk.bounds.x, chunk.bounds.y]
             && mask.params.size == [chunk.bounds.width, chunk.bounds.height]
@@ -9619,7 +9746,7 @@ pub(crate) fn validate_scroll_scene_host_before_artifact(
         || chunk.id.phase != super::PaintNodePhase::BeforeChildren
         || chunk.id.slot != 0
         || chunk.id.role != PaintChunkRole::SelfDecoration
-        || chunk.properties != Default::default()
+        || chunk.properties.legacy_boundary_dimensions() != Default::default()
         || chunk_bounds_bits(chunk) != expected_bounds_bits
         || artifact.owner_nodes.as_slice()
             != [PaintOwnerSnapshot {
@@ -9656,7 +9783,7 @@ pub(crate) fn validate_scroll_scene_content_artifact(
         || chunk.id.phase != super::PaintNodePhase::BeforeChildren
         || chunk.id.slot != 0
         || chunk.id.role != PaintChunkRole::SelfDecoration
-        || chunk.properties != Default::default()
+        || chunk.properties.legacy_boundary_dimensions() != Default::default()
         || chunk_bounds_bits(chunk) != expected_bounds_bits
         || matches!(
             chunk.payload_identity,
@@ -9719,7 +9846,7 @@ pub(crate) fn validate_scroll_scene_text_area_content_artifact(
             && wrapper.id.phase == super::PaintNodePhase::BeforeChildren
             && wrapper.id.slot == 0
             && wrapper.id.role == PaintChunkRole::SelfDecoration
-            && wrapper.properties == Default::default()
+            && wrapper.properties.legacy_boundary_dimensions() == Default::default()
             && chunk_bounds_bits(wrapper) == expected_content_bounds_bits
     };
     let glyph_matches = |glyphs: &super::PaintChunk| {
@@ -9730,7 +9857,7 @@ pub(crate) fn validate_scroll_scene_text_area_content_artifact(
             && glyphs.id.phase == super::PaintNodePhase::BeforeChildren
             && glyphs.id.slot == 1
             && glyphs.id.role == PaintChunkRole::TextGlyphs
-            && glyphs.properties == local_state
+            && glyphs.properties.legacy_boundary_eq(local_state)
             && ops.len() == 1
             && validate_text_glyph_ops(ops, &glyphs.payload_identity)
     };
@@ -9749,7 +9876,7 @@ pub(crate) fn validate_scroll_scene_text_area_content_artifact(
             && selection.id.phase == super::PaintNodePhase::BeforeChildren
             && selection.id.slot == 0
             && selection.id.role == PaintChunkRole::SelectionUnderlay
-            && selection.properties == local_state
+            && selection.properties.legacy_boundary_eq(local_state)
             && PaintPayloadIdentity::prepared_text_area_selection(
                 paint_grammar,
                 ops.iter().filter_map(|op| match op {
@@ -9916,7 +10043,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact
         && wrapper.id.phase == super::PaintNodePhase::BeforeChildren
         && wrapper.id.slot == 0
         && wrapper.id.role == PaintChunkRole::SelfDecoration
-        && wrapper.properties == Default::default()
+        && wrapper.properties.legacy_boundary_dimensions() == Default::default()
         && chunk_bounds_bits(wrapper) == expected_content_bounds_bits
         && validate_self_decoration_ops(wrapper_ops, &wrapper.payload_identity);
     let glyph_exact = |chunk: &super::PaintChunk, ops: &[PaintOp], owner, scope| {
@@ -9926,7 +10053,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact
             && chunk.id.phase == super::PaintNodePhase::BeforeChildren
             && chunk.id.slot == 1
             && chunk.id.role == PaintChunkRole::TextGlyphs
-            && chunk.properties == local_state
+            && chunk.properties.legacy_boundary_eq(local_state)
             && ops.len() == 1
             && validate_text_glyph_ops(ops, &chunk.payload_identity)
     };
@@ -10101,7 +10228,7 @@ fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_
         && wrapper.id.phase == super::PaintNodePhase::BeforeChildren
         && wrapper.id.slot == 0
         && wrapper.id.role == PaintChunkRole::SelfDecoration
-        && wrapper.properties == Default::default()
+        && wrapper.properties.legacy_boundary_dimensions() == Default::default()
         && validate_self_decoration_ops(wrapper_ops, &wrapper.payload_identity);
     let selection_exact = selection_chunk.owner == text_area_root
         && selection_chunk.id.owner == text_area_root
@@ -10109,7 +10236,7 @@ fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_
         && selection_chunk.id.phase == super::PaintNodePhase::BeforeChildren
         && selection_chunk.id.slot == 0
         && selection_chunk.id.role == PaintChunkRole::SelectionUnderlay
-        && selection_chunk.properties == local_state
+        && selection_chunk.properties.legacy_boundary_eq(local_state)
         && selection_chunk
             .payload_identity
             .retained_text_area_selection_seal()
@@ -10132,7 +10259,7 @@ fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_
             && chunk.id.phase == super::PaintNodePhase::BeforeChildren
             && chunk.id.slot == 1
             && chunk.id.role == PaintChunkRole::TextGlyphs
-            && chunk.properties == local_state
+            && chunk.properties.legacy_boundary_eq(local_state)
             && ops.len() == 1
             && validate_text_glyph_ops(ops, &chunk.payload_identity)
     };
@@ -10232,6 +10359,10 @@ fn isolate_atomic_projection_host_chunk(
         ops,
         clip_nodes: Vec::new(),
         effect_nodes: Vec::new(),
+        transform_nodes: Vec::new(),
+        layout_position_nodes: Vec::new(),
+        visual_offset_nodes: Vec::new(),
+        scroll_nodes: Vec::new(),
         owner_nodes: vec![PaintOwnerSnapshot {
             owner: root,
             parent: None,
@@ -10482,8 +10613,8 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
                 && host.id.phase == phase
                 && host.id.slot == super::RETAINED_CHILD_MASK_SLOT
                 && host.id.role == PaintChunkRole::SelfDecoration
-                && host.properties == outer_state
-                && local.properties == Default::default()
+                && host.properties.legacy_boundary_eq(outer_state)
+                && local.properties.legacy_boundary_dimensions() == Default::default()
                 && localized.params.position == local_mask.params.position
                 && localized.params.size == local_mask.params.size
                 && localized.params.fill_color == [0.0; 4]
@@ -10502,7 +10633,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
         };
     let host_glyph_is_exact = |chunk: &super::PaintChunk| {
         let ops = host_artifact.ops.get(chunk.op_range.clone());
-        chunk.properties == host_glyph_state
+        chunk.properties.legacy_boundary_eq(host_glyph_state)
             && ops.is_some_and(|ops| {
                 ops.len() == 1 && validate_text_glyph_ops(ops, &chunk.payload_identity)
             })
@@ -10535,7 +10666,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
         || root_before.id.phase != super::PaintNodePhase::BeforeChildren
         || root_before.id.slot != 0
         || root_before.id.role != PaintChunkRole::SelfDecoration
-        || root_before.properties != Default::default()
+        || root_before.properties.legacy_boundary_dimensions() != Default::default()
         || chunk_bounds_bits(root_before) != source_bounds_bits
         || host_wrapper.owner != content_root
         || host_wrapper.id.owner != content_root
@@ -10543,7 +10674,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
         || host_wrapper.id.phase != super::PaintNodePhase::BeforeChildren
         || host_wrapper.id.slot != 0
         || host_wrapper.id.role != PaintChunkRole::SelfDecoration
-        || host_wrapper.properties != outer_state
+        || !host_wrapper.properties.legacy_boundary_eq(outer_state)
         || !host_artifact
             .ops
             .get(host_wrapper.op_range.clone())
@@ -10562,12 +10693,14 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
         || overlay.id.phase != super::PaintNodePhase::AfterChildren
         || overlay.id.slot != 0
         || overlay.id.role != PaintChunkRole::ScrollbarOverlay
-        || overlay.properties != Default::default()
+        || overlay.properties.legacy_boundary_dimensions() != Default::default()
         || chunk_bounds_bits(overlay) != source_bounds_bits
-        || local_wrapper.properties != Default::default()
+        || local_wrapper.properties.legacy_boundary_dimensions() != Default::default()
         || chunk_bounds_bits(local_wrapper) != content_zero_bounds_bits
-        || local_root_glyph.properties != local_glyph_state
-        || local_projection_glyph.properties != local_glyph_state
+        || !local_root_glyph.properties.legacy_boundary_eq(local_glyph_state)
+        || !local_projection_glyph
+            .properties
+            .legacy_boundary_eq(local_glyph_state)
         || pair_is_exact(host_wrapper, local_wrapper).is_none()
         || pair_is_exact(host_root_glyph, local_root_glyph).is_none()
         || pair_is_exact(host_projection_glyph, local_projection_glyph).is_none()
@@ -10915,16 +11048,20 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
         || root_before.id.phase != super::PaintNodePhase::BeforeChildren
         || root_before.id.slot != 0
         || root_before.id.role != PaintChunkRole::SelfDecoration
-        || root_before.properties != Default::default()
+        || root_before.properties.legacy_boundary_dimensions() != Default::default()
         || chunk_bounds_bits(root_before) != source_bounds_bits
-        || host_wrapper.properties != outer_state
-        || host_selection.properties != host_local_state
-        || host_root_glyph.properties != host_local_state
-        || host_projection_glyph.properties != host_local_state
-        || local_wrapper.properties != Default::default()
-        || local_selection.properties != local_state
-        || local_root_glyph.properties != local_state
-        || local_projection_glyph.properties != local_state
+        || !host_wrapper.properties.legacy_boundary_eq(outer_state)
+        || !host_selection.properties.legacy_boundary_eq(host_local_state)
+        || !host_root_glyph.properties.legacy_boundary_eq(host_local_state)
+        || !host_projection_glyph
+            .properties
+            .legacy_boundary_eq(host_local_state)
+        || local_wrapper.properties.legacy_boundary_dimensions() != Default::default()
+        || !local_selection.properties.legacy_boundary_eq(local_state)
+        || !local_root_glyph.properties.legacy_boundary_eq(local_state)
+        || !local_projection_glyph
+            .properties
+            .legacy_boundary_eq(local_state)
         || chunk_bounds_bits(local_wrapper) != content_zero_bounds_bits
         || overlay.owner != boundary_root
         || overlay.id.owner != boundary_root
@@ -10932,7 +11069,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
         || overlay.id.phase != super::PaintNodePhase::AfterChildren
         || overlay.id.slot != 0
         || overlay.id.role != PaintChunkRole::ScrollbarOverlay
-        || overlay.properties != Default::default()
+        || overlay.properties.legacy_boundary_dimensions() != Default::default()
         || chunk_bounds_bits(overlay) != source_bounds_bits
         || pair_exact(host_wrapper, local_wrapper).is_none()
         || pair_exact(host_selection, local_selection).is_none()
@@ -11084,7 +11221,7 @@ pub(crate) fn validate_scroll_scene_interactive_text_area_content_artifact(
             && wrapper.id.phase == super::PaintNodePhase::BeforeChildren
             && wrapper.id.slot == 0
             && wrapper.id.role == PaintChunkRole::SelfDecoration
-            && wrapper.properties == Default::default()
+            && wrapper.properties.legacy_boundary_dimensions() == Default::default()
             && chunk_bounds_bits(wrapper) == expected_content_bounds_bits
     };
     let glyph_matches = |glyphs: &super::PaintChunk| {
@@ -11095,7 +11232,7 @@ pub(crate) fn validate_scroll_scene_interactive_text_area_content_artifact(
             && glyphs.id.phase == super::PaintNodePhase::BeforeChildren
             && glyphs.id.slot == 1
             && glyphs.id.role == PaintChunkRole::TextGlyphs
-            && glyphs.properties == local_state
+            && glyphs.properties.legacy_boundary_eq(local_state)
             && ops.len() == 1
             && validate_text_glyph_ops(ops, &glyphs.payload_identity)
     };
@@ -11110,7 +11247,7 @@ pub(crate) fn validate_scroll_scene_interactive_text_area_content_artifact(
             && selection.id.phase == super::PaintNodePhase::BeforeChildren
             && selection.id.slot == 0
             && selection.id.role == PaintChunkRole::SelectionUnderlay
-            && selection.properties == local_state
+            && selection.properties.legacy_boundary_eq(local_state)
             && seal.is_canonical_for_interactive(paint_grammar)
             && selection
                 .payload_identity
@@ -11155,7 +11292,7 @@ pub(crate) fn validate_scroll_scene_interactive_text_area_content_artifact(
                 || underline.id.phase != super::PaintNodePhase::AfterChildren
                 || underline.id.slot != 0
                 || underline.id.role != PaintChunkRole::TextDecoration
-                || underline.properties != local_state
+                || !underline.properties.legacy_boundary_eq(local_state)
                 || !seal.is_canonical()
                 || seal.text_area_root != text_area_root
                 || seal.glyph_identity != glyphs.payload_identity
@@ -11239,7 +11376,7 @@ fn validate_localized_direct_nested_scroll_segment_artifact(
         || chunk.id.phase != super::PaintNodePhase::BeforeChildren
         || chunk.id.slot != 0
         || !is_exact_nested_scroll_leaf_role(chunk.id.role)
-        || chunk.properties != Default::default()
+        || chunk.properties.legacy_boundary_dimensions() != Default::default()
         || chunk_bounds_bits(chunk) != expected_bounds_bits
         || artifact.owner_nodes.as_slice()
             != [PaintOwnerSnapshot {
@@ -11284,7 +11421,7 @@ pub(crate) fn validate_scroll_scene_overlay_artifact(
         || chunk.id.phase != super::PaintNodePhase::AfterChildren
         || chunk.id.slot != 0
         || chunk.id.role != PaintChunkRole::ScrollbarOverlay
-        || chunk.properties != Default::default()
+        || chunk.properties.legacy_boundary_dimensions() != Default::default()
         || chunk_bounds_bits(chunk) != expected_bounds_bits
         || artifact.owner_nodes.as_slice()
             != [PaintOwnerSnapshot {
@@ -11596,7 +11733,7 @@ pub(crate) fn validate_direct_nested_scroll_segment_artifact(
         || !is_exact_nested_scroll_leaf_role(chunk.id.role)
         || chunk.op_range.start != 0
         || chunk.op_range.end != artifact.ops.len()
-        || chunk.properties != Default::default()
+        || chunk.properties.legacy_boundary_dimensions() != Default::default()
         || chunk_bounds_bits(chunk) != recorded_bounds_bits
         || matches!(
             chunk.payload_identity,
@@ -11784,7 +11921,7 @@ fn validate_artifact_store_with_policy(
                 contents_clip,
             } => {
                 if chunk.owner == root {
-                    chunk.properties == Default::default()
+                    chunk.properties.legacy_boundary_dimensions() == Default::default()
                 } else if chunk.owner == child {
                     chunk.properties.transform.is_none()
                         && chunk.properties.effect.is_none()
@@ -11797,19 +11934,18 @@ fn validate_artifact_store_with_policy(
             ArtifactStoreValidationPolicy::ScrollSceneHostBefore { .. }
             | ArtifactStoreValidationPolicy::ScrollSceneOverlay { .. }
             | ArtifactStoreValidationPolicy::NativeScrollForest { .. } => {
-                chunk.properties == Default::default()
+                chunk.properties.legacy_boundary_dimensions() == Default::default()
             }
             ArtifactStoreValidationPolicy::ScrollSceneContent { .. } => {
-                chunk.properties == Default::default()
+                chunk.properties.legacy_boundary_dimensions() == Default::default()
             }
             ArtifactStoreValidationPolicy::FrameRootScrollContent { local_clip } => {
-                chunk.properties == Default::default()
+                chunk.properties.legacy_boundary_dimensions() == Default::default()
                     || local_clip.is_some_and(|clip| {
-                        chunk.properties
-                            == PropertyTreeState {
+                        chunk.properties.legacy_boundary_eq(PropertyTreeState {
                                 clip: Some(clip),
                                 ..Default::default()
-                            }
+                            })
                     })
             }
             ArtifactStoreValidationPolicy::ScrollSceneTextAreaContent {
@@ -11818,13 +11954,12 @@ fn validate_artifact_store_with_policy(
                 contents_clip,
             } => {
                 if chunk.owner == content_root {
-                    chunk.properties == Default::default()
+                    chunk.properties.legacy_boundary_dimensions() == Default::default()
                 } else if chunk.owner == text_area_root {
-                    chunk.properties
-                        == PropertyTreeState {
+                    chunk.properties.legacy_boundary_eq(PropertyTreeState {
                             clip: Some(contents_clip),
                             ..Default::default()
-                        }
+                        })
                 } else {
                     false
                 }
@@ -11836,13 +11971,12 @@ fn validate_artifact_store_with_policy(
                 contents_clip,
             } => {
                 if chunk.owner == content_root {
-                    chunk.properties == Default::default()
+                    chunk.properties.legacy_boundary_dimensions() == Default::default()
                 } else if chunk.owner == text_area_root || chunk.owner == projection_text_root {
-                    chunk.properties
-                        == PropertyTreeState {
+                    chunk.properties.legacy_boundary_eq(PropertyTreeState {
                             clip: Some(contents_clip),
                             ..Default::default()
-                        }
+                        })
                 } else {
                     false
                 }

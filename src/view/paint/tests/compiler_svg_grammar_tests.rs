@@ -4,11 +4,15 @@ use super::*;
 fn compiler_emits_typed_straight_srgb_svg_as_texture_composite() {
     let artifact = compiler_svg_test_artifact(false);
     assert_eq!(artifact.chunks[0].id.role, PaintChunkRole::SvgContent);
-    assert_eq!(artifact.chunks[0].properties, PropertyTreeState::default());
+    assert_eq!(
+        artifact.chunks[0].properties.legacy_boundary_dimensions(),
+        PropertyTreeState::default(),
+    );
+    assert!(artifact.chunks[0].properties.layout_position.is_some());
+    assert!(artifact.chunks[0].properties.visual_offset.is_some());
 
     let mut graph = compiled_whole_frame_graph(&artifact);
-    let passes =
-        graph.test_graphics_passes_mut::<crate::view::render_pass::TextureCompositePass>();
+    let passes = graph.test_graphics_passes_mut::<crate::view::render_pass::TextureCompositePass>();
     assert_eq!(passes.len(), 1);
     let snapshot = passes[0].test_snapshot();
     let upload = snapshot

@@ -330,10 +330,11 @@ pub(super) fn exact_deferred_viewport_self_clip_witness(
                 && (0.0..=1.0).contains(&effect.opacity)
                 && effect.generation != 0
         });
-    let state_is_exact = (state.paint == exact_clip_state && state.descendants == exact_clip_state)
+    let state_is_exact = (state.paint.legacy_boundary_eq(exact_clip_state)
+        && state.descendants.legacy_boundary_eq(exact_clip_state))
         || (exact_root_effect
-            && state.paint == exact_clip_effect_state
-            && state.descendants == exact_clip_effect_state);
+            && state.paint.legacy_boundary_eq(exact_clip_effect_state)
+            && state.descendants.legacy_boundary_eq(exact_clip_effect_state));
     if !state_is_exact {
         return None;
     }
@@ -1814,6 +1815,10 @@ mod tests {
                 ops: Vec::new(),
                 clip_nodes: Vec::new(),
                 effect_nodes: Vec::new(),
+                transform_nodes: Vec::new(),
+                layout_position_nodes: Vec::new(),
+                visual_offset_nodes: Vec::new(),
+                scroll_nodes: Vec::new(),
                 owner_nodes: Vec::new(),
             };
             PaintNodePlan {
@@ -2115,8 +2120,16 @@ mod tests {
             crate::view::compositor::property_tree::TransformNode {
                 owner: boundary_root,
                 parent: None,
-                viewport_matrix: glam::Mat4::IDENTITY,
+                local_matrix: glam::Mat4::IDENTITY,
+                local_origin: glam::Vec3::ZERO,
+                local_generation: 1,
                 generation: 1,
+                derived_projection: Some(
+                    crate::view::compositor::property_tree::DerivedSpatialProjection {
+                        owner_viewport_position: glam::Vec2::ZERO,
+                        owner_viewport_transform: glam::Mat4::IDENTITY,
+                    },
+                ),
             },
         );
         let boundary = PlannedBoundary {
@@ -2361,8 +2374,16 @@ mod tests {
                 crate::view::compositor::property_tree::TransformNode {
                     owner: parent,
                     parent: None,
-                    viewport_matrix: glam::Mat4::IDENTITY,
+                    local_matrix: glam::Mat4::IDENTITY,
+                    local_origin: glam::Vec3::ZERO,
+                    local_generation: 1,
                     generation: 1,
+                    derived_projection: Some(
+                        crate::view::compositor::property_tree::DerivedSpatialProjection {
+                            owner_viewport_position: glam::Vec2::ZERO,
+                            owner_viewport_transform: glam::Mat4::IDENTITY,
+                        },
+                    ),
                 },
             );
             for owner in [child, descendant] {

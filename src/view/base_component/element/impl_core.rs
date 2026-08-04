@@ -701,6 +701,8 @@ impl Element {
             transform: Transform::default(),
             transform_origin: TransformOrigin::center(),
             resolved_transform: None,
+            #[cfg(test)]
+            resolved_local_transform_for_test: None,
             resolved_inverse_transform: None,
             foreground_color: Color::rgb(0, 0, 0),
             opacity: 1.0,
@@ -727,6 +729,7 @@ impl Element {
             layout_transition_target_y: None,
             layout_transition_target_width: None,
             layout_transition_target_height: None,
+            spatial_placement_snapshot: None,
             last_parent_layout_x: x,
             last_parent_layout_y: y,
             layout_assigned_width: None,

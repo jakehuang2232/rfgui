@@ -504,9 +504,17 @@ fn nested_transform_shape_and_affine_rejections_fail_closed() {
         .transforms
         .get_mut(&TransformNodeId(child))
         .expect("child transform");
-    let mut perspective = child_transform.viewport_matrix.to_cols_array();
+    let mut perspective = child_transform
+        .derived_projection
+        .expect("derived child transform")
+        .owner_viewport_transform
+        .to_cols_array();
     perspective[3] = 0.25;
-    child_transform.viewport_matrix = glam::Mat4::from_cols_array(&perspective);
+    child_transform
+        .derived_projection
+        .as_mut()
+        .expect("derived child transform")
+        .owner_viewport_transform = glam::Mat4::from_cols_array(&perspective);
     let non_affine =
         plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
             .expect_err("perspective child matrix is outside C5A1");
@@ -522,7 +530,11 @@ fn nested_transform_shape_and_affine_rejections_fail_closed() {
         .transforms
         .get_mut(&TransformNodeId(child))
         .expect("child transform")
-        .viewport_matrix = glam::Mat4::from_translation(glam::Vec3::new(31.0, 0.0, 0.0));
+        .derived_projection
+        .as_mut()
+        .expect("derived child transform")
+        .owner_viewport_transform =
+        glam::Mat4::from_translation(glam::Vec3::new(31.0, 0.0, 0.0));
     let mismatched =
         plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
             .expect_err(

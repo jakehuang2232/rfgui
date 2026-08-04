@@ -360,8 +360,16 @@ fn transform_child_isolation_planner_hard_gates_shape_and_extra_properties() {
         crate::view::compositor::property_tree::TransformNode {
             owner: child,
             parent: Some(TransformNodeId(root)),
-            viewport_matrix: glam::Mat4::IDENTITY,
+            local_matrix: glam::Mat4::IDENTITY,
+            local_origin: glam::Vec3::ZERO,
+            local_generation: 1,
             generation: 1,
+            derived_projection: Some(
+                crate::view::compositor::property_tree::DerivedSpatialProjection {
+                    owner_viewport_position: glam::Vec2::ZERO,
+                    owner_viewport_transform: glam::Mat4::IDENTITY,
+                },
+            ),
         },
     );
     let error = plan_single_root_transform_child_isolation_surface(

@@ -1055,6 +1055,7 @@ pub(crate) fn scroll_content_tile_layer_stable_key(
 
 #[derive(Clone, Copy, Debug)]
 struct AnchorSnapshot {
+    stable_id: Option<u64>,
     x: f32,
     y: f32,
     width: f32,
@@ -3412,6 +3413,10 @@ pub trait ElementTrait:
                     ops,
                     clip_nodes: Vec::new(),
                     effect_nodes: Vec::new(),
+                    transform_nodes: Vec::new(),
+                    layout_position_nodes: Vec::new(),
+                    visual_offset_nodes: Vec::new(),
+                    scroll_nodes: Vec::new(),
                     owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                         owner,
                         parent: None,
@@ -3612,15 +3617,21 @@ pub trait ElementTrait:
         false
     }
 
-    /// Final viewport-space transform observed by the compositor property tree.
-    ///
-    /// The matrix is already resolved around the host's absolute layout origin;
-    /// property-tree consumers must retain parent identity but must not multiply
-    /// this payload by the parent transform again. `None` is the neutral default
-    /// for hosts that do not participate in the built-in transform contract.
+    /// Pure owner-local transform payload. Layout, scroll, and transition
+    /// translations are separate spatial edges and cannot leak into raster
+    /// identity through this contract.
     #[allow(private_interfaces)]
     #[doc(hidden)]
-    fn compositor_viewport_transform_snapshot(&self) -> Option<ViewportTransformSnapshot> {
+    fn compositor_local_transform_snapshot(&self) -> Option<LocalTransformSnapshot> {
+        None
+    }
+
+    /// Placement-time spatial decomposition used by the V2 layerizer.
+    /// Unknown hosts remain unsupported rather than reconstructing a local
+    /// edge from already-flattened viewport geometry.
+    #[allow(private_interfaces)]
+    #[doc(hidden)]
+    fn compositor_spatial_placement_snapshot(&self) -> Option<SpatialPlacementSnapshot> {
         None
     }
 
@@ -3958,6 +3969,10 @@ impl PreparedCustomLeafPaint {
             ops: vec![crate::view::paint::PaintOp::DrawRect(self.op)],
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
+            transform_nodes: Vec::new(),
+            layout_position_nodes: Vec::new(),
+            visual_offset_nodes: Vec::new(),
+            scroll_nodes: Vec::new(),
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
@@ -4188,6 +4203,10 @@ impl PreparedCustomWrapperPaint {
             ops: vec![crate::view::paint::PaintOp::DrawRect(fill.op)],
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
+            transform_nodes: Vec::new(),
+            layout_position_nodes: Vec::new(),
+            visual_offset_nodes: Vec::new(),
+            scroll_nodes: Vec::new(),
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
@@ -4459,31 +4478,130 @@ pub struct RetainedSampledLayoutTransitionSnapshot {
     pub(crate) paint_signature: u64,
 }
 
-/// Owning, backend-independent transform payload observed by the compositor.
+/// Pure transform payload in the owner's local reference box.
 ///
-/// Keeping the public trait boundary in raw column-major bits avoids exposing
-/// `glam::Mat4` as part of the host contract while preserving every float bit,
-/// including non-finite values that must remain visible to fail-closed checks.
+/// This payload contains neither the owner's layout position nor any inherited
+/// scroll/visual translation. It is therefore safe input for a surface-local
+/// spatial projection, but is not itself a complete viewport transform.
 #[doc(hidden)]
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
-pub struct ViewportTransformSnapshot {
+pub struct LocalTransformSnapshot {
     matrix: [f32; 16],
+    origin: [f32; 3],
 }
 
-impl ViewportTransformSnapshot {
-    #[doc(hidden)]
-    pub const fn from_cols_array(matrix: [f32; 16]) -> Self {
-        Self { matrix }
+impl LocalTransformSnapshot {
+    pub(crate) fn from_parts(matrix: Mat4, origin: Vec3) -> Self {
+        Self {
+            matrix: matrix.to_cols_array(),
+            origin: origin.to_array(),
+        }
     }
 
-    #[doc(hidden)]
-    pub const fn to_cols_array(self) -> [f32; 16] {
+    pub(crate) const fn to_cols_array(self) -> [f32; 16] {
         self.matrix
     }
 
-    pub(crate) fn from_matrix(matrix: Mat4) -> Self {
-        Self::from_cols_array(matrix.to_cols_array())
+    pub(crate) const fn origin(self) -> [f32; 3] {
+        self.origin
+    }
+}
+
+pub(crate) fn compose_transform_about_origin(matrix: Mat4, origin: Vec3) -> Mat4 {
+    Mat4::from_translation(origin) * matrix * Mat4::from_translation(-origin)
+}
+
+/// Stable spatial reference selected while layout still owns the placement
+/// decision. Stable ids cross the public host trait boundary; property sync
+/// resolves them back to arena-owned `NodeKey`s and fails closed when a
+/// referenced owner is unavailable.
+#[doc(hidden)]
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpatialPositionReferenceSnapshot {
+    Viewport,
+    LayoutParent(Option<u64>),
+    Anchor(u64),
+}
+
+/// Placement-time spatial payload kept separate from transform and scroll.
+///
+/// `translation_at_scroll_zero` is relative to `reference`. It is captured
+/// from the relative placement target before the visual box is formed; it is
+/// never reconstructed from `layout_flow_position`, which already contains
+/// ancestor scroll projection. `visual_offset` contains only this owner's
+/// transition offset, never the inherited cumulative offset.
+#[doc(hidden)]
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug)]
+pub struct SpatialPlacementSnapshot {
+    reference: SpatialPositionReferenceSnapshot,
+    translation_at_scroll_zero: [f32; 2],
+    /// Complete scroll-zero flow position for a frame root. Property sync
+    /// selects this only when arena topology resolves `LayoutParent(None)`;
+    /// descendants keep the relative edge above. Both values are frozen
+    /// directly during placement rather than reconstructed later.
+    viewport_translation_at_scroll_zero: [f32; 2],
+    /// Offset from this owner's border-box layout origin to the content
+    /// reference frame used by `LayoutParent` descendants. Placement freezes
+    /// this before scroll subtraction; it is not reconstructed from absolute
+    /// child positions.
+    child_reference_offset_at_scroll_zero: [f32; 2],
+    visual_offset: [f32; 2],
+    /// Flattened legacy position retained only as a B1/B2 differential oracle.
+    /// It is not a spatial edge and must not enter V2 identity.
+    compatibility_viewport_position: [f32; 2],
+}
+
+impl SpatialPlacementSnapshot {
+    pub(crate) const fn new(
+        reference: SpatialPositionReferenceSnapshot,
+        translation_at_scroll_zero: [f32; 2],
+        viewport_translation_at_scroll_zero: [f32; 2],
+        visual_offset: [f32; 2],
+        compatibility_viewport_position: [f32; 2],
+    ) -> Self {
+        Self {
+            reference,
+            translation_at_scroll_zero,
+            viewport_translation_at_scroll_zero,
+            child_reference_offset_at_scroll_zero: [0.0; 2],
+            visual_offset,
+            compatibility_viewport_position,
+        }
+    }
+
+    pub(crate) const fn with_child_reference_offset_at_scroll_zero(
+        mut self,
+        offset: [f32; 2],
+    ) -> Self {
+        self.child_reference_offset_at_scroll_zero = offset;
+        self
+    }
+
+    pub(crate) const fn reference(self) -> SpatialPositionReferenceSnapshot {
+        self.reference
+    }
+
+    pub(crate) const fn translation_at_scroll_zero(self) -> [f32; 2] {
+        self.translation_at_scroll_zero
+    }
+
+    pub(crate) const fn viewport_translation_at_scroll_zero(self) -> [f32; 2] {
+        self.viewport_translation_at_scroll_zero
+    }
+
+    pub(crate) const fn child_reference_offset_at_scroll_zero(self) -> [f32; 2] {
+        self.child_reference_offset_at_scroll_zero
+    }
+
+    pub(crate) const fn visual_offset(self) -> [f32; 2] {
+        self.visual_offset
+    }
+
+    pub(crate) const fn compatibility_viewport_position(self) -> [f32; 2] {
+        self.compatibility_viewport_position
     }
 }
 
@@ -5722,6 +5840,10 @@ pub struct Element {
     transform: Transform,
     transform_origin: TransformOrigin,
     resolved_transform: Option<Mat4>,
+    /// Test fixtures that inject a resolved matrix bypass authored style and
+    /// placement. This explicit test source keeps them on the B2-derived path.
+    #[cfg(test)]
+    resolved_local_transform_for_test: Option<Mat4>,
     resolved_inverse_transform: Option<Mat4>,
     foreground_color: Color,
     opacity: f32,
@@ -5751,6 +5873,9 @@ pub struct Element {
     layout_transition_target_y: Option<f32>,
     layout_transition_target_width: Option<f32>,
     layout_transition_target_height: Option<f32>,
+    /// Canonical placement decomposition captured before scroll and visual
+    /// translations are flattened into `layout_position`.
+    spatial_placement_snapshot: Option<SpatialPlacementSnapshot>,
     last_parent_layout_x: f32,
     last_parent_layout_y: f32,
     layout_assigned_width: Option<f32>,
@@ -6569,6 +6694,7 @@ impl Element {
     #[cfg(test)]
     pub(crate) fn set_resolved_transform_for_test(&mut self, transform: Option<Mat4>) {
         self.resolved_transform = transform;
+        self.resolved_local_transform_for_test = transform;
     }
 
     /// Parent id (legacy u64). Migration to `NodeKey`-based arena parent is
@@ -8684,6 +8810,10 @@ impl ElementTrait for Element {
                 ops,
                 clip_nodes: Vec::new(),
                 effect_nodes: Vec::new(),
+                transform_nodes: Vec::new(),
+                layout_position_nodes: Vec::new(),
+                visual_offset_nodes: Vec::new(),
+                scroll_nodes: Vec::new(),
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
@@ -8996,9 +9126,42 @@ impl ElementTrait for Element {
         self.resolved_transform.is_some()
     }
 
-    fn compositor_viewport_transform_snapshot(&self) -> Option<ViewportTransformSnapshot> {
-        self.resolved_transform
-            .map(ViewportTransformSnapshot::from_matrix)
+    fn compositor_local_transform_snapshot(&self) -> Option<LocalTransformSnapshot> {
+        #[cfg(test)]
+        if let Some(matrix) = self.resolved_local_transform_for_test {
+            return Some(LocalTransformSnapshot::from_parts(
+                matrix,
+                Vec3::new(
+                    -self.layout_state.layout_position.x,
+                    -self.layout_state.layout_position.y,
+                    0.0,
+                ),
+            ));
+        }
+        self.compute_local_transform_payload()
+            .map(|(matrix, origin)| LocalTransformSnapshot::from_parts(matrix, origin))
+    }
+
+    fn compositor_spatial_placement_snapshot(&self) -> Option<SpatialPlacementSnapshot> {
+        #[cfg(test)]
+        if self.spatial_placement_snapshot.is_none()
+            && self.resolved_local_transform_for_test.is_some()
+        {
+            let position = [
+                self.layout_state.layout_position.x,
+                self.layout_state.layout_position.y,
+            ];
+            return Some(SpatialPlacementSnapshot::new(
+                SpatialPositionReferenceSnapshot::Viewport,
+                position,
+                position,
+                [0.0, 0.0],
+                position,
+            ));
+        }
+        (!self.inline_ifc_owned_by_root)
+            .then_some(self.spatial_placement_snapshot)
+            .flatten()
     }
 
     fn is_deferred_to_root_viewport_render(&self) -> bool {

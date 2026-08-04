@@ -1080,6 +1080,11 @@ fn scroll_content_effect_native_leaf_fixture(
     arena.refresh_subtree_dirty_cache(root);
     let mut properties = PropertyTrees::default();
     properties.sync(&arena, &[root]);
+    assert!(
+        properties.spatial_validation_errors.is_empty(),
+        "native leaf fixture spatial projection: {:?}",
+        properties.spatial_validation_errors
+    );
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &[root], &properties);
     (arena, root, properties, generations)

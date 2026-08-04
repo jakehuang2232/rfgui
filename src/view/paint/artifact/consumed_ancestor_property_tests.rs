@@ -1,4 +1,5 @@
 use super::*;
+use crate::view::compositor::property_tree::{LayoutPositionNodeId, VisualOffsetNodeId};
 use crate::view::base_component::Element;
 use crate::view::test_support::{commit_child, commit_element, new_test_arena};
 use slotmap::SlotMap;
@@ -121,11 +122,15 @@ fn consumed_scroll_contents_projection_is_atomic_owner_bound_and_preserves_other
         ConsumedAncestorScrollContentsWitness::new(parent, child, scroll, contents_clip).unwrap();
     let effect = EffectNodeId(child);
     let transform = TransformNodeId(child);
+    let layout_position = LayoutPositionNodeId(child);
+    let visual_offset = VisualOffsetNodeId(child);
     let live = PropertyTreeState {
         transform: Some(transform),
         clip: Some(contents_clip),
         effect: Some(effect),
         scroll: Some(scroll),
+        layout_position: Some(layout_position),
+        visual_offset: Some(visual_offset),
     };
     let context = PaintRecordingContext {
         recording_owner: Some(descendant),
@@ -139,6 +144,8 @@ fn consumed_scroll_contents_projection_is_atomic_owner_bound_and_preserves_other
         Some(PropertyTreeState {
             transform: Some(transform),
             effect: Some(effect),
+            layout_position: Some(layout_position),
+            visual_offset: Some(visual_offset),
             ..Default::default()
         })
     );
@@ -376,6 +383,8 @@ fn consumed_transform_effect_scroll_stack_projects_all_three_layers_exactly() {
         effect: Some(effect.id),
         scroll: Some(ScrollNodeId(scroll_owner)),
         clip: Some(clip),
+        layout_position: Some(LayoutPositionNodeId(content_owner)),
+        visual_offset: Some(VisualOffsetNodeId(content_owner)),
     };
     let context = PaintRecordingContext {
         recording_owner: Some(content_owner),
@@ -385,7 +394,11 @@ fn consumed_transform_effect_scroll_stack_projects_all_three_layers_exactly() {
     };
     assert_eq!(
         context.project_consumed_ancestor_property(live),
-        Some(PropertyTreeState::default())
+        Some(PropertyTreeState {
+            layout_position: live.layout_position,
+            visual_offset: live.visual_offset,
+            ..Default::default()
+        })
     );
     assert!(context.authorizes_scroll_content_local_owner(content_owner));
     let effect_transform_stack = ConsumedAncestorPropertyStackWitness::new(
@@ -405,7 +418,11 @@ fn consumed_transform_effect_scroll_stack_projects_all_three_layers_exactly() {
     };
     assert_eq!(
         effect_transform_context.project_consumed_ancestor_property(live),
-        Some(PropertyTreeState::default())
+        Some(PropertyTreeState {
+            layout_position: live.layout_position,
+            visual_offset: live.visual_offset,
+            ..Default::default()
+        })
     );
     for invalid in [
         [

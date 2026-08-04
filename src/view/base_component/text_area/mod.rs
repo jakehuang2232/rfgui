@@ -1251,6 +1251,10 @@ impl ElementTrait for TextArea {
                     .collect(),
                 clip_nodes: Vec::new(),
                 effect_nodes: Vec::new(),
+                transform_nodes: Vec::new(),
+                layout_position_nodes: Vec::new(),
+                visual_offset_nodes: Vec::new(),
+                scroll_nodes: Vec::new(),
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
@@ -1279,6 +1283,10 @@ impl ElementTrait for TextArea {
                 ops: vec![crate::view::paint::PaintOp::PreparedText(op)],
                 clip_nodes: Vec::new(),
                 effect_nodes: Vec::new(),
+                transform_nodes: Vec::new(),
+                layout_position_nodes: Vec::new(),
+                visual_offset_nodes: Vec::new(),
+                scroll_nodes: Vec::new(),
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
@@ -1314,6 +1322,10 @@ impl ElementTrait for TextArea {
                     .collect(),
                 clip_nodes: Vec::new(),
                 effect_nodes: Vec::new(),
+                transform_nodes: Vec::new(),
+                layout_position_nodes: Vec::new(),
+                visual_offset_nodes: Vec::new(),
+                scroll_nodes: Vec::new(),
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
@@ -1343,6 +1355,10 @@ impl ElementTrait for TextArea {
                 ops: vec![crate::view::paint::PaintOp::DrawRect(caret.op)],
                 clip_nodes: Vec::new(),
                 effect_nodes: Vec::new(),
+                transform_nodes: Vec::new(),
+                layout_position_nodes: Vec::new(),
+                visual_offset_nodes: Vec::new(),
+                scroll_nodes: Vec::new(),
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,

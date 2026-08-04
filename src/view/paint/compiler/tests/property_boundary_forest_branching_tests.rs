@@ -51,7 +51,9 @@ fn effect_geometry(
         effect_generation: 71,
         basis: PropertyEffectCompositeBasisStamp::ParentTransform {
             transform,
-            viewport_matrix_bits: Mat4::IDENTITY.to_cols_array().map(f32::to_bits),
+            surface_composite_matrix_bits: Mat4::IDENTITY
+                .to_cols_array()
+                .map(f32::to_bits),
         },
         resolved_scissor: None,
         ancestor_composite_clips: Vec::new(),
@@ -66,8 +68,12 @@ fn branch_compiler_fixture() -> BranchCompilerFixture {
         id: TransformNodeId(owners[0]),
         owner: owners[0],
         parent: None,
-        viewport_matrix: Mat4::IDENTITY,
+        local_matrix: Mat4::IDENTITY,
+        local_origin: glam::Vec3::ZERO,
+        local_generation: 61,
         generation: 61,
+        owner_viewport_position: glam::Vec2::ZERO,
+        owner_viewport_transform: Mat4::IDENTITY,
     };
     let forest = PropertyBoundaryForest {
         roots: vec![PropertyBoundaryForestRoot {

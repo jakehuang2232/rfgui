@@ -1262,6 +1262,10 @@ impl ElementTrait for MalformedRecordingHost {
             ops: Vec::new(),
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
+            transform_nodes: Vec::new(),
+            layout_position_nodes: Vec::new(),
+            visual_offset_nodes: Vec::new(),
+            scroll_nodes: Vec::new(),
             owner_nodes: Vec::new(),
         })
     }

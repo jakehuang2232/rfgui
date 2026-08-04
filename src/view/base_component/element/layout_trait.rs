@@ -299,6 +299,9 @@ impl Layoutable for Element {
         let inset_right = border_right + self.padding.right.max(0.0);
         let inset_top = border_top + self.padding.top.max(0.0);
         let inset_bottom = border_bottom + self.padding.bottom.max(0.0);
+        self.spatial_placement_snapshot = self.spatial_placement_snapshot.map(|snapshot| {
+            snapshot.with_child_reference_offset_at_scroll_zero([inset_left, inset_top])
+        });
         self.layout_state.layout_flow_inner_position = Position {
             x: self.layout_state.layout_flow_position.x + inset_left,
             y: self.layout_state.layout_flow_position.y + inset_top,

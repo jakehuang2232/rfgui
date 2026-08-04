@@ -10,7 +10,8 @@ use crate::view::base_component::{Rect, ScrollbarOverlayWitness, ScrollbarPaintS
 use crate::view::compositor::property_tree::PropertyTreeState;
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
-    ScrollNodeId, ScrollNodeSnapshot, TransformNodeId, TransformNodeSnapshot,
+    LayoutPositionNodeSnapshot, ScrollNodeId, ScrollNodeSnapshot, TransformNodeId,
+    TransformNodeSnapshot, VisualOffsetNodeSnapshot,
 };
 use crate::view::node_arena::NodeKey;
 use crate::view::render_pass::draw_rect_pass::{
@@ -613,11 +614,20 @@ impl PaintScrollAtomicProjectionTextAreaSubtreeWitness {
             return None;
         }
         if live.clip == Some(self.outer.contents_clip_snapshot().id) {
-            Some(PropertyTreeState::default())
+            Some(PropertyTreeState {
+                transform: None,
+                clip: None,
+                effect: None,
+                scroll: None,
+                ..live
+            })
         } else if live.clip == Some(self.live_contents_clip.id) {
             Some(PropertyTreeState {
+                transform: None,
                 clip: Some(self.local_contents_clip.id),
-                ..Default::default()
+                effect: None,
+                scroll: None,
+                ..live
             })
         } else {
             None
@@ -865,7 +875,7 @@ impl ConsumedPropertyForestAncestorChainWitness {
                         || snapshot.generation == 0
                         || snapshot.parent != latest_transform
                         || snapshot
-                            .viewport_matrix
+                            .owner_viewport_transform
                             .to_cols_array()
                             .into_iter()
                             .any(|value| !value.is_finite())
@@ -1686,13 +1696,25 @@ impl PaintScrollForestEdgeWitness {
             scroll: Some(self.scroll.id),
             ..PropertyTreeState::default()
         };
-        if live == parent {
-            Some(PropertyTreeState::default())
-        } else if live == own {
+        if live.legacy_boundary_eq(parent) {
+            Some(PropertyTreeState {
+                transform: None,
+                clip: None,
+                effect: None,
+                scroll: None,
+                ..live
+            })
+        } else if live.legacy_boundary_eq(own) {
             // Host masks are emitted on the parent target around the typed
             // content receiver. The receiver keeps the own S/C edge; storing
             // it again on the mask would double-apply scroll/clip state.
-            Some(PropertyTreeState::default())
+            Some(PropertyTreeState {
+                transform: None,
+                clip: None,
+                effect: None,
+                scroll: None,
+                ..live
+            })
         } else {
             None
         }
@@ -1868,11 +1890,20 @@ impl PaintScrollTextAreaSubtreeWitness {
             return None;
         }
         if live.clip == Some(self.outer.contents_clip_snapshot().id) {
-            Some(PropertyTreeState::default())
+            Some(PropertyTreeState {
+                transform: None,
+                clip: None,
+                effect: None,
+                scroll: None,
+                ..live
+            })
         } else if live.clip == Some(self.live_contents_clip.id) {
             Some(PropertyTreeState {
+                transform: None,
                 clip: Some(self.local_contents_clip.id),
-                ..Default::default()
+                effect: None,
+                scroll: None,
+                ..live
             })
         } else {
             None
@@ -1989,11 +2020,20 @@ impl PaintScrollInteractiveTextAreaSubtreeWitness {
             return None;
         }
         if live.clip == Some(self.outer.contents_clip_snapshot().id) {
-            Some(PropertyTreeState::default())
+            Some(PropertyTreeState {
+                transform: None,
+                clip: None,
+                effect: None,
+                scroll: None,
+                ..live
+            })
         } else if live.clip == Some(self.live_contents_clip.id) {
             Some(PropertyTreeState {
+                transform: None,
                 clip: Some(self.local_contents_clip.id),
-                ..Default::default()
+                effect: None,
+                scroll: None,
+                ..live
             })
         } else {
             None
@@ -2410,6 +2450,16 @@ pub(crate) struct PaintArtifact {
     /// effect leaf referenced by `chunks`. M6B validates this store but keeps
     /// the existing per-op baked opacity as visual authority.
     pub(crate) effect_nodes: Vec<EffectNodeSnapshot>,
+    /// Complete arena-independent transform graph referenced by `chunks`,
+    /// including its canonical derived owner projection.
+    pub(crate) transform_nodes: Vec<TransformNodeSnapshot>,
+    /// Complete transitive layout-position graph referenced by `chunks`.
+    pub(crate) layout_position_nodes: Vec<LayoutPositionNodeSnapshot>,
+    /// Complete transitive owner-local visual-offset graph referenced by
+    /// `chunks`; parent links preserve ancestor animation composition.
+    pub(crate) visual_offset_nodes: Vec<VisualOffsetNodeSnapshot>,
+    /// Complete transitive scroll graph referenced by `chunks`.
+    pub(crate) scroll_nodes: Vec<ScrollNodeSnapshot>,
     /// Canonical frame-traversal ownership topology for every chunk owner and
     /// its transitive ancestors. Roots are explicitly parentless even if the
     /// same arena node has an out-of-scope parent.
@@ -2631,6 +2681,10 @@ impl RetainedChildMaskPlan {
             ops: vec![PaintOp::DrawRect(self.op.clone())],
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
+            transform_nodes: Vec::new(),
+            layout_position_nodes: Vec::new(),
+            visual_offset_nodes: Vec::new(),
+            scroll_nodes: Vec::new(),
             owner_nodes: vec![PaintOwnerSnapshot {
                 owner,
                 parent: None,

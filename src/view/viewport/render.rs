@@ -115,6 +115,10 @@ enum AutoAuthorityRejection {
     },
 }
 
+/// Observational history of rejected candidates during one authority search.
+/// A recorded rejection is not the frame's final authority: selection may
+/// continue and return a later retained candidate. Disabling capture must not
+/// alter candidate evaluation or the returned [`AutoAuthorityDecision`].
 #[derive(Clone, Debug, Default)]
 struct AutoAuthorityTrace {
     capture_rejections: bool,
@@ -1784,7 +1788,10 @@ fn is_exact_native_root_opacity_artifact(
         })
         && property_trees
             .node_state_for(*root)
-            .is_some_and(|state| state.paint == exact_state && state.descendants == exact_state)
+            .is_some_and(|state| {
+                state.paint.legacy_boundary_eq(exact_state)
+                    && state.descendants.legacy_boundary_eq(exact_state)
+            })
 }
 
 fn reachable_tree_has_scroll_container(

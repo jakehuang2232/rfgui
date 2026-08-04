@@ -40,7 +40,10 @@ fn property_scroll_interleave_scaffold_seals_only_supported_planning_shapes() {
             PropertyScrollPhaseKind::OverlayAfterChildren
         );
         assert_eq!(
-            boundary.consumed_properties.projected_output,
+            boundary
+                .consumed_properties
+                .projected_output
+                .legacy_boundary_dimensions(),
             PropertyTreeState::default()
         );
     }
@@ -602,7 +605,7 @@ fn property_effect_transform_scroll_tamper_matrix_effect_clip_wrapper_and_order_
         .effect_transform_receiver_insertions[0]
         .inner
         .receiver
-        .viewport_matrix
+        .owner_viewport_transform
         .w_axis
         .x += 1.0;
     assert!(!property_scene_plan_is_sealed(&matrix));

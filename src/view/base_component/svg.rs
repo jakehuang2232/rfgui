@@ -1531,6 +1531,10 @@ impl ElementTrait for Svg {
                     ops,
                     clip_nodes: Vec::new(),
                     effect_nodes: Vec::new(),
+                    transform_nodes: Vec::new(),
+                    layout_position_nodes: Vec::new(),
+                    visual_offset_nodes: Vec::new(),
+                    scroll_nodes: Vec::new(),
                     owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                         owner,
                         parent: None,
@@ -1697,8 +1701,12 @@ impl ElementTrait for Svg {
         self.element.has_retained_transform_surface()
     }
 
-    fn compositor_viewport_transform_snapshot(&self) -> Option<super::ViewportTransformSnapshot> {
-        self.element.compositor_viewport_transform_snapshot()
+    fn compositor_local_transform_snapshot(&self) -> Option<super::LocalTransformSnapshot> {
+        self.element.compositor_local_transform_snapshot()
+    }
+
+    fn compositor_spatial_placement_snapshot(&self) -> Option<super::SpatialPlacementSnapshot> {
+        self.element.compositor_spatial_placement_snapshot()
     }
 
     fn local_dirty_flags(&self) -> super::DirtyFlags {

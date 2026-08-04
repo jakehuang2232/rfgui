@@ -779,6 +779,10 @@ impl Element {
             ops,
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
+            transform_nodes: Vec::new(),
+            layout_position_nodes: Vec::new(),
+            visual_offset_nodes: Vec::new(),
+            scroll_nodes: Vec::new(),
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
@@ -825,6 +829,10 @@ impl Element {
             ops,
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
+            transform_nodes: Vec::new(),
+            layout_position_nodes: Vec::new(),
+            visual_offset_nodes: Vec::new(),
+            scroll_nodes: Vec::new(),
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
@@ -1677,7 +1685,7 @@ impl Element {
         });
     }
 
-    fn compute_transform_matrix(&self) -> Option<Mat4> {
+    fn compute_local_transform_payload(&self) -> Option<(Mat4, Vec3)> {
         if self.transform.as_slice().is_empty() {
             return None;
         }
@@ -1720,16 +1728,17 @@ impl Element {
             };
             transform *= next;
         }
+        Some((transform, origin))
+    }
+
+    fn compute_transform_matrix(&self) -> Option<Mat4> {
+        let (transform, origin) = self.compute_local_transform_payload()?;
         let origin_world = Vec3::new(
             self.layout_state.layout_position.x + origin.x,
             self.layout_state.layout_position.y + origin.y,
             origin.z,
         );
-        Some(
-            Mat4::from_translation(origin_world)
-                * transform
-                * Mat4::from_translation(-origin_world),
-        )
+        Some(compose_transform_about_origin(transform, origin_world))
     }
 
     fn render_box_shadows(

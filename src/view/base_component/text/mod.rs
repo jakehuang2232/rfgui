@@ -213,7 +213,7 @@ impl Text {
         self.resolved_transform = self.compute_transform_matrix();
     }
 
-    fn compute_transform_matrix(&self) -> Option<Mat4> {
+    fn compute_local_transform_payload(&self) -> Option<(Mat4, Vec3)> {
         if self.transform.as_slice().is_empty() {
             return None;
         }
@@ -252,16 +252,17 @@ impl Text {
             };
             transform *= next;
         }
+        Some((transform, origin))
+    }
+
+    fn compute_transform_matrix(&self) -> Option<Mat4> {
+        let (transform, origin) = self.compute_local_transform_payload()?;
         let origin_world = Vec3::new(
             self.layout_state.layout_position.x + origin.x,
             self.layout_state.layout_position.y + origin.y,
             origin.z,
         );
-        Some(
-            Mat4::from_translation(origin_world)
-                * transform
-                * Mat4::from_translation(-origin_world),
-        )
+        Some(super::compose_transform_about_origin(transform, origin_world))
     }
 
     fn untransformed_retained_paint_bounds(&self) -> super::RetainedSurfaceBounds {
@@ -849,6 +850,10 @@ impl ElementTrait for Text {
                 ops,
                 clip_nodes: Vec::new(),
                 effect_nodes: Vec::new(),
+                transform_nodes: Vec::new(),
+                layout_position_nodes: Vec::new(),
+                visual_offset_nodes: Vec::new(),
+                scroll_nodes: Vec::new(),
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
@@ -882,6 +887,10 @@ impl ElementTrait for Text {
             ops,
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
+            transform_nodes: Vec::new(),
+            layout_position_nodes: Vec::new(),
+            visual_offset_nodes: Vec::new(),
+            scroll_nodes: Vec::new(),
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
@@ -980,6 +989,10 @@ impl ElementTrait for Text {
             ops,
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
+            transform_nodes: Vec::new(),
+            layout_position_nodes: Vec::new(),
+            visual_offset_nodes: Vec::new(),
+            scroll_nodes: Vec::new(),
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
@@ -1199,9 +1212,29 @@ impl ElementTrait for Text {
         self.resolved_transform.is_some()
     }
 
-    fn compositor_viewport_transform_snapshot(&self) -> Option<super::ViewportTransformSnapshot> {
-        self.resolved_transform
-            .map(super::ViewportTransformSnapshot::from_matrix)
+    fn compositor_local_transform_snapshot(&self) -> Option<super::LocalTransformSnapshot> {
+        self.compute_local_transform_payload()
+            .map(|(matrix, origin)| super::LocalTransformSnapshot::from_parts(matrix, origin))
+    }
+
+    fn compositor_spatial_placement_snapshot(&self) -> Option<super::SpatialPlacementSnapshot> {
+        if self.inline_ifc_owned.is_some() {
+            return None;
+        }
+        let _placement = self.last_layout_placement?;
+        Some(super::SpatialPlacementSnapshot::new(
+            super::SpatialPositionReferenceSnapshot::LayoutParent(self.parent_id),
+            [self.position.x, self.position.y],
+            [
+                self.layout_state.layout_position.x,
+                self.layout_state.layout_position.y,
+            ],
+            [0.0, 0.0],
+            [
+                self.layout_state.layout_position.x,
+                self.layout_state.layout_position.y,
+            ],
+        ))
     }
 
     fn local_dirty_flags(&self) -> super::DirtyFlags {

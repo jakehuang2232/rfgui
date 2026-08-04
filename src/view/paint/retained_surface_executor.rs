@@ -609,10 +609,10 @@ fn property_effect_composite_basis_stamp(
         }
         super::frame_plan::PropertyIsolationCompositeBasis::ParentTransform {
             transform,
-            viewport_matrix_bits,
+            surface_composite_matrix_bits,
         } => super::compiler::PropertyEffectCompositeBasisStamp::ParentTransform {
             transform,
-            viewport_matrix_bits,
+            surface_composite_matrix_bits,
         },
     }
 }
@@ -2067,7 +2067,7 @@ fn property_boundary_forest_scene_transaction_is_canonical(
                 transform.0 == node.owner
                     && surface.effect_composite.is_none()
                     && surface
-                        .transform_viewport_matrix_bits
+                        .surface_composite_matrix_bits
                         .is_some_and(|matrix| {
                             matrix.into_iter().map(f32::from_bits).all(f32::is_finite)
                         })
@@ -2075,7 +2075,7 @@ fn property_boundary_forest_scene_transaction_is_canonical(
             }
             (Role::Effect, SurfaceKind::Effect(effect)) => {
                 effect.0 == node.owner
-                    && surface.transform_viewport_matrix_bits.is_none()
+                    && surface.surface_composite_matrix_bits.is_none()
                     && surface.effect_composite.is_some()
                     && stamp.identity.role == RetainedSurfaceRasterRole::PropertyEffect
             }
@@ -2111,14 +2111,14 @@ fn property_boundary_forest_scene_transaction_is_canonical(
                     };
                     match parent_surface.kind {
                         SurfaceKind::Transform(transform) => {
-                            let Some(viewport_matrix_bits) =
-                                parent_surface.transform_viewport_matrix_bits
+                            let Some(surface_composite_matrix_bits) =
+                                parent_surface.surface_composite_matrix_bits
                             else {
                                 return false;
                             };
                             PropertyIsolationCompositeBasis::ParentTransform {
                                 transform,
-                                viewport_matrix_bits,
+                                surface_composite_matrix_bits,
                             }
                         }
                         SurfaceKind::Effect(effect) => {
@@ -2186,7 +2186,7 @@ fn property_boundary_forest_scene_transaction_is_canonical(
                 ) => {
                     *source_bounds_bits == dependency.child_stamp.target.source_bounds_bits
                         && Some(*viewport_transform_bits)
-                            == child_surface.transform_viewport_matrix_bits
+                            == child_surface.surface_composite_matrix_bits
                 }
                 (
                     Role::Effect,
@@ -2210,10 +2210,10 @@ fn property_boundary_forest_scene_transaction_is_canonical(
                         }
                         PropertyIsolationCompositeBasis::ParentTransform {
                             transform,
-                            viewport_matrix_bits,
+                            surface_composite_matrix_bits,
                         } => super::compiler::PropertyEffectCompositeBasisStamp::ParentTransform {
                             transform,
-                            viewport_matrix_bits,
+                            surface_composite_matrix_bits,
                         },
                     };
                     *source_bounds_bits == expected.mapping.rect_bits
@@ -2347,7 +2347,7 @@ fn property_effect_scene_transaction_is_canonical(
                     && stamp.identity.role == RetainedSurfaceRasterRole::Transform
                     && surface.effect_composite.is_none()
                     && surface
-                        .transform_viewport_matrix_bits
+                        .surface_composite_matrix_bits
                         .is_some_and(|matrix| {
                             matrix.into_iter().map(f32::from_bits).all(f32::is_finite)
                         })
@@ -2357,7 +2357,7 @@ fn property_effect_scene_transaction_is_canonical(
             PropertySceneTransactionSurfaceKind::Effect(id) => {
                 id.0 == surface.boundary_root
                     && stamp.identity.role == RetainedSurfaceRasterRole::PropertyEffect
-                    && surface.transform_viewport_matrix_bits.is_none()
+                    && surface.surface_composite_matrix_bits.is_none()
                     && surface.effect_composite.is_some()
                     && surface.persistent_color_key
                         == crate::view::base_component::isolation_layer_stable_key(
@@ -2412,14 +2412,14 @@ fn property_effect_scene_transaction_is_canonical(
                     };
                     match witness.surfaces[parent_ordinal].kind {
                         PropertySceneTransactionSurfaceKind::Transform(transform) => {
-                            let Some(viewport_matrix_bits) =
-                                witness.surfaces[parent_ordinal].transform_viewport_matrix_bits
+                            let Some(surface_composite_matrix_bits) =
+                                witness.surfaces[parent_ordinal].surface_composite_matrix_bits
                             else {
                                 return false;
                             };
                             super::frame_plan::PropertyIsolationCompositeBasis::ParentTransform {
                                 transform,
-                                viewport_matrix_bits,
+                                surface_composite_matrix_bits,
                             }
                         }
                         PropertySceneTransactionSurfaceKind::Effect(effect) => {
@@ -2491,10 +2491,10 @@ fn property_effect_scene_transaction_is_canonical(
                     }
                     super::frame_plan::PropertyIsolationCompositeBasis::ParentTransform {
                         transform,
-                        viewport_matrix_bits,
+                        surface_composite_matrix_bits,
                     } => super::compiler::PropertyEffectCompositeBasisStamp::ParentTransform {
                         transform,
-                        viewport_matrix_bits,
+                        surface_composite_matrix_bits,
                     },
                 };
                 if *source_bounds_bits != expected.mapping.rect_bits

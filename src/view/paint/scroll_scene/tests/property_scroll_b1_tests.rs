@@ -560,8 +560,16 @@ fn property_scroll_b1_stale_time_and_exact_live_tree_drift_fail_closed() {
         crate::view::compositor::property_tree::TransformNode {
             owner: root,
             parent: None,
-            viewport_matrix: glam::Mat4::IDENTITY,
+            local_matrix: glam::Mat4::IDENTITY,
+            local_origin: glam::Vec3::ZERO,
+            local_generation: 1,
             generation: 1,
+            derived_projection: Some(
+                crate::view::compositor::property_tree::DerivedSpatialProjection {
+                    owner_viewport_position: glam::Vec2::ZERO,
+                    owner_viewport_transform: glam::Mat4::IDENTITY,
+                },
+            ),
         },
     );
     generations.sync(&arena, &[root], &properties);
