@@ -2035,3 +2035,4 @@ mod property_scroll_b4_tests;
 mod same_owner_scroll_tests;
 mod transform_scroll_action_tests;
 mod dpr2_device_target_tests;
+mod stage_c_deletion_inventory_tests;

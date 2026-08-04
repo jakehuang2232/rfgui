@@ -2298,5 +2298,6 @@ mod telemetry_tests;
 mod text_area_caret_reuse_tests;
 mod text_area_interaction_tests;
 mod text_area_scene_tests;
+mod stage_a_authority_selection_parity_tests;
 mod text_transform_tests;
 mod window_showcase_tests;

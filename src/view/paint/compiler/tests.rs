@@ -70,3 +70,4 @@ mod property_boundary_forest_plain_root_tests;
 mod property_boundary_forest_tests;
 mod property_boundary_forest_linear_tests;
 mod same_owner_transform_effect_scroll_tests;
+mod stage_c_deletion_inventory_tests;

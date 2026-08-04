@@ -3928,6 +3928,7 @@ mod property_boundary_forest_multi_root_executor_tests;
 mod property_boundary_forest_plain_root_executor_tests;
 mod root_effect_tests;
 mod structural_parity_tests;
+mod stage_a_artifact_parity_tests;
 mod text_area_projection_preedit_tests;
 mod text_area_projection_selection_tests;
 mod text_area_state_tests;
