@@ -335,14 +335,16 @@ impl PropertyScrollPostCompositeSchedule {
             }
             Self::FocusedAtomicProjectionSidecars(sidecars) => {
                 assert!(sidecars.is_canonical());
-                let Some(op) = sidecars.draw_op() else {
-                    return;
-                };
                 let mut ops = Vec::new();
                 if let Some(preedit) = sidecars.preedit_draw_op() {
                     ops.push(preedit);
                 }
-                ops.push(op);
+                if let Some(caret) = sidecars.draw_op() {
+                    ops.push(caret);
+                }
+                if ops.is_empty() {
+                    return;
+                }
                 (
                     ops,
                     sidecars.text_area_clip.logical_scissor,

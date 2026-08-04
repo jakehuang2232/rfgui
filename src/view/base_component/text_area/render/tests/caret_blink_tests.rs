@@ -67,6 +67,25 @@ fn retained_caret_blink_has_deterministic_boundaries_and_paint_only_dirty() {
 }
 
 #[test]
+fn active_preedit_reaches_the_hidden_caret_blink_phase() {
+    let mut text_area = TextArea::new();
+    text_area.layout_state.should_render = true;
+    assert!(text_area.set_focused(true));
+    assert!(text_area.set_preedit("中".to_string(), Some((0, "中".len()))));
+
+    let t0 = crate::time::Instant::now();
+    assert_eq!(text_area.tick_caret_blink(t0), DirtyFlags::NONE);
+    assert_eq!(
+        text_area.tick_caret_blink(t0 + Duration::from_millis(530)),
+        DirtyFlags::PAINT,
+    );
+
+    assert!(!text_area.caret_visible);
+    assert_eq!(text_area.ime_preedit, "中");
+    assert_eq!(text_area.ime_preedit_cursor, Some((0, "中".len())));
+}
+
+#[test]
 fn retained_caret_focus_reset_blur_and_unrender_restart_without_clock_reads() {
     let mut text_area = TextArea::new();
     text_area.layout_state.should_render = true;
