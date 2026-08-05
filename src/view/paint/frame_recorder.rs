@@ -150,6 +150,7 @@ impl RetainedAtomicProjectionChunkLiveRasterOracle {
 pub(crate) struct RetainedAtomicProjectionTextAreaLiveRasterOracle {
     content_root: NodeKey,
     text_area_root: NodeKey,
+    artifact_space_transition: super::PaintArtifactSpaceTransition,
     source_grammar:
         crate::view::base_component::text_area::RetainedAtomicProjectionTextAreaPaintGrammar,
     chunks: Vec<RetainedAtomicProjectionChunkLiveRasterOracle>,
@@ -161,6 +162,7 @@ pub(crate) struct RetainedAtomicProjectionTextAreaLiveRasterOracle {
 pub(crate) struct RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle {
     content_root: NodeKey,
     text_area_root: NodeKey,
+    artifact_space_transition: super::PaintArtifactSpaceTransition,
     source_grammar: crate::view::base_component::text_area::RetainedAtomicProjectionSelectionTextAreaPaintGrammar,
     chunks: Vec<RetainedAtomicProjectionChunkLiveRasterOracle>,
     clip_nodes: Vec<crate::view::compositor::property_tree::ClipNodeSnapshot>,
@@ -174,6 +176,10 @@ impl RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle {
 
     pub(crate) fn text_area_root(&self) -> NodeKey {
         self.text_area_root
+    }
+
+    pub(crate) fn artifact_space_transition(&self) -> super::PaintArtifactSpaceTransition {
+        self.artifact_space_transition
     }
 
     pub(crate) fn source_grammar(
@@ -268,6 +274,10 @@ impl RetainedAtomicProjectionTextAreaLiveRasterOracle {
 
     pub(crate) fn text_area_root(&self) -> NodeKey {
         self.text_area_root
+    }
+
+    pub(crate) fn artifact_space_transition(&self) -> super::PaintArtifactSpaceTransition {
+        self.artifact_space_transition
     }
 
     pub(crate) fn source_grammar(
@@ -721,6 +731,22 @@ impl RecordedRetainedAtomicProjectionTextAreaHost {
         self.raster_oracle.chunks.swap(first, second);
         self
     }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_artifact_space_transition_for_test(mut self) -> Self {
+        let revision = self
+            .raster_oracle
+            .artifact_space_transition
+            .semantic_revision();
+        self.raster_oracle.artifact_space_transition =
+            super::PaintArtifactSpaceTransition::from_bits(
+                [1234.0_f32.to_bits(), 0.0_f32.to_bits()],
+                [0.0_f32.to_bits(), 0.0_f32.to_bits()],
+                revision,
+            )
+            .unwrap();
+        self
+    }
 }
 
 impl RecordedRetainedAtomicProjectionTextAreaSubtree {
@@ -1014,10 +1040,11 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
         clip: Some(local_clip.id),
         ..Default::default()
     };
-    let delta = [
-        -f32::from_bits(grammar.atomic_source.last_unified_apply_bits.0),
-        -f32::from_bits(grammar.atomic_source.last_unified_apply_bits.1),
-    ];
+    let transition = local.raster_oracle.artifact_space_transition;
+    if host.raster_oracle.artifact_space_transition != transition {
+        return None;
+    }
+    let delta = transition.translation()?;
     let pair_exact = |host_chunk: &super::PaintChunk, local_chunk: &super::PaintChunk| {
         let localized = host
             .artifact
@@ -1057,7 +1084,7 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
                     host_chunk.bounds.height,
                 ]
                 .map(f32::to_bits),
-                grammar.atomic_source.last_unified_apply_bits,
+                transition,
             ) == Some(
                 [
                     local_chunk.bounds.x,
@@ -3735,6 +3762,17 @@ fn record_atomic_projection_live_raster_oracle(
     source_grammar: &crate::view::base_component::text_area::RetainedAtomicProjectionTextAreaPaintGrammar,
     owner_nodes: Vec<super::PaintOwnerSnapshot>,
 ) -> Result<RetainedAtomicProjectionTextAreaLiveRasterOracle, Vec<FrameArtifactFallbackReason>> {
+    let (apply_x, apply_y, revision) = source_grammar.last_unified_apply_bits;
+    let artifact_space_transition = super::PaintArtifactSpaceTransition::from_bits(
+        [apply_x, apply_y],
+        [0.0_f32.to_bits(), 0.0_f32.to_bits()],
+        revision,
+    )
+    .ok_or_else(|| {
+        vec![FrameArtifactFallbackReason::Validation(
+            PaintCoverageValidationError::RecordingPassMismatch,
+        )]
+    })?;
     let manifest = record_retained_coverage_manifest_with_context(
         arena,
         roots,
@@ -3791,6 +3829,7 @@ fn record_atomic_projection_live_raster_oracle(
     Ok(RetainedAtomicProjectionTextAreaLiveRasterOracle {
         content_root,
         text_area_root,
+        artifact_space_transition,
         source_grammar: source_grammar.clone(),
         chunks,
         clip_nodes: clips,
@@ -3814,6 +3853,17 @@ fn record_atomic_projection_selection_live_raster_oracle(
     RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     Vec<FrameArtifactFallbackReason>,
 > {
+    let (apply_x, apply_y, revision) = source_grammar.atomic_source.last_unified_apply_bits;
+    let artifact_space_transition = super::PaintArtifactSpaceTransition::from_bits(
+        [apply_x, apply_y],
+        [0.0_f32.to_bits(), 0.0_f32.to_bits()],
+        revision,
+    )
+    .ok_or_else(|| {
+        vec![FrameArtifactFallbackReason::Validation(
+            PaintCoverageValidationError::RecordingPassMismatch,
+        )]
+    })?;
     let manifest = record_retained_coverage_manifest_with_context(
         arena,
         roots,
@@ -3870,6 +3920,7 @@ fn record_atomic_projection_selection_live_raster_oracle(
     Ok(RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle {
         content_root,
         text_area_root,
+        artifact_space_transition,
         source_grammar: source_grammar.clone(),
         chunks,
         clip_nodes: clips,

@@ -562,8 +562,29 @@ fn focused_atomic_projection_scroll_fixture_with_state_and_underline_offset(
     PropertyTrees,
     PaintGenerationTracker,
 ) {
+    focused_atomic_projection_scroll_fixture_with_state_underline_and_scroll_offset(
+        caret_visible,
+        preedit,
+        projected_content,
+        preedit_underline_offset,
+        0.0,
+    )
+}
+
+fn focused_atomic_projection_scroll_fixture_with_state_underline_and_scroll_offset(
+    caret_visible: bool,
+    preedit: Option<&str>,
+    projected_content: &'static str,
+    preedit_underline_offset: [f32; 2],
+    scroll_y: f32,
+) -> (
+    NodeArena,
+    NodeKey,
+    NodeKey,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
     let width = 132.0;
-    let scroll_y = 0.0;
     let mut text_component = TextArea::new();
     text_component.content = "before projected after".to_string();
     text_component.font_size = 14.0;

@@ -276,6 +276,88 @@ fn property_scroll_b2_focused_atomic_caret_and_underline_preserve_resident_reuse
 }
 
 #[test]
+fn property_scroll_b2_artifact_space_transition_stays_outside_resident_identity() {
+    let sampled_at = crate::time::Instant::now();
+    let make_scene = |scroll_y| {
+        let (arena, root, _, properties, generations) =
+            focused_atomic_projection_scroll_fixture_with_state_underline_and_scroll_offset(
+                true,
+                Some("中"),
+                "projected",
+                [0.0; 2],
+                scroll_y,
+            );
+        plan_and_validate_property_scroll_scene(
+            &arena,
+            &[root],
+            &properties,
+            &generations,
+            1.0,
+            [0.0; 2],
+            None,
+            sampled_at,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            generous_budget(),
+        )
+        .expect("focused atomic projection scroll offset must remain compiler-sealed")
+    };
+    let prepare_emit = |viewport: &mut Viewport,
+                        scene: ValidatedPropertyScrollScene|
+     -> (
+        RetainedSurfaceRasterStamp,
+        RetainedPropertyScrollSceneBuildTrace,
+    ) {
+        let owner = viewport.begin_retained_surface_frame_stage().unwrap();
+        let mut graph = FrameGraph::new();
+        let mut ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+        let parent = ctx.allocate_target(&mut graph);
+        ctx.set_current_target(parent);
+        let mut prepared = prepare_retained_property_scroll_forest_from_pool(
+            viewport, scene, &mut graph, ctx, [0.0; 4], owner,
+        )
+        .expect("focused atomic projection transition frame prepares atomically");
+        prepared.refresh_actions_from_committed_test_pool();
+        let stamps = prepared.scroll_content_stamps_for_test();
+        let [stamp] = stamps.as_slice() else {
+            panic!("focused atomic projection owns one resident stamp")
+        };
+        let stamp = stamp.clone();
+        let outcome = emit_prepared_retained_property_scroll_forest(prepared);
+        let (_, trace) = outcome.into_parts();
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
+        (stamp, trace)
+    };
+
+    let cold_scene = make_scene(0.0);
+    let cold_transition = cold_scene.boundaries[0]
+        .planner
+        .atomic_projection_space_transition_for_test()
+        .unwrap();
+    let mut viewport = Viewport::new();
+    let (cold_stamp, cold_trace) = prepare_emit(&mut viewport, cold_scene);
+    assert_eq!((cold_trace.reraster_count, cold_trace.reuse_count), (1, 0));
+
+    let scrolled_scene = make_scene(20.0);
+    let scrolled_transition = scrolled_scene.boundaries[0]
+        .planner
+        .atomic_projection_space_transition_for_test()
+        .unwrap();
+    assert_ne!(
+        scrolled_transition, cold_transition,
+        "fixture must change the artifact-space projection"
+    );
+    let (scrolled_stamp, scrolled_trace) = prepare_emit(&mut viewport, scrolled_scene);
+    assert_eq!(
+        scrolled_stamp, cold_stamp,
+        "artifact-space projection is composite geometry, not resident raster identity"
+    );
+    assert_eq!(
+        (scrolled_trace.reraster_count, scrolled_trace.reuse_count),
+        (0, 1),
+    );
+}
+
+#[test]
 fn property_scroll_b2_tiled_preclear_freezes_row_major_actions_and_emits_each_tile() {
     let (arena, root, _, properties, generations) =
         fixture_with_geometry([0.0, 1000.0], [100.0, 80.0], [300.0, 3000.0]);
@@ -362,11 +444,9 @@ fn property_scroll_b2_offset_and_alpha_only_changes_reuse_content_residents() {
             .unwrap();
     offset_b.refresh_actions_from_committed_test_pool();
     let offset_actions = offset_b.actions.clone();
-    assert!(
-        offset_actions
-            .values()
-            .all(|action| *action == RetainedSurfaceCompileAction::Reuse)
-    );
+    assert!(offset_actions
+        .values()
+        .all(|action| *action == RetainedSurfaceCompileAction::Reuse));
     drop(offset_b);
 
     let (early_arena, early_root, early_properties, early_generations, early_time) =
@@ -402,11 +482,9 @@ fn property_scroll_b2_offset_and_alpha_only_changes_reuse_content_residents() {
     .unwrap();
     late.refresh_actions_from_committed_test_pool();
     let alpha_actions = late.actions.clone();
-    assert!(
-        alpha_actions
-            .values()
-            .all(|action| *action == RetainedSurfaceCompileAction::Reuse)
-    );
+    assert!(alpha_actions
+        .values()
+        .all(|action| *action == RetainedSurfaceCompileAction::Reuse));
 }
 
 #[test]

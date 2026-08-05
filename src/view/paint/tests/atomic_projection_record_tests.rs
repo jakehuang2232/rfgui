@@ -76,23 +76,17 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
     assert_eq!(plan_parts.identity(), plan_parts.clone().identity());
     assert_eq!(plan_parts.local_clip_snapshots().unwrap().len(), 1);
     let content_terminal = plan_parts.content_opaque_order_count().unwrap();
-    assert!(
-        plan_parts
-            .content_artifact_span_stamp(0, 0..content_terminal)
-            .is_some()
-    );
-    assert!(
-        !plan_parts
-            .clone()
-            .tamper_content_bounds_for_test()
-            .is_canonical()
-    );
-    assert!(
-        !plan_parts
-            .clone()
-            .tamper_content_resolved_clips_for_test()
-            .is_canonical()
-    );
+    assert!(plan_parts
+        .content_artifact_span_stamp(0, 0..content_terminal)
+        .is_some());
+    assert!(!plan_parts
+        .clone()
+        .tamper_content_bounds_for_test()
+        .is_canonical());
+    assert!(!plan_parts
+        .clone()
+        .tamper_content_resolved_clips_for_test()
+        .is_canonical());
     assert!(!plan_parts.clone().tamper_resident_for_test().is_canonical());
     for tampered_host in [
         host.clone().tamper_cross_parity_bounds_for_test(0),
@@ -100,6 +94,7 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
         host.clone().tamper_cross_parity_bounds_for_test(6),
         host.clone().tamper_cross_parity_payload_for_test(3, 4),
         host.clone().tamper_cross_parity_order_for_test(1, 2),
+        host.clone().tamper_artifact_space_transition_for_test(),
     ] {
         assert!(
             super::super::frame_recorder::validate_recorded_atomic_projection_text_area_plan_parts(
@@ -147,7 +142,9 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
         "source/admission drift must fail before recording",
     );
     let validate = |recorded| {
-        super::super::frame_recorder::validate_recorded_atomic_projection_text_area_subtree(recorded)
+        super::super::frame_recorder::validate_recorded_atomic_projection_text_area_subtree(
+            recorded,
+        )
     };
     let validated = validate(local.clone()).expect("dedicated compiler validator");
     assert!(validated.resident_for_test().is_canonical());
@@ -329,9 +326,7 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
     assert!(admission.bitwise_eq(&admission.clone()));
     assert!(
         root_element
-            .exact_retained_scroll_atomic_projection_text_area_subtree_admission(
-                root, &arena, 1.0,
-            )
+            .exact_retained_scroll_atomic_projection_text_area_subtree_admission(root, &arena, 1.0,)
             .is_none(),
         "existing atomic glyph selector must remain selection-free",
     );

@@ -9334,6 +9334,18 @@ impl PropertyScrollScenePlan {
     }
 
     #[cfg(test)]
+    fn atomic_projection_space_transition_for_test(
+        &self,
+    ) -> Option<super::PaintArtifactSpaceTransition> {
+        let ScrollBoundaryStep::AtomicProjectionContentComposite { authority, .. } =
+            self.steps.get(1)?
+        else {
+            return None;
+        };
+        Some(authority.artifact_space_transition_for_test())
+    }
+
+    #[cfg(test)]
     pub(crate) fn atomic_projection_tamper_matrix_for_test(&self) -> bool {
         if !self.atomic_projection_contract_for_test() {
             return false;

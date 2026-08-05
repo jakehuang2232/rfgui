@@ -22,6 +22,7 @@ pub(crate) use artifact::{
     ConsumedPropertyForestAncestorChainWitness, ConsumedSameOwnerEffectBoundaryWitness,
     ConsumedSameOwnerTransformBoundaryWitness, DrawRectOp, EffectPropertyContentWitness,
     EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactTarget,
+    PaintArtifactSpaceTransition,
     PaintBakedScrollHostWitness, PaintChunk, PaintChunkId, PaintChunkMetadata, PaintChunkRole,
     PaintContentRevision, PaintDeferredViewportEffectWitness, PaintDeferredViewportSelfClipWitness,
     PaintNodePhase, PaintNodePlan, PaintOp, PaintOpacityAuthority,

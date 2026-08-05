@@ -2964,10 +2964,15 @@ impl TextArea {
             ime_preedit_cursor: self.ime_preedit_cursor,
             cursor_char: self.cursor_char,
             unified_ifc_source_revision: self.unified_ifc_source_revision.get(),
-            last_unified_apply_bits: self
-                .last_unified_apply
-                .get()
-                .map(|(x, y, revision)| (x.to_bits(), y.to_bits(), revision)),
+            artifact_space_transition: self.last_unified_apply.get().and_then(
+                |(x, y, revision)| {
+                    crate::view::paint::PaintArtifactSpaceTransition::from_bits(
+                        [x.to_bits(), y.to_bits()],
+                        [0.0_f32.to_bits(), 0.0_f32.to_bits()],
+                        revision,
+                    )
+                },
+            ),
             generated_topology: generated_topology.into(),
             foreground_color_bits: self.color.to_rgba_f32().map(f32::to_bits),
             glyph_bounds_bits: [

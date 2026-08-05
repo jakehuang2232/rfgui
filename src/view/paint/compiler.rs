@@ -8585,6 +8585,13 @@ pub(crate) struct AtomicProjectionTextAreaPlanIdentity {
 }
 
 impl ValidatedScrollSceneAtomicProjectionTextAreaPlanParts {
+    #[cfg(test)]
+    pub(crate) fn artifact_space_transition_for_test(
+        &self,
+    ) -> super::PaintArtifactSpaceTransition {
+        self.local_raster_oracle.artifact_space_transition()
+    }
+
     pub(crate) fn boundary_root(&self) -> crate::view::node_arena::NodeKey {
         self.boundary_root
     }
@@ -8832,6 +8839,13 @@ impl ValidatedScrollSceneFocusedAtomicProjectionTextAreaPlanParts {
 
     pub(crate) fn resident(&self) -> &RetainedAtomicProjectionTextAreaResidentRasterSeal {
         self.base.resident()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn artifact_space_transition_for_test(
+        &self,
+    ) -> super::PaintArtifactSpaceTransition {
+        self.base.artifact_space_transition_for_test()
     }
 
     pub(crate) fn identity(&self) -> FocusedAtomicProjectionTextAreaPlanIdentity {
@@ -9977,6 +9991,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact
     }
     let content_root = raster_oracle.content_root();
     let text_area_root = raster_oracle.text_area_root();
+    let artifact_space_transition = raster_oracle.artifact_space_transition();
     let source_grammar = raster_oracle.source_grammar().clone();
     let [contents_clip] = raster_oracle.clip_nodes() else {
         return None;
@@ -10089,18 +10104,8 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact
             });
         }
     }
-    let [source_x, source_y, source_width, source_height] = source_grammar
-        .projection_text_bounds_bits
-        .map(f32::from_bits);
-    let apply_x = f32::from_bits(source_grammar.last_unified_apply_bits.0);
-    let apply_y = f32::from_bits(source_grammar.last_unified_apply_bits.1);
-    let localized_projection_bounds_bits = [
-        source_x - apply_x,
-        source_y - apply_y,
-        source_width,
-        source_height,
-    ]
-    .map(f32::to_bits);
+    let localized_projection_bounds_bits = artifact_space_transition
+        .project_bounds_bits(source_grammar.projection_text_bounds_bits)?;
     if !matches!(validated.target, ValidatedArtifactTarget::CurrentTarget)
         || !wrapper_exact
         || !glyph_exact(
@@ -10164,6 +10169,7 @@ fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_
     }
     let content_root = raster_oracle.content_root();
     let text_area_root = raster_oracle.text_area_root();
+    let artifact_space_transition = raster_oracle.artifact_space_transition();
     let source_grammar = raster_oracle.source_grammar().clone();
     let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
         start_char,
@@ -10308,7 +10314,7 @@ fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_
     }
     let localized_projection_bounds_bits = localized_atomic_projection_host_bounds(
         atomic_source.projection_text_bounds_bits,
-        atomic_source.last_unified_apply_bits,
+        artifact_space_transition,
     )?;
     if !matches!(validated.target, ValidatedArtifactTarget::CurrentTarget)
         || !wrapper_exact
@@ -10392,16 +10398,9 @@ fn isolate_atomic_projection_host_chunk(
 
 pub(super) fn localized_atomic_projection_host_bounds(
     bounds_bits: [u32; 4],
-    apply_bits: (u32, u32, u64),
+    transition: super::PaintArtifactSpaceTransition,
 ) -> Option<[u32; 4]> {
-    let x = f32::from_bits(bounds_bits[0]) - f32::from_bits(apply_bits.0);
-    let y = f32::from_bits(bounds_bits[1]) - f32::from_bits(apply_bits.1);
-    (x.is_finite() && y.is_finite()).then_some([
-        x.to_bits(),
-        y.to_bits(),
-        bounds_bits[2],
-        bounds_bits[3],
-    ])
+    transition.project_bounds_bits(bounds_bits)
 }
 
 fn atomic_projection_content_zero_bounds_bits(scroll: ScrollNodeSnapshot) -> [u32; 4] {
@@ -10441,11 +10440,14 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
         || host_raster_oracle.content_root() != local_raster_oracle.content_root()
         || host_raster_oracle.text_area_root() != local_raster_oracle.text_area_root()
         || host_raster_oracle.source_grammar() != local_raster_oracle.source_grammar()
+        || host_raster_oracle.artifact_space_transition()
+            != local_raster_oracle.artifact_space_transition()
     {
         return None;
     }
     let content_root = local_raster_oracle.content_root();
     let text_area_root = local_raster_oracle.text_area_root();
+    let artifact_space_transition = local_raster_oracle.artifact_space_transition();
     let source_grammar = local_raster_oracle.source_grammar().clone();
     let boundary_root = outer_scroll.owner;
     super::PaintScrollContentWitness::new(
@@ -10581,10 +10583,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
         ..Default::default()
     };
     let pair_is_exact = |host: &super::PaintChunk, local: &super::PaintChunk| {
-        let delta = [
-            -f32::from_bits(source_grammar.last_unified_apply_bits.0),
-            -f32::from_bits(source_grammar.last_unified_apply_bits.1),
-        ];
+        let delta = artifact_space_transition.translation()?;
         let localized_ops = host_artifact
             .ops
             .get(host.op_range.clone())?
@@ -10603,16 +10602,13 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
             )
             && localized_atomic_projection_host_bounds(
                 chunk_bounds_bits(host),
-                source_grammar.last_unified_apply_bits,
+                artifact_space_transition,
             ) == Some(chunk_bounds_bits(local)))
         .then_some(())
     };
     let child_mask_pair_is_exact =
         |host: &super::PaintChunk, local: &super::PaintChunk, phase: super::PaintNodePhase| {
-            let delta = [
-                -f32::from_bits(source_grammar.last_unified_apply_bits.0),
-                -f32::from_bits(source_grammar.last_unified_apply_bits.1),
-            ];
+            let delta = artifact_space_transition.translation()?;
             let [PaintOp::DrawRect(host_mask)] = host_artifact.ops.get(host.op_range.clone())?
             else {
                 return None;
@@ -10647,7 +10643,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
                     == Some(&local.payload_identity)
                 && localized_atomic_projection_host_bounds(
                     chunk_bounds_bits(host),
-                    source_grammar.last_unified_apply_bits,
+                    artifact_space_transition,
                 ) == Some(chunk_bounds_bits(local)))
             .then_some(())
         };
@@ -10880,11 +10876,14 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
         || host_raster_oracle.content_root() != local_raster_oracle.content_root()
         || host_raster_oracle.text_area_root() != local_raster_oracle.text_area_root()
         || host_raster_oracle.source_grammar() != local_raster_oracle.source_grammar()
+        || host_raster_oracle.artifact_space_transition()
+            != local_raster_oracle.artifact_space_transition()
     {
         return None;
     }
     let content_root = local_raster_oracle.content_root();
     let text_area_root = local_raster_oracle.text_area_root();
+    let artifact_space_transition = local_raster_oracle.artifact_space_transition();
     let source_grammar = local_raster_oracle.source_grammar().clone();
     let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
         start_char,
@@ -10894,7 +10893,6 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
     else {
         return None;
     };
-    let atomic_source = &source_grammar.atomic_source;
     let boundary_root = outer_scroll.owner;
     if !selection.matches_source(start_char, end_char, color_rgba_bits) {
         return None;
@@ -10995,10 +10993,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
         clip: Some(local_contents_clip.id),
         ..Default::default()
     };
-    let delta = [
-        -f32::from_bits(atomic_source.last_unified_apply_bits.0),
-        -f32::from_bits(atomic_source.last_unified_apply_bits.1),
-    ];
+    let delta = artifact_space_transition.translation()?;
     let pair_exact = |host: &super::PaintChunk, local: &super::PaintChunk| {
         let localized = host_artifact
             .ops
@@ -11024,7 +11019,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
             && payload == local.payload_identity
             && localized_atomic_projection_host_bounds(
                 chunk_bounds_bits(host),
-                atomic_source.last_unified_apply_bits,
+                artifact_space_transition,
             ) == Some(chunk_bounds_bits(local)))
         .then_some(())
     };
@@ -11061,7 +11056,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
                         == Some(&local.payload_identity)
                     && localized_atomic_projection_host_bounds(
                         chunk_bounds_bits(host),
-                        atomic_source.last_unified_apply_bits,
+                        artifact_space_transition,
                     ) == Some(chunk_bounds_bits(local)))
                 .then_some(())
             };

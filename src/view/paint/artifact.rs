@@ -3718,6 +3718,67 @@ pub(crate) struct TextPayloadNodeIdentity {
     pub(crate) preedit_cursor: Option<(usize, usize)>,
 }
 
+/// Bitwise-stable projection between two artifact coordinate spaces.
+///
+/// This is geometry/composite-side data. It validates how an already-recorded
+/// host artifact projects into another artifact space, and must not be folded
+/// into persistent texture keys or resident raster identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PaintArtifactSpaceTransition {
+    from_origin_bits: [u32; 2],
+    to_origin_bits: [u32; 2],
+    semantic_revision: u64,
+}
+
+impl PaintArtifactSpaceTransition {
+    pub(crate) fn from_bits(
+        from_origin_bits: [u32; 2],
+        to_origin_bits: [u32; 2],
+        semantic_revision: u64,
+    ) -> Option<Self> {
+        let transition = Self {
+            from_origin_bits,
+            to_origin_bits,
+            semantic_revision,
+        };
+        transition.is_canonical().then_some(transition)
+    }
+
+    pub(crate) fn is_canonical(self) -> bool {
+        self.semantic_revision != 0
+            && self
+                .from_origin_bits
+                .into_iter()
+                .chain(self.to_origin_bits)
+                .map(f32::from_bits)
+                .all(f32::is_finite)
+            && self.translation().is_some()
+    }
+
+    pub(crate) fn semantic_revision(self) -> u64 {
+        self.semantic_revision
+    }
+
+    pub(crate) fn translation(self) -> Option<[f32; 2]> {
+        let from = self.from_origin_bits.map(f32::from_bits);
+        let to = self.to_origin_bits.map(f32::from_bits);
+        let translation = [to[0] - from[0], to[1] - from[1]];
+        translation.into_iter().all(f32::is_finite).then_some(translation)
+    }
+
+    pub(crate) fn project_bounds_bits(self, bounds_bits: [u32; 4]) -> Option<[u32; 4]> {
+        let [delta_x, delta_y] = self.translation()?;
+        let x = f32::from_bits(bounds_bits[0]) + delta_x;
+        let y = f32::from_bits(bounds_bits[1]) + delta_y;
+        let width = f32::from_bits(bounds_bits[2]);
+        let height = f32::from_bits(bounds_bits[3]);
+        [x, y, width, height]
+            .into_iter()
+            .all(f32::is_finite)
+            .then_some([x, y, width, height].map(f32::to_bits))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TextPreeditPayloadIdentity {
     pub(crate) owner: NodeKey,
@@ -3727,7 +3788,7 @@ pub(crate) struct TextPreeditPayloadIdentity {
     pub(crate) ime_preedit_cursor: Option<(usize, usize)>,
     pub(crate) cursor_char: usize,
     pub(crate) unified_ifc_source_revision: u64,
-    pub(crate) last_unified_apply_bits: Option<(u32, u32, u64)>,
+    pub(crate) artifact_space_transition: Option<PaintArtifactSpaceTransition>,
     pub(crate) generated_topology: Arc<[TextPayloadNodeIdentity]>,
     pub(crate) foreground_color_bits: [u32; 4],
     pub(crate) glyph_bounds_bits: [u32; 4],
@@ -3753,11 +3814,10 @@ impl TextPreeditPayloadIdentity {
             })
             || self.unified_ifc_source_revision == 0
             || !self
-                .last_unified_apply_bits
-                .is_some_and(|(x, y, revision)| {
-                    f32::from_bits(x).is_finite()
-                        && f32::from_bits(y).is_finite()
-                        && revision == self.unified_ifc_source_revision
+                .artifact_space_transition
+                .is_some_and(|transition| {
+                    transition.is_canonical()
+                        && transition.semantic_revision() == self.unified_ifc_source_revision
                 })
             || self.generated_topology.is_empty()
             || !preedit_glyph_identity_is_exact(
@@ -4424,5 +4484,7 @@ impl PreparedSvgIdentity {
 
 #[cfg(test)]
 mod consumed_ancestor_property_tests;
+#[cfg(test)]
+mod paint_artifact_space_transition_tests;
 #[cfg(test)]
 mod text_selection_payload_identity_tests;
