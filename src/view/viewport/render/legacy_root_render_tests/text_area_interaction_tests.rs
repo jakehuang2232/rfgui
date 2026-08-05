@@ -453,7 +453,7 @@ fn retained_auto_scroll_text_area_selection_is_exact_reusable_and_invalidating()
             baseline_stamp.target.clone(),
             artifact_span.clone(),
             baseline_stamp.opaque_order_span.clone(),
-            legal_range_grammar,
+            legal_range_grammar.artifact_content_source().unwrap(),
         )
         .is_none(),
         "the constructor seam must reject a legal range that does not match the sealed payload"

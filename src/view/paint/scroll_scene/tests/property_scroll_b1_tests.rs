@@ -27,6 +27,7 @@ fn property_scroll_admission_sidecar_correspondence_rejects_synchronized_hybrid(
         text_area_root: sidecar.text_area_root,
         text_area_stable_id: sidecar.text_area_stable_id,
         paint_grammar: crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedGlyphs,
+        paint_source: crate::view::paint::PaintTextContentSource::Glyphs,
         caret_oracle_bounds_bits: None,
         source_bounds: sidecar.source_bounds,
         scroll: sidecar.scroll,

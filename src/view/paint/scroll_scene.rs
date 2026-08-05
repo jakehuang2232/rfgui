@@ -707,7 +707,7 @@ impl PropertyScrollHostAdmission {
                     PropertyScrollHostAdmissionKind::InteractiveTextAreaSubtree(admission),
                     Some(resident),
                     None,
-                ) => resident.is_canonical_for(admission.paint_grammar),
+                ) => resident.is_canonical_for(admission.paint_source),
                 (
                     PropertyScrollHostAdmissionKind::AtomicProjectionTextAreaSubtree(admission),
                     None,
@@ -716,7 +716,7 @@ impl PropertyScrollHostAdmission {
                     resident.is_canonical()
                         && resident.content_root == admission.content_wrapper
                         && resident.text_area_root == admission.text_area_root
-                        && resident.source_grammar == admission.paint_grammar
+                        && resident.artifact_source == admission.artifact_source
                 }
                 (
                     PropertyScrollHostAdmissionKind::FocusedAtomicProjectionTextAreaSubtree(
@@ -728,7 +728,7 @@ impl PropertyScrollHostAdmission {
                     resident.is_canonical()
                         && resident.content_root == admission.content_wrapper
                         && resident.text_area_root == admission.text_area_root
-                        && resident.source_grammar == admission.paint_grammar.atomic_source
+                        && resident.artifact_source == admission.artifact_source
                 }
                 (
                     PropertyScrollHostAdmissionKind::AtomicProjectionSelectionTextAreaSubtree(_),
@@ -8684,18 +8684,18 @@ fn property_scroll_plan_is_canonical(plan: &PropertyScrollScenePlan) -> bool {
         let focused_admission = seal
             .admission
             .focused_atomic_projection_text_area_subtree_snapshot();
-        let (admission_content_wrapper, admission_text_area_root, admission_paint_grammar) =
+        let (admission_content_wrapper, admission_text_area_root, admission_artifact_source) =
             if let Some(admission) = atomic_admission {
                 (
                     admission.content_wrapper,
                     admission.text_area_root,
-                    &admission.paint_grammar,
+                    &admission.artifact_source,
                 )
             } else if let Some(admission) = focused_admission {
                 (
                     admission.content_wrapper,
                     admission.text_area_root,
-                    &admission.paint_grammar.atomic_source,
+                    &admission.artifact_source,
                 )
             } else {
                 return false;
@@ -8799,7 +8799,7 @@ fn property_scroll_plan_is_canonical(plan: &PropertyScrollScenePlan) -> bool {
             || composite.contents_clip != seal.contents_clip.logical_scissor
             || admission_content_wrapper != content.content_root
             || admission_text_area_root != resident.text_area_root
-            || admission_paint_grammar != &resident.source_grammar
+            || admission_artifact_source != &resident.artifact_source
             || property_scroll_step_identities(&plan.steps).as_ref() != Some(&seal.steps_identity)
             || plan_property_scroll_backing(
                 seal.admission.child_stable_id,
@@ -8945,7 +8945,7 @@ fn property_scroll_plan_is_canonical(plan: &PropertyScrollScenePlan) -> bool {
             content_artifact.clone(),
             seal.admission.child,
             text_area.text_area_root,
-            text_area.paint_grammar,
+            text_area.paint_source,
             *local_clip,
             content_bounds_bits,
         )
@@ -8966,7 +8966,7 @@ fn property_scroll_plan_is_canonical(plan: &PropertyScrollScenePlan) -> bool {
             content_artifact.clone(),
             seal.admission.child,
             text_area.text_area_root,
-            text_area.paint_grammar,
+            text_area.paint_source,
             preedit,
             *local_clip,
             content_bounds_bits,
@@ -9425,8 +9425,8 @@ impl PropertyScrollScenePlan {
         ) else {
             return false;
         };
-        live_resident.source_grammar.projection_text_stable_id ^= 1;
-        planned_resident.source_grammar.projection_text_stable_id ^= 1;
+        live_resident.artifact_source.projection_text_bounds_bits[0] ^= 1;
+        planned_resident.artifact_source.projection_text_bounds_bits[0] ^= 1;
         !missing_sidecar.is_canonical()
             && !drifted_sidecar.is_canonical()
             && !reordered.is_canonical()
@@ -10163,7 +10163,7 @@ fn property_scroll_plan_from_exact_scene(
             content_local.clone(),
             content_root,
             text_area_admission.text_area_root,
-            text_area_admission.paint_grammar,
+            text_area_admission.paint_source,
             *local_clip,
             content_bounds_bits,
         )
@@ -10183,7 +10183,7 @@ fn property_scroll_plan_from_exact_scene(
             content_local.clone(),
             content_root,
             text_area_admission.text_area_root,
-            text_area_admission.paint_grammar,
+            text_area_admission.paint_source,
             preedit,
             *local_clip,
             content_bounds_bits,
@@ -11234,7 +11234,7 @@ fn property_scroll_boundary_is_canonical(boundary: &ValidatedPropertyScrollBound
             content_artifact.clone(),
             plan.seal.admission.child,
             text_area.text_area_root,
-            text_area.paint_grammar,
+            text_area.paint_source,
             *local_clip,
             content_bounds_bits,
         )
@@ -11252,7 +11252,7 @@ fn property_scroll_boundary_is_canonical(boundary: &ValidatedPropertyScrollBound
             content_artifact.clone(),
             plan.seal.admission.child,
             text_area.text_area_root,
-            text_area.paint_grammar,
+            text_area.paint_source,
             preedit,
             *local_clip,
             content_bounds_bits,
@@ -14653,7 +14653,11 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
                     text_area_root,
                     *live_text_area_clip,
                     local_scissor,
-                    paint_grammar,
+                    paint_grammar.artifact_content_source().ok_or(
+                        PropertyScrollScenePlanError::InvalidContract(
+                            "frame-root-scroll-scene",
+                        ),
+                    )?,
                 )
                 .ok_or(PropertyScrollScenePlanError::InvalidContract(
                     "frame-root-scroll-scene",
@@ -15862,7 +15866,7 @@ fn validate_property_scroll_content_authority(
             artifact,
             planner.admission.child,
             text_area.text_area_root,
-            text_area.paint_grammar,
+            text_area.paint_source,
             local_clip,
             content_bounds_bits,
         )
@@ -15881,7 +15885,7 @@ fn validate_property_scroll_content_authority(
             artifact,
             planner.admission.child,
             text_area.text_area_root,
-            text_area.paint_grammar,
+            text_area.paint_source,
             preedit,
             local_clip,
             content_bounds_bits,
@@ -16100,7 +16104,7 @@ fn prepare_retained_atomic_projection_selection_text_area_scroll_boundary_parts(
             ]
         || composite.contents_clip != planner.contents_clip.logical_scissor
         || admission.content_wrapper != compile_stamp.content.content_root
-        || admission.paint_grammar != resident.source_grammar
+        || admission.artifact_source != resident.artifact_source
         || !resident.is_canonical()
     {
         return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
@@ -16250,18 +16254,18 @@ fn prepare_retained_atomic_projection_text_area_scroll_boundary_parts(
     let Some(planner_resident) = planner.atomic_projection_resident.as_ref() else {
         return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
     };
-    let (admission_content_wrapper, admission_text_area_root, admission_source_grammar) =
+    let (admission_content_wrapper, admission_text_area_root, admission_artifact_source) =
         if let Some(admission) = atomic_admission {
             (
                 admission.content_wrapper,
                 admission.text_area_root,
-                &admission.paint_grammar,
+                &admission.artifact_source,
             )
         } else if let Some(admission) = focused_admission {
             (
                 admission.content_wrapper,
                 admission.text_area_root,
-                &admission.paint_grammar.atomic_source,
+                &admission.artifact_source,
             )
         } else {
             return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
@@ -16399,7 +16403,7 @@ fn prepare_retained_atomic_projection_text_area_scroll_boundary_parts(
             ]
         || composite.contents_clip != planner.contents_clip.logical_scissor
         || admission_content_wrapper != compile_stamp.content.content_root
-        || admission_source_grammar != &planner_resident.source_grammar
+        || admission_artifact_source != &planner_resident.artifact_source
     {
         return Err(RetainedPropertyScrollScenePrepareError::BoundaryDrift);
     }
@@ -16629,7 +16633,7 @@ fn prepare_retained_existing_property_scroll_boundary_parts(
                     target,
                     expected_span.clone(),
                     0..content_terminal,
-                    text_area.paint_grammar,
+                    text_area.paint_source,
                 )
             } else if planner
                 .admission
@@ -16910,7 +16914,7 @@ fn prepare_retained_property_scroll_scene_from_pool<'a>(
                     target,
                     expected_span.clone(),
                     0..content_terminal,
-                    text_area.paint_grammar,
+                    text_area.paint_source,
                 )
             } else {
                 validated_scroll_content_raster_stamp(
@@ -18836,7 +18840,7 @@ pub(crate) fn prepare_frame_root_scroll_scene<'a>(
                 raster_inputs,
                 span,
                 0..content_terminal,
-                witness.paint_grammar(),
+                witness.paint_source(),
             ),
             None => validated_scroll_content_raster_stamp(
                 root.content_root,
@@ -24139,7 +24143,7 @@ fn plan_exact_root_scroll_scene(
             recorded.artifact.clone(),
             admission.child,
             text_area_admission.text_area_root,
-            text_area_admission.paint_grammar,
+            text_area_admission.paint_source,
             recorded.preedit_seal.clone(),
             local_clip,
             bounds_bits(content_zero_bounds(scroll)),

@@ -107,6 +107,26 @@ pub(crate) enum RetainedTextAreaPaintGrammar {
 }
 
 impl RetainedTextAreaPaintGrammar {
+    pub(crate) fn artifact_content_source(
+        self,
+    ) -> Option<crate::view::paint::PaintTextContentSource> {
+        let source = match self {
+            Self::GlyphOnly => crate::view::paint::PaintTextContentSource::Glyphs,
+            Self::SelectionGlyphs {
+                start_char,
+                end_char,
+                color_rgba_bits,
+            } => crate::view::paint::PaintTextContentSource::Selection(
+                crate::view::paint::PaintTextSelectionSource {
+                    start_char,
+                    end_char,
+                    color_rgba_bits,
+                },
+            ),
+        };
+        source.is_canonical().then_some(source)
+    }
+
     pub(crate) fn is_canonical(self) -> bool {
         match self {
             Self::GlyphOnly => true,
@@ -139,6 +159,27 @@ pub(crate) enum RetainedInteractiveTextAreaPaintGrammar {
 }
 
 impl RetainedInteractiveTextAreaPaintGrammar {
+    pub(crate) fn artifact_content_source(
+        self,
+    ) -> Option<crate::view::paint::PaintTextContentSource> {
+        let source = match self {
+            Self::FocusedGlyphs => crate::view::paint::PaintTextContentSource::Glyphs,
+            Self::FocusedSelectionGlyphs {
+                start_char,
+                end_char,
+                color_rgba_bits,
+            } => crate::view::paint::PaintTextContentSource::Selection(
+                crate::view::paint::PaintTextSelectionSource {
+                    start_char,
+                    end_char,
+                    color_rgba_bits,
+                },
+            ),
+            Self::FocusedPreeditGlyphs => crate::view::paint::PaintTextContentSource::Preedit,
+        };
+        source.is_canonical().then_some(source)
+    }
+
     pub(crate) fn is_canonical(self) -> bool {
         match self {
             Self::FocusedGlyphs | Self::FocusedPreeditGlyphs => true,
@@ -274,6 +315,43 @@ pub(crate) struct RetainedAtomicProjectionTextAreaPaintGrammar {
 }
 
 impl RetainedAtomicProjectionTextAreaPaintGrammar {
+    pub(crate) fn artifact_space_transition(
+        &self,
+    ) -> Option<crate::view::paint::PaintArtifactSpaceTransition> {
+        let (x, y, revision) = self.last_unified_apply_bits;
+        crate::view::paint::PaintArtifactSpaceTransition::from_bits(
+            [x, y],
+            [0.0_f32.to_bits(), 0.0_f32.to_bits()],
+            revision,
+        )
+    }
+
+    pub(crate) fn artifact_source(
+        &self,
+        text_area_root: NodeKey,
+    ) -> Option<crate::view::paint::PaintAtomicProjectionArtifactSource> {
+        self.is_canonical().then_some(())?;
+        let mut owners = Vec::with_capacity(self.topology.len().saturating_add(1));
+        for topology in self.topology.iter() {
+            owners.push(crate::view::paint::PaintOwnerSnapshot {
+                owner: topology.owner,
+                parent: Some(text_area_root),
+            });
+            if topology.owner == self.projection_owner {
+                owners.push(crate::view::paint::PaintOwnerSnapshot {
+                    owner: self.projection_text_owner,
+                    parent: Some(topology.owner),
+                });
+            }
+        }
+        let source = crate::view::paint::PaintAtomicProjectionArtifactSource {
+            projection_text_owner: self.projection_text_owner,
+            projection_text_bounds_bits: self.projection_text_bounds_bits,
+            descendant_owner_topology: owners.into(),
+        };
+        source.is_canonical_for(text_area_root).then_some(source)
+    }
+
     fn from_frozen_source_identity(
         frozen: RetainedAtomicProjectionTextAreaFrozenSourceIdentity,
     ) -> Option<Self> {
@@ -663,6 +741,19 @@ pub(crate) struct RetainedFocusedAtomicProjectionTextAreaPaintGrammar {
 }
 
 impl RetainedFocusedAtomicProjectionTextAreaPaintGrammar {
+    pub(crate) fn artifact_space_transition(
+        &self,
+    ) -> Option<crate::view::paint::PaintArtifactSpaceTransition> {
+        self.atomic_source.artifact_space_transition()
+    }
+
+    pub(crate) fn artifact_source(
+        &self,
+        text_area_root: NodeKey,
+    ) -> Option<crate::view::paint::PaintAtomicProjectionArtifactSource> {
+        self.atomic_source.artifact_source(text_area_root)
+    }
+
     fn from_frozen_source_identity(
         frozen: RetainedFocusedAtomicProjectionTextAreaFrozenSourceIdentity,
     ) -> Option<Self> {
@@ -716,6 +807,25 @@ pub(crate) struct RetainedAtomicProjectionSelectionTextAreaPaintGrammar {
 }
 
 impl RetainedAtomicProjectionSelectionTextAreaPaintGrammar {
+    pub(crate) fn artifact_space_transition(
+        &self,
+    ) -> Option<crate::view::paint::PaintArtifactSpaceTransition> {
+        self.atomic_source.artifact_space_transition()
+    }
+
+    pub(crate) fn artifact_source(
+        &self,
+        text_area_root: NodeKey,
+    ) -> Option<crate::view::paint::PaintAtomicProjectionArtifactSource> {
+        self.atomic_source.artifact_source(text_area_root)
+    }
+
+    pub(crate) fn artifact_selection_source(
+        &self,
+    ) -> Option<crate::view::paint::PaintTextSelectionSource> {
+        self.selection.artifact_content_source()?.selection()
+    }
+
     fn from_frozen_source_identity(
         frozen: RetainedAtomicProjectionSelectionTextAreaFrozenSourceIdentity,
     ) -> Option<Self> {

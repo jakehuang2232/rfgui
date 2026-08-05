@@ -3033,14 +3033,17 @@ impl TextArea {
         text_area_clip: crate::view::compositor::property_tree::ClipNodeSnapshot,
         outer_clip: crate::view::compositor::property_tree::ClipNodeSnapshot,
         properties: crate::view::compositor::property_tree::PropertyTreeState,
-        admitted_grammar: super::RetainedInteractiveTextAreaPaintGrammar,
+        admitted_source: crate::view::paint::PaintTextContentSource,
         admitted_caret_oracle_bounds_bits: Option<[u32; 4]>,
     ) -> Option<Option<crate::view::paint::PaintCompositeEdge>> {
-        if self.exact_retained_property_scroll_interactive_subtree(
-            owner,
-            arena,
-            admission_parent_paint_offset,
-        ) != Some(admitted_grammar)
+        if self
+            .exact_retained_property_scroll_interactive_subtree(
+                owner,
+                arena,
+                admission_parent_paint_offset,
+            )
+            .and_then(|grammar| grammar.artifact_content_source())
+            != Some(admitted_source)
         {
             return None;
         }

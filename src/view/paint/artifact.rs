@@ -3,6 +3,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use rustc_hash::FxHashMap;
 use slotmap::Key;
 
 use crate::view::ImageSampling;
@@ -544,7 +545,6 @@ impl PaintScrollAtomicProjectionTextAreaSubtreeWitness {
         text_area_root: NodeKey,
         live_contents_clip: ClipNodeSnapshot,
         local_logical_scissor: [u32; 4],
-        paint_grammar: &crate::view::base_component::text_area::RetainedAtomicProjectionTextAreaPaintGrammar,
     ) -> Option<Self> {
         let outer_clip = outer.contents_clip_snapshot();
         let local_contents_clip = ClipNodeSnapshot {
@@ -560,8 +560,7 @@ impl PaintScrollAtomicProjectionTextAreaSubtreeWitness {
             && live_contents_clip.owner == text_area_root
             && live_contents_clip.parent == Some(outer_clip.id)
             && live_contents_clip.behavior == ClipBehavior::Intersect
-            && live_contents_clip.generation != 0
-            && paint_grammar.is_canonical())
+            && live_contents_clip.generation != 0)
         .then_some(Self {
             outer,
             text_area_root,
@@ -649,7 +648,7 @@ impl PaintScrollAtomicProjectionTextAreaSubtreeWitness {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness {
     property: PaintScrollAtomicProjectionTextAreaSubtreeWitness,
-    pub(crate) selection: crate::view::base_component::text_area::RetainedTextAreaPaintGrammar,
+    pub(crate) selection: PaintTextSelectionSource,
 }
 
 impl PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness {
@@ -658,13 +657,9 @@ impl PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness {
         text_area_root: NodeKey,
         live_contents_clip: ClipNodeSnapshot,
         local_logical_scissor: [u32; 4],
-        grammar: &crate::view::base_component::text_area::RetainedAtomicProjectionSelectionTextAreaPaintGrammar,
+        selection: PaintTextSelectionSource,
     ) -> Option<Self> {
-        if !matches!(
-            grammar.selection,
-            crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs { .. }
-        ) || !grammar.selection.is_canonical()
-        {
+        if !selection.is_canonical() {
             return None;
         }
         Some(Self {
@@ -673,9 +668,8 @@ impl PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness {
                 text_area_root,
                 live_contents_clip,
                 local_logical_scissor,
-                &grammar.atomic_source,
             )?,
-            selection: grammar.selection,
+            selection,
         })
     }
 }
@@ -691,15 +685,10 @@ impl PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness {
         text_area_root: NodeKey,
         live_contents_clip: ClipNodeSnapshot,
         local_logical_scissor: [u32; 4],
-        grammar: &crate::view::base_component::text_area::RetainedFocusedAtomicProjectionTextAreaPaintGrammar,
     ) -> Option<Self> {
-        (grammar.is_canonical()).then_some(Self {
+        Some(Self {
             property: PaintScrollAtomicProjectionTextAreaSubtreeWitness::new(
-                outer,
-                text_area_root,
-                live_contents_clip,
-                local_logical_scissor,
-                &grammar.atomic_source,
+                outer, text_area_root, live_contents_clip, local_logical_scissor,
             )?,
         })
     }
@@ -726,10 +715,7 @@ impl PaintScrollAtomicProjectionTextAreaRecorderWitness {
             && match self {
                 Self::ExistingAtomicGlyph(_) => true,
                 Self::AtomicProjectionSelection(witness) => {
-                    matches!(
-                        witness.selection,
-                        crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs { .. }
-                    ) && witness.selection.is_canonical()
+                    witness.selection.is_canonical()
                 }
                 Self::FocusedAtomicProjectionGlyph(_) => true,
             }
@@ -1793,7 +1779,7 @@ pub(crate) struct PaintScrollTextAreaSubtreeWitness {
     text_area_root: NodeKey,
     live_contents_clip: ClipNodeSnapshot,
     local_contents_clip: ClipNodeSnapshot,
-    paint_grammar: crate::view::base_component::text_area::RetainedTextAreaPaintGrammar,
+    paint_source: PaintTextContentSource,
     target_owner: NodeKey,
 }
 
@@ -1808,7 +1794,7 @@ impl PaintScrollTextAreaSubtreeWitness {
         text_area_root: NodeKey,
         live_contents_clip: ClipNodeSnapshot,
         local_logical_scissor: [u32; 4],
-        paint_grammar: crate::view::base_component::text_area::RetainedTextAreaPaintGrammar,
+        paint_source: PaintTextContentSource,
     ) -> Option<Self> {
         let outer_clip = outer.contents_clip_snapshot();
         let local_contents_clip = ClipNodeSnapshot {
@@ -1825,13 +1811,13 @@ impl PaintScrollTextAreaSubtreeWitness {
             && live_contents_clip.parent == Some(outer_clip.id)
             && live_contents_clip.behavior == ClipBehavior::Intersect
             && live_contents_clip.generation != 0
-            && paint_grammar.is_canonical())
+            && paint_source.is_canonical())
         .then_some(Self {
             outer,
             text_area_root,
             live_contents_clip,
             local_contents_clip,
-            paint_grammar,
+            paint_source,
             target_owner: outer.content_root(),
         })
     }
@@ -1852,10 +1838,8 @@ impl PaintScrollTextAreaSubtreeWitness {
         self.local_contents_clip
     }
 
-    pub(crate) fn paint_grammar(
-        self,
-    ) -> crate::view::base_component::text_area::RetainedTextAreaPaintGrammar {
-        self.paint_grammar
+    pub(crate) fn paint_source(self) -> PaintTextContentSource {
+        self.paint_source
     }
 
     pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
@@ -1878,7 +1862,7 @@ impl PaintScrollTextAreaSubtreeWitness {
             && self.local_contents_clip.parent.is_none()
             && self.local_contents_clip.behavior == self.live_contents_clip.behavior
             && self.local_contents_clip.generation == RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION
-            && self.paint_grammar.is_canonical()
+            && self.paint_source.is_canonical()
     }
 
     fn project_for(self, owner: NodeKey, live: PropertyTreeState) -> Option<PropertyTreeState> {
@@ -1928,7 +1912,7 @@ pub(crate) struct PaintScrollInteractiveTextAreaSubtreeWitness {
     text_area_root: NodeKey,
     live_contents_clip: ClipNodeSnapshot,
     local_contents_clip: ClipNodeSnapshot,
-    paint_grammar: crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar,
+    paint_source: PaintTextContentSource,
     target_owner: NodeKey,
 }
 
@@ -1938,7 +1922,7 @@ impl PaintScrollInteractiveTextAreaSubtreeWitness {
         text_area_root: NodeKey,
         live_contents_clip: ClipNodeSnapshot,
         local_logical_scissor: [u32; 4],
-        paint_grammar: crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar,
+        paint_source: PaintTextContentSource,
     ) -> Option<Self> {
         let outer_clip = outer.contents_clip_snapshot();
         let local_contents_clip = ClipNodeSnapshot {
@@ -1955,13 +1939,13 @@ impl PaintScrollInteractiveTextAreaSubtreeWitness {
             && live_contents_clip.parent == Some(outer_clip.id)
             && live_contents_clip.behavior == ClipBehavior::Intersect
             && live_contents_clip.generation != 0
-            && paint_grammar.is_canonical())
+            && paint_source.is_canonical())
         .then_some(Self {
             outer,
             text_area_root,
             live_contents_clip,
             local_contents_clip,
-            paint_grammar,
+            paint_source,
             target_owner: outer.content_root(),
         })
     }
@@ -1982,10 +1966,8 @@ impl PaintScrollInteractiveTextAreaSubtreeWitness {
         self.local_contents_clip
     }
 
-    pub(crate) fn paint_grammar(
-        self,
-    ) -> crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar {
-        self.paint_grammar
+    pub(crate) fn paint_source(self) -> PaintTextContentSource {
+        self.paint_source
     }
 
     pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
@@ -2008,7 +1990,7 @@ impl PaintScrollInteractiveTextAreaSubtreeWitness {
             && self.local_contents_clip.parent.is_none()
             && self.local_contents_clip.behavior == self.live_contents_clip.behavior
             && self.local_contents_clip.generation == RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION
-            && self.paint_grammar.is_canonical()
+            && self.paint_source.is_canonical()
     }
 
     fn project_for(self, owner: NodeKey, live: PropertyTreeState) -> Option<PropertyTreeState> {
@@ -3447,6 +3429,113 @@ pub(crate) struct TextSelectionPayloadIdentity {
     pub(crate) rects: Arc<[PreparedDrawRectIdentity]>,
 }
 
+/// Component-independent source facts for one text-selection underlay.
+///
+/// Geometry and prepared draw identities are deliberately absent here: the
+/// recorder must obtain those from the emitted artifact and bind them through
+/// [`TextSelectionPayloadIdentity`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PaintTextSelectionSource {
+    pub(crate) start_char: usize,
+    pub(crate) end_char: usize,
+    pub(crate) color_rgba_bits: [u32; 4],
+}
+
+impl PaintTextSelectionSource {
+    pub(crate) fn is_canonical(self) -> bool {
+        self.start_char < self.end_char
+            && self
+                .color_rgba_bits
+                .map(f32::from_bits)
+                .into_iter()
+                .all(|channel| channel.is_finite() && (0.0..=1.0).contains(&channel))
+    }
+
+    pub(crate) fn matches_payload(self, payload: &TextSelectionPayloadIdentity) -> bool {
+        self.is_canonical()
+            && payload.matches_source(self.start_char, self.end_char, self.color_rgba_bits)
+    }
+}
+
+/// Generic semantic source for a resident text payload. These cases describe
+/// emitted text primitives, not a component or surface grammar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaintTextContentSource {
+    Glyphs,
+    Selection(PaintTextSelectionSource),
+    Preedit,
+}
+
+impl PaintTextContentSource {
+    pub(crate) fn is_canonical(self) -> bool {
+        match self {
+            Self::Glyphs | Self::Preedit => true,
+            Self::Selection(selection) => selection.is_canonical(),
+        }
+    }
+
+    pub(crate) fn selection(self) -> Option<PaintTextSelectionSource> {
+        match self {
+            Self::Selection(selection) => Some(selection),
+            Self::Glyphs | Self::Preedit => None,
+        }
+    }
+
+    pub(crate) fn has_preedit(self) -> bool {
+        matches!(self, Self::Preedit)
+    }
+}
+
+/// Artifact-facing facts for one admitted atomic projection.
+///
+/// This intentionally contains neither the component's exact-shape grammar
+/// nor layout/measure internals. The exact admission remains a transient
+/// selector predicate; recorder and compiler consume only the owner topology
+/// and projection geometry that the emitted artifact must reproduce.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PaintAtomicProjectionArtifactSource {
+    pub(crate) projection_text_owner: NodeKey,
+    pub(crate) projection_text_bounds_bits: [u32; 4],
+    pub(crate) descendant_owner_topology: Arc<[PaintOwnerSnapshot]>,
+}
+
+impl PaintAtomicProjectionArtifactSource {
+    pub(crate) fn is_canonical_for(&self, text_area_root: NodeKey) -> bool {
+        let [x, y, width, height] = self.projection_text_bounds_bits.map(f32::from_bits);
+        if self.projection_text_owner == text_area_root
+            || [x, y, width, height]
+                .into_iter()
+                .any(|value| !value.is_finite())
+            || width <= 0.0
+            || height <= 0.0
+            || !(x + width).is_finite()
+            || !(y + height).is_finite()
+            || self.descendant_owner_topology.is_empty()
+        {
+            return false;
+        }
+        let mut parents = FxHashMap::default();
+        if self
+            .descendant_owner_topology
+            .iter()
+            .any(|owner| parents.insert(owner.owner, owner.parent).is_some())
+        {
+            return false;
+        }
+        let Some(Some(projection_root)) = parents.get(&self.projection_text_owner).copied() else {
+            return false;
+        };
+        projection_root != text_area_root
+            && parents.get(&projection_root) == Some(&Some(text_area_root))
+            && self.descendant_owner_topology.iter().all(|owner| {
+                owner.owner != text_area_root
+                    && owner.parent.is_some_and(|parent| {
+                        parent == text_area_root || parents.contains_key(&parent)
+                    })
+            })
+    }
+}
+
 impl TextSelectionPayloadIdentity {
     pub(crate) fn is_canonical(&self) -> bool {
         self.start_char < self.end_char
@@ -3484,47 +3573,32 @@ pub(crate) enum RetainedInteractiveTextAreaResidentRasterSeal {
 }
 
 impl RetainedInteractiveTextAreaResidentRasterSeal {
-    pub(crate) fn paint_grammar(
-        &self,
-    ) -> crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar {
+    pub(crate) fn paint_source(&self) -> PaintTextContentSource {
         match self {
-            Self::FocusedGlyphs => {
-                crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedGlyphs
-            }
-            Self::FocusedSelectionGlyphs(seal) => {
-                crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs {
+            Self::FocusedGlyphs => PaintTextContentSource::Glyphs,
+            Self::FocusedSelectionGlyphs(seal) => PaintTextContentSource::Selection(
+                PaintTextSelectionSource {
                     start_char: seal.start_char,
                     end_char: seal.end_char,
                     color_rgba_bits: seal.color_rgba_bits,
-                }
-            }
-            Self::FocusedPreeditGlyphs(_) => {
-                crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedPreeditGlyphs
-            }
+                },
+            ),
+            Self::FocusedPreeditGlyphs(_) => PaintTextContentSource::Preedit,
         }
     }
 
     pub(crate) fn is_canonical_for(
         &self,
-        grammar: crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar,
+        source: PaintTextContentSource,
     ) -> bool {
-        match (self, grammar) {
-            (
-                Self::FocusedGlyphs,
-                crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedGlyphs,
-            ) => true,
-            (
-                Self::FocusedSelectionGlyphs(seal),
-                crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs {
-                    start_char,
-                    end_char,
-                    color_rgba_bits,
-                },
-            ) => seal.matches_source(start_char, end_char, color_rgba_bits),
-            (
-                Self::FocusedPreeditGlyphs(seal),
-                crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedPreeditGlyphs,
-            ) => seal.is_canonical(),
+        match (self, source) {
+            (Self::FocusedGlyphs, PaintTextContentSource::Glyphs) => true,
+            (Self::FocusedSelectionGlyphs(seal), PaintTextContentSource::Selection(source)) => {
+                source.matches_payload(seal)
+            }
+            (Self::FocusedPreeditGlyphs(seal), PaintTextContentSource::Preedit) => {
+                seal.is_canonical()
+            }
             _ => false,
         }
     }

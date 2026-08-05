@@ -173,6 +173,10 @@ fn focused_atomic_projection_element_admission_is_graph_inert_and_exact() {
             (wrapper, text_area),
         );
         assert!(admission.paint_grammar.is_canonical());
+        assert_eq!(
+            admission.artifact_space_transition,
+            admission.paint_grammar.artifact_space_transition().unwrap(),
+        );
         assert!(admission.bitwise_eq(&admission.clone()));
         assert_eq!(admission.paint_grammar.caret.caret_visible, caret_visible);
         assert!(matches!(
@@ -362,8 +366,8 @@ fn focused_atomic_projection_host_local_plan_keeps_caret_out_of_resident() {
         assert!(plan.is_canonical());
         assert_eq!(plan.caret_for_test().caret_visible, caret_visible);
         assert_eq!(
-            plan.resident_for_test().source_grammar,
-            admission.paint_grammar.atomic_source,
+            plan.resident_for_test().artifact_source,
+            admission.artifact_source,
             "resident stamp must carry only the base atomic glyph grammar",
         );
     }

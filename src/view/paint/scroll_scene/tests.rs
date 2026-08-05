@@ -1624,6 +1624,7 @@ fn fake_text_area_sidecar_from_direct(
         text_area_stable_id: direct.child_stable_id,
         paint_grammar:
             crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::GlyphOnly,
+        paint_source: crate::view::paint::PaintTextContentSource::Glyphs,
         source_bounds: direct.source_bounds,
         scroll: direct.scroll,
     }

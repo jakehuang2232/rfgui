@@ -34,6 +34,11 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
         (admission.content_wrapper, admission.text_area_root),
         (wrapper, text_area)
     );
+    assert_eq!(
+        admission.artifact_space_transition,
+        admission.paint_grammar.artifact_space_transition().unwrap(),
+        "component admission must freeze the generic transition before recording",
+    );
     let (properties, generations) = sync_identity(&arena, &[root]);
     let scroll_id = crate::view::compositor::property_tree::ScrollNodeId(root);
     let scroll = properties.scroll_snapshot_for(scroll_id).unwrap();
@@ -323,6 +328,10 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
         )
         .expect("disjoint root selection plus one projection must admit");
     assert!(admission.paint_grammar.is_canonical());
+    assert_eq!(
+        admission.artifact_space_transition,
+        admission.paint_grammar.artifact_space_transition().unwrap(),
+    );
     assert!(admission.bitwise_eq(&admission.clone()));
     assert!(
         root_element
@@ -456,7 +465,7 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
             local.clone().tamper_source_line_for_test(),
         )
         .is_none(),
-        "synchronized public source grammar tamper must fail private identity",
+        "synchronized generic source tamper must fail artifact parity",
     );
     assert!(
         super::super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_authority(

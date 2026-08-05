@@ -156,7 +156,7 @@ fn atomic_projection_text_area_content_raster_stamp_is_generic_and_closed() {
         stamp.target.clone(),
         legacy_span.clone(),
         stamp.opaque_order_span.clone(),
-        crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::GlyphOnly,
+        PaintTextContentSource::Glyphs,
     )
     .expect("plain TextArea control stamp");
     assert!(retained_surface_raster_stamp_is_canonical(&plain));

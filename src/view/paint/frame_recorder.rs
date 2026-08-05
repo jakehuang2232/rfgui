@@ -151,8 +151,7 @@ pub(crate) struct RetainedAtomicProjectionTextAreaLiveRasterOracle {
     content_root: NodeKey,
     text_area_root: NodeKey,
     artifact_space_transition: super::PaintArtifactSpaceTransition,
-    source_grammar:
-        crate::view::base_component::text_area::RetainedAtomicProjectionTextAreaPaintGrammar,
+    artifact_source: super::PaintAtomicProjectionArtifactSource,
     chunks: Vec<RetainedAtomicProjectionChunkLiveRasterOracle>,
     clip_nodes: Vec<crate::view::compositor::property_tree::ClipNodeSnapshot>,
     owner_nodes: Vec<super::PaintOwnerSnapshot>,
@@ -163,7 +162,8 @@ pub(crate) struct RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle {
     content_root: NodeKey,
     text_area_root: NodeKey,
     artifact_space_transition: super::PaintArtifactSpaceTransition,
-    source_grammar: crate::view::base_component::text_area::RetainedAtomicProjectionSelectionTextAreaPaintGrammar,
+    artifact_source: super::PaintAtomicProjectionArtifactSource,
+    selection_source: super::PaintTextSelectionSource,
     chunks: Vec<RetainedAtomicProjectionChunkLiveRasterOracle>,
     clip_nodes: Vec<crate::view::compositor::property_tree::ClipNodeSnapshot>,
     owner_nodes: Vec<super::PaintOwnerSnapshot>,
@@ -182,10 +182,12 @@ impl RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle {
         self.artifact_space_transition
     }
 
-    pub(crate) fn source_grammar(
-        &self,
-    ) -> &crate::view::base_component::text_area::RetainedAtomicProjectionSelectionTextAreaPaintGrammar{
-        &self.source_grammar
+    pub(crate) fn artifact_source(&self) -> &super::PaintAtomicProjectionArtifactSource {
+        &self.artifact_source
+    }
+
+    pub(crate) fn selection_source(&self) -> super::PaintTextSelectionSource {
+        self.selection_source
     }
 
     pub(crate) fn chunks(&self) -> &[RetainedAtomicProjectionChunkLiveRasterOracle] {
@@ -230,16 +232,11 @@ fn normalize_atomic_projection_selection_chunk(
     artifact: &mut PaintArtifact,
     oracle: &mut RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     chunk_index: usize,
-    grammar: crate::view::base_component::text_area::RetainedTextAreaPaintGrammar,
+    source: super::PaintTextSelectionSource,
 ) -> Option<super::artifact::TextSelectionPayloadIdentity> {
-    let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-        start_char,
-        end_char,
-        color_rgba_bits,
-    } = grammar
-    else {
+    if !source.is_canonical() {
         return None;
-    };
+    }
     let chunk = artifact.chunks.get_mut(chunk_index)?;
     let oracle_chunk = oracle.chunks.get_mut(chunk_index)?;
     let rects = artifact.ops[chunk.op_range.clone()]
@@ -251,9 +248,9 @@ fn normalize_atomic_projection_selection_chunk(
         .collect::<Option<Vec<_>>>()?;
     let generic = super::PaintPayloadIdentity::prepared_rects(rects.iter().copied())?;
     let sealed = super::PaintPayloadIdentity::prepared_text_selection(
-        start_char,
-        end_char,
-        color_rgba_bits,
+        source.start_char,
+        source.end_char,
+        source.color_rgba_bits,
         rects.iter().copied(),
     )?;
     if (chunk.payload_identity != generic && chunk.payload_identity != sealed)
@@ -280,10 +277,8 @@ impl RetainedAtomicProjectionTextAreaLiveRasterOracle {
         self.artifact_space_transition
     }
 
-    pub(crate) fn source_grammar(
-        &self,
-    ) -> &crate::view::base_component::text_area::RetainedAtomicProjectionTextAreaPaintGrammar {
-        &self.source_grammar
+    pub(crate) fn artifact_source(&self) -> &super::PaintAtomicProjectionArtifactSource {
+        &self.artifact_source
     }
 
     pub(crate) fn chunks(&self) -> &[RetainedAtomicProjectionChunkLiveRasterOracle] {
@@ -526,10 +521,7 @@ impl RecordedRetainedAtomicProjectionSelectionTextAreaHost {
     }
 
     pub(crate) fn tamper_source_line_for_test(mut self) -> Self {
-        self.raster_oracle
-            .source_grammar
-            .atomic_source
-            .atomic_line_index += 1;
+        self.raster_oracle.artifact_source.projection_text_bounds_bits[0] ^= 1;
         self
     }
 }
@@ -583,10 +575,7 @@ impl RecordedRetainedAtomicProjectionSelectionTextAreaSubtree {
     }
 
     pub(crate) fn tamper_source_line_for_test(mut self) -> Self {
-        self.raster_oracle
-            .source_grammar
-            .atomic_source
-            .atomic_line_index += 1;
+        self.raster_oracle.artifact_source.projection_text_bounds_bits[0] ^= 1;
         self
     }
 }
@@ -612,15 +601,11 @@ impl ValidatedRecordedAtomicProjectionSelectionTextAreaAuthority {
                 .local
                 .raster_oracle
                 .matches_artifact(&self.local.artifact)
-            && self.local.raster_oracle.source_grammar.is_canonical()
-            && match self.local.raster_oracle.source_grammar.selection {
-                crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-                    start_char,
-                    end_char,
-                    color_rgba_bits,
-                } => self.selection.matches_source(start_char, end_char, color_rgba_bits),
-                _ => false,
-            }
+            && self
+                .local
+                .raster_oracle
+                .selection_source
+                .matches_payload(&self.selection)
             && host_selection
                 .payload_identity
                 .text_selection_identity()
@@ -919,14 +904,19 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
         )
         || host.raster_oracle.content_root != local.raster_oracle.content_root
         || host.raster_oracle.text_area_root != local.raster_oracle.text_area_root
-        || host.raster_oracle.source_grammar != local.raster_oracle.source_grammar
-        || !local.raster_oracle.source_grammar.is_canonical()
+        || host.raster_oracle.artifact_source != local.raster_oracle.artifact_source
+        || host.raster_oracle.selection_source != local.raster_oracle.selection_source
+        || !local
+            .raster_oracle
+            .artifact_source
+            .is_canonical_for(local.raster_oracle.text_area_root)
+        || !local.raster_oracle.selection_source.is_canonical()
     {
         return None;
     }
     let content_root = local.raster_oracle.content_root;
     let text_area_root = local.raster_oracle.text_area_root;
-    let grammar = &local.raster_oracle.source_grammar;
+    let selection_source = local.raster_oracle.selection_source;
     let boundary_root = host.outer_scroll.owner;
     PaintScrollContentWitness::new(
         boundary_root,
@@ -1014,20 +1004,20 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
     host_selection
         .payload_identity
         .text_selection_identity()?;
-    let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-        start_char,
-        end_char,
-        color_rgba_bits,
-    } = grammar.selection
-    else {
-        return None;
-    };
     if !host_selection
         .payload_identity
-        .matches_text_selection_source(start_char, end_char, color_rgba_bits)
+        .matches_text_selection_source(
+            selection_source.start_char,
+            selection_source.end_char,
+            selection_source.color_rgba_bits,
+        )
         || !local_selection
             .payload_identity
-            .matches_text_selection_source(start_char, end_char, color_rgba_bits)
+            .matches_text_selection_source(
+                selection_source.start_char,
+                selection_source.end_char,
+                selection_source.color_rgba_bits,
+            )
     {
         return None;
     }
@@ -1062,9 +1052,9 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
             ))?
         } else if host_chunk.id.role == super::PaintChunkRole::SelectionUnderlay {
             super::PaintPayloadIdentity::prepared_text_selection(
-                start_char,
-                end_char,
-                color_rgba_bits,
+                selection_source.start_char,
+                selection_source.end_char,
+                selection_source.color_rgba_bits,
                 localized.iter().filter_map(|op| match op {
                     super::PaintOp::DrawRect(rect) => Some(rect),
                     _ => None,
@@ -1161,7 +1151,19 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
         || host_selection.id.role != super::PaintChunkRole::SelectionUnderlay
         || host_selection.id.slot != 0
         || host_root_glyph.owner != text_area_root
-        || host_projection_glyph.owner != grammar.atomic_source.projection_text_owner
+        || host_projection_glyph.owner
+            != local.raster_oracle.artifact_source.projection_text_owner
+        || [
+            host_projection_glyph.bounds.x,
+            host_projection_glyph.bounds.y,
+            host_projection_glyph.bounds.width,
+            host_projection_glyph.bounds.height,
+        ]
+        .map(f32::to_bits)
+            != local
+                .raster_oracle
+                .artifact_source
+                .projection_text_bounds_bits
         || overlay.owner != boundary_root
         || overlay.id.owner != boundary_root
         || overlay.id.scope != super::PaintPropertyScope::SelfPaint
@@ -1432,43 +1434,6 @@ pub(super) fn record_baked_scroll_host_artifact_for_plan(
     }
 }
 
-fn text_area_matches_admitted_paint_grammar(
-    text_area: &crate::view::base_component::TextArea,
-    owner: NodeKey,
-    arena: &NodeArena,
-    paint_offset: [f32; 2],
-    grammar: crate::view::base_component::text_area::RetainedTextAreaPaintGrammar,
-) -> bool {
-    if !grammar.is_canonical() {
-        return false;
-    }
-    match grammar {
-        crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::GlyphOnly => {
-            text_area.exact_retained_property_scroll_glyph_subtree(owner, arena, paint_offset)
-        }
-        crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-            ..
-        } => {
-            text_area.exact_retained_property_scroll_selection_glyph_subtree(
-                owner,
-                arena,
-                paint_offset,
-            ) == Some(grammar)
-        }
-    }
-}
-
-fn text_area_matches_admitted_interactive_paint_grammar(
-    text_area: &crate::view::base_component::TextArea,
-    owner: NodeKey,
-    arena: &NodeArena,
-    paint_offset: [f32; 2],
-    grammar: crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar,
-) -> bool {
-    text_area.exact_retained_property_scroll_interactive_subtree(owner, arena, paint_offset)
-        == Some(grammar)
-}
-
 pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_for_plan(
     arena: &NodeArena,
     roots: &[NodeKey],
@@ -1520,13 +1485,7 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
     let live_recording_offset = wrapper
         .exact_retained_scroll_content_wrapper_recording_offset([0.0, 0.0])
         .ok_or_else(|| invalid(admission.content_wrapper))?;
-    if !text_area_matches_admitted_interactive_paint_grammar(
-        text_area,
-        admission.text_area_root,
-        arena,
-        recording_offset,
-        admission.paint_grammar,
-    ) {
+    if !admission.matches_live_source(text_area, arena, recording_offset) {
         return Err(invalid(admission.text_area_root));
     }
     let local_clip_id = crate::view::compositor::property_tree::ClipNodeId {
@@ -1550,7 +1509,7 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
         admission.text_area_root,
         *live_text_area_clip,
         local_scissor,
-        admission.paint_grammar,
+        admission.paint_source,
     )
     .ok_or_else(|| invalid(admission.text_area_root))?;
     let mut artifact = match record_frame_artifact_with_policy(
@@ -1572,7 +1531,7 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
         }
         Err(error) => return Err(error.reasons),
     };
-    let host_preedit_seal = if admission.paint_grammar.has_preedit() {
+    let host_preedit_seal = if admission.paint_source.has_preedit() {
         Some(
             text_area
                 .text_preedit_payload_identity(
@@ -1585,12 +1544,7 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
     } else {
         None
     };
-    if let crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs {
-        start_char,
-        end_char,
-        color_rgba_bits,
-    } = admission.paint_grammar
-    {
+    if let Some(selection_source) = admission.paint_source.selection() {
         let Some(selection) = artifact.chunks.get_mut(3) else {
             return Err(invalid(admission.text_area_root));
         };
@@ -1603,9 +1557,9 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| invalid(admission.text_area_root))?;
         selection.payload_identity = super::PaintPayloadIdentity::prepared_text_selection(
-            start_char,
-            end_char,
-            color_rgba_bits,
+            selection_source.start_char,
+            selection_source.end_char,
+            selection_source.color_rgba_bits,
             rects.into_iter(),
         )
         .ok_or_else(|| invalid(admission.text_area_root))?;
@@ -1763,17 +1717,13 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
             let Some(rects) = rects.filter(|rects| !rects.is_empty()) else {
                 return false;
             };
-            let crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs {
-                start_char,
-                end_char,
-                color_rgba_bits,
-            } = admission.paint_grammar else {
+            let Some(source) = admission.paint_source.selection() else {
                 return false;
             };
             chunk.payload_identity.matches_exact_text_selection(
-                start_char,
-                end_char,
-                color_rgba_bits,
+                source.start_char,
+                source.end_char,
+                source.color_rgba_bits,
                 rects.len(),
                 [
                     chunk.bounds.x,
@@ -1855,8 +1805,8 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
             }
         }
     };
-    let chunks_match = match admission.paint_grammar {
-        crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedGlyphs => {
+    let chunks_match = match admission.paint_source {
+        super::PaintTextContentSource::Glyphs => {
             matches!(artifact.chunks.as_slice(), [a, b, mask_begin, c, mask_end, d]
                 if root_before(a)
                     && wrapper(b)
@@ -1867,7 +1817,7 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
                     && mask_begin.payload_identity == mask_end.payload_identity
                     && overlay(d))
         }
-        crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs { .. } => {
+        super::PaintTextContentSource::Selection(_) => {
             matches!(artifact.chunks.as_slice(), [a, b, mask_begin, c, d, mask_end, e]
                 if root_before(a)
                     && wrapper(b)
@@ -1879,7 +1829,7 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
                     && mask_begin.payload_identity == mask_end.payload_identity
                     && overlay(e))
         }
-        crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedPreeditGlyphs => {
+        super::PaintTextContentSource::Preedit => {
             matches!(artifact.chunks.as_slice(), [a, b, mask_begin, c, d, mask_end, e]
                 if root_before(a)
                     && wrapper(b)
@@ -2003,13 +1953,7 @@ pub(super) fn record_baked_scroll_text_area_subtree_host_artifact_for_plan(
                 admission.content_wrapper,
             )]
         })?;
-    if !text_area_matches_admitted_paint_grammar(
-        text_area,
-        admission.text_area_root,
-        arena,
-        recording_offset,
-        admission.paint_grammar,
-    ) {
+    if !admission.matches_live_source(text_area, arena, recording_offset) {
         return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
             admission.text_area_root,
         )]);
@@ -2047,7 +1991,7 @@ pub(super) fn record_baked_scroll_text_area_subtree_host_artifact_for_plan(
         admission.text_area_root,
         *live_text_area_clip,
         local_scissor,
-        admission.paint_grammar,
+        admission.paint_source,
     )
     .ok_or_else(|| {
         vec![FrameArtifactFallbackReason::PropertyBoundary(
@@ -2168,14 +2112,9 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
     {
         return Err(invalid(admission.boundary_root));
     }
-    let source_before = text_area
-        .exact_retained_property_scroll_atomic_projection_subtree(
-            admission.text_area_root,
-            arena,
-            recording_offset,
-        )
-        .filter(|grammar| grammar == &admission.paint_grammar)
-        .ok_or_else(|| invalid(admission.text_area_root))?;
+    if !admission.matches_live_source(text_area, arena, recording_offset) {
+        return Err(invalid(admission.text_area_root));
+    }
     let local_clip_id = crate::view::compositor::property_tree::ClipNodeId {
         owner: admission.text_area_root,
         role: crate::view::compositor::property_tree::ClipNodeRole::ContentsClip,
@@ -2198,7 +2137,6 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
             admission.text_area_root,
             *live_text_area_clip,
             local_scissor,
-            &source_before,
         )
         .ok_or_else(|| invalid(admission.text_area_root))?,
     );
@@ -2216,18 +2154,13 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
             parent: Some(admission.content_wrapper),
         },
     ];
-    for seal in source_before.topology.iter() {
-        owners.push(super::PaintOwnerSnapshot {
-            owner: seal.owner,
-            parent: Some(admission.text_area_root),
-        });
-        if seal.owner == source_before.projection_owner {
-            owners.push(super::PaintOwnerSnapshot {
-                owner: source_before.projection_text_owner,
-                parent: Some(seal.owner),
-            });
-        }
-    }
+    owners.extend(
+        admission
+            .artifact_source
+            .descendant_owner_topology
+            .iter()
+            .copied(),
+    );
     let policy = FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(
         baked,
         recorder_authority,
@@ -2247,7 +2180,8 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
         oracle_context,
         admission.content_wrapper,
         admission.text_area_root,
-        &source_before,
+        &admission.artifact_source,
+        admission.artifact_space_transition,
         owners.clone(),
     )?;
     let mut artifact = match record_frame_artifact_with_policy(
@@ -2266,18 +2200,7 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
         }
         Err(error) => return Err(error.reasons),
     };
-    let source_after = text_area
-        .exact_retained_property_scroll_atomic_projection_subtree(
-            admission.text_area_root,
-            arena,
-            recording_offset,
-        )
-        .ok_or_else(|| {
-            vec![FrameArtifactFallbackReason::Validation(
-                PaintCoverageValidationError::RecordingPassMismatch,
-            )]
-        })?;
-    if source_before != source_after || source_after != admission.paint_grammar {
+    if !admission.matches_live_source(text_area, arena, recording_offset) {
         return Err(vec![FrameArtifactFallbackReason::Validation(
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
@@ -2294,7 +2217,8 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
         oracle_context,
         admission.content_wrapper,
         admission.text_area_root,
-        &source_after,
+        &admission.artifact_source,
+        admission.artifact_space_transition,
         owners.clone(),
     )?;
     if raster_before != raster_after || !raster_before.matches_artifact(&artifact) {
@@ -2373,7 +2297,7 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
         )
         || !glyph_exact(
             projection_glyph,
-            source_before.projection_text_owner,
+            admission.artifact_source.projection_text_owner,
             super::PaintPropertyScope::SelfPaint,
         )
         || [
@@ -2383,7 +2307,7 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
             projection_glyph.bounds.height,
         ]
         .map(f32::to_bits)
-            != source_before.projection_text_bounds_bits
+            != admission.artifact_source.projection_text_bounds_bits
         || overlay.owner != admission.boundary_root
         || overlay.id.owner != admission.boundary_root
         || overlay.id.scope != super::PaintPropertyScope::SelfPaint
@@ -2468,14 +2392,9 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
     {
         return Err(invalid(admission.boundary_root));
     }
-    let source_before = text_area
-        .exact_retained_property_scroll_focused_atomic_projection_glyph_subtree(
-            admission.text_area_root,
-            arena,
-            recording_offset,
-        )
-        .filter(|grammar| grammar == &admission.paint_grammar)
-        .ok_or_else(|| invalid(admission.text_area_root))?;
+    if !admission.matches_live_source(text_area, arena, recording_offset) {
+        return Err(invalid(admission.text_area_root));
+    }
     let local_clip_id = crate::view::compositor::property_tree::ClipNodeId {
         owner: admission.text_area_root,
         role: crate::view::compositor::property_tree::ClipNodeRole::ContentsClip,
@@ -2497,7 +2416,6 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
         admission.text_area_root,
         *live_text_area_clip,
         local_scissor,
-        &source_before,
     )
     .ok_or_else(|| invalid(admission.text_area_root))?;
     let recorder_authority =
@@ -2516,18 +2434,13 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
             parent: Some(admission.content_wrapper),
         },
     ];
-    for seal in source_before.atomic_source.topology.iter() {
-        owners.push(super::PaintOwnerSnapshot {
-            owner: seal.owner,
-            parent: Some(admission.text_area_root),
-        });
-        if seal.owner == source_before.atomic_source.projection_owner {
-            owners.push(super::PaintOwnerSnapshot {
-                owner: source_before.atomic_source.projection_text_owner,
-                parent: Some(seal.owner),
-            });
-        }
-    }
+    owners.extend(
+        admission
+            .artifact_source
+            .descendant_owner_topology
+            .iter()
+            .copied(),
+    );
     let policy = FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(
         baked,
         recorder_authority,
@@ -2547,7 +2460,8 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
         oracle_context,
         admission.content_wrapper,
         admission.text_area_root,
-        &source_before.atomic_source,
+        &admission.artifact_source,
+        admission.artifact_space_transition,
         owners.clone(),
     )?;
     let mut artifact = match record_frame_artifact_with_policy(
@@ -2566,18 +2480,7 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
         }
         Err(error) => return Err(error.reasons),
     };
-    let source_after = text_area
-        .exact_retained_property_scroll_focused_atomic_projection_glyph_subtree(
-            admission.text_area_root,
-            arena,
-            recording_offset,
-        )
-        .ok_or_else(|| {
-            vec![FrameArtifactFallbackReason::Validation(
-                PaintCoverageValidationError::RecordingPassMismatch,
-            )]
-        })?;
-    if source_before != source_after || source_after != admission.paint_grammar {
+    if !admission.matches_live_source(text_area, arena, recording_offset) {
         return Err(vec![FrameArtifactFallbackReason::Validation(
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
@@ -2592,7 +2495,8 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
         oracle_context,
         admission.content_wrapper,
         admission.text_area_root,
-        &source_after.atomic_source,
+        &admission.artifact_source,
+        admission.artifact_space_transition,
         owners,
     )?;
     if raster_before != raster_after || !raster_before.matches_artifact(&artifact) {
@@ -2603,8 +2507,8 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
     Ok(RecordedRetainedFocusedAtomicProjectionTextAreaHost {
         artifact,
         raster_oracle: raster_before,
-        caret: source_before.caret,
-        preedit: source_before.preedit,
+        caret: admission.caret_source().clone(),
+        preedit: admission.preedit_source().cloned(),
         source_bounds_bits: [
             admission.source_bounds.x.to_bits(),
             admission.source_bounds.y.to_bits(),
@@ -2679,14 +2583,9 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
     {
         return Err(invalid(admission.boundary_root));
     }
-    let source_before = text_area
-        .exact_retained_property_scroll_atomic_projection_selection_subtree(
-            admission.text_area_root,
-            arena,
-            recording_offset,
-        )
-        .filter(|grammar| grammar == &admission.paint_grammar)
-        .ok_or_else(|| invalid(admission.text_area_root))?;
+    if !admission.matches_live_source(text_area, arena, recording_offset) {
+        return Err(invalid(admission.text_area_root));
+    }
     let local_clip_id = crate::view::compositor::property_tree::ClipNodeId {
         owner: admission.text_area_root,
         role: crate::view::compositor::property_tree::ClipNodeRole::ContentsClip,
@@ -2708,7 +2607,7 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
         admission.text_area_root,
         *live_text_area_clip,
         local_scissor,
-        &source_before,
+        admission.selection_source,
     )
     .ok_or_else(|| invalid(admission.text_area_root))?;
     let recorder_authority =
@@ -2727,18 +2626,13 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
             parent: Some(admission.content_wrapper),
         },
     ];
-    for seal in source_before.atomic_source.topology.iter() {
-        owners.push(super::PaintOwnerSnapshot {
-            owner: seal.owner,
-            parent: Some(admission.text_area_root),
-        });
-        if seal.owner == source_before.atomic_source.projection_owner {
-            owners.push(super::PaintOwnerSnapshot {
-                owner: source_before.atomic_source.projection_text_owner,
-                parent: Some(seal.owner),
-            });
-        }
-    }
+    owners.extend(
+        admission
+            .artifact_source
+            .descendant_owner_topology
+            .iter()
+            .copied(),
+    );
     let policy = FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(
         baked,
         recorder_authority,
@@ -2758,7 +2652,9 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
         oracle_context,
         admission.content_wrapper,
         admission.text_area_root,
-        &source_before,
+        &admission.artifact_source,
+        admission.selection_source,
+        admission.artifact_space_transition,
         owners.clone(),
     )?;
     let mut artifact = match record_frame_artifact_with_policy(
@@ -2777,18 +2673,7 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
         }
         Err(error) => return Err(error.reasons),
     };
-    let source_after = text_area
-        .exact_retained_property_scroll_atomic_projection_selection_subtree(
-            admission.text_area_root,
-            arena,
-            recording_offset,
-        )
-        .ok_or_else(|| {
-            vec![FrameArtifactFallbackReason::Validation(
-                PaintCoverageValidationError::RecordingPassMismatch,
-            )]
-        })?;
-    if source_before != source_after || source_after != admission.paint_grammar {
+    if !admission.matches_live_source(text_area, arena, recording_offset) {
         return Err(vec![FrameArtifactFallbackReason::Validation(
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
@@ -2823,7 +2708,9 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
         oracle_context,
         admission.content_wrapper,
         admission.text_area_root,
-        &source_after,
+        &admission.artifact_source,
+        admission.selection_source,
+        admission.artifact_space_transition,
         owners.clone(),
     )?;
     normalize_atomic_projection_selection_chunk(
@@ -2870,21 +2757,14 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
             && chunk.id.slot == 1
             && chunk.id.role == super::PaintChunkRole::TextGlyphs
     };
-    let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-        start_char,
-        end_char,
-        color_rgba_bits,
-    } = recorder_witness.selection
-    else {
-        return Err(invalid(admission.text_area_root));
-    };
+    let selection_source = recorder_witness.selection;
     let selection_exact = matches!(&artifact.ops[selection.op_range.clone()], ops
     if !ops.is_empty()
         && ops.iter().all(|op| matches!(op, super::PaintOp::DrawRect(_)))
         && selection.payload_identity.matches_text_selection_source(
-            start_char,
-            end_char,
-            color_rgba_bits,
+            selection_source.start_char,
+            selection_source.end_char,
+            selection_source.color_rgba_bits,
         )
         && selection.payload_identity.matches_exact_text_selection_ops(
             ops.iter().filter_map(|op| match op { super::PaintOp::DrawRect(rect) => Some(rect), _ => None })
@@ -2911,7 +2791,7 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
         )
         || !glyph_exact(
             projection_glyph,
-            source_before.atomic_source.projection_text_owner,
+            admission.artifact_source.projection_text_owner,
             super::PaintPropertyScope::SelfPaint,
         )
         || [
@@ -2921,7 +2801,7 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
             projection_glyph.bounds.height,
         ]
         .map(f32::to_bits)
-            != source_before.atomic_source.projection_text_bounds_bits
+            != admission.artifact_source.projection_text_bounds_bits
         || overlay.owner != admission.boundary_root
         || overlay.id.phase != super::PaintNodePhase::AfterChildren
         || overlay.id.role != super::PaintChunkRole::ScrollbarOverlay
@@ -3411,13 +3291,7 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
         .as_any()
         .downcast_ref::<crate::view::base_component::TextArea>()
         .ok_or_else(|| invalid(text_area_root))?;
-    if !text_area_matches_admitted_paint_grammar(
-        text_area,
-        text_area_root,
-        arena,
-        required_paint_offset,
-        admission.paint_grammar,
-    ) {
+    if !admission.matches_live_source(text_area, arena, required_paint_offset) {
         return Err(invalid(text_area_root));
     }
     let local_scissor = text_area
@@ -3441,7 +3315,7 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
         text_area_root,
         *live_text_area_clip,
         local_scissor,
-        admission.paint_grammar,
+        admission.paint_source,
     )
     .ok_or_else(|| invalid(text_area_root))?;
     let outer_state = crate::view::compositor::property_tree::PropertyTreeState {
@@ -3572,12 +3446,7 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
             chunk.content_revision = normalized_revision;
         }
     }
-    if let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-        start_char,
-        end_char,
-        color_rgba_bits,
-    } = admission.paint_grammar
-    {
+    if let Some(selection_source) = admission.paint_source.selection() {
         let mut selection_indices =
             artifact
                 .chunks
@@ -3608,9 +3477,9 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
             return Err(invalid(text_area_root));
         }
         let sealed_identity = super::PaintPayloadIdentity::prepared_text_selection(
-            start_char,
-            end_char,
-            color_rgba_bits,
+            selection_source.start_char,
+            selection_source.end_char,
+            selection_source.color_rgba_bits,
             rects.iter().copied(),
         )
         .ok_or_else(|| invalid(text_area_root))?;
@@ -3644,12 +3513,7 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
             && chunk.payload_identity == super::PaintPayloadIdentity::prepared_texts([prepared])
     };
     let selection_matches = |chunk: &super::PaintChunk| {
-        let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-            start_char,
-            end_char,
-            color_rgba_bits,
-        } = admission.paint_grammar
-        else {
+        let Some(source) = admission.paint_source.selection() else {
             return false;
         };
         let ops = &artifact.ops[chunk.op_range.clone()];
@@ -3686,7 +3550,7 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
             && chunk.id.role == super::PaintChunkRole::SelectionUnderlay
             && chunk.properties.legacy_boundary_eq(local_state)
             && rects.iter().all(|rect| {
-                rect.params.fill_color.map(f32::to_bits) == color_rgba_bits
+                rect.params.fill_color.map(f32::to_bits) == source.color_rgba_bits
                     && rect.params.opacity.to_bits() == 1.0_f32.to_bits()
             })
             && [
@@ -3698,9 +3562,9 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
             .map(f32::to_bits)
                 == [left, top, right - left, bottom - top].map(f32::to_bits)
             && super::PaintPayloadIdentity::prepared_text_selection(
-                start_char,
-                end_char,
-                color_rgba_bits,
+                source.start_char,
+                source.end_char,
+                source.color_rgba_bits,
                 rects.into_iter(),
             )
             .as_ref()
@@ -3714,16 +3578,15 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
     ) else {
         return Err(invalid(content_root));
     };
-    let chunks_match_grammar = wrapper_matches(wrapper) && match admission.paint_grammar {
-        crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::GlyphOnly => {
+    let chunks_match_grammar = wrapper_matches(wrapper) && match admission.paint_source {
+        super::PaintTextContentSource::Glyphs => {
             matches!(semantic, [glyph] if glyph_matches(glyph))
         }
-        crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-            ..
-        } => {
+        super::PaintTextContentSource::Selection(_) => {
             matches!(semantic, [selection, glyph]
                 if selection_matches(selection) && glyph_matches(glyph))
         }
+        super::PaintTextContentSource::Preedit => false,
     };
     if !matches!(artifact.target, PaintArtifactTarget::CurrentTarget)
         || artifact.effect_nodes.len() != 0
@@ -3759,20 +3622,17 @@ fn record_atomic_projection_live_raster_oracle(
     context: PaintRecordingContext,
     content_root: NodeKey,
     text_area_root: NodeKey,
-    source_grammar: &crate::view::base_component::text_area::RetainedAtomicProjectionTextAreaPaintGrammar,
+    artifact_source: &super::PaintAtomicProjectionArtifactSource,
+    artifact_space_transition: super::PaintArtifactSpaceTransition,
     owner_nodes: Vec<super::PaintOwnerSnapshot>,
 ) -> Result<RetainedAtomicProjectionTextAreaLiveRasterOracle, Vec<FrameArtifactFallbackReason>> {
-    let (apply_x, apply_y, revision) = source_grammar.last_unified_apply_bits;
-    let artifact_space_transition = super::PaintArtifactSpaceTransition::from_bits(
-        [apply_x, apply_y],
-        [0.0_f32.to_bits(), 0.0_f32.to_bits()],
-        revision,
-    )
-    .ok_or_else(|| {
-        vec![FrameArtifactFallbackReason::Validation(
+    if !artifact_space_transition.is_canonical()
+        || !artifact_source.is_canonical_for(text_area_root)
+    {
+        return Err(vec![FrameArtifactFallbackReason::Validation(
             PaintCoverageValidationError::RecordingPassMismatch,
-        )]
-    })?;
+        )]);
+    }
     let manifest = record_retained_coverage_manifest_with_context(
         arena,
         roots,
@@ -3830,7 +3690,7 @@ fn record_atomic_projection_live_raster_oracle(
         content_root,
         text_area_root,
         artifact_space_transition,
-        source_grammar: source_grammar.clone(),
+        artifact_source: artifact_source.clone(),
         chunks,
         clip_nodes: clips,
         owner_nodes,
@@ -3847,23 +3707,22 @@ fn record_atomic_projection_selection_live_raster_oracle(
     context: PaintRecordingContext,
     content_root: NodeKey,
     text_area_root: NodeKey,
-    source_grammar: &crate::view::base_component::text_area::RetainedAtomicProjectionSelectionTextAreaPaintGrammar,
+    artifact_source: &super::PaintAtomicProjectionArtifactSource,
+    selection_source: super::PaintTextSelectionSource,
+    artifact_space_transition: super::PaintArtifactSpaceTransition,
     owner_nodes: Vec<super::PaintOwnerSnapshot>,
 ) -> Result<
     RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     Vec<FrameArtifactFallbackReason>,
 > {
-    let (apply_x, apply_y, revision) = source_grammar.atomic_source.last_unified_apply_bits;
-    let artifact_space_transition = super::PaintArtifactSpaceTransition::from_bits(
-        [apply_x, apply_y],
-        [0.0_f32.to_bits(), 0.0_f32.to_bits()],
-        revision,
-    )
-    .ok_or_else(|| {
-        vec![FrameArtifactFallbackReason::Validation(
+    if !artifact_space_transition.is_canonical()
+        || !artifact_source.is_canonical_for(text_area_root)
+        || !selection_source.is_canonical()
+    {
+        return Err(vec![FrameArtifactFallbackReason::Validation(
             PaintCoverageValidationError::RecordingPassMismatch,
-        )]
-    })?;
+        )]);
+    }
     let manifest = record_retained_coverage_manifest_with_context(
         arena,
         roots,
@@ -3921,10 +3780,66 @@ fn record_atomic_projection_selection_live_raster_oracle(
         content_root,
         text_area_root,
         artifact_space_transition,
-        source_grammar: source_grammar.clone(),
+        artifact_source: artifact_source.clone(),
+        selection_source,
         chunks,
         clip_nodes: clips,
         owner_nodes,
+    })
+}
+
+fn atomic_projection_owner_topology_is_live(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    text_area_root: NodeKey,
+    text_area_state: crate::view::compositor::property_tree::PropertyTreeState,
+    source: &super::PaintAtomicProjectionArtifactSource,
+) -> bool {
+    use crate::view::base_component::text_area::{
+        TextAreaLineBreak, TextAreaProjectionSegment, TextAreaTextRun,
+    };
+
+    if !source.is_canonical_for(text_area_root) {
+        return false;
+    }
+    let direct_owner_count = source
+        .descendant_owner_topology
+        .iter()
+        .filter(|owner| owner.parent == Some(text_area_root))
+        .count();
+    if arena.children_of(text_area_root).len() != direct_owner_count {
+        return false;
+    }
+    source.descendant_owner_topology.iter().all(|owner| {
+        let Some(node) = arena.get(owner.owner) else {
+            return false;
+        };
+        if arena.parent_of(owner.owner) != owner.parent
+            || node.element.is_deferred_to_root_viewport_render()
+            || node.element.has_active_animator()
+            || property_trees.states.get(&owner.owner).is_none_or(|state| {
+                !state.paint.legacy_boundary_eq(text_area_state)
+                    || !state.descendants.legacy_boundary_eq(text_area_state)
+            })
+        {
+            return false;
+        }
+        if owner.owner == source.projection_text_owner {
+            return node
+                .element
+                .as_any()
+                .is::<crate::view::base_component::Text>()
+                && node.element.children().is_empty();
+        }
+        if owner.parent != Some(text_area_root) {
+            return false;
+        }
+        if node.element.as_any().is::<TextAreaProjectionSegment>() {
+            return node.element.children() == [source.projection_text_owner];
+        }
+        (node.element.as_any().is::<TextAreaTextRun>()
+            || node.element.as_any().is::<TextAreaLineBreak>())
+            && node.element.children().is_empty()
     })
 }
 
@@ -3935,10 +3850,6 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
     admission: &RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
     outer: PaintScrollContentWitness,
 ) -> Result<RecordedRetainedAtomicProjectionTextAreaSubtree, Vec<FrameArtifactFallbackReason>> {
-    use crate::view::base_component::text_area::{
-        RetainedAtomicProjectionTextAreaTopologyKind as Kind, TextAreaLineBreak,
-        TextAreaProjectionSegment, TextAreaTextRun,
-    };
     let content_root = admission.content_wrapper;
     let text_area_root = admission.text_area_root;
     let invalid = |owner| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)];
@@ -3946,7 +3857,7 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         || outer.content_root() != content_root
         || outer.scroll_snapshot().owner != admission.boundary_root
         || !admission.matches_scroll_node(outer.scroll_snapshot())
-        || !admission.paint_grammar.is_canonical()
+        || !admission.artifact_source.is_canonical_for(text_area_root)
         || !property_trees.validation_errors.is_empty()
         || !property_trees.transforms.is_empty()
         || !property_trees.effects.is_empty()
@@ -3980,14 +3891,9 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
     {
         return Err(invalid(content_root));
     }
-    let source_before = text_area
-        .exact_retained_property_scroll_atomic_projection_subtree(
-            text_area_root,
-            arena,
-            required_paint_offset,
-        )
-        .filter(|grammar| grammar == &admission.paint_grammar)
-        .ok_or_else(|| invalid(text_area_root))?;
+    if !admission.matches_live_source(text_area, arena, required_paint_offset) {
+        return Err(invalid(text_area_root));
+    }
     let local_scissor = text_area
         .retained_property_scroll_local_contents_scissor(outer.normalization_paint_offset())
         .ok_or_else(|| invalid(text_area_root))?;
@@ -4010,7 +3916,6 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
             text_area_root,
             *live_text_area_clip,
             local_scissor,
-            &source_before,
         )
         .ok_or_else(|| invalid(text_area_root))?,
     );
@@ -4047,71 +3952,22 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
             parent: Some(content_root),
         },
     ];
-    if arena.children_of(text_area_root).len() != source_before.topology.len() {
+    if !atomic_projection_owner_topology_is_live(
+        arena,
+        property_trees,
+        text_area_root,
+        text_area_state,
+        &admission.artifact_source,
+    ) {
         return Err(invalid(text_area_root));
     }
-    for seal in source_before.topology.iter() {
-        let node = arena.get(seal.owner).ok_or_else(|| invalid(seal.owner))?;
-        if arena.parent_of(seal.owner) != Some(text_area_root)
-            || node.element.stable_id() != seal.stable_id
-            || node.element.is_deferred_to_root_viewport_render()
-            || node.element.has_active_animator()
-            || property_trees.states.get(&seal.owner).is_none_or(|state| {
-                !state.paint.legacy_boundary_eq(text_area_state)
-                    || !state.descendants.legacy_boundary_eq(text_area_state)
-            })
-        {
-            return Err(invalid(seal.owner));
-        }
-        let type_and_children_are_exact = match seal.kind {
-            Kind::TextRun => {
-                node.element.as_any().is::<TextAreaTextRun>() && node.element.children().is_empty()
-            }
-            Kind::LineBreak => {
-                node.element.as_any().is::<TextAreaLineBreak>()
-                    && node.element.children().is_empty()
-            }
-            Kind::ProjectionSegment => {
-                let [text] = node.element.children() else {
-                    return Err(invalid(seal.owner));
-                };
-                let text = *text;
-                let text_node = arena.get(text).ok_or_else(|| invalid(text))?;
-                if !node.element.as_any().is::<TextAreaProjectionSegment>()
-                    || text != source_before.projection_text_owner
-                    || arena.parent_of(text) != Some(seal.owner)
-                    || text_node.element.stable_id() != source_before.projection_text_stable_id
-                    || !text_node
-                        .element
-                        .as_any()
-                        .is::<crate::view::base_component::Text>()
-                    || !text_node.element.children().is_empty()
-                    || property_trees.states.get(&text).is_none_or(|state| {
-                        !state.paint.legacy_boundary_eq(text_area_state)
-                            || !state.descendants.legacy_boundary_eq(text_area_state)
-                    })
-                {
-                    return Err(invalid(text));
-                }
-                expected_owners.push(super::PaintOwnerSnapshot {
-                    owner: seal.owner,
-                    parent: Some(text_area_root),
-                });
-                expected_owners.push(super::PaintOwnerSnapshot {
-                    owner: text,
-                    parent: Some(seal.owner),
-                });
-                continue;
-            }
-        };
-        if !type_and_children_are_exact {
-            return Err(invalid(seal.owner));
-        }
-        expected_owners.push(super::PaintOwnerSnapshot {
-            owner: seal.owner,
-            parent: Some(text_area_root),
-        });
-    }
+    expected_owners.extend(
+        admission
+            .artifact_source
+            .descendant_owner_topology
+            .iter()
+            .copied(),
+    );
 
     let policy = FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(
         recorder_authority,
@@ -4132,7 +3988,8 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         oracle_context,
         content_root,
         text_area_root,
-        &source_before,
+        &admission.artifact_source,
+        admission.artifact_space_transition,
         expected_owners.clone(),
     )?;
 
@@ -4152,18 +4009,7 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         }
         Err(error) => return Err(error.reasons),
     };
-    let source_after = text_area
-        .exact_retained_property_scroll_atomic_projection_subtree(
-            text_area_root,
-            arena,
-            required_paint_offset,
-        )
-        .ok_or_else(|| {
-            vec![FrameArtifactFallbackReason::Validation(
-                PaintCoverageValidationError::RecordingPassMismatch,
-            )]
-        })?;
-    if source_before != source_after || source_after != admission.paint_grammar {
+    if !admission.matches_live_source(text_area, arena, required_paint_offset) {
         return Err(vec![FrameArtifactFallbackReason::Validation(
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
@@ -4178,7 +4024,8 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         oracle_context,
         content_root,
         text_area_root,
-        &source_after,
+        &admission.artifact_source,
+        admission.artifact_space_transition,
         expected_owners.clone(),
     )?;
     if raster_before != raster_after || !raster_before.matches_artifact(&artifact) {
@@ -4228,7 +4075,7 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         )
         || !glyph_exact(
             projection_glyph,
-            source_before.projection_text_owner,
+            admission.artifact_source.projection_text_owner,
             super::PaintPropertyScope::SelfPaint,
         )
     {
@@ -4248,10 +4095,6 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
     outer: PaintScrollContentWitness,
 ) -> Result<RecordedRetainedFocusedAtomicProjectionTextAreaSubtree, Vec<FrameArtifactFallbackReason>>
 {
-    use crate::view::base_component::text_area::{
-        RetainedAtomicProjectionTextAreaTopologyKind as Kind, TextAreaLineBreak,
-        TextAreaProjectionSegment, TextAreaTextRun,
-    };
     let content_root = admission.content_wrapper;
     let text_area_root = admission.text_area_root;
     let invalid = |owner| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)];
@@ -4259,7 +4102,7 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
         || outer.content_root() != content_root
         || outer.scroll_snapshot().owner != admission.boundary_root
         || !admission.matches_scroll_node(outer.scroll_snapshot())
-        || !admission.paint_grammar.is_canonical()
+        || !admission.artifact_source.is_canonical_for(text_area_root)
         || !property_trees.validation_errors.is_empty()
         || !property_trees.transforms.is_empty()
         || !property_trees.effects.is_empty()
@@ -4293,14 +4136,9 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
     {
         return Err(invalid(content_root));
     }
-    let source_before = text_area
-        .exact_retained_property_scroll_focused_atomic_projection_glyph_subtree(
-            text_area_root,
-            arena,
-            required_paint_offset,
-        )
-        .filter(|grammar| grammar == &admission.paint_grammar)
-        .ok_or_else(|| invalid(text_area_root))?;
+    if !admission.matches_live_source(text_area, arena, required_paint_offset) {
+        return Err(invalid(text_area_root));
+    }
     let local_scissor = text_area
         .retained_property_scroll_local_contents_scissor(outer.normalization_paint_offset())
         .ok_or_else(|| invalid(text_area_root))?;
@@ -4323,7 +4161,6 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
             text_area_root,
             *live_text_area_clip,
             local_scissor,
-            &source_before,
         )
         .ok_or_else(|| invalid(text_area_root))?,
     );
@@ -4350,7 +4187,6 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
     {
         return Err(invalid(content_root));
     }
-    let atomic_source = &source_before.atomic_source;
     let mut expected_owners = vec![
         super::PaintOwnerSnapshot {
             owner: content_root,
@@ -4361,71 +4197,22 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
             parent: Some(content_root),
         },
     ];
-    if arena.children_of(text_area_root).len() != atomic_source.topology.len() {
+    if !atomic_projection_owner_topology_is_live(
+        arena,
+        property_trees,
+        text_area_root,
+        text_area_state,
+        &admission.artifact_source,
+    ) {
         return Err(invalid(text_area_root));
     }
-    for seal in atomic_source.topology.iter() {
-        let node = arena.get(seal.owner).ok_or_else(|| invalid(seal.owner))?;
-        if arena.parent_of(seal.owner) != Some(text_area_root)
-            || node.element.stable_id() != seal.stable_id
-            || node.element.is_deferred_to_root_viewport_render()
-            || node.element.has_active_animator()
-            || property_trees.states.get(&seal.owner).is_none_or(|state| {
-                !state.paint.legacy_boundary_eq(text_area_state)
-                    || !state.descendants.legacy_boundary_eq(text_area_state)
-            })
-        {
-            return Err(invalid(seal.owner));
-        }
-        let type_and_children_are_exact = match seal.kind {
-            Kind::TextRun => {
-                node.element.as_any().is::<TextAreaTextRun>() && node.element.children().is_empty()
-            }
-            Kind::LineBreak => {
-                node.element.as_any().is::<TextAreaLineBreak>()
-                    && node.element.children().is_empty()
-            }
-            Kind::ProjectionSegment => {
-                let [text] = node.element.children() else {
-                    return Err(invalid(seal.owner));
-                };
-                let text = *text;
-                let text_node = arena.get(text).ok_or_else(|| invalid(text))?;
-                if !node.element.as_any().is::<TextAreaProjectionSegment>()
-                    || text != atomic_source.projection_text_owner
-                    || arena.parent_of(text) != Some(seal.owner)
-                    || text_node.element.stable_id() != atomic_source.projection_text_stable_id
-                    || !text_node
-                        .element
-                        .as_any()
-                        .is::<crate::view::base_component::Text>()
-                    || !text_node.element.children().is_empty()
-                    || property_trees.states.get(&text).is_none_or(|state| {
-                        !state.paint.legacy_boundary_eq(text_area_state)
-                            || !state.descendants.legacy_boundary_eq(text_area_state)
-                    })
-                {
-                    return Err(invalid(text));
-                }
-                expected_owners.push(super::PaintOwnerSnapshot {
-                    owner: seal.owner,
-                    parent: Some(text_area_root),
-                });
-                expected_owners.push(super::PaintOwnerSnapshot {
-                    owner: text,
-                    parent: Some(seal.owner),
-                });
-                continue;
-            }
-        };
-        if !type_and_children_are_exact {
-            return Err(invalid(seal.owner));
-        }
-        expected_owners.push(super::PaintOwnerSnapshot {
-            owner: seal.owner,
-            parent: Some(text_area_root),
-        });
-    }
+    expected_owners.extend(
+        admission
+            .artifact_source
+            .descendant_owner_topology
+            .iter()
+            .copied(),
+    );
 
     let policy = FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(
         recorder_authority,
@@ -4446,7 +4233,8 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
         oracle_context,
         content_root,
         text_area_root,
-        atomic_source,
+        &admission.artifact_source,
+        admission.artifact_space_transition,
         expected_owners.clone(),
     )?;
 
@@ -4466,18 +4254,7 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
         }
         Err(error) => return Err(error.reasons),
     };
-    let source_after = text_area
-        .exact_retained_property_scroll_focused_atomic_projection_glyph_subtree(
-            text_area_root,
-            arena,
-            required_paint_offset,
-        )
-        .ok_or_else(|| {
-            vec![FrameArtifactFallbackReason::Validation(
-                PaintCoverageValidationError::RecordingPassMismatch,
-            )]
-        })?;
-    if source_before != source_after || source_after != admission.paint_grammar {
+    if !admission.matches_live_source(text_area, arena, required_paint_offset) {
         return Err(vec![FrameArtifactFallbackReason::Validation(
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
@@ -4492,7 +4269,8 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
         oracle_context,
         content_root,
         text_area_root,
-        &source_after.atomic_source,
+        &admission.artifact_source,
+        admission.artifact_space_transition,
         expected_owners.clone(),
     )?;
     if raster_before != raster_after || !raster_before.matches_artifact(&artifact) {
@@ -4513,10 +4291,10 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
         return Err(invalid(content_root));
     };
     let (root_glyph, preedit_underline, projection_glyph) = match semantic {
-        [root_glyph, projection_glyph] if source_after.preedit.is_none() => {
+        [root_glyph, projection_glyph] if admission.preedit_source().is_none() => {
             (root_glyph, None, projection_glyph)
         }
-        [root_glyph, projection_glyph, underline] if source_after.preedit.is_some() => {
+        [root_glyph, projection_glyph, underline] if admission.preedit_source().is_some() => {
             (root_glyph, Some(underline), projection_glyph)
         }
         _ => return Err(invalid(content_root)),
@@ -4534,7 +4312,7 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
             && chunk.properties.legacy_boundary_eq(local_state)
     };
     let underline_exact = |chunk: &super::PaintChunk| {
-        let Some(preedit) = source_after.preedit.as_ref() else {
+        let Some(preedit) = admission.preedit_source() else {
             return false;
         };
         let rects = artifact.ops[chunk.op_range.clone()]
@@ -4584,7 +4362,7 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
         )
         && glyph_exact(
             projection_glyph,
-            atomic_source.projection_text_owner,
+            admission.artifact_source.projection_text_owner,
             super::PaintPropertyScope::SelfPaint,
         )
         && !preedit_underline.is_some_and(|underline| !underline_exact(underline));
@@ -4594,8 +4372,8 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
     Ok(RecordedRetainedFocusedAtomicProjectionTextAreaSubtree {
         artifact,
         raster_oracle: raster_before,
-        caret: source_after.caret,
-        preedit: source_after.preedit,
+        caret: admission.caret_source().clone(),
+        preedit: admission.preedit_source().cloned(),
     })
 }
 
@@ -4649,14 +4427,9 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
     {
         return Err(invalid(content_root));
     }
-    let source_before = text_area
-        .exact_retained_property_scroll_atomic_projection_selection_subtree(
-            text_area_root,
-            arena,
-            required_paint_offset,
-        )
-        .filter(|grammar| grammar == &admission.paint_grammar)
-        .ok_or_else(|| invalid(text_area_root))?;
+    if !admission.matches_live_source(text_area, arena, required_paint_offset) {
+        return Err(invalid(text_area_root));
+    }
     let local_scissor = text_area
         .retained_property_scroll_local_contents_scissor(outer.normalization_paint_offset())
         .ok_or_else(|| invalid(text_area_root))?;
@@ -4678,7 +4451,7 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         text_area_root,
         *live_text_area_clip,
         local_scissor,
-        &source_before,
+        admission.selection_source,
     )
     .ok_or_else(|| invalid(text_area_root))?;
     let recorder_authority =
@@ -4716,51 +4489,22 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
             parent: Some(content_root),
         },
     ];
-    if arena.children_of(text_area_root).len() != source_before.atomic_source.topology.len() {
+    if !atomic_projection_owner_topology_is_live(
+        arena,
+        property_trees,
+        text_area_root,
+        text_area_state,
+        &admission.artifact_source,
+    ) {
         return Err(invalid(text_area_root));
     }
-    for seal in source_before.atomic_source.topology.iter() {
-        let node = arena.get(seal.owner).ok_or_else(|| invalid(seal.owner))?;
-        if arena.parent_of(seal.owner) != Some(text_area_root)
-            || node.element.stable_id() != seal.stable_id
-            || node.element.is_deferred_to_root_viewport_render()
-            || node.element.has_active_animator()
-            || property_trees.states.get(&seal.owner).is_none_or(|state| {
-                !state.paint.legacy_boundary_eq(text_area_state)
-                    || !state.descendants.legacy_boundary_eq(text_area_state)
-            })
-        {
-            return Err(invalid(seal.owner));
-        }
-        expected_owners.push(super::PaintOwnerSnapshot {
-            owner: seal.owner,
-            parent: Some(text_area_root),
-        });
-        if seal.owner == source_before.atomic_source.projection_owner {
-            let text = source_before.atomic_source.projection_text_owner;
-            let text_node = arena.get(text).ok_or_else(|| invalid(text))?;
-            if arena.parent_of(text) != Some(seal.owner)
-                || node.element.children() != [text]
-                || text_node.element.stable_id()
-                    != source_before.atomic_source.projection_text_stable_id
-                || !text_node
-                    .element
-                    .as_any()
-                    .is::<crate::view::base_component::Text>()
-                || !text_node.element.children().is_empty()
-                || property_trees.states.get(&text).is_none_or(|state| {
-                    !state.paint.legacy_boundary_eq(text_area_state)
-                        || !state.descendants.legacy_boundary_eq(text_area_state)
-                })
-            {
-                return Err(invalid(text));
-            }
-            expected_owners.push(super::PaintOwnerSnapshot {
-                owner: text,
-                parent: Some(seal.owner),
-            });
-        }
-    }
+    expected_owners.extend(
+        admission
+            .artifact_source
+            .descendant_owner_topology
+            .iter()
+            .copied(),
+    );
     let policy = FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(
         recorder_authority,
     );
@@ -4780,7 +4524,9 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         oracle_context,
         content_root,
         text_area_root,
-        &source_before,
+        &admission.artifact_source,
+        admission.selection_source,
+        admission.artifact_space_transition,
         expected_owners.clone(),
     )?;
     let mut artifact = match record_frame_artifact_with_policy(
@@ -4799,18 +4545,7 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         }
         Err(error) => return Err(error.reasons),
     };
-    let source_after = text_area
-        .exact_retained_property_scroll_atomic_projection_selection_subtree(
-            text_area_root,
-            arena,
-            required_paint_offset,
-        )
-        .ok_or_else(|| {
-            vec![FrameArtifactFallbackReason::Validation(
-                PaintCoverageValidationError::RecordingPassMismatch,
-            )]
-        })?;
-    if source_before != source_after || source_after != admission.paint_grammar {
+    if !admission.matches_live_source(text_area, arena, required_paint_offset) {
         return Err(vec![FrameArtifactFallbackReason::Validation(
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
@@ -4845,7 +4580,9 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         oracle_context,
         content_root,
         text_area_root,
-        &source_after,
+        &admission.artifact_source,
+        admission.selection_source,
+        admission.artifact_space_transition,
         expected_owners.clone(),
     )?;
     let after_selection_seal = normalize_atomic_projection_selection_chunk(
@@ -4889,21 +4626,14 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
             && chunk.id.role == super::PaintChunkRole::TextGlyphs
             && chunk.properties.legacy_boundary_eq(local_state)
     };
-    let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-        start_char,
-        end_char,
-        color_rgba_bits,
-    } = recorder_witness.selection
-    else {
-        return Err(invalid(text_area_root));
-    };
+    let selection_source = recorder_witness.selection;
     let selection_exact = matches!(&artifact.ops[selection.op_range.clone()], ops
     if !ops.is_empty()
         && ops.iter().all(|op| matches!(op, super::PaintOp::DrawRect(_)))
         && selection.payload_identity.matches_text_selection_source(
-            start_char,
-            end_char,
-            color_rgba_bits,
+            selection_source.start_char,
+            selection_source.end_char,
+            selection_source.color_rgba_bits,
         )
         && selection.payload_identity.matches_exact_text_selection_ops(
             ops.iter().filter_map(|op| match op { super::PaintOp::DrawRect(rect) => Some(rect), _ => None })
@@ -4929,7 +4659,7 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         )
         || !glyph_exact(
             projection_glyph,
-            source_before.atomic_source.projection_text_owner,
+            admission.artifact_source.projection_text_owner,
             super::PaintPropertyScope::SelfPaint,
         )
     {
@@ -4990,13 +4720,7 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
         .as_any()
         .downcast_ref::<crate::view::base_component::TextArea>()
         .ok_or_else(|| invalid(text_area_root))?;
-    if !text_area_matches_admitted_interactive_paint_grammar(
-        text_area,
-        text_area_root,
-        arena,
-        detached_paint_offset,
-        admission.paint_grammar,
-    ) {
+    if !admission.matches_live_source(text_area, arena, detached_paint_offset) {
         return Err(invalid(text_area_root));
     }
     let local_clip_id = crate::view::compositor::property_tree::ClipNodeId {
@@ -5020,7 +4744,7 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
         text_area_root,
         *live_text_area_clip,
         local_scissor,
-        admission.paint_grammar,
+        admission.paint_source,
     )
     .ok_or_else(|| invalid(text_area_root))?;
     let outer_state = crate::view::compositor::property_tree::PropertyTreeState {
@@ -5101,11 +4825,11 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
             *live_text_area_clip,
             *live_outer_clip,
             text_area_state,
-            admission.paint_grammar,
+            admission.paint_source,
             admission.caret_oracle_bounds_bits,
         )
         .ok_or_else(|| invalid(text_area_root))?;
-    let preedit_before = if admission.paint_grammar.has_preedit() {
+    let preedit_before = if admission.paint_source.has_preedit() {
         Some(
             text_area
                 .text_preedit_payload_identity(
@@ -5143,11 +4867,11 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
             *live_text_area_clip,
             *live_outer_clip,
             text_area_state,
-            admission.paint_grammar,
+            admission.paint_source,
             admission.caret_oracle_bounds_bits,
         )
         .ok_or_else(|| invalid(text_area_root))?;
-    let preedit_after = if admission.paint_grammar.has_preedit() {
+    let preedit_after = if admission.paint_source.has_preedit() {
         Some(
             text_area
                 .text_preedit_payload_identity(
@@ -5269,8 +4993,8 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
     if !wrapper_matches(wrapper) {
         return Err(invalid(content_root));
     }
-    let preedit_seal = match admission.paint_grammar {
-        crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedGlyphs => {
+    let preedit_seal = match admission.paint_source {
+        super::PaintTextContentSource::Glyphs => {
             let [glyph] = semantic else {
                 return Err(invalid(content_root));
             };
@@ -5279,7 +5003,7 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
             }
             None
         }
-        crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs { .. } => {
+        super::PaintTextContentSource::Selection(_) => {
             let [selection, glyph] = semantic else {
                 return Err(invalid(content_root));
             };
@@ -5295,7 +5019,7 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
             }
             None
         }
-        crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedPreeditGlyphs => {
+        super::PaintTextContentSource::Preedit => {
             let [glyph, underline] = semantic else {
                 return Err(invalid(content_root));
             };
@@ -5318,12 +5042,7 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
             Some(seal)
         }
     };
-    if let crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs {
-        start_char,
-        end_char,
-        color_rgba_bits,
-    } = admission.paint_grammar
-    {
+    if let Some(selection_source) = admission.paint_source.selection() {
         let mut selection_indices = artifact
             .chunks
             .iter()
@@ -5347,9 +5066,9 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
             .ok_or_else(|| invalid(text_area_root))?;
         artifact.chunks[selection_index].payload_identity =
             super::PaintPayloadIdentity::prepared_text_selection(
-                start_char,
-                end_char,
-                color_rgba_bits,
+                selection_source.start_char,
+                selection_source.end_char,
+                selection_source.color_rgba_bits,
                 rects.into_iter(),
             )
             .ok_or_else(|| invalid(text_area_root))?;
