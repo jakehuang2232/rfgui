@@ -1022,14 +1022,22 @@ impl TextArea {
             return Ok(Vec::new());
         }
         let fill = self.color.to_rgba_f32();
+        #[cfg(test)]
+        let test_offset = self.preedit_underline_test_offset;
+        #[cfg(not(test))]
+        let test_offset = [0.0; 2];
         package
             .preedit_underline_rects()
             .into_iter()
             .map(|rect| {
                 let params = RectPassParams {
                     position: [
-                        origin[0] + rect.x,
-                        origin[1] + rect.y + rect.height.max(1.0) - 1.0,
+                        origin[0] + rect.x + test_offset[0],
+                        origin[1]
+                            + rect.y
+                            + rect.height.max(1.0)
+                            - 1.0
+                            + test_offset[1],
                     ],
                     size: [rect.width.max(1.0), 1.0],
                     fill_color: fill,
@@ -1113,13 +1121,21 @@ impl TextArea {
             ));
         }
         let fill = self.color.to_rgba_f32();
+        #[cfg(test)]
+        let test_offset = self.preedit_underline_test_offset;
+        #[cfg(not(test))]
+        let test_offset = [0.0; 2];
         let ops = rects
             .into_iter()
             .map(|rect| {
                 let params = RectPassParams {
                     position: [
-                        rect.x + paint_offset[0],
-                        rect.y + rect.height.max(1.0) - 1.0 + paint_offset[1],
+                        rect.x + paint_offset[0] + test_offset[0],
+                        rect.y
+                            + rect.height.max(1.0)
+                            - 1.0
+                            + paint_offset[1]
+                            + test_offset[1],
                     ],
                     size: [rect.width.max(1.0), 1.0],
                     fill_color: fill,

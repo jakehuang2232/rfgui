@@ -117,14 +117,15 @@ fn property_scroll_b2_focused_atomic_projection_prepares_and_emits_post_composit
 }
 
 #[test]
-fn property_scroll_b2_focused_atomic_post_composite_state_preserves_resident_reuse() {
+fn property_scroll_b2_focused_atomic_caret_and_underline_preserve_resident_reuse() {
     let sampled_at = crate::time::Instant::now();
-    let make_scene = |caret_visible, preedit, projected_content| {
+    let make_scene = |caret_visible, preedit, projected_content, underline_offset| {
         let (arena, root, _, properties, generations) =
-            focused_atomic_projection_scroll_fixture_with_state(
+            focused_atomic_projection_scroll_fixture_with_state_and_underline_offset(
                 caret_visible,
                 preedit,
                 projected_content,
+                underline_offset,
             );
         plan_and_validate_property_scroll_scene(
             &arena,
@@ -139,6 +140,19 @@ fn property_scroll_b2_focused_atomic_post_composite_state_preserves_resident_reu
             generous_budget(),
         )
         .expect("focused atomic projection state must remain compiler-sealed")
+    };
+    let composite_edges = |scene: &ValidatedPropertyScrollScene| {
+        let boundary = scene.boundaries.first().unwrap();
+        let PropertyScrollPostCompositeSchedule::FocusedAtomicProjectionSidecars(sidecars) =
+            &boundary.planner.seal.post_composite
+        else {
+            panic!("focused preedit scene must own generic composite edges")
+        };
+        sidecars
+            .edges
+            .iter()
+            .map(|edge| (edge.id.role, edge.payload_identity.clone()))
+            .collect::<Vec<_>>()
     };
     let prepare_emit = |viewport: &mut Viewport,
                         scene: ValidatedPropertyScrollScene|
@@ -168,18 +182,38 @@ fn property_scroll_b2_focused_atomic_post_composite_state_preserves_resident_reu
     };
 
     let mut viewport = Viewport::new();
-    let (cold_stamp, cold) = prepare_emit(&mut viewport, make_scene(true, None, "projected"));
+    let cold_scene = make_scene(true, None, "projected", [0.0; 2]);
+    assert_eq!(
+        composite_edges(&cold_scene)
+            .iter()
+            .filter(|(role, _)| *role == PaintChunkRole::Caret)
+            .count(),
+        1,
+    );
+    let (cold_stamp, cold) = prepare_emit(&mut viewport, cold_scene);
     assert_eq!((cold.reraster_count, cold.reuse_count), (1, 0));
 
-    let (caret_stamp, caret) = prepare_emit(&mut viewport, make_scene(false, None, "projected"));
+    let hidden_caret_scene = make_scene(false, None, "projected", [0.0; 2]);
+    assert!(
+        composite_edges(&hidden_caret_scene)
+            .iter()
+            .all(|(role, _)| *role != PaintChunkRole::Caret),
+        "caret blink removes only the generic caret edge",
+    );
+    let (caret_stamp, caret) = prepare_emit(&mut viewport, hidden_caret_scene);
     assert_eq!(
         caret_stamp, cold_stamp,
         "caret visibility is post-composite"
     );
     assert_eq!((caret.reraster_count, caret.reuse_count), (0, 1));
 
-    let (preedit_stamp, preedit) =
-        prepare_emit(&mut viewport, make_scene(true, Some("中"), "projected"));
+    let preedit_scene = make_scene(true, Some("中"), "projected", [0.0; 2]);
+    let preedit_underline = composite_edges(&preedit_scene)
+        .into_iter()
+        .find(|(role, _)| *role == PaintChunkRole::TextDecoration)
+        .map(|(_, payload)| payload)
+        .expect("focused preedit scene must own one underline edge");
+    let (preedit_stamp, preedit) = prepare_emit(&mut viewport, preedit_scene);
     assert_eq!(
         preedit_stamp.identity.resident_key(),
         cold_stamp.identity.resident_key(),
@@ -191,8 +225,10 @@ fn property_scroll_b2_focused_atomic_post_composite_state_preserves_resident_reu
     );
     assert_eq!((preedit.reraster_count, preedit.reuse_count), (1, 0));
 
-    let (warm_preedit_stamp, warm_preedit) =
-        prepare_emit(&mut viewport, make_scene(true, Some("中"), "projected"));
+    let (warm_preedit_stamp, warm_preedit) = prepare_emit(
+        &mut viewport,
+        make_scene(true, Some("中"), "projected", [0.0; 2]),
+    );
     assert_eq!(
         warm_preedit_stamp, preedit_stamp,
         "stable preedit glyphs preserve the resident raster stamp",
@@ -202,8 +238,34 @@ fn property_scroll_b2_focused_atomic_post_composite_state_preserves_resident_reu
         (0, 1),
     );
 
-    let (content_stamp, content) =
-        prepare_emit(&mut viewport, make_scene(true, None, "projection"));
+    let shifted_underline_scene = make_scene(true, Some("中"), "projected", [1.0, 0.0]);
+    let shifted_underline = composite_edges(&shifted_underline_scene)
+        .into_iter()
+        .find(|(role, _)| *role == PaintChunkRole::TextDecoration)
+        .map(|(_, payload)| payload)
+        .expect("shifted preedit scene must own one underline edge");
+    assert_ne!(
+        shifted_underline, preedit_underline,
+        "the fixture must change only the generic underline edge payload",
+    );
+    let (shifted_underline_stamp, shifted_underline_trace) =
+        prepare_emit(&mut viewport, shifted_underline_scene);
+    assert_eq!(
+        shifted_underline_stamp, preedit_stamp,
+        "preedit underline payload is post-composite and cannot enter resident raster identity",
+    );
+    assert_eq!(
+        (
+            shifted_underline_trace.reraster_count,
+            shifted_underline_trace.reuse_count,
+        ),
+        (0, 1),
+    );
+
+    let (content_stamp, content) = prepare_emit(
+        &mut viewport,
+        make_scene(true, None, "projection", [0.0; 2]),
+    );
     assert_eq!(
         content_stamp.identity.resident_key(),
         cold_stamp.identity.resident_key(),

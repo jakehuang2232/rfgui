@@ -542,6 +542,26 @@ fn focused_atomic_projection_scroll_fixture_with_state(
     PropertyTrees,
     PaintGenerationTracker,
 ) {
+    focused_atomic_projection_scroll_fixture_with_state_and_underline_offset(
+        caret_visible,
+        preedit,
+        projected_content,
+        [0.0; 2],
+    )
+}
+
+fn focused_atomic_projection_scroll_fixture_with_state_and_underline_offset(
+    caret_visible: bool,
+    preedit: Option<&str>,
+    projected_content: &'static str,
+    preedit_underline_offset: [f32; 2],
+) -> (
+    NodeArena,
+    NodeKey,
+    NodeKey,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
     let width = 132.0;
     let scroll_y = 0.0;
     let mut text_component = TextArea::new();
@@ -550,6 +570,7 @@ fn focused_atomic_projection_scroll_fixture_with_state(
     text_component.line_height = 1.25;
     text_component.is_focused = true;
     text_component.caret_visible = caret_visible;
+    text_component.preedit_underline_test_offset = preedit_underline_offset;
     text_component.cursor_char = usize::from(preedit.is_some()) * 8;
     if let Some(preedit) = preedit {
         text_component.ime_preedit = preedit.to_string();

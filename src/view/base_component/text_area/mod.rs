@@ -825,6 +825,8 @@ pub struct TextArea {
     pub(crate) retained_source_test_active_animator: bool,
     #[cfg(test)]
     pub(crate) retained_source_test_deferred: bool,
+    #[cfg(test)]
+    pub(crate) preedit_underline_test_offset: [f32; 2],
 
     // handlers
     pub(crate) on_change_handlers: Vec<TextChangeHandlerProp>,
@@ -896,6 +898,8 @@ impl Default for TextArea {
             retained_source_test_active_animator: false,
             #[cfg(test)]
             retained_source_test_deferred: false,
+            #[cfg(test)]
+            preedit_underline_test_offset: [0.0; 2],
 
             on_change_handlers: Vec::new(),
             on_focus_handlers: Vec::new(),
