@@ -3912,6 +3912,7 @@ mod culling_tests;
 mod custom_leaf_tests;
 mod custom_wrapper_tests;
 mod effect_store_tests;
+mod generic_composite_edge_tests;
 mod inline_span_tests;
 mod metadata_preflight_tests;
 mod outer_shadow_tests;

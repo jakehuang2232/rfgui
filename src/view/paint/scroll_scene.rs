@@ -10,7 +10,7 @@ use crate::view::base_component::{
     RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollHostAdmissionSnapshot, RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollTextAreaSubtreeAdmissionSnapshot, RetainedScrollTransformHostAdmissionSnapshot,
-    RetainedSurfaceBounds, UiBuildContext, persistent_target_texture_descriptors,
+    Rect, RetainedSurfaceBounds, UiBuildContext, persistent_target_texture_descriptors,
     scroll_content_layer_stable_key, text_area::FocusedAtomicCaretSourcePaintSeal,
     texture_desc_for_logical_bounds,
 };
@@ -26,9 +26,7 @@ use crate::view::render_pass::ClearPass;
 use crate::view::render_pass::composite_layer_pass::{
     CompositeLayerInput, CompositeLayerOutput, CompositeLayerParams, CompositeLayerPass, LayerIn,
 };
-use crate::view::render_pass::draw_rect_pass::{
-    DrawRectInput, DrawRectOutput, DrawRectPass, RenderTargetOut,
-};
+use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::texture_composite_pass::{
     TextureCompositeInput, TextureCompositeOutput, TextureCompositePass, TextureCompositeSourceIn,
 };
@@ -69,9 +67,10 @@ use super::frame_plan::opaque_order_count;
 use super::{
     FramePaintPlanError, FramePaintPlanRejection, PaintArtifact, PaintArtifactTarget,
     PaintOwnerSnapshot, PaintScrollContentWitness, PaintScrollTextAreaSubtreeWitness,
-    PreparedScrollContentCompositeGeometry, RecordedRetainedTextAreaCaretOverlay,
-    RetainedSurfaceCompileAction, RetainedSurfaceRasterInputs, RetainedSurfaceRasterRole,
-    RetainedSurfaceRasterStamp, validated_scroll_content_raster_stamp,
+    PaintCompositeEdge, PreparedScrollContentCompositeGeometry, RetainedSurfaceCompileAction,
+    RetainedSurfaceRasterInputs, RetainedSurfaceRasterRole, RetainedSurfaceRasterStamp,
+    emit_paint_composite_edges, intersect_logical_scissors, paint_composite_edge_opaque_delta,
+    validated_scroll_content_raster_stamp,
     validated_scroll_text_area_content_raster_stamp,
 };
 
@@ -92,49 +91,14 @@ enum PropertyScrollHostAdmissionKind {
     ),
 }
 
-#[derive(Clone, Debug)]
-struct PropertyScrollInteractiveTextAreaCaretSeal {
-    recorded: RecordedRetainedTextAreaCaretOverlay,
-}
-
-impl PropertyScrollInteractiveTextAreaCaretSeal {
-    fn from_recorded(recorded: &RecordedRetainedTextAreaCaretOverlay) -> Option<Self> {
-        recorded.is_canonical().then(|| Self {
-            recorded: recorded.clone(),
-        })
-    }
-
-    fn is_canonical(&self) -> bool {
-        self.recorded.is_canonical()
-    }
-}
-
-impl PartialEq for PropertyScrollInteractiveTextAreaCaretSeal {
-    fn eq(&self, other: &Self) -> bool {
-        self.is_canonical()
-            && other.is_canonical()
-            && self.recorded.identity == other.recorded.identity
-            && self
-                .recorded
-                .op
-                .as_ref()
-                .and_then(|op| super::PaintPayloadIdentity::prepared_rects([op]))
-                == other
-                    .recorded
-                    .op
-                    .as_ref()
-                    .and_then(|op| super::PaintPayloadIdentity::prepared_rects([op]))
-    }
-}
-
-impl Eq for PropertyScrollInteractiveTextAreaCaretSeal {}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PropertyScrollFocusedAtomicProjectionSidecarSeal {
     caret: crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal,
     preedit: Option<crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
     text_area_clip: ClipNodeSnapshot,
     outer_clip: ClipNodeSnapshot,
+    properties: PropertyTreeState,
+    edges: Arc<[PaintCompositeEdge]>,
 }
 
 impl PropertyScrollFocusedAtomicProjectionSidecarSeal {
@@ -143,17 +107,21 @@ impl PropertyScrollFocusedAtomicProjectionSidecarSeal {
         preedit: Option<&crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
         text_area_clip: ClipNodeSnapshot,
         outer_clip: ClipNodeSnapshot,
+        properties: PropertyTreeState,
     ) -> Option<Self> {
-        let seal = Self {
+        let mut seal = Self {
             caret: caret.clone(),
             preedit: preedit.cloned(),
             text_area_clip,
             outer_clip,
+            properties,
+            edges: Arc::from([]),
         };
+        seal.edges = seal.reconstructed_edges()?.into();
         seal.is_canonical().then_some(seal)
     }
 
-    fn is_canonical(&self) -> bool {
+    fn source_is_canonical(&self) -> bool {
         self.caret.is_canonical()
             && self.preedit.as_ref().is_none_or(|preedit| {
                 preedit.is_canonical()
@@ -190,10 +158,19 @@ impl PropertyScrollFocusedAtomicProjectionSidecarSeal {
             && self.outer_clip.logical_scissor[1]
                 .checked_add(self.outer_clip.logical_scissor[3])
                 .is_some()
+            && self.properties.clip == Some(self.text_area_clip.id)
+            && self.properties.scroll.is_some()
+    }
+
+    fn is_canonical(&self) -> bool {
+        self.source_is_canonical()
+            && self
+                .reconstructed_edges()
+                .is_some_and(|edges| edges.as_slice() == self.edges.as_ref())
     }
 
     fn draw_op(&self) -> Option<super::DrawRectOp> {
-        if !self.is_canonical() {
+        if !self.source_is_canonical() {
             return None;
         }
         let FocusedAtomicCaretSourcePaintSeal::Present {
@@ -220,7 +197,7 @@ impl PropertyScrollFocusedAtomicProjectionSidecarSeal {
 
     fn preedit_draw_op(&self) -> Option<super::DrawRectOp> {
         let preedit = self.preedit.as_ref()?;
-        if !self.is_canonical() {
+        if !self.source_is_canonical() {
             return None;
         }
         let [x, y, width, height] = preedit.underline_bounds_bits.map(f32::from_bits);
@@ -238,6 +215,91 @@ impl PropertyScrollFocusedAtomicProjectionSidecarSeal {
             == Some(&preedit.underline_identity))
         .then_some(op)
     }
+
+    fn reconstructed_edges(&self) -> Option<Vec<PaintCompositeEdge>> {
+        if !self.source_is_canonical() {
+            return None;
+        }
+        let Some(logical_scissor) = intersect_logical_scissors(
+            self.text_area_clip.logical_scissor,
+            self.outer_clip.logical_scissor,
+        ) else {
+            return Some(Vec::new());
+        };
+        let mut edges = Vec::with_capacity(2);
+        if let (Some(preedit), Some(op)) = (&self.preedit, self.preedit_draw_op()) {
+            let [x, y, width, height] = preedit.underline_bounds_bits.map(f32::from_bits);
+            edges.push(PaintCompositeEdge::new_draw_rect(
+                super::PaintChunkId {
+                    owner: self.caret.owner,
+                    scope: super::PaintPropertyScope::Contents,
+                    phase: super::PaintNodePhase::AfterChildren,
+                    slot: 0,
+                    role: super::PaintChunkRole::TextDecoration,
+                },
+                self.caret.owner,
+                Rect {
+                    x,
+                    y,
+                    width,
+                    height,
+                },
+                self.properties,
+                Some(logical_scissor),
+                op,
+            )?);
+        }
+        if let (
+            FocusedAtomicCaretSourcePaintSeal::Present { bounds_bits, .. },
+            Some(op),
+        ) = (&self.caret.paint, self.draw_op())
+        {
+            let [x, y, width, height] = bounds_bits.map(f32::from_bits);
+            edges.push(PaintCompositeEdge::new_draw_rect(
+                super::PaintChunkId {
+                    owner: self.caret.owner,
+                    scope: super::PaintPropertyScope::Contents,
+                    phase: super::PaintNodePhase::AfterChildren,
+                    slot: 1,
+                    role: super::PaintChunkRole::Caret,
+                },
+                self.caret.owner,
+                Rect {
+                    x,
+                    y,
+                    width,
+                    height,
+                },
+                self.properties,
+                Some(logical_scissor),
+                op,
+            )?);
+        }
+        Some(edges)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PropertyScrollInteractiveTextAreaCaretSeal {
+    edges: Arc<[PaintCompositeEdge]>,
+}
+
+impl PropertyScrollInteractiveTextAreaCaretSeal {
+    fn from_edges(edges: Arc<[PaintCompositeEdge]>) -> Option<Self> {
+        let seal = Self { edges };
+        seal.is_canonical().then_some(seal)
+    }
+
+    fn is_canonical(&self) -> bool {
+        self.edges.len() <= 1
+            && self.edges.iter().all(|edge| {
+                edge.is_canonical()
+                    && edge.id.scope == super::PaintPropertyScope::Contents
+                    && edge.id.phase == super::PaintNodePhase::AfterChildren
+                    && edge.id.slot == 1
+                    && edge.id.role == super::PaintChunkRole::Caret
+            })
+    }
 }
 
 /// Closed schedule attached to the content-composite boundary. Existing
@@ -254,118 +316,33 @@ enum PropertyScrollPostCompositeSchedule {
 }
 
 impl PropertyScrollPostCompositeSchedule {
-    fn clip_intersection(text_area: [u32; 4], outer: [u32; 4]) -> Option<[u32; 4]> {
-        let left = text_area[0].max(outer[0]);
-        let top = text_area[1].max(outer[1]);
-        let right = text_area[0]
-            .checked_add(text_area[2])?
-            .min(outer[0].checked_add(outer[2])?);
-        let bottom = text_area[1]
-            .checked_add(text_area[3])?
-            .min(outer[1].checked_add(outer[3])?);
-        (right > left && bottom > top).then_some([left, top, right - left, bottom - top])
-    }
-
     fn opaque_order_delta(&self) -> Option<u32> {
         match self {
             Self::NoneForExistingGrammar => Some(0),
             Self::InteractiveTextAreaCaret(caret) => {
-                if !caret.is_canonical() {
-                    return None;
-                }
-                let Some(op) = caret.recorded.op.as_ref() else {
-                    return Some(0);
-                };
-                if Self::clip_intersection(
-                    caret.recorded.identity.text_area_clip.logical_scissor,
-                    caret.recorded.identity.outer_clip.logical_scissor,
-                )
-                .is_none()
-                {
-                    return Some(0);
-                }
-                let mut pass = DrawRectPass::new(
-                    op.params.clone(),
-                    DrawRectInput::default(),
-                    DrawRectOutput::default(),
-                );
-                pass.set_render_mode(op.mode);
-                Some(u32::from(pass.is_opaque_candidate()))
+                caret.is_canonical().then_some(())?;
+                paint_composite_edge_opaque_delta(&caret.edges)
             }
             Self::FocusedAtomicProjectionSidecars(sidecars) => {
-                if Self::clip_intersection(
-                    sidecars.text_area_clip.logical_scissor,
-                    sidecars.outer_clip.logical_scissor,
-                )
-                .is_none()
-                {
-                    return Some(0);
-                }
-                let mut count = 0u32;
-                for op in [sidecars.preedit_draw_op(), sidecars.draw_op()]
-                    .into_iter()
-                    .flatten()
-                {
-                    let mut pass = DrawRectPass::new(
-                        op.params,
-                        DrawRectInput::default(),
-                        DrawRectOutput::default(),
-                    );
-                    pass.set_render_mode(op.mode);
-                    count = count.checked_add(u32::from(pass.is_opaque_candidate()))?;
-                }
-                sidecars.is_canonical().then_some(count)
+                sidecars.is_canonical().then_some(())?;
+                paint_composite_edge_opaque_delta(&sidecars.edges)
             }
         }
     }
 
     fn emit(self, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
-        let (ops, text_area, outer) = match self {
+        let edges = match self {
             Self::NoneForExistingGrammar => return,
             Self::InteractiveTextAreaCaret(caret) => {
                 assert!(caret.is_canonical());
-                let Some(op) = caret.recorded.op else {
-                    return;
-                };
-                (
-                    vec![op],
-                    caret.recorded.identity.text_area_clip.logical_scissor,
-                    caret.recorded.identity.outer_clip.logical_scissor,
-                )
+                caret.edges
             }
             Self::FocusedAtomicProjectionSidecars(sidecars) => {
                 assert!(sidecars.is_canonical());
-                let mut ops = Vec::new();
-                if let Some(preedit) = sidecars.preedit_draw_op() {
-                    ops.push(preedit);
-                }
-                if let Some(caret) = sidecars.draw_op() {
-                    ops.push(caret);
-                }
-                if ops.is_empty() {
-                    return;
-                }
-                (
-                    ops,
-                    sidecars.text_area_clip.logical_scissor,
-                    sidecars.outer_clip.logical_scissor,
-                )
+                sidecars.edges
             }
         };
-        let Some(scissor) = Self::clip_intersection(text_area, outer) else {
-            return;
-        };
-        let previous = ctx.replace_scissor_rect(Some(scissor));
-        for op in ops {
-            let mut pass = DrawRectPass::new(
-                op.params,
-                DrawRectInput::default(),
-                DrawRectOutput::default(),
-            );
-            pass.set_render_mode(op.mode);
-            ctx.emit_draw_rect_pass(graph, pass);
-        }
-        ctx.replace_scissor_rect(previous);
+        emit_paint_composite_edges(&edges, graph, ctx);
     }
 }
 
@@ -586,10 +563,17 @@ impl PropertyScrollHostAdmission {
                 ) => {
                     (*inline).bitwise_eq(sidecar)
                         && caret.is_canonical()
-                        && caret.recorded.identity.owner == inline.text_area_root
-                        && caret.recorded.identity.stable_id == inline.text_area_stable_id
-                        && caret.recorded.identity.oracle_bounds_bits
-                            == inline.caret_oracle_bounds_bits
+                        && caret.edges.iter().all(|edge| {
+                            edge.is_canonical()
+                                && edge.owner == inline.text_area_root
+                                && edge.id.owner == inline.text_area_root
+                                && edge.id.scope == super::PaintPropertyScope::Contents
+                                && edge.id.phase == super::PaintNodePhase::AfterChildren
+                                && edge.id.slot == 1
+                                && edge.id.role == super::PaintChunkRole::Caret
+                                && Some(edge.bounds_bits) == inline.caret_oracle_bounds_bits
+                        })
+                        && (inline.caret_oracle_bounds_bits.is_some() || caret.edges.is_empty())
                 }
                 (
                     PropertyScrollHostAdmissionKind::AtomicProjectionTextAreaSubtree(inline),
@@ -11674,14 +11658,16 @@ impl ValidatedPropertyScrollScene {
     #[cfg(test)]
     pub(crate) fn interactive_caret_is_culled_for_test(&self) -> bool {
         self.boundaries.first().is_some_and(|boundary| {
-            matches!(
-                &boundary.planner.seal.post_composite,
-                PropertyScrollPostCompositeSchedule::InteractiveTextAreaCaret(caret)
-                    if matches!(
-                        caret.recorded.identity.paint,
-                        super::RetainedTextAreaCaretOverlayPaintIdentity::Culled { .. }
-                    )
-            )
+            boundary
+                .planner
+                .seal
+                .interactive_text_area_subtree_admission
+                .is_some_and(|admission| admission.caret_oracle_bounds_bits.is_some())
+                && matches!(
+                    &boundary.planner.seal.post_composite,
+                    PropertyScrollPostCompositeSchedule::InteractiveTextAreaCaret(caret)
+                        if caret.edges.is_empty()
+                )
         })
     }
 
@@ -12086,35 +12072,9 @@ impl ValidatedPropertyScrollScene {
 
     #[cfg(test)]
     pub(crate) fn rejects_synchronized_interactive_caret_width_tamper_for_test(&self) -> bool {
-        let Some(boundary) = self.boundaries.first() else {
-            return false;
-        };
-        let PropertyScrollPostCompositeSchedule::InteractiveTextAreaCaret(caret) =
-            &boundary.planner.seal.post_composite
-        else {
-            return false;
-        };
-        let mut tampered = caret.clone();
-        let Some(op) = tampered.recorded.op.as_mut() else {
-            return false;
-        };
-        op.params.size[0] = 2.0;
-        let bounds_bits = [
-            op.params.position[0],
-            op.params.position[1],
-            op.params.size[0],
-            op.params.size[1],
-        ]
-        .map(f32::to_bits);
-        let Some(payload_identity) = super::PaintPayloadIdentity::prepared_rects([&*op]) else {
-            return false;
-        };
-        tampered.recorded.identity.paint =
-            super::RetainedTextAreaCaretOverlayPaintIdentity::Visible {
-                bounds_bits,
-                payload_identity,
-            };
-        !tampered.is_canonical()
+        self.rejects_synchronized_interactive_caret_geometry_tamper_for_test(|op| {
+            op.params.size[0] = 2.0;
+        })
     }
 
     #[cfg(test)]
@@ -12144,27 +12104,38 @@ impl ValidatedPropertyScrollScene {
         else {
             return false;
         };
-        let mut tampered = caret.clone();
-        let Some(op) = tampered.recorded.op.as_mut() else {
+        let mut tampered_edges = caret.edges.to_vec();
+        let Some(edge) = tampered_edges.first_mut() else {
             return false;
         };
-        mutate(op);
-        let bounds_bits = [
-            op.params.position[0],
-            op.params.position[1],
-            op.params.size[0],
-            op.params.size[1],
+        mutate(&mut edge.op);
+        edge.bounds_bits = [
+            edge.op.params.position[0],
+            edge.op.params.position[1],
+            edge.op.params.size[0],
+            edge.op.params.size[1],
         ]
         .map(f32::to_bits);
-        let Some(payload_identity) = super::PaintPayloadIdentity::prepared_rects([&*op]) else {
+        let Some(payload_identity) = super::PaintPayloadIdentity::prepared_rects([&edge.op]) else {
             return false;
         };
-        tampered.recorded.identity.paint =
-            super::RetainedTextAreaCaretOverlayPaintIdentity::Visible {
-                bounds_bits,
-                payload_identity,
-            };
-        !tampered.is_canonical()
+        edge.payload_identity = payload_identity;
+        let Some(tampered_caret) = PropertyScrollInteractiveTextAreaCaretSeal::from_edges(
+            tampered_edges.into(),
+        ) else {
+            return false;
+        };
+        let tampered =
+            PropertyScrollPostCompositeSchedule::InteractiveTextAreaCaret(tampered_caret);
+        tampered.opaque_order_delta().is_some()
+            && !boundary.planner.seal.admission.exactly_corresponds_to(
+                boundary.planner.seal.text_area_subtree_admission,
+                boundary
+                    .planner
+                    .seal
+                    .interactive_text_area_subtree_admission,
+                &tampered,
+            )
     }
 }
 
@@ -23826,6 +23797,11 @@ fn plan_exact_root_scroll_scene(
             parts.preedit(),
             *text_area_clip,
             *live_outer_clip,
+            PropertyTreeState {
+                clip: Some(local_clip_id),
+                scroll: Some(scroll.id),
+                ..Default::default()
+            },
         ) else {
             return Err(invalid());
         };
@@ -24173,9 +24149,23 @@ fn plan_exact_root_scroll_scene(
         )
         .ok_or_else(invalid)?;
         let (_, resident) = validated.into_parts();
-        let caret =
-            PropertyScrollInteractiveTextAreaCaretSeal::from_recorded(&recorded.caret_overlay)
-                .ok_or_else(invalid)?;
+        if recorded.composite_edges.len() > 1
+            || recorded.composite_edges.iter().any(|edge| {
+                !edge.is_canonical()
+                    || edge.owner != text_area_admission.text_area_root
+                    || edge.id.owner != text_area_admission.text_area_root
+                    || edge.id.scope != super::PaintPropertyScope::Contents
+                    || edge.id.phase != super::PaintNodePhase::AfterChildren
+                    || edge.id.slot != 1
+                    || edge.id.role != super::PaintChunkRole::Caret
+            })
+        {
+            return Err(invalid());
+        }
+        let caret = PropertyScrollInteractiveTextAreaCaretSeal::from_edges(Arc::clone(
+            &recorded.composite_edges,
+        ))
+        .ok_or_else(invalid)?;
         (
             recorded.artifact,
             Some(resident),

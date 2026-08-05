@@ -11217,7 +11217,7 @@ pub(crate) fn validate_scroll_scene_interactive_text_area_content_artifact(
     content_root: crate::view::node_arena::NodeKey,
     text_area_root: crate::view::node_arena::NodeKey,
     paint_grammar: crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar,
-    preedit_seal: Option<super::RetainedTextAreaPreeditRasterSeal>,
+    preedit_seal: Option<super::TextPreeditPayloadIdentity>,
     contents_clip: ClipNodeSnapshot,
     expected_content_bounds_bits: [u32; 4],
 ) -> Option<ValidatedScrollSceneInteractiveTextAreaContentArtifact> {
@@ -11332,7 +11332,7 @@ pub(crate) fn validate_scroll_scene_interactive_text_area_content_artifact(
                 || underline.id.role != PaintChunkRole::TextDecoration
                 || !underline.properties.legacy_boundary_eq(local_state)
                 || !seal.is_canonical()
-                || seal.text_area_root != text_area_root
+                || seal.owner != text_area_root
                 || seal.glyph_identity != glyphs.payload_identity
                 || seal.underline_identity != underline.payload_identity
                 || seal.glyph_bounds_bits != chunk_bounds_bits(glyphs)

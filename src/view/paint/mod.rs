@@ -5,6 +5,7 @@
 
 mod artifact;
 mod compiler;
+mod composite_edge;
 mod coverage_manifest;
 mod frame_plan;
 mod frame_recorder;
@@ -35,12 +36,15 @@ pub(crate) use artifact::{
     PreparedInlineIfcDecorationIdentity, PreparedInlineIfcDecorationOp,
     PreparedScrollbarOverlayIdentity, PreparedScrollbarOverlayOp, PreparedShadowIdentity,
     PreparedShadowOp, PreparedSvgIdentity, PreparedSvgOp, PreparedTextIdentity, PreparedTextOp,
-    PropertyForestBoundarySnapshot, RETAINED_CHILD_MASK_SLOT, RecordedRetainedTextAreaCaretOverlay,
+    PropertyForestBoundarySnapshot, RETAINED_CHILD_MASK_SLOT,
     RetainedAtomicProjectionTextAreaChunkRasterSeal, RetainedChildMaskPlan,
-    RetainedTextAreaCaretOverlayIdentity, RetainedTextAreaCaretOverlayPaintIdentity,
-    RetainedTextAreaGeneratedNodeKind, RetainedTextAreaGeneratedNodeSeal,
-    RetainedTextAreaPreeditRasterSeal, has_canonical_paint_bounds, preedit_glyph_identity_is_exact,
+    TextPayloadNodeKind, TextPayloadNodeIdentity,
+    TextPreeditPayloadIdentity, has_canonical_paint_bounds, preedit_glyph_identity_is_exact,
     preedit_underline_identity_is_exact,
+};
+pub(crate) use composite_edge::{
+    PaintCompositeEdge, emit_paint_composite_edges, intersect_logical_scissors,
+    paint_composite_edge_opaque_delta,
 };
 #[cfg(test)]
 pub(crate) use compiler::validate_media_content_artifact_for_test;

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::hash_map::Entry;
+use std::{collections::hash_map::Entry, sync::Arc};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -90,8 +90,7 @@ use super::{
     PaintScrollAtomicProjectionTextAreaSubtreeWitness, PaintScrollContentWitness,
     PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
     PaintScrollInteractiveTextAreaSubtreeWitness, PaintScrollTextAreaSubtreeWitness,
-    PaintTransformSurfaceWitness, RecordedRetainedTextAreaCaretOverlay,
-    RetainedTextAreaPreeditRasterSeal,
+    PaintCompositeEdge, PaintTransformSurfaceWitness, TextPreeditPayloadIdentity,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1549,7 +1548,7 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
     let host_preedit_seal = if admission.paint_grammar.has_preedit() {
         Some(
             text_area
-                .retained_interactive_preedit_raster_seal(
+                .text_preedit_payload_identity(
                     admission.text_area_root,
                     arena,
                     live_recording_offset,
@@ -4894,8 +4893,8 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
 #[derive(Clone, Debug)]
 pub(super) struct RecordedRetainedInteractiveTextAreaSubtree {
     pub(super) artifact: PaintArtifact,
-    pub(super) preedit_seal: Option<RetainedTextAreaPreeditRasterSeal>,
-    pub(super) caret_overlay: RecordedRetainedTextAreaCaretOverlay,
+    pub(super) preedit_seal: Option<TextPreeditPayloadIdentity>,
+    pub(super) composite_edges: Arc<[PaintCompositeEdge]>,
 }
 
 pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_plan(
@@ -5043,13 +5042,14 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
         );
     }
     let caret_before = text_area
-        .retained_interactive_caret_overlay(
+        .interactive_caret_composite_edge(
             text_area_root,
             arena,
             detached_paint_offset,
             live_paint_offset,
             *live_text_area_clip,
             *live_outer_clip,
+            text_area_state,
             admission.paint_grammar,
             admission.caret_oracle_bounds_bits,
         )
@@ -5057,7 +5057,7 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
     let preedit_before = if admission.paint_grammar.has_preedit() {
         Some(
             text_area
-                .retained_interactive_preedit_raster_seal(
+                .text_preedit_payload_identity(
                     text_area_root,
                     arena,
                     detached_paint_offset,
@@ -5084,13 +5084,14 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
         Err(error) => return Err(error.reasons),
     };
     let caret_after = text_area
-        .retained_interactive_caret_overlay(
+        .interactive_caret_composite_edge(
             text_area_root,
             arena,
             detached_paint_offset,
             live_paint_offset,
             *live_text_area_clip,
             *live_outer_clip,
+            text_area_state,
             admission.paint_grammar,
             admission.caret_oracle_bounds_bits,
         )
@@ -5098,7 +5099,7 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
     let preedit_after = if admission.paint_grammar.has_preedit() {
         Some(
             text_area
-                .retained_interactive_preedit_raster_seal(
+                .text_preedit_payload_identity(
                     text_area_root,
                     arena,
                     detached_paint_offset,
@@ -5108,16 +5109,7 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
     } else {
         None
     };
-    if caret_before.identity != caret_after.identity
-        || caret_before
-            .op
-            .as_ref()
-            .and_then(|op| super::PaintPayloadIdentity::prepared_rects([op]))
-            != caret_after
-                .op
-                .as_ref()
-                .and_then(|op| super::PaintPayloadIdentity::prepared_rects([op]))
-        || preedit_before != preedit_after
+    if caret_before != caret_after || preedit_before != preedit_after
     {
         return Err(vec![FrameArtifactFallbackReason::Validation(
             PaintCoverageValidationError::RecordingPassMismatch,
@@ -5331,7 +5323,7 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
     Ok(RecordedRetainedInteractiveTextAreaSubtree {
         artifact,
         preedit_seal,
-        caret_overlay: caret_after,
+        composite_edges: caret_after.into_iter().collect::<Vec<_>>().into(),
     })
 }
 

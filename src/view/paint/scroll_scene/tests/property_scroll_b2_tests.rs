@@ -117,48 +117,6 @@ fn property_scroll_b2_focused_atomic_projection_prepares_and_emits_post_composit
 }
 
 #[test]
-fn property_scroll_b2_preedit_underline_survives_hidden_caret_blink_phase() {
-    let (arena, root, _, properties, generations) =
-        focused_atomic_projection_scroll_fixture_with_state(false, Some("中"), "projected");
-    let scene = plan_and_validate_property_scroll_scene(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        1.0,
-        [0.0; 2],
-        None,
-        crate::time::Instant::now(),
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-        generous_budget(),
-    )
-    .expect("a preedit underline with the caret blinked off must remain compiler-sealed");
-    let mut viewport = Viewport::new();
-    let frame_owner = viewport.begin_retained_surface_frame_stage().unwrap();
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
-    let parent = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(parent);
-    let prepared = prepare_retained_property_scroll_forest_from_pool(
-        &mut viewport,
-        scene,
-        &mut graph,
-        ctx,
-        [0.0; 4],
-        frame_owner,
-    )
-    .expect("the hidden-caret preedit frame must prepare");
-
-    let outcome = emit_prepared_retained_property_scroll_forest(prepared);
-    assert_eq!(
-        outcome.into_parts().0.opaque_rect_order(),
-        1,
-        "the preedit underline remains in the parent opaque order when the caret is hidden",
-    );
-    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true));
-}
-
-#[test]
 fn property_scroll_b2_focused_atomic_post_composite_state_preserves_resident_reuse() {
     let sampled_at = crate::time::Instant::now();
     let make_scene = |caret_visible, preedit, projected_content| {

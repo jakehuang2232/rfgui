@@ -2867,12 +2867,12 @@ impl TextArea {
         }
     }
 
-    pub(crate) fn retained_interactive_preedit_raster_seal(
+    pub(crate) fn text_preedit_payload_identity(
         &self,
         owner: NodeKey,
         arena: &NodeArena,
         parent_paint_offset: [f32; 2],
-    ) -> Option<crate::view::paint::RetainedTextAreaPreeditRasterSeal> {
+    ) -> Option<crate::view::paint::TextPreeditPayloadIdentity> {
         if self.exact_retained_property_scroll_interactive_subtree(
             owner,
             arena,
@@ -2904,9 +2904,9 @@ impl TextArea {
                 if let Some(run) = node.element.as_any().downcast_ref::<TextAreaTextRun>() {
                     (
                         if run.is_preedit_run {
-                            crate::view::paint::RetainedTextAreaGeneratedNodeKind::PreeditRun
+                            crate::view::paint::TextPayloadNodeKind::PreeditRun
                         } else {
-                            crate::view::paint::RetainedTextAreaGeneratedNodeKind::TextRun
+                            crate::view::paint::TextPayloadNodeKind::TextRun
                         },
                         Arc::<str>::from(run.text.as_str()),
                         run.preedit_cursor,
@@ -2918,14 +2918,14 @@ impl TextArea {
                     .is_some()
                 {
                     (
-                        crate::view::paint::RetainedTextAreaGeneratedNodeKind::LineBreak,
+                        crate::view::paint::TextPayloadNodeKind::LineBreak,
                         Arc::<str>::from(""),
                         None,
                     )
                 } else {
                     return None;
                 };
-            generated_topology.push(crate::view::paint::RetainedTextAreaGeneratedNodeSeal {
+            generated_topology.push(crate::view::paint::TextPayloadNodeIdentity {
                 topology_index,
                 owner: segment.child_key,
                 parent: owner,
@@ -2940,15 +2940,13 @@ impl TextArea {
                 preedit_cursor,
             });
         }
-        let seal = crate::view::paint::RetainedTextAreaPreeditRasterSeal {
-            text_area_root: owner,
-            paint_grammar: super::RetainedInteractiveTextAreaPaintGrammar::FocusedPreeditGlyphs,
+        let seal = crate::view::paint::TextPreeditPayloadIdentity {
+            owner,
             content: Arc::from(self.content.as_str()),
             backing_text: Arc::from(package.ifc.backing_text()),
             ime_preedit: Arc::from(self.ime_preedit.as_str()),
             ime_preedit_cursor: self.ime_preedit_cursor,
             cursor_char: self.cursor_char,
-            cursor_affinity: self.cursor_affinity,
             unified_ifc_source_revision: self.unified_ifc_source_revision.get(),
             last_unified_apply_bits: self
                 .last_unified_apply
@@ -3005,7 +3003,7 @@ impl TextArea {
         }))
     }
 
-    pub(crate) fn retained_interactive_caret_overlay(
+    pub(crate) fn interactive_caret_composite_edge(
         &self,
         owner: NodeKey,
         arena: &NodeArena,
@@ -3013,9 +3011,10 @@ impl TextArea {
         live_parent_paint_offset: [f32; 2],
         text_area_clip: crate::view::compositor::property_tree::ClipNodeSnapshot,
         outer_clip: crate::view::compositor::property_tree::ClipNodeSnapshot,
+        properties: crate::view::compositor::property_tree::PropertyTreeState,
         admitted_grammar: super::RetainedInteractiveTextAreaPaintGrammar,
         admitted_caret_oracle_bounds_bits: Option<[u32; 4]>,
-    ) -> Option<crate::view::paint::RecordedRetainedTextAreaCaretOverlay> {
+    ) -> Option<Option<crate::view::paint::PaintCompositeEdge>> {
         if self.exact_retained_property_scroll_interactive_subtree(
             owner,
             arena,
@@ -3038,69 +3037,35 @@ impl TextArea {
         if oracle_bounds_bits != admitted_caret_oracle_bounds_bits {
             return None;
         }
-        let (paint, op) = if let Some(caret) = caret {
-            let bounds_bits = [
-                caret.bounds.x,
-                caret.bounds.y,
-                caret.bounds.width,
-                caret.bounds.height,
-            ]
-            .map(f32::to_bits);
-            let payload_identity =
-                crate::view::paint::PaintPayloadIdentity::prepared_rects([&caret.op])?;
-            let visible = live_caret_bounds_intersect_clip_chain(
-                &caret.bounds,
-                text_area_clip.logical_scissor,
-                outer_clip.logical_scissor,
-            );
-            if visible {
-                (
-                    crate::view::paint::RetainedTextAreaCaretOverlayPaintIdentity::Visible {
-                        bounds_bits,
-                        payload_identity,
-                    },
-                    Some(caret.op),
-                )
-            } else {
-                (
-                    crate::view::paint::RetainedTextAreaCaretOverlayPaintIdentity::Culled {
-                        bounds_bits,
-                        payload_identity,
-                    },
-                    None,
-                )
-            }
-        } else {
-            (
-                crate::view::paint::RetainedTextAreaCaretOverlayPaintIdentity::Hidden,
-                None,
-            )
+        let Some(caret) = caret else {
+            return Some(None);
         };
-        let overlay = crate::view::paint::RecordedRetainedTextAreaCaretOverlay {
-            identity: crate::view::paint::RetainedTextAreaCaretOverlayIdentity {
+        if !live_caret_bounds_intersect_clip_chain(
+            &caret.bounds,
+            text_area_clip.logical_scissor,
+            outer_clip.logical_scissor,
+        ) {
+            return Some(None);
+        }
+        let logical_scissor = crate::view::paint::intersect_logical_scissors(
+            text_area_clip.logical_scissor,
+            outer_clip.logical_scissor,
+        )?;
+        crate::view::paint::PaintCompositeEdge::new_draw_rect(
+            crate::view::paint::PaintChunkId {
                 owner,
-                stable_id: self.node_id,
-                focused: self.is_focused,
-                should_render: self.layout_state.should_render,
-                caret_visible: self.caret_visible,
-                foreground_color_bits: self.color.to_rgba_f32().map(f32::to_bits),
-                cursor_char: self.cursor_char,
-                cursor_affinity: self.cursor_affinity,
-                ime_preedit_cursor: self.ime_preedit_cursor,
-                local_scroll_bits: [self.scroll_x.to_bits(), self.scroll_y.to_bits()],
-                unified_ifc_source_revision: self.unified_ifc_source_revision.get(),
-                last_unified_apply_bits: self
-                    .last_unified_apply
-                    .get()
-                    .map(|(x, y, revision)| (x.to_bits(), y.to_bits(), revision)),
-                oracle_bounds_bits,
-                text_area_clip,
-                outer_clip,
-                paint,
+                scope: crate::view::paint::PaintPropertyScope::Contents,
+                phase: crate::view::paint::PaintNodePhase::AfterChildren,
+                slot: 1,
+                role: crate::view::paint::PaintChunkRole::Caret,
             },
-            op,
-        };
-        overlay.is_canonical().then_some(overlay)
+            owner,
+            caret.bounds,
+            properties,
+            Some(logical_scissor),
+            caret.op,
+        )
+        .map(Some)
     }
 
     /// Recomputes the TextArea contents clip in the detached scroll-content

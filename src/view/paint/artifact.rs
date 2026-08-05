@@ -3480,7 +3480,7 @@ impl TextSelectionPayloadIdentity {
 pub(crate) enum RetainedInteractiveTextAreaResidentRasterSeal {
     FocusedGlyphs,
     FocusedSelectionGlyphs(TextSelectionPayloadIdentity),
-    FocusedPreeditGlyphs(RetainedTextAreaPreeditRasterSeal),
+    FocusedPreeditGlyphs(TextPreeditPayloadIdentity),
 }
 
 impl RetainedInteractiveTextAreaResidentRasterSeal {
@@ -3696,20 +3696,20 @@ pub(crate) enum PaintPayloadIdentity {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RetainedTextAreaGeneratedNodeKind {
+pub(crate) enum TextPayloadNodeKind {
     TextRun,
     PreeditRun,
     LineBreak,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RetainedTextAreaGeneratedNodeSeal {
+pub(crate) struct TextPayloadNodeIdentity {
     pub(crate) topology_index: usize,
     pub(crate) owner: NodeKey,
     pub(crate) parent: NodeKey,
     pub(crate) stable_id: u64,
     pub(crate) source_id: u64,
-    pub(crate) kind: RetainedTextAreaGeneratedNodeKind,
+    pub(crate) kind: TextPayloadNodeKind,
     pub(crate) char_range: Range<usize>,
     pub(crate) backing_byte_range: Range<usize>,
     pub(crate) preedit_backing_byte_range: Option<Range<usize>>,
@@ -3719,19 +3719,16 @@ pub(crate) struct RetainedTextAreaGeneratedNodeSeal {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RetainedTextAreaPreeditRasterSeal {
-    pub(crate) text_area_root: NodeKey,
-    pub(crate) paint_grammar:
-        crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar,
+pub(crate) struct TextPreeditPayloadIdentity {
+    pub(crate) owner: NodeKey,
     pub(crate) content: Arc<str>,
     pub(crate) backing_text: Arc<str>,
     pub(crate) ime_preedit: Arc<str>,
     pub(crate) ime_preedit_cursor: Option<(usize, usize)>,
     pub(crate) cursor_char: usize,
-    pub(crate) cursor_affinity: crate::view::base_component::text_area::CaretAffinity,
     pub(crate) unified_ifc_source_revision: u64,
     pub(crate) last_unified_apply_bits: Option<(u32, u32, u64)>,
-    pub(crate) generated_topology: Arc<[RetainedTextAreaGeneratedNodeSeal]>,
+    pub(crate) generated_topology: Arc<[TextPayloadNodeIdentity]>,
     pub(crate) foreground_color_bits: [u32; 4],
     pub(crate) glyph_bounds_bits: [u32; 4],
     pub(crate) underline_bounds_bits: [u32; 4],
@@ -3739,11 +3736,9 @@ pub(crate) struct RetainedTextAreaPreeditRasterSeal {
     pub(crate) underline_identity: PaintPayloadIdentity,
 }
 
-impl RetainedTextAreaPreeditRasterSeal {
+impl TextPreeditPayloadIdentity {
     pub(crate) fn is_canonical(&self) -> bool {
-        if self.paint_grammar
-            != crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedPreeditGlyphs
-            || self.ime_preedit.is_empty()
+        if self.ime_preedit.is_empty()
             || self
                 .foreground_color_bits
                 .map(f32::from_bits)
@@ -3803,8 +3798,8 @@ impl RetainedTextAreaPreeditRasterSeal {
         for (index, entry) in self.generated_topology.iter().enumerate() {
             if entry.topology_index != index
                 || entry.stable_id == 0
-                || entry.parent != self.text_area_root
-                || entry.owner == self.text_area_root
+                || entry.parent != self.owner
+                || entry.owner == self.owner
                 || entry.source_id != entry.stable_id
                 || entry.char_range.start > entry.char_range.end
                 || entry.backing_byte_range.start != backing_cursor
@@ -3824,7 +3819,7 @@ impl RetainedTextAreaPreeditRasterSeal {
             }
             let backing = &self.backing_text[entry.backing_byte_range.clone()];
             match entry.kind {
-                RetainedTextAreaGeneratedNodeKind::PreeditRun => {
+                TextPayloadNodeKind::PreeditRun => {
                     preedit_count += 1;
                     let expected_range = entry.backing_byte_range.clone();
                     if preedit_count != 1
@@ -3839,7 +3834,7 @@ impl RetainedTextAreaPreeditRasterSeal {
                         return false;
                     }
                 }
-                RetainedTextAreaGeneratedNodeKind::TextRun => {
+                TextPayloadNodeKind::TextRun => {
                     let char_len = entry.text.chars().count();
                     if entry.char_range
                         != (committed_chars..committed_chars.saturating_add(char_len))
@@ -3853,7 +3848,7 @@ impl RetainedTextAreaPreeditRasterSeal {
                     committed_chars = entry.char_range.end;
                     committed.push_str(&entry.text);
                 }
-                RetainedTextAreaGeneratedNodeKind::LineBreak => {
+                TextPayloadNodeKind::LineBreak => {
                     if entry.char_range != (committed_chars..committed_chars.saturating_add(1))
                         || backing != "\n"
                         || !entry.text.is_empty()
@@ -3943,221 +3938,6 @@ pub(crate) fn preedit_underline_identity_is_exact(
     [left, top, right - left, bottom - top].map(f32::to_bits) == bounds_bits
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum RetainedTextAreaCaretOverlayPaintIdentity {
-    Hidden,
-    Culled {
-        bounds_bits: [u32; 4],
-        payload_identity: PaintPayloadIdentity,
-    },
-    Visible {
-        bounds_bits: [u32; 4],
-        payload_identity: PaintPayloadIdentity,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RetainedTextAreaCaretOverlayIdentity {
-    pub(crate) owner: NodeKey,
-    pub(crate) stable_id: u64,
-    pub(crate) focused: bool,
-    pub(crate) should_render: bool,
-    pub(crate) caret_visible: bool,
-    pub(crate) foreground_color_bits: [u32; 4],
-    pub(crate) cursor_char: usize,
-    pub(crate) cursor_affinity: crate::view::base_component::text_area::CaretAffinity,
-    pub(crate) ime_preedit_cursor: Option<(usize, usize)>,
-    pub(crate) local_scroll_bits: [u32; 2],
-    pub(crate) unified_ifc_source_revision: u64,
-    pub(crate) last_unified_apply_bits: Option<(u32, u32, u64)>,
-    /// Independently recomputed by the source caret-map oracle. Paint/op
-    /// identity must agree with it; clipping cannot redefine geometry.
-    pub(crate) oracle_bounds_bits: Option<[u32; 4]>,
-    pub(crate) text_area_clip: ClipNodeSnapshot,
-    pub(crate) outer_clip: ClipNodeSnapshot,
-    pub(crate) paint: RetainedTextAreaCaretOverlayPaintIdentity,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct RecordedRetainedTextAreaCaretOverlay {
-    pub(crate) identity: RetainedTextAreaCaretOverlayIdentity,
-    pub(crate) op: Option<DrawRectOp>,
-}
-
-impl RecordedRetainedTextAreaCaretOverlay {
-    pub(crate) fn is_canonical(&self) -> bool {
-        let identity = &self.identity;
-        if identity.stable_id == 0
-            || !identity.focused
-            || !identity.should_render
-            || identity
-                .local_scroll_bits
-                .map(f32::from_bits)
-                .into_iter()
-                .any(|v| !v.is_finite())
-            || identity.unified_ifc_source_revision == 0
-            || identity
-                .last_unified_apply_bits
-                .is_none_or(|(x, y, revision)| {
-                    !f32::from_bits(x).is_finite()
-                        || !f32::from_bits(y).is_finite()
-                        || revision != identity.unified_ifc_source_revision
-                })
-            || identity.text_area_clip.id.owner != identity.owner
-            || identity.text_area_clip.owner != identity.owner
-            || identity.text_area_clip.id.role != ClipNodeRole::ContentsClip
-            || identity.text_area_clip.parent != Some(identity.outer_clip.id)
-            || identity.outer_clip.id.owner != identity.outer_clip.owner
-            || identity.outer_clip.id.role != ClipNodeRole::ContentsClip
-            || identity.outer_clip.owner == identity.owner
-            || identity.outer_clip.id == identity.text_area_clip.id
-            || identity.outer_clip.parent.is_some()
-            || identity.text_area_clip.behavior != ClipBehavior::Intersect
-            || identity.outer_clip.behavior != ClipBehavior::Intersect
-            || identity.text_area_clip.generation == 0
-            || identity.outer_clip.generation == 0
-            || identity
-                .foreground_color_bits
-                .map(f32::from_bits)
-                .into_iter()
-                .any(|channel| !channel.is_finite() || !(0.0..=1.0).contains(&channel))
-            || identity.text_area_clip.logical_scissor[0]
-                .checked_add(identity.text_area_clip.logical_scissor[2])
-                .is_none()
-            || identity.text_area_clip.logical_scissor[1]
-                .checked_add(identity.text_area_clip.logical_scissor[3])
-                .is_none()
-            || identity.outer_clip.logical_scissor[0]
-                .checked_add(identity.outer_clip.logical_scissor[2])
-                .is_none()
-            || identity.outer_clip.logical_scissor[1]
-                .checked_add(identity.outer_clip.logical_scissor[3])
-                .is_none()
-        {
-            return false;
-        }
-        match (&identity.paint, &self.op, identity.oracle_bounds_bits) {
-            (RetainedTextAreaCaretOverlayPaintIdentity::Hidden, None, None) => {
-                !identity.caret_visible
-            }
-            (
-                RetainedTextAreaCaretOverlayPaintIdentity::Culled {
-                    bounds_bits,
-                    payload_identity,
-                },
-                None,
-                Some(oracle_bounds_bits),
-            ) => {
-                identity.caret_visible
-                    && *bounds_bits == oracle_bounds_bits
-                    && caret_payload_identity_is_exact(
-                        *bounds_bits,
-                        payload_identity,
-                        identity.foreground_color_bits,
-                    )
-                    && !caret_bounds_intersect_live_clip_chain(
-                        *bounds_bits,
-                        identity.text_area_clip.logical_scissor,
-                        identity.outer_clip.logical_scissor,
-                    )
-            }
-            (
-                RetainedTextAreaCaretOverlayPaintIdentity::Visible {
-                    bounds_bits,
-                    payload_identity,
-                },
-                Some(op),
-                Some(oracle_bounds_bits),
-            ) => {
-                identity.caret_visible
-                    && *bounds_bits == oracle_bounds_bits
-                    && op.mode == RectRenderMode::FillOnly
-                    && op.params.size[0].to_bits() == 1.0_f32.to_bits()
-                    && op.params.size[1].is_finite()
-                    && op.params.size[1] > 0.0
-                    && op.params.opacity.to_bits() == 1.0_f32.to_bits()
-                    && op.params.fill_color.map(f32::to_bits) == identity.foreground_color_bits
-                    && *bounds_bits
-                        == [
-                            op.params.position[0],
-                            op.params.position[1],
-                            op.params.size[0],
-                            op.params.size[1],
-                        ]
-                        .map(f32::to_bits)
-                    && PaintPayloadIdentity::prepared_rects([op]).as_ref() == Some(payload_identity)
-                    && caret_bounds_intersect_live_clip_chain(
-                        *bounds_bits,
-                        identity.text_area_clip.logical_scissor,
-                        identity.outer_clip.logical_scissor,
-                    )
-            }
-            _ => false,
-        }
-    }
-
-    pub(crate) fn bitwise_eq(&self, other: &Self) -> bool {
-        self.is_canonical()
-            && other.is_canonical()
-            && self.identity == other.identity
-            && self
-                .op
-                .as_ref()
-                .and_then(|op| PaintPayloadIdentity::prepared_rects([op]))
-                == other
-                    .op
-                    .as_ref()
-                    .and_then(|op| PaintPayloadIdentity::prepared_rects([op]))
-    }
-}
-
-fn caret_payload_identity_is_exact(
-    bounds_bits: [u32; 4],
-    payload_identity: &PaintPayloadIdentity,
-    foreground_color_bits: [u32; 4],
-) -> bool {
-    let PaintPayloadIdentity::PreparedRects(rects) = payload_identity else {
-        return false;
-    };
-    let [rect] = rects.as_ref() else {
-        return false;
-    };
-    rect.mode == RectRenderMode::FillOnly
-        && rect.params.position_bits == [bounds_bits[0], bounds_bits[1]]
-        && rect.params.size_bits == [bounds_bits[2], bounds_bits[3]]
-        && bounds_bits[2] == 1.0_f32.to_bits()
-        && f32::from_bits(bounds_bits[3]).is_finite()
-        && f32::from_bits(bounds_bits[3]) > 0.0
-        && rect.params.opacity_bits == 1.0_f32.to_bits()
-        && rect.params.fill_color_bits == foreground_color_bits
-}
-
-fn caret_bounds_intersect_live_clip_chain(
-    bounds_bits: [u32; 4],
-    text_area_scissor: [u32; 4],
-    outer_scissor: [u32; 4],
-) -> bool {
-    let [x, y, width, height] = bounds_bits.map(f32::from_bits);
-    let left = text_area_scissor[0].max(outer_scissor[0]) as f32;
-    let top = text_area_scissor[1].max(outer_scissor[1]) as f32;
-    let (Some(text_right), Some(outer_right), Some(text_bottom), Some(outer_bottom)) = (
-        text_area_scissor[0].checked_add(text_area_scissor[2]),
-        outer_scissor[0].checked_add(outer_scissor[2]),
-        text_area_scissor[1].checked_add(text_area_scissor[3]),
-        outer_scissor[1].checked_add(outer_scissor[3]),
-    ) else {
-        return false;
-    };
-    let right = text_right.min(outer_right) as f32;
-    let bottom = text_bottom.min(outer_bottom) as f32;
-    [x, y, width, height].into_iter().all(f32::is_finite)
-        && width > 0.0
-        && height > 0.0
-        && x < right
-        && x + width > left
-        && y < bottom
-        && y + height > top
-}
 
 impl PaintPayloadIdentity {
     pub(crate) fn text_selection_identity(
