@@ -401,14 +401,13 @@ fn retained_auto_scroll_text_area_selection_is_exact_reusable_and_invalidating()
         select(&arena, &roots, &properties, &generations),
     );
     assert_eq!((baseline.reraster_count, baseline.reuse_count), (1, 0));
-    assert!(matches!(
-        baseline_stamp.text_area_paint_grammar,
-        Some(crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-            start_char: 2,
-            end_char: 18,
-            ..
-        })
-    ));
+    let baseline_selection = baseline_stamp
+        .chunks
+        .iter()
+        .find(|chunk| chunk.id.role == crate::view::paint::PaintChunkRole::SelectionUnderlay)
+        .and_then(|chunk| chunk.payload_identity.text_selection_identity())
+        .expect("selection payload identity");
+    assert_eq!((baseline_selection.start_char, baseline_selection.end_char), (2, 18));
     assert_eq!(
         baseline_stamp
             .chunks
@@ -436,20 +435,12 @@ fn retained_auto_scroll_text_area_selection_is_exact_reusable_and_invalidating()
     op_count.chunks[1].op_count = 0;
     let mut payload = baseline_stamp.clone();
     payload.chunks[1].payload_identity = Default::default();
-    let mut grammar_legal_range = baseline_stamp.clone();
-    let Some(
+    let legal_range_grammar =
         crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-            start_char,
-            end_char,
-            ..
-        },
-    ) = grammar_legal_range.text_area_paint_grammar.as_mut()
-    else {
-        unreachable!()
-    };
-    *start_char = 3;
-    *end_char = 17;
-    let legal_range_grammar = grammar_legal_range.text_area_paint_grammar.unwrap();
+            start_char: 3,
+            end_char: 17,
+            color_rgba_bits: baseline_selection.color_rgba_bits,
+        };
     let [crate::view::paint::RetainedSurfaceRasterStepStamp::ArtifactSpan(artifact_span)] =
         baseline_stamp.ordered_steps.as_slice()
     else {
@@ -467,55 +458,7 @@ fn retained_auto_scroll_text_area_selection_is_exact_reusable_and_invalidating()
         .is_none(),
         "the constructor seam must reject a legal range that does not match the sealed payload"
     );
-    let mut grammar_range = baseline_stamp.clone();
-    let Some(
-        crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-            start_char,
-            end_char,
-            ..
-        },
-    ) = grammar_range.text_area_paint_grammar.as_mut()
-    else {
-        unreachable!()
-    };
-    *start_char = *end_char;
-    let mut grammar_kind = baseline_stamp.clone();
-    grammar_kind.text_area_paint_grammar =
-        Some(crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::GlyphOnly);
-    let mut grammar_nan = baseline_stamp.clone();
-    let Some(
-        crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-            color_rgba_bits,
-            ..
-        },
-    ) = grammar_nan.text_area_paint_grammar.as_mut()
-    else {
-        unreachable!()
-    };
-    color_rgba_bits[0] = f32::NAN.to_bits();
-    let mut grammar_out_of_range = baseline_stamp.clone();
-    let Some(
-        crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-            color_rgba_bits,
-            ..
-        },
-    ) = grammar_out_of_range.text_area_paint_grammar.as_mut()
-    else {
-        unreachable!()
-    };
-    color_rgba_bits[3] = 1.5_f32.to_bits();
-    for tampered in [
-        role,
-        slot,
-        order,
-        op_count,
-        payload,
-        grammar_legal_range,
-        grammar_range,
-        grammar_kind,
-        grammar_nan,
-        grammar_out_of_range,
-    ] {
+    for tampered in [role, slot, order, op_count, payload] {
         assert!(!crate::view::paint::retained_surface_raster_stamp_is_canonical(&tampered));
     }
     assert_eq!(viewport.compositor.retained_surfaces, pool_before_tamper);
@@ -671,16 +614,15 @@ fn retained_auto_scroll_text_area_selection_is_exact_reusable_and_invalidating()
         &mut viewport,
         select(&arena, &roots, &properties, &generations),
     );
-    assert!(matches!(
-        local_scroll_stamp.text_area_paint_grammar,
-        Some(
-            crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-                start_char: 5,
-                end_char: 24,
-                ..
-            }
-        )
-    ));
+    assert!(local_scroll_stamp.chunks.iter().any(|chunk| {
+        chunk.id.role == crate::view::paint::PaintChunkRole::SelectionUnderlay
+            && chunk
+                .payload_identity
+                .text_selection_identity()
+                .is_some_and(|selection| {
+                    (selection.start_char, selection.end_char) == (5, 24)
+                })
+    }));
     assert!(
         local_scroll_stamp != color_stamp,
         "C2a local TextArea scroll must invalidate the selection resident stamp"

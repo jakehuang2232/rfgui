@@ -302,9 +302,6 @@ fn effect_transform_fixture() -> EffectTransformForestFixture {
                 parent_opaque_order_after: 0,
             },
         )],
-        text_area_paint_grammar: None,
-        interactive_text_area_resident: None,
-        atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect: Some(PropertyEffectRasterIdentityInputs {
             local_raster_clips: Vec::new(),

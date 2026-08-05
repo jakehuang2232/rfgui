@@ -5300,9 +5300,6 @@ fn property_boundary_program_transform_stamp_is_root_local(
         && stamp.scroll_host.is_none()
         && stamp.property_effect.is_none()
         && stamp.native_scroll_children.is_empty()
-        && stamp.text_area_paint_grammar.is_none()
-        && stamp.interactive_text_area_resident.is_none()
-        && stamp.atomic_projection_text_area_resident.is_none()
         && span.step_index == 0
         && span.owner_topology == stamp.owner_topology
         && span.clip_nodes == stamp.clip_nodes

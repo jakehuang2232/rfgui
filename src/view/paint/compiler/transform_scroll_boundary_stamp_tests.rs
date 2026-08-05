@@ -690,9 +690,6 @@ fn generic_retained_surface_canonicalizers_reject_scroll_boundary_steps() {
             0..0,
             None,
             None,
-            None,
-            None,
-            None,
         )
         .is_none()
     );

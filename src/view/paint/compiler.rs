@@ -2367,6 +2367,9 @@ impl RetainedSurfaceRasterInputs {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RetainedSurfaceRasterStamp {
+    /// Component grammar is deliberately absent. Exact resident content is
+    /// identified by the generic owner topology, local clips, ordered chunk
+    /// headers, payload identities, op counts, and opaque span below.
     pub(crate) identity: RetainedSurfaceRasterIdentity,
     pub(crate) target: RetainedSurfaceRasterInputs,
     pub(crate) owner_topology: Vec<PaintOwnerSnapshot>,
@@ -2375,18 +2378,6 @@ pub(crate) struct RetainedSurfaceRasterStamp {
     pub(crate) op_count: usize,
     pub(crate) opaque_order_span: Range<u32>,
     pub(crate) ordered_steps: Vec<RetainedSurfaceRasterStepStamp>,
-    pub(crate) text_area_paint_grammar:
-        Option<crate::view::base_component::text_area::RetainedTextAreaPaintGrammar>,
-    /// Exact focused TextArea resident dependency. Dynamic caret state is
-    /// deliberately absent: it belongs to the post-composite edge and must
-    /// never invalidate the resident raster.
-    pub(crate) interactive_text_area_resident:
-        Option<RetainedInteractiveTextAreaResidentRasterSeal>,
-    /// Exact closed-family atomic-projection TextArea local-raster dependency.
-    /// Full host-space source grammar remains on the plan/admission resident
-    /// and is deliberately excluded from retained content equality.
-    pub(crate) atomic_projection_text_area_resident:
-        Option<RetainedAtomicProjectionTextAreaRasterDependency>,
     /// Complete baked-scroll raster dependency. This is deliberately absent
     /// from non-scroll surfaces; any offset, generation, clip, scrollbar, or
     /// content-geometry change therefore invalidates reuse.
@@ -2398,15 +2389,6 @@ pub(crate) struct RetainedSurfaceRasterStamp {
     /// Existing retained grammars must keep this empty.
     pub(crate) native_scroll_children:
         Vec<super::frame_plan::NativeScrollForestChildRasterDependency>,
-}
-
-/// Closed raster-only dependency family for bounded atomic-projection
-/// TextArea content. Each admitted grammar owns a distinct typed dependency;
-/// callers cannot combine their fields into a hybrid stamp.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum RetainedAtomicProjectionTextAreaRasterDependency {
-    Glyph(RetainedAtomicProjectionTextAreaRasterDependencySeal),
-    Selection(RetainedAtomicProjectionSelectionTextAreaRasterDependencySeal),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3272,9 +3254,6 @@ fn transform_scroll_receiver_raster_stamp_is_canonical_with(
         || stamp.identity.color_key
             != crate::view::base_component::transformed_layer_stable_key(stamp.identity.stable_id)
         || stamp.scroll_host.is_some()
-        || stamp.text_area_paint_grammar.is_some()
-        || stamp.interactive_text_area_resident.is_some()
-        || stamp.atomic_projection_text_area_resident.is_some()
         || stamp.property_effect.is_some()
         || !stamp.clip_nodes.is_empty()
         || !stamp
@@ -3445,9 +3424,6 @@ fn build_transform_scroll_receiver_raster_stamp(
         op_count,
         opaque_order_span: aggregate_opaque_order_span,
         ordered_steps,
-        text_area_paint_grammar: None,
-        interactive_text_area_resident: None,
-        atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect: None,
         native_scroll_children: Vec::new(),
@@ -3718,9 +3694,6 @@ pub(crate) fn effect_scroll_receiver_raster_stamp_validates_contract(
         || stamp.identity.color_key
             != crate::view::base_component::isolation_layer_stable_key(contract.stable_id())
         || stamp.scroll_host.is_some()
-        || stamp.text_area_paint_grammar.is_some()
-        || stamp.interactive_text_area_resident.is_some()
-        || stamp.atomic_projection_text_area_resident.is_some()
         || stamp.property_effect.as_ref()
             != Some(&PropertyEffectRasterIdentityInputs {
                 local_raster_clips: contract.isolated_local_raster_clips(),
@@ -3849,9 +3822,6 @@ pub(crate) fn validated_effect_scroll_receiver_raster_stamp(
         op_count,
         opaque_order_span: aggregate_opaque_order_span,
         ordered_steps,
-        text_area_paint_grammar: None,
-        interactive_text_area_resident: None,
-        atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect: Some(PropertyEffectRasterIdentityInputs {
             local_raster_clips: contract.isolated_local_raster_clips(),
@@ -3878,9 +3848,6 @@ pub(crate) fn transform_effect_scroll_outer_raster_stamp_validates_contract(
         || stamp.identity.color_key
             != crate::view::base_component::transformed_layer_stable_key(stamp.identity.stable_id)
         || stamp.scroll_host.is_some()
-        || stamp.text_area_paint_grammar.is_some()
-        || stamp.interactive_text_area_resident.is_some()
-        || stamp.atomic_projection_text_area_resident.is_some()
         || stamp.property_effect.is_some()
         || !stamp.clip_nodes.is_empty()
         || !stamp
@@ -3988,9 +3955,6 @@ pub(crate) fn validated_transform_effect_scroll_outer_raster_stamp(
         op_count,
         opaque_order_span: aggregate_opaque_order_span,
         ordered_steps,
-        text_area_paint_grammar: None,
-        interactive_text_area_resident: None,
-        atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect: None,
         native_scroll_children: Vec::new(),
@@ -4020,9 +3984,6 @@ pub(crate) fn effect_transform_scroll_outer_raster_stamp_validates_contract(
         || stamp.identity.color_key
             != crate::view::base_component::isolation_layer_stable_key(outer_contract.stable_id())
         || stamp.scroll_host.is_some()
-        || stamp.text_area_paint_grammar.is_some()
-        || stamp.interactive_text_area_resident.is_some()
-        || stamp.atomic_projection_text_area_resident.is_some()
         || stamp.property_effect.as_ref()
             != Some(&PropertyEffectRasterIdentityInputs {
                 local_raster_clips: outer_contract.isolated_local_raster_clips(),
@@ -4135,9 +4096,6 @@ pub(crate) fn validated_effect_transform_scroll_outer_raster_stamp(
         op_count,
         opaque_order_span: aggregate_opaque_order_span,
         ordered_steps,
-        text_area_paint_grammar: None,
-        interactive_text_area_resident: None,
-        atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect: Some(PropertyEffectRasterIdentityInputs {
             local_raster_clips: outer_contract.isolated_local_raster_clips(),
@@ -4706,7 +4664,7 @@ pub(crate) fn retained_nested_isolation_composite_geometry_stamp(
     ];
     let canonical = source_bounds_bits
         .iter()
-        .copied()
+        .cloned()
         .map(f32::from_bits)
         .all(f32::is_finite)
         && source_bounds.x >= 0.0
@@ -4833,9 +4791,6 @@ pub(crate) fn validated_retained_surface_tree_raster_stamp(
         aggregate_opaque_order_span,
         None,
         None,
-        None,
-        None,
-        None,
     )
 }
 
@@ -4860,9 +4815,6 @@ pub(crate) fn validated_scroll_content_raster_stamp(
         target,
         vec![RetainedSurfaceRasterStepStamp::ArtifactSpan(artifact_span)],
         aggregate_opaque_order_span,
-        None,
-        None,
-        None,
         None,
         None,
     )
@@ -4958,9 +4910,6 @@ pub(crate) fn validated_native_scroll_forest_content_raster_stamp(
         op_count: artifact_span.op_count,
         opaque_order_span: aggregate_opaque_order_span,
         ordered_steps: vec![RetainedSurfaceRasterStepStamp::ArtifactSpan(artifact_span)],
-        text_area_paint_grammar: None,
-        interactive_text_area_resident: None,
-        atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect: None,
         native_scroll_children: child_dependencies,
@@ -5046,9 +4995,6 @@ pub(crate) fn scroll_content_effect_receiver_raster_stamp_validates_contract(
         || stamp.identity.color_key
             != crate::view::base_component::scroll_content_layer_stable_key(content_stable_id)
         || stamp.scroll_host.is_some()
-        || stamp.text_area_paint_grammar.is_some()
-        || stamp.interactive_text_area_resident.is_some()
-        || stamp.atomic_projection_text_area_resident.is_some()
         || stamp.property_effect.is_some()
         || !stamp.clip_nodes.is_empty()
         || !stamp
@@ -5260,9 +5206,6 @@ pub(crate) fn validated_scroll_content_effect_receiver_raster_stamp(
         op_count,
         opaque_order_span: 0..cursor,
         ordered_steps,
-        text_area_paint_grammar: None,
-        interactive_text_area_resident: None,
-        atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect: None,
         native_scroll_children: Vec::new(),
@@ -5284,7 +5227,39 @@ pub(crate) fn validated_scroll_text_area_content_raster_stamp(
     aggregate_opaque_order_span: Range<u32>,
     paint_grammar: crate::view::base_component::text_area::RetainedTextAreaPaintGrammar,
 ) -> Option<RetainedSurfaceRasterStamp> {
-    if !paint_grammar.is_canonical() {
+    let (_, semantic) = classify_optional_child_mask_stamp_semantics(
+        artifact_span.chunks.as_slice(),
+        boundary_root,
+    )?;
+    let [contents_clip] = artifact_span.clip_nodes.as_slice() else {
+        return None;
+    };
+    let text_area_chunks = semantic
+        .iter()
+        .filter(|chunk| chunk.owner == contents_clip.owner)
+        .cloned()
+        .collect::<Vec<_>>();
+    let grammar_matches = match paint_grammar {
+        crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::GlyphOnly => {
+            matches!(text_area_chunks.as_slice(), [glyph]
+                if glyph.id.role == PaintChunkRole::TextGlyphs)
+        }
+        crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
+            start_char,
+            end_char,
+            color_rgba_bits,
+        } => matches!(text_area_chunks.as_slice(), [selection, glyph]
+            if selection.id.role == PaintChunkRole::SelectionUnderlay
+                && selection.payload_identity.matches_exact_text_selection(
+                    start_char,
+                    end_char,
+                    color_rgba_bits,
+                    selection.op_count,
+                    selection.bounds_bits,
+                )
+                && glyph.id.role == PaintChunkRole::TextGlyphs),
+    };
+    if !paint_grammar.is_canonical() || !grammar_matches {
         return None;
     }
     validated_retained_surface_tree_raster_stamp_with_scroll(
@@ -5296,9 +5271,6 @@ pub(crate) fn validated_scroll_text_area_content_raster_stamp(
         target,
         vec![RetainedSurfaceRasterStepStamp::ArtifactSpan(artifact_span)],
         aggregate_opaque_order_span,
-        None,
-        None,
-        Some(paint_grammar),
         None,
         None,
     )
@@ -5313,7 +5285,43 @@ pub(crate) fn validated_scroll_interactive_text_area_content_raster_stamp(
     resident: RetainedInteractiveTextAreaResidentRasterSeal,
 ) -> Option<RetainedSurfaceRasterStamp> {
     let grammar = resident.paint_grammar();
-    if !resident.is_canonical_for(grammar) {
+    let (_, semantic) = classify_optional_child_mask_stamp_semantics(
+        artifact_span.chunks.as_slice(),
+        boundary_root,
+    )?;
+    let [contents_clip] = artifact_span.clip_nodes.as_slice() else {
+        return None;
+    };
+    let text_area_chunks = semantic
+        .iter()
+        .filter(|chunk| chunk.owner == contents_clip.owner)
+        .cloned()
+        .collect::<Vec<_>>();
+    let resident_matches = match &resident {
+        RetainedInteractiveTextAreaResidentRasterSeal::FocusedGlyphs => {
+            matches!(text_area_chunks.as_slice(), [glyph]
+                if glyph.id.role == PaintChunkRole::TextGlyphs)
+        }
+        RetainedInteractiveTextAreaResidentRasterSeal::FocusedSelectionGlyphs(selection) => {
+            matches!(text_area_chunks.as_slice(), [selection_chunk, glyph]
+                if selection_chunk.id.role == PaintChunkRole::SelectionUnderlay
+                    && selection_chunk.payload_identity.text_selection_identity().as_ref()
+                        == Some(selection)
+                    && glyph.id.role == PaintChunkRole::TextGlyphs)
+        }
+        RetainedInteractiveTextAreaResidentRasterSeal::FocusedPreeditGlyphs(preedit) => {
+            matches!(text_area_chunks.as_slice(), [glyph, underline]
+                if glyph.id.role == PaintChunkRole::TextGlyphs
+                    && glyph.owner == preedit.owner
+                    && glyph.bounds_bits == preedit.glyph_bounds_bits
+                    && glyph.payload_identity == preedit.glyph_identity
+                    && underline.id.role == PaintChunkRole::TextDecoration
+                    && underline.owner == preedit.owner
+                    && underline.bounds_bits == preedit.underline_bounds_bits
+                    && underline.payload_identity == preedit.underline_identity)
+        }
+    };
+    if !resident.is_canonical_for(grammar) || !resident_matches {
         return None;
     }
     validated_retained_surface_tree_raster_stamp_with_scroll(
@@ -5327,17 +5335,89 @@ pub(crate) fn validated_scroll_interactive_text_area_content_raster_stamp(
         aggregate_opaque_order_span,
         None,
         None,
-        None,
-        Some(resident),
-        None,
     )
+}
+
+fn raster_chunk_matches_atomic_seal(
+    chunk: &RetainedSurfaceChunkStamp,
+    seal: &RetainedAtomicProjectionTextAreaChunkRasterSeal,
+) -> bool {
+    chunk.id == seal.id
+        && chunk.owner == seal.owner
+        && chunk.bounds_bits == seal.bounds_bits
+        && chunk.payload_identity == seal.payload_identity
+}
+
+fn artifact_span_matches_atomic_projection_dependency(
+    span: &RetainedSurfaceArtifactSpanStamp,
+    dependency: &RetainedAtomicProjectionTextAreaRasterDependencySeal,
+) -> bool {
+    if !dependency.is_canonical()
+        || span.owner_topology.as_slice() != dependency.owner_topology.as_ref()
+        || span.clip_nodes.as_slice() != [dependency.contents_clip]
+    {
+        return false;
+    }
+    let Some((wrapper, [text_area_glyph, projection_glyph])) =
+        classify_optional_child_mask_stamp_semantics(
+            span.chunks.as_slice(),
+            dependency.content_root,
+        )
+    else {
+        return false;
+    };
+    raster_chunk_matches_atomic_seal(wrapper, &dependency.wrapper_chunk)
+        && raster_chunk_matches_atomic_seal(
+            text_area_glyph,
+            &dependency.text_area_glyph_chunk,
+        )
+        && raster_chunk_matches_atomic_seal(
+            projection_glyph,
+            &dependency.projection_glyph_chunk,
+        )
+}
+
+fn artifact_span_matches_atomic_projection_selection_dependency(
+    span: &RetainedSurfaceArtifactSpanStamp,
+    dependency: &RetainedAtomicProjectionSelectionTextAreaRasterDependencySeal,
+) -> bool {
+    if !dependency.is_canonical()
+        || span.owner_topology.as_slice() != dependency.owner_topology.as_ref()
+        || span.clip_nodes.as_slice() != [dependency.contents_clip]
+    {
+        return false;
+    }
+    let Some((wrapper, [selection, text_area_glyph, projection_glyph])) =
+        classify_optional_child_mask_stamp_semantics(
+            span.chunks.as_slice(),
+            dependency.content_root,
+        )
+    else {
+        return false;
+    };
+    raster_chunk_matches_atomic_seal(wrapper, &dependency.wrapper_chunk)
+        && raster_chunk_matches_atomic_seal(selection, &dependency.selection_chunk)
+        && selection
+            .payload_identity
+            .text_selection_identity()
+            .as_ref()
+            == Some(&dependency.selection)
+        && raster_chunk_matches_atomic_seal(
+            text_area_glyph,
+            &dependency.text_area_glyph_chunk,
+        )
+        && raster_chunk_matches_atomic_seal(
+            projection_glyph,
+            &dependency.projection_glyph_chunk,
+        )
 }
 
 /// Constructs the C3a offset-zero atomic-projection TextArea raster identity.
 ///
-/// The resident is accepted only as the compiler-private seal produced by the
-/// dedicated atomic content validator. Host scroll/clip/overlay state remains
-/// excluded from this content stamp.
+/// The compiler-private resident still validates admission and must exactly
+/// match the generic artifact span, but it is discarded before the stamp is
+/// sealed. Host scroll/clip/overlay state and component grammar therefore do
+/// not enter retained content equality.
 pub(crate) fn validated_scroll_atomic_projection_text_area_content_raster_stamp(
     boundary_root: crate::view::node_arena::NodeKey,
     stable_id: u64,
@@ -5353,6 +5433,9 @@ pub(crate) fn validated_scroll_atomic_projection_text_area_content_raster_stamp(
         return None;
     }
     let raster_dependency = resident.raster_dependency()?;
+    if !artifact_span_matches_atomic_projection_dependency(&artifact_span, &raster_dependency) {
+        return None;
+    }
     validated_retained_surface_tree_raster_stamp_with_scroll(
         boundary_root,
         stable_id,
@@ -5364,18 +5447,13 @@ pub(crate) fn validated_scroll_atomic_projection_text_area_content_raster_stamp(
         aggregate_opaque_order_span,
         None,
         None,
-        None,
-        None,
-        Some(RetainedAtomicProjectionTextAreaRasterDependency::Glyph(
-            raster_dependency,
-        )),
     )
 }
 
 /// Constructs the offset-zero retained raster identity for the admitted
 /// root-selection plus one atomic projection grammar. The stable resident key
-/// remains the normal scroll-content key; exact local output lives solely in
-/// the closed raster dependency variant.
+/// remains the normal scroll-content key; exact local output is retained by
+/// the generic artifact span after the compiler-private dependency agrees.
 pub(crate) fn validated_scroll_atomic_projection_selection_text_area_content_raster_stamp(
     boundary_root: crate::view::node_arena::NodeKey,
     stable_id: u64,
@@ -5391,6 +5469,12 @@ pub(crate) fn validated_scroll_atomic_projection_selection_text_area_content_ras
         return None;
     }
     let raster_dependency = resident.raster_dependency()?;
+    if !artifact_span_matches_atomic_projection_selection_dependency(
+        &artifact_span,
+        &raster_dependency,
+    ) {
+        return None;
+    }
     validated_retained_surface_tree_raster_stamp_with_scroll(
         boundary_root,
         stable_id,
@@ -5402,11 +5486,6 @@ pub(crate) fn validated_scroll_atomic_projection_selection_text_area_content_ras
         aggregate_opaque_order_span,
         None,
         None,
-        None,
-        None,
-        Some(RetainedAtomicProjectionTextAreaRasterDependency::Selection(
-            raster_dependency,
-        )),
     )
 }
 
@@ -5442,9 +5521,6 @@ pub(crate) fn validated_scroll_content_tile_raster_stamp(
         aggregate_opaque_order_span,
         Some(tile),
         None,
-        None,
-        None,
-        None,
     )
 }
 
@@ -5468,9 +5544,6 @@ pub(crate) fn validated_scroll_host_raster_stamp(
         aggregate_opaque_order_span,
         None,
         Some(dependency),
-        None,
-        None,
-        None,
     )
 }
 
@@ -5486,11 +5559,6 @@ fn validated_retained_surface_tree_raster_stamp_with_scroll(
     aggregate_opaque_order_span: Range<u32>,
     scroll_content_tile: Option<super::ScrollContentTileRasterIdentity>,
     scroll_host: Option<RetainedScrollHostRasterDependency>,
-    text_area_paint_grammar: Option<
-        crate::view::base_component::text_area::RetainedTextAreaPaintGrammar,
-    >,
-    interactive_text_area_resident: Option<RetainedInteractiveTextAreaResidentRasterSeal>,
-    atomic_projection_text_area_resident: Option<RetainedAtomicProjectionTextAreaRasterDependency>,
 ) -> Option<RetainedSurfaceRasterStamp> {
     if stable_id == 0 || aggregate_opaque_order_span.start != 0 {
         return None;
@@ -5551,9 +5619,6 @@ fn validated_retained_surface_tree_raster_stamp_with_scroll(
         op_count,
         opaque_order_span: aggregate_opaque_order_span,
         ordered_steps,
-        text_area_paint_grammar,
-        interactive_text_area_resident,
-        atomic_projection_text_area_resident,
         scroll_host,
         property_effect: None,
         native_scroll_children: Vec::new(),
@@ -5636,9 +5701,6 @@ pub(crate) fn validated_property_scene_surface_raster_stamp(
         op_count,
         opaque_order_span: aggregate_opaque_order_span,
         ordered_steps,
-        text_area_paint_grammar: None,
-        interactive_text_area_resident: None,
-        atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect: None,
         native_scroll_children: Vec::new(),
@@ -5800,9 +5862,6 @@ pub(crate) fn property_scene_surface_raster_stamp_is_canonical_at_depth(
             || stamp.identity.role != RetainedSurfaceRasterRole::Transform
             || stamp.identity.scroll_content_tile.is_some()
             || stamp.scroll_host.is_some()
-            || stamp.text_area_paint_grammar.is_some()
-            || stamp.interactive_text_area_resident.is_some()
-            || stamp.atomic_projection_text_area_resident.is_some()
             || stamp.property_effect.is_some()
             || stamp.identity.stable_id == 0
             || stamp.identity.color_key
@@ -5956,9 +6015,6 @@ pub(crate) fn validated_property_effect_surface_raster_stamp(
         op_count,
         opaque_order_span: aggregate_opaque_order_span,
         ordered_steps,
-        text_area_paint_grammar: None,
-        interactive_text_area_resident: None,
-        atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect: Some(PropertyEffectRasterIdentityInputs {
             local_raster_clips: contract.isolated_local_raster_clips(),
@@ -6119,9 +6175,6 @@ pub(crate) fn property_effect_surface_raster_stamp_is_canonical_at_depth(
             || stamp.identity.role != RetainedSurfaceRasterRole::PropertyEffect
             || stamp.identity.scroll_content_tile.is_some()
             || stamp.scroll_host.is_some()
-            || stamp.text_area_paint_grammar.is_some()
-            || stamp.interactive_text_area_resident.is_some()
-            || stamp.atomic_projection_text_area_resident.is_some()
             || stamp.identity.stable_id == 0
             || stamp.identity.color_key
                 != crate::view::base_component::isolation_layer_stable_key(stamp.identity.stable_id)
@@ -6540,9 +6593,6 @@ pub(crate) fn validated_property_boundary_forest_surface_raster_stamp(
         op_count,
         opaque_order_span: aggregate_opaque_order_span,
         ordered_steps,
-        text_area_paint_grammar: None,
-        interactive_text_area_resident: None,
-        atomic_projection_text_area_resident: None,
         scroll_host: None,
         property_effect,
         native_scroll_children: Vec::new(),
@@ -6927,184 +6977,27 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                 (_, None) => true,
                 (_, Some(_)) => false,
             };
-        let scroll_content_text_area_is_canonical = || {
-            if stamp.identity.scroll_content_tile.is_some()
-                || stamp.atomic_projection_text_area_resident.is_some()
-            {
+        let scroll_content_local_artifact_is_canonical = || {
+            if stamp.identity.scroll_content_tile.is_some() {
                 return false;
             }
-            let (paint_grammar, preedit) = match (
-                stamp.text_area_paint_grammar,
-                stamp.interactive_text_area_resident.as_ref(),
-                stamp.atomic_projection_text_area_resident.as_ref(),
-            ) {
-                (Some(grammar), None, None) if grammar.is_canonical() => (Some(grammar), None),
-                (None, Some(resident), None) => {
-                    let grammar = resident.paint_grammar();
-                    if !resident.is_canonical_for(grammar) {
-                        return false;
-                    }
-                    match (grammar, resident) {
-                        (
-                            crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedGlyphs,
-                            RetainedInteractiveTextAreaResidentRasterSeal::FocusedGlyphs,
-                        ) => (
-                            Some(crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::GlyphOnly),
-                            None,
-                        ),
-                        (
-                            crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedSelectionGlyphs {
-                                start_char,
-                                end_char,
-                                color_rgba_bits,
-                            },
-                            RetainedInteractiveTextAreaResidentRasterSeal::FocusedSelectionGlyphs(_),
-                        ) => (
-                            Some(crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-                                start_char,
-                                end_char,
-                                color_rgba_bits,
-                            }),
-                            None,
-                        ),
-                        (
-                            crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedPreeditGlyphs,
-                            RetainedInteractiveTextAreaResidentRasterSeal::FocusedPreeditGlyphs(seal),
-                        ) => (None, Some(seal)),
-                        _ => return false,
-                    }
-                }
-                _ => return false,
-            };
             let [clip] = stamp.clip_nodes.as_slice() else {
                 return false;
             };
-            let wrapper_matches = |wrapper: &RetainedSurfaceChunkStamp| {
-                wrapper.owner == stamp.identity.boundary_root
-                    && wrapper.id.owner == wrapper.owner
-                    && wrapper.id.scope == PaintPropertyScope::SelfPaint
-                    && wrapper.id.phase == super::PaintNodePhase::BeforeChildren
-                    && wrapper.id.slot == 0
-                    && wrapper.id.role == PaintChunkRole::SelfDecoration
-                    && wrapper.clip.is_none()
-            };
-            let glyph_matches = |glyphs: &RetainedSurfaceChunkStamp| {
-                glyphs.owner == clip.owner
-                    && glyphs.id.owner == glyphs.owner
-                    && glyphs.id.scope == PaintPropertyScope::Contents
-                    && glyphs.id.phase == super::PaintNodePhase::BeforeChildren
-                    && glyphs.id.slot == 1
-                    && glyphs.id.role == PaintChunkRole::TextGlyphs
-                    && glyphs.clip == Some(clip.id)
-                    && glyphs.op_count == 1
-                    && matches!(
-                        &glyphs.payload_identity,
-                        PaintPayloadIdentity::PreparedTexts(texts) if texts.len() == 1
-                    )
-            };
-            let chunks_match_grammar = (|| {
-                let (wrapper, semantic) = classify_optional_child_mask_stamp_semantics(
-                    stamp.chunks.as_slice(),
-                    stamp.identity.boundary_root,
-                )?;
-                if !wrapper_matches(wrapper) {
-                    return None;
-                }
-                let text_area_chunks = semantic
-                    .iter()
-                    .filter(|chunk| chunk.owner == clip.owner)
-                    .collect::<Vec<_>>();
-                match (paint_grammar, preedit) {
-                (
-                    Some(crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::GlyphOnly),
-                    None,
-                ) => matches!(text_area_chunks.as_slice(), [glyphs] if glyph_matches(glyphs)),
-                (
-                    Some(crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-                        start_char,
-                        end_char,
-                        color_rgba_bits,
-                    }),
-                    None,
-                ) => {
-                    start_char < end_char
-                        && matches!(
-                            text_area_chunks.as_slice(),
-                            [selection, glyphs]
-                                if selection.owner == clip.owner
-                                    && selection.id.owner == selection.owner
-                                    && selection.id.scope == PaintPropertyScope::Contents
-                                    && selection.id.phase == super::PaintNodePhase::BeforeChildren
-                                    && selection.id.slot == 0
-                                    && selection.id.role == PaintChunkRole::SelectionUnderlay
-                                    && selection.clip == Some(clip.id)
-                                    && selection.payload_identity.matches_exact_text_selection(
-                                        start_char,
-                                        end_char,
-                                        color_rgba_bits,
-                                        selection.op_count,
-                                        selection.bounds_bits,
-                                    )
-                                    && glyph_matches(glyphs)
-                        )
-                }
-                (None, Some(seal)) => matches!(
-                    text_area_chunks.as_slice(),
-                    [glyphs, underline]
-                        if glyph_matches(glyphs)
-                            && underline.owner == clip.owner
-                            && underline.id.owner == underline.owner
-                            && underline.id.scope == PaintPropertyScope::Contents
-                            && underline.id.phase == super::PaintNodePhase::AfterChildren
-                            && underline.id.slot == 0
-                            && underline.id.role == PaintChunkRole::TextDecoration
-                            && underline.clip == Some(clip.id)
-                            && glyphs.payload_identity == seal.glyph_identity
-                            && glyphs.bounds_bits == seal.glyph_bounds_bits
-                            && underline.payload_identity == seal.underline_identity
-                            && underline.bounds_bits == seal.underline_bounds_bits
-                ),
-                _ => false,
-                }
-                .then_some(())
-            })()
-            .is_some();
             if clip.id.owner != clip.owner
                 || clip.id.role != ClipNodeRole::ContentsClip
                 || clip.parent.is_some()
                 || clip.behavior != ClipBehavior::Intersect
                 || clip.generation != super::artifact::RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION
-                || !chunks_match_grammar
             {
                 return false;
             }
+
             let owners = stamp
                 .owner_topology
                 .iter()
                 .map(|owner| (owner.owner, owner.parent))
                 .collect::<FxHashMap<_, _>>();
-            let exact_text_area_topology = owners.len() == stamp.owner_topology.len()
-                && owners
-                    .get(&stamp.identity.boundary_root)
-                    .is_some_and(Option::is_none)
-                && owners.get(&clip.owner).copied() == Some(Some(stamp.identity.boundary_root))
-                && stamp.owner_topology.iter().all(|owner| {
-                    if owner.owner == stamp.identity.boundary_root || owner.owner == clip.owner {
-                        return true;
-                    }
-                    let mut cursor = owner.parent;
-                    let mut seen = FxHashSet::default();
-                    while let Some(current) = cursor {
-                        if !seen.insert(current) {
-                            return false;
-                        }
-                        if current == clip.owner {
-                            return true;
-                        }
-                        cursor = owners.get(&current).copied().flatten();
-                    }
-                    false
-                });
             let is_descendant_of = |owner, ancestor| {
                 let mut cursor = Some(owner);
                 let mut seen = FxHashSet::default();
@@ -7119,212 +7012,154 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                 }
                 false
             };
-            let generalized_topology = owners.len() == stamp.owner_topology.len()
-                && owners
+            if owners.len() != stamp.owner_topology.len()
+                || !owners
                     .get(&stamp.identity.boundary_root)
                     .is_some_and(Option::is_none)
-                && is_descendant_of(clip.owner, stamp.identity.boundary_root)
-                && stamp
+                || !is_descendant_of(clip.owner, stamp.identity.boundary_root)
+                || !stamp
                     .owner_topology
                     .iter()
                     .all(|owner| is_descendant_of(owner.owner, stamp.identity.boundary_root))
-                && stamp.chunks.iter().all(|chunk| {
-                    chunk.id.role != PaintChunkRole::ScrollbarOverlay
-                        && is_descendant_of(chunk.owner, stamp.identity.boundary_root)
-                        && match chunk.clip {
-                            None => true,
-                            Some(id) => id == clip.id && is_descendant_of(chunk.owner, clip.owner),
+            {
+                return false;
+            }
+
+            let Some((wrapper, semantic)) = classify_optional_child_mask_stamp_semantics(
+                stamp.chunks.as_slice(),
+                stamp.identity.boundary_root,
+            ) else {
+                return false;
+            };
+            let wrapper_op_count_is_exact = match &wrapper.payload_identity {
+                PaintPayloadIdentity::PreparedShadows(shadows, decoration) => {
+                    wrapper.op_count == shadows.len().saturating_add(decoration.len())
+                }
+                PaintPayloadIdentity::InlineIfcDecorations(shadows, decorations) => {
+                    wrapper.op_count == shadows.len().saturating_add(decorations.len())
+                }
+                _ => false,
+            };
+            if wrapper.owner != stamp.identity.boundary_root
+                || wrapper.id.owner != wrapper.owner
+                || wrapper.id.scope != PaintPropertyScope::SelfPaint
+                || wrapper.id.phase != super::PaintNodePhase::BeforeChildren
+                || wrapper.id.slot != 0
+                || wrapper.id.role != PaintChunkRole::SelfDecoration
+                || wrapper.clip.is_some()
+                || !wrapper_op_count_is_exact
+                || semantic.iter().any(|chunk| {
+                    chunk.id.owner != chunk.owner
+                        || match chunk.clip {
+                            None => !is_descendant_of(
+                                chunk.owner,
+                                stamp.identity.boundary_root,
+                            ),
+                            Some(id) => {
+                                id != clip.id || !is_descendant_of(chunk.owner, clip.owner)
+                            }
                         }
                 })
-                && stamp.chunks.iter().any(|chunk| {
-                    chunk.owner == stamp.identity.boundary_root
-                        && chunk.id.scope == PaintPropertyScope::SelfPaint
-                        && chunk.id.phase == super::PaintNodePhase::BeforeChildren
-                        && chunk.id.slot == 0
-                        && chunk.id.role == PaintChunkRole::SelfDecoration
-                        && chunk.clip.is_none()
-                });
-            chunks_match_grammar && (exact_text_area_topology || generalized_topology)
-        };
-        let scroll_content_atomic_projection_glyph_text_area_is_canonical = || {
-            if stamp.identity.scroll_content_tile.is_some()
-                || stamp.text_area_paint_grammar.is_some()
-                || stamp.interactive_text_area_resident.is_some()
-            {
-                return false;
-            }
-            let Some(RetainedAtomicProjectionTextAreaRasterDependency::Glyph(resident)) =
-                stamp.atomic_projection_text_area_resident.as_ref()
-            else {
-                return false;
-            };
-            if !resident.is_canonical()
-                || resident.content_root != stamp.identity.boundary_root
-                || stamp.target.source_bounds_bits != resident.wrapper_chunk.bounds_bits
-                || stamp.clip_nodes.as_slice() != [resident.contents_clip]
             {
                 return false;
             }
 
-            if stamp.owner_topology.as_slice() != resident.owner_topology.as_ref() {
-                return false;
-            }
+            let local_chunks = semantic
+                .iter()
+                .filter(|chunk| chunk.clip == Some(clip.id))
+                .cloned()
+                .collect::<Vec<_>>();
 
-            let Some((wrapper, [text_area_glyph, projection_glyph])) =
-                classify_optional_child_mask_stamp_semantics(
-                    stamp.chunks.as_slice(),
-                    resident.content_root,
-                )
-            else {
-                return false;
-            };
-            let chunk_matches_seal =
-                |chunk: &RetainedSurfaceChunkStamp,
-                 seal: &RetainedAtomicProjectionTextAreaChunkRasterSeal| {
-                    chunk.id == seal.id
-                        && chunk.owner == seal.owner
-                        && chunk.id.owner == chunk.owner
-                        && chunk.bounds_bits == seal.bounds_bits
-                        && chunk.payload_identity == seal.payload_identity
-                };
-            let wrapper_op_count_is_exact = match &wrapper.payload_identity {
-                PaintPayloadIdentity::PreparedShadows(shadows, decoration) => {
-                    wrapper.op_count == shadows.len().saturating_add(decoration.len())
-                }
-                PaintPayloadIdentity::InlineIfcDecorations(shadows, decorations) => {
-                    wrapper.op_count == shadows.len().saturating_add(decorations.len())
-                }
-                _ => false,
-            };
             let glyph_is_exact = |chunk: &RetainedSurfaceChunkStamp| {
-                chunk.op_count == 1
+                chunk.id.phase == super::PaintNodePhase::BeforeChildren
+                    && chunk.id.slot == 1
+                    && chunk.id.role == PaintChunkRole::TextGlyphs
+                    && if chunk.owner == clip.owner {
+                        chunk.id.scope == PaintPropertyScope::Contents
+                    } else {
+                        chunk.id.scope == PaintPropertyScope::SelfPaint
+                    }
+                    && chunk.op_count == 1
                     && matches!(
                         &chunk.payload_identity,
                         PaintPayloadIdentity::PreparedTexts(texts) if texts.len() == 1
                     )
             };
-            chunk_matches_seal(wrapper, &resident.wrapper_chunk)
-                && wrapper.id.scope == PaintPropertyScope::SelfPaint
-                && wrapper.id.phase == super::PaintNodePhase::BeforeChildren
-                && wrapper.id.slot == 0
-                && wrapper.id.role == PaintChunkRole::SelfDecoration
-                && wrapper.clip.is_none()
-                && wrapper_op_count_is_exact
-                && chunk_matches_seal(text_area_glyph, &resident.text_area_glyph_chunk)
-                && text_area_glyph.owner == resident.text_area_root
-                && text_area_glyph.id.scope == PaintPropertyScope::Contents
-                && text_area_glyph.id.phase == super::PaintNodePhase::BeforeChildren
-                && text_area_glyph.id.slot == 1
-                && text_area_glyph.id.role == PaintChunkRole::TextGlyphs
-                && text_area_glyph.clip == Some(resident.contents_clip.id)
-                && glyph_is_exact(text_area_glyph)
-                && chunk_matches_seal(projection_glyph, &resident.projection_glyph_chunk)
-                && projection_glyph.owner == resident.projection_glyph_chunk.owner
-                && projection_glyph.id.scope == PaintPropertyScope::SelfPaint
-                && projection_glyph.id.phase == super::PaintNodePhase::BeforeChildren
-                && projection_glyph.id.slot == 1
-                && projection_glyph.id.role == PaintChunkRole::TextGlyphs
-                && projection_glyph.clip == Some(resident.contents_clip.id)
-                && glyph_is_exact(projection_glyph)
-        };
-        let scroll_content_atomic_projection_selection_text_area_is_canonical = || {
-            if stamp.identity.scroll_content_tile.is_some()
-                || stamp.text_area_paint_grammar.is_some()
-                || stamp.interactive_text_area_resident.is_some()
-            {
-                return false;
-            }
-            let Some(RetainedAtomicProjectionTextAreaRasterDependency::Selection(resident)) =
-                stamp.atomic_projection_text_area_resident.as_ref()
-            else {
-                return false;
-            };
-            if !resident.is_canonical()
-                || resident.content_root != stamp.identity.boundary_root
-                || stamp.target.source_bounds_bits != resident.wrapper_chunk.bounds_bits
-                || stamp.clip_nodes.as_slice() != [resident.contents_clip]
-                || stamp.owner_topology.as_slice() != resident.owner_topology.as_ref()
-            {
-                return false;
-            }
-            let Some((wrapper, [selection, text_area_glyph, projection_glyph])) =
-                classify_optional_child_mask_stamp_semantics(
-                    stamp.chunks.as_slice(),
-                    resident.content_root,
-                )
-            else {
-                return false;
-            };
-            let chunk_matches_seal =
-                |chunk: &RetainedSurfaceChunkStamp,
-                 seal: &RetainedAtomicProjectionTextAreaChunkRasterSeal| {
-                    chunk.id == seal.id
-                        && chunk.owner == seal.owner
-                        && chunk.id.owner == chunk.owner
-                        && chunk.bounds_bits == seal.bounds_bits
-                        && chunk.payload_identity == seal.payload_identity
+            let selection_is_exact = |chunk: &RetainedSurfaceChunkStamp| {
+                let Some(selection) = chunk.payload_identity.text_selection_identity() else {
+                    return false;
                 };
-            let wrapper_op_count_is_exact = match &wrapper.payload_identity {
-                PaintPayloadIdentity::PreparedShadows(shadows, decoration) => {
-                    wrapper.op_count == shadows.len().saturating_add(decoration.len())
-                }
-                PaintPayloadIdentity::InlineIfcDecorations(shadows, decorations) => {
-                    wrapper.op_count == shadows.len().saturating_add(decorations.len())
-                }
-                _ => false,
-            };
-            let glyph_is_exact = |chunk: &RetainedSurfaceChunkStamp| {
-                chunk.op_count == 1
-                    && matches!(
-                        &chunk.payload_identity,
-                        PaintPayloadIdentity::PreparedTexts(texts) if texts.len() == 1
+                chunk.owner == clip.owner
+                    && chunk.id.scope == PaintPropertyScope::Contents
+                    && chunk.id.phase == super::PaintNodePhase::BeforeChildren
+                    && chunk.id.slot == 0
+                    && chunk.id.role == PaintChunkRole::SelectionUnderlay
+                    && selection.is_canonical()
+                    && chunk.payload_identity.matches_exact_text_selection(
+                        selection.start_char,
+                        selection.end_char,
+                        selection.color_rgba_bits,
+                        chunk.op_count,
+                        chunk.bounds_bits,
                     )
             };
-            chunk_matches_seal(wrapper, &resident.wrapper_chunk)
-                && wrapper.id.scope == PaintPropertyScope::SelfPaint
-                && wrapper.id.phase == super::PaintNodePhase::BeforeChildren
-                && wrapper.id.slot == 0
-                && wrapper.id.role == PaintChunkRole::SelfDecoration
-                && wrapper.clip.is_none()
-                && wrapper_op_count_is_exact
-                && chunk_matches_seal(selection, &resident.selection_chunk)
-                && selection.owner == resident.text_area_root
-                && selection.id.scope == PaintPropertyScope::Contents
-                && selection.id.phase == super::PaintNodePhase::BeforeChildren
-                && selection.id.slot == 0
-                && selection.id.role == PaintChunkRole::SelectionUnderlay
-                && selection.clip == Some(resident.contents_clip.id)
-                && selection.op_count == resident.selection.rects.len()
-                && selection
-                    .payload_identity
-                    .text_selection_identity()
-                    .as_ref()
-                    == Some(&resident.selection)
-                && chunk_matches_seal(text_area_glyph, &resident.text_area_glyph_chunk)
-                && text_area_glyph.owner == resident.text_area_root
-                && text_area_glyph.id.scope == PaintPropertyScope::Contents
-                && text_area_glyph.id.phase == super::PaintNodePhase::BeforeChildren
-                && text_area_glyph.id.slot == 1
-                && text_area_glyph.id.role == PaintChunkRole::TextGlyphs
-                && text_area_glyph.clip == Some(resident.contents_clip.id)
-                && glyph_is_exact(text_area_glyph)
-                && chunk_matches_seal(projection_glyph, &resident.projection_glyph_chunk)
-                && projection_glyph.owner == resident.projection_glyph_chunk.owner
-                && projection_glyph.id.scope == PaintPropertyScope::SelfPaint
-                && projection_glyph.id.phase == super::PaintNodePhase::BeforeChildren
-                && projection_glyph.id.slot == 1
-                && projection_glyph.id.role == PaintChunkRole::TextGlyphs
-                && projection_glyph.clip == Some(resident.contents_clip.id)
-                && glyph_is_exact(projection_glyph)
+            let decoration_is_exact = |chunk: &RetainedSurfaceChunkStamp| {
+                let Some(rects) = chunk.payload_identity.exact_fill_rect_ops() else {
+                    return false;
+                };
+                let mut left = f32::INFINITY;
+                let mut top = f32::INFINITY;
+                let mut right = f32::NEG_INFINITY;
+                let mut bottom = f32::NEG_INFINITY;
+                for rect in &rects {
+                    left = left.min(rect.params.position[0]);
+                    top = top.min(rect.params.position[1]);
+                    right = right.max(rect.params.position[0] + rect.params.size[0]);
+                    bottom = bottom.max(rect.params.position[1] + rect.params.size[1]);
+                }
+                chunk.owner == clip.owner
+                    && chunk.id.scope == PaintPropertyScope::Contents
+                    && chunk.id.phase == super::PaintNodePhase::AfterChildren
+                    && chunk.id.slot == 0
+                    && chunk.id.role == PaintChunkRole::TextDecoration
+                    && rects.len() == chunk.op_count
+                    && [left, top, right - left, bottom - top].map(f32::to_bits)
+                        == chunk.bounds_bits
+            };
+
+            matches!(local_chunks.as_slice(),
+                [glyph]
+                    if glyph.owner == clip.owner && glyph_is_exact(glyph)
+            ) || matches!(local_chunks.as_slice(),
+                [selection, glyph]
+                    if selection_is_exact(selection)
+                        && glyph.owner == clip.owner
+                        && glyph_is_exact(glyph)
+            ) || matches!(local_chunks.as_slice(),
+                [glyph, decoration]
+                    if glyph.owner == clip.owner
+                        && glyph_is_exact(glyph)
+                        && decoration_is_exact(decoration)
+            ) || matches!(local_chunks.as_slice(),
+                [root_glyph, projection_glyph]
+                    if root_glyph.owner == clip.owner
+                        && glyph_is_exact(root_glyph)
+                        && projection_glyph.owner != clip.owner
+                        && glyph_is_exact(projection_glyph)
+            ) || matches!(local_chunks.as_slice(),
+                [selection, root_glyph, projection_glyph]
+                    if selection_is_exact(selection)
+                        && root_glyph.owner == clip.owner
+                        && glyph_is_exact(root_glyph)
+                        && projection_glyph.owner != clip.owner
+                        && glyph_is_exact(projection_glyph)
+            )
         };
         let scroll_content_is_canonical = stamp.identity.role
             != RetainedSurfaceRasterRole::ScrollContent
             || (depth == 0
                 && stamp.scroll_host.is_none()
-                && ((stamp.text_area_paint_grammar.is_none()
-                    && stamp.interactive_text_area_resident.is_none()
-                    && stamp.atomic_projection_text_area_resident.is_none()
-                    && stamp.clip_nodes.is_empty()
+                && ((stamp.clip_nodes.is_empty()
                     && matches!(
                         stamp.owner_topology.as_slice(),
                         [owner]
@@ -7340,9 +7175,7 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                                 PaintPayloadIdentity::PreparedScrollbarOverlay(_)
                             )
                     }))
-                    || scroll_content_text_area_is_canonical()
-                    || scroll_content_atomic_projection_glyph_text_area_is_canonical()
-                    || scroll_content_atomic_projection_selection_text_area_is_canonical())
+                    || scroll_content_local_artifact_is_canonical())
                 && matches!(
                     stamp.ordered_steps.as_slice(),
                     [RetainedSurfaceRasterStepStamp::ArtifactSpan(span)]
@@ -7450,10 +7283,6 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
             || !scroll_content_tile_is_canonical
             || !scroll_content_is_canonical
             || !scroll_dependency_is_canonical
-            || (stamp.identity.role != RetainedSurfaceRasterRole::ScrollContent
-                && (stamp.text_area_paint_grammar.is_some()
-                    || stamp.interactive_text_area_resident.is_some()
-                    || stamp.atomic_projection_text_area_resident.is_some()))
             || stamp.property_effect.is_some()
             || stamp.identity.stable_id == 0
             || !stamp
@@ -9333,9 +9162,9 @@ impl RetainedAtomicProjectionTextAreaResidentRasterSeal {
     }
 }
 
-/// Raster-only C3a dependency derived one-way from the full plan/admission
-/// resident authority. Host-space source grammar stays on the full resident;
-/// the retained content stamp carries only normalized detached-raster facts.
+/// Ephemeral C3a dependency derived one-way from the full plan/admission
+/// resident authority. It validates the generic artifact span at construction
+/// and is discarded before `RetainedSurfaceRasterStamp` is built.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RetainedAtomicProjectionTextAreaFrozenRasterDependencyIdentity {
     content_root: crate::view::node_arena::NodeKey,
@@ -9442,8 +9271,9 @@ struct RetainedAtomicProjectionSelectionTextAreaFrozenResidentRasterIdentity {
 }
 
 /// Full compiler-private authority for the admitted root-selection plus one
-/// atomic projection grammar. Host-space source facts remain here; only the
-/// exact detached local raster facts can flow into the retained stamp.
+/// atomic projection grammar. Host-space source facts remain here; the exact
+/// detached local raster is compared to the generic artifact span and this
+/// authority does not flow into the retained stamp.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal {
     pub(crate) content_root: crate::view::node_arena::NodeKey,

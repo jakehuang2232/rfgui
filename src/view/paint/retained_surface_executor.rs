@@ -1800,9 +1800,6 @@ fn property_effect_scene_surface_stamp_is_canonical(
         if depth >= usize::from(u8::MAX)
             || stamp.identity.scroll_content_tile.is_some()
             || stamp.scroll_host.is_some()
-            || stamp.text_area_paint_grammar.is_some()
-            || stamp.interactive_text_area_resident.is_some()
-            || stamp.atomic_projection_text_area_resident.is_some()
             || stamp.identity.stable_id == 0
             || !stamp
                 .target

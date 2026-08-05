@@ -345,10 +345,7 @@ fn retained_auto_interactive_text_area_reuses_dynamic_caret_and_invalidates_resi
 
     let (selection_stamp, _, selection, _) =
         prepare_emit(&mut viewport, make_scene("selection"));
-    assert_ne!(
-        selection_stamp.interactive_text_area_resident,
-        base_stamp.interactive_text_area_resident
-    );
+    assert_ne!(selection_stamp, base_stamp);
     assert_eq!((selection.reraster_count, selection.reuse_count), (1, 0));
     let base_glyph = base_stamp
         .chunks
@@ -371,10 +368,7 @@ fn retained_auto_interactive_text_area_reuses_dynamic_caret_and_invalidates_resi
     assert_eq!(selection_glyph.op_count, base_glyph.op_count);
 
     let (preedit_stamp, _, preedit, _) = prepare_emit(&mut viewport, make_scene("preedit"));
-    assert_ne!(
-        preedit_stamp.interactive_text_area_resident,
-        selection_stamp.interactive_text_area_resident
-    );
+    assert_ne!(preedit_stamp, selection_stamp);
     assert_eq!((preedit.reraster_count, preedit.reuse_count), (1, 0));
     let base_wrapper = base_stamp
         .chunks

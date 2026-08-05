@@ -4,7 +4,6 @@ fn register_stage_c_deletion_type<T>() {}
 
 #[test]
 fn stage_c_deletion_inventory_keeps_compiler_types_compile_time_linked() {
-    register_stage_c_deletion_type::<RetainedAtomicProjectionTextAreaRasterDependency>();
     register_stage_c_deletion_type::<ValidatedScrollSceneInteractiveTextAreaContentArtifact>();
     register_stage_c_deletion_type::<ValidatedScrollSceneAtomicProjectionTextAreaContentArtifact>();
     register_stage_c_deletion_type::<ValidatedScrollSceneAtomicProjectionTextAreaHostBeforeArtifact>(
@@ -92,7 +91,6 @@ fn stage_c_deletion_inventory_rejects_unregistered_downstream_text_area_types() 
         "RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal",
         "RetainedAtomicProjectionTextAreaFrozenRasterDependencyIdentity",
         "RetainedAtomicProjectionTextAreaFrozenResidentRasterIdentity",
-        "RetainedAtomicProjectionTextAreaRasterDependency",
         "RetainedAtomicProjectionTextAreaRasterDependencySeal",
         "RetainedAtomicProjectionTextAreaResidentRasterSeal",
         "ValidatedScrollSceneAtomicProjectionSelectionTextAreaContentArtifact",
