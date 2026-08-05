@@ -542,56 +542,14 @@ fn focused_atomic_projection_scroll_fixture_with_state(
     PropertyTrees,
     PaintGenerationTracker,
 ) {
-    focused_atomic_projection_scroll_fixture_with_state_and_underline_offset(
-        caret_visible,
-        preedit,
-        projected_content,
-        [0.0; 2],
-    )
-}
-
-fn focused_atomic_projection_scroll_fixture_with_state_and_underline_offset(
-    caret_visible: bool,
-    preedit: Option<&str>,
-    projected_content: &'static str,
-    preedit_underline_offset: [f32; 2],
-) -> (
-    NodeArena,
-    NodeKey,
-    NodeKey,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
-    focused_atomic_projection_scroll_fixture_with_state_underline_and_scroll_offset(
-        caret_visible,
-        preedit,
-        projected_content,
-        preedit_underline_offset,
-        0.0,
-    )
-}
-
-fn focused_atomic_projection_scroll_fixture_with_state_underline_and_scroll_offset(
-    caret_visible: bool,
-    preedit: Option<&str>,
-    projected_content: &'static str,
-    preedit_underline_offset: [f32; 2],
-    scroll_y: f32,
-) -> (
-    NodeArena,
-    NodeKey,
-    NodeKey,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
     let width = 132.0;
+    let scroll_y = 0.0;
     let mut text_component = TextArea::new();
     text_component.content = "before projected after".to_string();
     text_component.font_size = 14.0;
     text_component.line_height = 1.25;
     text_component.is_focused = true;
     text_component.caret_visible = caret_visible;
-    text_component.preedit_underline_test_offset = preedit_underline_offset;
     text_component.cursor_char = usize::from(preedit.is_some()) * 8;
     if let Some(preedit) = preedit {
         text_component.ime_preedit = preedit.to_string();

@@ -8585,13 +8585,6 @@ pub(crate) struct AtomicProjectionTextAreaPlanIdentity {
 }
 
 impl ValidatedScrollSceneAtomicProjectionTextAreaPlanParts {
-    #[cfg(test)]
-    pub(crate) fn artifact_space_transition_for_test(
-        &self,
-    ) -> super::PaintArtifactSpaceTransition {
-        self.local_raster_oracle.artifact_space_transition()
-    }
-
     pub(crate) fn boundary_root(&self) -> crate::view::node_arena::NodeKey {
         self.boundary_root
     }
@@ -8841,12 +8834,6 @@ impl ValidatedScrollSceneFocusedAtomicProjectionTextAreaPlanParts {
         self.base.resident()
     }
 
-    #[cfg(test)]
-    pub(crate) fn artifact_space_transition_for_test(
-        &self,
-    ) -> super::PaintArtifactSpaceTransition {
-        self.base.artifact_space_transition_for_test()
-    }
 
     pub(crate) fn identity(&self) -> FocusedAtomicProjectionTextAreaPlanIdentity {
         self.frozen_identity.clone()
