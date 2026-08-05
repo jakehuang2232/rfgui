@@ -259,6 +259,9 @@ fn normalize_atomic_projection_selection_chunk(
         return None;
     }
     let seal = sealed.text_selection_identity()?;
+    source
+        .validate_payload_for_owner(chunk.owner, &seal)
+        .ok()?;
     chunk.payload_identity = sealed.clone();
     oracle_chunk.payload_identity = sealed;
     Some(seal)

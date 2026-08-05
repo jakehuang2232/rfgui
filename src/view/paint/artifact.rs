@@ -3429,6 +3429,29 @@ pub(crate) struct TextSelectionPayloadIdentity {
     pub(crate) rects: Arc<[PreparedDrawRectIdentity]>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaintArtifactContractViolation {
+    CompositeOwner,
+    CompositeBounds,
+    CompositeClip,
+    CompositePayload,
+    CompositePhaseOrder,
+    CompositeSourceParity,
+    SelectionRange,
+    SelectionColor,
+    SelectionRectIdentity,
+    SelectionSourceParity,
+    TransitionOrigin,
+    TransitionRevision,
+    TransitionSourceParity,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PaintArtifactContractRejection {
+    pub(crate) owner: NodeKey,
+    pub(crate) violation: PaintArtifactContractViolation,
+}
+
 /// Component-independent source facts for one text-selection underlay.
 ///
 /// Geometry and prepared draw identities are deliberately absent here: the
@@ -3454,6 +3477,20 @@ impl PaintTextSelectionSource {
     pub(crate) fn matches_payload(self, payload: &TextSelectionPayloadIdentity) -> bool {
         self.is_canonical()
             && payload.matches_source(self.start_char, self.end_char, self.color_rgba_bits)
+    }
+
+    pub(crate) fn validate_payload_for_owner(
+        self,
+        owner: NodeKey,
+        payload: &TextSelectionPayloadIdentity,
+    ) -> Result<(), PaintArtifactContractRejection> {
+        payload.validate_for_owner(owner)?;
+        self.matches_payload(payload)
+            .then_some(())
+            .ok_or(PaintArtifactContractRejection {
+                owner,
+                violation: PaintArtifactContractViolation::SelectionSourceParity,
+            })
     }
 }
 
@@ -3537,19 +3574,60 @@ impl PaintAtomicProjectionArtifactSource {
 }
 
 impl TextSelectionPayloadIdentity {
-    pub(crate) fn is_canonical(&self) -> bool {
-        self.start_char < self.end_char
-            && self
-                .color_rgba_bits
-                .map(f32::from_bits)
-                .into_iter()
-                .all(|channel| channel.is_finite() && (0.0..=1.0).contains(&channel))
-            && !self.rects.is_empty()
-            && self.rects.iter().all(|rect| {
-                rect.mode == RectRenderMode::FillOnly
-                    && rect.params.fill_color_bits == self.color_rgba_bits
-                    && rect.params.opacity_bits == 1.0_f32.to_bits()
+    fn validate_parts(&self) -> Result<(), PaintArtifactContractViolation> {
+        if self.start_char >= self.end_char {
+            return Err(PaintArtifactContractViolation::SelectionRange);
+        }
+        if self
+            .color_rgba_bits
+            .map(f32::from_bits)
+            .into_iter()
+            .any(|channel| !channel.is_finite() || !(0.0..=1.0).contains(&channel))
+        {
+            return Err(PaintArtifactContractViolation::SelectionColor);
+        }
+        if self.rects.is_empty()
+            || self.rects.iter().any(|rect| {
+                rect.mode != RectRenderMode::FillOnly
+                    || rect.params.fill_color_bits != self.color_rgba_bits
+                    || rect.params.opacity_bits != 1.0_f32.to_bits()
             })
+        {
+            return Err(PaintArtifactContractViolation::SelectionRectIdentity);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_for_owner(
+        &self,
+        owner: NodeKey,
+    ) -> Result<(), PaintArtifactContractRejection> {
+        self.validate_parts()
+            .map_err(|violation| PaintArtifactContractRejection { owner, violation })
+    }
+
+    pub(crate) fn validate_exact_ops_for_owner(
+        &self,
+        owner: NodeKey,
+        rects: &[DrawRectOp],
+    ) -> Result<(), PaintArtifactContractRejection> {
+        self.validate_for_owner(owner)?;
+        let exact = PaintPayloadIdentity::prepared_text_selection(
+            self.start_char,
+            self.end_char,
+            self.color_rgba_bits,
+            rects,
+        );
+        (exact.as_ref() == Some(&PaintPayloadIdentity::TextSelection(self.clone())))
+            .then_some(())
+            .ok_or(PaintArtifactContractRejection {
+                owner,
+                violation: PaintArtifactContractViolation::SelectionRectIdentity,
+            })
+    }
+
+    pub(crate) fn is_canonical(&self) -> bool {
+        self.validate_parts().is_ok()
     }
 
     pub(crate) fn matches_source(
@@ -3827,6 +3905,65 @@ impl PaintArtifactSpaceTransition {
                 .map(f32::from_bits)
                 .all(f32::is_finite)
             && self.translation().is_some()
+    }
+
+    pub(crate) fn validate_for_owner(
+        self,
+        owner: NodeKey,
+    ) -> Result<(), PaintArtifactContractRejection> {
+        if self.semantic_revision == 0 {
+            return Err(PaintArtifactContractRejection {
+                owner,
+                violation: PaintArtifactContractViolation::TransitionRevision,
+            });
+        }
+        if self
+            .from_origin_bits
+            .into_iter()
+            .chain(self.to_origin_bits)
+            .map(f32::from_bits)
+            .any(|value| !value.is_finite())
+            || self.translation().is_none()
+        {
+            return Err(PaintArtifactContractRejection {
+                owner,
+                violation: PaintArtifactContractViolation::TransitionOrigin,
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_expected_for_owner(
+        self,
+        owner: NodeKey,
+        expected: Self,
+    ) -> Result<(), PaintArtifactContractRejection> {
+        self.validate_for_owner(owner)?;
+        expected.validate_for_owner(owner)?;
+        (self == expected)
+            .then_some(())
+            .ok_or(PaintArtifactContractRejection {
+                owner,
+                violation: PaintArtifactContractViolation::TransitionSourceParity,
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_from_origin_for_test(mut self, axis: usize) -> Self {
+        self.from_origin_bits[axis] ^= 1;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_to_origin_for_test(mut self, axis: usize) -> Self {
+        self.to_origin_bits[axis] ^= 1;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_revision_for_test(mut self) -> Self {
+        self.semantic_revision = self.semantic_revision.saturating_add(1);
+        self
     }
 
     pub(crate) fn semantic_revision(self) -> u64 {

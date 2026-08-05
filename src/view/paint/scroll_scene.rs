@@ -166,7 +166,16 @@ impl PropertyScrollFocusedAtomicProjectionSidecarSeal {
         self.source_is_canonical()
             && self
                 .reconstructed_edges()
-                .is_some_and(|edges| edges.as_slice() == self.edges.as_ref())
+                .is_some_and(|expected| {
+                    expected.len() == self.edges.len()
+                        && self
+                            .edges
+                            .iter()
+                            .zip(&expected)
+                            .all(|(edge, expected)| {
+                                edge.validate_source_parity(expected).is_ok()
+                            })
+                })
     }
 
     fn draw_op(&self) -> Option<super::DrawRectOp> {
@@ -293,11 +302,15 @@ impl PropertyScrollInteractiveTextAreaCaretSeal {
     fn is_canonical(&self) -> bool {
         self.edges.len() <= 1
             && self.edges.iter().all(|edge| {
-                edge.is_canonical()
-                    && edge.id.scope == super::PaintPropertyScope::Contents
-                    && edge.id.phase == super::PaintNodePhase::AfterChildren
-                    && edge.id.slot == 1
-                    && edge.id.role == super::PaintChunkRole::Caret
+                edge.id.scope == super::PaintPropertyScope::Contents
+                    && edge
+                        .validate_schedule(
+                            edge.owner,
+                            super::PaintNodePhase::AfterChildren,
+                            1,
+                            super::PaintChunkRole::Caret,
+                        )
+                        .is_ok()
             })
     }
 }
@@ -564,13 +577,15 @@ impl PropertyScrollHostAdmission {
                     (*inline).bitwise_eq(sidecar)
                         && caret.is_canonical()
                         && caret.edges.iter().all(|edge| {
-                            edge.is_canonical()
-                                && edge.owner == inline.text_area_root
-                                && edge.id.owner == inline.text_area_root
-                                && edge.id.scope == super::PaintPropertyScope::Contents
-                                && edge.id.phase == super::PaintNodePhase::AfterChildren
-                                && edge.id.slot == 1
-                                && edge.id.role == super::PaintChunkRole::Caret
+                            edge.id.scope == super::PaintPropertyScope::Contents
+                                && edge
+                                    .validate_schedule(
+                                        inline.text_area_root,
+                                        super::PaintNodePhase::AfterChildren,
+                                        1,
+                                        super::PaintChunkRole::Caret,
+                                    )
+                                    .is_ok()
                                 && Some(edge.bounds_bits) == inline.caret_oracle_bounds_bits
                         })
                         && (inline.caret_oracle_bounds_bits.is_some() || caret.edges.is_empty())
@@ -24152,13 +24167,15 @@ fn plan_exact_root_scroll_scene(
         let (_, resident) = validated.into_parts();
         if recorded.composite_edges.len() > 1
             || recorded.composite_edges.iter().any(|edge| {
-                !edge.is_canonical()
-                    || edge.owner != text_area_admission.text_area_root
-                    || edge.id.owner != text_area_admission.text_area_root
-                    || edge.id.scope != super::PaintPropertyScope::Contents
-                    || edge.id.phase != super::PaintNodePhase::AfterChildren
-                    || edge.id.slot != 1
-                    || edge.id.role != super::PaintChunkRole::Caret
+                edge.id.scope != super::PaintPropertyScope::Contents
+                    || edge
+                        .validate_schedule(
+                            text_area_admission.text_area_root,
+                            super::PaintNodePhase::AfterChildren,
+                            1,
+                            super::PaintChunkRole::Caret,
+                        )
+                        .is_err()
             })
         {
             return Err(invalid());

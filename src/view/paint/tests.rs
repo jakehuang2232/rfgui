@@ -2403,6 +2403,26 @@ fn validated_atomic_projection_selection_scroll_scene_at(
     )
 }
 
+fn viewport_with_committed_atomic_projection_selection_resident(
+) -> crate::view::viewport::Viewport {
+    let mut viewport = crate::view::viewport::Viewport::new();
+    let frame_owner = viewport.begin_retained_surface_frame_stage().unwrap();
+    let mut graph = FrameGraph::new();
+    let prepared = super::scroll_scene::prepare_retained_property_scroll_forest_from_pool(
+        &mut viewport,
+        validated_atomic_projection_selection_scroll_scene_at(6),
+        &mut graph,
+        UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
+        [0.0, 0.0, 0.0, 1.0],
+        frame_owner,
+    )
+    .expect("resident seed scene must prepare");
+    let prepared = super::scroll_scene::emit_prepared_retained_property_scroll_forest(prepared);
+    drop(prepared);
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true));
+    viewport
+}
+
 fn validated_atomic_projection_selection_scroll_scene_fixture(
     fixture: AtomicProjectionScrollFixture,
     selection_end: usize,
@@ -3913,6 +3933,7 @@ mod custom_leaf_tests;
 mod custom_wrapper_tests;
 mod effect_store_tests;
 mod generic_composite_edge_tests;
+mod generic_contract_fail_closed_tests;
 mod inline_span_tests;
 mod metadata_preflight_tests;
 mod outer_shadow_tests;

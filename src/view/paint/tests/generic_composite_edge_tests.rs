@@ -228,3 +228,103 @@ fn generic_composite_edges_do_not_enter_resident_raster_identity() {
         "resident content still participates in raster identity",
     );
 }
+
+#[test]
+fn generic_composite_edge_tampers_are_typed_owner_attributed_and_mutation_free() {
+    let mut arena = new_test_arena();
+    let owner = commit_element(
+        &mut arena,
+        Box::new(Element::new_with_id(0xa2_4310, 0.0, 0.0, 64.0, 32.0)),
+    );
+    let other_owner = commit_element(
+        &mut arena,
+        Box::new(Element::new_with_id(0xa2_4311, 0.0, 0.0, 64.0, 32.0)),
+    );
+    let edge = synthetic_composite_edge(owner, PaintChunkRole::Caret, [8.0, 4.0]);
+    let mut viewport = viewport_with_committed_atomic_projection_selection_resident();
+    let frame_owner = viewport.begin_retained_surface_frame_stage().unwrap();
+    let graph = FrameGraph::new();
+    let graph_before = graph.build_state_snapshot_for_test();
+    let pool_before = viewport.retained_surface_transaction_shape_for_test();
+
+    let mut wrong_owner = edge.clone();
+    wrong_owner.id.owner = other_owner;
+    assert_eq!(
+        wrong_owner.validate(),
+        Err(PaintArtifactContractRejection {
+            owner,
+            violation: PaintArtifactContractViolation::CompositeOwner,
+        })
+    );
+
+    let mut bounds = edge.clone();
+    bounds.bounds_bits[0] ^= 1;
+    assert_eq!(
+        bounds.validate(),
+        Err(PaintArtifactContractRejection {
+            owner,
+            violation: PaintArtifactContractViolation::CompositeBounds,
+        })
+    );
+
+    let mut payload = edge.clone();
+    payload.payload_identity = PaintPayloadIdentity::None;
+    assert_eq!(
+        payload.validate(),
+        Err(PaintArtifactContractRejection {
+            owner,
+            violation: PaintArtifactContractViolation::CompositePayload,
+        })
+    );
+
+    let mut clip = edge.clone();
+    clip.logical_scissor = Some([0, 0, 0, 10]);
+    assert_eq!(
+        clip.validate(),
+        Err(PaintArtifactContractRejection {
+            owner,
+            violation: PaintArtifactContractViolation::CompositeClip,
+        })
+    );
+
+    let mut phase = edge.clone();
+    phase.id.phase = PaintNodePhase::BeforeChildren;
+    let mut order = edge.clone();
+    order.id.slot ^= 1;
+    for phase_or_order in [phase, order] {
+        assert_eq!(
+            phase_or_order.validate_schedule(
+                owner,
+                PaintNodePhase::AfterChildren,
+                1,
+                PaintChunkRole::Caret,
+            ),
+            Err(PaintArtifactContractRejection {
+                owner,
+                violation: PaintArtifactContractViolation::CompositePhaseOrder,
+            })
+        );
+    }
+
+    let mut synchronized = edge.clone();
+    synchronized.op.params.position[0] += 1.0;
+    synchronized.bounds_bits[0] = synchronized.op.params.position[0].to_bits();
+    synchronized.payload_identity =
+        PaintPayloadIdentity::prepared_rects([&synchronized.op]).unwrap();
+    assert!(synchronized.validate().is_ok());
+    assert_eq!(
+        synchronized.validate_source_parity(&edge),
+        Err(PaintArtifactContractRejection {
+            owner,
+            violation: PaintArtifactContractViolation::CompositeSourceParity,
+        })
+    );
+
+    assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
+    assert_eq!(
+        viewport.retained_surface_transaction_shape_for_test(),
+        pool_before
+    );
+    assert!(viewport.retained_surface_frame_stage_owner_is_active(frame_owner));
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), false));
+}

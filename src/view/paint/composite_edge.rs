@@ -4,7 +4,10 @@ use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::NodeKey;
 use crate::view::render_pass::draw_rect_pass::{DrawRectInput, DrawRectOutput, DrawRectPass};
 
-use super::{DrawRectOp, PaintArtifact, PaintChunk, PaintChunkId, PaintOp, PaintPayloadIdentity};
+use super::{
+    DrawRectOp, PaintArtifact, PaintArtifactContractRejection, PaintArtifactContractViolation,
+    PaintChunk, PaintChunkId, PaintOp, PaintPayloadIdentity,
+};
 
 /// One arena-independent primitive drawn at a compositing boundary.
 ///
@@ -80,9 +83,18 @@ impl PaintCompositeEdge {
     }
 
     pub(crate) fn is_canonical(&self) -> bool {
+        self.validate().is_ok()
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), PaintArtifactContractRejection> {
         let [x, y, width, height] = self.bounds_bits.map(f32::from_bits);
-        if self.id.owner != self.owner
-            || [x, y, width, height]
+        if self.id.owner != self.owner {
+            return Err(PaintArtifactContractRejection {
+                owner: self.owner,
+                violation: PaintArtifactContractViolation::CompositeOwner,
+            });
+        }
+        if [x, y, width, height]
                 .into_iter()
                 .any(|value| !value.is_finite())
             || width <= 0.0
@@ -92,12 +104,22 @@ impl PaintCompositeEdge {
             || self.op.params.position.map(f32::to_bits)
                 != [self.bounds_bits[0], self.bounds_bits[1]]
             || self.op.params.size.map(f32::to_bits) != [self.bounds_bits[2], self.bounds_bits[3]]
-            || PaintPayloadIdentity::prepared_rects([&self.op]).as_ref()
-                != Some(&self.payload_identity)
         {
-            return false;
+            return Err(PaintArtifactContractRejection {
+                owner: self.owner,
+                violation: PaintArtifactContractViolation::CompositeBounds,
+            });
         }
-        self.logical_scissor
+        if PaintPayloadIdentity::prepared_rects([&self.op]).as_ref()
+            != Some(&self.payload_identity)
+        {
+            return Err(PaintArtifactContractRejection {
+                owner: self.owner,
+                violation: PaintArtifactContractViolation::CompositePayload,
+            });
+        }
+        if !self
+            .logical_scissor
             .is_none_or(|[left, top, scissor_width, scissor_height]| {
                 let Some(right) = left.checked_add(scissor_width) else {
                     return false;
@@ -111,6 +133,49 @@ impl PaintCompositeEdge {
                     && x + width > left as f32
                     && y < bottom as f32
                     && y + height > top as f32
+            })
+        {
+            return Err(PaintArtifactContractRejection {
+                owner: self.owner,
+                violation: PaintArtifactContractViolation::CompositeClip,
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_schedule(
+        &self,
+        owner: NodeKey,
+        phase: super::PaintNodePhase,
+        slot: u16,
+        role: super::PaintChunkRole,
+    ) -> Result<(), PaintArtifactContractRejection> {
+        self.validate()?;
+        if self.owner != owner
+            || self.id.owner != owner
+            || self.id.phase != phase
+            || self.id.slot != slot
+            || self.id.role != role
+        {
+            return Err(PaintArtifactContractRejection {
+                owner,
+                violation: PaintArtifactContractViolation::CompositePhaseOrder,
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_source_parity(
+        &self,
+        expected: &Self,
+    ) -> Result<(), PaintArtifactContractRejection> {
+        self.validate()?;
+        expected.validate()?;
+        (self == expected)
+            .then_some(())
+            .ok_or(PaintArtifactContractRejection {
+                owner: expected.owner,
+                violation: PaintArtifactContractViolation::CompositeSourceParity,
             })
     }
 

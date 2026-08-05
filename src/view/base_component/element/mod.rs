@@ -705,7 +705,10 @@ impl RetainedScrollTextAreaSubtreeAdmissionSnapshot {
                 recording_offset,
             )
         };
-        live == Some(self.paint_grammar)
+        live.is_some_and(|grammar| {
+            grammar == self.paint_grammar
+                && grammar.artifact_content_source() == Some(self.paint_source)
+        })
     }
 }
 
@@ -730,8 +733,7 @@ impl RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
         &self,
         snapshot: crate::view::compositor::property_tree::ScrollNodeSnapshot,
     ) -> bool {
-        self.paint_grammar.is_canonical()
-            && scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
+        scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
     }
 
     pub(crate) fn matches_live_source(
@@ -746,8 +748,16 @@ impl RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
                 arena,
                 recording_offset,
             )
-            .as_ref()
-            == Some(&self.paint_grammar)
+            .is_some_and(|grammar| {
+                grammar == self.paint_grammar
+                    && grammar.artifact_source(self.text_area_root).as_ref()
+                        == Some(&self.artifact_source)
+                    && grammar.artifact_space_transition().is_some_and(|expected| {
+                        self.artifact_space_transition
+                            .validate_expected_for_owner(self.text_area_root, expected)
+                            .is_ok()
+                    })
+            })
     }
 }
 
@@ -773,8 +783,7 @@ impl RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot {
         &self,
         snapshot: crate::view::compositor::property_tree::ScrollNodeSnapshot,
     ) -> bool {
-        self.paint_grammar.is_canonical()
-            && scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
+        scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
     }
     pub(crate) fn matches_live_source(
         &self,
@@ -788,8 +797,17 @@ impl RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot {
                 arena,
                 recording_offset,
             )
-            .as_ref()
-            == Some(&self.paint_grammar)
+            .is_some_and(|grammar| {
+                grammar == self.paint_grammar
+                    && grammar.artifact_source(self.text_area_root).as_ref()
+                        == Some(&self.artifact_source)
+                    && grammar.artifact_selection_source() == Some(self.selection_source)
+                    && grammar.artifact_space_transition().is_some_and(|expected| {
+                        self.artifact_space_transition
+                            .validate_expected_for_owner(self.text_area_root, expected)
+                            .is_ok()
+                    })
+            })
     }
 }
 
@@ -814,8 +832,7 @@ impl RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
         &self,
         snapshot: crate::view::compositor::property_tree::ScrollNodeSnapshot,
     ) -> bool {
-        self.paint_grammar.is_canonical()
-            && scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
+        scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
     }
     pub(crate) fn matches_live_source(
         &self,
@@ -829,8 +846,16 @@ impl RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
                 arena,
                 recording_offset,
             )
-            .as_ref()
-            == Some(&self.paint_grammar)
+            .is_some_and(|grammar| {
+                grammar == self.paint_grammar
+                    && grammar.artifact_source(self.text_area_root).as_ref()
+                        == Some(&self.artifact_source)
+                    && grammar.artifact_space_transition().is_some_and(|expected| {
+                        self.artifact_space_transition
+                            .validate_expected_for_owner(self.text_area_root, expected)
+                            .is_ok()
+                    })
+            })
     }
 
     pub(crate) fn caret_source(
@@ -875,11 +900,16 @@ impl RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot {
         arena: &NodeArena,
         recording_offset: [f32; 2],
     ) -> bool {
-        text_area.exact_retained_property_scroll_interactive_subtree(
-            self.text_area_root,
-            arena,
-            recording_offset,
-        ) == Some(self.paint_grammar)
+        text_area
+            .exact_retained_property_scroll_interactive_subtree(
+                self.text_area_root,
+                arena,
+                recording_offset,
+            )
+            .is_some_and(|grammar| {
+                grammar == self.paint_grammar
+                    && grammar.artifact_content_source() == Some(self.paint_source)
+            })
     }
 }
 
