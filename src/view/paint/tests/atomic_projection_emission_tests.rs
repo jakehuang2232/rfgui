@@ -252,7 +252,7 @@ fn focused_atomic_projection_local_recorder_suppresses_caret_into_post_fact() {
         let clip_chain = properties.clip_snapshot_for(Some(outer_clip_id)).unwrap();
         let outer_clip = *clip_chain.last().unwrap();
         let outer = PaintScrollContentWitness::new(root, wrapper, scroll, outer_clip).unwrap();
-        let local = super::super::frame_recorder::record_scroll_focused_atomic_projection_text_area_subtree_local_artifact_for_plan(
+        let local = super::legacy_recording::record_scroll_focused_atomic_projection_text_area_subtree_local_artifact_for_plan(
             &arena,
             &properties,
             &generations,
@@ -340,7 +340,7 @@ fn focused_atomic_projection_host_local_plan_keeps_caret_out_of_resident() {
         let outer = PaintScrollContentWitness::new(root, wrapper, scroll, outer_clip).unwrap();
         let baked = PaintBakedScrollHostWitness::new(root, wrapper, scroll, outer_clip.id)
             .expect("baked scroll host");
-        let host = super::super::frame_recorder::record_baked_scroll_focused_atomic_projection_text_area_subtree_host_artifact_for_plan(
+        let host = super::legacy_recording::record_baked_scroll_focused_atomic_projection_text_area_subtree_host_artifact_for_plan(
             &arena,
             &[root],
             &properties,
@@ -349,7 +349,7 @@ fn focused_atomic_projection_host_local_plan_keeps_caret_out_of_resident() {
             baked,
         )
         .expect("focused host recorder");
-        let local = super::super::frame_recorder::record_scroll_focused_atomic_projection_text_area_subtree_local_artifact_for_plan(
+        let local = super::legacy_recording::record_scroll_focused_atomic_projection_text_area_subtree_local_artifact_for_plan(
             &arena,
             &properties,
             &generations,
@@ -358,7 +358,7 @@ fn focused_atomic_projection_host_local_plan_keeps_caret_out_of_resident() {
         )
         .expect("focused local recorder");
         let plan =
-            super::super::frame_recorder::validate_recorded_focused_atomic_projection_text_area_plan_parts(
+            super::legacy_recording::validate_recorded_focused_atomic_projection_text_area_plan_parts(
                 host, local,
             )
             .expect("focused plan parts");

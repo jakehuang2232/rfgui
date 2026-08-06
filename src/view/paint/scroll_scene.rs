@@ -23742,7 +23742,7 @@ fn plan_exact_root_scroll_scene(
             .ok_or_else(invalid)?;
     if let Some(focused_admission) = focused_atomic_projection_text_area_subtree_admission.as_ref()
     {
-        let host = super::frame_recorder::record_baked_scroll_focused_atomic_projection_text_area_subtree_host_artifact_for_plan(
+        let host = super::legacy_recording::record_baked_scroll_focused_atomic_projection_text_area_subtree_host_artifact_for_plan(
             arena,
             &[root],
             property_trees,
@@ -23759,7 +23759,7 @@ fn plan_exact_root_scroll_scene(
         let content_witness =
             PaintScrollContentWitness::new(root, admission.child, scroll, contents_clip)
                 .ok_or_else(invalid)?;
-        let local = super::frame_recorder::record_scroll_focused_atomic_projection_text_area_subtree_local_artifact_for_plan(
+        let local = super::legacy_recording::record_scroll_focused_atomic_projection_text_area_subtree_local_artifact_for_plan(
             arena,
             property_trees,
             paint_generations,
@@ -23773,7 +23773,7 @@ fn plan_exact_root_scroll_scene(
                 .collect(),
         })?;
         let parts =
-            super::frame_recorder::validate_recorded_focused_atomic_projection_text_area_plan_parts(
+            super::legacy_recording::validate_recorded_focused_atomic_projection_text_area_plan_parts(
                 host, local,
             )
             .ok_or_else(invalid)?;
@@ -23872,7 +23872,7 @@ fn plan_exact_root_scroll_scene(
     if let Some(selection_admission) =
         atomic_projection_selection_text_area_subtree_admission.as_ref()
     {
-        let host = super::frame_recorder::record_baked_scroll_atomic_projection_selection_text_area_subtree_host_artifact_for_plan(
+        let host = super::legacy_recording::record_baked_scroll_atomic_projection_selection_text_area_subtree_host_artifact_for_plan(
             arena,
             &[root],
             property_trees,
@@ -23889,7 +23889,7 @@ fn plan_exact_root_scroll_scene(
         let content_witness =
             PaintScrollContentWitness::new(root, admission.child, scroll, contents_clip)
                 .ok_or_else(invalid)?;
-        let local = super::frame_recorder::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
+        let local = super::legacy_recording::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
             arena,
             property_trees,
             paint_generations,
@@ -23902,9 +23902,9 @@ fn plan_exact_root_scroll_scene(
                 .map(FramePaintPlanRejection::Coverage)
                 .collect(),
         })?;
-        let authority = super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_authority(host, local)
+        let authority = super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_authority(host, local)
             .ok_or_else(invalid)?;
-        let parts = super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_plan_parts(authority)
+        let parts = super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_plan_parts(authority)
             .ok_or_else(invalid)?;
         if parts.boundary_root() != root
             || parts.content_root() != admission.child
@@ -23960,7 +23960,7 @@ fn plan_exact_root_scroll_scene(
         });
     }
     if let Some(atomic_admission) = atomic_projection_text_area_subtree_admission.as_ref() {
-        let host = super::frame_recorder::record_baked_scroll_atomic_projection_text_area_subtree_host_artifact_for_plan(
+        let host = super::legacy_recording::record_baked_scroll_atomic_projection_text_area_subtree_host_artifact_for_plan(
             arena,
             &[root],
             property_trees,
@@ -23977,7 +23977,7 @@ fn plan_exact_root_scroll_scene(
         let content_witness =
             PaintScrollContentWitness::new(root, admission.child, scroll, contents_clip)
                 .ok_or_else(invalid)?;
-        let local = super::frame_recorder::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
+        let local = super::legacy_recording::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
             arena,
             property_trees,
             paint_generations,
@@ -23991,7 +23991,7 @@ fn plan_exact_root_scroll_scene(
                 .collect(),
         })?;
         let parts =
-            super::frame_recorder::validate_recorded_atomic_projection_text_area_plan_parts(
+            super::legacy_recording::validate_recorded_atomic_projection_text_area_plan_parts(
                 host, local,
             )
             .ok_or_else(invalid)?;
@@ -24043,7 +24043,7 @@ fn plan_exact_root_scroll_scene(
         });
     }
     let baked_artifact = if let Some(text_area_admission) = text_area_subtree_admission {
-        super::frame_recorder::record_baked_scroll_text_area_subtree_host_artifact_for_plan(
+        super::legacy_recording::record_baked_scroll_text_area_subtree_host_artifact_for_plan(
             arena,
             &[root],
             property_trees,
@@ -24052,7 +24052,7 @@ fn plan_exact_root_scroll_scene(
             baked_witness,
         )
     } else if let Some(text_area_admission) = interactive_text_area_subtree_admission {
-        super::frame_recorder::record_baked_scroll_interactive_text_area_subtree_host_artifact_for_plan(
+        super::legacy_recording::record_baked_scroll_interactive_text_area_subtree_host_artifact_for_plan(
             arena,
             &[root],
             property_trees,
@@ -24116,7 +24116,7 @@ fn plan_exact_root_scroll_scene(
         text_area_subtree_admission
     {
         let artifact =
-            super::frame_recorder::record_scroll_text_area_subtree_local_artifact_for_plan(
+            super::legacy_recording::record_scroll_text_area_subtree_local_artifact_for_plan(
                 arena,
                 property_trees,
                 paint_generations,
@@ -24135,7 +24135,7 @@ fn plan_exact_root_scroll_scene(
             PropertyScrollPostCompositeSchedule::NoneForExistingGrammar,
         )
     } else if let Some(text_area_admission) = interactive_text_area_subtree_admission {
-        let recorded = super::frame_recorder::record_scroll_interactive_text_area_subtree_local_artifact_for_plan(
+        let recorded = super::legacy_recording::record_scroll_interactive_text_area_subtree_local_artifact_for_plan(
             arena,
             property_trees,
             paint_generations,
@@ -24149,24 +24149,24 @@ fn plan_exact_root_scroll_scene(
                 .collect(),
         })?;
         let local_clip = recorded
-            .artifact
+            .artifact()
             .clip_nodes
             .first()
             .copied()
             .ok_or_else(invalid)?;
         let validated = validate_scroll_scene_interactive_text_area_content_artifact(
-            recorded.artifact.clone(),
+            recorded.artifact().clone(),
             admission.child,
             text_area_admission.text_area_root,
             text_area_admission.paint_source,
-            recorded.preedit_seal.clone(),
+            recorded.preedit_seal().cloned(),
             local_clip,
             bounds_bits(content_zero_bounds(scroll)),
         )
         .ok_or_else(invalid)?;
         let (_, resident) = validated.into_parts();
-        if recorded.composite_edges.len() > 1
-            || recorded.composite_edges.iter().any(|edge| {
+        if recorded.composite_edges().len() > 1
+            || recorded.composite_edges().iter().any(|edge| {
                 edge.id.scope != super::PaintPropertyScope::Contents
                     || edge
                         .validate_schedule(
@@ -24180,12 +24180,11 @@ fn plan_exact_root_scroll_scene(
         {
             return Err(invalid());
         }
-        let caret = PropertyScrollInteractiveTextAreaCaretSeal::from_edges(Arc::clone(
-            &recorded.composite_edges,
-        ))
-        .ok_or_else(invalid)?;
+        let (recorded_artifact, recorded_edges) = recorded.into_parts();
+        let caret = PropertyScrollInteractiveTextAreaCaretSeal::from_edges(recorded_edges)
+            .ok_or_else(invalid)?;
         (
-            recorded.artifact,
+            recorded_artifact,
             Some(resident),
             PropertyScrollPostCompositeSchedule::InteractiveTextAreaCaret(caret),
         )

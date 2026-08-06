@@ -8270,7 +8270,7 @@ pub(crate) struct ValidatedScrollSceneAtomicProjectionTextAreaPlanParts {
     content: ValidatedScrollSceneAtomicProjectionTextAreaContentArtifact,
     overlay: ValidatedScrollSceneAtomicProjectionTextAreaOverlayArtifact,
     resident: RetainedAtomicProjectionTextAreaResidentRasterSeal,
-    local_raster_oracle: super::legacy_admission::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    local_raster_oracle: super::legacy_recording::RetainedAtomicProjectionTextAreaLiveRasterOracle,
     frozen_identity: AtomicProjectionTextAreaPlanIdentity,
 }
 
@@ -8353,7 +8353,7 @@ pub(crate) struct ValidatedScrollSceneAtomicProjectionSelectionTextAreaPlanParts
     opaque_order_counts: [u32; 3],
     content_span: RetainedSurfaceArtifactSpanStamp,
     local_raster_oracle:
-        super::legacy_admission::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
+        super::legacy_recording::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     frozen_identity: AtomicProjectionSelectionTextAreaPlanIdentity,
 }
 
@@ -9782,7 +9782,7 @@ pub(crate) fn validate_scroll_scene_text_area_content_artifact(
 /// bounds.  The generic TextArea validator remains unchanged.
 pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact_parts(
     artifact: PaintArtifact,
-    raster_oracle: super::legacy_admission::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    raster_oracle: super::legacy_recording::RetainedAtomicProjectionTextAreaLiveRasterOracle,
 ) -> Option<ValidatedScrollSceneAtomicProjectionTextAreaContentArtifact> {
     if !raster_oracle.matches_artifact(&artifact) || !matches!(raster_oracle.chunks().len(), 3 | 5)
     {
@@ -9921,7 +9921,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact
         return None;
     }
     let seal_chunk =
-        |chunk: &super::frame_recorder::RetainedAtomicProjectionChunkLiveRasterOracle| {
+        |chunk: &super::legacy_recording::RetainedAtomicProjectionChunkLiveRasterOracle| {
             PaintChunkRasterIdentity {
                 id: chunk.id(),
                 owner: chunk.owner(),
@@ -9953,7 +9953,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact
 
 fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_parts(
     artifact: PaintArtifact,
-    raster_oracle: super::legacy_admission::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
+    raster_oracle: super::legacy_recording::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     selection: TextSelectionPayloadIdentity,
 ) -> Option<ValidatedScrollSceneAtomicProjectionSelectionTextAreaContentArtifact> {
     if !raster_oracle.matches_artifact(&artifact) || !matches!(raster_oracle.chunks().len(), 4 | 6)
@@ -10116,7 +10116,7 @@ fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_
         return None;
     }
     let seal_chunk =
-        |chunk: &super::frame_recorder::RetainedAtomicProjectionChunkLiveRasterOracle| {
+        |chunk: &super::legacy_recording::RetainedAtomicProjectionChunkLiveRasterOracle| {
             PaintChunkRasterIdentity {
                 id: chunk.id(),
                 owner: chunk.owner(),
@@ -10197,13 +10197,13 @@ fn atomic_projection_content_zero_bounds_bits(scroll: ScrollNodeSnapshot) -> [u3
 #[allow(clippy::too_many_arguments)]
 pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
     host_artifact: PaintArtifact,
-    host_raster_oracle: super::legacy_admission::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    host_raster_oracle: super::legacy_recording::RetainedAtomicProjectionTextAreaLiveRasterOracle,
     source_bounds_bits: [u32; 4],
     outer_scroll: ScrollNodeSnapshot,
     outer_contents_clip: ClipNodeSnapshot,
     host_local_contents_clip: ClipNodeSnapshot,
     local_artifact: PaintArtifact,
-    local_raster_oracle: super::legacy_admission::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    local_raster_oracle: super::legacy_recording::RetainedAtomicProjectionTextAreaLiveRasterOracle,
 ) -> Option<ValidatedScrollSceneAtomicProjectionTextAreaPlanParts> {
     if !host_raster_oracle.matches_artifact(&host_artifact)
         || !local_raster_oracle.matches_artifact(&local_artifact)
@@ -10585,7 +10585,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn validate_scroll_scene_focused_atomic_projection_text_area_plan_parts(
     host_artifact: PaintArtifact,
-    host_raster_oracle: super::legacy_admission::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    host_raster_oracle: super::legacy_recording::RetainedAtomicProjectionTextAreaLiveRasterOracle,
     host_caret: crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal,
     host_preedit: Option<crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
     source_bounds_bits: [u32; 4],
@@ -10593,7 +10593,7 @@ pub(super) fn validate_scroll_scene_focused_atomic_projection_text_area_plan_par
     outer_contents_clip: ClipNodeSnapshot,
     host_local_contents_clip: ClipNodeSnapshot,
     local_artifact: PaintArtifact,
-    local_raster_oracle: super::legacy_admission::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    local_raster_oracle: super::legacy_recording::RetainedAtomicProjectionTextAreaLiveRasterOracle,
     local_caret: crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal,
     local_preedit: Option<crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
 ) -> Option<ValidatedScrollSceneFocusedAtomicProjectionTextAreaPlanParts> {
@@ -10633,13 +10633,13 @@ pub(super) fn validate_scroll_scene_focused_atomic_projection_text_area_plan_par
 #[allow(clippy::too_many_arguments)]
 pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_parts(
     host_artifact: PaintArtifact,
-    host_raster_oracle: super::legacy_admission::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
+    host_raster_oracle: super::legacy_recording::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     source_bounds_bits: [u32; 4],
     outer_scroll: ScrollNodeSnapshot,
     outer_contents_clip: ClipNodeSnapshot,
     host_local_contents_clip: ClipNodeSnapshot,
     local_artifact: PaintArtifact,
-    local_raster_oracle: super::legacy_admission::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
+    local_raster_oracle: super::legacy_recording::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     selection: TextSelectionPayloadIdentity,
 ) -> Option<ValidatedScrollSceneAtomicProjectionSelectionTextAreaPlanParts> {
     if !host_raster_oracle.matches_artifact(&host_artifact)

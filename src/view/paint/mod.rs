@@ -10,6 +10,7 @@ mod coverage_manifest;
 mod frame_plan;
 mod frame_recorder;
 mod legacy_admission;
+mod legacy_recording;
 mod recorder;
 mod recording_context;
 mod retained_surface_executor;

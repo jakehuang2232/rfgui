@@ -51,7 +51,7 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
     let outer = PaintScrollContentWitness::new(root, wrapper, scroll, outer_clip).unwrap();
     let baked = PaintBakedScrollHostWitness::new(root, wrapper, scroll, outer_clip.id).unwrap();
 
-    let local = super::super::frame_recorder::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
+    let local = super::legacy_recording::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
         &arena,
         &properties,
         &generations,
@@ -59,7 +59,7 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
         outer,
     ).expect("closed local recorder");
     assert_eq!(local.artifact_for_test().chunks.len(), 5);
-    let host = super::super::frame_recorder::record_baked_scroll_atomic_projection_text_area_subtree_host_artifact_for_plan(
+    let host = super::legacy_recording::record_baked_scroll_atomic_projection_text_area_subtree_host_artifact_for_plan(
         &arena,
         &[root],
         &properties,
@@ -70,7 +70,7 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
     assert_eq!(host.chunk_count_for_test(), 7);
     assert!(host.is_canonical_for_test());
     let plan_parts =
-        super::super::frame_recorder::validate_recorded_atomic_projection_text_area_plan_parts(
+        super::legacy_recording::validate_recorded_atomic_projection_text_area_plan_parts(
             host.clone(),
             local.clone(),
         )
@@ -102,7 +102,7 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
         host.clone().tamper_artifact_space_transition_for_test(),
     ] {
         assert!(
-            super::super::frame_recorder::validate_recorded_atomic_projection_text_area_plan_parts(
+            super::legacy_recording::validate_recorded_atomic_projection_text_area_plan_parts(
                 tampered_host,
                 local.clone(),
             )
@@ -111,7 +111,7 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
         );
     }
     assert!(
-        super::super::frame_recorder::validate_recorded_atomic_projection_text_area_plan_parts(
+        super::legacy_recording::validate_recorded_atomic_projection_text_area_plan_parts(
             host.clone().tamper_cross_parity_bounds_for_test(1),
             local.clone().tamper_cross_parity_bounds_for_test(0),
         )
@@ -136,7 +136,7 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
     let mut drifted_admission = admission.clone();
     drifted_admission.paint_grammar.projection_text_stable_id ^= 1;
     assert!(
-        super::super::frame_recorder::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
+        super::legacy_recording::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
             &arena,
             &properties,
             &generations,
@@ -147,7 +147,7 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
         "source/admission drift must fail before recording",
     );
     let validate = |recorded| {
-        super::super::frame_recorder::validate_recorded_atomic_projection_text_area_subtree(
+        super::legacy_recording::validate_recorded_atomic_projection_text_area_subtree(
             recorded,
         )
     };
@@ -360,7 +360,7 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
         .unwrap();
     let outer = PaintScrollContentWitness::new(root, wrapper, scroll, outer_clip).unwrap();
     let baked = PaintBakedScrollHostWitness::new(root, wrapper, scroll, outer_clip.id).unwrap();
-    let local = super::super::frame_recorder::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
+    let local = super::legacy_recording::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
         &arena,
         &properties,
         &generations,
@@ -368,7 +368,7 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
         outer,
     )
     .expect("typed closed-union local recording");
-    let host = super::super::frame_recorder::record_baked_scroll_atomic_projection_selection_text_area_subtree_host_artifact_for_plan(
+    let host = super::legacy_recording::record_baked_scroll_atomic_projection_selection_text_area_subtree_host_artifact_for_plan(
         &arena,
         &[root],
         &properties,
@@ -381,7 +381,7 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
     assert_eq!(local.chunk_count_for_test(), 6);
     assert!(host.is_canonical_for_test());
     assert!(local.is_canonical_for_test());
-    let authority = super::super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_authority(
+    let authority = super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_authority(
         host.clone(),
         local.clone(),
     )
@@ -392,7 +392,7 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
         authority.localized_selection_changed_for_test(),
         "nonzero outer scroll must localize selection rectangles",
     );
-    let plan_parts = super::super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_plan_parts(authority)
+    let plan_parts = super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_plan_parts(authority)
         .expect("typed authority must consume into opaque fixed H/content/O plan parts");
     assert!(plan_parts.is_canonical());
     assert_eq!(plan_parts.chunk_counts_for_test(), (1, 6, 1));
@@ -420,7 +420,7 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
     );
 
     assert!(
-        super::super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_authority(
+        super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_authority(
             host.clone().tamper_order_for_test(2, 3),
             local.clone(),
         )
@@ -428,7 +428,7 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
         "synchronized host order tamper must fail",
     );
     assert!(
-        super::super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_authority(
+        super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_authority(
             host.clone(),
             local.clone().tamper_selection_payload_for_test(),
         )
@@ -436,7 +436,7 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
         "synchronized local payload tamper must fail",
     );
     assert!(
-        super::super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_authority(
+        super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_authority(
             host.clone().tamper_selection_payload_for_test(),
             local.clone(),
         )
@@ -444,7 +444,7 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
         "synchronized host payload tamper must fail",
     );
     assert!(
-        super::super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_authority(
+        super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_authority(
             host.clone().tamper_wrapper_bounds_for_test(),
             local.clone().tamper_wrapper_bounds_for_test(),
         )
@@ -452,7 +452,7 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
         "synchronized host/local bounds drift must fail independent scroll geometry",
     );
     assert!(
-        super::super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_authority(
+        super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_authority(
             host.clone(),
             local.clone().tamper_owner_parent_for_test(),
         )
@@ -460,7 +460,7 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
         "synchronized owner topology tamper must fail",
     );
     assert!(
-        super::super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_authority(
+        super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_authority(
             host.clone().tamper_source_line_for_test(),
             local.clone().tamper_source_line_for_test(),
         )
@@ -468,7 +468,7 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
         "synchronized generic source tamper must fail artifact parity",
     );
     assert!(
-        super::super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_authority(
+        super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_authority(
             host,
             local.tamper_local_clip_for_test(),
         )

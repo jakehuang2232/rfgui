@@ -2488,14 +2488,14 @@ fn atomic_projection_emission_fixture_for_test(
         .last()?;
     let outer = PaintScrollContentWitness::new(root, wrapper, scroll, outer_clip)?;
     let baked = PaintBakedScrollHostWitness::new(root, wrapper, scroll, outer_clip.id)?;
-    let local = super::frame_recorder::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
+    let local = super::legacy_recording::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
         &arena,
         &properties,
         &generations,
         &admission,
         outer,
     ).ok()?;
-    let host = super::frame_recorder::record_baked_scroll_atomic_projection_text_area_subtree_host_artifact_for_plan(
+    let host = super::legacy_recording::record_baked_scroll_atomic_projection_text_area_subtree_host_artifact_for_plan(
         &arena,
         &[root],
         &properties,
@@ -2504,7 +2504,7 @@ fn atomic_projection_emission_fixture_for_test(
         baked,
     ).ok()?;
     let plan_parts =
-        super::frame_recorder::validate_recorded_atomic_projection_text_area_plan_parts(
+        super::legacy_recording::validate_recorded_atomic_projection_text_area_plan_parts(
             host, local,
         )?;
     let terminal = plan_parts.content_opaque_order_count()?;
@@ -2586,14 +2586,14 @@ fn atomic_projection_selection_emission_fixture_for_test(
         .last()?;
     let outer = PaintScrollContentWitness::new(root, wrapper, scroll, outer_clip)?;
     let baked = PaintBakedScrollHostWitness::new(root, wrapper, scroll, outer_clip.id)?;
-    let local = super::frame_recorder::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
+    let local = super::legacy_recording::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
         &arena,
         &properties,
         &generations,
         &admission,
         outer,
     ).ok()?;
-    let host = super::frame_recorder::record_baked_scroll_atomic_projection_selection_text_area_subtree_host_artifact_for_plan(
+    let host = super::legacy_recording::record_baked_scroll_atomic_projection_selection_text_area_subtree_host_artifact_for_plan(
         &arena,
         &[root],
         &properties,
@@ -2602,11 +2602,11 @@ fn atomic_projection_selection_emission_fixture_for_test(
         baked,
     ).ok()?;
     let authority =
-        super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_authority(
+        super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_authority(
             host, local,
         )?;
     let plan_parts =
-        super::frame_recorder::validate_recorded_atomic_projection_selection_text_area_plan_parts(
+        super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_plan_parts(
             authority,
         )?;
     let terminal = plan_parts.content_opaque_order_count()?;

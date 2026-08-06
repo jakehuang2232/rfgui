@@ -39,7 +39,7 @@ fn generic_transition_and_selection_sources_reject_at_owner_before_mutation() {
         .unwrap();
     let outer = PaintScrollContentWitness::new(root, wrapper, scroll, outer_clip).unwrap();
     assert!(
-        super::super::frame_recorder::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
+        super::legacy_recording::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
             &arena,
             &properties,
             &generations,
@@ -60,7 +60,7 @@ fn generic_transition_and_selection_sources_reject_at_owner_before_mutation() {
     ];
     let rejects = |tampered| {
         assert_eq!(
-            super::super::frame_recorder::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
+            super::legacy_recording::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
                 &arena,
                 &properties,
                 &generations,
