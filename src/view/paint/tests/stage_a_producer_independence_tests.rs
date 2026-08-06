@@ -31,22 +31,35 @@ fn declared_text_area_types(source: &str) -> Vec<String> {
     names
 }
 
-/// The Stage A producer gate. `artifact.rs` and `frame_recorder.rs` are what
-/// the V2 layerizer consumes, so neither may declare a component-specific paint
-/// type. A new `*TextArea*` declaration in either file is a regression, not a
-/// registration opportunity: put it behind a generic contract instead.
+/// `artifact.rs` is the artifact data model the V2 layerizer consumes. It has
+/// passed the Stage A producer gate: no component-specific paint type, and no
+/// dependency on `legacy_admission`. A new `*TextArea*` declaration or a
+/// `legacy_admission` reference here is a regression, not a registration
+/// opportunity — express the fact as a generic chunk, payload identity,
+/// composite edge, or artifact-space transition instead.
 #[test]
-fn stage_a_producers_declare_no_component_specific_paint_types() {
+fn artifact_model_is_component_independent() {
     assert_eq!(
         declared_text_area_types(include_str!("../artifact.rs")),
         Vec::<String>::new(),
-        "artifact.rs must stay component-independent; express the fact as a generic chunk, payload identity, composite edge, or artifact-space transition",
+        "artifact.rs must not declare a component-specific paint type",
     );
-    // `frame_recorder.rs` is not clean yet. These eight recorded host/subtree
-    // wrappers still encode one exact component shape each; A4's remaining work
-    // is to collapse them into generic recorded boundary segments, after which
-    // this list becomes empty like `artifact.rs`. The list is a ratchet: it may
-    // shrink, never grow.
+    assert!(
+        !include_str!("../artifact.rs").contains("legacy_admission"),
+        "artifact.rs must not depend on legacy_admission; the dependency has to point the other way",
+    );
+}
+
+/// NOT a gate — an inventory of work still owed by A4.
+///
+/// These eight recorded host/subtree wrappers each encode one exact component
+/// shape. A4 is complete only when they have collapsed into generic recorded
+/// boundary segments and this list is empty, at which point this test is
+/// replaced by the same zero assertion `artifact.rs` already passes.
+///
+/// The list is a ratchet: it may shrink, never grow.
+#[test]
+fn frame_recorder_component_specific_wrapper_inventory_only_shrinks() {
     let recorder_pending = [
         "RecordedRetainedAtomicProjectionSelectionTextAreaHost",
         "RecordedRetainedAtomicProjectionSelectionTextAreaSubtree",
@@ -62,7 +75,7 @@ fn stage_a_producers_declare_no_component_specific_paint_types() {
     assert_eq!(
         declared_text_area_types(include_str!("../frame_recorder.rs")),
         recorder_pending,
-        "frame_recorder.rs must stay component-independent; the recorder may not learn which component grammar it is recording. Shrink this list as A4 collapses the wrappers — never extend it",
+        "the recorder may not learn which component grammar it is recording. Shrink this list as A4 collapses the wrappers — never extend it",
     );
 }
 

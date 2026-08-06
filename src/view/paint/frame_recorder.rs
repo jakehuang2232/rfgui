@@ -75,6 +75,7 @@ use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 // Legacy recorder oracles; they leave with `legacy_admission` in Stage C.
 use super::legacy_admission::{
+    PaintScrollDetachedProjectionSubtreeWitness,
     RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     RetainedAtomicProjectionTextAreaLiveRasterOracle,
 };
@@ -92,7 +93,7 @@ use super::{
     PaintCoverageValidationError, PaintOpacityAuthority, PaintRecordingContext,
     PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
     PaintScrollAtomicProjectionTextAreaRecorderWitness as AtomicProjectionRecorderWitness,
-    PaintScrollDetachedProjectionSubtreeWitness, PaintScrollContentWitness,
+    PaintScrollContentWitness,
     PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
     PaintScrollInteractiveTextAreaSubtreeWitness, PaintScrollTextAreaSubtreeWitness,
     PaintCompositeEdge, PaintTransformSurfaceWitness, TextPreeditPayloadIdentity,

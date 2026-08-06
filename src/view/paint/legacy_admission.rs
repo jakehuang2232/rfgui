@@ -332,10 +332,6 @@ impl PaintScrollInteractiveTextAreaSubtreeWitness {
         self.local_contents_clip
     }
 
-    pub(crate) fn paint_source(self) -> PaintTextContentSource {
-        self.paint_source
-    }
-
     pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
         Self {
             target_owner,
@@ -582,4 +578,133 @@ impl RetainedAtomicProjectionTextAreaLiveRasterOracle {
         self.chunks.remove(index);
         Some(self)
     }
+}
+
+// ---- legacy exact-shape projection tokens (moved from artifact.rs) ----
+
+/// Component-independent proof that one detached scroll-content projection has
+/// a canonical local clip: `local_contents_clip` is the live contents clip
+/// re-based onto the detached surface. The token authorizes only that property
+/// projection — never source topology, component semantics, or raster facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PaintScrollDetachedProjectionSubtreeWitness {
+    outer: PaintScrollContentWitness,
+    projection_root: NodeKey,
+    live_contents_clip: ClipNodeSnapshot,
+    local_contents_clip: ClipNodeSnapshot,
+    target_owner: NodeKey,
+}
+
+impl PaintScrollDetachedProjectionSubtreeWitness {
+    pub(crate) fn new(
+        outer: PaintScrollContentWitness,
+        projection_root: NodeKey,
+        live_contents_clip: ClipNodeSnapshot,
+        local_logical_scissor: [u32; 4],
+    ) -> Option<Self> {
+        let outer_clip = outer.contents_clip_snapshot();
+        let local_contents_clip = ClipNodeSnapshot {
+            parent: None,
+            logical_scissor: local_logical_scissor,
+            generation: DETACHED_LOCAL_CLIP_GENERATION,
+            ..live_contents_clip
+        };
+        (projection_root != outer.boundary_root()
+            && projection_root != outer.content_root()
+            && live_contents_clip.id.owner == projection_root
+            && live_contents_clip.id.role == ClipNodeRole::ContentsClip
+            && live_contents_clip.owner == projection_root
+            && live_contents_clip.parent == Some(outer_clip.id)
+            && live_contents_clip.behavior == ClipBehavior::Intersect
+            && live_contents_clip.generation != 0)
+        .then_some(Self {
+            outer,
+            projection_root,
+            live_contents_clip,
+            local_contents_clip,
+            target_owner: outer.content_root(),
+        })
+    }
+
+    pub(crate) fn outer(self) -> PaintScrollContentWitness {
+        self.outer
+    }
+    pub(crate) fn projection_root(self) -> NodeKey {
+        self.projection_root
+    }
+    pub(crate) fn live_contents_clip(self) -> ClipNodeSnapshot {
+        self.live_contents_clip
+    }
+    pub(crate) fn local_contents_clip(self) -> ClipNodeSnapshot {
+        self.local_contents_clip
+    }
+    pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
+        Self {
+            target_owner,
+            ..self
+        }
+    }
+
+    pub(super) fn is_canonical_for(self, owner: NodeKey) -> bool {
+        self.target_owner == owner
+            && self.live_contents_clip.id.owner == self.projection_root
+            && self.live_contents_clip.owner == self.projection_root
+            && self.live_contents_clip.id.role == ClipNodeRole::ContentsClip
+            && self.live_contents_clip.parent == Some(self.outer.contents_clip_snapshot().id)
+            && self.live_contents_clip.behavior == ClipBehavior::Intersect
+            && self.live_contents_clip.generation != 0
+            && self.local_contents_clip.id == self.live_contents_clip.id
+            && self.local_contents_clip.owner == self.live_contents_clip.owner
+            && self.local_contents_clip.parent.is_none()
+            && self.local_contents_clip.behavior == self.live_contents_clip.behavior
+            && self.local_contents_clip.generation == DETACHED_LOCAL_CLIP_GENERATION
+    }
+
+    pub(super) fn project_for(self, owner: NodeKey, live: PropertyTreeState) -> Option<PropertyTreeState> {
+        if !self.is_canonical_for(owner)
+            || live.transform.is_some()
+            || live.effect.is_some()
+            || live.scroll != Some(self.outer.scroll_snapshot().id)
+        {
+            return None;
+        }
+        if live.clip == Some(self.outer.contents_clip_snapshot().id) {
+            Some(PropertyTreeState {
+                transform: None,
+                clip: None,
+                effect: None,
+                scroll: None,
+                ..live
+            })
+        } else if live.clip == Some(self.live_contents_clip.id) {
+            Some(PropertyTreeState {
+                transform: None,
+                clip: Some(self.local_contents_clip.id),
+                effect: None,
+                scroll: None,
+                ..live
+            })
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn detach_clip_snapshot(
+        self,
+        live: &[ClipNodeSnapshot],
+    ) -> Option<Vec<ClipNodeSnapshot>> {
+        if live.is_empty() {
+            return Some(Vec::new());
+        }
+        (live == [self.live_contents_clip, self.outer.contents_clip_snapshot()])
+            .then(|| vec![self.local_contents_clip])
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PaintChunkRasterIdentity {
+    pub(crate) id: PaintChunkId,
+    pub(crate) owner: NodeKey,
+    pub(crate) bounds_bits: [u32; 4],
+    pub(crate) payload_identity: PaintPayloadIdentity,
 }

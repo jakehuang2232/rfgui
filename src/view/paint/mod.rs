@@ -11,6 +11,7 @@ mod frame_plan;
 mod frame_recorder;
 mod legacy_admission;
 mod recorder;
+mod recording_context;
 mod retained_surface_executor;
 mod scroll_content;
 mod scroll_scene;
@@ -28,8 +29,8 @@ pub(crate) use artifact::{
     PaintBakedScrollHostWitness, PaintChunk, PaintChunkId, PaintChunkMetadata, PaintChunkRole,
     PaintContentRevision, PaintDeferredViewportEffectWitness, PaintDeferredViewportSelfClipWitness,
     PaintNodePhase, PaintNodePlan, PaintOp, PaintOpacityAuthority,
-    PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope, PaintRecordingContext,
-    PaintScrollDetachedProjectionSubtreeWitness, PaintScrollContentWitness,
+    PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope,
+    PaintScrollContentWitness,
     PaintScrollForestEdgeWitness,
     PaintTextContentSource, PaintTextPreeditWitness, PaintTextSelectionSource,
     PaintTextSelectionWitness, PaintTransformSurfaceWitness,
@@ -38,7 +39,7 @@ pub(crate) use artifact::{
     PreparedScrollbarOverlayIdentity, PreparedScrollbarOverlayOp, PreparedShadowIdentity,
     PreparedShadowOp, PreparedSvgIdentity, PreparedSvgOp, PreparedTextIdentity, PreparedTextOp,
     PropertyForestBoundarySnapshot, RETAINED_CHILD_MASK_SLOT,
-    PaintChunkRasterIdentity, RetainedChildMaskPlan,
+    RetainedChildMaskPlan,
     TextPayloadNodeKind, TextPayloadNodeIdentity,
     TextPreeditPayloadIdentity, has_canonical_paint_bounds, preedit_glyph_identity_is_exact,
     preedit_underline_identity_is_exact,
@@ -47,12 +48,14 @@ pub(crate) use artifact::{
 /// cutover; see `legacy_admission`.
 #[allow(unused_imports)]
 pub(crate) use legacy_admission::{
+    PaintChunkRasterIdentity, PaintScrollDetachedProjectionSubtreeWitness,
     PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
     PaintScrollAtomicProjectionTextAreaRecorderWitness,
     PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
     PaintScrollInteractiveTextAreaSubtreeWitness, PaintScrollTextAreaSubtreeWitness,
     RetainedInteractiveTextAreaResidentRasterSeal,
 };
+pub(crate) use recording_context::PaintRecordingContext;
 pub(crate) use composite_edge::{
     PaintCompositeEdge, emit_paint_composite_edges, intersect_logical_scissors,
     paint_composite_edge_opaque_delta,
