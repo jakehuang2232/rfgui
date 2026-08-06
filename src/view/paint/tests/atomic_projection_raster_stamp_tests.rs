@@ -167,7 +167,7 @@ fn atomic_projection_text_area_content_raster_stamp_is_generic_and_closed() {
             stamp.target.clone(),
             legacy_span,
             stamp.opaque_order_span.clone(),
-            super::super::artifact::RetainedInteractiveTextAreaResidentRasterSeal::FocusedGlyphs,
+            super::super::legacy_admission::RetainedInteractiveTextAreaResidentRasterSeal::FocusedGlyphs,
         )
         .expect("interactive TextArea control stamp");
     assert!(retained_surface_raster_stamp_is_canonical(&interactive));

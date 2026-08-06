@@ -9,6 +9,7 @@ mod composite_edge;
 mod coverage_manifest;
 mod frame_plan;
 mod frame_recorder;
+mod legacy_admission;
 mod recorder;
 mod retained_surface_executor;
 mod scroll_content;
@@ -28,11 +29,8 @@ pub(crate) use artifact::{
     PaintContentRevision, PaintDeferredViewportEffectWitness, PaintDeferredViewportSelfClipWitness,
     PaintNodePhase, PaintNodePlan, PaintOp, PaintOpacityAuthority,
     PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope, PaintRecordingContext,
-    PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
-    PaintScrollAtomicProjectionTextAreaRecorderWitness,
-    PaintScrollAtomicProjectionTextAreaSubtreeWitness, PaintScrollContentWitness,
-    PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness, PaintScrollForestEdgeWitness,
-    PaintScrollInteractiveTextAreaSubtreeWitness, PaintScrollTextAreaSubtreeWitness,
+    PaintScrollDetachedProjectionSubtreeWitness, PaintScrollContentWitness,
+    PaintScrollForestEdgeWitness,
     PaintTextContentSource, PaintTextPreeditWitness, PaintTextSelectionSource,
     PaintTextSelectionWitness, PaintTransformSurfaceWitness,
     PreparedImageIdentity, PreparedImageOp, PreparedInlineIfcDecorationDescriptor,
@@ -40,10 +38,20 @@ pub(crate) use artifact::{
     PreparedScrollbarOverlayIdentity, PreparedScrollbarOverlayOp, PreparedShadowIdentity,
     PreparedShadowOp, PreparedSvgIdentity, PreparedSvgOp, PreparedTextIdentity, PreparedTextOp,
     PropertyForestBoundarySnapshot, RETAINED_CHILD_MASK_SLOT,
-    RetainedAtomicProjectionTextAreaChunkRasterSeal, RetainedChildMaskPlan,
+    PaintChunkRasterIdentity, RetainedChildMaskPlan,
     TextPayloadNodeKind, TextPayloadNodeIdentity,
     TextPreeditPayloadIdentity, has_canonical_paint_bounds, preedit_glyph_identity_is_exact,
     preedit_underline_identity_is_exact,
+};
+/// Legacy retained admission surface. Deleted whole in the Stage C hard
+/// cutover; see `legacy_admission`.
+#[allow(unused_imports)]
+pub(crate) use legacy_admission::{
+    PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
+    PaintScrollAtomicProjectionTextAreaRecorderWitness,
+    PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
+    PaintScrollInteractiveTextAreaSubtreeWitness, PaintScrollTextAreaSubtreeWitness,
+    RetainedInteractiveTextAreaResidentRasterSeal,
 };
 pub(crate) use composite_edge::{
     PaintCompositeEdge, emit_paint_composite_edges, intersect_logical_scissors,

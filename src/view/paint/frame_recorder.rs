@@ -73,6 +73,11 @@ use crate::view::compositor::property_tree::{
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
+// Legacy recorder oracles; they leave with `legacy_admission` in Stage C.
+use super::legacy_admission::{
+    RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
+    RetainedAtomicProjectionTextAreaLiveRasterOracle,
+};
 
 use super::coverage_manifest::{
     NativeScrollContentReceiverCutout,
@@ -87,7 +92,7 @@ use super::{
     PaintCoverageValidationError, PaintOpacityAuthority, PaintRecordingContext,
     PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
     PaintScrollAtomicProjectionTextAreaRecorderWitness as AtomicProjectionRecorderWitness,
-    PaintScrollAtomicProjectionTextAreaSubtreeWitness, PaintScrollContentWitness,
+    PaintScrollDetachedProjectionSubtreeWitness, PaintScrollContentWitness,
     PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
     PaintScrollInteractiveTextAreaSubtreeWitness, PaintScrollTextAreaSubtreeWitness,
     PaintCompositeEdge, PaintTransformSurfaceWitness, TextPreeditPayloadIdentity,
@@ -121,11 +126,11 @@ pub(crate) enum FrameArtifactFallbackReason {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RetainedAtomicProjectionChunkLiveRasterOracle {
-    id: super::PaintChunkId,
-    owner: NodeKey,
-    bounds_bits: [u32; 4],
-    properties: crate::view::compositor::property_tree::PropertyTreeState,
-    payload_identity: super::PaintPayloadIdentity,
+    pub(super) id: super::PaintChunkId,
+    pub(super) owner: NodeKey,
+    pub(super) bounds_bits: [u32; 4],
+    pub(super) properties: crate::view::compositor::property_tree::PropertyTreeState,
+    pub(super) payload_identity: super::PaintPayloadIdentity,
 }
 
 impl RetainedAtomicProjectionChunkLiveRasterOracle {
@@ -146,87 +151,8 @@ impl RetainedAtomicProjectionChunkLiveRasterOracle {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RetainedAtomicProjectionTextAreaLiveRasterOracle {
-    content_root: NodeKey,
-    text_area_root: NodeKey,
-    artifact_space_transition: super::PaintArtifactSpaceTransition,
-    artifact_source: super::PaintAtomicProjectionArtifactSource,
-    chunks: Vec<RetainedAtomicProjectionChunkLiveRasterOracle>,
-    clip_nodes: Vec<crate::view::compositor::property_tree::ClipNodeSnapshot>,
-    owner_nodes: Vec<super::PaintOwnerSnapshot>,
-}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle {
-    content_root: NodeKey,
-    text_area_root: NodeKey,
-    artifact_space_transition: super::PaintArtifactSpaceTransition,
-    artifact_source: super::PaintAtomicProjectionArtifactSource,
-    selection_source: super::PaintTextSelectionSource,
-    chunks: Vec<RetainedAtomicProjectionChunkLiveRasterOracle>,
-    clip_nodes: Vec<crate::view::compositor::property_tree::ClipNodeSnapshot>,
-    owner_nodes: Vec<super::PaintOwnerSnapshot>,
-}
 
-impl RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle {
-    pub(crate) fn content_root(&self) -> NodeKey {
-        self.content_root
-    }
-
-    pub(crate) fn text_area_root(&self) -> NodeKey {
-        self.text_area_root
-    }
-
-    pub(crate) fn artifact_space_transition(&self) -> super::PaintArtifactSpaceTransition {
-        self.artifact_space_transition
-    }
-
-    pub(crate) fn artifact_source(&self) -> &super::PaintAtomicProjectionArtifactSource {
-        &self.artifact_source
-    }
-
-    pub(crate) fn selection_source(&self) -> super::PaintTextSelectionSource {
-        self.selection_source
-    }
-
-    pub(crate) fn chunks(&self) -> &[RetainedAtomicProjectionChunkLiveRasterOracle] {
-        &self.chunks
-    }
-
-    pub(crate) fn clip_nodes(&self) -> &[crate::view::compositor::property_tree::ClipNodeSnapshot] {
-        &self.clip_nodes
-    }
-
-    pub(crate) fn owner_nodes(&self) -> &[super::PaintOwnerSnapshot] {
-        &self.owner_nodes
-    }
-
-    pub(crate) fn matches_artifact(&self, artifact: &PaintArtifact) -> bool {
-        self.chunks.len() == artifact.chunks.len()
-            && self
-                .chunks
-                .iter()
-                .zip(&artifact.chunks)
-                .all(|(oracle, chunk)| {
-                    oracle.id == chunk.id
-                        && oracle.owner == chunk.owner
-                        && oracle.bounds_bits
-                            == [
-                                chunk.bounds.x,
-                                chunk.bounds.y,
-                                chunk.bounds.width,
-                                chunk.bounds.height,
-                            ]
-                            .map(f32::to_bits)
-                        && oracle.properties == chunk.properties
-                        && oracle.payload_identity == chunk.payload_identity
-                })
-            && self.clip_nodes == artifact.clip_nodes
-            && self.owner_nodes == artifact.owner_nodes
-            && artifact.effect_nodes.is_empty()
-    }
-}
 
 fn normalize_atomic_projection_selection_chunk(
     artifact: &mut PaintArtifact,
@@ -267,66 +193,6 @@ fn normalize_atomic_projection_selection_chunk(
     Some(seal)
 }
 
-impl RetainedAtomicProjectionTextAreaLiveRasterOracle {
-    pub(crate) fn content_root(&self) -> NodeKey {
-        self.content_root
-    }
-
-    pub(crate) fn text_area_root(&self) -> NodeKey {
-        self.text_area_root
-    }
-
-    pub(crate) fn artifact_space_transition(&self) -> super::PaintArtifactSpaceTransition {
-        self.artifact_space_transition
-    }
-
-    pub(crate) fn artifact_source(&self) -> &super::PaintAtomicProjectionArtifactSource {
-        &self.artifact_source
-    }
-
-    pub(crate) fn chunks(&self) -> &[RetainedAtomicProjectionChunkLiveRasterOracle] {
-        &self.chunks
-    }
-
-    pub(crate) fn clip_nodes(&self) -> &[crate::view::compositor::property_tree::ClipNodeSnapshot] {
-        &self.clip_nodes
-    }
-
-    pub(crate) fn owner_nodes(&self) -> &[super::PaintOwnerSnapshot] {
-        &self.owner_nodes
-    }
-
-    pub(crate) fn matches_artifact(&self, artifact: &PaintArtifact) -> bool {
-        self.chunks.len() == artifact.chunks.len()
-            && self
-                .chunks
-                .iter()
-                .zip(&artifact.chunks)
-                .all(|(oracle, chunk)| {
-                    oracle.id == chunk.id
-                        && oracle.owner == chunk.owner
-                        && oracle.bounds_bits
-                            == [
-                                chunk.bounds.x,
-                                chunk.bounds.y,
-                                chunk.bounds.width,
-                                chunk.bounds.height,
-                            ]
-                            .map(f32::to_bits)
-                        && oracle.properties == chunk.properties
-                        && oracle.payload_identity == chunk.payload_identity
-                })
-            && self.clip_nodes == artifact.clip_nodes
-            && self.owner_nodes == artifact.owner_nodes
-            && artifact.effect_nodes.is_empty()
-    }
-
-    fn without_chunk(mut self, index: usize) -> Option<Self> {
-        (index < self.chunks.len()).then_some(())?;
-        self.chunks.remove(index);
-        Some(self)
-    }
-}
 
 fn artifact_without_chunk(mut artifact: PaintArtifact, index: usize) -> Option<PaintArtifact> {
     let chunk = artifact.chunks.get(index)?.clone();
@@ -2135,7 +2001,7 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
         .retained_property_scroll_local_contents_scissor(outer.normalization_paint_offset())
         .ok_or_else(|| invalid(admission.text_area_root))?;
     let recorder_authority = AtomicProjectionRecorderWitness::ExistingAtomicGlyph(
-        PaintScrollAtomicProjectionTextAreaSubtreeWitness::new(
+        PaintScrollDetachedProjectionSubtreeWitness::new(
             outer,
             admission.text_area_root,
             *live_text_area_clip,
@@ -3914,7 +3780,7 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         return Err(invalid(text_area_root));
     }
     let recorder_authority = AtomicProjectionRecorderWitness::ExistingAtomicGlyph(
-        PaintScrollAtomicProjectionTextAreaSubtreeWitness::new(
+        PaintScrollDetachedProjectionSubtreeWitness::new(
             outer,
             text_area_root,
             *live_text_area_clip,
@@ -7935,7 +7801,7 @@ fn baked_scroll_atomic_projection_text_area_subtree_properties_are_exact(
     owner: NodeKey,
     properties: crate::view::compositor::property_tree::PropertyTreeState,
     baked: PaintBakedScrollHostWitness,
-    text_area: PaintScrollAtomicProjectionTextAreaSubtreeWitness,
+    text_area: PaintScrollDetachedProjectionSubtreeWitness,
 ) -> bool {
     let properties = properties.legacy_boundary_dimensions();
     if text_area.outer().boundary_root() != baked.boundary_root()
@@ -7966,7 +7832,7 @@ fn baked_scroll_atomic_projection_text_area_subtree_properties_are_exact(
 
 fn scroll_atomic_projection_text_area_subtree_local_properties_are_exact(
     properties: crate::view::compositor::property_tree::PropertyTreeState,
-    witness: PaintScrollAtomicProjectionTextAreaSubtreeWitness,
+    witness: PaintScrollDetachedProjectionSubtreeWitness,
 ) -> bool {
     let properties = properties.legacy_boundary_dimensions();
     properties == Default::default()

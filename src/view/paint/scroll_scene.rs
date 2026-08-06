@@ -32,7 +32,7 @@ use crate::view::render_pass::texture_composite_pass::{
 };
 use crate::view::viewport::{RetainedSurfaceFrameStageOwner, Viewport};
 
-use super::artifact::RetainedInteractiveTextAreaResidentRasterSeal;
+use super::legacy_admission::RetainedInteractiveTextAreaResidentRasterSeal;
 use super::compiler::{
     AtomicProjectionSelectionTextAreaPlanIdentity, AtomicProjectionTextAreaPlanIdentity,
     RetainedAtomicProjectionTextAreaResidentRasterSeal,

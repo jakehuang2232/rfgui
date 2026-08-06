@@ -25,9 +25,10 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::artifact::{
-    RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION, RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    RetainedInteractiveTextAreaResidentRasterSeal, TextSelectionPayloadIdentity,
+    DETACHED_LOCAL_CLIP_GENERATION, PaintChunkRasterIdentity,
+    TextSelectionPayloadIdentity,
 };
+use super::legacy_admission::RetainedInteractiveTextAreaResidentRasterSeal;
 use super::{
     EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactTarget, PaintChunkRole,
     PaintOp, PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope, PreparedImageIdentity,
@@ -150,7 +151,7 @@ pub(crate) fn validate_frame_root_scroll_content_artifact(
                 || local.owner != text_area_root
                 || local.parent.is_some()
                 || local.behavior != ClipBehavior::Intersect
-                || local.generation != RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION
+                || local.generation != DETACHED_LOCAL_CLIP_GENERATION
                 || artifact.clip_nodes.as_slice() != [local]
                 || !witness.paint_source().is_canonical()
             {
@@ -5338,7 +5339,7 @@ pub(crate) fn validated_scroll_interactive_text_area_content_raster_stamp(
 
 fn raster_chunk_matches_atomic_seal(
     chunk: &RetainedSurfaceChunkStamp,
-    seal: &RetainedAtomicProjectionTextAreaChunkRasterSeal,
+    seal: &PaintChunkRasterIdentity,
 ) -> bool {
     chunk.id == seal.id
         && chunk.owner == seal.owner
@@ -6986,7 +6987,7 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                 || clip.id.role != ClipNodeRole::ContentsClip
                 || clip.parent.is_some()
                 || clip.behavior != ClipBehavior::Intersect
-                || clip.generation != super::artifact::RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION
+                || clip.generation != super::artifact::DETACHED_LOCAL_CLIP_GENERATION
             {
                 return false;
             }
@@ -8269,7 +8270,7 @@ pub(crate) struct ValidatedScrollSceneAtomicProjectionTextAreaPlanParts {
     content: ValidatedScrollSceneAtomicProjectionTextAreaContentArtifact,
     overlay: ValidatedScrollSceneAtomicProjectionTextAreaOverlayArtifact,
     resident: RetainedAtomicProjectionTextAreaResidentRasterSeal,
-    local_raster_oracle: super::frame_recorder::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    local_raster_oracle: super::legacy_admission::RetainedAtomicProjectionTextAreaLiveRasterOracle,
     frozen_identity: AtomicProjectionTextAreaPlanIdentity,
 }
 
@@ -8352,7 +8353,7 @@ pub(crate) struct ValidatedScrollSceneAtomicProjectionSelectionTextAreaPlanParts
     opaque_order_counts: [u32; 3],
     content_span: RetainedSurfaceArtifactSpanStamp,
     local_raster_oracle:
-        super::frame_recorder::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
+        super::legacy_admission::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     frozen_identity: AtomicProjectionSelectionTextAreaPlanIdentity,
 }
 
@@ -9080,9 +9081,9 @@ struct RetainedAtomicProjectionTextAreaFrozenResidentRasterIdentity {
     artifact_source: super::PaintAtomicProjectionArtifactSource,
     contents_clip: ClipNodeSnapshot,
     owner_topology: Arc<[PaintOwnerSnapshot]>,
-    wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    text_area_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    projection_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
+    wrapper_chunk: PaintChunkRasterIdentity,
+    text_area_glyph_chunk: PaintChunkRasterIdentity,
+    projection_glyph_chunk: PaintChunkRasterIdentity,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9092,9 +9093,9 @@ pub(crate) struct RetainedAtomicProjectionTextAreaResidentRasterSeal {
     pub(crate) artifact_source: super::PaintAtomicProjectionArtifactSource,
     pub(crate) contents_clip: ClipNodeSnapshot,
     pub(crate) owner_topology: Arc<[PaintOwnerSnapshot]>,
-    pub(crate) wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    pub(crate) text_area_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    pub(crate) projection_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
+    pub(crate) wrapper_chunk: PaintChunkRasterIdentity,
+    pub(crate) text_area_glyph_chunk: PaintChunkRasterIdentity,
+    pub(crate) projection_glyph_chunk: PaintChunkRasterIdentity,
     frozen_raster_identity: RetainedAtomicProjectionTextAreaFrozenResidentRasterIdentity,
 }
 
@@ -9105,9 +9106,9 @@ impl RetainedAtomicProjectionTextAreaResidentRasterSeal {
         artifact_source: super::PaintAtomicProjectionArtifactSource,
         contents_clip: ClipNodeSnapshot,
         owner_topology: Arc<[PaintOwnerSnapshot]>,
-        wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-        text_area_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-        projection_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
+        wrapper_chunk: PaintChunkRasterIdentity,
+        text_area_glyph_chunk: PaintChunkRasterIdentity,
+        projection_glyph_chunk: PaintChunkRasterIdentity,
     ) -> Self {
         let frozen_raster_identity = RetainedAtomicProjectionTextAreaFrozenResidentRasterIdentity {
             content_root,
@@ -9139,7 +9140,7 @@ impl RetainedAtomicProjectionTextAreaResidentRasterSeal {
             && self.contents_clip.id.role == ClipNodeRole::ContentsClip
             && self.contents_clip.parent.is_none()
             && self.contents_clip.behavior == ClipBehavior::Intersect
-            && self.contents_clip.generation == RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION
+            && self.contents_clip.generation == DETACHED_LOCAL_CLIP_GENERATION
             && self.frozen_raster_identity
                 == RetainedAtomicProjectionTextAreaFrozenResidentRasterIdentity {
                     content_root: self.content_root,
@@ -9167,9 +9168,9 @@ struct RetainedAtomicProjectionTextAreaFrozenRasterDependencyIdentity {
     text_area_root: crate::view::node_arena::NodeKey,
     contents_clip: ClipNodeSnapshot,
     owner_topology: Arc<[PaintOwnerSnapshot]>,
-    wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    text_area_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    projection_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
+    wrapper_chunk: PaintChunkRasterIdentity,
+    text_area_glyph_chunk: PaintChunkRasterIdentity,
+    projection_glyph_chunk: PaintChunkRasterIdentity,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9178,9 +9179,9 @@ pub(crate) struct RetainedAtomicProjectionTextAreaRasterDependencySeal {
     pub(crate) text_area_root: crate::view::node_arena::NodeKey,
     pub(crate) contents_clip: ClipNodeSnapshot,
     pub(crate) owner_topology: Arc<[PaintOwnerSnapshot]>,
-    pub(crate) wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    pub(crate) text_area_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    pub(crate) projection_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
+    pub(crate) wrapper_chunk: PaintChunkRasterIdentity,
+    pub(crate) text_area_glyph_chunk: PaintChunkRasterIdentity,
+    pub(crate) projection_glyph_chunk: PaintChunkRasterIdentity,
     frozen_identity: RetainedAtomicProjectionTextAreaFrozenRasterDependencyIdentity,
 }
 
@@ -9217,7 +9218,7 @@ impl RetainedAtomicProjectionTextAreaRasterDependencySeal {
             || self.contents_clip.id.role != ClipNodeRole::ContentsClip
             || self.contents_clip.parent.is_some()
             || self.contents_clip.behavior != ClipBehavior::Intersect
-            || self.contents_clip.generation != RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION
+            || self.contents_clip.generation != DETACHED_LOCAL_CLIP_GENERATION
             || self.frozen_identity
                 != (RetainedAtomicProjectionTextAreaFrozenRasterDependencyIdentity {
                     content_root: self.content_root,
@@ -9259,10 +9260,10 @@ struct RetainedAtomicProjectionSelectionTextAreaFrozenResidentRasterIdentity {
     selection: TextSelectionPayloadIdentity,
     contents_clip: ClipNodeSnapshot,
     owner_topology: Arc<[PaintOwnerSnapshot]>,
-    wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    selection_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    text_area_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    projection_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
+    wrapper_chunk: PaintChunkRasterIdentity,
+    selection_chunk: PaintChunkRasterIdentity,
+    text_area_glyph_chunk: PaintChunkRasterIdentity,
+    projection_glyph_chunk: PaintChunkRasterIdentity,
 }
 
 /// Full compiler-private authority for the admitted root-selection plus one
@@ -9277,10 +9278,10 @@ pub(crate) struct RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal {
     pub(crate) selection: TextSelectionPayloadIdentity,
     pub(crate) contents_clip: ClipNodeSnapshot,
     pub(crate) owner_topology: Arc<[PaintOwnerSnapshot]>,
-    pub(crate) wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    pub(crate) selection_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    pub(crate) text_area_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    pub(crate) projection_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
+    pub(crate) wrapper_chunk: PaintChunkRasterIdentity,
+    pub(crate) selection_chunk: PaintChunkRasterIdentity,
+    pub(crate) text_area_glyph_chunk: PaintChunkRasterIdentity,
+    pub(crate) projection_glyph_chunk: PaintChunkRasterIdentity,
     frozen_raster_identity:
         RetainedAtomicProjectionSelectionTextAreaFrozenResidentRasterIdentity,
 }
@@ -9294,10 +9295,10 @@ impl RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal {
         selection: TextSelectionPayloadIdentity,
         contents_clip: ClipNodeSnapshot,
         owner_topology: Arc<[PaintOwnerSnapshot]>,
-        wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-        selection_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-        text_area_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-        projection_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
+        wrapper_chunk: PaintChunkRasterIdentity,
+        selection_chunk: PaintChunkRasterIdentity,
+        text_area_glyph_chunk: PaintChunkRasterIdentity,
+        projection_glyph_chunk: PaintChunkRasterIdentity,
     ) -> Option<Self> {
         let frozen_raster_identity =
             RetainedAtomicProjectionSelectionTextAreaFrozenResidentRasterIdentity {
@@ -9336,7 +9337,7 @@ impl RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal {
             && self.contents_clip.id.role == ClipNodeRole::ContentsClip
             && self.contents_clip.parent.is_none()
             && self.contents_clip.behavior == ClipBehavior::Intersect
-            && self.contents_clip.generation == RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION
+            && self.contents_clip.generation == DETACHED_LOCAL_CLIP_GENERATION
             && self.frozen_raster_identity
                 == RetainedAtomicProjectionSelectionTextAreaFrozenResidentRasterIdentity {
                     content_root: self.content_root,
@@ -9366,10 +9367,10 @@ struct RetainedAtomicProjectionSelectionTextAreaFrozenRasterDependencyIdentity {
     selection: TextSelectionPayloadIdentity,
     contents_clip: ClipNodeSnapshot,
     owner_topology: Arc<[PaintOwnerSnapshot]>,
-    wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    selection_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    text_area_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    projection_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
+    wrapper_chunk: PaintChunkRasterIdentity,
+    selection_chunk: PaintChunkRasterIdentity,
+    text_area_glyph_chunk: PaintChunkRasterIdentity,
+    projection_glyph_chunk: PaintChunkRasterIdentity,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9379,10 +9380,10 @@ pub(crate) struct RetainedAtomicProjectionSelectionTextAreaRasterDependencySeal 
     pub(crate) selection: TextSelectionPayloadIdentity,
     pub(crate) contents_clip: ClipNodeSnapshot,
     pub(crate) owner_topology: Arc<[PaintOwnerSnapshot]>,
-    pub(crate) wrapper_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    pub(crate) selection_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    pub(crate) text_area_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
-    pub(crate) projection_glyph_chunk: RetainedAtomicProjectionTextAreaChunkRasterSeal,
+    pub(crate) wrapper_chunk: PaintChunkRasterIdentity,
+    pub(crate) selection_chunk: PaintChunkRasterIdentity,
+    pub(crate) text_area_glyph_chunk: PaintChunkRasterIdentity,
+    pub(crate) projection_glyph_chunk: PaintChunkRasterIdentity,
     frozen_identity: RetainedAtomicProjectionSelectionTextAreaFrozenRasterDependencyIdentity,
 }
 
@@ -9432,7 +9433,7 @@ impl RetainedAtomicProjectionSelectionTextAreaRasterDependencySeal {
             || self.contents_clip.id.role != ClipNodeRole::ContentsClip
             || self.contents_clip.parent.is_some()
             || self.contents_clip.behavior != ClipBehavior::Intersect
-            || self.contents_clip.generation != RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION
+            || self.contents_clip.generation != DETACHED_LOCAL_CLIP_GENERATION
             || self.frozen_identity
                 != (RetainedAtomicProjectionSelectionTextAreaFrozenRasterDependencyIdentity {
                     content_root: self.content_root,
@@ -9781,7 +9782,7 @@ pub(crate) fn validate_scroll_scene_text_area_content_artifact(
 /// bounds.  The generic TextArea validator remains unchanged.
 pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact_parts(
     artifact: PaintArtifact,
-    raster_oracle: super::frame_recorder::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    raster_oracle: super::legacy_admission::RetainedAtomicProjectionTextAreaLiveRasterOracle,
 ) -> Option<ValidatedScrollSceneAtomicProjectionTextAreaContentArtifact> {
     if !raster_oracle.matches_artifact(&artifact) || !matches!(raster_oracle.chunks().len(), 3 | 5)
     {
@@ -9803,7 +9804,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact
         || contents_clip.owner != text_area_root
         || contents_clip.parent.is_some()
         || contents_clip.behavior != ClipBehavior::Intersect
-        || contents_clip.generation != RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION
+        || contents_clip.generation != DETACHED_LOCAL_CLIP_GENERATION
     {
         return None;
     }
@@ -9921,7 +9922,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact
     }
     let seal_chunk =
         |chunk: &super::frame_recorder::RetainedAtomicProjectionChunkLiveRasterOracle| {
-            RetainedAtomicProjectionTextAreaChunkRasterSeal {
+            PaintChunkRasterIdentity {
                 id: chunk.id(),
                 owner: chunk.owner(),
                 bounds_bits: chunk.bounds_bits(),
@@ -9952,7 +9953,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact
 
 fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_parts(
     artifact: PaintArtifact,
-    raster_oracle: super::frame_recorder::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
+    raster_oracle: super::legacy_admission::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     selection: TextSelectionPayloadIdentity,
 ) -> Option<ValidatedScrollSceneAtomicProjectionSelectionTextAreaContentArtifact> {
     if !raster_oracle.matches_artifact(&artifact) || !matches!(raster_oracle.chunks().len(), 4 | 6)
@@ -9979,7 +9980,7 @@ fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_
         || contents_clip.owner != text_area_root
         || contents_clip.parent.is_some()
         || contents_clip.behavior != ClipBehavior::Intersect
-        || contents_clip.generation != RETAINED_TEXT_AREA_LOCAL_CLIP_GENERATION
+        || contents_clip.generation != DETACHED_LOCAL_CLIP_GENERATION
     {
         return None;
     }
@@ -10116,7 +10117,7 @@ fn validate_scroll_scene_atomic_projection_selection_text_area_content_artifact_
     }
     let seal_chunk =
         |chunk: &super::frame_recorder::RetainedAtomicProjectionChunkLiveRasterOracle| {
-            RetainedAtomicProjectionTextAreaChunkRasterSeal {
+            PaintChunkRasterIdentity {
                 id: chunk.id(),
                 owner: chunk.owner(),
                 bounds_bits: chunk.bounds_bits(),
@@ -10196,13 +10197,13 @@ fn atomic_projection_content_zero_bounds_bits(scroll: ScrollNodeSnapshot) -> [u3
 #[allow(clippy::too_many_arguments)]
 pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
     host_artifact: PaintArtifact,
-    host_raster_oracle: super::frame_recorder::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    host_raster_oracle: super::legacy_admission::RetainedAtomicProjectionTextAreaLiveRasterOracle,
     source_bounds_bits: [u32; 4],
     outer_scroll: ScrollNodeSnapshot,
     outer_contents_clip: ClipNodeSnapshot,
     host_local_contents_clip: ClipNodeSnapshot,
     local_artifact: PaintArtifact,
-    local_raster_oracle: super::frame_recorder::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    local_raster_oracle: super::legacy_admission::RetainedAtomicProjectionTextAreaLiveRasterOracle,
 ) -> Option<ValidatedScrollSceneAtomicProjectionTextAreaPlanParts> {
     if !host_raster_oracle.matches_artifact(&host_artifact)
         || !local_raster_oracle.matches_artifact(&local_artifact)
@@ -10584,7 +10585,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn validate_scroll_scene_focused_atomic_projection_text_area_plan_parts(
     host_artifact: PaintArtifact,
-    host_raster_oracle: super::frame_recorder::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    host_raster_oracle: super::legacy_admission::RetainedAtomicProjectionTextAreaLiveRasterOracle,
     host_caret: crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal,
     host_preedit: Option<crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
     source_bounds_bits: [u32; 4],
@@ -10592,7 +10593,7 @@ pub(super) fn validate_scroll_scene_focused_atomic_projection_text_area_plan_par
     outer_contents_clip: ClipNodeSnapshot,
     host_local_contents_clip: ClipNodeSnapshot,
     local_artifact: PaintArtifact,
-    local_raster_oracle: super::frame_recorder::RetainedAtomicProjectionTextAreaLiveRasterOracle,
+    local_raster_oracle: super::legacy_admission::RetainedAtomicProjectionTextAreaLiveRasterOracle,
     local_caret: crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal,
     local_preedit: Option<crate::view::base_component::text_area::FocusedAtomicPreeditSourceSeal>,
 ) -> Option<ValidatedScrollSceneFocusedAtomicProjectionTextAreaPlanParts> {
@@ -10632,13 +10633,13 @@ pub(super) fn validate_scroll_scene_focused_atomic_projection_text_area_plan_par
 #[allow(clippy::too_many_arguments)]
 pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_parts(
     host_artifact: PaintArtifact,
-    host_raster_oracle: super::frame_recorder::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
+    host_raster_oracle: super::legacy_admission::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     source_bounds_bits: [u32; 4],
     outer_scroll: ScrollNodeSnapshot,
     outer_contents_clip: ClipNodeSnapshot,
     host_local_contents_clip: ClipNodeSnapshot,
     local_artifact: PaintArtifact,
-    local_raster_oracle: super::frame_recorder::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
+    local_raster_oracle: super::legacy_admission::RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     selection: TextSelectionPayloadIdentity,
 ) -> Option<ValidatedScrollSceneAtomicProjectionSelectionTextAreaPlanParts> {
     if !host_raster_oracle.matches_artifact(&host_artifact)
