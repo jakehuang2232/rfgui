@@ -38,33 +38,93 @@ fn declared_text_area_types(source: &str) -> Vec<String> {
     names
 }
 
-/// The Stage A producer gate.
+/// Concrete legacy paint tokens. A producer that names one of these has learned
+/// which component grammar it is recording.
+const FORBIDDEN_LEGACY_TYPES: [&str; 10] = [
+    "PaintScrollTextAreaSubtreeWitness",
+    "PaintScrollInteractiveTextAreaSubtreeWitness",
+    "PaintScrollAtomicProjectionTextAreaRecorderWitness",
+    "AtomicProjectionRecorderWitness",
+    "PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness",
+    "PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness",
+    "RetainedInteractiveTextAreaResidentRasterSeal",
+    "RetainedAtomicProjectionTextAreaLiveRasterOracle",
+    "RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle",
+    "RetainedAtomicProjectionChunkLiveRasterOracle",
+];
+
+/// Exact-shape `FrameArtifactAuthorityPolicy` variants. Matching one of these is
+/// grammar dispatch, which is exactly what Stage A removes.
+const FORBIDDEN_EXACT_POLICY_VARIANTS: [&str; 6] = [
+    "BakedScrollTextAreaSubtreeHost",
+    "BakedScrollAtomicProjectionTextAreaSubtreeHost",
+    "BakedScrollInteractiveTextAreaSubtreeHost",
+    "ScrollTextAreaSubtreeLocal",
+    "ScrollAtomicProjectionTextAreaSubtreeLocal",
+    "ScrollInteractiveTextAreaSubtreeLocal",
+];
+
+fn forbidden_symbol_counts(source: &str) -> (usize, usize, usize) {
+    let types = FORBIDDEN_LEGACY_TYPES
+        .iter()
+        .map(|name| source.matches(name).count())
+        .sum();
+    let variants = FORBIDDEN_EXACT_POLICY_VARIANTS
+        .iter()
+        .map(|name| source.matches(name).count())
+        .sum();
+    let imports = source.matches("legacy_admission").count()
+        + source.matches("legacy_recording").count();
+    (types, variants, imports)
+}
+
+/// The Stage A producer gate for `artifact.rs`, which is closed.
 ///
-/// `artifact.rs` is the artifact data model the V2 layerizer consumes, and
-/// `frame_recorder.rs` is what produces it. Neither may declare a
-/// component-specific paint type, and the artifact model may not depend on the
-/// legacy modules at all — the dependency has to point the other way.
-///
-/// A new `*TextArea*` declaration in either file is a regression, not a
-/// registration opportunity: express the fact as a generic chunk, payload
-/// identity, composite edge, or artifact-space transition instead.
+/// Bare `TextArea` substrings are deliberately not banned — diagnostics and
+/// generic payload names may legitimately mention it. What is banned is naming a
+/// concrete legacy token, matching an exact grammar variant, or depending on the
+/// legacy modules at all: the dependency has to point the other way.
 #[test]
-fn stage_a_producers_declare_no_component_specific_paint_types() {
+fn artifact_model_is_component_independent() {
+    let source = include_str!("../artifact.rs");
     assert_eq!(
-        declared_text_area_types(include_str!("../artifact.rs")),
+        declared_text_area_types(source),
         Vec::<String>::new(),
         "artifact.rs must not declare a component-specific paint type",
     );
     assert_eq!(
+        forbidden_symbol_counts(source),
+        (0, 0, 0),
+        "artifact.rs must not reference a concrete legacy paint token, match an exact grammar variant, or depend on the legacy modules",
+    );
+}
+
+/// NOT a gate — the remaining A4 producer debt, counted honestly.
+///
+/// `frame_recorder.rs` declares no component-specific type any more, but it
+/// still names concrete legacy tokens and dispatches on the six exact
+/// `FrameArtifactAuthorityPolicy` variants; `recording_context.rs` still holds
+/// the six legacy capability fields those variants populate. They are one data
+/// flow — `exact policy variant -> legacy witness -> recording-context field` —
+/// and A4 closes only when all three columns reach zero.
+///
+/// Every number here is a ratchet: it may shrink, never grow.
+#[test]
+fn producer_legacy_reference_inventory_only_shrinks() {
+    assert_eq!(
         declared_text_area_types(include_str!("../frame_recorder.rs")),
         Vec::<String>::new(),
-        "the recorder may not learn which component grammar it is recording",
+        "the recorder may not declare a component-specific paint type",
     );
-    let artifact_source = include_str!("../artifact.rs");
-    assert!(
-        !artifact_source.contains("legacy_admission")
-            && !artifact_source.contains("legacy_recording"),
-        "artifact.rs must not depend on the legacy modules",
+    assert_eq!(
+        forbidden_symbol_counts(include_str!("../frame_recorder.rs")),
+        (16, 63, 1),
+        "frame_recorder.rs: (concrete legacy token refs, exact policy variant refs, legacy module refs). Shrink as A4 relocates the exact policy branches — never extend",
+    );
+    assert_eq!(
+        forbidden_symbol_counts(include_str!("../recording_context.rs")),
+        (10, 0, 2),
+        "recording_context.rs: same three columns. Its six legacy capability fields go in the same cutover as the exact policy variants upstream",
     );
 }
 
