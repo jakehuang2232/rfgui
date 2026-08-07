@@ -19,8 +19,7 @@ fn generic_transition_and_selection_sources_reject_at_owner_before_mutation() {
         .as_any()
         .downcast_ref::<Element>()
         .unwrap();
-    let admission = root_element
-        .exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission(
+    let admission = crate::view::paint::exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission(root_element,
             root, &arena, 1.0,
         )
         .expect("selection projection fixture must admit");
@@ -108,23 +107,12 @@ fn generic_transition_and_selection_sources_reject_at_owner_before_mutation() {
     synchronized_transition.artifact_space_transition = synchronized_transition
         .artifact_space_transition
         .tamper_revision_for_test();
-    synchronized_transition
-        .paint_grammar
-        .atomic_source
-        .last_unified_apply_bits
-        .2 += 1;
+    synchronized_transition.tamper_unified_apply_revision_for_test();
     rejects(synchronized_transition);
 
     let mut synchronized_selection = admission;
     synchronized_selection.selection_source.end_char += 1;
-    let crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::SelectionGlyphs {
-        end_char,
-        ..
-    } = &mut synchronized_selection.paint_grammar.selection
-    else {
-        panic!("selection fixture must retain selection source")
-    };
-    *end_char += 1;
+    synchronized_selection.tamper_selection_end_char_for_test();
     rejects(synchronized_selection);
 
     assert_eq!(graph.build_state_snapshot_for_test(), graph_before);

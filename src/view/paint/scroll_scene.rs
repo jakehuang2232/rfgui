@@ -5,11 +5,7 @@ use slotmap::Key;
 
 use crate::view::base_component::{
     AncestorClipContext, BuildState, Element,
-    RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
-    RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
-    RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
-    RetainedScrollHostAdmissionSnapshot, RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
-    RetainedScrollTextAreaSubtreeAdmissionSnapshot, RetainedScrollTransformHostAdmissionSnapshot,
+    RetainedScrollHostAdmissionSnapshot, RetainedScrollTransformHostAdmissionSnapshot,
     Rect, RetainedSurfaceBounds, UiBuildContext, persistent_target_texture_descriptors,
     scroll_content_layer_stable_key, text_area::FocusedAtomicCaretSourcePaintSeal,
     texture_desc_for_logical_bounds,
@@ -32,7 +28,19 @@ use crate::view::render_pass::texture_composite_pass::{
 };
 use crate::view::viewport::{RetainedSurfaceFrameStageOwner, Viewport};
 
-use super::legacy_admission::RetainedInteractiveTextAreaResidentRasterSeal;
+use super::legacy_admission::{
+    RetainedInteractiveTextAreaResidentRasterSeal,
+    RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollTextAreaSubtreeAdmissionSnapshot,
+    exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission,
+    exact_retained_scroll_atomic_projection_text_area_subtree_admission,
+    exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission,
+    exact_retained_scroll_interactive_text_area_subtree_admission,
+    exact_retained_scroll_text_area_subtree_admission,
+};
 use super::compiler::{
     AtomicProjectionSelectionTextAreaPlanIdentity, AtomicProjectionTextAreaPlanIdentity,
     RetainedAtomicProjectionTextAreaResidentRasterSeal,
@@ -9083,18 +9091,18 @@ fn property_scroll_plan_matches_exact_live_inputs(
     let direct_admission = element.exact_retained_scroll_host_admission(*root, arena, 1.0);
     let text_area_subtree_admission = direct_admission
         .is_none()
-        .then(|| element.exact_retained_scroll_text_area_subtree_admission(*root, arena, 1.0))
+        .then(|| exact_retained_scroll_text_area_subtree_admission(element,*root, arena, 1.0))
         .flatten();
     let interactive_text_area_subtree_admission = direct_admission
         .is_none()
         .then(|| {
-            element.exact_retained_scroll_interactive_text_area_subtree_admission(*root, arena, 1.0)
+            exact_retained_scroll_interactive_text_area_subtree_admission(element,*root, arena, 1.0)
         })
         .flatten();
     let atomic_projection_text_area_subtree_admission = direct_admission
         .is_none()
         .then(|| {
-            element.exact_retained_scroll_atomic_projection_text_area_subtree_admission(
+            exact_retained_scroll_atomic_projection_text_area_subtree_admission(element,
                 *root, arena, 1.0,
             )
         })
@@ -9102,7 +9110,7 @@ fn property_scroll_plan_matches_exact_live_inputs(
     let focused_atomic_projection_text_area_subtree_admission = direct_admission
         .is_none()
         .then(|| {
-            element.exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(
+            exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(element,
                 *root, arena, 1.0,
             )
         })
@@ -9110,7 +9118,7 @@ fn property_scroll_plan_matches_exact_live_inputs(
     let atomic_projection_selection_text_area_subtree_admission = direct_admission
         .is_none()
         .then(|| {
-            element.exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission(
+            exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission(element,
                 *root, arena, 1.0,
             )
         })
@@ -9362,7 +9370,7 @@ impl PropertyScrollScenePlan {
         else {
             return false;
         };
-        sidecar.paint_grammar.projection_text_stable_id ^= 1;
+        sidecar.tamper_projection_text_stable_id_for_test();
         let mut reordered = self.clone();
         reordered.steps.swap(0, 2);
         let mut geometry = self.clone();
@@ -9407,13 +9415,13 @@ impl PropertyScrollScenePlan {
         else {
             return false;
         };
-        live_kind.paint_grammar.projection_text_stable_id ^= 1;
+        live_kind.tamper_projection_text_stable_id_for_test();
         let PropertyScrollHostAdmissionKind::AtomicProjectionTextAreaSubtree(planned_kind) =
             &mut synchronized_source_grammar.seal.planned_admission.kind
         else {
             return false;
         };
-        planned_kind.paint_grammar.projection_text_stable_id ^= 1;
+        planned_kind.tamper_projection_text_stable_id_for_test();
         let (Some(live_sidecar), Some(planned_sidecar)) = (
             synchronized_source_grammar
                 .seal
@@ -9426,8 +9434,8 @@ impl PropertyScrollScenePlan {
         ) else {
             return false;
         };
-        live_sidecar.paint_grammar.projection_text_stable_id ^= 1;
-        planned_sidecar.paint_grammar.projection_text_stable_id ^= 1;
+        live_sidecar.tamper_projection_text_stable_id_for_test();
+        planned_sidecar.tamper_projection_text_stable_id_for_test();
         let (Some(live_resident), Some(planned_resident)) = (
             synchronized_source_grammar
                 .seal
@@ -11916,10 +11924,7 @@ impl ValidatedPropertyScrollScene {
             else {
                 return false;
             };
-            selection
-                .paint_grammar
-                .atomic_source
-                .projection_text_stable_id ^= 1;
+            selection.tamper_projection_text_stable_id_for_test();
         }
         let kind_drift_rejects = !kind_drift.is_canonical()
             && property_scroll_scene_seal_from_boundaries(&[kind_drift]).is_none();
@@ -14620,23 +14625,16 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
                     .ok_or(PropertyScrollScenePlanError::InvalidContract(
                         "frame-root-scroll-scene",
                     ))?;
-                let paint_grammar = if text_area.exact_retained_property_scroll_glyph_subtree(
-                    text_area_root,
-                    arena,
-                    required_paint_offset,
-                ) {
-                    crate::view::base_component::text_area::RetainedTextAreaPaintGrammar::GlyphOnly
-                } else {
-                    text_area
-                        .exact_retained_property_scroll_selection_glyph_subtree(
-                            text_area_root,
-                            arena,
-                            required_paint_offset,
-                        )
-                        .ok_or(PropertyScrollScenePlanError::InvalidContract(
-                            "frame-root-scroll-scene",
-                        ))?
-                };
+                let paint_source =
+                    super::legacy_admission::exact_retained_property_scroll_text_area_paint_source(
+                        text_area,
+                        text_area_root,
+                        arena,
+                        required_paint_offset,
+                    )
+                    .ok_or(PropertyScrollScenePlanError::InvalidContract(
+                        "frame-root-scroll-scene",
+                    ))?;
                 let local_scissor = text_area
                     .retained_property_scroll_local_contents_scissor(
                         content_witness.normalization_paint_offset(),
@@ -14668,11 +14666,7 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
                     text_area_root,
                     *live_text_area_clip,
                     local_scissor,
-                    paint_grammar.artifact_content_source().ok_or(
-                        PropertyScrollScenePlanError::InvalidContract(
-                            "frame-root-scroll-scene",
-                        ),
-                    )?,
+                    paint_source,
                 )
                 .ok_or(PropertyScrollScenePlanError::InvalidContract(
                     "frame-root-scroll-scene",
@@ -23629,13 +23623,13 @@ fn plan_exact_root_scroll_scene(
     let text_area_subtree_admission = direct_admission
         .is_none()
         .then(|| {
-            element.exact_retained_scroll_text_area_subtree_admission(root, arena, scale_factor)
+            exact_retained_scroll_text_area_subtree_admission(element,root, arena, scale_factor)
         })
         .flatten();
     let interactive_text_area_subtree_admission = direct_admission
         .is_none()
         .then(|| {
-            element.exact_retained_scroll_interactive_text_area_subtree_admission(
+            exact_retained_scroll_interactive_text_area_subtree_admission(element,
                 root,
                 arena,
                 scale_factor,
@@ -23645,7 +23639,7 @@ fn plan_exact_root_scroll_scene(
     let atomic_projection_text_area_subtree_admission = direct_admission
         .is_none()
         .then(|| {
-            element.exact_retained_scroll_atomic_projection_text_area_subtree_admission(
+            exact_retained_scroll_atomic_projection_text_area_subtree_admission(element,
                 root,
                 arena,
                 scale_factor,
@@ -23655,7 +23649,7 @@ fn plan_exact_root_scroll_scene(
     let focused_atomic_projection_text_area_subtree_admission = direct_admission
         .is_none()
         .then(|| {
-            element.exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(
+            exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(element,
                 root,
                 arena,
                 scale_factor,
@@ -23665,7 +23659,7 @@ fn plan_exact_root_scroll_scene(
     let atomic_projection_selection_text_area_subtree_admission = direct_admission
         .is_none()
         .then(|| {
-            element.exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission(
+            exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission(element,
                 root,
                 arena,
                 scale_factor,

@@ -26,8 +26,7 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
         "source oracle must remain exact after shell placement",
     );
     drop(text_node);
-    let admission = root_element
-        .exact_retained_scroll_atomic_projection_text_area_subtree_admission(root, &arena, 1.0)
+    let admission = crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element, root, &arena, 1.0)
         .expect("atomic projection shell must admit");
     drop(root_node);
     assert_eq!(
@@ -36,7 +35,7 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
     );
     assert_eq!(
         admission.artifact_space_transition,
-        admission.paint_grammar.artifact_space_transition().unwrap(),
+        admission.paint_grammar_for_test().artifact_space_transition().unwrap(),
         "component admission must freeze the generic transition before recording",
     );
     let (properties, generations) = sync_identity(&arena, &[root]);
@@ -134,7 +133,7 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
     });
     assert!(!tampered_host_clip.is_canonical_for_test());
     let mut drifted_admission = admission.clone();
-    drifted_admission.paint_grammar.projection_text_stable_id ^= 1;
+    drifted_admission.tamper_projection_text_stable_id_for_test();
     assert!(
         super::legacy_recording::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
             &arena,
@@ -322,26 +321,23 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
         .as_any()
         .downcast_ref::<Element>()
         .unwrap();
-    let admission = root_element
-        .exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission(
+    let admission = crate::view::paint::exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission(root_element,
             root, &arena, 1.0,
         )
         .expect("disjoint root selection plus one projection must admit");
-    assert!(admission.paint_grammar.is_canonical());
+    assert!(admission.paint_grammar_for_test().is_canonical());
     assert_eq!(
         admission.artifact_space_transition,
-        admission.paint_grammar.artifact_space_transition().unwrap(),
+        admission.paint_grammar_for_test().artifact_space_transition().unwrap(),
     );
     assert!(admission.bitwise_eq(&admission.clone()));
     assert!(
-        root_element
-            .exact_retained_scroll_atomic_projection_text_area_subtree_admission(root, &arena, 1.0,)
+        crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element, root, &arena, 1.0,)
             .is_none(),
         "existing atomic glyph selector must remain selection-free",
     );
     assert!(
-        root_element
-            .exact_retained_scroll_text_area_subtree_admission(root, &arena, 1.0)
+        crate::view::paint::exact_retained_scroll_text_area_subtree_admission(root_element, root, &arena, 1.0)
             .is_none(),
         "C1/C2 selector must remain projection-free",
     );

@@ -187,8 +187,7 @@ fn retained_auto_scroll_text_area_subtree_interaction_and_budget_fail_closed() {
             .downcast_ref::<Element>()
             .unwrap();
         assert!(
-            root_element
-                .exact_retained_scroll_interactive_text_area_subtree_admission(
+            crate::view::paint::exact_retained_scroll_interactive_text_area_subtree_admission(root_element,
                     roots[0], &arena, 1.0,
                 )
                 .is_some(),

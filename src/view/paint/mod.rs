@@ -50,6 +50,17 @@ pub(crate) use artifact::{
 #[allow(unused_imports)]
 pub(crate) use legacy_admission::{
     LegacyTextAreaProjection, PaintLegacyTextAreaCoverageAuthority,
+    RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollTextAreaSubtreeAdmissionSnapshot,
+    exact_retained_property_scroll_text_area_paint_source,
+    exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission,
+    exact_retained_scroll_atomic_projection_text_area_subtree_admission,
+    exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission,
+    exact_retained_scroll_interactive_text_area_subtree_admission,
+    exact_retained_scroll_text_area_subtree_admission,
     PaintChunkRasterIdentity, PaintScrollDetachedProjectionSubtreeWitness,
     PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
     PaintScrollAtomicProjectionTextAreaRecorderWitness,

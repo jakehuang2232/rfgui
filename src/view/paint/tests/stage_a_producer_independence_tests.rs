@@ -1,5 +1,12 @@
 use super::*;
 
+use super::super::legacy_admission::{
+    RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollTextAreaSubtreeAdmissionSnapshot,
+};
 use super::super::legacy_recording::{
     RecordedRetainedAtomicProjectionSelectionTextAreaHost,
     RecordedRetainedAtomicProjectionSelectionTextAreaSubtree,
@@ -189,6 +196,89 @@ fn recording_context_capabilities_are_behavior_named() {
     );
 }
 
+/// The Stage A5 gate: the built-in `Element` host owns no TextArea admission.
+///
+/// `Element` used to declare five TextArea admission snapshots, carry their
+/// `paint_grammar`, and mint them from five exact selectors. All of that is
+/// component-specific admission authority living in a durable host. What may
+/// remain is exactly one registered legacy extraction seam, so the boundary
+/// cannot quietly regrow one method at a time.
+#[test]
+fn element_host_owns_no_text_area_admission() {
+    let source = include_str!("../../base_component/element/mod.rs");
+    assert_eq!(
+        declared_text_area_types(source),
+        Vec::<String>::new(),
+        "element/mod.rs must not declare a TextArea admission snapshot",
+    );
+    assert_eq!(
+        forbidden_symbol_counts(source),
+        (0, 0, 0),
+        "element/mod.rs must not name a concrete legacy paint token, match an exact grammar variant, or depend on the legacy modules",
+    );
+    for forbidden in [
+        "RetainedTextAreaPaintGrammar",
+        "RetainedAtomicProjectionTextAreaPaintGrammar",
+        "RetainedAtomicProjectionSelectionTextAreaPaintGrammar",
+        "RetainedFocusedAtomicProjectionTextAreaPaintGrammar",
+        "RetainedInteractiveTextAreaPaintGrammar",
+        "paint_grammar",
+        "exact_retained_scroll_text_area_subtree_admission",
+        "exact_retained_scroll_atomic_projection_text_area_subtree_admission",
+        "exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission",
+        "exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission",
+        "exact_retained_scroll_interactive_text_area_subtree_admission",
+    ] {
+        assert_eq!(
+            source.matches(forbidden).count(),
+            0,
+            "element/mod.rs must not reference {forbidden}",
+        );
+    }
+
+    // Exactly one registered retained-admission seam, and it must be named as
+    // the legacy extraction it is rather than as a generic capability. The
+    // `legacy_retained_` prefix is the reserved marker: anything else that
+    // wants to hand exact retained-admission shape to the paint side has to
+    // take this name, and then it lands here.
+    let legacy_exports: Vec<&str> = source
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("pub(crate) fn "))
+        .filter_map(|line| line.split_once('(').map(|split| split.0))
+        .filter(|name| name.starts_with("legacy_retained_"))
+        .collect();
+    assert_eq!(
+        legacy_exports,
+        vec!["legacy_retained_scroll_single_child_content_shell"],
+        "only the one registered legacy extraction seam may leave element/mod.rs",
+    );
+}
+
+/// The Stage A5 gate for the production scroll-scene planner.
+///
+/// Whole-file, not production-only: the two frozen-replay tamper matrices now
+/// drift the grammar through a narrow test seam at the token's definition
+/// site, so nothing in this file needs to name a grammar or reach a
+/// `paint_grammar` field at all.
+#[test]
+fn scroll_scene_planner_constructs_no_component_grammar() {
+    let source = include_str!("../scroll_scene.rs");
+    for forbidden in [
+        "RetainedTextAreaPaintGrammar",
+        "RetainedAtomicProjectionTextAreaPaintGrammar",
+        "RetainedAtomicProjectionSelectionTextAreaPaintGrammar",
+        "RetainedFocusedAtomicProjectionTextAreaPaintGrammar",
+        "RetainedInteractiveTextAreaPaintGrammar",
+        "paint_grammar",
+    ] {
+        assert_eq!(
+            source.matches(forbidden).count(),
+            0,
+            "scroll_scene.rs must not reference {forbidden}, in production or in a test seam",
+        );
+    }
+}
+
 /// `legacy_admission` and `legacy_recording` are deleted whole in the Stage C
 /// hard cutover. Linking every type here makes that batch fail to compile if any
 /// survive, so the deletion cannot be partial.
@@ -202,6 +292,21 @@ fn stage_c_deletion_inventory_keeps_legacy_modules_compile_time_linked() {
     register_stage_c_deletion_type::<RetainedInteractiveTextAreaResidentRasterSeal>();
     register_stage_c_deletion_type::<PaintLegacyTextAreaCoverageAuthority>();
     register_stage_c_deletion_type::<LegacyTextAreaProjection>();
+    register_stage_c_deletion_type::<RetainedScrollTextAreaSubtreeAdmissionSnapshot>();
+    register_stage_c_deletion_type::<RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot>();
+    register_stage_c_deletion_type::<RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot>();
+    register_stage_c_deletion_type::<
+        RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
+    >();
+    register_stage_c_deletion_type::<
+        RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    >();
+    // The extraction seam that let those five leave `element/mod.rs`. It is
+    // deleted with them, not re-privatised: nothing in V2 may consume an
+    // exact `scroll host -> wrapper -> single child` shell.
+    register_stage_c_deletion_type::<
+        crate::view::base_component::LegacyRetainedScrollSingleChildContentShell,
+    >();
 
     register_stage_c_deletion_type::<RecordedRetainedAtomicProjectionTextAreaSubtree>();
     register_stage_c_deletion_type::<RecordedRetainedAtomicProjectionTextAreaHost>();
@@ -228,10 +333,15 @@ fn stage_c_deletion_inventory_rejects_unregistered_legacy_types() {
             "PaintScrollInteractiveTextAreaSubtreeWitness",
             "PaintScrollTextAreaSubtreeWitness",
             "RetainedInteractiveTextAreaResidentRasterSeal",
+            "RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot",
+            "RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot",
+            "RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot",
+            "RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot",
+            "RetainedScrollTextAreaSubtreeAdmissionSnapshot",
         ]
         .map(str::to_string)
         .to_vec(),
-        "legacy_admission.rs is a closed set awaiting Stage C deletion; do not add items to it",
+        "legacy_admission.rs is a closed set awaiting Stage C deletion; move an existing exact proof in only to break a durable coupling, and never add a new capability",
     );
     assert_eq!(
         declared_text_area_types(include_str!("../legacy_recording.rs")),

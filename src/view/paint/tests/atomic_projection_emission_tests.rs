@@ -163,8 +163,7 @@ fn focused_atomic_projection_element_admission_is_graph_inert_and_exact() {
             .as_any()
             .downcast_ref::<Element>()
             .unwrap();
-        let admission = root_element
-            .exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(
+        let admission = crate::view::paint::exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(root_element,
                 root, &arena, 1.0,
             )
             .expect("focused atomic projection source must admit without planning");
@@ -172,15 +171,15 @@ fn focused_atomic_projection_element_admission_is_graph_inert_and_exact() {
             (admission.content_wrapper, admission.text_area_root),
             (wrapper, text_area),
         );
-        assert!(admission.paint_grammar.is_canonical());
+        assert!(admission.paint_grammar_for_test().is_canonical());
         assert_eq!(
             admission.artifact_space_transition,
-            admission.paint_grammar.artifact_space_transition().unwrap(),
+            admission.paint_grammar_for_test().artifact_space_transition().unwrap(),
         );
         assert!(admission.bitwise_eq(&admission.clone()));
-        assert_eq!(admission.paint_grammar.caret.caret_visible, caret_visible);
+        assert_eq!(admission.paint_grammar_for_test().caret.caret_visible, caret_visible);
         assert!(matches!(
-            (&admission.paint_grammar.caret.paint, caret_visible),
+            (&admission.paint_grammar_for_test().caret.paint, caret_visible),
             (
                 crate::view::base_component::text_area::FocusedAtomicCaretSourcePaintSeal::Present { .. },
                 true,
@@ -190,16 +189,14 @@ fn focused_atomic_projection_element_admission_is_graph_inert_and_exact() {
             )
         ));
         assert!(
-            root_element
-                .exact_retained_scroll_atomic_projection_text_area_subtree_admission(
+            crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element,
                     root, &arena, 1.0,
                 )
                 .is_none(),
             "existing non-focused atomic admission must remain closed",
         );
         assert!(
-            root_element
-                .exact_retained_scroll_interactive_text_area_subtree_admission(
+            crate::view::paint::exact_retained_scroll_interactive_text_area_subtree_admission(root_element,
                     root, &arena, 1.0,
                 )
                 .is_none(),
@@ -235,8 +232,7 @@ fn focused_atomic_projection_local_recorder_suppresses_caret_into_post_fact() {
             .as_any()
             .downcast_ref::<Element>()
             .unwrap();
-        let admission = root_element
-            .exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(
+        let admission = crate::view::paint::exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(root_element,
                 root, &arena, 1.0,
             )
             .expect("focused atomic projection source must admit");
@@ -310,14 +306,12 @@ fn focused_atomic_projection_host_local_plan_keeps_caret_out_of_resident() {
             .as_any()
             .downcast_ref::<Element>()
             .unwrap();
-        let admission = root_element
-            .exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(
+        let admission = crate::view::paint::exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(root_element,
                 root, &arena, 1.0,
             )
             .expect("focused source admission");
         assert!(
-            root_element
-                .exact_retained_scroll_atomic_projection_text_area_subtree_admission(
+            crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element,
                     root, &arena, 1.0,
                 )
                 .is_none(),

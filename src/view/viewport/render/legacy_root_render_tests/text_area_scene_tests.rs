@@ -43,8 +43,7 @@ fn retained_auto_scroll_text_area_subtree_selects_typed_property_scene() {
         .downcast_ref::<Element>()
         .unwrap();
     assert!(
-        root_element
-            .exact_retained_scroll_text_area_subtree_admission(roots[0], &arena, 1.0)
+        crate::view::paint::exact_retained_scroll_text_area_subtree_admission(root_element, roots[0], &arena, 1.0)
             .is_some(),
         "fixture must satisfy the typed component admission"
     );
@@ -158,8 +157,7 @@ fn retained_auto_focused_atomic_projection_text_area_selects_property_scene() {
         .downcast_ref::<Element>()
         .unwrap();
     assert!(
-        root_element
-            .exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(
+        crate::view::paint::exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(root_element,
                 roots[0], &arena, 1.0,
             )
             .is_some(),
@@ -255,8 +253,7 @@ fn retained_auto_focused_atomic_projection_preedit_selects_property_scene() {
         .downcast_ref::<Element>()
         .unwrap();
     assert!(
-        root_element
-            .exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(
+        crate::view::paint::exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(root_element,
                 roots[0], &arena, 1.0,
             )
             .is_some(),

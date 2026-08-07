@@ -2474,8 +2474,7 @@ fn atomic_projection_emission_fixture_for_test(
     let (arena, root, wrapper, _) = prepared_atomic_projection_scroll_shell_with(projected_content);
     let root_node = arena.get(root)?;
     let root_element = root_node.element.as_any().downcast_ref::<Element>()?;
-    let admission = root_element
-        .exact_retained_scroll_atomic_projection_text_area_subtree_admission(root, &arena, 1.0)?;
+    let admission = crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element, root, &arena, 1.0)?;
     drop(root_node);
     let (properties, generations) = sync_identity(&arena, &[root]);
     let scroll = properties
@@ -2570,8 +2569,7 @@ fn atomic_projection_selection_emission_fixture_for_test(
     }
     let root_node = arena.get(root)?;
     let root_element = root_node.element.as_any().downcast_ref::<Element>()?;
-    let admission = root_element
-        .exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission(
+    let admission = crate::view::paint::exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission(root_element,
             root, &arena, 1.0,
         )?;
     drop(root_node);

@@ -482,21 +482,18 @@ fn retained_atomic_projection_scroll_admission_is_graph_inert_and_exact() {
         .as_any()
         .downcast_ref::<Element>()
         .unwrap();
-    let admission = root_element
-        .exact_retained_scroll_atomic_projection_text_area_subtree_admission(root, &arena, 1.0)
+    let admission = crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element, root, &arena, 1.0)
         .expect("C3a source shell must admit the exact sibling snapshot");
     assert_eq!(admission.boundary_root, root);
     assert_eq!(admission.content_wrapper, wrapper);
     assert_eq!(admission.text_area_root, text_area);
-    assert!(admission.paint_grammar.is_canonical());
+    assert!(admission.paint_grammar_for_test().is_canonical());
     assert!(
-        root_element
-            .exact_retained_scroll_text_area_subtree_admission(root, &arena, 1.0)
+        crate::view::paint::exact_retained_scroll_text_area_subtree_admission(root_element, root, &arena, 1.0)
             .is_none(),
         "C1/C2 admission must not inherit C3a semantics"
     );
-    let dpr2_admission = root_element
-        .exact_retained_scroll_atomic_projection_text_area_subtree_admission(root, &arena, 2.0)
+    let dpr2_admission = crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element, root, &arena, 2.0)
         .expect("device-aligned DPR2 geometry keeps the exact sibling descriptor");
     assert!(admission.bitwise_eq(&dpr2_admission));
     let device_aligned = |value: f32| {
@@ -520,15 +517,13 @@ fn retained_atomic_projection_scroll_admission_is_graph_inert_and_exact() {
         .all(device_aligned)
     );
     assert!(
-        root_element
-            .exact_retained_scroll_atomic_projection_text_area_subtree_admission(
+        crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element,
                 root, &arena, 0.0,
             )
             .is_none()
     );
     assert!(
-        root_element
-            .exact_retained_scroll_atomic_projection_text_area_subtree_admission(
+        crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element,
                 root,
                 &arena,
                 f32::NAN,
@@ -554,8 +549,7 @@ fn retained_atomic_projection_scroll_admission_is_graph_inert_and_exact() {
         .downcast_ref::<Element>()
         .unwrap();
     assert!(
-        root_element
-            .exact_retained_scroll_atomic_projection_text_area_subtree_admission(
+        crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element,
                 root, &arena, 2.0,
             )
             .is_none()

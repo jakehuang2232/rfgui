@@ -442,99 +442,50 @@ pub(crate) struct RetainedScrollHostAdmissionSnapshot {
     pub(crate) scroll: ScrollGeometrySnapshot,
 }
 
-/// Exact sibling admission for the first property-scroll TextArea subtree.
+/// Validated `scroll host -> single content wrapper -> single child` shell.
 ///
-/// This deliberately does not widen `RetainedScrollHostAdmissionSnapshot` or
-/// its direct-leaf oracle.  The admitted grammar is one scroll host, one
-/// otherwise leaf-equivalent Element content wrapper, and one plain TextArea
-/// subtree rooted at `text_area_root`. The frozen paint grammar distinguishes
-/// C1 glyph-only content from C2a selection-underlay plus glyph content.
+/// Fields stay private and leave through `into_parts` exactly once, so a caller
+/// cannot assemble a shell it did not obtain from the validating seam.
+///
+/// Temporary legacy extraction seam. It is registered in the Stage C deletion
+/// inventory and is deleted with the legacy admission modules; the V2 layerizer
+/// must never grow a consumer for it.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct RetainedScrollTextAreaSubtreeAdmissionSnapshot {
-    pub(crate) boundary_root: NodeKey,
-    pub(crate) stable_id: u64,
-    pub(crate) content_wrapper: NodeKey,
-    pub(crate) content_wrapper_stable_id: u64,
-    pub(crate) text_area_root: NodeKey,
-    pub(crate) text_area_stable_id: u64,
-    pub(crate) paint_source: crate::view::paint::PaintTextContentSource,
-    pub(crate) source_bounds: RetainedSurfaceBounds,
-    pub(crate) scroll: ScrollGeometrySnapshot,
+pub(crate) struct LegacyRetainedScrollSingleChildContentShell {
+    source_bounds: RetainedSurfaceBounds,
+    scroll: ScrollGeometrySnapshot,
+    content_wrapper: NodeKey,
+    content_wrapper_stable_id: u64,
+    content_child: NodeKey,
+    recording_offset: [f32; 2],
+    live_recording_offset: [f32; 2],
 }
 
-/// Exact sibling admission for one realized atomic TextArea projection whose
-/// user subtree is exactly one bare static Text leaf. The recorder reruns the
-/// live component oracle before and after recording, while the artifact path
-/// consumes only the generic source and spatial transition facts below.
-#[derive(Clone, Debug)]
-pub(crate) struct RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
-    pub(crate) boundary_root: NodeKey,
-    pub(crate) stable_id: u64,
-    pub(crate) content_wrapper: NodeKey,
-    pub(crate) content_wrapper_stable_id: u64,
-    pub(crate) text_area_root: NodeKey,
-    pub(crate) text_area_stable_id: u64,
-    pub(crate) paint_grammar: super::text_area::RetainedAtomicProjectionTextAreaPaintGrammar,
-    pub(crate) artifact_source: crate::view::paint::PaintAtomicProjectionArtifactSource,
-    pub(crate) artifact_space_transition: crate::view::paint::PaintArtifactSpaceTransition,
-    pub(crate) source_bounds: RetainedSurfaceBounds,
-    pub(crate) scroll: ScrollGeometrySnapshot,
-}
-
-/// Exact sibling admission for one root-owned nonempty TextArea selection and
-/// one realized atomic projection.
-#[derive(Clone, Debug)]
-pub(crate) struct RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot {
-    pub(crate) boundary_root: NodeKey,
-    pub(crate) stable_id: u64,
-    pub(crate) content_wrapper: NodeKey,
-    pub(crate) content_wrapper_stable_id: u64,
-    pub(crate) text_area_root: NodeKey,
-    pub(crate) text_area_stable_id: u64,
-    pub(crate) paint_grammar:
-        super::text_area::RetainedAtomicProjectionSelectionTextAreaPaintGrammar,
-    pub(crate) artifact_source: crate::view::paint::PaintAtomicProjectionArtifactSource,
-    pub(crate) selection_source: crate::view::paint::PaintTextSelectionSource,
-    pub(crate) artifact_space_transition: crate::view::paint::PaintArtifactSpaceTransition,
-    pub(crate) source_bounds: RetainedSurfaceBounds,
-    pub(crate) scroll: ScrollGeometrySnapshot,
-}
-
-/// Exact focused-glyph sibling admission for one realized atomic projection.
-/// Caret and preedit sources remain post-composite facts and are excluded from
-/// the resident raster identity.
-#[derive(Clone, Debug)]
-pub(crate) struct RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
-    pub(crate) boundary_root: NodeKey,
-    pub(crate) stable_id: u64,
-    pub(crate) content_wrapper: NodeKey,
-    pub(crate) content_wrapper_stable_id: u64,
-    pub(crate) text_area_root: NodeKey,
-    pub(crate) text_area_stable_id: u64,
-    pub(crate) paint_grammar: super::text_area::RetainedFocusedAtomicProjectionTextAreaPaintGrammar,
-    pub(crate) artifact_source: crate::view::paint::PaintAtomicProjectionArtifactSource,
-    pub(crate) artifact_space_transition: crate::view::paint::PaintArtifactSpaceTransition,
-    pub(crate) source_bounds: RetainedSurfaceBounds,
-    pub(crate) scroll: ScrollGeometrySnapshot,
-}
-
-/// Exact sibling admission for focused plain TextArea retention. Its resident
-/// base grammar excludes caret paint; the dynamic caret overlay is sealed by
-/// the recorder/compiler chain.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot {
-    pub(crate) boundary_root: NodeKey,
-    pub(crate) stable_id: u64,
-    pub(crate) content_wrapper: NodeKey,
-    pub(crate) content_wrapper_stable_id: u64,
-    pub(crate) text_area_root: NodeKey,
-    pub(crate) text_area_stable_id: u64,
-    pub(crate) paint_source: crate::view::paint::PaintTextContentSource,
-    /// Independent source-oracle geometry. `None` is the exact hidden-caret
-    /// result; `Some` is the caret-map-derived live bounds before clipping.
-    pub(crate) caret_oracle_bounds_bits: Option<[u32; 4]>,
-    pub(crate) source_bounds: RetainedSurfaceBounds,
-    pub(crate) scroll: ScrollGeometrySnapshot,
+impl LegacyRetainedScrollSingleChildContentShell {
+    /// `(source_bounds, scroll, content_wrapper, content_wrapper_stable_id,
+    /// content_child, recording_offset, live_recording_offset)`
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        RetainedSurfaceBounds,
+        ScrollGeometrySnapshot,
+        NodeKey,
+        u64,
+        NodeKey,
+        [f32; 2],
+        [f32; 2],
+    ) {
+        (
+            self.source_bounds,
+            self.scroll,
+            self.content_wrapper,
+            self.content_wrapper_stable_id,
+            self.content_child,
+            self.recording_offset,
+            self.live_recording_offset,
+        )
+    }
 }
 
 /// Exact admission for the first direct `ScrollContents -> Transform`
@@ -658,249 +609,6 @@ impl RetainedScrollHostAdmissionSnapshot {
         snapshot: crate::view::compositor::property_tree::ScrollNodeSnapshot,
     ) -> bool {
         scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
-    }
-}
-
-impl RetainedScrollTextAreaSubtreeAdmissionSnapshot {
-    pub(crate) fn bitwise_eq(self, other: Self) -> bool {
-        self.boundary_root == other.boundary_root
-            && self.stable_id == other.stable_id
-            && self.content_wrapper == other.content_wrapper
-            && self.content_wrapper_stable_id == other.content_wrapper_stable_id
-            && self.text_area_root == other.text_area_root
-            && self.text_area_stable_id == other.text_area_stable_id
-            && self.paint_source.is_canonical()
-            && other.paint_source.is_canonical()
-            && self.paint_source == other.paint_source
-            && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
-            && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
-    }
-
-    pub(crate) fn matches_scroll_node(
-        self,
-        snapshot: crate::view::compositor::property_tree::ScrollNodeSnapshot,
-    ) -> bool {
-        scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
-    }
-
-    pub(crate) fn matches_live_source(
-        self,
-        text_area: &super::TextArea,
-        arena: &NodeArena,
-        recording_offset: [f32; 2],
-    ) -> bool {
-        let live = if text_area.exact_retained_property_scroll_glyph_subtree(
-            self.text_area_root,
-            arena,
-            recording_offset,
-        ) {
-            Some(super::text_area::RetainedTextAreaPaintGrammar::GlyphOnly)
-        } else {
-            text_area.exact_retained_property_scroll_selection_glyph_subtree(
-                self.text_area_root,
-                arena,
-                recording_offset,
-            )
-        };
-        live.and_then(|grammar| grammar.artifact_content_source()) == Some(self.paint_source)
-    }
-}
-
-impl RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
-    pub(crate) fn bitwise_eq(&self, other: &Self) -> bool {
-        self.boundary_root == other.boundary_root
-            && self.stable_id == other.stable_id
-            && self.content_wrapper == other.content_wrapper
-            && self.content_wrapper_stable_id == other.content_wrapper_stable_id
-            && self.text_area_root == other.text_area_root
-            && self.text_area_stable_id == other.text_area_stable_id
-            && self.paint_grammar.is_canonical()
-            && other.paint_grammar.is_canonical()
-            && self.paint_grammar == other.paint_grammar
-            && self.artifact_source == other.artifact_source
-            && self.artifact_space_transition == other.artifact_space_transition
-            && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
-            && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
-    }
-
-    pub(crate) fn matches_scroll_node(
-        &self,
-        snapshot: crate::view::compositor::property_tree::ScrollNodeSnapshot,
-    ) -> bool {
-        scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
-    }
-
-    pub(crate) fn matches_live_source(
-        &self,
-        text_area: &super::TextArea,
-        arena: &NodeArena,
-        recording_offset: [f32; 2],
-    ) -> bool {
-        text_area
-            .exact_retained_property_scroll_atomic_projection_subtree(
-                self.text_area_root,
-                arena,
-                recording_offset,
-            )
-            .is_some_and(|grammar| {
-                grammar == self.paint_grammar
-                    && grammar.artifact_source(self.text_area_root).as_ref()
-                        == Some(&self.artifact_source)
-                    && grammar.artifact_space_transition().is_some_and(|expected| {
-                        self.artifact_space_transition
-                            .validate_expected_for_owner(self.text_area_root, expected)
-                            .is_ok()
-                    })
-            })
-    }
-}
-
-impl RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot {
-    pub(crate) fn bitwise_eq(&self, other: &Self) -> bool {
-        self.boundary_root == other.boundary_root
-            && self.stable_id == other.stable_id
-            && self.content_wrapper == other.content_wrapper
-            && self.content_wrapper_stable_id == other.content_wrapper_stable_id
-            && self.text_area_root == other.text_area_root
-            && self.text_area_stable_id == other.text_area_stable_id
-            && self.paint_grammar.is_canonical()
-            && other.paint_grammar.is_canonical()
-            && self.paint_grammar == other.paint_grammar
-            && self.artifact_source == other.artifact_source
-            && self.selection_source == other.selection_source
-            && self.artifact_space_transition == other.artifact_space_transition
-            && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
-            && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
-    }
-
-    pub(crate) fn matches_scroll_node(
-        &self,
-        snapshot: crate::view::compositor::property_tree::ScrollNodeSnapshot,
-    ) -> bool {
-        scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
-    }
-    pub(crate) fn matches_live_source(
-        &self,
-        text_area: &super::TextArea,
-        arena: &NodeArena,
-        recording_offset: [f32; 2],
-    ) -> bool {
-        text_area
-            .exact_retained_property_scroll_atomic_projection_selection_subtree(
-                self.text_area_root,
-                arena,
-                recording_offset,
-            )
-            .is_some_and(|grammar| {
-                grammar == self.paint_grammar
-                    && grammar.artifact_source(self.text_area_root).as_ref()
-                        == Some(&self.artifact_source)
-                    && grammar.artifact_selection_source() == Some(self.selection_source)
-                    && grammar.artifact_space_transition().is_some_and(|expected| {
-                        self.artifact_space_transition
-                            .validate_expected_for_owner(self.text_area_root, expected)
-                            .is_ok()
-                    })
-            })
-    }
-}
-
-impl RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
-    pub(crate) fn bitwise_eq(&self, other: &Self) -> bool {
-        self.boundary_root == other.boundary_root
-            && self.stable_id == other.stable_id
-            && self.content_wrapper == other.content_wrapper
-            && self.content_wrapper_stable_id == other.content_wrapper_stable_id
-            && self.text_area_root == other.text_area_root
-            && self.text_area_stable_id == other.text_area_stable_id
-            && self.paint_grammar.is_canonical()
-            && other.paint_grammar.is_canonical()
-            && self.paint_grammar == other.paint_grammar
-            && self.artifact_source == other.artifact_source
-            && self.artifact_space_transition == other.artifact_space_transition
-            && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
-            && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
-    }
-
-    pub(crate) fn matches_scroll_node(
-        &self,
-        snapshot: crate::view::compositor::property_tree::ScrollNodeSnapshot,
-    ) -> bool {
-        scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
-    }
-    pub(crate) fn matches_live_source(
-        &self,
-        text_area: &super::TextArea,
-        arena: &NodeArena,
-        recording_offset: [f32; 2],
-    ) -> bool {
-        text_area
-            .exact_retained_property_scroll_focused_atomic_projection_glyph_subtree(
-                self.text_area_root,
-                arena,
-                recording_offset,
-            )
-            .is_some_and(|grammar| {
-                grammar == self.paint_grammar
-                    && grammar.artifact_source(self.text_area_root).as_ref()
-                        == Some(&self.artifact_source)
-                    && grammar.artifact_space_transition().is_some_and(|expected| {
-                        self.artifact_space_transition
-                            .validate_expected_for_owner(self.text_area_root, expected)
-                            .is_ok()
-                    })
-            })
-    }
-
-    pub(crate) fn caret_source(
-        &self,
-    ) -> &super::text_area::FocusedAtomicCaretSourceSeal {
-        &self.paint_grammar.caret
-    }
-
-    pub(crate) fn preedit_source(
-        &self,
-    ) -> Option<&super::text_area::FocusedAtomicPreeditSourceSeal> {
-        self.paint_grammar.preedit.as_ref()
-    }
-}
-
-impl RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot {
-    pub(crate) fn bitwise_eq(self, other: Self) -> bool {
-        self.boundary_root == other.boundary_root
-            && self.stable_id == other.stable_id
-            && self.content_wrapper == other.content_wrapper
-            && self.content_wrapper_stable_id == other.content_wrapper_stable_id
-            && self.text_area_root == other.text_area_root
-            && self.text_area_stable_id == other.text_area_stable_id
-            && self.paint_source.is_canonical()
-            && other.paint_source.is_canonical()
-            && self.paint_source == other.paint_source
-            && self.caret_oracle_bounds_bits == other.caret_oracle_bounds_bits
-            && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
-            && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
-    }
-
-    pub(crate) fn matches_scroll_node(
-        self,
-        snapshot: crate::view::compositor::property_tree::ScrollNodeSnapshot,
-    ) -> bool {
-        scroll_geometry_snapshot_matches_scroll_node(self.scroll, snapshot)
-    }
-    pub(crate) fn matches_live_source(
-        self,
-        text_area: &super::TextArea,
-        arena: &NodeArena,
-        recording_offset: [f32; 2],
-    ) -> bool {
-        text_area
-            .exact_retained_property_scroll_interactive_subtree(
-                self.text_area_root,
-                arena,
-                recording_offset,
-            )
-            .and_then(|grammar| grammar.artifact_content_source())
-            == Some(self.paint_source)
     }
 }
 
@@ -6133,293 +5841,6 @@ impl Element {
         self.exact_retained_scroll_host_admission_with_parent(owner, arena, scale_factor, None)
     }
 
-    /// Closed C1/C2a sibling of the direct-leaf scroll admission. Keeping this
-    /// separate makes the original B0 admission continue to prove that its
-    /// content child has no descendants.
-    pub(crate) fn exact_retained_scroll_text_area_subtree_admission(
-        &self,
-        owner: NodeKey,
-        arena: &NodeArena,
-        scale_factor: f32,
-    ) -> Option<RetainedScrollTextAreaSubtreeAdmissionSnapshot> {
-        let (source_bounds, scroll, content_wrapper) =
-            self.exact_retained_scroll_host_shell(owner, arena, scale_factor, None)?;
-        let wrapper_node = arena.get(content_wrapper)?;
-        let wrapper = wrapper_node.element.as_any().downcast_ref::<Element>()?;
-        let [text_area_root] = wrapper.children.as_slice() else {
-            return None;
-        };
-        let text_area_root = *text_area_root;
-        let text_area_node = arena.get(text_area_root)?;
-        let text_area = text_area_node
-            .element
-            .as_any()
-            .downcast_ref::<super::TextArea>()?;
-        let normalization = [scroll.offset[0], scroll.offset[1]];
-        let wrapper_recording_offset =
-            wrapper.exact_retained_scroll_content_wrapper_recording_offset(normalization)?;
-        let paint_grammar = if text_area.exact_retained_property_scroll_glyph_subtree(
-            text_area_root,
-            arena,
-            wrapper_recording_offset,
-        ) {
-            super::text_area::RetainedTextAreaPaintGrammar::GlyphOnly
-        } else {
-            text_area.exact_retained_property_scroll_selection_glyph_subtree(
-                text_area_root,
-                arena,
-                wrapper_recording_offset,
-            )?
-        };
-        let paint_source = paint_grammar.artifact_content_source()?;
-        if arena.parent_of(content_wrapper) != Some(owner)
-            || arena.parent_of(text_area_root) != Some(content_wrapper)
-            || arena.children_of(content_wrapper) != [text_area_root]
-            || !scroll_content_bounds_match(wrapper, scroll)
-        {
-            return None;
-        }
-        Some(RetainedScrollTextAreaSubtreeAdmissionSnapshot {
-            boundary_root: owner,
-            stable_id: self.stable_id(),
-            content_wrapper,
-            content_wrapper_stable_id: wrapper.stable_id(),
-            text_area_root,
-            text_area_stable_id: text_area.stable_id(),
-            paint_source,
-            source_bounds,
-            scroll,
-        })
-    }
-
-    /// Exact atomic-projection sibling admission. The component oracle stays
-    /// local to this selector; downstream recording receives generic artifact
-    /// facts from the resulting snapshot.
-    pub(crate) fn exact_retained_scroll_atomic_projection_text_area_subtree_admission(
-        &self,
-        owner: NodeKey,
-        arena: &NodeArena,
-        scale_factor: f32,
-    ) -> Option<RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot> {
-        let (source_bounds, scroll, content_wrapper) =
-            self.exact_retained_scroll_host_shell(owner, arena, scale_factor, None)?;
-        let wrapper_node = arena.get(content_wrapper)?;
-        let wrapper = wrapper_node.element.as_any().downcast_ref::<Element>()?;
-        let [text_area_root] = wrapper.children.as_slice() else {
-            return None;
-        };
-        let text_area_root = *text_area_root;
-        let text_area_node = arena.get(text_area_root)?;
-        let text_area = text_area_node
-            .element
-            .as_any()
-            .downcast_ref::<super::TextArea>()?;
-        let normalization = [scroll.offset[0], scroll.offset[1]];
-        let wrapper_recording_offset =
-            wrapper.exact_retained_scroll_content_wrapper_recording_offset(normalization)?;
-        let paint_grammar = text_area.exact_retained_property_scroll_atomic_projection_subtree(
-            text_area_root,
-            arena,
-            wrapper_recording_offset,
-        )?;
-        let artifact_space_transition = paint_grammar.artifact_space_transition()?;
-        let artifact_source = paint_grammar.artifact_source(text_area_root)?;
-        if arena.parent_of(content_wrapper) != Some(owner)
-            || arena.parent_of(text_area_root) != Some(content_wrapper)
-            || arena.children_of(content_wrapper) != [text_area_root]
-            || !scroll_content_bounds_match(wrapper, scroll)
-        {
-            return None;
-        }
-        Some(
-            RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
-                boundary_root: owner,
-                stable_id: self.stable_id(),
-                content_wrapper,
-                content_wrapper_stable_id: wrapper.stable_id(),
-                text_area_root,
-                text_area_stable_id: text_area.stable_id(),
-                paint_grammar,
-                artifact_source,
-                artifact_space_transition,
-                source_bounds,
-                scroll,
-            },
-        )
-    }
-
-    /// Exact root-owned selection plus one realized atomic projection. The
-    /// component oracle is rerun by recorders around artifact production.
-    pub(crate) fn exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission(
-        &self,
-        owner: NodeKey,
-        arena: &NodeArena,
-        scale_factor: f32,
-    ) -> Option<RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot> {
-        let (source_bounds, scroll, content_wrapper) =
-            self.exact_retained_scroll_host_shell(owner, arena, scale_factor, None)?;
-        let wrapper_node = arena.get(content_wrapper)?;
-        let wrapper = wrapper_node.element.as_any().downcast_ref::<Element>()?;
-        let [text_area_root] = wrapper.children.as_slice() else {
-            return None;
-        };
-        let text_area_root = *text_area_root;
-        let text_area_node = arena.get(text_area_root)?;
-        let text_area = text_area_node
-            .element
-            .as_any()
-            .downcast_ref::<super::TextArea>()?;
-        let normalization = [scroll.offset[0], scroll.offset[1]];
-        let wrapper_recording_offset =
-            wrapper.exact_retained_scroll_content_wrapper_recording_offset(normalization)?;
-        let paint_grammar = text_area
-            .exact_retained_property_scroll_atomic_projection_selection_subtree(
-                text_area_root,
-                arena,
-                wrapper_recording_offset,
-            )?;
-        let artifact_space_transition = paint_grammar.artifact_space_transition()?;
-        let artifact_source = paint_grammar.artifact_source(text_area_root)?;
-        let selection_source = paint_grammar.artifact_selection_source()?;
-        if arena.parent_of(content_wrapper) != Some(owner)
-            || arena.parent_of(text_area_root) != Some(content_wrapper)
-            || arena.children_of(content_wrapper) != [text_area_root]
-            || !scroll_content_bounds_match(wrapper, scroll)
-        {
-            return None;
-        }
-        Some(
-            RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot {
-                boundary_root: owner,
-                stable_id: self.stable_id(),
-                content_wrapper,
-                content_wrapper_stable_id: wrapper.stable_id(),
-                text_area_root,
-                text_area_stable_id: text_area.stable_id(),
-                paint_grammar,
-                artifact_source,
-                selection_source,
-                artifact_space_transition,
-                source_bounds,
-                scroll,
-            },
-        )
-    }
-
-    /// Exact focused-glyph sibling for one atomic projection. Resident and
-    /// post-composite source facts are frozen independently.
-    pub(crate) fn exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission(
-        &self,
-        owner: NodeKey,
-        arena: &NodeArena,
-        scale_factor: f32,
-    ) -> Option<RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot> {
-        let (source_bounds, scroll, content_wrapper) =
-            self.exact_retained_scroll_host_shell(owner, arena, scale_factor, None)?;
-        let wrapper_node = arena.get(content_wrapper)?;
-        let wrapper = wrapper_node.element.as_any().downcast_ref::<Element>()?;
-        let [text_area_root] = wrapper.children.as_slice() else {
-            return None;
-        };
-        let text_area_root = *text_area_root;
-        let text_area_node = arena.get(text_area_root)?;
-        let text_area = text_area_node
-            .element
-            .as_any()
-            .downcast_ref::<super::TextArea>()?;
-        let normalization = [scroll.offset[0], scroll.offset[1]];
-        let wrapper_recording_offset =
-            wrapper.exact_retained_scroll_content_wrapper_recording_offset(normalization)?;
-        let paint_grammar = text_area
-            .exact_retained_property_scroll_focused_atomic_projection_glyph_subtree(
-                text_area_root,
-                arena,
-                wrapper_recording_offset,
-            )?;
-        let artifact_space_transition = paint_grammar.artifact_space_transition()?;
-        let artifact_source = paint_grammar.artifact_source(text_area_root)?;
-        if arena.parent_of(content_wrapper) != Some(owner)
-            || arena.parent_of(text_area_root) != Some(content_wrapper)
-            || arena.children_of(content_wrapper) != [text_area_root]
-            || !scroll_content_bounds_match(wrapper, scroll)
-        {
-            return None;
-        }
-        Some(
-            RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
-                boundary_root: owner,
-                stable_id: self.stable_id(),
-                content_wrapper,
-                content_wrapper_stable_id: wrapper.stable_id(),
-                text_area_root,
-                text_area_stable_id: text_area.stable_id(),
-                paint_grammar,
-                artifact_source,
-                artifact_space_transition,
-                source_bounds,
-                scroll,
-            },
-        )
-    }
-
-    pub(crate) fn exact_retained_scroll_interactive_text_area_subtree_admission(
-        &self,
-        owner: NodeKey,
-        arena: &NodeArena,
-        scale_factor: f32,
-    ) -> Option<RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot> {
-        let (source_bounds, scroll, content_wrapper) =
-            self.exact_retained_scroll_host_shell(owner, arena, scale_factor, None)?;
-        let wrapper_node = arena.get(content_wrapper)?;
-        let wrapper = wrapper_node.element.as_any().downcast_ref::<Element>()?;
-        let [text_area_root] = wrapper.children.as_slice() else {
-            return None;
-        };
-        let text_area_root = *text_area_root;
-        let text_area_node = arena.get(text_area_root)?;
-        let text_area = text_area_node
-            .element
-            .as_any()
-            .downcast_ref::<super::TextArea>()?;
-        let normalization = [scroll.offset[0], scroll.offset[1]];
-        let wrapper_recording_offset =
-            wrapper.exact_retained_scroll_content_wrapper_recording_offset(normalization)?;
-        let paint_grammar = text_area.exact_retained_property_scroll_interactive_subtree(
-            text_area_root,
-            arena,
-            wrapper_recording_offset,
-        )?;
-        let paint_source = paint_grammar.artifact_content_source()?;
-        let live_wrapper_offset =
-            wrapper.exact_retained_scroll_content_wrapper_recording_offset([0.0, 0.0])?;
-        let caret_oracle_bounds_bits = text_area.retained_interactive_caret_oracle_bounds_bits(
-            text_area_root,
-            arena,
-            wrapper_recording_offset,
-            live_wrapper_offset,
-            paint_grammar,
-        )?;
-        if arena.parent_of(content_wrapper) != Some(owner)
-            || arena.parent_of(text_area_root) != Some(content_wrapper)
-            || arena.children_of(content_wrapper) != [text_area_root]
-            || !scroll_content_bounds_match(wrapper, scroll)
-        {
-            return None;
-        }
-        Some(RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot {
-            boundary_root: owner,
-            stable_id: self.stable_id(),
-            content_wrapper,
-            content_wrapper_stable_id: wrapper.stable_id(),
-            text_area_root,
-            text_area_stable_id: text_area.stable_id(),
-            paint_source,
-            caret_oracle_bounds_bits,
-            source_bounds,
-            scroll,
-        })
-    }
-
     /// Strict sibling admission for one parentless scroll host whose only
     /// content child owns a transform.  Property-tree planning separately
     /// proves that transform is a direct translation and is the sole target.
@@ -6713,6 +6134,55 @@ impl Element {
             parent_offset[0] + round_layout_value(paint_x) - paint_x,
             parent_offset[1] + round_layout_value(paint_y) - paint_y,
         ])
+    }
+
+    /// The one seam the legacy exact admissions may reach into `Element`.
+    ///
+    /// It hands back the validated `scroll host -> single content wrapper ->
+    /// single child` shell without naming, downcasting, or interpreting the
+    /// child: the caller decides what that child has to be. Everything the old
+    /// TextArea admission selectors shared is here, so the boundary is one
+    /// registered seam rather than five widened internals.
+    ///
+    /// This is a temporary legacy extraction seam, not a durable capability.
+    /// It encodes an exact shape the V2 layerizer never consumes, and it is
+    /// deleted — not re-privatised — with the legacy admission modules in the
+    /// Stage C hard cutover.
+    pub(crate) fn legacy_retained_scroll_single_child_content_shell(
+        &self,
+        owner: NodeKey,
+        arena: &NodeArena,
+        scale_factor: f32,
+    ) -> Option<LegacyRetainedScrollSingleChildContentShell> {
+        let (source_bounds, scroll, content_wrapper) =
+            self.exact_retained_scroll_host_shell(owner, arena, scale_factor, None)?;
+        let wrapper_node = arena.get(content_wrapper)?;
+        let wrapper = wrapper_node.element.as_any().downcast_ref::<Element>()?;
+        let [content_child] = wrapper.children.as_slice() else {
+            return None;
+        };
+        let content_child = *content_child;
+        let normalization = [scroll.offset[0], scroll.offset[1]];
+        let recording_offset =
+            wrapper.exact_retained_scroll_content_wrapper_recording_offset(normalization)?;
+        let live_recording_offset =
+            wrapper.exact_retained_scroll_content_wrapper_recording_offset([0.0, 0.0])?;
+        if arena.parent_of(content_wrapper) != Some(owner)
+            || arena.parent_of(content_child) != Some(content_wrapper)
+            || arena.children_of(content_wrapper) != [content_child]
+            || !scroll_content_bounds_match(wrapper, scroll)
+        {
+            return None;
+        }
+        Some(LegacyRetainedScrollSingleChildContentShell {
+            source_bounds,
+            scroll,
+            content_wrapper,
+            content_wrapper_stable_id: wrapper.stable_id(),
+            content_child,
+            recording_offset,
+            live_recording_offset,
+        })
     }
 
     fn exact_retained_scroll_host_shell(

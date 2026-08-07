@@ -15,13 +15,7 @@ use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::view::base_component::{
-    RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
-    RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
-    RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
-    RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
-    RetainedScrollTextAreaSubtreeAdmissionSnapshot,
-};
+
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
@@ -32,6 +26,11 @@ use super::frame_recorder::{
 };
 use super::legacy_admission::{
     PaintLegacyTextAreaCoverageAuthority,
+    RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollTextAreaSubtreeAdmissionSnapshot,
     PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
     PaintScrollAtomicProjectionTextAreaRecorderWitness as AtomicProjectionRecorderWitness,
     PaintScrollDetachedProjectionSubtreeWitness,
