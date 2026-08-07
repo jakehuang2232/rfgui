@@ -14688,15 +14688,25 @@ pub(crate) fn plan_and_validate_frame_root_scroll_scene(
                 ));
             }
         }
-        let content_artifact =
-            super::frame_recorder::record_generalized_scroll_content_artifact_for_plan(
+        let content_artifact = match text_area_witness {
+            Some(text_area_witness) => {
+                super::legacy_recording::record_scroll_content_text_area_subtree_artifact_for_plan(
+                    arena,
+                    property_trees,
+                    paint_generations,
+                    content_witness,
+                    text_area_witness,
+                    required_paint_offset,
+                )
+            }
+            None => super::frame_recorder::record_generalized_scroll_content_artifact_for_plan(
                 arena,
                 property_trees,
                 paint_generations,
                 content_witness,
-                text_area_witness,
                 required_paint_offset,
-            )
+            ),
+        }
             .map_err(|fallbacks| {
                 PropertyScrollScenePlanError::Frame(FramePaintPlanError {
                     reasons: fallbacks

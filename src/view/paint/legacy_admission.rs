@@ -556,6 +556,175 @@ impl PaintScrollDetachedProjectionSubtreeWitness {
     }
 }
 
+/// Coverage-side authority for the one exact detached subtree a legacy
+/// recording may carry.
+///
+/// The six pre-V2 admission capabilities are mutually exclusive — a recording
+/// is either a baked host or a detached local, and either the stable, the
+/// atomic-projection, or the interactive grammar — so coverage carries this one
+/// value instead of six parallel capability fields. It never reaches
+/// `PaintRecordingContext`, the artifact, or any payload identity.
+///
+/// Two kinds of accessor, with different guarantees. Among the node-facing ones
+/// — `project_for` and the three `authorizes_*` / `suppresses_*` predicates —
+/// any branch that grants a projected state or a behavior revalidates the
+/// witness against the walked node; a variant the branch does not apply to
+/// returns `NoAuthority` or `false` without granting anything, so none of them
+/// can act as ambient subtree state either way. The structural ones — `outer`,
+/// `detaches_clip_snapshot`, `detach_clip_snapshot` — revalidate nothing: they
+/// read the witness's own frozen fields, which are private, immutable, and
+/// could only have been produced by a canonical mint. `detach_clip_snapshot`
+/// still fails closed, but on the recorded clip chain rather than on the node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaintLegacyTextAreaCoverageAuthority {
+    Local(PaintScrollTextAreaSubtreeWitness),
+    BakedHost(PaintScrollTextAreaSubtreeWitness),
+    AtomicProjectionLocal(PaintScrollAtomicProjectionTextAreaRecorderWitness),
+    AtomicProjectionBakedHost(PaintScrollAtomicProjectionTextAreaRecorderWitness),
+    InteractiveLocal(PaintScrollInteractiveTextAreaSubtreeWitness),
+    InteractiveBakedHost(PaintScrollInteractiveTextAreaSubtreeWitness),
+}
+
+/// Outcome of asking a legacy authority to project one live property state.
+///
+/// `NoAuthority` and `Rejected` must stay distinguishable: the first means the
+/// generic projection still owns this node, the second means a validated legacy
+/// projection failed and the node has to fall back. Both are pure — a rejection
+/// consumes nothing and mutates nothing. Collapsing them into `Option` would
+/// let a node whose exact authority failed be admitted by the weaker generic
+/// projection instead, bypassing the failure.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum LegacyTextAreaProjection {
+    NoAuthority,
+    Projected(PropertyTreeState),
+    Rejected,
+}
+
+impl PaintLegacyTextAreaCoverageAuthority {
+    pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
+        match self {
+            Self::Local(witness) => Self::Local(witness.for_target(target_owner)),
+            Self::BakedHost(witness) => Self::BakedHost(witness.for_target(target_owner)),
+            Self::AtomicProjectionLocal(witness) => {
+                Self::AtomicProjectionLocal(witness.for_target(target_owner))
+            }
+            Self::AtomicProjectionBakedHost(witness) => {
+                Self::AtomicProjectionBakedHost(witness.for_target(target_owner))
+            }
+            Self::InteractiveLocal(witness) => {
+                Self::InteractiveLocal(witness.for_target(target_owner))
+            }
+            Self::InteractiveBakedHost(witness) => {
+                Self::InteractiveBakedHost(witness.for_target(target_owner))
+            }
+        }
+    }
+
+    pub(crate) fn outer(self) -> PaintScrollContentWitness {
+        match self {
+            Self::Local(witness) | Self::BakedHost(witness) => witness.outer(),
+            Self::AtomicProjectionLocal(witness) | Self::AtomicProjectionBakedHost(witness) => {
+                witness.outer()
+            }
+            Self::InteractiveLocal(witness) | Self::InteractiveBakedHost(witness) => {
+                witness.outer()
+            }
+        }
+    }
+
+    fn is_canonical_for(self, owner: NodeKey) -> bool {
+        match self {
+            Self::Local(witness) | Self::BakedHost(witness) => witness.is_canonical_for(owner),
+            Self::AtomicProjectionLocal(witness) | Self::AtomicProjectionBakedHost(witness) => {
+                witness.is_canonical_for(owner)
+            }
+            Self::InteractiveLocal(witness) | Self::InteractiveBakedHost(witness) => {
+                witness.is_canonical_for(owner)
+            }
+        }
+    }
+
+    /// Only the detached local half consumes live ancestor properties. A baked
+    /// host records against unprojected live state, so it must leave the
+    /// generic projection in charge.
+    fn detached_local(self) -> bool {
+        matches!(
+            self,
+            Self::Local(_) | Self::AtomicProjectionLocal(_) | Self::InteractiveLocal(_)
+        )
+    }
+
+    pub(crate) fn project_for(
+        self,
+        owner: NodeKey,
+        live: PropertyTreeState,
+    ) -> LegacyTextAreaProjection {
+        if !self.detached_local() {
+            return LegacyTextAreaProjection::NoAuthority;
+        }
+        let projected = match self {
+            Self::Local(witness) => witness.project_for(owner, live),
+            Self::AtomicProjectionLocal(witness) => witness.project_for(owner, live),
+            Self::InteractiveLocal(witness) => witness.project_for(owner, live),
+            _ => None,
+        };
+        match projected {
+            Some(projected) => LegacyTextAreaProjection::Projected(projected),
+            None => LegacyTextAreaProjection::Rejected,
+        }
+    }
+
+    /// Mirrors `project_for`: the recorded clip chain is rebased onto the
+    /// detached surface only for the local half.
+    pub(crate) fn detaches_clip_snapshot(self) -> bool {
+        self.detached_local()
+    }
+
+    pub(crate) fn detach_clip_snapshot(
+        self,
+        live: &[ClipNodeSnapshot],
+    ) -> Option<Vec<ClipNodeSnapshot>> {
+        match self {
+            Self::Local(witness) => witness.detach_clip_snapshot(live),
+            Self::AtomicProjectionLocal(witness) => witness.detach_clip_snapshot(live),
+            Self::InteractiveLocal(witness) => witness.detach_clip_snapshot(live),
+            _ => None,
+        }
+    }
+
+    /// Self paint of the detached content root is recorded on the local basis,
+    /// so it consumes the recorder's normalization offset.
+    pub(crate) fn authorizes_scroll_content_local_owner(self, owner: NodeKey) -> bool {
+        self.detached_local() && self.is_canonical_for(owner)
+    }
+
+    /// The content root is the one node allowed to keep a descendant contents
+    /// clip inside the recording; the clip itself stays frozen in the witness.
+    pub(crate) fn authorizes_descendant_contents_clip(self, owner: NodeKey) -> bool {
+        self.outer().content_root() == owner && self.is_canonical_for(owner)
+    }
+
+    /// The resident raster already owns the caret for these two grammars, so
+    /// the recording must not paint a second, blinking one.
+    pub(crate) fn suppresses_resident_caret(self, owner: NodeKey) -> bool {
+        match self {
+            Self::AtomicProjectionLocal(witness) | Self::AtomicProjectionBakedHost(witness) => {
+                matches!(
+                    witness,
+                    PaintScrollAtomicProjectionTextAreaRecorderWitness::FocusedAtomicProjectionGlyph(
+                        _
+                    )
+                ) && witness.property().projection_root() == owner
+                    && witness.is_canonical_for(owner)
+            }
+            Self::InteractiveLocal(witness) | Self::InteractiveBakedHost(witness) => {
+                witness.text_area_root() == owner && witness.is_canonical_for(owner)
+            }
+            Self::Local(_) | Self::BakedHost(_) => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PaintChunkRasterIdentity {
     pub(crate) id: PaintChunkId,

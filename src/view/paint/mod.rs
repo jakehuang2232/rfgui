@@ -49,6 +49,7 @@ pub(crate) use artifact::{
 /// cutover; see `legacy_admission`.
 #[allow(unused_imports)]
 pub(crate) use legacy_admission::{
+    LegacyTextAreaProjection, PaintLegacyTextAreaCoverageAuthority,
     PaintChunkRasterIdentity, PaintScrollDetachedProjectionSubtreeWitness,
     PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
     PaintScrollAtomicProjectionTextAreaRecorderWitness,

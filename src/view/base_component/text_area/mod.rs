@@ -1237,7 +1237,7 @@ impl ElementTrait for TextArea {
         let mut payload = self
             .prepared_plain_shadow_text_payload(owner, arena, false, recording_context.paint_offset)
             .ok()?;
-        if recording_context.suppresses_interactive_text_area_caret(owner) {
+        if recording_context.suppresses_resident_caret(owner) {
             payload.caret = None;
         }
         let mut before_children = Vec::with_capacity(2);
@@ -1333,7 +1333,7 @@ impl ElementTrait for TextArea {
         let mut payload = self
             .prepared_plain_shadow_text_payload(owner, arena, false, recording_context.paint_offset)
             .ok()?;
-        if recording_context.suppresses_interactive_text_area_caret(owner) {
+        if recording_context.suppresses_resident_caret(owner) {
             payload.caret = None;
         }
         let mut before_children = Vec::with_capacity(2);

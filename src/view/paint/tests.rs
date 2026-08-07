@@ -3935,6 +3935,7 @@ mod effect_store_tests;
 mod generic_composite_edge_tests;
 mod generic_contract_fail_closed_tests;
 mod inline_span_tests;
+mod legacy_text_area_coverage_authority_tests;
 mod metadata_preflight_tests;
 mod outer_shadow_tests;
 mod owning_inline_root_atomic_tests;

@@ -26,23 +26,24 @@ use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::frame_recorder::{
-    FrameArtifactAuthorityPolicy, FrameArtifactFallbackReason, FrameArtifactRecordOutcome,
-    SnapshotMerge, assess_manifest, chunk_bounds_bits, atomic_projection_owner_topology_is_live, classify_optional_child_mask_semantics, merge_snapshot,
-    record_frame_artifact_with_policy,
+    ForcedFrameArtifactError, FrameArtifactDebugBoundary, FrameArtifactDebugBoundaryKind,
+    FrameArtifactEligibility, FrameArtifactFallbackReason, FrameArtifactRecordOutcome,
+    canonical_manifest_matches, materialize_frame_artifact,
 };
 use super::legacy_admission::{
+    PaintLegacyTextAreaCoverageAuthority,
     PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
     PaintScrollAtomicProjectionTextAreaRecorderWitness as AtomicProjectionRecorderWitness,
     PaintScrollDetachedProjectionSubtreeWitness,
     PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
     PaintScrollInteractiveTextAreaSubtreeWitness, PaintScrollTextAreaSubtreeWitness,
 };
-use super::coverage_manifest::record_retained_coverage_manifest_with_context;
+use super::coverage_manifest::record_legacy_text_area_coverage_manifest;
 use super::{
     CoverageRecordingMode, PaintCoverageItem,
     PaintArtifactTarget, PaintBakedScrollHostWitness, PaintCompositeEdge,
     PaintOpacityAuthority, RendererMode, TextPreeditPayloadIdentity,
-    PaintArtifact, PaintCoverageValidationError, PaintRecordingContext,
+    PaintArtifact, PaintChunk, PaintCoverageValidationError, PaintRecordingContext,
     PaintScrollContentWitness,
 };
 
@@ -1176,13 +1177,13 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
     } else {
         None
     };
-    let mut artifact = match record_frame_artifact_with_policy(
+    let mut artifact = match record_legacy_text_area_frame_artifact(
         arena,
         &[content_root],
         property_trees,
         paint_generations,
-        RendererMode::StrictPlan,
-        FrameArtifactAuthorityPolicy::ScrollInteractiveTextAreaSubtreeLocal(witness),
+        PaintLegacyTextAreaCoverageAuthority::InteractiveLocal(witness),
+        None,
         None,
         Some(detached_paint_offset.map(f32::to_bits)),
     ) {
@@ -1727,13 +1728,10 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
             .iter()
             .copied(),
     );
-    let policy = FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(
-        baked,
-        recorder_authority,
-    );
+    let authority =
+        PaintLegacyTextAreaCoverageAuthority::AtomicProjectionBakedHost(recorder_authority);
     let oracle_context = PaintRecordingContext {
         baked_scroll_host: Some(baked),
-        baked_scroll_atomic_projection_text_area_subtree: Some(recorder_authority),
         opacity_authority: PaintOpacityAuthority::Baked,
         ..PaintRecordingContext::default()
     };
@@ -1742,7 +1740,7 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
         roots,
         property_trees,
         paint_generations,
-        policy,
+        authority,
         oracle_context,
         admission.content_wrapper,
         admission.text_area_root,
@@ -1750,13 +1748,13 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
         admission.artifact_space_transition,
         owners.clone(),
     )?;
-    let mut artifact = match record_frame_artifact_with_policy(
+    let mut artifact = match record_legacy_text_area_frame_artifact(
         arena,
         roots,
         property_trees,
         paint_generations,
-        RendererMode::StrictPlan,
-        policy,
+        authority,
+        oracle_context.baked_scroll_host,
         None,
         None,
     ) {
@@ -1779,7 +1777,7 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
         roots,
         property_trees,
         paint_generations,
-        policy,
+        authority,
         oracle_context,
         admission.content_wrapper,
         admission.text_area_root,
@@ -2008,13 +2006,10 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
             .iter()
             .copied(),
     );
-    let policy = FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(
-        baked,
-        recorder_authority,
-    );
+    let authority =
+        PaintLegacyTextAreaCoverageAuthority::AtomicProjectionBakedHost(recorder_authority);
     let oracle_context = PaintRecordingContext {
         baked_scroll_host: Some(baked),
-        baked_scroll_atomic_projection_text_area_subtree: Some(recorder_authority),
         opacity_authority: PaintOpacityAuthority::Baked,
         ..PaintRecordingContext::default()
     };
@@ -2023,7 +2018,7 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
         roots,
         property_trees,
         paint_generations,
-        policy,
+        authority,
         oracle_context,
         admission.content_wrapper,
         admission.text_area_root,
@@ -2031,13 +2026,13 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
         admission.artifact_space_transition,
         owners.clone(),
     )?;
-    let mut artifact = match record_frame_artifact_with_policy(
+    let mut artifact = match record_legacy_text_area_frame_artifact(
         arena,
         roots,
         property_trees,
         paint_generations,
-        RendererMode::StrictPlan,
-        policy,
+        authority,
+        oracle_context.baked_scroll_host,
         None,
         None,
     ) {
@@ -2058,7 +2053,7 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
         roots,
         property_trees,
         paint_generations,
-        policy,
+        authority,
         oracle_context,
         admission.content_wrapper,
         admission.text_area_root,
@@ -2201,13 +2196,10 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
             .iter()
             .copied(),
     );
-    let policy = FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(
-        baked,
-        recorder_authority,
-    );
+    let authority =
+        PaintLegacyTextAreaCoverageAuthority::AtomicProjectionBakedHost(recorder_authority);
     let oracle_context = PaintRecordingContext {
         baked_scroll_host: Some(baked),
-        baked_scroll_atomic_projection_text_area_subtree: Some(recorder_authority),
         opacity_authority: PaintOpacityAuthority::Baked,
         ..PaintRecordingContext::default()
     };
@@ -2216,7 +2208,7 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
         roots,
         property_trees,
         paint_generations,
-        policy,
+        authority,
         oracle_context,
         admission.content_wrapper,
         admission.text_area_root,
@@ -2225,13 +2217,13 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
         admission.artifact_space_transition,
         owners.clone(),
     )?;
-    let mut artifact = match record_frame_artifact_with_policy(
+    let mut artifact = match record_legacy_text_area_frame_artifact(
         arena,
         roots,
         property_trees,
         paint_generations,
-        RendererMode::StrictPlan,
-        policy,
+        authority,
+        oracle_context.baked_scroll_host,
         None,
         None,
     ) {
@@ -2272,7 +2264,7 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
         roots,
         property_trees,
         paint_generations,
-        policy,
+        authority,
         oracle_context,
         admission.content_wrapper,
         admission.text_area_root,
@@ -2397,7 +2389,7 @@ fn record_atomic_projection_live_raster_oracle(
     roots: &[NodeKey],
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
-    policy: FrameArtifactAuthorityPolicy,
+    authority: PaintLegacyTextAreaCoverageAuthority,
     context: PaintRecordingContext,
     content_root: NodeKey,
     text_area_root: NodeKey,
@@ -2412,19 +2404,15 @@ fn record_atomic_projection_live_raster_oracle(
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
     }
-    let manifest = record_retained_coverage_manifest_with_context(
+    let manifest = record_legacy_metadata_manifest(
         arena,
         roots,
-        false,
-        true,
-        CoverageRecordingMode::MetadataOnly,
         property_trees,
         paint_generations,
         context,
-        None,
-        &super::PlannedBoundaryCutoutSet::default(),
+        authority,
     );
-    let eligibility = assess_manifest(&manifest, policy);
+    let eligibility = assess_legacy_manifest(&manifest, authority, context.baked_scroll_host);
     if !eligibility.eligible {
         return Err(eligibility.reasons);
     }
@@ -2483,7 +2471,7 @@ fn record_atomic_projection_selection_live_raster_oracle(
     roots: &[NodeKey],
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
-    policy: FrameArtifactAuthorityPolicy,
+    authority: PaintLegacyTextAreaCoverageAuthority,
     context: PaintRecordingContext,
     content_root: NodeKey,
     text_area_root: NodeKey,
@@ -2503,19 +2491,15 @@ fn record_atomic_projection_selection_live_raster_oracle(
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
     }
-    let manifest = record_retained_coverage_manifest_with_context(
+    let manifest = record_legacy_metadata_manifest(
         arena,
         roots,
-        false,
-        true,
-        CoverageRecordingMode::MetadataOnly,
         property_trees,
         paint_generations,
         context,
-        None,
-        &super::PlannedBoundaryCutoutSet::default(),
+        authority,
     );
-    let eligibility = assess_manifest(&manifest, policy);
+    let eligibility = assess_legacy_manifest(&manifest, authority, context.baked_scroll_host);
     if !eligibility.eligible {
         return Err(eligibility.reasons);
     }
@@ -2695,13 +2679,11 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
             .copied(),
     );
 
-    let policy = FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(
-        recorder_authority,
-    );
+    let authority =
+        PaintLegacyTextAreaCoverageAuthority::AtomicProjectionLocal(recorder_authority);
     let oracle_context = PaintRecordingContext {
         paint_offset: recorder_authority.outer().normalization_paint_offset(),
         required_scroll_content_paint_offset_bits: Some(required_paint_offset.map(f32::to_bits)),
-        scroll_atomic_projection_text_area_subtree: Some(recorder_authority),
         opacity_authority: PaintOpacityAuthority::Baked,
         ..PaintRecordingContext::default()
     };
@@ -2710,7 +2692,7 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         &[content_root],
         property_trees,
         paint_generations,
-        policy,
+        authority,
         oracle_context,
         content_root,
         text_area_root,
@@ -2719,13 +2701,13 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         expected_owners.clone(),
     )?;
 
-    let mut artifact = match record_frame_artifact_with_policy(
+    let mut artifact = match record_legacy_text_area_frame_artifact(
         arena,
         &[content_root],
         property_trees,
         paint_generations,
-        RendererMode::StrictPlan,
-        policy,
+        authority,
+        oracle_context.baked_scroll_host,
         None,
         Some(required_paint_offset.map(f32::to_bits)),
     ) {
@@ -2746,7 +2728,7 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         &[content_root],
         property_trees,
         paint_generations,
-        policy,
+        authority,
         oracle_context,
         content_root,
         text_area_root,
@@ -2941,13 +2923,11 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
             .copied(),
     );
 
-    let policy = FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(
-        recorder_authority,
-    );
+    let authority =
+        PaintLegacyTextAreaCoverageAuthority::AtomicProjectionLocal(recorder_authority);
     let oracle_context = PaintRecordingContext {
         paint_offset: recorder_authority.outer().normalization_paint_offset(),
         required_scroll_content_paint_offset_bits: Some(required_paint_offset.map(f32::to_bits)),
-        scroll_atomic_projection_text_area_subtree: Some(recorder_authority),
         opacity_authority: PaintOpacityAuthority::Baked,
         ..PaintRecordingContext::default()
     };
@@ -2956,7 +2936,7 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
         &[content_root],
         property_trees,
         paint_generations,
-        policy,
+        authority,
         oracle_context,
         content_root,
         text_area_root,
@@ -2965,13 +2945,13 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
         expected_owners.clone(),
     )?;
 
-    let mut artifact = match record_frame_artifact_with_policy(
+    let mut artifact = match record_legacy_text_area_frame_artifact(
         arena,
         &[content_root],
         property_trees,
         paint_generations,
-        RendererMode::StrictPlan,
-        policy,
+        authority,
+        oracle_context.baked_scroll_host,
         None,
         Some(required_paint_offset.map(f32::to_bits)),
     ) {
@@ -2992,7 +2972,7 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
         &[content_root],
         property_trees,
         paint_generations,
-        policy,
+        authority,
         oracle_context,
         content_root,
         text_area_root,
@@ -3233,13 +3213,11 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
             .iter()
             .copied(),
     );
-    let policy = FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(
-        recorder_authority,
-    );
+    let authority =
+        PaintLegacyTextAreaCoverageAuthority::AtomicProjectionLocal(recorder_authority);
     let oracle_context = PaintRecordingContext {
         paint_offset: recorder_authority.outer().normalization_paint_offset(),
         required_scroll_content_paint_offset_bits: Some(required_paint_offset.map(f32::to_bits)),
-        scroll_atomic_projection_text_area_subtree: Some(recorder_authority),
         opacity_authority: PaintOpacityAuthority::Baked,
         ..PaintRecordingContext::default()
     };
@@ -3248,7 +3226,7 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         &[content_root],
         property_trees,
         paint_generations,
-        policy,
+        authority,
         oracle_context,
         content_root,
         text_area_root,
@@ -3257,13 +3235,13 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         admission.artifact_space_transition,
         expected_owners.clone(),
     )?;
-    let mut artifact = match record_frame_artifact_with_policy(
+    let mut artifact = match record_legacy_text_area_frame_artifact(
         arena,
         &[content_root],
         property_trees,
         paint_generations,
-        RendererMode::StrictPlan,
-        policy,
+        authority,
+        oracle_context.baked_scroll_host,
         None,
         Some(required_paint_offset.map(f32::to_bits)),
     ) {
@@ -3304,7 +3282,7 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         &[content_root],
         property_trees,
         paint_generations,
-        policy,
+        authority,
         oracle_context,
         content_root,
         text_area_root,
@@ -3478,16 +3456,13 @@ pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_fo
         admission.paint_source,
     )
     .ok_or_else(|| invalid(admission.text_area_root))?;
-    let mut artifact = match record_frame_artifact_with_policy(
+    let mut artifact = match record_legacy_text_area_frame_artifact(
         arena,
         roots,
         property_trees,
         paint_generations,
-        RendererMode::StrictPlan,
-        FrameArtifactAuthorityPolicy::BakedScrollInteractiveTextAreaSubtreeHost(
-            baked,
-            text_area_witness,
-        ),
+        PaintLegacyTextAreaCoverageAuthority::InteractiveBakedHost(text_area_witness),
+        Some(baked),
         None,
         None,
     ) {
@@ -3964,13 +3939,13 @@ pub(super) fn record_baked_scroll_text_area_subtree_host_artifact_for_plan(
             admission.text_area_root,
         )]
     })?;
-    let artifact = match record_frame_artifact_with_policy(
+    let artifact = match record_legacy_text_area_frame_artifact(
         arena,
         roots,
         property_trees,
         paint_generations,
-        RendererMode::StrictPlan,
-        FrameArtifactAuthorityPolicy::BakedScrollTextAreaSubtreeHost(baked, text_area_witness),
+        PaintLegacyTextAreaCoverageAuthority::BakedHost(text_area_witness),
+        Some(baked),
         None,
         None,
     ) {
@@ -4158,13 +4133,13 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
         );
     }
 
-    let mut artifact = match record_frame_artifact_with_policy(
+    let mut artifact = match record_legacy_text_area_frame_artifact(
         arena,
         &[content_root],
         property_trees,
         paint_generations,
-        RendererMode::StrictPlan,
-        FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(witness),
+        PaintLegacyTextAreaCoverageAuthority::Local(witness),
+        None,
         None,
         Some(required_paint_offset.map(f32::to_bits)),
     ) {
@@ -4376,4 +4351,557 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
         return Err(invalid(content_root));
     }
     Ok(artifact)
+}
+
+
+// ---- recorder internals relocated out of the durable frame recorder ----
+//
+// These serve the exact-shape middle layer only. They live here so
+// `frame_recorder.rs` keeps no component-specific property assertion, no exact
+// grammar dispatch, and no dependency on `legacy_admission`. All of it is
+// deleted with this file in the Stage C hard cutover.
+
+fn classify_optional_child_mask_semantics<'a>(
+    artifact: &super::PaintArtifact,
+    chunks: &'a [super::PaintChunk],
+    content_root: NodeKey,
+    mask_properties: crate::view::compositor::property_tree::PropertyTreeState,
+) -> Option<(&'a super::PaintChunk, &'a [super::PaintChunk])> {
+    let (wrapper, tail) = chunks.split_first()?;
+    let is_mask = |chunk: &super::PaintChunk| chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT;
+    let has_boundary_mask = tail.first().is_some_and(|chunk| is_mask(chunk))
+        || tail.last().is_some_and(|chunk| is_mask(chunk));
+    if !has_boundary_mask {
+        return tail
+            .iter()
+            .all(|chunk| !is_mask(chunk))
+            .then_some((wrapper, tail));
+    }
+    let (mask_end, with_begin) = tail.split_last()?;
+    let (mask_begin, semantic) = with_begin.split_first()?;
+    let mask_exact = |chunk: &super::PaintChunk, phase: super::PaintNodePhase| {
+        let [super::PaintOp::DrawRect(mask)] = &artifact.ops[chunk.op_range.clone()] else {
+            return false;
+        };
+        chunk.owner == content_root
+            && chunk.id.owner == content_root
+            && chunk.id.scope == super::PaintPropertyScope::Contents
+            && chunk.id.phase == phase
+            && chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT
+            && chunk.id.role == super::PaintChunkRole::SelfDecoration
+            && chunk.properties.legacy_boundary_eq(mask_properties)
+            && mask.mode == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
+            && mask.params.position == [chunk.bounds.x, chunk.bounds.y]
+            && mask.params.size == [chunk.bounds.width, chunk.bounds.height]
+            && mask.params.fill_color == [0.0; 4]
+            && mask.params.opacity.to_bits() == 1.0_f32.to_bits()
+            && super::PaintPayloadIdentity::prepared_rects([mask]).as_ref()
+                == Some(&chunk.payload_identity)
+    };
+    (semantic.iter().all(|chunk| !is_mask(chunk))
+        && mask_exact(mask_begin, super::PaintNodePhase::BeforeChildren)
+        && mask_exact(mask_end, super::PaintNodePhase::AfterChildren)
+        && chunk_bounds_bits(mask_begin) == chunk_bounds_bits(mask_end)
+        && mask_begin.payload_identity == mask_end.payload_identity)
+        .then_some((wrapper, semantic))
+}
+
+fn chunk_bounds_bits(chunk: &PaintChunk) -> [u32; 4] {
+    [
+        chunk.bounds.x.to_bits(),
+        chunk.bounds.y.to_bits(),
+        chunk.bounds.width.to_bits(),
+        chunk.bounds.height.to_bits(),
+    ]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SnapshotMerge {
+    Inserted,
+    Identical,
+    Conflict,
+}
+
+fn merge_snapshot<K, V>(store: &mut FxHashMap<K, V>, key: K, snapshot: V) -> SnapshotMerge
+where
+    K: Copy + Eq + std::hash::Hash,
+    V: Copy + PartialEq,
+{
+    match store.entry(key) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(snapshot);
+            SnapshotMerge::Inserted
+        }
+        std::collections::hash_map::Entry::Occupied(entry) if *entry.get() == snapshot => {
+            SnapshotMerge::Identical
+        }
+        std::collections::hash_map::Entry::Occupied(_) => SnapshotMerge::Conflict,
+    }
+}
+
+/// C3a graph-inert recorder for the exact atomic-projection sibling.  Source
+/// authority remains the live TextArea oracle and is checked on both sides of
+/// the metadata/full pass; the Copy paint witness authorizes properties only.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn atomic_projection_owner_topology_is_live(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    text_area_root: NodeKey,
+    text_area_state: crate::view::compositor::property_tree::PropertyTreeState,
+    source: &super::PaintAtomicProjectionArtifactSource,
+) -> bool {
+    use crate::view::base_component::text_area::{
+        TextAreaLineBreak, TextAreaProjectionSegment, TextAreaTextRun,
+    };
+
+    if !source.is_canonical_for(text_area_root) {
+        return false;
+    }
+    let direct_owner_count = source
+        .descendant_owner_topology
+        .iter()
+        .filter(|owner| owner.parent == Some(text_area_root))
+        .count();
+    if arena.children_of(text_area_root).len() != direct_owner_count {
+        return false;
+    }
+    source.descendant_owner_topology.iter().all(|owner| {
+        let Some(node) = arena.get(owner.owner) else {
+            return false;
+        };
+        if arena.parent_of(owner.owner) != owner.parent
+            || node.element.is_deferred_to_root_viewport_render()
+            || node.element.has_active_animator()
+            || property_trees.states.get(&owner.owner).is_none_or(|state| {
+                !state.paint.legacy_boundary_eq(text_area_state)
+                    || !state.descendants.legacy_boundary_eq(text_area_state)
+            })
+        {
+            return false;
+        }
+        if owner.owner == source.projection_text_owner {
+            return node
+                .element
+                .as_any()
+                .is::<crate::view::base_component::Text>()
+                && node.element.children().is_empty();
+        }
+        if owner.parent != Some(text_area_root) {
+            return false;
+        }
+        if node.element.as_any().is::<TextAreaProjectionSegment>() {
+            return node.element.children() == [source.projection_text_owner];
+        }
+        (node.element.as_any().is::<TextAreaTextRun>()
+            || node.element.as_any().is::<TextAreaLineBreak>())
+            && node.element.children().is_empty()
+    })
+}
+
+fn baked_scroll_text_area_subtree_properties_are_exact(
+    owner: NodeKey,
+    properties: crate::view::compositor::property_tree::PropertyTreeState,
+    baked: PaintBakedScrollHostWitness,
+    text_area: PaintScrollTextAreaSubtreeWitness,
+) -> bool {
+    let properties = properties.legacy_boundary_dimensions();
+    if text_area.outer().boundary_root() != baked.boundary_root()
+        || text_area.outer().content_root() != baked.child()
+        || text_area.outer().scroll_snapshot().id != baked.scroll()
+        || text_area.outer().contents_clip_snapshot().id != baked.contents_clip()
+    {
+        return false;
+    }
+    if owner == baked.boundary_root() {
+        properties == Default::default()
+    } else if owner == baked.child() {
+        properties
+            == crate::view::compositor::property_tree::PropertyTreeState {
+                clip: Some(baked.contents_clip()),
+                scroll: Some(baked.scroll()),
+                ..Default::default()
+            }
+    } else {
+        properties
+            == crate::view::compositor::property_tree::PropertyTreeState {
+                clip: Some(text_area.live_contents_clip().id),
+                scroll: Some(baked.scroll()),
+                ..Default::default()
+            }
+    }
+}
+
+fn scroll_text_area_subtree_local_properties_are_exact(
+    properties: crate::view::compositor::property_tree::PropertyTreeState,
+    witness: PaintScrollTextAreaSubtreeWitness,
+) -> bool {
+    let properties = properties.legacy_boundary_dimensions();
+    properties == Default::default()
+        || properties
+            == crate::view::compositor::property_tree::PropertyTreeState {
+                clip: Some(witness.local_contents_clip().id),
+                ..Default::default()
+            }
+}
+
+fn baked_scroll_atomic_projection_text_area_subtree_properties_are_exact(
+    owner: NodeKey,
+    properties: crate::view::compositor::property_tree::PropertyTreeState,
+    baked: PaintBakedScrollHostWitness,
+    text_area: PaintScrollDetachedProjectionSubtreeWitness,
+) -> bool {
+    let properties = properties.legacy_boundary_dimensions();
+    if text_area.outer().boundary_root() != baked.boundary_root()
+        || text_area.outer().content_root() != baked.child()
+        || text_area.outer().scroll_snapshot().id != baked.scroll()
+        || text_area.outer().contents_clip_snapshot().id != baked.contents_clip()
+    {
+        return false;
+    }
+    if owner == baked.boundary_root() {
+        properties == Default::default()
+    } else if owner == baked.child() {
+        properties
+            == crate::view::compositor::property_tree::PropertyTreeState {
+                clip: Some(baked.contents_clip()),
+                scroll: Some(baked.scroll()),
+                ..Default::default()
+            }
+    } else {
+        properties
+            == crate::view::compositor::property_tree::PropertyTreeState {
+                clip: Some(text_area.live_contents_clip().id),
+                scroll: Some(baked.scroll()),
+                ..Default::default()
+            }
+    }
+}
+
+fn scroll_atomic_projection_text_area_subtree_local_properties_are_exact(
+    properties: crate::view::compositor::property_tree::PropertyTreeState,
+    witness: PaintScrollDetachedProjectionSubtreeWitness,
+) -> bool {
+    let properties = properties.legacy_boundary_dimensions();
+    properties == Default::default()
+        || properties
+            == crate::view::compositor::property_tree::PropertyTreeState {
+                clip: Some(witness.local_contents_clip().id),
+                ..Default::default()
+            }
+}
+
+fn baked_scroll_interactive_text_area_subtree_properties_are_exact(
+    owner: NodeKey,
+    properties: crate::view::compositor::property_tree::PropertyTreeState,
+    baked: PaintBakedScrollHostWitness,
+    text_area: PaintScrollInteractiveTextAreaSubtreeWitness,
+) -> bool {
+    let properties = properties.legacy_boundary_dimensions();
+    if text_area.outer().boundary_root() != baked.boundary_root()
+        || text_area.outer().content_root() != baked.child()
+        || text_area.outer().scroll_snapshot().id != baked.scroll()
+        || text_area.outer().contents_clip_snapshot().id != baked.contents_clip()
+    {
+        return false;
+    }
+    if owner == baked.boundary_root() {
+        properties == Default::default()
+    } else if owner == baked.child() {
+        properties
+            == crate::view::compositor::property_tree::PropertyTreeState {
+                clip: Some(baked.contents_clip()),
+                scroll: Some(baked.scroll()),
+                ..Default::default()
+            }
+    } else {
+        properties
+            == crate::view::compositor::property_tree::PropertyTreeState {
+                clip: Some(text_area.live_contents_clip().id),
+                scroll: Some(baked.scroll()),
+                ..Default::default()
+            }
+    }
+}
+
+fn scroll_interactive_text_area_subtree_local_properties_are_exact(
+    properties: crate::view::compositor::property_tree::PropertyTreeState,
+    witness: PaintScrollInteractiveTextAreaSubtreeWitness,
+) -> bool {
+    let properties = properties.legacy_boundary_dimensions();
+    properties == Default::default()
+        || properties
+            == crate::view::compositor::property_tree::PropertyTreeState {
+                clip: Some(witness.local_contents_clip().id),
+                ..Default::default()
+            }
+}
+
+/// The exact property assertion for the one grammar this recording admits.
+///
+/// It replaces the per-variant arms `assess_manifest` used to carry: the
+/// durable assessor now knows only generic policies, and the exactness that
+/// used to select between them lives with the witness that proves it.
+fn legacy_properties_are_exact(
+    authority: PaintLegacyTextAreaCoverageAuthority,
+    baked_scroll_host: Option<PaintBakedScrollHostWitness>,
+    owner: NodeKey,
+    properties: crate::view::compositor::property_tree::PropertyTreeState,
+) -> bool {
+    match (authority, baked_scroll_host) {
+        (PaintLegacyTextAreaCoverageAuthority::Local(witness), None) => {
+            scroll_text_area_subtree_local_properties_are_exact(properties, witness)
+        }
+        (PaintLegacyTextAreaCoverageAuthority::BakedHost(witness), Some(baked)) => {
+            baked_scroll_text_area_subtree_properties_are_exact(owner, properties, baked, witness)
+        }
+        (PaintLegacyTextAreaCoverageAuthority::AtomicProjectionLocal(witness), None) => {
+            scroll_atomic_projection_text_area_subtree_local_properties_are_exact(
+                properties,
+                witness.property(),
+            )
+        }
+        (PaintLegacyTextAreaCoverageAuthority::AtomicProjectionBakedHost(witness), Some(baked)) => {
+            baked_scroll_atomic_projection_text_area_subtree_properties_are_exact(
+                owner,
+                properties,
+                baked,
+                witness.property(),
+            )
+        }
+        (PaintLegacyTextAreaCoverageAuthority::InteractiveLocal(witness), None) => {
+            scroll_interactive_text_area_subtree_local_properties_are_exact(properties, witness)
+        }
+        (PaintLegacyTextAreaCoverageAuthority::InteractiveBakedHost(witness), Some(baked)) => {
+            baked_scroll_interactive_text_area_subtree_properties_are_exact(
+                owner, properties, baked, witness,
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Manifest assessment for an exact detached-subtree recording.
+///
+/// The generic accounting is the same as the durable assessor's — validation
+/// errors, chunk/op counts, legacy boundaries — but every property assertion
+/// comes from `legacy_properties_are_exact`, and no planned boundary or native
+/// scroll receiver is admissible in any of these grammars.
+fn assess_legacy_manifest(
+    manifest: &super::PaintCoverageManifest,
+    authority: PaintLegacyTextAreaCoverageAuthority,
+    baked_scroll_host: Option<PaintBakedScrollHostWitness>,
+) -> FrameArtifactEligibility {
+    let mut reasons = manifest
+        .validation_errors
+        .iter()
+        .cloned()
+        .map(FrameArtifactFallbackReason::Validation)
+        .collect::<Vec<_>>();
+    let mut chunk_count = 0usize;
+    let mut op_count = 0usize;
+    let mut debug_boundaries = Vec::new();
+    fn push(reasons: &mut Vec<FrameArtifactFallbackReason>, reason: FrameArtifactFallbackReason) {
+        if !reasons.contains(&reason) {
+            reasons.push(reason);
+        }
+    }
+    for item in &manifest.items {
+        match item {
+            PaintCoverageItem::ArtifactChunk { chunk, ops, .. } => {
+                chunk_count = chunk_count.saturating_add(1);
+                op_count = op_count.saturating_add(ops.as_ref().map_or(0, Vec::len));
+                if !legacy_properties_are_exact(
+                    authority,
+                    baked_scroll_host,
+                    chunk.owner,
+                    chunk.properties,
+                ) {
+                    push(
+                        &mut reasons,
+                        FrameArtifactFallbackReason::PropertyBoundary(chunk.owner),
+                    );
+                }
+            }
+            PaintCoverageItem::TransparentNode {
+                owner, properties, ..
+            }
+            | PaintCoverageItem::CulledSubtree {
+                owner, properties, ..
+            } => {
+                if !legacy_properties_are_exact(authority, baked_scroll_host, *owner, *properties) {
+                    push(
+                        &mut reasons,
+                        FrameArtifactFallbackReason::PropertyBoundary(*owner),
+                    );
+                }
+            }
+            PaintCoverageItem::LegacyBoundary { root, reason, .. } => {
+                let boundary = FrameArtifactDebugBoundary {
+                    owner: *root,
+                    kind: FrameArtifactDebugBoundaryKind::Legacy(*reason),
+                };
+                if !debug_boundaries.contains(&boundary) {
+                    debug_boundaries.push(boundary);
+                }
+                push(
+                    &mut reasons,
+                    FrameArtifactFallbackReason::LegacyBoundary(*reason),
+                );
+            }
+            PaintCoverageItem::PlannedBoundary { .. }
+            | PaintCoverageItem::NativeScrollContentReceiver { .. } => {
+                push(
+                    &mut reasons,
+                    FrameArtifactFallbackReason::Validation(
+                        PaintCoverageValidationError::RecordingPassMismatch,
+                    ),
+                );
+            }
+        }
+    }
+    FrameArtifactEligibility {
+        eligible: reasons.is_empty(),
+        reasons: reasons.clone(),
+        chunk_count,
+        op_count,
+        debug_boundaries,
+    }
+}
+
+/// Metadata-only coverage for the live raster oracles, which need the exact
+/// chunk identity on both sides of the full pass without materializing ops.
+fn record_legacy_metadata_manifest(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    context: PaintRecordingContext,
+    authority: PaintLegacyTextAreaCoverageAuthority,
+) -> super::PaintCoverageManifest {
+    record_legacy_text_area_coverage_manifest(
+        arena,
+        roots,
+        CoverageRecordingMode::MetadataOnly,
+        property_trees,
+        paint_generations,
+        context,
+        authority,
+    )
+}
+
+/// Recording driver for the exact detached-subtree grammars.
+///
+/// It mirrors the durable driver's preflight / full / cross-pass structure but
+/// keeps the exactness here: the durable policy enum carries no grammar
+/// variant, and the authority reaches coverage only through the private legacy
+/// entry point. Every caller records under `RendererMode::StrictPlan`, so a
+/// failed assessment is a forced error rather than a whole-frame fallback.
+fn record_legacy_text_area_frame_artifact(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    authority: PaintLegacyTextAreaCoverageAuthority,
+    baked_scroll_host: Option<PaintBakedScrollHostWitness>,
+    consumed_ancestor_property: Option<super::ConsumedAncestorProperty>,
+    required_scroll_content_paint_offset_bits: Option<[u32; 2]>,
+) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
+    let initial_recording_context = PaintRecordingContext {
+        paint_offset: if authority.detaches_clip_snapshot() {
+            authority.outer().normalization_paint_offset()
+        } else {
+            [0.0, 0.0]
+        },
+        consumed_ancestor_property,
+        required_scroll_content_paint_offset_bits,
+        opacity_authority: PaintOpacityAuthority::Baked,
+        baked_scroll_host,
+        ..PaintRecordingContext::default()
+    };
+    let preflight = record_legacy_text_area_coverage_manifest(
+        arena,
+        roots,
+        CoverageRecordingMode::MetadataOnly,
+        property_trees,
+        paint_generations,
+        initial_recording_context,
+        authority,
+    );
+    let preflight_eligibility = assess_legacy_manifest(&preflight, authority, baked_scroll_host);
+    if !preflight_eligibility.eligible {
+        return Err(ForcedFrameArtifactError {
+            reasons: preflight_eligibility.reasons,
+        });
+    }
+    let manifest = record_legacy_text_area_coverage_manifest(
+        arena,
+        roots,
+        CoverageRecordingMode::FullArtifact,
+        property_trees,
+        paint_generations,
+        initial_recording_context,
+        authority,
+    );
+    let mut eligibility = assess_legacy_manifest(&manifest, authority, baked_scroll_host);
+    if eligibility.eligible && !canonical_manifest_matches(&preflight, &manifest) {
+        eligibility.eligible = false;
+        eligibility
+            .reasons
+            .push(FrameArtifactFallbackReason::Validation(
+                PaintCoverageValidationError::RecordingPassMismatch,
+            ));
+    }
+    if !eligibility.eligible {
+        return Err(ForcedFrameArtifactError {
+            reasons: eligibility.reasons,
+        });
+    }
+    materialize_frame_artifact(
+        manifest,
+        PaintArtifactTarget::CurrentTarget,
+        RendererMode::StrictPlan,
+        eligibility,
+    )
+}
+
+
+/// Descendant-scroll content recorder for the one content subtree that still
+/// carries an exact detached TextArea clip. The generic sibling in
+/// `frame_recorder` records the same boundary when no such clip is present.
+pub(super) fn record_scroll_content_text_area_subtree_artifact_for_plan(
+    arena: &NodeArena,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    witness: PaintScrollContentWitness,
+    text_area_witness: PaintScrollTextAreaSubtreeWitness,
+    required_paint_offset: [f32; 2],
+) -> Result<PaintArtifact, Vec<FrameArtifactFallbackReason>> {
+    let content_root = witness.content_root();
+    if required_paint_offset.iter().any(|value| !value.is_finite())
+        || arena.parent_of(content_root) != Some(witness.boundary_root())
+        || text_area_witness.outer() != witness
+    {
+        return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+            content_root,
+        )]);
+    }
+    let artifact = match record_legacy_text_area_frame_artifact(
+        arena,
+        &[content_root],
+        property_trees,
+        paint_generations,
+        PaintLegacyTextAreaCoverageAuthority::Local(text_area_witness),
+        None,
+        Some(witness.consumed_property()),
+        Some(required_paint_offset.map(f32::to_bits)),
+    ) {
+        Ok(FrameArtifactRecordOutcome::Artifact { artifact, .. }) => artifact,
+        Ok(FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility)) => {
+            return Err(eligibility.reasons);
+        }
+        Err(error) => return Err(error.reasons),
+    };
+    (!artifact.chunks.is_empty() && matches!(artifact.target, PaintArtifactTarget::CurrentTarget))
+        .then_some(artifact)
+        .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(content_root)])
 }

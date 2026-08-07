@@ -40,13 +40,15 @@ fn declared_text_area_types(source: &str) -> Vec<String> {
 
 /// Concrete legacy paint tokens. A producer that names one of these has learned
 /// which component grammar it is recording.
-const FORBIDDEN_LEGACY_TYPES: [&str; 10] = [
+const FORBIDDEN_LEGACY_TYPES: [&str; 12] = [
     "PaintScrollTextAreaSubtreeWitness",
     "PaintScrollInteractiveTextAreaSubtreeWitness",
     "PaintScrollAtomicProjectionTextAreaRecorderWitness",
     "AtomicProjectionRecorderWitness",
     "PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness",
     "PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness",
+    "PaintLegacyTextAreaCoverageAuthority",
+    "LegacyTextAreaProjection",
     "RetainedInteractiveTextAreaResidentRasterSeal",
     "RetainedAtomicProjectionTextAreaLiveRasterOracle",
     "RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle",
@@ -78,66 +80,75 @@ fn forbidden_symbol_counts(source: &str) -> (usize, usize, usize) {
     (types, variants, imports)
 }
 
-/// The Stage A producer gate for `artifact.rs`, which is closed.
+/// The Stage A producer gate.
 ///
-/// Bare `TextArea` substrings are deliberately not banned — diagnostics and
-/// generic payload names may legitimately mention it. What is banned is naming a
-/// concrete legacy token, matching an exact grammar variant, or depending on the
-/// legacy modules at all: the dependency has to point the other way.
+/// A paint producer must be able to record without knowing which component
+/// grammar it is recording. Bare `TextArea` substrings are deliberately not
+/// banned — diagnostics and generic payload names may legitimately mention it.
+/// What is banned is declaring a component-specific paint type, naming a
+/// concrete legacy token, matching an exact grammar variant, or depending on
+/// the legacy modules at all: the dependency has to point the other way.
 #[test]
-fn artifact_model_is_component_independent() {
-    let source = include_str!("../artifact.rs");
+fn producers_are_component_independent() {
+    for (name, source) in [
+        ("artifact.rs", include_str!("../artifact.rs")),
+        ("frame_recorder.rs", include_str!("../frame_recorder.rs")),
+        ("recording_context.rs", include_str!("../recording_context.rs")),
+    ] {
+        assert_eq!(
+            declared_text_area_types(source),
+            Vec::<String>::new(),
+            "{name} must not declare a component-specific paint type",
+        );
+        assert_eq!(
+            forbidden_symbol_counts(source),
+            (0, 0, 0),
+            "{name}: (concrete legacy token refs, exact grammar variant refs, legacy module refs) must all be zero",
+        );
+    }
+}
+
+/// A generic variant name is not proof of a generic variant.
+///
+/// `ScrollContentLocal` carried an `Option<PaintScrollTextAreaSubtreeWitness>`
+/// second field: a durable name smuggling grammar dispatch past a
+/// name-matching check. This reads the payload types out of the policy
+/// declaration itself, so the gate cannot be satisfied by renaming.
+#[test]
+fn durable_authority_policy_carries_no_component_payload() {
+    let source = include_str!("../frame_recorder.rs");
+    let body = source
+        .split_once("enum FrameArtifactAuthorityPolicy {")
+        .expect("the recorder declares its authority policy")
+        .1
+        .split_once("\n}")
+        .expect("the declaration is brace-terminated")
+        .0;
+    let payload_identifiers: Vec<&str> = body
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .filter(|token| !token.is_empty())
+        .collect();
+    let offenders: Vec<&&str> = payload_identifiers
+        .iter()
+        .filter(|token| token.contains("TextArea") || FORBIDDEN_LEGACY_TYPES.contains(token))
+        .collect();
     assert_eq!(
-        declared_text_area_types(source),
-        Vec::<String>::new(),
-        "artifact.rs must not declare a component-specific paint type",
-    );
-    assert_eq!(
-        forbidden_symbol_counts(source),
-        (0, 0, 0),
-        "artifact.rs must not reference a concrete legacy paint token, match an exact grammar variant, or depend on the legacy modules",
+        offenders,
+        Vec::<&&str>::new(),
+        "no durable authority variant may carry a component-specific payload, whatever the variant is called",
     );
 }
 
-/// NOT a gate — the remaining A4 producer debt, counted honestly.
+/// The recorder capability context holds capabilities, not grammars.
 ///
-/// `frame_recorder.rs` declares no component-specific type any more, but it
-/// still names concrete legacy tokens and dispatches on the six exact
-/// `FrameArtifactAuthorityPolicy` variants; `recording_context.rs` still holds
-/// the six legacy capability fields those variants populate. They are one data
-/// flow — `exact policy variant -> legacy witness -> recording-context field` —
-/// and A4 closes only when all three columns reach zero.
-///
-/// Every number here is a ratchet: it may shrink, never grow.
+/// Its six per-shape admission fields are gone; what replaced them are
+/// behavior flags coverage re-derives per node. Naming one after the shape it
+/// happens to serve today would reintroduce grammar dispatch one field at a
+/// time, so the field names are part of the contract.
 #[test]
-fn producer_legacy_reference_inventory_only_shrinks() {
-    assert_eq!(
-        declared_text_area_types(include_str!("../frame_recorder.rs")),
-        Vec::<String>::new(),
-        "the recorder may not declare a component-specific paint type",
-    );
-    assert_eq!(
-        forbidden_symbol_counts(include_str!("../frame_recorder.rs")),
-        (16, 63, 1),
-        "frame_recorder.rs: (concrete legacy token refs, exact policy variant refs, legacy module refs). Shrink as A4 relocates the exact policy branches — never extend",
-    );
-    assert_eq!(
-        forbidden_symbol_counts(include_str!("../recording_context.rs")),
-        (10, 0, 2),
-        "recording_context.rs: same three columns. Its six legacy capability fields go in the same cutover as the exact policy variants upstream",
-    );
-}
-
-/// `recording_context.rs` still carries per-shape legacy admission capability.
-/// It is the remaining A4 producer debt: each field either moves into the legacy
-/// capability/bridge or decomposes into a generic property witness, payload
-/// source, or composite edge. It must never become a permanent hiding place that
-/// bypasses the gate above.
-///
-/// The list is a ratchet: it may shrink, never grow.
-#[test]
-fn recording_context_legacy_capability_inventory_only_shrinks() {
-    let pending = [
+fn recording_context_capabilities_are_behavior_named() {
+    let source = include_str!("../recording_context.rs");
+    let retired = [
         "baked_scroll_atomic_projection_text_area_subtree",
         "baked_scroll_interactive_text_area_subtree",
         "baked_scroll_text_area_subtree",
@@ -145,15 +156,36 @@ fn recording_context_legacy_capability_inventory_only_shrinks() {
         "scroll_interactive_text_area_subtree",
         "scroll_text_area_subtree",
     ];
-    let source = include_str!("../recording_context.rs");
-    let declared: Vec<&str> = pending
+    let surviving: Vec<&str> = retired
         .into_iter()
         .filter(|field| source.contains(&format!("{field}:")))
         .collect();
     assert_eq!(
-        declared,
-        pending.to_vec(),
-        "shrink this list as A4 relocates or decomposes each legacy capability — never extend it",
+        surviving,
+        Vec::<&str>::new(),
+        "these per-shape admission capabilities are decomposed, not relocated",
+    );
+
+    let shape_named: Vec<String> = source
+        .lines()
+        .filter_map(|line| {
+            let field = line.trim_start().strip_prefix("pub(crate) ")?;
+            let name = field.split_once(':')?.0;
+            if !name.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                return None;
+            }
+            ["text_area", "atomic_projection", "interactive", "baked_scroll"]
+                .iter()
+                .any(|shape| name.contains(shape))
+                .then(|| name.to_string())
+        })
+        .collect();
+    assert_eq!(
+        shape_named,
+        ["inside_text_area", "text_area_selection", "text_area_preedit", "baked_scroll_host"]
+            .map(str::to_string)
+            .to_vec(),
+        "a new capability field must be named for the behavior it authorizes, not the grammar it serves",
     );
 }
 
@@ -168,6 +200,8 @@ fn stage_c_deletion_inventory_keeps_legacy_modules_compile_time_linked() {
     register_stage_c_deletion_type::<PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness>();
     register_stage_c_deletion_type::<PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness>();
     register_stage_c_deletion_type::<RetainedInteractiveTextAreaResidentRasterSeal>();
+    register_stage_c_deletion_type::<PaintLegacyTextAreaCoverageAuthority>();
+    register_stage_c_deletion_type::<LegacyTextAreaProjection>();
 
     register_stage_c_deletion_type::<RecordedRetainedAtomicProjectionTextAreaSubtree>();
     register_stage_c_deletion_type::<RecordedRetainedAtomicProjectionTextAreaHost>();
@@ -186,6 +220,8 @@ fn stage_c_deletion_inventory_rejects_unregistered_legacy_types() {
     assert_eq!(
         declared_text_area_types(include_str!("../legacy_admission.rs")),
         [
+            "LegacyTextAreaProjection",
+            "PaintLegacyTextAreaCoverageAuthority",
             "PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness",
             "PaintScrollAtomicProjectionTextAreaRecorderWitness",
             "PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness",

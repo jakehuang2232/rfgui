@@ -1,9 +1,10 @@
 //! Recorder-side capability context.
 //!
 //! Split out of `artifact.rs` so the artifact data model — what the V2
-//! layerizer consumes — stays free of `legacy_admission`. This module still
-//! carries the pre-V2 per-shape admission capabilities; collapsing those into
-//! generic recorded boundary segments is the remaining A4 work.
+//! layerizer consumes — stays free of the pre-V2 admission types. This module
+//! is held to the same rule: a recording capability is either a generic
+//! property witness or a recorder-derived behavior flag that coverage
+//! recomputes for every node it walks.
 
 use crate::view::compositor::property_tree::{
     ClipNodeId, ClipNodeRole, EffectNodeId, PropertyTreeState, TransformNodeId,
@@ -11,10 +12,6 @@ use crate::view::compositor::property_tree::{
 use crate::view::node_arena::NodeKey;
 
 use super::artifact::*;
-use super::legacy_admission::{
-    PaintScrollAtomicProjectionTextAreaRecorderWitness,
-    PaintScrollInteractiveTextAreaSubtreeWitness, PaintScrollTextAreaSubtreeWitness,
-};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PaintRecordingContext {
@@ -78,26 +75,20 @@ pub(crate) struct PaintRecordingContext {
     /// S/C pair from host self paint while preserving this boundary's own S/C
     /// pair on descendants.
     pub(crate) scroll_forest_host: Option<PaintScrollForestEdgeWitness>,
-    /// C1-only proof which consumes one outer Scroll/ContentsClip pair while
-    /// preserving the exact TextArea-local ContentsClip in detached geometry.
-    pub(crate) scroll_text_area_subtree: Option<PaintScrollTextAreaSubtreeWitness>,
-    /// Host-side half of the same C1 proof.  Unlike
-    /// `scroll_text_area_subtree`, this only authorizes the wrapper's exact
-    /// child clip and never projects live outer properties.
-    pub(crate) baked_scroll_text_area_subtree: Option<PaintScrollTextAreaSubtreeWitness>,
-    /// C3a-only projection of the same outer scroll/clip pair.  It is a
-    /// separate capability because its source grammar is non-Copy and is
-    /// revalidated by the closed recorder before and after coverage.
-    pub(crate) scroll_atomic_projection_text_area_subtree:
-        Option<PaintScrollAtomicProjectionTextAreaRecorderWitness>,
-    pub(crate) baked_scroll_atomic_projection_text_area_subtree:
-        Option<PaintScrollAtomicProjectionTextAreaRecorderWitness>,
-    /// C2b/C2c resident-base authority. It uses the same exact property
-    /// projection as C1/C2a while authorizing source-level caret suppression.
-    pub(crate) scroll_interactive_text_area_subtree:
-        Option<PaintScrollInteractiveTextAreaSubtreeWitness>,
-    pub(crate) baked_scroll_interactive_text_area_subtree:
-        Option<PaintScrollInteractiveTextAreaSubtreeWitness>,
+    /// Recorder-derived proof that this exact node's self paint is recorded on
+    /// a detached local basis, so it consumes `paint_offset`. Coverage clears
+    /// and recomputes it after every component context hook; a component that
+    /// sets it is overwritten before its own paint runs.
+    pub(crate) scroll_content_local_owner: bool,
+    /// Recorder-derived proof that this exact node may keep one descendant
+    /// contents clip inside the recording. Like the flag above it is per-node
+    /// and never inherited: a child inherits the value by copy and coverage
+    /// overwrites it before the child paints.
+    pub(crate) descendant_contents_clip: bool,
+    /// Recorder-derived proof that a resident raster already owns this node's
+    /// caret, so the recording must not paint a second one. Same per-node
+    /// lifetime as the two flags above.
+    pub(crate) resident_caret_suppressed: bool,
     /// Recorder-owned post-hook paint offset required by the bounded detached
     /// scroll-content canary. Coverage rebinds this after every component hook
     /// and compares bitwise; all other recording policies leave it absent.
@@ -236,15 +227,6 @@ impl PaintRecordingContext {
         if let Some(witness) = self.scroll_forest_host {
             return witness.project_host_for(self.recording_owner?, live);
         }
-        if let Some(witness) = self.scroll_text_area_subtree {
-            return witness.project_for(self.recording_owner?, live);
-        }
-        if let Some(witness) = self.scroll_atomic_projection_text_area_subtree {
-            return witness.project_for(self.recording_owner?, live);
-        }
-        if let Some(witness) = self.scroll_interactive_text_area_subtree {
-            return witness.project_for(self.recording_owner?, live);
-        }
         if let Some(stack) = self.consumed_ancestor_property_stack {
             return stack.project_for(self.recording_owner?, live, self.opacity_authority);
         }
@@ -334,85 +316,19 @@ impl PaintRecordingContext {
             || self.consumed_ancestor_property_stack.is_some_and(|stack| {
                 stack.authorizes_scroll_content_local_owner(owner, self.opacity_authority)
             })
-            || self
-                .scroll_text_area_subtree
-                .is_some_and(|witness| witness.is_canonical_for(owner))
-            || self
-                .scroll_atomic_projection_text_area_subtree
-                .is_some_and(|witness| witness.is_canonical_for(owner))
-            || self
-                .scroll_interactive_text_area_subtree
-                .is_some_and(|witness| witness.is_canonical_for(owner))
+            || self.scroll_content_local_owner
     }
 
-    /// The C1 wrapper is the only Element allowed to carry a descendant
-    /// contents clip inside the exact scroll artifact.  The TextArea witness
-    /// freezes that clip and is rebound by coverage to the current owner, so
-    /// this cannot authorize an unrelated child-clip topology.
-    pub(crate) fn authorizes_scroll_text_area_content_wrapper(self, stable_id: u64) -> bool {
-        let stable_witness = self
-            .baked_scroll_text_area_subtree
-            .or(self.scroll_text_area_subtree);
-        let interactive_witness = self
-            .baked_scroll_interactive_text_area_subtree
-            .or(self.scroll_interactive_text_area_subtree);
-        let atomic_witness = self
-            .baked_scroll_atomic_projection_text_area_subtree
-            .or(self.scroll_atomic_projection_text_area_subtree);
-        matches!(
-            (
-                self.recording_owner,
-                self.recording_owner_stable_id,
-                stable_witness,
-            ),
-            (Some(owner), Some(recording_stable_id), Some(witness))
-                if recording_stable_id == stable_id
-                    && witness.outer().content_root() == owner
-                    && witness.is_canonical_for(owner)
-        ) || matches!(
-            (
-                self.recording_owner,
-                self.recording_owner_stable_id,
-                interactive_witness,
-            ),
-            (Some(owner), Some(recording_stable_id), Some(witness))
-                if recording_stable_id == stable_id
-                    && witness.outer().content_root() == owner
-                    && witness.is_canonical_for(owner)
-        ) || matches!(
-            (
-                self.recording_owner,
-                self.recording_owner_stable_id,
-                atomic_witness,
-            ),
-            (Some(owner), Some(recording_stable_id), Some(witness))
-                if recording_stable_id == stable_id
-                    && witness.outer().content_root() == owner
-                    && witness.is_canonical_for(owner)
-        )
+    /// One node inside a recording may keep a descendant contents clip. The
+    /// authority is minted per node by coverage, so a component hook cannot
+    /// carry it to a sibling or reuse it for an unrelated child-clip topology.
+    pub(crate) fn authorizes_descendant_contents_clip(self, stable_id: u64) -> bool {
+        self.descendant_contents_clip
+            && self.recording_owner.is_some()
+            && self.recording_owner_stable_id == Some(stable_id)
     }
 
-    pub(crate) fn suppresses_interactive_text_area_caret(self, owner: NodeKey) -> bool {
-        let suppresses_focused_atomic = self
-            .scroll_atomic_projection_text_area_subtree
-            .or(self.baked_scroll_atomic_projection_text_area_subtree)
-            .is_some_and(|witness| {
-                matches!(
-                    witness,
-                    PaintScrollAtomicProjectionTextAreaRecorderWitness::FocusedAtomicProjectionGlyph(
-                        _
-                    )
-                ) && witness.property().projection_root() == owner
-                    && witness.is_canonical_for(owner)
-            });
-        self.recording_owner == Some(owner)
-            && (suppresses_focused_atomic
-                || self
-                    .scroll_interactive_text_area_subtree
-                    .or(self.baked_scroll_interactive_text_area_subtree)
-                    .is_some_and(|witness| {
-                        witness.text_area_root() == owner && witness.is_canonical_for(owner)
-                    }))
+    pub(crate) fn suppresses_resident_caret(self, owner: NodeKey) -> bool {
+        self.resident_caret_suppressed && self.recording_owner == Some(owner)
     }
-
 }

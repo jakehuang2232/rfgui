@@ -4,7 +4,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::view::base_component::{ShadowPaintBlocker, ShadowPaintRecordingCapability};
 use crate::view::compositor::property_tree::{
-    ClipNodeId, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot, ScrollNodeId, TransformNodeId,
+    ClipNodeId, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot, PropertyTreeState, ScrollNodeId,
+    TransformNodeId,
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
@@ -452,6 +453,7 @@ pub(super) fn record_coverage_manifest_with_property_authorities(
         None,
         planned_boundary_cutouts,
         None,
+        None,
     )
 }
 
@@ -483,6 +485,7 @@ pub(super) fn record_retained_coverage_manifest_with_property_forest_authorities
         effect_surface_authority,
         Some(property_forest_ancestor_chain),
         planned_boundary_cutouts,
+        None,
         None,
     )
 }
@@ -540,6 +543,92 @@ pub(super) fn record_retained_coverage_manifest_with_native_scroll_receiver(
         None,
         &PlannedBoundaryCutoutSet::default(),
         Some(receiver),
+        None,
+    )
+}
+
+/// Project one node's live property state onto the surface being recorded.
+///
+/// This is the only projection dispatch coverage performs, and the three
+/// outcomes are not interchangeable. A validated legacy authority owns the
+/// projection outright: it consumes the outer scroll/clip pair and rebases the
+/// descendant clip, so running the generic projection afterwards would look for
+/// ancestor properties the legacy result no longer carries. `Rejected` is
+/// therefore a rejection of the node, not a reason to retry generically —
+/// falling through would let a node whose exact authority failed be admitted by
+/// a weaker one. `NoAuthority` is the single path into the generic projection.
+pub(super) fn project_recorded_node_properties(
+    context: &PaintRecordingContext,
+    authority: Option<super::PaintLegacyTextAreaCoverageAuthority>,
+    key: NodeKey,
+    live: PropertyTreeState,
+) -> Option<PropertyTreeState> {
+    match authority.map_or(super::LegacyTextAreaProjection::NoAuthority, |authority| {
+        authority.project_for(key, live)
+    }) {
+        super::LegacyTextAreaProjection::Projected(projected) => Some(projected),
+        super::LegacyTextAreaProjection::Rejected => None,
+        super::LegacyTextAreaProjection::NoAuthority => {
+            context.project_consumed_ancestor_property(live)
+        }
+    }
+}
+
+/// Re-derive the three legacy-backed behavior flags for one node.
+///
+/// Every flag is cleared first and then re-derived by validating the authority
+/// against `key`. The clear is load-bearing on its own: child contexts inherit
+/// the parent's value by copy and the walker rebinds `recording_owner` to the
+/// child, so without it a parent's `true` would authorize its whole subtree.
+/// A component hook that sets a flag is overwritten by the same call.
+pub(super) fn rebind_legacy_behavior_flags(
+    context: &mut PaintRecordingContext,
+    authority: Option<super::PaintLegacyTextAreaCoverageAuthority>,
+    key: NodeKey,
+) {
+    context.scroll_content_local_owner = false;
+    context.descendant_contents_clip = false;
+    context.resident_caret_suppressed = false;
+    let Some(authority) = authority else {
+        return;
+    };
+    context.scroll_content_local_owner = authority.authorizes_scroll_content_local_owner(key);
+    context.descendant_contents_clip = authority.authorizes_descendant_contents_clip(key);
+    context.resident_caret_suppressed = authority.suppresses_resident_caret(key);
+}
+
+/// The one entry point that may carry a legacy detached-subtree authority.
+///
+/// It exists so `legacy_recording` can drive coverage without the authority
+/// ever passing through a `record_coverage_manifest*` API, the recorder
+/// capability context, or the artifact. Entry point, parameter, and every
+/// caller are deleted with `legacy_admission` in the Stage C hard cutover; the
+/// generic coverage path must not import that module afterwards.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn record_legacy_text_area_coverage_manifest(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    recording_mode: CoverageRecordingMode,
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    initial_recording_context: PaintRecordingContext,
+    legacy_text_area_authority: super::PaintLegacyTextAreaCoverageAuthority,
+) -> PaintCoverageManifest {
+    record_coverage_manifest_with_property_authorities_impl(
+        arena,
+        roots,
+        false,
+        true,
+        recording_mode,
+        property_trees,
+        paint_generations,
+        initial_recording_context,
+        None,
+        None,
+        None,
+        &PlannedBoundaryCutoutSet::default(),
+        None,
+        Some(legacy_text_area_authority),
     )
 }
 
@@ -558,6 +647,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
     property_forest_ancestor_chain: Option<&super::ConsumedPropertyForestAncestorChainWitness>,
     planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
     native_scroll_receiver: Option<NativeScrollContentReceiverCutout>,
+    legacy_text_area_authority: Option<super::PaintLegacyTextAreaCoverageAuthority>,
 ) -> PaintCoverageManifest {
     let mut manifest = PaintCoverageManifest::default();
     let mut seen_keys = FxHashSet::default();
@@ -641,16 +731,12 @@ fn record_coverage_manifest_with_property_authorities_impl(
         consumed_ancestor_property: Option<super::ConsumedAncestorProperty>,
         consumed_ancestor_property_stack: Option<super::ConsumedAncestorPropertyStackWitness>,
         scroll_forest_host: Option<super::PaintScrollForestEdgeWitness>,
-        scroll_text_area_subtree: Option<super::PaintScrollTextAreaSubtreeWitness>,
-        baked_scroll_text_area_subtree: Option<super::PaintScrollTextAreaSubtreeWitness>,
-        scroll_atomic_projection_text_area_subtree:
-            Option<super::PaintScrollAtomicProjectionTextAreaRecorderWitness>,
-        baked_scroll_atomic_projection_text_area_subtree:
-            Option<super::PaintScrollAtomicProjectionTextAreaRecorderWitness>,
-        scroll_interactive_text_area_subtree:
-            Option<super::PaintScrollInteractiveTextAreaSubtreeWitness>,
-        baked_scroll_interactive_text_area_subtree:
-            Option<super::PaintScrollInteractiveTextAreaSubtreeWitness>,
+        /// Time-boxed bridge for the pre-V2 exact detached subtree grammars.
+        /// It reaches the walker only through the private legacy entry point,
+        /// never through a `record_coverage_manifest*` API, never through
+        /// `PaintRecordingContext`, and never into the artifact. It is deleted
+        /// with `legacy_admission` in the Stage C hard cutover.
+        legacy_text_area_authority: Option<super::PaintLegacyTextAreaCoverageAuthority>,
         required_scroll_content_paint_offset_bits: Option<[u32; 2]>,
         opacity_authority: super::PaintOpacityAuthority,
         planned_boundary_cutouts: &'a PlannedBoundaryCutoutSet,
@@ -852,24 +938,14 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 .property_forest_ancestor_chain
                 .and_then(|witness| witness.projection_for_target(key));
             recording_context.scroll_forest_host = self.scroll_forest_host;
-            recording_context.scroll_text_area_subtree = self
-                .scroll_text_area_subtree
-                .map(|witness| witness.for_target(key));
-            recording_context.baked_scroll_text_area_subtree = self
-                .baked_scroll_text_area_subtree
-                .map(|witness| witness.for_target(key));
-            recording_context.scroll_atomic_projection_text_area_subtree = self
-                .scroll_atomic_projection_text_area_subtree
-                .map(|witness| witness.for_target(key));
-            recording_context.baked_scroll_atomic_projection_text_area_subtree = self
-                .baked_scroll_atomic_projection_text_area_subtree
-                .map(|witness| witness.for_target(key));
-            recording_context.scroll_interactive_text_area_subtree = self
-                .scroll_interactive_text_area_subtree
-                .map(|witness| witness.for_target(key));
-            recording_context.baked_scroll_interactive_text_area_subtree = self
-                .baked_scroll_interactive_text_area_subtree
-                .map(|witness| witness.for_target(key));
+            let legacy_text_area_authority = self
+                .legacy_text_area_authority
+                .map(|authority| authority.for_target(key));
+            rebind_legacy_behavior_flags(
+                &mut recording_context,
+                legacy_text_area_authority,
+                key,
+            );
             // Opacity authority is a recorder policy, not ambient component
             // state. Rebind it after every node/child hook so a component
             // cannot bake a root-group opacity that the compositor will apply
@@ -890,9 +966,15 @@ fn record_coverage_manifest_with_property_authorities_impl(
             {
                 recording_context.baked_scroll_host = Some(witness.for_target(key));
             }
-            let Some(mut properties) =
-                recording_context.project_consumed_ancestor_property(live_properties)
-            else {
+            let project = |live| {
+                project_recorded_node_properties(
+                    &recording_context,
+                    legacy_text_area_authority,
+                    key,
+                    live,
+                )
+            };
+            let Some(mut properties) = project(live_properties) else {
                 self.push_legacy_boundary(
                     key,
                     stable_id,
@@ -901,9 +983,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 );
                 return;
             };
-            let Some(mut contents_properties) =
-                recording_context.project_consumed_ancestor_property(live_contents_properties)
-            else {
+            let Some(mut contents_properties) = project(live_contents_properties) else {
                 self.push_legacy_boundary(
                     key,
                     stable_id,
@@ -1325,31 +1405,9 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     );
                     return None;
                 };
-                if let Some(authority) = self.scroll_text_area_subtree {
-                    let Some(detached) = authority.detach_clip_snapshot(&clip_snapshot) else {
-                        self.reject_invalid_chunk(
-                            key,
-                            stable_id,
-                            order.clone(),
-                            PaintCoverageValidationError::InvalidClipSnapshot(key),
-                        );
-                        return None;
-                    };
-                    clip_snapshot = detached;
-                }
-                if let Some(authority) = self.scroll_atomic_projection_text_area_subtree {
-                    let Some(detached) = authority.detach_clip_snapshot(&clip_snapshot) else {
-                        self.reject_invalid_chunk(
-                            key,
-                            stable_id,
-                            order.clone(),
-                            PaintCoverageValidationError::InvalidClipSnapshot(key),
-                        );
-                        return None;
-                    };
-                    clip_snapshot = detached;
-                }
-                if let Some(authority) = self.scroll_interactive_text_area_subtree {
+                if let Some(authority) = self.legacy_text_area_authority
+                    && authority.detaches_clip_snapshot()
+                {
                     let Some(detached) = authority.detach_clip_snapshot(&clip_snapshot) else {
                         self.reject_invalid_chunk(
                             key,
@@ -1511,16 +1569,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
         consumed_ancestor_property_stack: initial_recording_context
             .consumed_ancestor_property_stack,
         scroll_forest_host: initial_recording_context.scroll_forest_host,
-        scroll_text_area_subtree: initial_recording_context.scroll_text_area_subtree,
-        baked_scroll_text_area_subtree: initial_recording_context.baked_scroll_text_area_subtree,
-        scroll_atomic_projection_text_area_subtree: initial_recording_context
-            .scroll_atomic_projection_text_area_subtree,
-        baked_scroll_atomic_projection_text_area_subtree: initial_recording_context
-            .baked_scroll_atomic_projection_text_area_subtree,
-        scroll_interactive_text_area_subtree: initial_recording_context
-            .scroll_interactive_text_area_subtree,
-        baked_scroll_interactive_text_area_subtree: initial_recording_context
-            .baked_scroll_interactive_text_area_subtree,
+        legacy_text_area_authority,
         required_scroll_content_paint_offset_bits: initial_recording_context
             .required_scroll_content_paint_offset_bits,
         opacity_authority: initial_recording_context.opacity_authority,

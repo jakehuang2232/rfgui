@@ -4,7 +4,7 @@ use std::collections::hash_map::Entry;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-pub(super) fn chunk_bounds_bits(chunk: &super::PaintChunk) -> [u32; 4] {
+fn chunk_bounds_bits(chunk: &super::PaintChunk) -> [u32; 4] {
     [
         chunk.bounds.x,
         chunk.bounds.y,
@@ -12,51 +12,6 @@ pub(super) fn chunk_bounds_bits(chunk: &super::PaintChunk) -> [u32; 4] {
         chunk.bounds.height,
     ]
     .map(f32::to_bits)
-}
-
-pub(super) fn classify_optional_child_mask_semantics<'a>(
-    artifact: &super::PaintArtifact,
-    chunks: &'a [super::PaintChunk],
-    content_root: NodeKey,
-    mask_properties: crate::view::compositor::property_tree::PropertyTreeState,
-) -> Option<(&'a super::PaintChunk, &'a [super::PaintChunk])> {
-    let (wrapper, tail) = chunks.split_first()?;
-    let is_mask = |chunk: &super::PaintChunk| chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT;
-    let has_boundary_mask = tail.first().is_some_and(|chunk| is_mask(chunk))
-        || tail.last().is_some_and(|chunk| is_mask(chunk));
-    if !has_boundary_mask {
-        return tail
-            .iter()
-            .all(|chunk| !is_mask(chunk))
-            .then_some((wrapper, tail));
-    }
-    let (mask_end, with_begin) = tail.split_last()?;
-    let (mask_begin, semantic) = with_begin.split_first()?;
-    let mask_exact = |chunk: &super::PaintChunk, phase: super::PaintNodePhase| {
-        let [super::PaintOp::DrawRect(mask)] = &artifact.ops[chunk.op_range.clone()] else {
-            return false;
-        };
-        chunk.owner == content_root
-            && chunk.id.owner == content_root
-            && chunk.id.scope == super::PaintPropertyScope::Contents
-            && chunk.id.phase == phase
-            && chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT
-            && chunk.id.role == super::PaintChunkRole::SelfDecoration
-            && chunk.properties.legacy_boundary_eq(mask_properties)
-            && mask.mode == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
-            && mask.params.position == [chunk.bounds.x, chunk.bounds.y]
-            && mask.params.size == [chunk.bounds.width, chunk.bounds.height]
-            && mask.params.fill_color == [0.0; 4]
-            && mask.params.opacity.to_bits() == 1.0_f32.to_bits()
-            && super::PaintPayloadIdentity::prepared_rects([mask]).as_ref()
-                == Some(&chunk.payload_identity)
-    };
-    (semantic.iter().all(|chunk| !is_mask(chunk))
-        && mask_exact(mask_begin, super::PaintNodePhase::BeforeChildren)
-        && mask_exact(mask_end, super::PaintNodePhase::AfterChildren)
-        && chunk_bounds_bits(mask_begin) == chunk_bounds_bits(mask_end)
-        && mask_begin.payload_identity == mask_end.payload_identity)
-        .then_some((wrapper, semantic))
 }
 
 use crate::view::compositor::property_tree::{
@@ -67,7 +22,6 @@ use crate::view::compositor::property_tree::{
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
-use super::legacy_admission::PaintScrollDetachedProjectionSubtreeWitness;
 use super::coverage_manifest::{
     NativeScrollContentReceiverCutout,
     exact_deferred_viewport_self_clip_witness, record_retained_coverage_manifest_with_context,
@@ -79,10 +33,7 @@ use super::{
     CoverageRecordingMode, EffectPropertySurfaceArtifactContract, LegacyPaintReason, PaintArtifact,
     PaintArtifactTarget, PaintBakedScrollHostWitness, PaintChunk, PaintCoverageItem,
     PaintCoverageValidationError, PaintOpacityAuthority, PaintRecordingContext,
-    PaintScrollAtomicProjectionTextAreaRecorderWitness as AtomicProjectionRecorderWitness,
-    PaintScrollContentWitness,
-    PaintScrollInteractiveTextAreaSubtreeWitness, PaintScrollTextAreaSubtreeWitness,
-    PaintTransformSurfaceWitness,
+    PaintScrollContentWitness, PaintTransformSurfaceWitness,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -611,7 +562,7 @@ pub(super) fn record_scroll_content_local_artifact_for_plan(
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
-        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness, None),
+        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness),
         None,
         Some(required_paint_offset.map(f32::to_bits)),
     ) {
@@ -670,7 +621,6 @@ pub(super) fn record_generalized_scroll_content_artifact_for_plan(
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     witness: PaintScrollContentWitness,
-    text_area_witness: Option<PaintScrollTextAreaSubtreeWitness>,
     required_paint_offset: [f32; 2],
 ) -> Result<PaintArtifact, Vec<FrameArtifactFallbackReason>> {
     let content_root = witness.content_root();
@@ -687,7 +637,7 @@ pub(super) fn record_generalized_scroll_content_artifact_for_plan(
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
-        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness, text_area_witness),
+        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness),
         None,
         Some(required_paint_offset.map(f32::to_bits)),
     ) {
@@ -702,65 +652,6 @@ pub(super) fn record_generalized_scroll_content_artifact_for_plan(
         .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(content_root)])
 }
 
-
-/// C3a graph-inert recorder for the exact atomic-projection sibling.  Source
-/// authority remains the live TextArea oracle and is checked on both sides of
-/// the metadata/full pass; the Copy paint witness authorizes properties only.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn atomic_projection_owner_topology_is_live(
-    arena: &NodeArena,
-    property_trees: &PropertyTrees,
-    text_area_root: NodeKey,
-    text_area_state: crate::view::compositor::property_tree::PropertyTreeState,
-    source: &super::PaintAtomicProjectionArtifactSource,
-) -> bool {
-    use crate::view::base_component::text_area::{
-        TextAreaLineBreak, TextAreaProjectionSegment, TextAreaTextRun,
-    };
-
-    if !source.is_canonical_for(text_area_root) {
-        return false;
-    }
-    let direct_owner_count = source
-        .descendant_owner_topology
-        .iter()
-        .filter(|owner| owner.parent == Some(text_area_root))
-        .count();
-    if arena.children_of(text_area_root).len() != direct_owner_count {
-        return false;
-    }
-    source.descendant_owner_topology.iter().all(|owner| {
-        let Some(node) = arena.get(owner.owner) else {
-            return false;
-        };
-        if arena.parent_of(owner.owner) != owner.parent
-            || node.element.is_deferred_to_root_viewport_render()
-            || node.element.has_active_animator()
-            || property_trees.states.get(&owner.owner).is_none_or(|state| {
-                !state.paint.legacy_boundary_eq(text_area_state)
-                    || !state.descendants.legacy_boundary_eq(text_area_state)
-            })
-        {
-            return false;
-        }
-        if owner.owner == source.projection_text_owner {
-            return node
-                .element
-                .as_any()
-                .is::<crate::view::base_component::Text>()
-                && node.element.children().is_empty();
-        }
-        if owner.parent != Some(text_area_root) {
-            return false;
-        }
-        if node.element.as_any().is::<TextAreaProjectionSegment>() {
-            return node.element.children() == [source.projection_text_owner];
-        }
-        (node.element.as_any().is::<TextAreaTextRun>()
-            || node.element.as_any().is::<TextAreaLineBreak>())
-            && node.element.children().is_empty()
-    })
-}
 
 pub(super) fn record_scroll_content_local_artifact_with_stack_for_plan(
     arena: &NodeArena,
@@ -797,7 +688,7 @@ pub(super) fn record_scroll_content_local_artifact_with_stack_for_plan(
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
-        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness, None),
+        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness),
         None,
         Some(consumed_stack),
         None,
@@ -863,7 +754,7 @@ pub(super) fn record_effect_scroll_content_local_artifact_with_stack_for_plan(
         property_trees,
         paint_generations,
         RendererMode::StrictPlan,
-        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness, None),
+        FrameArtifactAuthorityPolicy::ScrollContentLocal(witness),
         None,
         Some(consumed_stack),
         Some(effect.id),
@@ -2358,13 +2249,13 @@ pub(super) fn record_scroll_content_effect_surface_steps_for_plan(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct RootOpacityGroupPlan {
+struct RootOpacityGroupPlan {
     root: NodeKey,
     effect: EffectNodeId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum FrameArtifactAuthorityPolicy {
+enum FrameArtifactAuthorityPolicy {
     ExistingBakedProperties,
     PropertyNeutral,
     ClipEnabled,
@@ -2374,28 +2265,10 @@ pub(super) enum FrameArtifactAuthorityPolicy {
     TransformPropertySurface(PaintTransformSurfaceWitness),
     EffectPropertySurface(EffectNodeId),
     BakedScrollHost(PaintBakedScrollHostWitness),
-    BakedScrollTextAreaSubtreeHost(
-        PaintBakedScrollHostWitness,
-        PaintScrollTextAreaSubtreeWitness,
-    ),
-    BakedScrollAtomicProjectionTextAreaSubtreeHost(
-        PaintBakedScrollHostWitness,
-        AtomicProjectionRecorderWitness,
-    ),
-    BakedScrollInteractiveTextAreaSubtreeHost(
-        PaintBakedScrollHostWitness,
-        PaintScrollInteractiveTextAreaSubtreeWitness,
-    ),
     ScrollTransformHost(PaintBakedScrollHostWitness, super::PlannedBoundary),
-    ScrollContentLocal(
-        PaintScrollContentWitness,
-        Option<PaintScrollTextAreaSubtreeWitness>,
-    ),
+    ScrollContentLocal(PaintScrollContentWitness),
     ScrollContentEffectReceiver(PaintScrollContentWitness, super::PlannedBoundary),
     NativeScrollForestContent(super::PaintScrollForestEdgeWitness),
-    ScrollTextAreaSubtreeLocal(PaintScrollTextAreaSubtreeWitness),
-    ScrollAtomicProjectionTextAreaSubtreeLocal(AtomicProjectionRecorderWitness),
-    ScrollInteractiveTextAreaSubtreeLocal(PaintScrollInteractiveTextAreaSubtreeWitness),
 }
 
 fn baked_scroll_host_witness(
@@ -2403,25 +2276,19 @@ fn baked_scroll_host_witness(
 ) -> Option<PaintBakedScrollHostWitness> {
     match policy {
         FrameArtifactAuthorityPolicy::BakedScrollHost(witness)
-        | FrameArtifactAuthorityPolicy::BakedScrollTextAreaSubtreeHost(witness, _)
-        | FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(
-            witness,
-            _,
-        )
-        | FrameArtifactAuthorityPolicy::BakedScrollInteractiveTextAreaSubtreeHost(witness, _)
         | FrameArtifactAuthorityPolicy::ScrollTransformHost(witness, _) => Some(witness),
         _ => None,
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SnapshotMerge {
+enum SnapshotMerge {
     Inserted,
     Identical,
     Conflict,
 }
 
-pub(super) fn merge_snapshot<K, V>(store: &mut FxHashMap<K, V>, key: K, snapshot: V) -> SnapshotMerge
+fn merge_snapshot<K, V>(store: &mut FxHashMap<K, V>, key: K, snapshot: V) -> SnapshotMerge
 where
     K: Copy + Eq + std::hash::Hash,
     V: Copy + PartialEq,
@@ -2637,7 +2504,7 @@ fn materialize_transform_surface_steps(
     Ok(steps)
 }
 
-pub(super) fn record_frame_artifact_with_policy(
+fn record_frame_artifact_with_policy(
     arena: &NodeArena,
     roots: &[NodeKey],
     property_trees: &PropertyTrees,
@@ -2686,31 +2553,19 @@ fn record_frame_artifact_with_policy_and_stack(
     let initial_recording_context =
         PaintRecordingContext {
             paint_offset: match policy {
-                FrameArtifactAuthorityPolicy::ScrollContentLocal(witness, _)
+                FrameArtifactAuthorityPolicy::ScrollContentLocal(witness)
                 | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(witness, _) => {
                     witness.normalization_paint_offset()
-                }
-                FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(witness) => {
-                    witness.outer().normalization_paint_offset()
-                }
-                FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(
-                    witness,
-                ) => witness.outer().normalization_paint_offset(),
-                FrameArtifactAuthorityPolicy::ScrollInteractiveTextAreaSubtreeLocal(witness) => {
-                    witness.outer().normalization_paint_offset()
                 }
                 _ => [0.0, 0.0],
             },
             consumed_ancestor_property: match policy {
-                FrameArtifactAuthorityPolicy::ScrollContentLocal(witness, _)
+                FrameArtifactAuthorityPolicy::ScrollContentLocal(witness)
                 | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(witness, _) => {
                     consumed_ancestor_property_stack
                         .is_none()
                         .then(|| witness.consumed_property())
                 }
-                FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(_) => None,
-                FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(_) => None,
-                FrameArtifactAuthorityPolicy::ScrollInteractiveTextAreaSubtreeLocal(_) => None,
                 _ => consumed_ancestor_property,
             },
             consumed_ancestor_property_stack,
@@ -2732,62 +2587,15 @@ fn record_frame_artifact_with_policy_and_stack(
                 | FrameArtifactAuthorityPolicy::TransformSurface(_)
                 | FrameArtifactAuthorityPolicy::TransformPropertySurface(_)
                 | FrameArtifactAuthorityPolicy::BakedScrollHost(_)
-                | FrameArtifactAuthorityPolicy::BakedScrollTextAreaSubtreeHost(_, _)
-                | FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(_, _)
-                | FrameArtifactAuthorityPolicy::BakedScrollInteractiveTextAreaSubtreeHost(_, _)
                 | FrameArtifactAuthorityPolicy::ScrollTransformHost(_, _)
-                | FrameArtifactAuthorityPolicy::ScrollContentLocal(_, _)
+                | FrameArtifactAuthorityPolicy::ScrollContentLocal(_)
                 | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
-                | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_)
-                | FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(_) => {
-                    PaintOpacityAuthority::Baked
-                }
-                FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(_) => {
-                    PaintOpacityAuthority::Baked
-                }
-                FrameArtifactAuthorityPolicy::ScrollInteractiveTextAreaSubtreeLocal(_) => {
+                | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_) => {
                     PaintOpacityAuthority::Baked
                 }
             }
             },
             baked_scroll_host: baked_scroll_host_witness(policy),
-            scroll_text_area_subtree: match policy {
-                FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(witness) => Some(witness),
-                FrameArtifactAuthorityPolicy::ScrollContentLocal(_, witness) => witness,
-                _ => None,
-            },
-            baked_scroll_text_area_subtree: match policy {
-                FrameArtifactAuthorityPolicy::BakedScrollTextAreaSubtreeHost(_, witness) => {
-                    Some(witness)
-                }
-                _ => None,
-            },
-            scroll_atomic_projection_text_area_subtree: match policy {
-                FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(
-                    witness,
-                ) => Some(witness),
-                _ => None,
-            },
-            baked_scroll_atomic_projection_text_area_subtree: match policy {
-                FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(
-                    _,
-                    witness,
-                ) => Some(witness),
-                _ => None,
-            },
-            scroll_interactive_text_area_subtree: match policy {
-                FrameArtifactAuthorityPolicy::ScrollInteractiveTextAreaSubtreeLocal(witness) => {
-                    Some(witness)
-                }
-                _ => None,
-            },
-            baked_scroll_interactive_text_area_subtree: match policy {
-                FrameArtifactAuthorityPolicy::BakedScrollInteractiveTextAreaSubtreeHost(
-                    _,
-                    witness,
-                ) => Some(witness),
-                _ => None,
-            },
             ..PaintRecordingContext::default()
         };
     let planned_boundary_cutouts = super::PlannedBoundaryCutoutSet::default();
@@ -2852,35 +2660,44 @@ fn record_frame_artifact_with_policy_and_stack(
         return fallback_or_forced(mode, eligibility);
     }
 
+    let target = match policy {
+        FrameArtifactAuthorityPolicy::RootOpacityGroup(plan) => {
+            PaintArtifactTarget::RootOpacityGroup {
+                root: plan.root,
+                effect: plan.effect,
+            }
+        }
+        FrameArtifactAuthorityPolicy::ExistingBakedProperties
+        | FrameArtifactAuthorityPolicy::PropertyNeutral
+        | FrameArtifactAuthorityPolicy::ClipEnabled
+        | FrameArtifactAuthorityPolicy::PropertyScene
+        | FrameArtifactAuthorityPolicy::TransformSurface(_)
+        | FrameArtifactAuthorityPolicy::TransformPropertySurface(_)
+        | FrameArtifactAuthorityPolicy::EffectPropertySurface(_)
+        | FrameArtifactAuthorityPolicy::BakedScrollHost(_)
+        | FrameArtifactAuthorityPolicy::ScrollTransformHost(_, _)
+        | FrameArtifactAuthorityPolicy::ScrollContentLocal(_)
+        | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
+        | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_) => {
+            PaintArtifactTarget::CurrentTarget
+        }
+    };
+    materialize_frame_artifact(manifest, target, mode, eligibility)
+}
+
+/// Turn an already-assessed coverage manifest into the artifact.
+///
+/// Policy-free by construction: every property assertion has run by the time
+/// this is called, so the only failures left are snapshot conflicts between
+/// two chunks that claim the same node.
+pub(super) fn materialize_frame_artifact(
+    manifest: super::PaintCoverageManifest,
+    target: PaintArtifactTarget,
+    mode: RendererMode,
+    mut eligibility: FrameArtifactEligibility,
+) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
     let mut artifact = PaintArtifact {
-        target: match policy {
-            FrameArtifactAuthorityPolicy::RootOpacityGroup(plan) => {
-                PaintArtifactTarget::RootOpacityGroup {
-                    root: plan.root,
-                    effect: plan.effect,
-                }
-            }
-            FrameArtifactAuthorityPolicy::ExistingBakedProperties
-            | FrameArtifactAuthorityPolicy::PropertyNeutral
-            | FrameArtifactAuthorityPolicy::ClipEnabled
-            | FrameArtifactAuthorityPolicy::PropertyScene
-            | FrameArtifactAuthorityPolicy::TransformSurface(_)
-            | FrameArtifactAuthorityPolicy::TransformPropertySurface(_)
-            | FrameArtifactAuthorityPolicy::EffectPropertySurface(_)
-            | FrameArtifactAuthorityPolicy::BakedScrollHost(_)
-            | FrameArtifactAuthorityPolicy::BakedScrollTextAreaSubtreeHost(_, _)
-            | FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(_, _)
-            | FrameArtifactAuthorityPolicy::BakedScrollInteractiveTextAreaSubtreeHost(_, _)
-            | FrameArtifactAuthorityPolicy::ScrollTransformHost(_, _)
-            | FrameArtifactAuthorityPolicy::ScrollContentLocal(_, _)
-            | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
-            | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_)
-            | FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(_)
-            | FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(_)
-            | FrameArtifactAuthorityPolicy::ScrollInteractiveTextAreaSubtreeLocal(_) => {
-                PaintArtifactTarget::CurrentTarget
-            }
-        },
+        target,
         ..PaintArtifact::default()
     };
     let mut seen_clip_nodes = FxHashMap::default();
@@ -2979,7 +2796,7 @@ fn record_frame_artifact_with_policy_and_stack(
 #[cfg(test)]
 mod snapshot_merge_tests;
 
-pub(super) fn assess_manifest(
+fn assess_manifest(
     manifest: &super::PaintCoverageManifest,
     policy: FrameArtifactAuthorityPolicy,
 ) -> FrameArtifactEligibility {
@@ -3006,63 +2823,12 @@ pub(super) fn assess_manifest(
                         reasons.push(reason);
                     }
                 }
-                if let FrameArtifactAuthorityPolicy::ScrollContentLocal(_, witness) = policy
-                    && match witness {
-                        Some(witness) => !scroll_text_area_subtree_local_properties_are_exact(
-                            chunk.properties,
-                            witness,
-                        ),
-                        None => {
-                            chunk.properties.legacy_boundary_dimensions() != Default::default()
-                        }
-                    }
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
                 if matches!(
                     policy,
-                    FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
+                    FrameArtifactAuthorityPolicy::ScrollContentLocal(_)
+                        | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
                         | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_)
                 ) && chunk.properties.legacy_boundary_dimensions() != Default::default()
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
-                if let FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(witness) = policy
-                    && !scroll_text_area_subtree_local_properties_are_exact(
-                        chunk.properties,
-                        witness,
-                    )
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
-                if let FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(
-                    witness,
-                ) = policy
-                    && !scroll_atomic_projection_text_area_subtree_local_properties_are_exact(
-                        chunk.properties,
-                        witness.property(),
-                    )
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
-                if let FrameArtifactAuthorityPolicy::ScrollInteractiveTextAreaSubtreeLocal(witness) =
-                    policy
-                    && !scroll_interactive_text_area_subtree_local_properties_are_exact(
-                        chunk.properties,
-                        witness,
-                    )
                 {
                     let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
                     if !reasons.contains(&reason) {
@@ -3129,55 +2895,7 @@ pub(super) fn assess_manifest(
                         reasons.push(reason);
                     }
                 }
-                if let FrameArtifactAuthorityPolicy::BakedScrollTextAreaSubtreeHost(
-                    baked,
-                    text_area,
-                ) = policy
-                    && !baked_scroll_text_area_subtree_properties_are_exact(
-                        chunk.owner,
-                        chunk.properties,
-                        baked,
-                        text_area,
-                    )
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                } else if let FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(
-                    baked,
-                    text_area,
-                ) = policy
-                    && !baked_scroll_atomic_projection_text_area_subtree_properties_are_exact(
-                        chunk.owner,
-                        chunk.properties,
-                        baked,
-                        text_area.property(),
-                    )
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
-                    if !reasons.contains(&reason) { reasons.push(reason); }
-                } else if let FrameArtifactAuthorityPolicy::BakedScrollInteractiveTextAreaSubtreeHost(
-                    baked,
-                    text_area,
-                ) = policy
-                    && !baked_scroll_interactive_text_area_subtree_properties_are_exact(
-                        chunk.owner,
-                        chunk.properties,
-                        baked,
-                        text_area,
-                    )
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                } else if !matches!(
-                    policy,
-                    FrameArtifactAuthorityPolicy::BakedScrollTextAreaSubtreeHost(_, _)
-                        | FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(_, _)
-                        | FrameArtifactAuthorityPolicy::BakedScrollInteractiveTextAreaSubtreeHost(_, _)
-                ) && let Some(witness) = baked_scroll_host_witness(policy)
+                if let Some(witness) = baked_scroll_host_witness(policy)
                     && !baked_scroll_host_properties_are_exact(
                         chunk.owner,
                         chunk.properties,
@@ -3193,60 +2911,12 @@ pub(super) fn assess_manifest(
             PaintCoverageItem::TransparentNode {
                 owner, properties, ..
             } => {
-                if let FrameArtifactAuthorityPolicy::ScrollContentLocal(_, witness) = policy
-                    && match witness {
-                        Some(witness) => !scroll_text_area_subtree_local_properties_are_exact(
-                            *properties,
-                            witness,
-                        ),
-                        None => {
-                            properties.legacy_boundary_dimensions() != Default::default()
-                        }
-                    }
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
                 if matches!(
                     policy,
-                    FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
+                    FrameArtifactAuthorityPolicy::ScrollContentLocal(_)
+                        | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
                         | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_)
                 ) && properties.legacy_boundary_dimensions() != Default::default()
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
-                if let FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(witness) = policy
-                    && !scroll_text_area_subtree_local_properties_are_exact(*properties, witness)
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
-                if let FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(
-                    witness,
-                ) = policy
-                    && !scroll_atomic_projection_text_area_subtree_local_properties_are_exact(
-                        *properties,
-                        witness.property(),
-                    )
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
-                if let FrameArtifactAuthorityPolicy::ScrollInteractiveTextAreaSubtreeLocal(witness) =
-                    policy
-                    && !scroll_interactive_text_area_subtree_local_properties_are_exact(
-                        *properties,
-                        witness,
-                    )
                 {
                     let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
                     if !reasons.contains(&reason) {
@@ -3289,55 +2959,7 @@ pub(super) fn assess_manifest(
                         reasons.push(reason);
                     }
                 }
-                if let FrameArtifactAuthorityPolicy::BakedScrollTextAreaSubtreeHost(
-                    baked,
-                    text_area,
-                ) = policy
-                    && !baked_scroll_text_area_subtree_properties_are_exact(
-                        *owner,
-                        *properties,
-                        baked,
-                        text_area,
-                    )
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                } else if let FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(
-                    baked,
-                    text_area,
-                ) = policy
-                    && !baked_scroll_atomic_projection_text_area_subtree_properties_are_exact(
-                        *owner,
-                        *properties,
-                        baked,
-                        text_area.property(),
-                    )
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
-                    if !reasons.contains(&reason) { reasons.push(reason); }
-                } else if let FrameArtifactAuthorityPolicy::BakedScrollInteractiveTextAreaSubtreeHost(
-                    baked,
-                    text_area,
-                ) = policy
-                    && !baked_scroll_interactive_text_area_subtree_properties_are_exact(
-                        *owner,
-                        *properties,
-                        baked,
-                        text_area,
-                    )
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                } else if !matches!(
-                    policy,
-                    FrameArtifactAuthorityPolicy::BakedScrollTextAreaSubtreeHost(_, _)
-                        | FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(_, _)
-                        | FrameArtifactAuthorityPolicy::BakedScrollInteractiveTextAreaSubtreeHost(_, _)
-                ) && let Some(witness) = baked_scroll_host_witness(policy)
+                if let Some(witness) = baked_scroll_host_witness(policy)
                     && !baked_scroll_host_properties_are_exact(*owner, *properties, witness)
                 {
                     let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
@@ -3369,60 +2991,14 @@ pub(super) fn assess_manifest(
                     FrameArtifactAuthorityPolicy::BakedScrollHost(witness) => {
                         !baked_scroll_host_properties_are_exact(*owner, *properties, witness)
                     }
-                    FrameArtifactAuthorityPolicy::BakedScrollTextAreaSubtreeHost(
-                        baked,
-                        text_area,
-                    ) => !baked_scroll_text_area_subtree_properties_are_exact(
-                        *owner,
-                        *properties,
-                        baked,
-                        text_area,
-                    ),
-                    FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(
-                        baked,
-                        text_area,
-                    ) => !baked_scroll_atomic_projection_text_area_subtree_properties_are_exact(
-                        *owner,
-                        *properties,
-                        baked,
-                        text_area.property(),
-                    ),
-                    FrameArtifactAuthorityPolicy::BakedScrollInteractiveTextAreaSubtreeHost(
-                        baked,
-                        text_area,
-                    ) => !baked_scroll_interactive_text_area_subtree_properties_are_exact(
-                        *owner,
-                        *properties,
-                        baked,
-                        text_area,
-                    ),
                     FrameArtifactAuthorityPolicy::ScrollTransformHost(witness, _) => {
                         !baked_scroll_host_properties_are_exact(*owner, *properties, witness)
                     }
-                    FrameArtifactAuthorityPolicy::ScrollContentLocal(_, Some(witness)) => {
-                        !scroll_text_area_subtree_local_properties_are_exact(*properties, witness)
-                    }
-                    FrameArtifactAuthorityPolicy::ScrollContentLocal(_, None) => {
+                    FrameArtifactAuthorityPolicy::ScrollContentLocal(_)
+                    | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
+                    | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_) => {
                         properties.legacy_boundary_dimensions() != Default::default()
                     }
-                    FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _) => {
-                        properties.legacy_boundary_dimensions() != Default::default()
-                    }
-                    FrameArtifactAuthorityPolicy::NativeScrollForestContent(_) => {
-                        properties.legacy_boundary_dimensions() != Default::default()
-                    }
-                    FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(witness) => {
-                        !scroll_text_area_subtree_local_properties_are_exact(*properties, witness)
-                    }
-                    FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(witness) => {
-                        !scroll_atomic_projection_text_area_subtree_local_properties_are_exact(*properties, witness.property())
-                    }
-                    FrameArtifactAuthorityPolicy::ScrollInteractiveTextAreaSubtreeLocal(
-                        witness,
-                    ) => !scroll_interactive_text_area_subtree_local_properties_are_exact(
-                        *properties,
-                        witness,
-                    ),
                     _ => {
                         properties.transform.is_some()
                             || properties.effect.is_some()
@@ -3542,144 +3118,6 @@ fn baked_scroll_host_properties_are_exact(
     } else {
         false
     }
-}
-
-fn baked_scroll_text_area_subtree_properties_are_exact(
-    owner: NodeKey,
-    properties: crate::view::compositor::property_tree::PropertyTreeState,
-    baked: PaintBakedScrollHostWitness,
-    text_area: PaintScrollTextAreaSubtreeWitness,
-) -> bool {
-    let properties = properties.legacy_boundary_dimensions();
-    if text_area.outer().boundary_root() != baked.boundary_root()
-        || text_area.outer().content_root() != baked.child()
-        || text_area.outer().scroll_snapshot().id != baked.scroll()
-        || text_area.outer().contents_clip_snapshot().id != baked.contents_clip()
-    {
-        return false;
-    }
-    if owner == baked.boundary_root() {
-        properties == Default::default()
-    } else if owner == baked.child() {
-        properties
-            == crate::view::compositor::property_tree::PropertyTreeState {
-                clip: Some(baked.contents_clip()),
-                scroll: Some(baked.scroll()),
-                ..Default::default()
-            }
-    } else {
-        properties
-            == crate::view::compositor::property_tree::PropertyTreeState {
-                clip: Some(text_area.live_contents_clip().id),
-                scroll: Some(baked.scroll()),
-                ..Default::default()
-            }
-    }
-}
-
-fn scroll_text_area_subtree_local_properties_are_exact(
-    properties: crate::view::compositor::property_tree::PropertyTreeState,
-    witness: PaintScrollTextAreaSubtreeWitness,
-) -> bool {
-    let properties = properties.legacy_boundary_dimensions();
-    properties == Default::default()
-        || properties
-            == crate::view::compositor::property_tree::PropertyTreeState {
-                clip: Some(witness.local_contents_clip().id),
-                ..Default::default()
-            }
-}
-
-fn baked_scroll_atomic_projection_text_area_subtree_properties_are_exact(
-    owner: NodeKey,
-    properties: crate::view::compositor::property_tree::PropertyTreeState,
-    baked: PaintBakedScrollHostWitness,
-    text_area: PaintScrollDetachedProjectionSubtreeWitness,
-) -> bool {
-    let properties = properties.legacy_boundary_dimensions();
-    if text_area.outer().boundary_root() != baked.boundary_root()
-        || text_area.outer().content_root() != baked.child()
-        || text_area.outer().scroll_snapshot().id != baked.scroll()
-        || text_area.outer().contents_clip_snapshot().id != baked.contents_clip()
-    {
-        return false;
-    }
-    if owner == baked.boundary_root() {
-        properties == Default::default()
-    } else if owner == baked.child() {
-        properties
-            == crate::view::compositor::property_tree::PropertyTreeState {
-                clip: Some(baked.contents_clip()),
-                scroll: Some(baked.scroll()),
-                ..Default::default()
-            }
-    } else {
-        properties
-            == crate::view::compositor::property_tree::PropertyTreeState {
-                clip: Some(text_area.live_contents_clip().id),
-                scroll: Some(baked.scroll()),
-                ..Default::default()
-            }
-    }
-}
-
-fn scroll_atomic_projection_text_area_subtree_local_properties_are_exact(
-    properties: crate::view::compositor::property_tree::PropertyTreeState,
-    witness: PaintScrollDetachedProjectionSubtreeWitness,
-) -> bool {
-    let properties = properties.legacy_boundary_dimensions();
-    properties == Default::default()
-        || properties
-            == crate::view::compositor::property_tree::PropertyTreeState {
-                clip: Some(witness.local_contents_clip().id),
-                ..Default::default()
-            }
-}
-
-fn baked_scroll_interactive_text_area_subtree_properties_are_exact(
-    owner: NodeKey,
-    properties: crate::view::compositor::property_tree::PropertyTreeState,
-    baked: PaintBakedScrollHostWitness,
-    text_area: PaintScrollInteractiveTextAreaSubtreeWitness,
-) -> bool {
-    let properties = properties.legacy_boundary_dimensions();
-    if text_area.outer().boundary_root() != baked.boundary_root()
-        || text_area.outer().content_root() != baked.child()
-        || text_area.outer().scroll_snapshot().id != baked.scroll()
-        || text_area.outer().contents_clip_snapshot().id != baked.contents_clip()
-    {
-        return false;
-    }
-    if owner == baked.boundary_root() {
-        properties == Default::default()
-    } else if owner == baked.child() {
-        properties
-            == crate::view::compositor::property_tree::PropertyTreeState {
-                clip: Some(baked.contents_clip()),
-                scroll: Some(baked.scroll()),
-                ..Default::default()
-            }
-    } else {
-        properties
-            == crate::view::compositor::property_tree::PropertyTreeState {
-                clip: Some(text_area.live_contents_clip().id),
-                scroll: Some(baked.scroll()),
-                ..Default::default()
-            }
-    }
-}
-
-fn scroll_interactive_text_area_subtree_local_properties_are_exact(
-    properties: crate::view::compositor::property_tree::PropertyTreeState,
-    witness: PaintScrollInteractiveTextAreaSubtreeWitness,
-) -> bool {
-    let properties = properties.legacy_boundary_dimensions();
-    properties == Default::default()
-        || properties
-            == crate::view::compositor::property_tree::PropertyTreeState {
-                clip: Some(witness.local_contents_clip().id),
-                ..Default::default()
-            }
 }
 
 fn root_opacity_group_plan(
@@ -3817,21 +3255,10 @@ fn production_property_boundary_reasons(
                     | FrameArtifactAuthorityPolicy::TransformPropertySurface(_)
                     | FrameArtifactAuthorityPolicy::EffectPropertySurface(_)
                     | FrameArtifactAuthorityPolicy::BakedScrollHost(_)
-                    | FrameArtifactAuthorityPolicy::BakedScrollTextAreaSubtreeHost(_, _)
-                    | FrameArtifactAuthorityPolicy::BakedScrollAtomicProjectionTextAreaSubtreeHost(_, _)
-                    | FrameArtifactAuthorityPolicy::BakedScrollInteractiveTextAreaSubtreeHost(
-                        _,
-                        _,
-                    )
                     | FrameArtifactAuthorityPolicy::ScrollTransformHost(_, _)
-                    | FrameArtifactAuthorityPolicy::ScrollContentLocal(_, _)
+                    | FrameArtifactAuthorityPolicy::ScrollContentLocal(_)
                     | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(_, _)
-                    | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_)
-                    | FrameArtifactAuthorityPolicy::ScrollTextAreaSubtreeLocal(_)
-                    | FrameArtifactAuthorityPolicy::ScrollAtomicProjectionTextAreaSubtreeLocal(_)
-                    | FrameArtifactAuthorityPolicy::ScrollInteractiveTextAreaSubtreeLocal(_) => {
-                        false
-                    }
+                    | FrameArtifactAuthorityPolicy::NativeScrollForestContent(_) => false,
                 })
         });
         if property_boundary {

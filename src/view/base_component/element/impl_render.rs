@@ -918,7 +918,7 @@ impl Element {
         // through the ordinary SelfClip / ChildClip authority gates.
         if arena.is_some_and(|arena| self.requires_child_mask_surface(arena))
             && !recording_context.authorizes_baked_scroll_host_root(self.stable_id())
-            && !recording_context.authorizes_scroll_text_area_content_wrapper(self.stable_id())
+            && !recording_context.authorizes_descendant_contents_clip(self.stable_id())
             && arena.is_none_or(|arena| {
                 self.prepared_retained_child_mask_plan(arena, recording_context)
                     .is_none()
@@ -1076,7 +1076,7 @@ impl Element {
             let inner_radii = self.inner_clip_radii(outer_radii);
             if self.should_clip_children(&overflow_child_indices, inner_radii, arena)
                 && !recording_context.authorizes_baked_scroll_host_root(self.stable_id())
-                && !recording_context.authorizes_scroll_text_area_content_wrapper(self.stable_id())
+                && !recording_context.authorizes_descendant_contents_clip(self.stable_id())
                 && self
                     .prepared_retained_child_mask_plan(arena, recording_context)
                     .is_none()
