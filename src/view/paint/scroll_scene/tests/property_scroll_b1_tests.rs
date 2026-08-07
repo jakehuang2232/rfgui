@@ -26,7 +26,6 @@ fn property_scroll_admission_sidecar_correspondence_rejects_synchronized_hybrid(
         content_wrapper_stable_id: sidecar.content_wrapper_stable_id,
         text_area_root: sidecar.text_area_root,
         text_area_stable_id: sidecar.text_area_stable_id,
-        paint_grammar: crate::view::base_component::text_area::RetainedInteractiveTextAreaPaintGrammar::FocusedGlyphs,
         paint_source: crate::view::paint::PaintTextContentSource::Glyphs,
         caret_oracle_bounds_bits: None,
         source_bounds: sidecar.source_bounds,
@@ -586,4 +585,82 @@ fn property_scroll_b1_stale_time_and_exact_live_tree_drift_fail_closed() {
         .err(),
         Some(PropertyScrollBoundaryValidationError::LiveSnapshotDrift)
     );
+}
+
+/// The plain and interactive admissions prove their text content through the
+/// generic paint source alone.
+///
+/// They used to carry a `paint_grammar` whose canonicality and equality were
+/// separate `bitwise_eq` conjuncts. That grammar is bijective with
+/// `PaintTextContentSource` and shares its canonicality condition, so the
+/// conjuncts moved onto the source — these assertions are what keeps the
+/// replaced checks pinned.
+#[test]
+fn plain_and_interactive_admission_paint_source_tamper_fails_closed() {
+    let (arena, root, _, properties, generations) = fixture_at_offset([0.0, 20.0]);
+    let boundary = validated_property_scroll_boundary_from_fixture(
+        &arena,
+        root,
+        &properties,
+        &generations,
+        crate::time::Instant::now(),
+        generous_budget(),
+    );
+    let PropertyScrollHostAdmissionKind::DirectLeaf(direct) = boundary.planner.seal.admission.kind
+    else {
+        panic!("fixture must begin as the direct-leaf corpus")
+    };
+    let plain = fake_text_area_sidecar_from_direct(direct);
+    let interactive = RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot {
+        boundary_root: plain.boundary_root,
+        stable_id: plain.stable_id,
+        content_wrapper: plain.content_wrapper,
+        content_wrapper_stable_id: plain.content_wrapper_stable_id,
+        text_area_root: plain.text_area_root,
+        text_area_stable_id: plain.text_area_stable_id,
+        paint_source: crate::view::paint::PaintTextContentSource::Glyphs,
+        caret_oracle_bounds_bits: None,
+        source_bounds: plain.source_bounds,
+        scroll: plain.scroll,
+    };
+    assert!(plain.bitwise_eq(plain));
+    assert!(interactive.bitwise_eq(interactive));
+
+    let canonical_selection = crate::view::paint::PaintTextContentSource::Selection(
+        crate::view::paint::PaintTextSelectionSource {
+            start_char: 1,
+            end_char: 4,
+            color_rgba_bits: [1.0f32.to_bits(); 4],
+        },
+    );
+    // A different source is a different admission, exactly as a different
+    // grammar variant used to be.
+    let mut drifted_plain = plain;
+    drifted_plain.paint_source = canonical_selection;
+    assert!(!plain.bitwise_eq(drifted_plain));
+    assert!(!drifted_plain.bitwise_eq(plain));
+    let mut drifted_interactive = interactive;
+    drifted_interactive.paint_source = canonical_selection;
+    assert!(!interactive.bitwise_eq(drifted_interactive));
+    assert!(!drifted_interactive.bitwise_eq(interactive));
+
+    // A non-canonical source fails closed against itself, on both sides of the
+    // comparison — the replay is symmetric, so neither operand may be trusted.
+    let forged = crate::view::paint::PaintTextContentSource::Selection(
+        crate::view::paint::PaintTextSelectionSource {
+            start_char: 4,
+            end_char: 4,
+            color_rgba_bits: [1.0f32.to_bits(); 4],
+        },
+    );
+    let mut forged_plain = plain;
+    forged_plain.paint_source = forged;
+    assert!(!forged_plain.bitwise_eq(forged_plain));
+    assert!(!plain.bitwise_eq(forged_plain));
+    assert!(!forged_plain.bitwise_eq(plain));
+    let mut forged_interactive = interactive;
+    forged_interactive.paint_source = forged;
+    assert!(!forged_interactive.bitwise_eq(forged_interactive));
+    assert!(!interactive.bitwise_eq(forged_interactive));
+    assert!(!forged_interactive.bitwise_eq(interactive));
 }

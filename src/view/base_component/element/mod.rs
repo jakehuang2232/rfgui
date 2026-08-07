@@ -457,7 +457,6 @@ pub(crate) struct RetainedScrollTextAreaSubtreeAdmissionSnapshot {
     pub(crate) content_wrapper_stable_id: u64,
     pub(crate) text_area_root: NodeKey,
     pub(crate) text_area_stable_id: u64,
-    pub(crate) paint_grammar: super::text_area::RetainedTextAreaPaintGrammar,
     pub(crate) paint_source: crate::view::paint::PaintTextContentSource,
     pub(crate) source_bounds: RetainedSurfaceBounds,
     pub(crate) scroll: ScrollGeometrySnapshot,
@@ -530,7 +529,6 @@ pub(crate) struct RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot {
     pub(crate) content_wrapper_stable_id: u64,
     pub(crate) text_area_root: NodeKey,
     pub(crate) text_area_stable_id: u64,
-    pub(crate) paint_grammar: super::text_area::RetainedInteractiveTextAreaPaintGrammar,
     pub(crate) paint_source: crate::view::paint::PaintTextContentSource,
     /// Independent source-oracle geometry. `None` is the exact hidden-caret
     /// result; `Some` is the caret-map-derived live bounds before clipping.
@@ -671,9 +669,8 @@ impl RetainedScrollTextAreaSubtreeAdmissionSnapshot {
             && self.content_wrapper_stable_id == other.content_wrapper_stable_id
             && self.text_area_root == other.text_area_root
             && self.text_area_stable_id == other.text_area_stable_id
-            && self.paint_grammar.is_canonical()
-            && other.paint_grammar.is_canonical()
-            && self.paint_grammar == other.paint_grammar
+            && self.paint_source.is_canonical()
+            && other.paint_source.is_canonical()
             && self.paint_source == other.paint_source
             && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
             && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
@@ -705,10 +702,7 @@ impl RetainedScrollTextAreaSubtreeAdmissionSnapshot {
                 recording_offset,
             )
         };
-        live.is_some_and(|grammar| {
-            grammar == self.paint_grammar
-                && grammar.artifact_content_source() == Some(self.paint_source)
-        })
+        live.and_then(|grammar| grammar.artifact_content_source()) == Some(self.paint_source)
     }
 }
 
@@ -879,9 +873,8 @@ impl RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot {
             && self.content_wrapper_stable_id == other.content_wrapper_stable_id
             && self.text_area_root == other.text_area_root
             && self.text_area_stable_id == other.text_area_stable_id
-            && self.paint_grammar.is_canonical()
-            && other.paint_grammar.is_canonical()
-            && self.paint_grammar == other.paint_grammar
+            && self.paint_source.is_canonical()
+            && other.paint_source.is_canonical()
             && self.paint_source == other.paint_source
             && self.caret_oracle_bounds_bits == other.caret_oracle_bounds_bits
             && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
@@ -906,10 +899,8 @@ impl RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot {
                 arena,
                 recording_offset,
             )
-            .is_some_and(|grammar| {
-                grammar == self.paint_grammar
-                    && grammar.artifact_content_source() == Some(self.paint_source)
-            })
+            .and_then(|grammar| grammar.artifact_content_source())
+            == Some(self.paint_source)
     }
 }
 
@@ -6195,7 +6186,6 @@ impl Element {
             content_wrapper_stable_id: wrapper.stable_id(),
             text_area_root,
             text_area_stable_id: text_area.stable_id(),
-            paint_grammar,
             paint_source,
             source_bounds,
             scroll,
@@ -6423,7 +6413,6 @@ impl Element {
             content_wrapper_stable_id: wrapper.stable_id(),
             text_area_root,
             text_area_stable_id: text_area.stable_id(),
-            paint_grammar,
             paint_source,
             caret_oracle_bounds_bits,
             source_bounds,
