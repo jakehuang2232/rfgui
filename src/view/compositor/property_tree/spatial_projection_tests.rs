@@ -577,8 +577,7 @@ fn interleaved_projection_matches_owner_compatibility_matrix() {
     }
 }
 
-#[test]
-fn interleaved_projection_fails_closed_for_incomplete_and_anchor_graphs() {
+fn interleaved_projection_rejection_fixture() -> (NodeKey, NodeKey, PropertyTrees) {
     let mut arena = new_test_arena();
     let root = commit_element(
         &mut arena,
@@ -593,11 +592,17 @@ fn interleaved_projection_fails_closed_for_incomplete_and_anchor_graphs() {
 
     let mut trees = PropertyTrees::default();
     trees.sync(&arena, &[root]);
+    (root, child, trees)
+}
+
+#[test]
+fn interleaved_projection_rejects_missing_layout_position() {
+    let (root, child, trees) = interleaved_projection_rejection_fixture();
     let state = trees.states[&child].paint;
     let transforms = trees
         .transform_snapshot_chain_for(state.transform)
         .expect("transform snapshots");
-    let mut positions = trees
+    let positions = trees
         .layout_position_snapshot_chain_for(state.layout_position)
         .expect("layout-position snapshots");
     let visuals = trees
@@ -611,7 +616,21 @@ fn interleaved_projection_fails_closed_for_incomplete_and_anchor_graphs() {
             LayoutPositionNodeId(root),
         )),
     );
+}
 
+#[test]
+fn interleaved_projection_rejects_missing_scroll() {
+    let (root, child, trees) = interleaved_projection_rejection_fixture();
+    let state = trees.states[&child].paint;
+    let transforms = trees
+        .transform_snapshot_chain_for(state.transform)
+        .expect("transform snapshots");
+    let mut positions = trees
+        .layout_position_snapshot_chain_for(state.layout_position)
+        .expect("layout-position snapshots");
+    let visuals = trees
+        .visual_offset_snapshot_chain_for(state.visual_offset)
+        .expect("visual-offset snapshots");
     positions[0].reference_scroll = Some(ScrollNodeId(root));
     let missing_scroll = SpatialProjectionGraph::try_new(&transforms, &positions, &visuals, &[]);
     assert_eq!(
@@ -619,8 +638,21 @@ fn interleaved_projection_fails_closed_for_incomplete_and_anchor_graphs() {
         Some(SpatialProjectionError::MissingScroll(ScrollNodeId(root))),
         "an applied scroll edge may not disappear from the owning snapshot graph",
     );
+}
 
-    positions[0].reference_scroll = None;
+#[test]
+fn interleaved_projection_rejects_cyclic_visual_offset() {
+    let (root, child, trees) = interleaved_projection_rejection_fixture();
+    let state = trees.states[&child].paint;
+    let transforms = trees
+        .transform_snapshot_chain_for(state.transform)
+        .expect("transform snapshots");
+    let positions = trees
+        .layout_position_snapshot_chain_for(state.layout_position)
+        .expect("layout-position snapshots");
+    let visuals = trees
+        .visual_offset_snapshot_chain_for(state.visual_offset)
+        .expect("visual-offset snapshots");
     let mut cyclic_visuals = visuals.clone();
     cyclic_visuals
         .iter_mut()
@@ -632,7 +664,21 @@ fn interleaved_projection_fails_closed_for_incomplete_and_anchor_graphs() {
         cyclic,
         Err(SpatialProjectionError::CyclicVisualOffset(_))
     ));
+}
 
+#[test]
+fn named_anchor_projection_fails_closed_before_stage_c_fix() {
+    let (root, child, trees) = interleaved_projection_rejection_fixture();
+    let state = trees.states[&child].paint;
+    let transforms = trees
+        .transform_snapshot_chain_for(state.transform)
+        .expect("transform snapshots");
+    let mut positions = trees
+        .layout_position_snapshot_chain_for(state.layout_position)
+        .expect("layout-position snapshots");
+    let visuals = trees
+        .visual_offset_snapshot_chain_for(state.visual_offset)
+        .expect("visual-offset snapshots");
     positions[0].reference = SpatialPositionReference::Anchor(root);
     let graph = SpatialProjectionGraph::try_new(&transforms, &positions, &visuals, &[])
         .expect("anchor identity graph is complete");
