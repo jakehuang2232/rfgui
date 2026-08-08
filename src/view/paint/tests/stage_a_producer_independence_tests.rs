@@ -1,6 +1,24 @@
-use super::*;
+//! Stage A closure note (2026-08-08).
+//!
+//! - The artifact corpus asserts scroll_nodes empty — it exercises no scroll-graph coverage.
+//! - Reuse is one retained scroll-content surface under five content shapes, not five reuse-layer shapes. This is the positive Stage A result: the reuse decision is already component-independent.
+//! - Producer independence covers three producers. Downstream is not clean: compiler.rs holds 27 TextArea types / 435 grammar tokens, scroll_scene.rs holds 1 type / 857 tokens.
+//!
+//! The golden artifact corpus authors generic `sans-serif` at 17.5px. On the
+//! closure platform (macOS, Fontique 0.11 CoreText backend), that maps to
+//! Helvetica. The frozen glyph, caret, selection, and scrollbar floats also
+//! freeze that mapping and the current shaping, layout, and hinting behavior;
+//! an intentional change to those inputs requires an explicit golden-contract
+//! update and is not automatically a rendering regression.
 
 use super::super::legacy_admission::{
+    LegacyTextAreaProjection, PaintLegacyTextAreaCoverageAuthority,
+    PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
+    PaintScrollAtomicProjectionTextAreaRecorderWitness,
+    PaintScrollDetachedProjectionSubtreeWitness,
+    PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
+    PaintScrollInteractiveTextAreaSubtreeWitness, PaintScrollTextAreaSubtreeWitness,
+    RetainedInteractiveTextAreaResidentRasterSeal,
     RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
     RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
@@ -13,53 +31,69 @@ use super::super::legacy_recording::{
     RecordedRetainedAtomicProjectionTextAreaHost, RecordedRetainedAtomicProjectionTextAreaSubtree,
     RecordedRetainedFocusedAtomicProjectionTextAreaHost,
     RecordedRetainedFocusedAtomicProjectionTextAreaSubtree,
-    RecordedRetainedInteractiveTextAreaSubtree,
+    RecordedRetainedInteractiveTextAreaSubtree, RetainedAtomicProjectionChunkLiveRasterOracle,
     RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
     RetainedAtomicProjectionTextAreaLiveRasterOracle,
     ValidatedRecordedAtomicProjectionSelectionTextAreaAuthority,
 };
 
-fn register_stage_c_deletion_type<T>() {}
-
-fn declared_text_area_types(source: &str) -> Vec<String> {
-    let mut names: Vec<String> = source
-        .lines()
-        .filter_map(|line| {
-            let mut tokens = line.trim_start().split_whitespace();
-            let first = tokens.next()?;
-            let declaration = if first.starts_with("pub") {
-                tokens.next()?
-            } else {
-                first
-            };
-            if !matches!(declaration, "struct" | "enum" | "type") {
-                return None;
-            }
-            let name = tokens.next()?.trim_end_matches(|character: char| {
-                !character.is_ascii_alphanumeric() && character != '_'
-            });
-            name.contains("TextArea").then(|| name.to_string())
-        })
-        .collect();
-    names.sort();
-    names
+fn register_stage_c_deletion_type<T>() -> &'static str {
+    std::any::type_name::<T>()
+        .rsplit("::")
+        .next()
+        .expect("a Rust type has a terminal name")
 }
 
-/// Concrete legacy paint tokens. A producer that names one of these has learned
-/// which component grammar it is recording.
-const FORBIDDEN_LEGACY_TYPES: [&str; 12] = [
-    "PaintScrollTextAreaSubtreeWitness",
-    "PaintScrollInteractiveTextAreaSubtreeWitness",
-    "PaintScrollAtomicProjectionTextAreaRecorderWitness",
-    "AtomicProjectionRecorderWitness",
-    "PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness",
-    "PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness",
-    "PaintLegacyTextAreaCoverageAuthority",
+const LEGACY_ADMISSION_TYPE_NAMES: [&str; 14] = [
     "LegacyTextAreaProjection",
+    "PaintLegacyTextAreaCoverageAuthority",
+    "PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness",
+    "PaintScrollAtomicProjectionTextAreaRecorderWitness",
+    "PaintScrollDetachedProjectionSubtreeWitness",
+    "PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness",
+    "PaintScrollInteractiveTextAreaSubtreeWitness",
+    "PaintScrollTextAreaSubtreeWitness",
     "RetainedInteractiveTextAreaResidentRasterSeal",
-    "RetainedAtomicProjectionTextAreaLiveRasterOracle",
-    "RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle",
+    "RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot",
+    "RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot",
+    "RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot",
+    "RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot",
+    "RetainedScrollTextAreaSubtreeAdmissionSnapshot",
+];
+
+const LEGACY_RECORDING_TYPE_NAMES: [&str; 14] = [
+    "AtomicProjectionSelectionBackingContract",
+    "AtomicProjectionSelectionPostCompositeContract",
+    "RecordedRetainedAtomicProjectionSelectionTextAreaHost",
+    "RecordedRetainedAtomicProjectionSelectionTextAreaSubtree",
+    "RecordedRetainedAtomicProjectionTextAreaHost",
+    "RecordedRetainedAtomicProjectionTextAreaSubtree",
+    "RecordedRetainedFocusedAtomicProjectionTextAreaHost",
+    "RecordedRetainedFocusedAtomicProjectionTextAreaSubtree",
+    "RecordedRetainedInteractiveTextAreaSubtree",
     "RetainedAtomicProjectionChunkLiveRasterOracle",
+    "RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle",
+    "RetainedAtomicProjectionTextAreaLiveRasterOracle",
+    "SnapshotMerge",
+    "ValidatedRecordedAtomicProjectionSelectionTextAreaAuthority",
+];
+
+// Private declarations cannot escape `legacy_recording`, so they belong only
+// to its declaration-side closed set. This exclusion also avoids treating the
+// unrelated private `frame_recorder::SnapshotMerge` as a legacy-module export.
+const LEGACY_RECORDING_PRIVATE_TYPE_NAMES: [&str; 3] = [
+    "AtomicProjectionSelectionBackingContract",
+    "AtomicProjectionSelectionPostCompositeContract",
+    "SnapshotMerge",
+];
+
+const LEGACY_REEXPORTED_SELECTOR_NAMES: [&str; 6] = [
+    "exact_retained_property_scroll_text_area_paint_source",
+    "exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission",
+    "exact_retained_scroll_atomic_projection_text_area_subtree_admission",
+    "exact_retained_scroll_focused_atomic_projection_text_area_subtree_admission",
+    "exact_retained_scroll_interactive_text_area_subtree_admission",
+    "exact_retained_scroll_text_area_subtree_admission",
 ];
 
 /// Exact-shape `FrameArtifactAuthorityPolicy` variants. Matching one of these is
@@ -74,8 +108,14 @@ const FORBIDDEN_EXACT_POLICY_VARIANTS: [&str; 6] = [
 ];
 
 fn forbidden_symbol_counts(source: &str) -> (usize, usize, usize) {
-    let types = FORBIDDEN_LEGACY_TYPES
+    let legacy_exports = LEGACY_ADMISSION_TYPE_NAMES
         .iter()
+        .chain(
+            LEGACY_RECORDING_TYPE_NAMES
+                .iter()
+                .filter(|name| !LEGACY_RECORDING_PRIVATE_TYPE_NAMES.contains(name)),
+        )
+        .chain(LEGACY_REEXPORTED_SELECTOR_NAMES.iter())
         .map(|name| source.matches(name).count())
         .sum();
     let variants = FORBIDDEN_EXACT_POLICY_VARIANTS
@@ -84,7 +124,29 @@ fn forbidden_symbol_counts(source: &str) -> (usize, usize, usize) {
         .sum();
     let imports = source.matches("legacy_admission").count()
         + source.matches("legacy_recording").count();
-    (types, variants, imports)
+    (legacy_exports, variants, imports)
+}
+
+fn declared_text_area_types(source: &str) -> std::collections::BTreeSet<String> {
+    super::declared_type_names_at_any_depth(source)
+        .into_iter()
+        .filter(|name| name.contains("TextArea"))
+        .collect()
+}
+
+#[test]
+fn producer_declaration_scan_reaches_nested_modules() {
+    let nested = "mod nested {\n    pub(crate) struct NestedTextAreaToken;\n}";
+    assert_eq!(
+        declared_text_area_types(nested),
+        ["NestedTextAreaToken".to_string()].into_iter().collect(),
+        "producer and Element gates must scan declarations at every module depth",
+    );
+    assert_eq!(
+        super::declared_top_level_type_names(nested),
+        std::collections::BTreeSet::new(),
+        "deletion closed sets intentionally remain top-level-only",
+    );
 }
 
 /// The Stage A producer gate.
@@ -104,7 +166,7 @@ fn producers_are_component_independent() {
     ] {
         assert_eq!(
             declared_text_area_types(source),
-            Vec::<String>::new(),
+            std::collections::BTreeSet::new(),
             "{name} must not declare a component-specific paint type",
         );
         assert_eq!(
@@ -137,7 +199,13 @@ fn durable_authority_policy_carries_no_component_payload() {
         .collect();
     let offenders: Vec<&&str> = payload_identifiers
         .iter()
-        .filter(|token| token.contains("TextArea") || FORBIDDEN_LEGACY_TYPES.contains(token))
+        .filter(|token| {
+            token.contains("TextArea")
+                || LEGACY_ADMISSION_TYPE_NAMES.contains(token)
+                || (LEGACY_RECORDING_TYPE_NAMES.contains(token)
+                    && !LEGACY_RECORDING_PRIVATE_TYPE_NAMES.contains(token))
+                || LEGACY_REEXPORTED_SELECTOR_NAMES.contains(token)
+        })
         .collect();
     assert_eq!(
         offenders,
@@ -208,7 +276,7 @@ fn element_host_owns_no_text_area_admission() {
     let source = include_str!("../../base_component/element/mod.rs");
     assert_eq!(
         declared_text_area_types(source),
-        Vec::<String>::new(),
+        std::collections::BTreeSet::new(),
         "element/mod.rs must not declare a TextArea admission snapshot",
     );
     assert_eq!(
@@ -284,82 +352,103 @@ fn scroll_scene_planner_constructs_no_component_grammar() {
 /// survive, so the deletion cannot be partial.
 #[test]
 fn stage_c_deletion_inventory_keeps_legacy_modules_compile_time_linked() {
-    register_stage_c_deletion_type::<PaintScrollTextAreaSubtreeWitness>();
-    register_stage_c_deletion_type::<PaintScrollInteractiveTextAreaSubtreeWitness>();
-    register_stage_c_deletion_type::<PaintScrollAtomicProjectionTextAreaRecorderWitness>();
-    register_stage_c_deletion_type::<PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness>();
-    register_stage_c_deletion_type::<PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness>();
-    register_stage_c_deletion_type::<RetainedInteractiveTextAreaResidentRasterSeal>();
-    register_stage_c_deletion_type::<PaintLegacyTextAreaCoverageAuthority>();
-    register_stage_c_deletion_type::<LegacyTextAreaProjection>();
-    register_stage_c_deletion_type::<RetainedScrollTextAreaSubtreeAdmissionSnapshot>();
-    register_stage_c_deletion_type::<RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot>();
-    register_stage_c_deletion_type::<RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot>();
-    register_stage_c_deletion_type::<
-        RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
-    >();
-    register_stage_c_deletion_type::<
-        RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
-    >();
+    let linked_admission_types: std::collections::BTreeSet<String> = [
+        register_stage_c_deletion_type::<PaintScrollTextAreaSubtreeWitness>(),
+        register_stage_c_deletion_type::<PaintScrollInteractiveTextAreaSubtreeWitness>(),
+        register_stage_c_deletion_type::<PaintScrollAtomicProjectionTextAreaRecorderWitness>(),
+        register_stage_c_deletion_type::<
+            PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
+        >(),
+        register_stage_c_deletion_type::<
+            PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
+        >(),
+        register_stage_c_deletion_type::<PaintScrollDetachedProjectionSubtreeWitness>(),
+        register_stage_c_deletion_type::<RetainedInteractiveTextAreaResidentRasterSeal>(),
+        register_stage_c_deletion_type::<PaintLegacyTextAreaCoverageAuthority>(),
+        register_stage_c_deletion_type::<LegacyTextAreaProjection>(),
+        register_stage_c_deletion_type::<RetainedScrollTextAreaSubtreeAdmissionSnapshot>(),
+        register_stage_c_deletion_type::<
+            RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
+        >(),
+        register_stage_c_deletion_type::<
+            RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+        >(),
+        register_stage_c_deletion_type::<
+            RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
+        >(),
+        register_stage_c_deletion_type::<
+            RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+        >(),
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(
+        linked_admission_types,
+        super::module_visible_top_level_type_names(include_str!("../legacy_admission.rs")),
+        "every legacy_admission type visible outside its module must be compile-time linked",
+    );
     // The extraction seam that let those five leave `element/mod.rs`. It is
     // deleted with them, not re-privatised: nothing in V2 may consume an
     // exact `scroll host -> wrapper -> single child` shell.
+    let linked_recording_types: std::collections::BTreeSet<String> = [
+        register_stage_c_deletion_type::<RecordedRetainedAtomicProjectionTextAreaSubtree>(),
+        register_stage_c_deletion_type::<RecordedRetainedAtomicProjectionTextAreaHost>(),
+        register_stage_c_deletion_type::<RecordedRetainedAtomicProjectionSelectionTextAreaSubtree>(),
+        register_stage_c_deletion_type::<RecordedRetainedAtomicProjectionSelectionTextAreaHost>(),
+        register_stage_c_deletion_type::<RecordedRetainedFocusedAtomicProjectionTextAreaSubtree>(),
+        register_stage_c_deletion_type::<RecordedRetainedFocusedAtomicProjectionTextAreaHost>(),
+        register_stage_c_deletion_type::<RecordedRetainedInteractiveTextAreaSubtree>(),
+        register_stage_c_deletion_type::<ValidatedRecordedAtomicProjectionSelectionTextAreaAuthority>(),
+        register_stage_c_deletion_type::<RetainedAtomicProjectionChunkLiveRasterOracle>(),
+        register_stage_c_deletion_type::<RetainedAtomicProjectionTextAreaLiveRasterOracle>(),
+        register_stage_c_deletion_type::<RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle>(),
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(
+        linked_recording_types,
+        super::module_visible_top_level_type_names(include_str!("../legacy_recording.rs")),
+        "every legacy_recording type visible outside its module must be compile-time linked",
+    );
+
     register_stage_c_deletion_type::<
         crate::view::base_component::LegacyRetainedScrollSingleChildContentShell,
     >();
-
-    register_stage_c_deletion_type::<RecordedRetainedAtomicProjectionTextAreaSubtree>();
-    register_stage_c_deletion_type::<RecordedRetainedAtomicProjectionTextAreaHost>();
-    register_stage_c_deletion_type::<RecordedRetainedAtomicProjectionSelectionTextAreaSubtree>();
-    register_stage_c_deletion_type::<RecordedRetainedAtomicProjectionSelectionTextAreaHost>();
-    register_stage_c_deletion_type::<RecordedRetainedFocusedAtomicProjectionTextAreaSubtree>();
-    register_stage_c_deletion_type::<RecordedRetainedFocusedAtomicProjectionTextAreaHost>();
-    register_stage_c_deletion_type::<RecordedRetainedInteractiveTextAreaSubtree>();
-    register_stage_c_deletion_type::<ValidatedRecordedAtomicProjectionSelectionTextAreaAuthority>();
-    register_stage_c_deletion_type::<RetainedAtomicProjectionTextAreaLiveRasterOracle>();
-    register_stage_c_deletion_type::<RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle>();
 }
 
 #[test]
 fn stage_c_deletion_inventory_rejects_unregistered_legacy_types() {
     assert_eq!(
-        declared_text_area_types(include_str!("../legacy_admission.rs")),
-        [
-            "LegacyTextAreaProjection",
-            "PaintLegacyTextAreaCoverageAuthority",
-            "PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness",
-            "PaintScrollAtomicProjectionTextAreaRecorderWitness",
-            "PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness",
-            "PaintScrollInteractiveTextAreaSubtreeWitness",
-            "PaintScrollTextAreaSubtreeWitness",
-            "RetainedInteractiveTextAreaResidentRasterSeal",
-            "RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot",
-            "RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot",
-            "RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot",
-            "RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot",
-            "RetainedScrollTextAreaSubtreeAdmissionSnapshot",
-        ]
-        .map(str::to_string)
-        .to_vec(),
+        super::declared_top_level_type_names(include_str!("../legacy_admission.rs")),
+        LEGACY_ADMISSION_TYPE_NAMES
+            .map(str::to_string)
+            .into_iter()
+            .collect(),
         "legacy_admission.rs is a closed set awaiting Stage C deletion; move an existing exact proof in only to break a durable coupling, and never add a new capability",
     );
     assert_eq!(
-        declared_text_area_types(include_str!("../legacy_recording.rs")),
-        [
-            "RecordedRetainedAtomicProjectionSelectionTextAreaHost",
-            "RecordedRetainedAtomicProjectionSelectionTextAreaSubtree",
-            "RecordedRetainedAtomicProjectionTextAreaHost",
-            "RecordedRetainedAtomicProjectionTextAreaSubtree",
-            "RecordedRetainedFocusedAtomicProjectionTextAreaHost",
-            "RecordedRetainedFocusedAtomicProjectionTextAreaSubtree",
-            "RecordedRetainedInteractiveTextAreaSubtree",
-            "RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle",
-            "RetainedAtomicProjectionTextAreaLiveRasterOracle",
-            "ValidatedRecordedAtomicProjectionSelectionTextAreaAuthority",
-        ]
-        .map(str::to_string)
-        .to_vec(),
+        super::declared_top_level_type_names(include_str!("../legacy_recording.rs")),
+        LEGACY_RECORDING_TYPE_NAMES
+            .map(str::to_string)
+            .into_iter()
+            .collect(),
         "legacy_recording.rs is a closed set awaiting Stage C deletion; do not add items to it",
+    );
+
+    let selector_names: std::collections::BTreeSet<String> =
+        super::module_visible_top_level_function_names(include_str!("../legacy_admission.rs"))
+            .into_iter()
+            .filter(|name| name.starts_with("exact_retained_") && name.contains("text_area"))
+            .collect();
+    assert_eq!(
+        selector_names,
+        LEGACY_REEXPORTED_SELECTOR_NAMES
+            .map(str::to_string)
+            .into_iter()
+            .collect(),
+        "the exact TextArea selector export set is closed until Stage C deletion",
     );
 }
 

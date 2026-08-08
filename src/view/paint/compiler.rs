@@ -25,10 +25,9 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::artifact::{
-    DETACHED_LOCAL_CLIP_GENERATION,
-    TextSelectionPayloadIdentity,
+    DETACHED_LOCAL_CLIP_GENERATION, PaintChunkRasterIdentity, TextSelectionPayloadIdentity,
 };
-use super::legacy_admission::{PaintChunkRasterIdentity, RetainedInteractiveTextAreaResidentRasterSeal};
+use super::legacy_admission::RetainedInteractiveTextAreaResidentRasterSeal;
 use super::{
     EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactTarget, PaintChunkRole,
     PaintOp, PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope, PreparedImageIdentity,

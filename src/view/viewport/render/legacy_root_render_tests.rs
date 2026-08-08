@@ -1128,10 +1128,29 @@ fn prepared_focused_atomic_projection_scroll_text_area_scene_with_preedit(
     PropertyTrees,
     PaintGenerationTracker,
 ) {
+    prepared_atomic_projection_scroll_text_area_scene_with(
+        20.0,
+        "before projected after",
+        true,
+        None,
+        preedit,
+    )
+}
+
+fn prepared_atomic_projection_scroll_text_area_scene_with(
+    outer_scroll_y: f32,
+    content: &'static str,
+    focused: bool,
+    selection: Option<(usize, usize)>,
+    preedit: Option<(&str, Option<(usize, usize)>)>,
+) -> (
+    NodeArena,
+    Vec<NodeKey>,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
     let width = 108.0;
-    let outer_scroll_y = 20.0;
     let content_height = 300.0;
-    let content = "before projected after";
     let mut arena = new_test_arena();
     let mut text_area = TextArea::with_stable_id(0xd3_a1c3);
     text_area.set_text(content.to_string());
@@ -1140,9 +1159,13 @@ fn prepared_focused_atomic_projection_scroll_text_area_scene_with_preedit(
     text_area.on_render_handler = Some(crate::ui::on_text_area_render(|render| {
         render.range(7..16, |_text_area| crate::ui::RsxNode::text("projected"));
     }));
-    text_area.is_focused = true;
-    text_area.caret_visible = true;
+    text_area.is_focused = focused;
+    text_area.caret_visible = focused;
     text_area.cursor_char = if preedit.is_some() { 8 } else { 7 };
+    if let Some((anchor, focus)) = selection {
+        text_area.selection_anchor_char = Some(anchor);
+        text_area.selection_focus_char = Some(focus);
+    }
     if let Some((preedit, cursor)) = preedit {
         text_area.ime_preedit = preedit.to_string();
         text_area.ime_preedit_cursor = cursor;
@@ -2294,6 +2317,7 @@ mod same_owner_transform_effect_scroll_tests;
 mod scroll_forest_tests;
 mod scroll_production_dispatch_tests;
 mod scroll_topology_tests;
+mod stage_a_reuse_contract_tests;
 mod telemetry_tests;
 mod text_area_caret_reuse_tests;
 mod text_area_interaction_tests;

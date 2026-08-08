@@ -733,15 +733,6 @@ impl PaintLegacyTextAreaCoverageAuthority {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PaintChunkRasterIdentity {
-    pub(crate) id: PaintChunkId,
-    pub(crate) owner: NodeKey,
-    pub(crate) bounds_bits: [u32; 4],
-    pub(crate) payload_identity: PaintPayloadIdentity,
-}
-
-
 // ---- exact TextArea admission proofs and their minting selectors ----
 //
 // Moved out of `element/mod.rs` so the built-in `Element` host owns no

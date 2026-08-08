@@ -7643,6 +7643,19 @@ impl PreparedRetainedPropertyScrollForest<'_> {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(crate) fn scroll_content_actions_for_test(&self) -> Vec<RetainedSurfaceCompileAction> {
+        self.scroll_content_stamps_for_test()
+            .iter()
+            .map(|stamp| {
+                self.actions
+                    .get(&stamp.identity.resident_key())
+                    .copied()
+                    .expect("every prepared scroll-content stamp has one frozen action")
+            })
+            .collect()
+    }
+
     pub(crate) fn refresh_actions_from_committed_test_pool(&mut self) {
         self.actions = self
             .viewport
@@ -11673,6 +11686,11 @@ impl ValidatedPropertyScrollScene {
     #[cfg(test)]
     pub(crate) fn boundary_count(&self) -> usize {
         self.boundaries.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn receiver_roots_for_test(&self) -> Vec<NodeKey> {
+        self.seal.roots.iter().map(|root| root.root).collect()
     }
 
     #[cfg(test)]

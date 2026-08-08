@@ -78,9 +78,13 @@ fn assert_property_scroll_authority_and_typed_rejection(
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let accepted =
         select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
-    assert!(
-        matches!(accepted, AutoAuthorityDecision::PropertyScrollScene { .. }),
-        "{name}: Stage A must preserve PropertyScrollScene authority",
+    let AutoAuthorityDecision::PropertyScrollScene { scene, .. } = accepted else {
+        panic!("{name}: Stage A must preserve PropertyScrollScene authority")
+    };
+    assert_eq!(
+        scene.receiver_roots_for_test().as_slice(),
+        roots.as_slice(),
+        "{name}: Stage A must preserve the accepted authority owner",
     );
 
     let text_area = text_area_owner(&arena, roots[0]);

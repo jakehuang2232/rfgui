@@ -36,6 +36,94 @@ use crate::view::{ImageSource, SvgSource};
 
 use super::*;
 
+pub(super) fn declared_top_level_type_names(source: &str) -> std::collections::BTreeSet<String> {
+    source
+        .lines()
+        .filter(|line| {
+            line.as_bytes()
+                .first()
+                .is_some_and(|byte| !byte.is_ascii_whitespace())
+        })
+        .filter_map(|line| {
+            let mut tokens = line.split_whitespace();
+            let first = tokens.next()?;
+            let declaration = if first == "pub" || first.starts_with("pub(") {
+                tokens.next()?
+            } else {
+                first
+            };
+            if !matches!(declaration, "struct" | "enum" | "type") {
+                return None;
+            }
+            let name = tokens.next()?.trim_end_matches(|character: char| {
+                !character.is_ascii_alphanumeric() && character != '_'
+            });
+            Some(name.to_string())
+        })
+        .collect()
+}
+
+pub(super) fn declared_type_names_at_any_depth(source: &str) -> std::collections::BTreeSet<String> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let mut tokens = line.split_whitespace();
+            let first = tokens.next()?;
+            let declaration = if first == "pub" || first.starts_with("pub(") {
+                tokens.next()?
+            } else {
+                first
+            };
+            if !matches!(declaration, "struct" | "enum" | "type") {
+                return None;
+            }
+            let name = tokens.next()?.trim_end_matches(|character: char| {
+                !character.is_ascii_alphanumeric() && character != '_'
+            });
+            Some(name.to_string())
+        })
+        .collect()
+}
+
+pub(super) fn module_visible_top_level_type_names(
+    source: &str,
+) -> std::collections::BTreeSet<String> {
+    source
+        .lines()
+        .filter(|line| line.starts_with("pub ") || line.starts_with("pub("))
+        .filter_map(|line| {
+            let mut tokens = line.split_whitespace();
+            let _visibility = tokens.next()?;
+            let declaration = tokens.next()?;
+            if !matches!(declaration, "struct" | "enum" | "type") {
+                return None;
+            }
+            let name = tokens.next()?.trim_end_matches(|character: char| {
+                !character.is_ascii_alphanumeric() && character != '_'
+            });
+            Some(name.to_string())
+        })
+        .collect()
+}
+
+pub(super) fn module_visible_top_level_function_names(
+    source: &str,
+) -> std::collections::BTreeSet<String> {
+    source
+        .lines()
+        .filter(|line| line.starts_with("pub ") || line.starts_with("pub("))
+        .filter_map(|line| {
+            let mut tokens = line.split_whitespace();
+            let _visibility = tokens.next()?;
+            if tokens.next()? != "fn" {
+                return None;
+            }
+            Some(tokens.next()?.split_once('(')?.0.to_string())
+        })
+        .collect()
+}
+
 pub(super) fn exact_isolation_fixture(
     opacity: f32,
 ) -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
@@ -3949,7 +4037,7 @@ mod property_boundary_forest_multi_root_executor_tests;
 mod property_boundary_forest_plain_root_executor_tests;
 mod root_effect_tests;
 mod structural_parity_tests;
-mod stage_a_artifact_parity_tests;
+mod stage_a_artifact_contract_tests;
 mod stage_a_producer_independence_tests;
 mod text_area_projection_preedit_tests;
 mod text_area_projection_selection_tests;

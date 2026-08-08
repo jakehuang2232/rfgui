@@ -1562,6 +1562,19 @@ pub(crate) struct PaintChunk {
     pub(crate) payload_identity: PaintPayloadIdentity,
 }
 
+/// Artifact-space identity for one raster-bearing chunk.
+///
+/// This deliberately carries no retained-policy or component grammar. Durable
+/// consumers use it to freeze the generic chunk facts that must survive
+/// preparation without retaining the complete artifact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PaintChunkRasterIdentity {
+    pub(crate) id: PaintChunkId,
+    pub(crate) owner: NodeKey,
+    pub(crate) bounds_bits: [u32; 4],
+    pub(crate) payload_identity: PaintPayloadIdentity,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PaintChunkMetadata {
     pub(crate) id: PaintChunkId,

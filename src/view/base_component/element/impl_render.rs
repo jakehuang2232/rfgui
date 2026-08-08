@@ -227,6 +227,13 @@ impl Element {
     }
 
     #[cfg(test)]
+    pub(crate) fn settle_scrollbar_hidden_for_test(&mut self) {
+        self.scrollbar_interaction_pending = false;
+        self.last_scrollbar_interaction = None;
+        self.sampled_scrollbar_alpha = 0.0;
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_scroll_direction_for_retained_test(&mut self, direction: ScrollDirection) {
         self.scroll_direction = direction;
     }
