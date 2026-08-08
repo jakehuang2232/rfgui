@@ -1,8 +1,9 @@
 use super::*;
 
 use crate::style::{
-    Anchor, Layout, Length, Padding, ParsedValue, Position, PropertyId, Scale, ScrollDirection,
-    Style, Transform, TransformOrigin, Transition, TransitionProperty, Transitions,
+    Anchor, AnchorName, Layout, Length, Padding, ParsedValue, Position, PropertyId, Scale,
+    ScrollDirection, Style, Transform, TransformOrigin, Transition, TransitionProperty,
+    Transitions,
 };
 use crate::view::base_component::{Element, LayoutConstraints, LayoutPlacement};
 use crate::view::test_support::{
@@ -667,27 +668,120 @@ fn interleaved_projection_rejects_cyclic_visual_offset() {
 }
 
 #[test]
-fn named_anchor_projection_fails_closed_before_stage_c_fix() {
-    let (root, child, trees) = interleaved_projection_rejection_fixture();
+fn named_anchor_projection_uses_canonical_reference_edge() {
+    let mut root_element = Element::new_with_id(0xb300, 0.0, 0.0, 400.0, 300.0);
+    let mut root_style = Style::new();
+    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    root_element.apply_style(root_style);
+
+    let mut anchor_element = Element::new_with_id(0xb301, 0.0, 0.0, 40.0, 20.0);
+    let mut anchor_style = Style::new();
+    anchor_style.insert(
+        PropertyId::Position,
+        ParsedValue::Position(
+            Position::absolute()
+                .left(Length::px(120.0))
+                .top(Length::px(30.0)),
+        ),
+    );
+    anchor_element.apply_style(anchor_style);
+    anchor_element.set_anchor_name(Some(AnchorName::new("stage-c-anchor")));
+
+    let mut child_element = transformed_element(0xb302, 0.0, 0.0, 30.0, 20.0);
+    let mut child_style = Style::new();
+    child_style.insert(
+        PropertyId::Position,
+        ParsedValue::Position(
+            Position::absolute()
+                .anchor("stage-c-anchor")
+                .left(Length::px(7.0))
+                .top(Length::px(9.0)),
+        ),
+    );
+    child_element.apply_style(child_style);
+
+    let mut arena = new_test_arena();
+    let root = commit_element(&mut arena, Box::new(root_element));
+    let anchor = commit_child(&mut arena, root, Box::new(anchor_element));
+    let child = commit_child(&mut arena, root, Box::new(child_element));
+    measure_and_place(&mut arena, root, constraints(), placement());
+
+    let mut trees = PropertyTrees::default();
+    trees.sync(&arena, &[root]);
+    assert!(
+        trees.spatial_validation_errors.is_empty(),
+        "canonical named-anchor projection: {:?}",
+        trees.spatial_validation_errors,
+    );
     let state = trees.states[&child].paint;
+    let child_position = trees
+        .layout_position_snapshot_for(LayoutPositionNodeId(child))
+        .expect("anchored child position snapshot");
+    assert_eq!(
+        child_position.reference,
+        SpatialPositionReference::Anchor(anchor),
+    );
+    assert_eq!(
+        child_position
+            .translation_at_scroll_zero
+            .to_array()
+            .map(f32::to_bits),
+        [7.0_f32.to_bits(), 9.0_f32.to_bits()],
+    );
+    let cached = trees.transforms[&TransformNodeId(child)]
+        .derived_projection
+        .expect("canonical projection cache");
+    assert_eq!(
+        cached.owner_viewport_position.to_array().map(f32::to_bits),
+        [127.0_f32.to_bits(), 39.0_f32.to_bits()],
+    );
+
     let transforms = trees
         .transform_snapshot_chain_for(state.transform)
         .expect("transform snapshots");
-    let mut positions = trees
+    let positions = trees
         .layout_position_snapshot_chain_for(state.layout_position)
         .expect("layout-position snapshots");
-    let visuals = trees
+    let mut visuals = trees
         .visual_offset_snapshot_chain_for(state.visual_offset)
-        .expect("visual-offset snapshots");
-    positions[0].reference = SpatialPositionReference::Anchor(root);
-    let graph = SpatialProjectionGraph::try_new(&transforms, &positions, &visuals, &[])
-        .expect("anchor identity graph is complete");
+        .expect("child visual-offset snapshots");
+    let incomplete_graph = SpatialProjectionGraph::try_new(&transforms, &positions, &visuals, &[])
+        .expect("position graph remains structurally complete");
     assert_eq!(
-        graph
+        incomplete_graph
             .derive_owner_viewport_transform(TransformNodeId(child))
             .err(),
-        Some(SpatialProjectionError::UnsupportedAnchorReference(
-            LayoutPositionNodeId(child),
+        Some(SpatialProjectionError::MissingVisualOffset(
+            VisualOffsetNodeId(anchor),
         )),
+        "a named-anchor projection may not infer a missing anchor visual edge",
+    );
+    for snapshot in trees
+        .visual_offset_snapshot_chain_for(Some(VisualOffsetNodeId(anchor)))
+        .expect("anchor visual-offset snapshots")
+    {
+        if !visuals.iter().any(|existing| existing.id == snapshot.id) {
+            visuals.push(snapshot);
+        }
+    }
+    visuals
+        .iter_mut()
+        .find(|snapshot| snapshot.id == VisualOffsetNodeId(anchor))
+        .expect("anchor visual snapshot")
+        .offset = Vec2::new(5.0, -3.0);
+    visuals
+        .iter_mut()
+        .find(|snapshot| snapshot.id == VisualOffsetNodeId(root))
+        .expect("shared root visual snapshot")
+        .offset = Vec2::new(10.0, 0.0);
+    let graph = SpatialProjectionGraph::try_new(&transforms, &positions, &visuals, &[])
+        .expect("anchor snapshot graph");
+    let shifted = graph
+        .derive_owner_viewport_transform(TransformNodeId(child))
+        .expect("projection follows the canonical anchor visual edge");
+    assert_eq!(
+        shifted.owner_viewport_position.to_array().map(f32::to_bits),
+        [152.0_f32.to_bits(), 36.0_f32.to_bits()],
+        "C0b preserves placement compatibility: the shared root visual contributes through both the anchor and owner chains",
     );
 }

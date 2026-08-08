@@ -162,11 +162,14 @@ fn stage_c_stage_a_reuse_baseline_has_one_exact_test() {
     );
 }
 
-/// C0a freezes four separately named lower-layer rejection contracts. C0b may
-/// replace only the named-anchor row with a canonical-success test; removing
-/// or renaming any non-anchor row changes this name set.
+/// C0b replaces only the named-anchor rejection with canonical success. The
+/// other three C0a rejection names remain frozen; removing or renaming any of
+/// them changes this name set and exposes a wider spatial-baseline shift.
+/// This is a spatial proof only: it does not satisfy C1 classification,
+/// reconstruction, planner-order, or ArtifactCursor gates, nor later
+/// layerization, emission, reuse, or pixel-parity coverage.
 #[test]
-fn stage_c_named_anchor_pre_fix_baseline_remains_registered() {
+fn stage_c_named_anchor_success_baseline_is_isolated() {
     let tests = declared_test_function_names(include_str!(
         "../../compositor/property_tree/spatial_projection_tests.rs"
     ));
@@ -174,7 +177,7 @@ fn stage_c_named_anchor_pre_fix_baseline_remains_registered() {
         "interleaved_projection_rejects_missing_layout_position",
         "interleaved_projection_rejects_missing_scroll",
         "interleaved_projection_rejects_cyclic_visual_offset",
-        "named_anchor_projection_fails_closed_before_stage_c_fix",
+        "named_anchor_projection_uses_canonical_reference_edge",
     ]);
     assert!(rejection_contracts.is_subset(&tests));
 }

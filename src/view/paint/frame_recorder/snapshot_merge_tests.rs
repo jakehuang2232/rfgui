@@ -1,13 +1,17 @@
 use super::*;
 
-use crate::style::{Layout, ParsedValue, PropertyId, Scale, ScrollDirection, Style, Transform};
+use crate::style::{
+    AnchorName, Layout, Length, ParsedValue, Position, PropertyId, Scale, ScrollDirection, Style,
+    Transform,
+};
 use crate::view::base_component::{
     Element, LayoutConstraints, LayoutPlacement, Rect, ScrollAxisSnapshot,
     ScrollContentsClipWitness, ScrollbarInteractionWitness, ScrollbarOverlayWitness,
     ScrollbarPaintStateWitness, Size,
 };
 use crate::view::compositor::property_tree::{
-    LayoutPositionNodeId, ScrollNode, ScrollNodeId, TransformNodeId, VisualOffsetNodeId,
+    LayoutPositionNodeId, ScrollNode, ScrollNodeId, SpatialProjectionGraph, TransformNodeId,
+    VisualOffsetNodeId,
 };
 use crate::view::paint::{
     PaintChunkId, PaintChunkRole, PaintContentRevision, PaintNodePhase, PaintPayloadIdentity,
@@ -205,5 +209,146 @@ fn artifact_snapshots_complete_spatial_ancestor_graphs_without_arena_queries() {
             .map(|snapshot| snapshot.id)
             .collect::<Vec<_>>(),
         vec![ScrollNodeId(root)],
+    );
+}
+
+#[test]
+fn artifact_snapshot_closure_includes_named_anchor_visual_chain() {
+    let mut root_element = Element::new_with_id(0xb2f0, 0.0, 0.0, 400.0, 300.0);
+    let mut root_style = Style::new();
+    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    root_element.apply_style(root_style);
+
+    let mut anchor_element = Element::new_with_id(0xb2f1, 0.0, 0.0, 40.0, 20.0);
+    let mut anchor_style = Style::new();
+    anchor_style.insert(
+        PropertyId::Position,
+        ParsedValue::Position(
+            Position::absolute()
+                .left(Length::px(120.0))
+                .top(Length::px(30.0)),
+        ),
+    );
+    anchor_element.apply_style(anchor_style);
+    anchor_element.set_anchor_name(Some(AnchorName::new("artifact-anchor")));
+
+    let mut child_element = Element::new_with_id(0xb2f2, 0.0, 0.0, 30.0, 20.0);
+    let mut child_style = Style::new();
+    child_style.set_transform(Transform::new([Scale::uniform(1.1)]));
+    child_style.insert(
+        PropertyId::Position,
+        ParsedValue::Position(
+            Position::absolute()
+                .anchor("artifact-anchor")
+                .left(Length::px(7.0))
+                .top(Length::px(9.0)),
+        ),
+    );
+    child_element.apply_style(child_style);
+
+    let mut arena = new_test_arena();
+    let root = commit_element(&mut arena, Box::new(root_element));
+    let anchor = commit_child(&mut arena, root, Box::new(anchor_element));
+    let child = commit_child(&mut arena, root, Box::new(child_element));
+    measure_and_place(
+        &mut arena,
+        root,
+        LayoutConstraints {
+            max_width: 400.0,
+            max_height: 300.0,
+            viewport_width: 400.0,
+            viewport_height: 300.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+        },
+        LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 400.0,
+            available_height: 300.0,
+            viewport_width: 400.0,
+            viewport_height: 300.0,
+            percent_base_width: Some(400.0),
+            percent_base_height: Some(300.0),
+        },
+    );
+    let mut trees = PropertyTrees::default();
+    trees.sync(&arena, &[root]);
+    assert!(
+        trees.spatial_validation_errors.is_empty(),
+        "named-anchor spatial closure: {:?}",
+        trees.spatial_validation_errors,
+    );
+
+    let mut artifact = PaintArtifact {
+        chunks: vec![PaintChunk {
+            id: PaintChunkId {
+                owner: child,
+                scope: PaintPropertyScope::SelfPaint,
+                phase: PaintNodePhase::BeforeChildren,
+                slot: 0,
+                role: PaintChunkRole::SelfDecoration,
+            },
+            owner: child,
+            op_range: 0..0,
+            bounds: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            },
+            properties: trees.states[&child].paint,
+            content_revision: PaintContentRevision {
+                self_paint_revision: 1,
+                composite_revision: 1,
+                topology_revision: 1,
+            },
+            payload_identity: PaintPayloadIdentity::None,
+        }],
+        ..PaintArtifact::default()
+    };
+    populate_referenced_property_snapshots(&mut artifact, &trees)
+        .expect("named-anchor artifact snapshot closure");
+
+    assert_eq!(
+        artifact
+            .layout_position_nodes
+            .iter()
+            .map(|snapshot| snapshot.id)
+            .collect::<Vec<_>>(),
+        [
+            LayoutPositionNodeId(child),
+            LayoutPositionNodeId(anchor),
+            LayoutPositionNodeId(root),
+        ],
+    );
+    assert_eq!(
+        artifact
+            .visual_offset_nodes
+            .iter()
+            .map(|snapshot| snapshot.id)
+            .collect::<Vec<_>>(),
+        [
+            VisualOffsetNodeId(child),
+            VisualOffsetNodeId(root),
+            VisualOffsetNodeId(anchor),
+        ],
+        "chunk visual ancestry precedes the auxiliary anchor visual closure",
+    );
+    let graph = SpatialProjectionGraph::try_new(
+        &artifact.transform_nodes,
+        &artifact.layout_position_nodes,
+        &artifact.visual_offset_nodes,
+        &artifact.scroll_nodes,
+    )
+    .expect("artifact-owned named-anchor graph");
+    let derived = graph
+        .derive_owner_viewport_transform(TransformNodeId(child))
+        .expect("arena-independent named-anchor projection");
+    assert_eq!(
+        derived.owner_viewport_position.to_array().map(f32::to_bits),
+        [127.0_f32.to_bits(), 39.0_f32.to_bits()],
     );
 }

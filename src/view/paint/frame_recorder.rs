@@ -16,8 +16,8 @@ fn chunk_bounds_bits(chunk: &super::PaintChunk) -> [u32; 4] {
 
 use crate::view::compositor::property_tree::{
     ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot, LayoutPositionNodeId,
-    LayoutPositionNodeSnapshot, ScrollNodeId, ScrollNodeSnapshot, TransformNodeId,
-    TransformNodeSnapshot, VisualOffsetNodeId, VisualOffsetNodeSnapshot,
+    LayoutPositionNodeSnapshot, ScrollNodeId, ScrollNodeSnapshot, SpatialPositionReference,
+    TransformNodeId, TransformNodeSnapshot, VisualOffsetNodeId, VisualOffsetNodeSnapshot,
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
@@ -2323,6 +2323,7 @@ fn populate_referenced_property_snapshots(
     let mut scrolls = FxHashMap::<ScrollNodeId, ScrollNodeSnapshot>::default();
     for chunk in &artifact.chunks {
         let invalid = || vec![FrameArtifactFallbackReason::PropertyBoundary(chunk.owner)];
+        let mut anchor_visual_roots = Vec::new();
         for snapshot in property_trees
             .transform_snapshot_chain_for(chunk.properties.transform)
             .ok_or_else(invalid)?
@@ -2337,6 +2338,9 @@ fn populate_referenced_property_snapshots(
             .layout_position_snapshot_chain_for(chunk.properties.layout_position)
             .ok_or_else(invalid)?
         {
+            if let SpatialPositionReference::Anchor(anchor) = snapshot.reference {
+                anchor_visual_roots.push(VisualOffsetNodeId(anchor));
+            }
             if let Some(scroll) = snapshot.reference_scroll {
                 for scroll_snapshot in property_trees
                     .scroll_snapshot_chain_for(Some(scroll))
@@ -2363,6 +2367,18 @@ fn populate_referenced_property_snapshots(
                 SnapshotMerge::Inserted => artifact.visual_offset_nodes.push(snapshot),
                 SnapshotMerge::Identical => {}
                 SnapshotMerge::Conflict => return Err(invalid()),
+            }
+        }
+        for anchor in anchor_visual_roots {
+            for snapshot in property_trees
+                .visual_offset_snapshot_chain_for(Some(anchor))
+                .ok_or_else(invalid)?
+            {
+                match merge_snapshot(&mut visuals, snapshot.id, snapshot) {
+                    SnapshotMerge::Inserted => artifact.visual_offset_nodes.push(snapshot),
+                    SnapshotMerge::Identical => {}
+                    SnapshotMerge::Conflict => return Err(invalid()),
+                }
             }
         }
         for snapshot in property_trees

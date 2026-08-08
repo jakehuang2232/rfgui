@@ -38,6 +38,21 @@ pub(crate) struct VisualOffsetNodeId(pub(crate) NodeKey);
 pub(crate) enum SpatialPositionReference {
     Viewport,
     LayoutParent(Option<NodeKey>),
+    /// Named anchor's visual border-box origin. Projection resolves this from
+    /// the anchor's layout-position and visual-offset chains; its transform
+    /// and the flattened compatibility viewport position are not inputs.
+    ///
+    /// C0b deliberately preserves placement compatibility: the anchor and
+    /// anchored owner visual chains are evaluated independently, so a shared
+    /// visual ancestor contributes once through each chain.
+    /// `Element::register_anchor_snapshot` stores the anchor's
+    /// `layout_state.layout_position` in `PLACEMENT_RUNTIME.anchors` after
+    /// placement has added the inherited and local visual offsets, while the
+    /// anchored owner's `LayoutPlacement` carries its visual offsets
+    /// independently. Revalidate this compatibility contract if either call
+    /// site changes. Anchor transforms and anchor references carrying
+    /// `reference_scroll` remain unsupported; both require explicit capability
+    /// work before the full Stage C corpus.
     Anchor(NodeKey),
 }
 
@@ -328,7 +343,6 @@ pub(crate) enum SpatialProjectionError {
     CyclicVisualOffset(VisualOffsetNodeId),
     CyclicScroll(ScrollNodeId),
     InvalidLayoutReference(LayoutPositionNodeId),
-    UnsupportedAnchorReference(LayoutPositionNodeId),
 }
 
 /// Owner projection derived exclusively from the spatial snapshot graph.
@@ -543,11 +557,7 @@ impl<'a> SpatialProjectionGraph<'a> {
                 SpatialPositionReference::LayoutParent(Some(parent)) => {
                     LayoutPositionNodeId(parent)
                 }
-                SpatialPositionReference::Anchor(_) => {
-                    return Err(SpatialProjectionError::UnsupportedAnchorReference(
-                        snapshot.id,
-                    ));
-                }
+                SpatialPositionReference::Anchor(anchor) => LayoutPositionNodeId(anchor),
             };
         }
         chain.reverse();
@@ -585,10 +595,19 @@ impl<'a> SpatialProjectionGraph<'a> {
                     }
                     position += snapshot.translation_at_scroll_zero;
                 }
-                SpatialPositionReference::Anchor(_) => {
-                    return Err(SpatialProjectionError::UnsupportedAnchorReference(
-                        snapshot.id,
-                    ));
+                SpatialPositionReference::Anchor(anchor) => {
+                    let Some(reference) = index.checked_sub(1).and_then(|i| chain.get(i)) else {
+                        return Err(SpatialProjectionError::InvalidLayoutReference(snapshot.id));
+                    };
+                    if reference.owner != anchor || snapshot.reference_scroll.is_some() {
+                        return Err(SpatialProjectionError::InvalidLayoutReference(snapshot.id));
+                    }
+                    // Placement freezes this edge relative to the anchor's
+                    // visual border-box origin. Rebuild that origin from the
+                    // anchor's own position and visual snapshot chains; never
+                    // read the flattened compatibility viewport position.
+                    position += self.cumulative_visual_offset(anchor)?;
+                    position += snapshot.translation_at_scroll_zero;
                 }
             }
         }
@@ -1177,18 +1196,28 @@ impl PropertyTrees {
         &self,
         leaf: Option<VisualOffsetNodeId>,
     ) -> Option<Vec<VisualOffsetNodeSnapshot>> {
-        let mut snapshots = Vec::new();
+        self.visual_offset_id_chain_for(leaf)?
+            .into_iter()
+            .map(|id| self.visual_offset_snapshot_for(id))
+            .collect()
+    }
+
+    fn visual_offset_id_chain_for(
+        &self,
+        leaf: Option<VisualOffsetNodeId>,
+    ) -> Option<Vec<VisualOffsetNodeId>> {
+        let mut ids = Vec::new();
         let mut seen = FxHashSet::default();
         let mut cursor = leaf;
         while let Some(id) = cursor {
             if !seen.insert(id) {
                 return None;
             }
-            let snapshot = self.visual_offset_snapshot_for(id)?;
-            cursor = snapshot.parent;
-            snapshots.push(snapshot);
+            let node = self.visual_offsets.get(&id)?;
+            cursor = node.parent;
+            ids.push(id);
         }
-        Some(snapshots)
+        Some(ids)
     }
 
     pub(super) fn scroll_generation_for_owner(&self, owner: NodeKey) -> Option<u64> {
@@ -1376,6 +1405,15 @@ impl PropertyTrees {
                     }
                     required_scrolls.extend(scroll_chain);
                 }
+                if let SpatialPositionReference::Anchor(anchor) = node.reference {
+                    let Some(anchor_visual_chain) =
+                        self.visual_offset_id_chain_for(Some(VisualOffsetNodeId(anchor)))
+                    else {
+                        position_chain_is_complete = false;
+                        break;
+                    };
+                    required_visuals.extend(anchor_visual_chain);
+                }
                 position_cursor = match node.reference {
                     SpatialPositionReference::Viewport
                     | SpatialPositionReference::LayoutParent(None) => None,
@@ -1389,23 +1427,9 @@ impl PropertyTrees {
                 required_positions.extend(position_chain);
             }
 
-            let mut visual_chain = Vec::new();
-            let mut visual_seen = FxHashSet::default();
-            let mut visual_cursor = Some(VisualOffsetNodeId(transform.owner));
-            let mut visual_chain_is_complete = true;
-            while let Some(id) = visual_cursor {
-                if !visual_seen.insert(id) {
-                    visual_chain_is_complete = false;
-                    break;
-                }
-                let Some(node) = self.visual_offsets.get(&id) else {
-                    visual_chain_is_complete = false;
-                    break;
-                };
-                visual_chain.push(id);
-                visual_cursor = node.parent;
-            }
-            if visual_chain_is_complete {
+            if let Some(visual_chain) =
+                self.visual_offset_id_chain_for(Some(VisualOffsetNodeId(transform.owner)))
+            {
                 required_visuals.extend(visual_chain);
             }
         }
