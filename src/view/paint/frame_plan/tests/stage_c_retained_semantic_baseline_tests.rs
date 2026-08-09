@@ -1,4 +1,7 @@
 use super::*;
+use crate::view::paint::{
+    ArtifactTransitionRequest, ClassifiedTransitionEvent, classify_artifact_transition_sequence,
+};
 
 const ROOT: u64 = 0xb4_0001;
 const INNER_A: u64 = 0xb4_0002;
@@ -193,6 +196,72 @@ fn freeze_transition_events(
             ),
         })
         .collect()
+}
+
+fn freeze_classified_transition_event(
+    arena: &NodeArena,
+    planner_sequence_ordinal: u32,
+    event: ClassifiedTransitionEvent,
+) -> FrozenTransitionEvent {
+    let classified = event.transition();
+    let from = PropertyTreeState {
+        transform: classified.transform.from,
+        clip: classified.clip.from,
+        effect: classified.effect.from,
+        scroll: classified.scroll.from,
+        layout_position: classified.layout_position.from,
+        visual_offset: classified.visual_offset.from,
+    };
+    let to = PropertyTreeState {
+        transform: classified.transform.to,
+        clip: classified.clip.to,
+        effect: classified.effect.to,
+        scroll: classified.scroll.to,
+        layout_position: classified.layout_position.to,
+        visual_offset: classified.visual_offset.to,
+    };
+    FrozenTransitionEvent {
+        scene_root_ordinal: event.scene_root_ordinal(),
+        planner_sequence_ordinal,
+        owner: arena
+            .get(event.target())
+            .expect("classified target must remain reachable")
+            .element
+            .stable_id(),
+        transition: transition(freeze_state(arena, from), freeze_state(arena, to)),
+    }
+}
+
+fn owner_is_within(arena: &NodeArena, owner: NodeKey, target: NodeKey) -> bool {
+    let mut cursor = Some(owner);
+    while let Some(owner) = cursor {
+        if owner == target {
+            return true;
+        }
+        cursor = arena.parent_of(owner);
+    }
+    false
+}
+
+fn assert_classified_cursors_match_artifact_traversal(
+    arena: &NodeArena,
+    artifact: &PaintArtifact,
+    dag: &PropertyBoundaryDag,
+    events: &[ClassifiedTransitionEvent],
+) {
+    assert_eq!(events.len(), dag.nodes.len());
+    for (node, event) in dag.nodes.iter().zip(events) {
+        let expected_chunk = artifact
+            .chunks
+            .iter()
+            .position(|chunk| owner_is_within(arena, chunk.owner, node.owner))
+            .expect("every classified boundary owns an artifact chunk subtree");
+        assert_eq!(event.cursor().chunk_index(), expected_chunk);
+        assert_eq!(
+            event.cursor().op_index(),
+            artifact.chunks[expected_chunk].op_range.start,
+        );
+    }
 }
 
 fn production_fixture_context() -> TransformSurfacePlanContext {
@@ -593,8 +662,44 @@ fn stage_c_nine_scroll_interleave_semantics_are_frozen_before_v2() {
             Some(expected_grammar),
         );
         assert_oracle_stable_ids_are_injective(&arena, &scaffold.boundary_dag);
-        let actual_events = freeze_transition_events(&arena, &scaffold.boundary_dag);
-        assert_eq!(actual_events, expected_events);
+        let planner_events = freeze_transition_events(&arena, &scaffold.boundary_dag);
+        assert_eq!(planner_events, expected_events);
+
+        let artifact =
+            stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
+                .expect("C1 structural artifact must close over the synced property trees");
+        let requests = scaffold
+            .boundary_dag
+            .nodes
+            .iter()
+            .map(|node| {
+                ArtifactTransitionRequest::new(
+                    node.owner,
+                    node.consumption.expected_before,
+                    node.consumption.projected_after,
+                )
+            })
+            .collect::<Vec<_>>();
+        let classified = classify_artifact_transition_sequence(&artifact, &requests)
+            .expect("C1 artifact transition classification");
+        assert_classified_cursors_match_artifact_traversal(
+            &arena,
+            &artifact,
+            &scaffold.boundary_dag,
+            &classified,
+        );
+        let actual_events = classified
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, event)| {
+                freeze_classified_transition_event(
+                    &arena,
+                    u32::try_from(ordinal).expect("classified sequence ordinal"),
+                    event,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual_events, planner_events);
         match shape {
             ScrollInterleaveFixtureShape::TransformScroll => {
                 transform_scroll_events = Some(actual_events)

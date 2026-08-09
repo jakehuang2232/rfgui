@@ -17,7 +17,8 @@ use crate::view::frame_graph::{FrameGraph, FramePassTestPayload};
 use crate::view::node_arena::Node;
 use crate::view::paint::tests::exact_isolation_fixture;
 use crate::view::paint::{
-    PaintBakedScrollHostWitness, PaintNodePhase, PaintPropertyScope, PaintScrollContentWitness,
+    PaintBakedScrollHostWitness, PaintChunk, PaintChunkId, PaintChunkRole, PaintContentRevision,
+    PaintNodePhase, PaintPayloadIdentity, PaintPropertyScope, PaintScrollContentWitness,
     PlannedBoundary, PlannedBoundaryKind, RETAINED_CHILD_MASK_SLOT, RetainedSurfaceCompileAction,
 };
 use crate::view::test_support::{commit_child, commit_element, measure_and_place, new_test_arena};
@@ -636,6 +637,115 @@ fn property_scroll_interleave_fixture(
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &[root], &properties);
     (arena, root, properties, generations)
+}
+
+/// Independently authored C1 input artifact for topology-only fixtures.
+///
+/// One structural zero-op chunk is emitted for every reachable owner in arena
+/// DFS order, including transparent property owners that the paint recorder
+/// intentionally omits. Property states and every snapshot payload still come
+/// from the real synced `PropertyTrees`; no planner DAG fact is an input.
+fn stage_c_classification_artifact_fixture(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    properties: &PropertyTrees,
+    generations: &PaintGenerationTracker,
+) -> Result<PaintArtifact, Vec<FrameArtifactFallbackReason>> {
+    let mut artifact = PaintArtifact::default();
+    let mut seen = FxHashSet::default();
+    let mut stack = roots
+        .iter()
+        .rev()
+        .copied()
+        .map(|root| (root, None))
+        .collect::<Vec<_>>();
+    while let Some((owner, parent)) = stack.pop() {
+        if !seen.insert(owner) {
+            return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(owner)]);
+        }
+        let node = arena
+            .get(owner)
+            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)])?;
+        let state = properties
+            .node_state_for(owner)
+            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)])?;
+        let generation = generations
+            .local_generations_for(owner)
+            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)])?;
+        artifact.owner_nodes.push(PaintOwnerSnapshot { owner, parent });
+        artifact.chunks.push(PaintChunk {
+            id: PaintChunkId {
+                owner,
+                scope: PaintPropertyScope::SelfPaint,
+                phase: PaintNodePhase::BeforeChildren,
+                slot: 0,
+                role: PaintChunkRole::SelfDecoration,
+            },
+            owner,
+            op_range: 0..0,
+            bounds: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+            properties: state.paint,
+            content_revision: PaintContentRevision {
+                self_paint_revision: generation.self_paint_revision,
+                composite_revision: generation.composite_revision,
+                topology_revision: generation.topology_revision,
+            },
+            payload_identity: PaintPayloadIdentity::None,
+        });
+        stack.extend(
+            node.element
+                .children()
+                .iter()
+                .rev()
+                .copied()
+                .map(|child| (child, Some(owner))),
+        );
+    }
+
+    let mut clips = FxHashMap::default();
+    let mut effects = FxHashMap::default();
+    for chunk in &artifact.chunks {
+        for snapshot in properties
+            .clip_snapshot_for(chunk.properties.clip)
+            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(chunk.owner)])?
+        {
+            if let Some(existing) = clips.get(&snapshot.id) {
+                if *existing != snapshot {
+                    return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+                        chunk.owner,
+                    )]);
+                }
+            } else {
+                clips.insert(snapshot.id, snapshot);
+                artifact.clip_nodes.push(snapshot);
+            }
+        }
+        for snapshot in properties
+            .effect_snapshot_for(chunk.properties.effect)
+            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(chunk.owner)])?
+        {
+            if let Some(existing) = effects.get(&snapshot.id) {
+                if *existing != snapshot {
+                    return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+                        chunk.owner,
+                    )]);
+                }
+            } else {
+                effects.insert(snapshot.id, snapshot);
+                artifact.effect_nodes.push(snapshot);
+            }
+        }
+    }
+    super::super::frame_recorder::populate_referenced_property_snapshots_for_test(
+        &mut artifact,
+        properties,
+    )?;
+    Ok(artifact)
 }
 
 /// Two scroll hosts on one ancestor path, plus the inner host's key.

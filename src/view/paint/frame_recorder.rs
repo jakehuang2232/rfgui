@@ -2395,6 +2395,14 @@ fn populate_referenced_property_snapshots(
     Ok(())
 }
 
+#[cfg(test)]
+pub(crate) fn populate_referenced_property_snapshots_for_test(
+    artifact: &mut PaintArtifact,
+    property_trees: &PropertyTrees,
+) -> Result<(), Vec<FrameArtifactFallbackReason>> {
+    populate_referenced_property_snapshots(artifact, property_trees)
+}
+
 fn materialize_transform_surface_steps(
     manifest: super::PaintCoverageManifest,
 ) -> Result<Vec<RecordedTransformSurfaceStep>, Vec<FrameArtifactFallbackReason>> {

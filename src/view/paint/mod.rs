@@ -73,8 +73,9 @@ pub(crate) use legacy_admission::{
 pub(crate) use recording_context::PaintRecordingContext;
 #[allow(unused_imports)]
 pub(crate) use property_transition::{
-    ArtifactCursor, ArtifactOwnerGraph, ArtifactSceneTarget, ClassifiedTransitionEvent,
-    PropertySnapshotGraph, TransitionError, artifact_cursors, classify_property_transition,
+    ArtifactCursor, ArtifactOwnerGraph, ArtifactSceneTarget, ArtifactTransitionRequest,
+    ClassifiedTransitionEvent, PropertySnapshotGraph, TransitionError, artifact_cursors,
+    classify_artifact_transition_sequence, classify_property_transition,
 };
 pub(crate) use composite_edge::{
     PaintCompositeEdge, emit_paint_composite_edges, intersect_logical_scissors,

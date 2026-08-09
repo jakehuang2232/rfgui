@@ -390,6 +390,18 @@ fn spatial_cycle_owner_is_deterministic_in_artifact_store_order() {
     );
 
     let (mut artifact, _, _, _, _) = complete_artifact();
+    artifact.transform_nodes.reverse();
+    let root = artifact.transform_nodes[0].id;
+    artifact.transform_nodes[0].parent = Some(artifact.transform_nodes[1].id);
+    assert_eq!(
+        PropertySnapshotGraph::try_from_artifact(&artifact).err(),
+        Some(TransitionError::SpatialSnapshot(
+            SpatialProjectionError::CyclicTransform(root),
+        )),
+        "reversing store order reverses the exact cycle owner",
+    );
+
+    let (mut artifact, _, _, _, _) = complete_artifact();
     let child = artifact.layout_position_nodes[0].id;
     artifact.layout_position_nodes[1].reference =
         SpatialPositionReference::LayoutParent(Some(child.0));
@@ -442,6 +454,38 @@ fn scene_root_ordinal_is_derived_from_owner_store_order() {
 }
 
 #[test]
+fn ordered_sequence_derives_root_and_first_subtree_cursor_from_artifact() {
+    let (artifact, from, to, child, _) = complete_artifact();
+    let root = artifact.owner_nodes[0].owner;
+    let requests = [
+        ArtifactTransitionRequest::new(root, to, PropertyTreeState::default()),
+        ArtifactTransitionRequest::new(child, from, to),
+    ];
+    let events = classify_artifact_transition_sequence(&artifact, &requests)
+        .expect("ordered artifact transition sequence");
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].target(), root);
+    assert_eq!(events[0].scene_root_ordinal(), 0);
+    assert_eq!(events[0].cursor().chunk_index(), 0);
+    assert_eq!(events[1].target(), child);
+    assert_eq!(events[1].scene_root_ordinal(), 0);
+    assert_eq!(events[1].cursor().chunk_index(), 1);
+    assert_eq!(
+        events[1].transition(),
+        PropertyStateTransition::between(from, to)
+    );
+
+    let reversed = [requests[1], requests[0]];
+    assert_eq!(
+        classify_artifact_transition_sequence(&artifact, &reversed),
+        Err(TransitionError::OutOfOrderArtifactCursor {
+            previous_chunk: 1,
+            current_chunk: 0,
+        }),
+    );
+}
+
+#[test]
 fn transition_error_taxonomy_is_exhaustive() {
     fn spatial_reason(error: SpatialProjectionError) -> &'static str {
         match error {
@@ -490,6 +534,7 @@ fn transition_error_taxonomy_is_exhaustive() {
             TransitionError::SceneRootOrdinalOverflow(_) => "scene-root-ordinal-overflow",
             TransitionError::InvalidArtifactCursor(_) => "invalid-artifact-cursor",
             TransitionError::NonTerminalArtifactCursor(_) => "non-terminal-artifact-cursor",
+            TransitionError::OutOfOrderArtifactCursor { .. } => "out-of-order-artifact-cursor",
         }
     }
 

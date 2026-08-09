@@ -47,6 +47,10 @@ pub(crate) enum TransitionError {
     SceneRootOrdinalOverflow(NodeKey),
     InvalidArtifactCursor(usize),
     NonTerminalArtifactCursor(usize),
+    OutOfOrderArtifactCursor {
+        previous_chunk: usize,
+        current_chunk: usize,
+    },
 }
 
 /// Validated, arena-independent property snapshot graph backing C1.
@@ -326,6 +330,7 @@ pub(crate) fn artifact_cursors(
 pub(crate) struct ArtifactOwnerGraph {
     parents: FxHashMap<NodeKey, Option<NodeKey>>,
     scene_root_ordinals: FxHashMap<NodeKey, u32>,
+    first_chunk_indices: FxHashMap<NodeKey, usize>,
 }
 
 impl ArtifactOwnerGraph {
@@ -357,20 +362,22 @@ impl ArtifactOwnerGraph {
 
         let mut scene_root_ordinals = FxHashMap::default();
         let mut referenced = FxHashSet::default();
-        for chunk in &artifact.chunks {
+        let mut first_chunk_indices = FxHashMap::default();
+        for (chunk_index, chunk) in artifact.chunks.iter().enumerate() {
             let mut cursor = chunk.owner;
             loop {
+                first_chunk_indices.entry(cursor).or_insert(chunk_index);
+                if !referenced.insert(cursor) {
+                    break;
+                }
+                // Parent closure and acyclicity were proven above. Only the
+                // first chunk-owner lookup can be absent; every later lookup
+                // is an already-validated parent edge.
                 let parent = parents
                     .get(&cursor)
                     .copied()
                     .ok_or(TransitionError::UnknownTarget(cursor))?;
-                referenced.insert(cursor);
                 let Some(parent) = parent else {
-                    let ordinal = root_ordinals
-                        .get(&cursor)
-                        .copied()
-                        .ok_or(TransitionError::UnknownTarget(cursor))?;
-                    scene_root_ordinals.insert(chunk.owner, ordinal);
                     break;
                 };
                 cursor = parent;
@@ -385,30 +392,37 @@ impl ArtifactOwnerGraph {
         }
 
         for snapshot in &artifact.owner_nodes {
-            if scene_root_ordinals.contains_key(&snapshot.owner) {
-                continue;
-            }
+            let mut path = Vec::new();
             let mut cursor = snapshot.owner;
-            loop {
+            let ordinal = loop {
+                if let Some(ordinal) = scene_root_ordinals.get(&cursor).copied() {
+                    break ordinal;
+                }
+                path.push(cursor);
+                // These two branches are unreachable after parent-forest
+                // validation and root collection. They remain typed checks
+                // at the artifact boundary instead of becoming assumptions.
                 let parent = parents
                     .get(&cursor)
                     .copied()
                     .ok_or(TransitionError::UnknownTarget(cursor))?;
                 let Some(parent) = parent else {
-                    let ordinal = root_ordinals
+                    break root_ordinals
                         .get(&cursor)
                         .copied()
                         .ok_or(TransitionError::UnknownTarget(cursor))?;
-                    scene_root_ordinals.insert(snapshot.owner, ordinal);
-                    break;
                 };
                 cursor = parent;
+            };
+            for owner in path {
+                scene_root_ordinals.insert(owner, ordinal);
             }
         }
 
         Ok(Self {
             parents,
             scene_root_ordinals,
+            first_chunk_indices,
         })
     }
 
@@ -435,6 +449,24 @@ impl ArtifactOwnerGraph {
             .copied()
             .ok_or(TransitionError::UnknownTarget(owner))
     }
+
+    fn cursor_for_target(
+        &self,
+        target: NodeKey,
+        cursors: &[ArtifactCursor],
+    ) -> Result<ArtifactCursor, TransitionError> {
+        let chunk_index = self
+            .first_chunk_indices
+            .get(&target)
+            .copied()
+            // Unreachable after the closed owner-store check: every retained
+            // owner is a chunk owner or one of its ancestors.
+            .ok_or(TransitionError::UnknownTarget(target))?;
+        cursors
+            .get(chunk_index)
+            .copied()
+            .ok_or(TransitionError::InvalidArtifactCursor(chunk_index))
+    }
 }
 
 /// Capability proving that `target` belongs to one validated artifact scene
@@ -443,6 +475,22 @@ impl ArtifactOwnerGraph {
 pub(crate) struct ArtifactSceneTarget {
     scene_root_ordinal: u32,
     target: NodeKey,
+}
+
+/// One ordered, grammar-free request to classify a property-state edge for a
+/// generic artifact owner. Root ordinal and cursor are deliberately absent;
+/// both are derived from the validated artifact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ArtifactTransitionRequest {
+    target: NodeKey,
+    from: PropertyTreeState,
+    to: PropertyTreeState,
+}
+
+impl ArtifactTransitionRequest {
+    pub(crate) fn new(target: NodeKey, from: PropertyTreeState, to: PropertyTreeState) -> Self {
+        Self { target, from, to }
+    }
 }
 
 /// Paint-sequenced envelope around the compositor-owned property delta.
@@ -488,6 +536,42 @@ impl ClassifiedTransitionEvent {
     pub(crate) fn transition(self) -> PropertyStateTransition {
         self.transition
     }
+}
+
+/// Classifies an ordered request stream against one complete artifact.
+///
+/// Request order is preserved exactly. Each event's scene root and cursor are
+/// independently derived from the artifact owner forest and chunk traversal;
+/// no planner ordinal or receiver grammar enters the production result.
+pub(crate) fn classify_artifact_transition_sequence(
+    artifact: &PaintArtifact,
+    requests: &[ArtifactTransitionRequest],
+) -> Result<Vec<ClassifiedTransitionEvent>, TransitionError> {
+    let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
+    let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
+    let cursors = artifact_cursors(artifact)?;
+    let mut events = Vec::with_capacity(requests.len());
+    let mut previous = None;
+    for request in requests {
+        let cursor = owners.cursor_for_target(request.target, &cursors)?;
+        if let Some(previous) = previous
+            && cursor.chunk_index < previous
+        {
+            return Err(TransitionError::OutOfOrderArtifactCursor {
+                previous_chunk: previous,
+                current_chunk: cursor.chunk_index,
+            });
+        }
+        events.push(ClassifiedTransitionEvent::new(
+            owners.scene_target(request.target)?,
+            cursor,
+            request.from,
+            request.to,
+            &snapshots,
+        )?);
+        previous = Some(cursor.chunk_index);
+    }
+    Ok(events)
 }
 
 #[cfg(test)]
