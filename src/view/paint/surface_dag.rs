@@ -1,17 +1,19 @@
-#![allow(dead_code)] // C2a type seam; C2b becomes the first DAG constructor.
+#![allow(dead_code)] // The C2 graph remains graph-inert until the C3 consumer lands.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::view::{
     compositor::property_tree::{
-        ClipNodeId, ClipNodeRole, EffectNodeId, ScrollNodeId, TransformNodeId,
+        ClipNodeId, ClipNodeRole, EffectNodeId, PropertyStateTransition, PropertyTreeState,
+        ScrollNodeId, TransformNodeId,
     },
     node_arena::NodeKey,
 };
 
 use super::{
-    ArtifactCursor, ArtifactOwnerGraph, ArtifactSceneTarget, PaintArtifact, PropertySnapshotGraph,
-    TransitionError, artifact_cursors,
+    ArtifactCursor, ArtifactOwnerGraph, ArtifactSceneTarget, ClassifiedTransitionEvent,
+    PaintArtifact, PropertySnapshotGraph, TransitionError, artifact_cursors,
+    classify_property_transition,
 };
 
 /// Explicit C2 layerization input. The first policy preserves every authored
@@ -40,6 +42,12 @@ pub(crate) enum SurfaceDagNodeKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SurfaceDagNodeId(u32);
 
+impl SurfaceDagNodeId {
+    pub(crate) fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// Scene-root identity derived from one validated artifact owner graph.
 /// The ordinal cannot be constructed by a consumer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -62,10 +70,20 @@ pub(crate) enum SurfaceDagTargetId {
     Surface(SurfaceDagNodeId),
 }
 
+impl SurfaceDagTargetId {
+    pub(crate) fn scene_root_ordinal(self) -> Option<u32> {
+        match self {
+            Self::SceneRoot(root) => Some(root.0),
+            Self::Surface(_) => None,
+        }
+    }
+}
+
 /// The clip-space obligation carried by a detached scroll-content surface.
 /// `outer_clip` is the contents clip's immediate clip-forest parent;
-/// `local_clip` is rebased into the detached content's coordinate space in
-/// C2b. Receiver-space equivalence is not implied by this C2a type.
+/// `local_clip` is the identity that a later C2 batch must rebase into the
+/// detached content's coordinate space. Receiver-space equivalence is not
+/// implied by this type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SurfaceDagClipRebase {
     outer_clip: Option<ClipNodeId>,
@@ -82,8 +100,8 @@ impl SurfaceDagClipRebase {
     }
 }
 
-/// Final C2 node shape. C2a freezes the type seam; C2b supplies receiver
-/// reconstruction and the node sequence.
+/// Durable C2 node shape with its independently classified consumption edge
+/// and artifact-derived compositing receiver.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SurfaceDagNode {
     id: SurfaceDagNodeId,
@@ -91,7 +109,68 @@ pub(crate) struct SurfaceDagNode {
     cursor: ArtifactCursor,
     kind: SurfaceDagNodeKind,
     receiver: SurfaceDagTargetId,
+    transition: PropertyStateTransition,
     clip_rebase: Option<SurfaceDagClipRebase>,
+}
+
+impl SurfaceDagNode {
+    pub(crate) fn id(&self) -> SurfaceDagNodeId {
+        self.id
+    }
+
+    pub(crate) fn target(&self) -> NodeKey {
+        self.target
+    }
+
+    pub(crate) fn cursor(&self) -> ArtifactCursor {
+        self.cursor
+    }
+
+    pub(crate) fn kind(&self) -> SurfaceDagNodeKind {
+        self.kind
+    }
+
+    pub(crate) fn receiver(&self) -> SurfaceDagTargetId {
+        self.receiver
+    }
+
+    pub(crate) fn transition(&self) -> PropertyStateTransition {
+        self.transition
+    }
+
+    pub(crate) fn clip_rebase(&self) -> Option<SurfaceDagClipRebase> {
+        self.clip_rebase
+    }
+}
+
+/// Arena-independent ordered surface graph reconstructed from an artifact and
+/// its separately classified consumption stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceDag {
+    nodes: Vec<SurfaceDagNode>,
+}
+
+impl SurfaceDag {
+    pub(crate) fn nodes(&self) -> &[SurfaceDagNode] {
+        &self.nodes
+    }
+
+    /// Resolves a generic receiver to its surface node. This is why collapsing
+    /// legacy `Surface(id)` and `ScrollContent(id)` receiver variants loses no
+    /// information: the referenced node's own `kind` retains that distinction.
+    pub(crate) fn receiver_node(
+        &self,
+        receiver: SurfaceDagTargetId,
+    ) -> Result<Option<&SurfaceDagNode>, SurfaceDagError> {
+        let SurfaceDagTargetId::Surface(id) = receiver else {
+            return Ok(None);
+        };
+        self.nodes
+            .get(id.index())
+            .filter(|node| node.id == id)
+            .map(Some)
+            .ok_or(SurfaceDagError::UnknownSurfaceReceiver(id))
+    }
 }
 
 /// One artifact-derived surface boundary before receiver reconstruction.
@@ -127,6 +206,10 @@ impl ArtifactSurfaceCandidate {
     pub(crate) fn scene_root_receiver(self) -> SurfaceDagTargetId {
         SurfaceDagTargetId::SceneRoot(SurfaceDagSceneRootId::from_scene_target(self.scene_target))
     }
+
+    pub(crate) fn scene_root_ordinal(self) -> u32 {
+        self.scene_target.scene_root_ordinal()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,6 +219,35 @@ pub(crate) enum SurfaceDagError {
         scroll: ScrollNodeId,
         expected: ClipNodeId,
     },
+    TransitionCount {
+        candidates: usize,
+        events: usize,
+    },
+    TransitionSceneRoot {
+        index: usize,
+        expected: u32,
+        actual: u32,
+    },
+    TransitionTarget {
+        index: usize,
+        expected: NodeKey,
+        actual: NodeKey,
+    },
+    TransitionCursor {
+        index: usize,
+        expected: ArtifactCursor,
+        actual: ArtifactCursor,
+    },
+    TransitionKind {
+        index: usize,
+        expected: SurfaceDagNodeKind,
+    },
+    ReceiverOwnerOutOfOrder {
+        owner: NodeKey,
+        receiver_owner: NodeKey,
+    },
+    SurfaceNodeOrdinalOverflow(usize),
+    UnknownSurfaceReceiver(SurfaceDagNodeId),
 }
 
 impl From<TransitionError> for SurfaceDagError {
@@ -146,20 +258,31 @@ impl From<TransitionError> for SurfaceDagError {
 
 /// Derives surface-producing candidates exclusively from a closed artifact.
 ///
-/// This is not receiver reconstruction. It freezes the C2 mapping and the
-/// clip-rebase obligation while leaving the C0a/C0c nested-scroll projected
-/// state decision explicit for C2b.
+/// This is not receiver reconstruction. It freezes the surface-kind mapping
+/// and clip-rebase obligation while leaving consumption classification and
+/// compositing receivers as separate inputs.
 pub(crate) fn derive_artifact_surface_candidates(
     artifact: &PaintArtifact,
     policy: LayerizationPolicy,
 ) -> Result<Vec<ArtifactSurfaceCandidate>, SurfaceDagError> {
-    match policy {
-        LayerizationPolicy::PreservePropertyBoundaries => {}
-    }
-
     let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
     let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
     let cursors = artifact_cursors(artifact)?;
+    derive_artifact_surface_candidates_from_validated(
+        artifact, policy, &snapshots, &owners, &cursors,
+    )
+}
+
+fn derive_artifact_surface_candidates_from_validated(
+    artifact: &PaintArtifact,
+    policy: LayerizationPolicy,
+    snapshots: &PropertySnapshotGraph,
+    owners: &ArtifactOwnerGraph,
+    cursors: &[ArtifactCursor],
+) -> Result<Vec<ArtifactSurfaceCandidate>, SurfaceDagError> {
+    match policy {
+        LayerizationPolicy::PreservePropertyBoundaries => {}
+    }
 
     let transforms = artifact
         .transform_nodes
@@ -180,7 +303,7 @@ pub(crate) fn derive_artifact_surface_candidates(
     let mut candidates = Vec::new();
     for owner in artifact.owner_nodes.iter().map(|snapshot| snapshot.owner) {
         let scene_target = owners.scene_target(owner)?;
-        let cursor = owners.cursor_for_target(owner, &cursors)?;
+        let cursor = owners.cursor_for_target(owner, cursors)?;
         if let Some(transform) = transforms.get(&owner).copied() {
             candidates.push(ArtifactSurfaceCandidate {
                 scene_target,
@@ -226,4 +349,147 @@ pub(crate) fn derive_artifact_surface_candidates(
         }
     }
     Ok(candidates)
+}
+
+fn transition_consumes_kind(transition: PropertyStateTransition, kind: SurfaceDagNodeKind) -> bool {
+    match kind {
+        SurfaceDagNodeKind::Transform(transform) => {
+            transition.transform.from == Some(transform) && transition.transform.is_changed()
+        }
+        SurfaceDagNodeKind::Effect(effect) => {
+            transition.effect.from == Some(effect) && transition.effect.is_changed()
+        }
+        SurfaceDagNodeKind::ScrollContent {
+            scroll,
+            contents_clip,
+        } => {
+            transition.scroll.from == Some(scroll)
+                && transition.scroll.is_changed()
+                && transition.clip.from == Some(contents_clip)
+                && transition.clip.is_changed()
+        }
+    }
+}
+
+fn transition_states(
+    transition: PropertyStateTransition,
+) -> (PropertyTreeState, PropertyTreeState) {
+    (
+        PropertyTreeState {
+            transform: transition.transform.from,
+            clip: transition.clip.from,
+            effect: transition.effect.from,
+            scroll: transition.scroll.from,
+            layout_position: transition.layout_position.from,
+            visual_offset: transition.visual_offset.from,
+        },
+        PropertyTreeState {
+            transform: transition.transform.to,
+            clip: transition.clip.to,
+            effect: transition.effect.to,
+            scroll: transition.scroll.to,
+            layout_position: transition.layout_position.to,
+            visual_offset: transition.visual_offset.to,
+        },
+    )
+}
+
+/// Reconstructs the ordered C2 surface graph without planner grammar or arena
+/// access. Consumption classification and compositing receiver derivation are
+/// deliberately separate: events supply the former, the artifact owner forest
+/// supplies the latter.
+pub(crate) fn reconstruct_surface_dag(
+    artifact: &PaintArtifact,
+    events: &[ClassifiedTransitionEvent],
+    policy: LayerizationPolicy,
+) -> Result<SurfaceDag, SurfaceDagError> {
+    let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
+    let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
+    let cursors = artifact_cursors(artifact)?;
+    let candidates = derive_artifact_surface_candidates_from_validated(
+        artifact, policy, &snapshots, &owners, &cursors,
+    )?;
+    if candidates.len() != events.len() {
+        return Err(SurfaceDagError::TransitionCount {
+            candidates: candidates.len(),
+            events: events.len(),
+        });
+    }
+    let surface_owners = candidates
+        .iter()
+        .map(|candidate| candidate.target())
+        .collect::<FxHashSet<_>>();
+    let mut innermost_by_owner = FxHashMap::default();
+    let mut nodes = Vec::with_capacity(candidates.len());
+
+    for (index, (candidate, event)) in candidates.into_iter().zip(events).enumerate() {
+        let scene_root_receiver = candidate.scene_root_receiver();
+        let expected_scene_root = candidate.scene_root_ordinal();
+        if event.scene_root_ordinal() != expected_scene_root {
+            return Err(SurfaceDagError::TransitionSceneRoot {
+                index,
+                expected: expected_scene_root,
+                actual: event.scene_root_ordinal(),
+            });
+        }
+        if event.target() != candidate.target() {
+            return Err(SurfaceDagError::TransitionTarget {
+                index,
+                expected: candidate.target(),
+                actual: event.target(),
+            });
+        }
+        if event.cursor() != candidate.cursor() {
+            return Err(SurfaceDagError::TransitionCursor {
+                index,
+                expected: candidate.cursor(),
+                actual: event.cursor(),
+            });
+        }
+        let (from, to) = transition_states(event.transition());
+        let transition = classify_property_transition(from, to, &snapshots)?;
+        if !transition_consumes_kind(transition, candidate.kind()) {
+            return Err(SurfaceDagError::TransitionKind {
+                index,
+                expected: candidate.kind(),
+            });
+        }
+
+        let owner = candidate.target();
+        let receiver = if let Some(id) = innermost_by_owner.get(&owner).copied() {
+            SurfaceDagTargetId::Surface(id)
+        } else {
+            let mut cursor = owners.parent(owner)?;
+            let mut found = None;
+            while let Some(ancestor) = cursor {
+                if let Some(id) = innermost_by_owner.get(&ancestor).copied() {
+                    found = Some(id);
+                    break;
+                }
+                if surface_owners.contains(&ancestor) {
+                    return Err(SurfaceDagError::ReceiverOwnerOutOfOrder {
+                        owner,
+                        receiver_owner: ancestor,
+                    });
+                }
+                cursor = owners.parent(ancestor)?;
+            }
+            found.map_or(scene_root_receiver, SurfaceDagTargetId::Surface)
+        };
+        let id = SurfaceDagNodeId(
+            u32::try_from(index).map_err(|_| SurfaceDagError::SurfaceNodeOrdinalOverflow(index))?,
+        );
+        nodes.push(SurfaceDagNode {
+            id,
+            target: owner,
+            cursor: candidate.cursor(),
+            kind: candidate.kind(),
+            receiver,
+            transition,
+            clip_rebase: candidate.clip_rebase(),
+        });
+        innermost_by_owner.insert(owner, id);
+    }
+
+    Ok(SurfaceDag { nodes })
 }

@@ -2519,5 +2519,6 @@ mod same_owner_transform_effect_scroll_tests;
 mod stage_c_retained_semantic_baseline_tests;
 mod stage_c_scroll_capability_corpus_tests;
 mod stage_c_surface_candidate_tests;
+mod stage_c_surface_dag_tests;
 mod stage_c_transition_capability_tests;
 mod transform_isolation_tests;
