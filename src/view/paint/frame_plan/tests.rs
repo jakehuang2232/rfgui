@@ -5,8 +5,8 @@ use std::sync::Arc;
 use slotmap::Key;
 
 use crate::style::{
-    Angle, BoxShadow, Color, Layout, Opacity, ParsedValue, PropertyId, Rotate, ScrollDirection,
-    Style, Transform, Transition, TransitionProperty, Transitions,
+    AnchorName, Angle, BoxShadow, Color, Layout, Length, Opacity, ParsedValue, Position, PropertyId,
+    Rotate, Scale, ScrollDirection, Style, Transform, Transition, TransitionProperty, Transitions,
 };
 use crate::view::base_component::{
     BoxModelSnapshot, BuildState, DirtyPassMask, ElementTrait, EventTarget, Image,
@@ -746,6 +746,361 @@ fn stage_c_classification_artifact_fixture(
         properties,
     )?;
     Ok(artifact)
+}
+
+fn stage_c_owner_is_within(arena: &NodeArena, owner: NodeKey, target: NodeKey) -> bool {
+    let mut cursor = Some(owner);
+    while let Some(owner) = cursor {
+        if owner == target {
+            return true;
+        }
+        cursor = arena.parent_of(owner);
+    }
+    false
+}
+
+fn assert_stage_c_classified_cursors_match_artifact_traversal(
+    arena: &NodeArena,
+    artifact: &PaintArtifact,
+    events: &[crate::view::paint::ClassifiedTransitionEvent],
+) {
+    for event in events {
+        let expected_chunk = artifact
+            .chunks
+            .iter()
+            .position(|chunk| stage_c_owner_is_within(arena, chunk.owner, event.target()))
+            .expect("every classified target owns an artifact chunk subtree");
+        assert_eq!(event.cursor().chunk_index(), expected_chunk);
+        assert_eq!(
+            event.cursor().op_index(),
+            artifact.chunks[expected_chunk].op_range.start,
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum StageCScrollCapabilityCase {
+    DepthFour,
+    NestedScroll,
+    BranchingSiblings,
+    HeterogeneousRoots,
+    CoLocatedProperties,
+    ClipCrossingScroll,
+    InterleavedSiblingOrder,
+    NamedAnchor,
+    LayoutPositionReferenceScroll,
+    ScrollOffsetDelta,
+    OverlayPhase,
+}
+
+const STAGE_C_SCROLL_CAPABILITY_CASES: [StageCScrollCapabilityCase; 11] = [
+    StageCScrollCapabilityCase::DepthFour,
+    StageCScrollCapabilityCase::NestedScroll,
+    StageCScrollCapabilityCase::BranchingSiblings,
+    StageCScrollCapabilityCase::HeterogeneousRoots,
+    StageCScrollCapabilityCase::CoLocatedProperties,
+    StageCScrollCapabilityCase::ClipCrossingScroll,
+    StageCScrollCapabilityCase::InterleavedSiblingOrder,
+    StageCScrollCapabilityCase::NamedAnchor,
+    StageCScrollCapabilityCase::LayoutPositionReferenceScroll,
+    StageCScrollCapabilityCase::ScrollOffsetDelta,
+    StageCScrollCapabilityCase::OverlayPhase,
+];
+
+impl StageCScrollCapabilityCase {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::DepthFour => "depth-four",
+            Self::NestedScroll => "nested-scroll",
+            Self::BranchingSiblings => "branching-siblings",
+            Self::HeterogeneousRoots => "heterogeneous-roots",
+            Self::CoLocatedProperties => "co-located-properties",
+            Self::ClipCrossingScroll => "clip-crossing-scroll",
+            Self::InterleavedSiblingOrder => "interleaved-sibling-order",
+            Self::NamedAnchor => "named-anchor",
+            Self::LayoutPositionReferenceScroll => "layout-position-reference-scroll",
+            Self::ScrollOffsetDelta => "scroll-offset-delta",
+            Self::OverlayPhase => "overlay-phase",
+        }
+    }
+}
+
+fn stage_c_depth_four_scroll_fixture() -> (
+    NodeArena,
+    Vec<NodeKey>,
+    NodeKey,
+    NodeKey,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
+    let (mut arena, roots, _, _) = native_scroll_forest_plan_fixture();
+    let wrapper = arena
+        .find_by_stable_id(0x12f0_06)
+        .expect("C0c depth-four wrapper");
+    let fourth = arena.insert(Node::new(Box::new(Element::new_with_id(
+        0x12f0_15, 10.0, 20.0, 600.0, 600.0,
+    ))));
+    arena.set_parent(fourth, Some(wrapper));
+    arena.push_child(wrapper, fourth);
+    let mut scroll_style = Style::new();
+    scroll_style.insert(
+        PropertyId::ScrollDirection,
+        ParsedValue::ScrollDirection(ScrollDirection::Both),
+    );
+    scroll_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    {
+        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, fourth);
+        element.apply_style(scroll_style);
+        element.layout_state.layout_position.x = 10.0;
+        element.layout_state.layout_position.y = 20.0;
+        element.layout_state.layout_size = Size {
+            width: 600.0,
+            height: 600.0,
+        };
+        element.layout_state.layout_inner_position = element.layout_state.layout_position;
+        element.layout_state.layout_inner_size = element.layout_state.layout_size;
+        element.layout_state.content_size = Size {
+            width: 900.0,
+            height: 900.0,
+        };
+        element.set_scroll_offset((15.0, 25.0));
+        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+    }
+    let leaf = arena.insert(Node::new(Box::new(Element::new_with_id(
+        0x12f0_16, -5.0, -5.0, 900.0, 900.0,
+    ))));
+    arena.set_parent(leaf, Some(fourth));
+    arena.push_child(fourth, leaf);
+    {
+        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, leaf);
+        element.layout_state.layout_position.x = -5.0;
+        element.layout_state.layout_position.y = -5.0;
+        element.layout_state.layout_size = Size {
+            width: 900.0,
+            height: 900.0,
+        };
+        element.layout_state.layout_inner_position = element.layout_state.layout_position;
+        element.layout_state.layout_inner_size = element.layout_state.layout_size;
+        element.layout_state.content_size = element.layout_state.layout_size;
+        element.set_background_color_value(Color::rgb(18, 36, 54));
+        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+    }
+    for root in &roots {
+        arena.refresh_subtree_dirty_cache(*root);
+    }
+    let mut properties = PropertyTrees::default();
+    properties.sync(&arena, &roots);
+    let mut generations = PaintGenerationTracker::default();
+    generations.sync(&arena, &roots, &properties);
+    (arena, roots, wrapper, fourth, properties, generations)
+}
+
+fn stage_c_named_anchor_classification_fixture() -> (
+    NodeArena,
+    NodeKey,
+    NodeKey,
+    NodeKey,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
+    let mut root_element = Element::new_with_id(0xc1c0_0100, 0.0, 0.0, 400.0, 300.0);
+    let mut root_style = Style::new();
+    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    root_element.apply_style(root_style);
+
+    let mut anchor_element = Element::new_with_id(0xc1c0_0101, 0.0, 0.0, 40.0, 20.0);
+    let mut anchor_style = Style::new();
+    anchor_style.insert(
+        PropertyId::Position,
+        ParsedValue::Position(
+            Position::absolute()
+                .left(Length::px(120.0))
+                .top(Length::px(30.0)),
+        ),
+    );
+    anchor_element.apply_style(anchor_style);
+    anchor_element.set_anchor_name(Some(AnchorName::new("stage-c-classifier-anchor")));
+
+    let mut child_element = Element::new_with_id(0xc1c0_0102, 0.0, 0.0, 30.0, 20.0);
+    let mut child_style = Style::new();
+    child_style.set_transform(Transform::new([Scale::uniform(1.1)]));
+    child_style.insert(
+        PropertyId::Position,
+        ParsedValue::Position(
+            Position::absolute()
+                .anchor("stage-c-classifier-anchor")
+                .left(Length::px(7.0))
+                .top(Length::px(9.0)),
+        ),
+    );
+    child_element.apply_style(child_style);
+
+    let mut arena = new_test_arena();
+    let root = commit_element(&mut arena, Box::new(root_element));
+    let anchor = commit_child(&mut arena, root, Box::new(anchor_element));
+    let child = commit_child(&mut arena, root, Box::new(child_element));
+    let constraints = LayoutConstraints {
+        max_width: 400.0,
+        max_height: 300.0,
+        viewport_width: 400.0,
+        viewport_height: 300.0,
+        percent_base_width: Some(400.0),
+        percent_base_height: Some(300.0),
+    };
+    let placement = LayoutPlacement {
+        parent_x: 0.0,
+        parent_y: 0.0,
+        visual_offset_x: 0.0,
+        visual_offset_y: 0.0,
+        available_width: 400.0,
+        available_height: 300.0,
+        viewport_width: 400.0,
+        viewport_height: 300.0,
+        percent_base_width: Some(400.0),
+        percent_base_height: Some(300.0),
+    };
+    measure_and_place(&mut arena, root, constraints, placement);
+    let mut properties = PropertyTrees::default();
+    properties.sync(&arena, &[root]);
+    assert!(
+        properties.spatial_validation_errors.is_empty(),
+        "C1c named-anchor fixture: {:?}",
+        properties.spatial_validation_errors,
+    );
+    let mut generations = PaintGenerationTracker::default();
+    generations.sync(&arena, &[root], &properties);
+    (arena, root, anchor, child, properties, generations)
+}
+
+fn stage_c_layout_position_reference_scroll_fixture() -> (
+    NodeArena,
+    NodeKey,
+    NodeKey,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
+    let mut arena = new_test_arena();
+    let mut root = Element::new_with_id(0xc0c0_0100, 0.0, 0.0, 100.0, 80.0);
+    let mut root_style = Style::new();
+    root_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(100.0)));
+    root_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(80.0)));
+    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    root_style.insert(
+        PropertyId::ScrollDirection,
+        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+    );
+    root.apply_style(root_style);
+    let root = commit_element(&mut arena, Box::new(root));
+
+    let mut child = Element::new_with_id(0xc0c0_0101, 0.0, 0.0, 100.0, 240.0);
+    let mut child_style = Style::new();
+    child_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(100.0)));
+    child_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(240.0)));
+    child_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    child.apply_style(child_style);
+    let child = commit_child(&mut arena, root, Box::new(child));
+
+    let constraints = LayoutConstraints {
+        max_width: 100.0,
+        max_height: 80.0,
+        viewport_width: 100.0,
+        viewport_height: 80.0,
+        percent_base_width: Some(100.0),
+        percent_base_height: Some(80.0),
+    };
+    let placement = LayoutPlacement {
+        parent_x: 0.0,
+        parent_y: 0.0,
+        visual_offset_x: 0.0,
+        visual_offset_y: 0.0,
+        available_width: 100.0,
+        available_height: 80.0,
+        viewport_width: 100.0,
+        viewport_height: 80.0,
+        percent_base_width: Some(100.0),
+        percent_base_height: Some(80.0),
+    };
+    measure_and_place(&mut arena, root, constraints, placement);
+    crate::view::test_support::get_element_mut::<Element>(&arena, root)
+        .set_scroll_offset((0.0, 20.0));
+    measure_and_place(&mut arena, root, constraints, placement);
+    assert!(
+        crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
+            &mut arena,
+            root,
+            DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT),
+        ),
+        "C0c reference-scroll fixture remains reachable",
+    );
+    let geometry_dirty = DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT);
+    assert!(!arena.subtree_dirty_intersects(root, geometry_dirty));
+    let mut properties = PropertyTrees::default();
+    properties.sync(&arena, &[root]);
+    assert!(
+        properties.validation_errors.is_empty(),
+        "C0c reference-scroll fixture: {:?}",
+        properties.validation_errors,
+    );
+    let mut generations = PaintGenerationTracker::default();
+    generations.sync(&arena, &[root], &properties);
+    (arena, root, child, properties, generations)
+}
+
+fn apply_stage_c_scroll_offset_delta(
+    arena: &NodeArena,
+    scroll: NodeKey,
+    properties: &mut PropertyTrees,
+    generations: &mut PaintGenerationTracker,
+    delta_y: f32,
+) -> glam::Vec2 {
+    let baseline_offset = properties
+        .scroll_snapshot_for(ScrollNodeId(scroll))
+        .expect("C0c scroll snapshot")
+        .offset;
+    {
+        let mut element = crate::view::test_support::get_element_mut::<Element>(arena, scroll);
+        element.set_scroll_offset((baseline_offset.x, baseline_offset.y + delta_y));
+        // Production `element/event_target.rs::set_scroll_offset` marks
+        // placement dirty, and `element/impl_layout.rs::place_children`
+        // derives each child origin as
+        // `layout_flow_inner_position - scroll_offset`. This exact-admission
+        // fixture mirrors only that production delta so both C0c and C1c
+        // consume one shared input mutation.
+        element.clear_local_dirty_flags(DirtyPassMask::PLACEMENT);
+    }
+    let content_root = arena.children_of(scroll)[0];
+    let mut pending = vec![content_root];
+    while let Some(owner) = pending.pop() {
+        pending.extend(arena.children_of(owner));
+        let mut element = crate::view::test_support::get_element_mut::<Element>(arena, owner);
+        element.layout_state.layout_position.y -= delta_y;
+        element.layout_state.layout_inner_position.y -= delta_y;
+        element.clear_local_dirty_flags(DirtyPassMask::PLACEMENT);
+    }
+    arena.refresh_subtree_dirty_cache(scroll);
+    properties.sync(arena, &[scroll]);
+    generations.sync(arena, &[scroll], properties);
+    baseline_offset
+}
+
+fn stage_c_visible_overlay_fixture() -> (
+    NodeArena,
+    Vec<NodeKey>,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
+    let (arena, roots, mut properties, mut generations) = native_scroll_forest_plan_fixture();
+    let scroll = arena
+        .find_by_stable_id(0x12f0_01)
+        .expect("C0c visible overlay scroll host");
+    crate::view::test_support::get_element_mut::<Element>(&arena, scroll)
+        .set_sampled_scrollbar_alpha_for_test(1.0);
+    for root in &roots {
+        arena.refresh_subtree_dirty_cache(*root);
+    }
+    properties.sync(&arena, &roots);
+    generations.sync(&arena, &roots, &properties);
+    (arena, roots, properties, generations)
 }
 
 /// Two scroll hosts on one ancestor path, plus the inner host's key.
@@ -2163,4 +2518,5 @@ mod same_owner_effect_tests;
 mod same_owner_transform_effect_scroll_tests;
 mod stage_c_retained_semantic_baseline_tests;
 mod stage_c_scroll_capability_corpus_tests;
+mod stage_c_transition_capability_tests;
 mod transform_isolation_tests;

@@ -232,38 +232,6 @@ fn freeze_classified_transition_event(
     }
 }
 
-fn owner_is_within(arena: &NodeArena, owner: NodeKey, target: NodeKey) -> bool {
-    let mut cursor = Some(owner);
-    while let Some(owner) = cursor {
-        if owner == target {
-            return true;
-        }
-        cursor = arena.parent_of(owner);
-    }
-    false
-}
-
-fn assert_classified_cursors_match_artifact_traversal(
-    arena: &NodeArena,
-    artifact: &PaintArtifact,
-    dag: &PropertyBoundaryDag,
-    events: &[ClassifiedTransitionEvent],
-) {
-    assert_eq!(events.len(), dag.nodes.len());
-    for (node, event) in dag.nodes.iter().zip(events) {
-        let expected_chunk = artifact
-            .chunks
-            .iter()
-            .position(|chunk| owner_is_within(arena, chunk.owner, node.owner))
-            .expect("every classified boundary owns an artifact chunk subtree");
-        assert_eq!(event.cursor().chunk_index(), expected_chunk);
-        assert_eq!(
-            event.cursor().op_index(),
-            artifact.chunks[expected_chunk].op_range.start,
-        );
-    }
-}
-
 fn production_fixture_context() -> TransformSurfacePlanContext {
     let ui_context = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let context = TransformSurfacePlanContext::new(
@@ -682,12 +650,8 @@ fn stage_c_nine_scroll_interleave_semantics_are_frozen_before_v2() {
             .collect::<Vec<_>>();
         let classified = classify_artifact_transition_sequence(&artifact, &requests)
             .expect("C1 artifact transition classification");
-        assert_classified_cursors_match_artifact_traversal(
-            &arena,
-            &artifact,
-            &scaffold.boundary_dag,
-            &classified,
-        );
+        assert_eq!(classified.len(), scaffold.boundary_dag.nodes.len());
+        assert_stage_c_classified_cursors_match_artifact_traversal(&arena, &artifact, &classified);
         let actual_events = classified
             .into_iter()
             .enumerate()

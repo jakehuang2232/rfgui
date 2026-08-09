@@ -540,9 +540,11 @@ impl ClassifiedTransitionEvent {
 
 /// Classifies an ordered request stream against one complete artifact.
 ///
-/// Request order is preserved exactly. Each event's scene root and cursor are
-/// independently derived from the artifact owner forest and chunk traversal;
-/// no planner ordinal or receiver grammar enters the production result.
+/// A request stream is legal when target first-subtree chunk indices are
+/// non-decreasing; co-located targets may share one index. Legal request order
+/// is preserved exactly. Each event's scene root and cursor are independently
+/// derived from the artifact owner forest and chunk traversal; no planner
+/// ordinal or receiver grammar enters the production result.
 pub(crate) fn classify_artifact_transition_sequence(
     artifact: &PaintArtifact,
     requests: &[ArtifactTransitionRequest],
