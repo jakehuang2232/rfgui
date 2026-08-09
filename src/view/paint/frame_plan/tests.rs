@@ -2052,4 +2052,5 @@ mod property_scroll_interleave_tests;
 mod same_owner_effect_tests;
 mod same_owner_transform_effect_scroll_tests;
 mod stage_c_retained_semantic_baseline_tests;
+mod stage_c_scroll_capability_corpus_tests;
 mod transform_isolation_tests;

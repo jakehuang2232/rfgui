@@ -7520,6 +7520,37 @@ impl PreparedRetainedScrollContentEffectScene<'_> {
             .count();
         self.trace.reuse_count = self.actions.len() - self.trace.reraster_count;
     }
+
+    #[cfg(test)]
+    pub(crate) fn effect_content_observations_for_test(
+        &self,
+    ) -> Vec<[(RetainedSurfaceCompileAction, RetainedSurfaceRasterStamp); 2]> {
+        self.roots
+            .iter()
+            .map(|root| {
+                let effect = root.frozen.effect_stamp.clone();
+                let content = root.frozen.content_stamp.clone();
+                [
+                    (
+                        self.actions[&effect.identity.resident_key()],
+                        effect,
+                    ),
+                    (
+                        self.actions[&content.identity.resident_key()],
+                        content,
+                    ),
+                ]
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refresh_effect_content_observations_from_committed_pool_for_test(
+        &mut self,
+    ) -> Vec<[(RetainedSurfaceCompileAction, RetainedSurfaceRasterStamp); 2]> {
+        self.refresh_actions_from_committed_test_pool();
+        self.effect_content_observations_for_test()
+    }
 }
 
 /// One joint pre-clear lease selected by `PropertyBoundaryDagCompiler`.

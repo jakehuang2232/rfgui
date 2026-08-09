@@ -298,8 +298,11 @@ fn anchor_parent_clip_uses_transitioning_parent_inner_size() {
     assert_eq!(clip.height, 140.0);
 }
 
-#[test]
-fn anchored_absolute_child_uses_anchor_visual_position_during_transition() {
+fn assert_anchored_absolute_child_uses_anchor_visual_position_during_transition(
+    inherited_visual_offset_x: f32,
+    expected_anchor_x: f32,
+    expected_child_x: f32,
+) {
     let mut arena = new_test_arena();
     let mut parent = Element::new(0.0, 0.0, 500.0, 200.0);
     let mut parent_style = Style::new();
@@ -355,7 +358,7 @@ fn anchored_absolute_child_uses_anchor_visual_position_during_transition() {
     let placement = LayoutPlacement {
         parent_x: 0.0,
         parent_y: 0.0,
-        visual_offset_x: 0.0,
+        visual_offset_x: inherited_visual_offset_x,
         visual_offset_y: 0.0,
         available_width: 800.0,
         available_height: 600.0,
@@ -405,16 +408,38 @@ fn anchored_absolute_child_uses_anchor_visual_position_during_transition() {
 
     let anchor = crate::view::test_support::get_element::<Element>(&arena, anchor_key);
     let child = crate::view::test_support::get_element::<Element>(&arena, child_k);
-    assert!(
-        (anchor.layout_state.layout_position.x - 300.0).abs() < 0.01,
-        "anchor_x={}, child_x={}",
-        anchor.layout_state.layout_position.x,
-        child.layout_state.layout_position.x
+    assert_eq!(
+        anchor.layout_state.layout_flow_position.x.to_bits(),
+        340.0_f32.to_bits(),
+        "the transition target remains the scroll-zero layout position",
     );
-    assert!(
-        (child.layout_state.layout_position.x - 310.0).abs() < 0.01,
-        "anchor_x={}, child_x={}",
-        anchor.layout_state.layout_position.x,
-        child.layout_state.layout_position.x
+    assert_eq!(
+        anchor.layout_state.layout_position.x.to_bits(),
+        (anchor.layout_state.layout_flow_position.x
+            + placement.visual_offset_x
+            + anchor.layout_transition_visual_offset_x)
+            .to_bits(),
+        "anchor layout position composes layout flow, inherited visual, then local visual",
+    );
+    assert_eq!(
+        anchor.layout_state.layout_position.x.to_bits(),
+        expected_anchor_x.to_bits(),
+    );
+    assert_eq!(
+        child.layout_state.layout_position.x.to_bits(),
+        expected_child_x.to_bits(),
+        "named-anchor placement preserves the shared visual contribution in both chains",
+    );
+}
+
+#[test]
+fn anchored_absolute_child_uses_anchor_visual_position_during_transition() {
+    assert_anchored_absolute_child_uses_anchor_visual_position_during_transition(0.0, 300.0, 310.0);
+}
+
+#[test]
+fn anchored_absolute_child_counts_shared_visual_offset_in_both_reference_chains() {
+    assert_anchored_absolute_child_uses_anchor_visual_position_during_transition(
+        10.0, 310.0, 330.0,
     );
 }
