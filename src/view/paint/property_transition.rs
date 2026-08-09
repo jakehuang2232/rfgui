@@ -450,7 +450,7 @@ impl ArtifactOwnerGraph {
             .ok_or(TransitionError::UnknownTarget(owner))
     }
 
-    fn cursor_for_target(
+    pub(crate) fn cursor_for_target(
         &self,
         target: NodeKey,
         cursors: &[ArtifactCursor],
@@ -475,6 +475,16 @@ impl ArtifactOwnerGraph {
 pub(crate) struct ArtifactSceneTarget {
     scene_root_ordinal: u32,
     target: NodeKey,
+}
+
+impl ArtifactSceneTarget {
+    pub(crate) fn scene_root_ordinal(self) -> u32 {
+        self.scene_root_ordinal
+    }
+
+    pub(crate) fn target(self) -> NodeKey {
+        self.target
+    }
 }
 
 /// One ordered, grammar-free request to classify a property-state edge for a
@@ -514,9 +524,9 @@ impl ClassifiedTransitionEvent {
         snapshots: &PropertySnapshotGraph,
     ) -> Result<Self, TransitionError> {
         Ok(Self {
-            scene_root_ordinal: scene_target.scene_root_ordinal,
+            scene_root_ordinal: scene_target.scene_root_ordinal(),
             cursor,
-            target: scene_target.target,
+            target: scene_target.target(),
             transition: classify_property_transition(from, to, snapshots)?,
         })
     }

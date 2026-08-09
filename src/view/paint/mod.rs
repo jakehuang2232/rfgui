@@ -18,6 +18,7 @@ mod retained_surface_executor;
 mod scroll_content;
 mod scroll_scene;
 mod scroll_tiles;
+mod surface_dag;
 
 #[allow(unused_imports)]
 pub(crate) use artifact::{
@@ -76,6 +77,12 @@ pub(crate) use property_transition::{
     ArtifactCursor, ArtifactOwnerGraph, ArtifactSceneTarget, ArtifactTransitionRequest,
     ClassifiedTransitionEvent, PropertySnapshotGraph, TransitionError, artifact_cursors,
     classify_artifact_transition_sequence, classify_property_transition,
+};
+#[allow(unused_imports)]
+pub(crate) use surface_dag::{
+    ArtifactSurfaceCandidate, LayerizationPolicy, SurfaceDagClipRebase, SurfaceDagError,
+    SurfaceDagNode, SurfaceDagNodeId, SurfaceDagNodeKind, SurfaceDagTargetId,
+    derive_artifact_surface_candidates,
 };
 pub(crate) use composite_edge::{
     PaintCompositeEdge, emit_paint_composite_edges, intersect_logical_scissors,
