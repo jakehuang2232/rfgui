@@ -486,19 +486,35 @@ impl<'a> SpatialProjectionGraph<'a> {
                 return Err(SpatialProjectionError::MissingScroll(parent));
             }
         }
-        validate_parent_forest(&graph.transforms, |snapshot| snapshot.parent)
-            .map_err(SpatialProjectionError::CyclicTransform)?;
-        validate_parent_forest(&graph.positions, |snapshot| match snapshot.reference {
-            SpatialPositionReference::Viewport
-            | SpatialPositionReference::LayoutParent(None) => None,
-            SpatialPositionReference::LayoutParent(Some(parent))
-            | SpatialPositionReference::Anchor(parent) => Some(LayoutPositionNodeId(parent)),
-        })
+        validate_parent_forest(
+            &graph.transforms,
+            transforms.iter().map(|snapshot| snapshot.id),
+            |snapshot| snapshot.parent,
+        )
+        .map_err(SpatialProjectionError::CyclicTransform)?;
+        validate_parent_forest(
+            &graph.positions,
+            positions.iter().map(|snapshot| snapshot.id),
+            |snapshot| match snapshot.reference {
+                SpatialPositionReference::Viewport
+                | SpatialPositionReference::LayoutParent(None) => None,
+                SpatialPositionReference::LayoutParent(Some(parent))
+                | SpatialPositionReference::Anchor(parent) => Some(LayoutPositionNodeId(parent)),
+            },
+        )
         .map_err(SpatialProjectionError::CyclicLayoutPosition)?;
-        validate_parent_forest(&graph.visuals, |snapshot| snapshot.parent)
-            .map_err(SpatialProjectionError::CyclicVisualOffset)?;
-        validate_parent_forest(&graph.scrolls, |snapshot| snapshot.parent)
-            .map_err(SpatialProjectionError::CyclicScroll)?;
+        validate_parent_forest(
+            &graph.visuals,
+            visuals.iter().map(|snapshot| snapshot.id),
+            |snapshot| snapshot.parent,
+        )
+        .map_err(SpatialProjectionError::CyclicVisualOffset)?;
+        validate_parent_forest(
+            &graph.scrolls,
+            scrolls.iter().map(|snapshot| snapshot.id),
+            |snapshot| snapshot.parent,
+        )
+        .map_err(SpatialProjectionError::CyclicScroll)?;
 
         Ok(graph)
     }
@@ -642,6 +658,7 @@ impl<'a> SpatialProjectionGraph<'a> {
 
 fn validate_parent_forest<K, V, F>(
     nodes: &FxHashMap<K, &V>,
+    starts: impl IntoIterator<Item = K>,
     parent: F,
 ) -> Result<(), K>
 where
@@ -649,7 +666,7 @@ where
     F: Fn(&V) -> Option<K>,
 {
     let mut complete = FxHashSet::default();
-    for &start in nodes.keys() {
+    for start in starts {
         if complete.contains(&start) {
             continue;
         }

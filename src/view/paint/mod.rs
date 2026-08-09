@@ -11,6 +11,7 @@ mod frame_plan;
 mod frame_recorder;
 mod legacy_admission;
 mod legacy_recording;
+mod property_transition;
 mod recorder;
 mod recording_context;
 mod retained_surface_executor;
@@ -70,6 +71,11 @@ pub(crate) use legacy_admission::{
     RetainedInteractiveTextAreaResidentRasterSeal,
 };
 pub(crate) use recording_context::PaintRecordingContext;
+#[allow(unused_imports)]
+pub(crate) use property_transition::{
+    ArtifactCursor, ArtifactOwnerGraph, ArtifactSceneTarget, ClassifiedTransitionEvent,
+    PropertySnapshotGraph, TransitionError, artifact_cursors, classify_property_transition,
+};
 pub(crate) use composite_edge::{
     PaintCompositeEdge, emit_paint_composite_edges, intersect_logical_scissors,
     paint_composite_edge_opaque_delta,
