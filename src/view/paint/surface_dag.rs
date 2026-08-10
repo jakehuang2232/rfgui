@@ -1,6 +1,6 @@
 #![allow(dead_code)] // The C2 graph remains graph-inert until the C3 consumer lands.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use crate::view::{
     compositor::property_tree::{
@@ -38,7 +38,11 @@ pub(crate) enum SurfaceDagNodeKind {
     },
 }
 
-/// Dense artifact-local surface identity.
+/// Dense artifact-local surface identity assigned in artifact-store order.
+///
+/// This identity is not a topological ordinal: a node's receiver may have a
+/// higher id. Consumers must traverse the receiver graph instead of inferring
+/// receiver order from [`SurfaceDagNodeId::index`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SurfaceDagNodeId(u32);
 
@@ -102,6 +106,10 @@ impl SurfaceDagClipRebase {
 
 /// Durable C2 node shape with its independently classified consumption edge
 /// and artifact-derived compositing receiver.
+///
+/// Nodes remain in artifact-store order, not topological order. `receiver` may
+/// reference a higher [`SurfaceDagNodeId`]; graph traversal must follow that
+/// receiver edge until it reaches a scene root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SurfaceDagNode {
     id: SurfaceDagNodeId,
@@ -155,6 +163,13 @@ impl SurfaceDag {
         &self.nodes
     }
 
+    fn surface_node(&self, id: SurfaceDagNodeId) -> Result<&SurfaceDagNode, SurfaceDagError> {
+        self.nodes
+            .get(id.index())
+            .filter(|node| node.id == id)
+            .ok_or(SurfaceDagError::UnknownSurfaceReceiver(id))
+    }
+
     /// Resolves a generic receiver to its surface node. This is why collapsing
     /// legacy `Surface(id)` and `ScrollContent(id)` receiver variants loses no
     /// information: the referenced node's own `kind` retains that distinction.
@@ -165,11 +180,29 @@ impl SurfaceDag {
         let SurfaceDagTargetId::Surface(id) = receiver else {
             return Ok(None);
         };
-        self.nodes
-            .get(id.index())
-            .filter(|node| node.id == id)
-            .map(Some)
-            .ok_or(SurfaceDagError::UnknownSurfaceReceiver(id))
+        self.surface_node(id).map(Some)
+    }
+
+    fn validate_receiver_acyclicity(&self) -> Result<(), SurfaceDagError> {
+        for origin in &self.nodes {
+            let mut receiver = origin.receiver;
+            let mut reached_scene_root = false;
+            for _ in 0..self.nodes.len() {
+                match receiver {
+                    SurfaceDagTargetId::SceneRoot(_) => {
+                        reached_scene_root = true;
+                        break;
+                    }
+                    SurfaceDagTargetId::Surface(id) => {
+                        receiver = self.surface_node(id)?.receiver;
+                    }
+                }
+            }
+            if !reached_scene_root {
+                return Err(SurfaceDagError::CyclicSurfaceReceiver(origin.id));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -242,12 +275,9 @@ pub(crate) enum SurfaceDagError {
         index: usize,
         expected: SurfaceDagNodeKind,
     },
-    ReceiverOwnerOutOfOrder {
-        owner: NodeKey,
-        receiver_owner: NodeKey,
-    },
     SurfaceNodeOrdinalOverflow(usize),
     UnknownSurfaceReceiver(SurfaceDagNodeId),
+    CyclicSurfaceReceiver(SurfaceDagNodeId),
 }
 
 impl From<TransitionError> for SurfaceDagError {
@@ -397,7 +427,10 @@ fn transition_states(
 /// Reconstructs the ordered C2 surface graph without planner grammar or arena
 /// access. Consumption classification and compositing receiver derivation are
 /// deliberately separate: events supply the former, the artifact owner forest
-/// supplies the latter.
+/// supplies the latter. Candidate and event order remains artifact store order;
+/// receiver resolution is a separate pass and therefore accepts both
+/// ancestor-first fixtures and the production recorder's leaf-first owner
+/// snapshots.
 pub(crate) fn reconstruct_surface_dag(
     artifact: &PaintArtifact,
     events: &[ClassifiedTransitionEvent],
@@ -415,14 +448,25 @@ pub(crate) fn reconstruct_surface_dag(
             events: events.len(),
         });
     }
-    let surface_owners = candidates
-        .iter()
-        .map(|candidate| candidate.target())
-        .collect::<FxHashSet<_>>();
-    let mut innermost_by_owner = FxHashMap::default();
+    // The final candidate for one owner is its canonical innermost surface:
+    // candidate derivation fixes the local order as Transform -> Effect ->
+    // ScrollContent. This complete map makes ancestor lookup independent of
+    // whether owner snapshots are ancestor-first or leaf-first.
+    let mut ids = Vec::with_capacity(candidates.len());
+    let mut innermost_id_by_owner = FxHashMap::default();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let id = SurfaceDagNodeId(
+            u32::try_from(index).map_err(|_| SurfaceDagError::SurfaceNodeOrdinalOverflow(index))?,
+        );
+        ids.push(id);
+        innermost_id_by_owner.insert(candidate.target(), id);
+    }
+
+    let mut previous_id_by_owner = FxHashMap::default();
     let mut nodes = Vec::with_capacity(candidates.len());
 
-    for (index, (candidate, event)) in candidates.into_iter().zip(events).enumerate() {
+    for (index, ((candidate, event), id)) in candidates.into_iter().zip(events).zip(ids).enumerate()
+    {
         let scene_root_receiver = candidate.scene_root_receiver();
         let expected_scene_root = candidate.scene_root_ordinal();
         if event.scene_root_ordinal() != expected_scene_root {
@@ -456,29 +500,20 @@ pub(crate) fn reconstruct_surface_dag(
         }
 
         let owner = candidate.target();
-        let receiver = if let Some(id) = innermost_by_owner.get(&owner).copied() {
+        let receiver = if let Some(id) = previous_id_by_owner.get(&owner).copied() {
             SurfaceDagTargetId::Surface(id)
         } else {
             let mut cursor = owners.parent(owner)?;
             let mut found = None;
             while let Some(ancestor) = cursor {
-                if let Some(id) = innermost_by_owner.get(&ancestor).copied() {
+                if let Some(id) = innermost_id_by_owner.get(&ancestor).copied() {
                     found = Some(id);
                     break;
-                }
-                if surface_owners.contains(&ancestor) {
-                    return Err(SurfaceDagError::ReceiverOwnerOutOfOrder {
-                        owner,
-                        receiver_owner: ancestor,
-                    });
                 }
                 cursor = owners.parent(ancestor)?;
             }
             found.map_or(scene_root_receiver, SurfaceDagTargetId::Surface)
         };
-        let id = SurfaceDagNodeId(
-            u32::try_from(index).map_err(|_| SurfaceDagError::SurfaceNodeOrdinalOverflow(index))?,
-        );
         nodes.push(SurfaceDagNode {
             id,
             target: owner,
@@ -488,8 +523,10 @@ pub(crate) fn reconstruct_surface_dag(
             transition,
             clip_rebase: candidate.clip_rebase(),
         });
-        innermost_by_owner.insert(owner, id);
+        previous_id_by_owner.insert(owner, id);
     }
 
-    Ok(SurfaceDag { nodes })
+    let surface_dag = SurfaceDag { nodes };
+    surface_dag.validate_receiver_acyclicity()?;
+    Ok(surface_dag)
 }

@@ -6,13 +6,58 @@
 //! derive transition endpoints from chunks or prove clip-space rebasing; both
 //! remain later C2 gates.
 
-use std::collections::BTreeSet;
+use std::{cmp::Reverse, collections::BTreeSet};
 
 use super::*;
 use crate::view::paint::{
     ArtifactTransitionRequest, LayerizationPolicy, SurfaceDag, SurfaceDagError, SurfaceDagNodeKind,
     classify_artifact_transition_sequence, reconstruct_surface_dag,
 };
+
+fn owner_depth(arena: &NodeArena, mut owner: NodeKey) -> usize {
+    let mut depth = 0;
+    while let Some(parent) = arena.parent_of(owner) {
+        depth += 1;
+        owner = parent;
+    }
+    depth
+}
+
+fn reorder_artifact_leaf_first(arena: &NodeArena, artifact: &mut PaintArtifact) {
+    artifact
+        .owner_nodes
+        .sort_by_key(|snapshot| Reverse(owner_depth(arena, snapshot.owner)));
+    artifact
+        .chunks
+        .sort_by_key(|chunk| Reverse(owner_depth(arena, chunk.owner)));
+
+    let old_ops = artifact.ops.clone();
+    let mut reordered_ops = Vec::with_capacity(old_ops.len());
+    for chunk in &mut artifact.chunks {
+        let source = chunk.op_range.clone();
+        let start = reordered_ops.len();
+        reordered_ops.extend_from_slice(&old_ops[source]);
+        chunk.op_range = start..reordered_ops.len();
+    }
+    artifact.ops = reordered_ops;
+}
+
+fn assert_receiver_chain_reaches_scene_root(
+    surface_dag: &SurfaceDag,
+    origin: &crate::view::paint::SurfaceDagNode,
+) {
+    let mut receiver = origin.receiver();
+    for _ in 0..surface_dag.nodes().len() {
+        match surface_dag
+            .receiver_node(receiver)
+            .expect("receiver-chain gate rejects unknown surface ids")
+        {
+            None => return,
+            Some(node) => receiver = node.receiver(),
+        }
+    }
+    panic!("receiver-chain gate must reach a scene root within the node bound");
+}
 
 fn assert_receiver_matches_legacy(
     surface_dag: &SurfaceDag,
@@ -236,9 +281,9 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
             SurfaceDagError::TransitionTarget { .. } => "transition-target",
             SurfaceDagError::TransitionCursor { .. } => "transition-cursor",
             SurfaceDagError::TransitionKind { .. } => "transition-kind",
-            SurfaceDagError::ReceiverOwnerOutOfOrder { .. } => "receiver-owner-out-of-order",
             SurfaceDagError::SurfaceNodeOrdinalOverflow(_) => "surface-node-ordinal-overflow",
             SurfaceDagError::UnknownSurfaceReceiver(_) => "unknown-surface-receiver",
+            SurfaceDagError::CyclicSurfaceReceiver(_) => "cyclic-surface-receiver",
         }
     }
 
@@ -304,7 +349,7 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
 }
 
 #[test]
-fn stage_c_surface_dag_rejects_a_surface_owner_before_its_receiver_owner() {
+fn stage_c_surface_dag_accepts_the_production_leaf_first_owner_order() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformScroll);
     let plan = plan_property_scroll_interleave_scaffold_with_context(
@@ -323,9 +368,11 @@ fn stage_c_surface_dag_rejects_a_surface_owner_before_its_receiver_owner() {
     let mut artifact =
         stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
             .expect("C2b transform-scroll artifact");
+    reorder_artifact_leaf_first(&arena, &mut artifact);
     let requests = legacy
         .nodes
         .iter()
+        .rev()
         .map(|node| {
             ArtifactTransitionRequest::new(
                 node.owner,
@@ -334,30 +381,93 @@ fn stage_c_surface_dag_rejects_a_surface_owner_before_its_receiver_owner() {
             )
         })
         .collect::<Vec<_>>();
-    let mut events = classify_artifact_transition_sequence(&artifact, &requests)
-        .expect("C2b transform-scroll transitions");
-    let root_index = artifact
-        .owner_nodes
-        .iter()
-        .position(|snapshot| snapshot.owner == root)
-        .expect("root owner snapshot");
-    let scroll_index = artifact
-        .owner_nodes
-        .iter()
-        .position(|snapshot| snapshot.owner == scroll_owner)
-        .expect("scroll owner snapshot");
-    artifact.owner_nodes.swap(root_index, scroll_index);
-    events.swap(0, 1);
-
-    assert_eq!(
-        reconstruct_surface_dag(
-            &artifact,
-            &events,
-            LayerizationPolicy::PreservePropertyBoundaries,
-        ),
-        Err(SurfaceDagError::ReceiverOwnerOutOfOrder {
-            owner: scroll_owner,
-            receiver_owner: root,
-        }),
+    let events = classify_artifact_transition_sequence(&artifact, &requests)
+        .expect("C2c leaf-first transition stream");
+    let surface_dag = reconstruct_surface_dag(
+        &artifact,
+        &events,
+        LayerizationPolicy::PreservePropertyBoundaries,
+    )
+    .expect("C2c leaf-first surface DAG");
+    let [scroll, transform] = surface_dag.nodes() else {
+        panic!("leaf-first transform-scroll must retain two nodes")
+    };
+    assert_eq!(scroll.target(), scroll_owner);
+    assert!(matches!(
+        scroll.kind(),
+        SurfaceDagNodeKind::ScrollContent { .. }
+    ));
+    let receiver = surface_dag
+        .receiver_node(scroll.receiver())
+        .expect("validated forward receiver")
+        .expect("scroll targets ancestor transform");
+    assert_eq!(receiver.id(), transform.id());
+    assert_eq!(receiver.target(), root);
+    assert!(matches!(receiver.kind(), SurfaceDagNodeKind::Transform(_)));
+    assert!(
+        scroll.id().index() < receiver.id().index(),
+        "leaf-first store order permits a forward receiver id without reordering nodes",
     );
+    assert_eq!(transform.receiver().scene_root_ordinal(), Some(0));
+    assert_receiver_chain_reaches_scene_root(&surface_dag, scroll);
+}
+
+#[test]
+fn stage_c_surface_dag_accepts_a_leaf_first_nested_scroll_chain() {
+    let (arena, root, properties, generations) =
+        property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::NestedScroll);
+    let plan = plan_property_scroll_interleave_scaffold_with_context(
+        &arena,
+        &[root],
+        &properties,
+        &generations,
+        TransformSurfacePlanContext::default(),
+    )
+    .expect("C2c nested-scroll fixture");
+    let legacy = &plan
+        .property_scroll_planning_scaffold()
+        .expect("C2c nested-scroll DAG")
+        .boundary_dag;
+    let mut artifact =
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
+            .expect("C2c nested-scroll artifact");
+    reorder_artifact_leaf_first(&arena, &mut artifact);
+    let requests = legacy
+        .nodes
+        .iter()
+        .rev()
+        .map(|node| {
+            ArtifactTransitionRequest::new(
+                node.owner,
+                node.consumption.expected_before,
+                node.consumption.projected_after,
+            )
+        })
+        .collect::<Vec<_>>();
+    let events = classify_artifact_transition_sequence(&artifact, &requests)
+        .expect("C2c leaf-first nested-scroll transitions");
+    let surface_dag = reconstruct_surface_dag(
+        &artifact,
+        &events,
+        LayerizationPolicy::PreservePropertyBoundaries,
+    )
+    .expect("C2c leaf-first nested-scroll DAG");
+    let [inner, outer] = surface_dag.nodes() else {
+        panic!("leaf-first nested scroll must retain two nodes")
+    };
+    assert!(matches!(
+        (inner.kind(), outer.kind()),
+        (
+            SurfaceDagNodeKind::ScrollContent { .. },
+            SurfaceDagNodeKind::ScrollContent { .. }
+        )
+    ));
+    let receiver = surface_dag
+        .receiver_node(inner.receiver())
+        .expect("validated nested forward receiver")
+        .expect("inner scroll targets outer scroll content");
+    assert_eq!(receiver.id(), outer.id());
+    assert!(inner.id().index() < receiver.id().index());
+    assert_eq!(outer.receiver().scene_root_ordinal(), Some(0));
+    assert_receiver_chain_reaches_scene_root(&surface_dag, inner);
 }
