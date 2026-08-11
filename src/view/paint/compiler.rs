@@ -425,10 +425,12 @@ fn validate_ordered_receiver_steps(
         layout_position_nodes: Vec::new(),
         visual_offset_nodes: Vec::new(),
         scroll_nodes: Vec::new(),
+        owner_property_states: Vec::new(),
         owner_nodes: Vec::new(),
     };
     let mut boundary_count = 0usize;
     let mut owner_nodes = FxHashMap::default();
+    let mut owner_property_states = FxHashMap::default();
     let mut clip_nodes = FxHashMap::default();
     let mut effect_nodes = FxHashMap::default();
     let mut transform_nodes = FxHashMap::default();
@@ -463,6 +465,16 @@ fn validate_ordered_receiver_steps(
                         None => {
                             owner_nodes.insert(owner.owner, *owner);
                             combined.owner_nodes.push(*owner);
+                        }
+                    }
+                }
+                for snapshot in &artifact.owner_property_states {
+                    match owner_property_states.get(&snapshot.owner) {
+                        Some(old) if old != snapshot => return None,
+                        Some(_) => {}
+                        None => {
+                            owner_property_states.insert(snapshot.owner, *snapshot);
+                            combined.owner_property_states.push(*snapshot);
                         }
                     }
                 }
@@ -638,6 +650,7 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
         layout_position_nodes: Vec::new(),
         visual_offset_nodes: Vec::new(),
         scroll_nodes: Vec::new(),
+        owner_property_states: Vec::new(),
         owner_nodes: Vec::new(),
     };
     let mut content_only = PaintArtifact {
@@ -650,9 +663,11 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
         layout_position_nodes: Vec::new(),
         visual_offset_nodes: Vec::new(),
         scroll_nodes: Vec::new(),
+        owner_property_states: Vec::new(),
         owner_nodes: Vec::new(),
     };
     let mut owner_nodes = FxHashMap::default();
+    let mut owner_property_states = FxHashMap::default();
     let mut clip_nodes = FxHashMap::default();
     let mut effect_nodes = FxHashMap::default();
     let mut transform_nodes = FxHashMap::default();
@@ -663,12 +678,14 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
     let mut content_layout_position_nodes = FxHashMap::default();
     let mut content_visual_offset_nodes = FxHashMap::default();
     let mut content_scroll_nodes = FxHashMap::default();
+    let mut content_owner_property_states = FxHashMap::default();
     let mut child_markers = Vec::new();
     let mut content_opaque_count = 0_u32;
     append_native_scroll_forest_artifact(
         &mut combined,
         host_before,
         &mut owner_nodes,
+        &mut owner_property_states,
         &mut clip_nodes,
         &mut effect_nodes,
         &mut transform_nodes,
@@ -688,6 +705,7 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
                     &mut combined,
                     artifact,
                     &mut owner_nodes,
+                    &mut owner_property_states,
                     &mut clip_nodes,
                     &mut effect_nodes,
                     &mut transform_nodes,
@@ -706,6 +724,7 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
                     &mut content_only,
                     artifact,
                     &mut content_owners,
+                    &mut content_owner_property_states,
                     &mut content_clips,
                     &mut content_effects,
                     &mut content_transform_nodes,
@@ -720,6 +739,7 @@ pub(super) fn compile_native_scroll_forest_boundary_program_for_plan(
         &mut combined,
         overlay_after,
         &mut owner_nodes,
+        &mut owner_property_states,
         &mut clip_nodes,
         &mut effect_nodes,
         &mut transform_nodes,
@@ -784,6 +804,10 @@ fn append_native_scroll_forest_artifact(
     combined: &mut PaintArtifact,
     artifact: &PaintArtifact,
     owner_nodes: &mut FxHashMap<crate::view::node_arena::NodeKey, PaintOwnerSnapshot>,
+    owner_property_states: &mut FxHashMap<
+        crate::view::node_arena::NodeKey,
+        super::PaintOwnerPropertyStateSnapshot,
+    >,
     clip_nodes: &mut FxHashMap<ClipNodeId, ClipNodeSnapshot>,
     effect_nodes: &mut FxHashMap<EffectNodeId, EffectNodeSnapshot>,
     transform_nodes: &mut FxHashMap<TransformNodeId, TransformNodeSnapshot>,
@@ -809,6 +833,16 @@ fn append_native_scroll_forest_artifact(
             None => {
                 owner_nodes.insert(owner.owner, *owner);
                 combined.owner_nodes.push(*owner);
+            }
+        }
+    }
+    for snapshot in &artifact.owner_property_states {
+        match owner_property_states.get(&snapshot.owner) {
+            Some(old) if old != snapshot => return None,
+            Some(_) => {}
+            None => {
+                owner_property_states.insert(snapshot.owner, *snapshot);
+                combined.owner_property_states.push(*snapshot);
             }
         }
     }
@@ -4551,6 +4585,7 @@ fn retained_surface_artifact_span_stamp(
     {
         return None;
     }
+    let (clip_nodes, _) = super::artifact::chunk_raster_property_snapshot_closure(artifact)?;
     let chunks = artifact
         .chunks
         .iter()
@@ -4576,7 +4611,7 @@ fn retained_surface_artifact_span_stamp(
     Some(RetainedSurfaceArtifactSpanStamp {
         step_index,
         owner_topology: artifact.owner_nodes.clone(),
-        clip_nodes: artifact.clip_nodes.clone(),
+        clip_nodes,
         chunks,
         op_count: artifact.ops.len(),
         opaque_order_span,
@@ -9578,8 +9613,6 @@ pub(crate) fn validate_scroll_scene_host_before_artifact(
                 owner: root,
                 parent: None,
             }]
-        || !artifact.clip_nodes.is_empty()
-        || !artifact.effect_nodes.is_empty()
     {
         return None;
     }
@@ -9619,8 +9652,6 @@ pub(crate) fn validate_scroll_scene_content_artifact(
                 owner: content_root,
                 parent: None,
             }]
-        || !artifact.clip_nodes.is_empty()
-        || !artifact.effect_nodes.is_empty()
     {
         return None;
     }
@@ -10155,7 +10186,7 @@ fn isolate_atomic_projection_host_chunk(
     let ops = source.ops.get(chunk.op_range.clone())?.to_vec();
     let mut chunk = chunk.clone();
     chunk.op_range = 0..ops.len();
-    Some(PaintArtifact {
+    let mut artifact = PaintArtifact {
         target: PaintArtifactTarget::CurrentTarget,
         chunks: vec![chunk],
         ops,
@@ -10169,7 +10200,15 @@ fn isolate_atomic_projection_host_chunk(
             owner: root,
             parent: None,
         }],
-    })
+        owner_property_states: source
+            .owner_property_states
+            .iter()
+            .copied()
+            .filter(|snapshot| snapshot.owner == root)
+            .collect(),
+    };
+    super::artifact::project_clip_effect_snapshot_closure(&mut artifact, source)?;
+    Some(artifact)
 }
 
 pub(super) fn localized_atomic_projection_host_bounds(
@@ -11234,8 +11273,6 @@ pub(crate) fn validate_scroll_scene_overlay_artifact(
                 owner: root,
                 parent: None,
             }]
-        || !artifact.clip_nodes.is_empty()
-        || !artifact.effect_nodes.is_empty()
     {
         return None;
     }
@@ -12205,9 +12242,20 @@ fn validate_artifact_store_with_policy(
         }
     };
     let mut referenced_effects = FxHashSet::default();
+    let (raster_clips, raster_effects) =
+        super::artifact::chunk_raster_property_snapshot_closure(artifact)?;
+    let raster_clip_ids = raster_clips
+        .iter()
+        .map(|snapshot| snapshot.id)
+        .collect::<FxHashSet<_>>();
+    let raster_effect_ids = raster_effects
+        .iter()
+        .map(|snapshot| snapshot.id)
+        .collect::<FxHashSet<_>>();
     for (chunk, owner_ancestry) in artifact.chunks.iter().zip(&owner_ancestries) {
         let mut expected_effect_chain = effect_nodes
             .values()
+            .filter(|snapshot| raster_effect_ids.contains(&snapshot.id))
             .filter_map(|snapshot| {
                 owner_ancestry
                     .get(&snapshot.owner)
@@ -12271,6 +12319,19 @@ fn validate_artifact_store_with_policy(
             return None;
         }
     }
+    for endpoint in &artifact.owner_property_states {
+        for state in [endpoint.paint, endpoint.descendants] {
+            let mut cursor = state.effect;
+            let mut seen = FxHashSet::default();
+            while let Some(id) = cursor {
+                if !seen.insert(id) || seen.len() >= usize::from(u8::MAX) {
+                    return None;
+                }
+                referenced_effects.insert(id);
+                cursor = effect_nodes.get(&id)?.parent;
+            }
+        }
+    }
     if referenced_effects.len() != effect_nodes.len() {
         return None;
     }
@@ -12301,17 +12362,18 @@ fn validate_artifact_store_with_policy(
             owner: chunk.owner,
             role: ClipNodeRole::ContentsClip,
         };
-        let self_paint_leaf = if clip_nodes.contains_key(&own_self) {
+        let self_paint_leaf = if raster_clip_ids.contains(&own_self) {
             Some(own_self)
-        } else if let Some(contents) = clip_nodes.get(&own_contents) {
+        } else if raster_clip_ids.contains(&own_contents) {
+            let contents = clip_nodes.get(&own_contents)?;
             contents.parent
         } else {
             chunk.properties.clip
         };
         let expected_leaf = match chunk.id.scope {
             PaintPropertyScope::SelfPaint => self_paint_leaf,
-            PaintPropertyScope::Contents => clip_nodes
-                .contains_key(&own_contents)
+            PaintPropertyScope::Contents => raster_clip_ids
+                .contains(&own_contents)
                 .then_some(own_contents)
                 .or(self_paint_leaf),
         };
@@ -12371,6 +12433,19 @@ fn validate_artifact_store_with_policy(
             };
         }
         resolved.push(clip);
+    }
+    for endpoint in &artifact.owner_property_states {
+        for state in [endpoint.paint, endpoint.descendants] {
+            let mut cursor = state.clip;
+            let mut seen = FxHashSet::default();
+            while let Some(id) = cursor {
+                if !seen.insert(id) || seen.len() >= usize::from(u8::MAX) {
+                    return None;
+                }
+                referenced.insert(id);
+                cursor = clip_nodes.get(&id)?.parent;
+            }
+        }
     }
     if referenced.len() != clip_nodes.len() {
         return None;

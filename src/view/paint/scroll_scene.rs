@@ -23588,7 +23588,7 @@ fn extract_root_scene_chunk(
     let ops = source.ops.get(chunk.op_range.clone())?.to_vec();
     let mut chunk = chunk.clone();
     chunk.op_range = 0..ops.len();
-    Some(PaintArtifact {
+    let mut artifact = PaintArtifact {
         target: PaintArtifactTarget::CurrentTarget,
         chunks: vec![chunk],
         ops,
@@ -23602,7 +23602,15 @@ fn extract_root_scene_chunk(
             owner: root,
             parent: None,
         }],
-    })
+        owner_property_states: source
+            .owner_property_states
+            .iter()
+            .copied()
+            .filter(|snapshot| snapshot.owner == root)
+            .collect(),
+    };
+    super::artifact::project_clip_effect_snapshot_closure(&mut artifact, source)?;
+    Some(artifact)
 }
 
 #[allow(clippy::too_many_arguments)]

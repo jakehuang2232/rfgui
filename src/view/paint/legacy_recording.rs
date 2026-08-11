@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
@@ -45,6 +44,40 @@ use super::{
     PaintArtifact, PaintChunk, PaintCoverageValidationError, PaintRecordingContext,
     PaintScrollContentWitness,
 };
+
+fn replace_owner_topology_with_property_endpoints(
+    artifact: &mut PaintArtifact,
+    owners: &[super::PaintOwnerSnapshot],
+    property_trees: &PropertyTrees,
+) -> Result<(), Vec<FrameArtifactFallbackReason>> {
+    let existing = artifact
+        .owner_property_states
+        .iter()
+        .map(|snapshot| (snapshot.owner, *snapshot))
+        .collect::<FxHashMap<_, _>>();
+    let mut endpoints = Vec::with_capacity(owners.len());
+    for topology in owners {
+        if let Some(snapshot) = existing.get(&topology.owner).copied() {
+            endpoints.push(snapshot);
+            continue;
+        }
+        let state = property_trees
+            .node_state_for(topology.owner)
+            .ok_or_else(|| {
+                vec![FrameArtifactFallbackReason::Validation(
+                    PaintCoverageValidationError::InvalidOwnerSnapshot(topology.owner),
+                )]
+            })?;
+        endpoints.push(super::PaintOwnerPropertyStateSnapshot {
+            owner: topology.owner,
+            paint: state.paint,
+            descendants: state.descendants,
+        });
+    }
+    artifact.owner_nodes = owners.to_vec();
+    artifact.owner_property_states = endpoints;
+    Ok(())
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RetainedAtomicProjectionChunkLiveRasterOracle {
@@ -1770,7 +1803,7 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
     }
     // Coverage materializes chunk owners and ancestors. C3a also seals
     // generated no-paint siblings from the source oracle.
-    artifact.owner_nodes = owners.clone();
+    replace_owner_topology_with_property_endpoints(&mut artifact, &owners, property_trees)?;
     let raster_after = record_atomic_projection_live_raster_oracle(
         arena,
         roots,
@@ -2046,7 +2079,7 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
     }
-    artifact.owner_nodes = owners.clone();
+    replace_owner_topology_with_property_endpoints(&mut artifact, &owners, property_trees)?;
     let raster_after = record_atomic_projection_live_raster_oracle(
         arena,
         roots,
@@ -2237,7 +2270,7 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
     }
-    artifact.owner_nodes = owners.clone();
+    replace_owner_topology_with_property_endpoints(&mut artifact, &owners, property_trees)?;
     let mut selection_indices = artifact
         .chunks
         .iter()
@@ -2721,7 +2754,11 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
     }
-    artifact.owner_nodes = expected_owners.clone();
+    replace_owner_topology_with_property_endpoints(
+        &mut artifact,
+        &expected_owners,
+        property_trees,
+    )?;
     let raster_after = record_atomic_projection_live_raster_oracle(
         arena,
         &[content_root],
@@ -2965,7 +3002,11 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
     }
-    artifact.owner_nodes = expected_owners.clone();
+    replace_owner_topology_with_property_endpoints(
+        &mut artifact,
+        &expected_owners,
+        property_trees,
+    )?;
     let raster_after = record_atomic_projection_live_raster_oracle(
         arena,
         &[content_root],
@@ -3255,7 +3296,11 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
     }
-    artifact.owner_nodes = expected_owners.clone();
+    replace_owner_topology_with_property_endpoints(
+        &mut artifact,
+        &expected_owners,
+        property_trees,
+    )?;
     let mut selection_indices = artifact
         .chunks
         .iter()

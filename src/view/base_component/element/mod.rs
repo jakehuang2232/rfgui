@@ -3248,6 +3248,7 @@ pub trait ElementTrait:
                     layout_position_nodes: Vec::new(),
                     visual_offset_nodes: Vec::new(),
                     scroll_nodes: Vec::new(),
+                    owner_property_states: Vec::new(),
                     owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                         owner,
                         parent: None,
@@ -3804,6 +3805,7 @@ impl PreparedCustomLeafPaint {
             layout_position_nodes: Vec::new(),
             visual_offset_nodes: Vec::new(),
             scroll_nodes: Vec::new(),
+            owner_property_states: Vec::new(),
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
@@ -4038,6 +4040,7 @@ impl PreparedCustomWrapperPaint {
             layout_position_nodes: Vec::new(),
             visual_offset_nodes: Vec::new(),
             scroll_nodes: Vec::new(),
+            owner_property_states: Vec::new(),
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
@@ -8419,6 +8422,7 @@ impl ElementTrait for Element {
                 layout_position_nodes: Vec::new(),
                 visual_offset_nodes: Vec::new(),
                 scroll_nodes: Vec::new(),
+                owner_property_states: Vec::new(),
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,

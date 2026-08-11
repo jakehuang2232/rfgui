@@ -33,7 +33,7 @@ pub(crate) use artifact::{
     PaintChunkRasterIdentity, PaintChunkRole, PaintContentRevision,
     PaintDeferredViewportEffectWitness, PaintDeferredViewportSelfClipWitness,
     PaintNodePhase, PaintNodePlan, PaintOp, PaintOpacityAuthority,
-    PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope,
+    PaintOwnerPropertyStateSnapshot, PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope,
     PaintScrollContentWitness,
     PaintScrollForestEdgeWitness,
     PaintTextContentSource, PaintTextPreeditWitness, PaintTextSelectionSource,
@@ -75,7 +75,8 @@ pub(crate) use recording_context::PaintRecordingContext;
 #[allow(unused_imports)]
 pub(crate) use property_transition::{
     ArtifactCursor, ArtifactOwnerGraph, ArtifactSceneTarget, ArtifactTransitionRequest,
-    ClassifiedTransitionEvent, PropertySnapshotGraph, TransitionError, artifact_cursors,
+    ClassifiedTransitionEvent, OwnerPropertyStateEndpoint, PropertySnapshotGraph,
+    PropertyStateReferenceError, TransitionError, artifact_cursors,
     classify_artifact_transition_sequence, classify_property_transition,
 };
 #[allow(unused_imports)]

@@ -3,7 +3,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::Key;
 
 use crate::view::ImageSampling;
@@ -1518,32 +1518,176 @@ pub(crate) struct PaintArtifact {
     pub(crate) chunks: Vec<PaintChunk>,
     pub(crate) ops: Vec<PaintOp>,
     /// Complete, arena-independent transitive clip snapshot for every clip
-    /// leaf referenced by `chunks`.
+    /// leaf referenced by `chunks` or `owner_property_states`.
     pub(crate) clip_nodes: Vec<ClipNodeSnapshot>,
     /// Complete, arena-independent transitive effect snapshot for every
-    /// effect leaf referenced by `chunks`. M6B validates this store but keeps
-    /// the existing per-op baked opacity as visual authority.
+    /// effect leaf referenced by `chunks` or `owner_property_states`. M6B
+    /// validates this store but keeps the existing per-op baked opacity as
+    /// visual authority.
     pub(crate) effect_nodes: Vec<EffectNodeSnapshot>,
-    /// Complete arena-independent transform graph referenced by `chunks`,
-    /// including its canonical derived owner projection.
+    /// Complete arena-independent transform graph referenced by `chunks` or
+    /// `owner_property_states`, including canonical derived owner projection.
     pub(crate) transform_nodes: Vec<TransformNodeSnapshot>,
-    /// Complete transitive layout-position graph referenced by `chunks`.
+    /// Complete transitive layout-position graph referenced by `chunks` or
+    /// `owner_property_states`.
     pub(crate) layout_position_nodes: Vec<LayoutPositionNodeSnapshot>,
     /// Complete transitive owner-local visual-offset graph referenced by
-    /// `chunks`; parent links preserve ancestor animation composition.
+    /// `chunks` or `owner_property_states`; parent links preserve ancestor
+    /// animation composition.
     pub(crate) visual_offset_nodes: Vec<VisualOffsetNodeSnapshot>,
-    /// Complete transitive scroll graph referenced by `chunks`.
+    /// Complete transitive scroll graph referenced by `chunks` or
+    /// `owner_property_states`.
     pub(crate) scroll_nodes: Vec<ScrollNodeSnapshot>,
     /// Canonical frame-traversal ownership topology for every chunk owner and
     /// its transitive ancestors. Roots are explicitly parentless even if the
     /// same arena node has an out-of-scope parent.
     pub(crate) owner_nodes: Vec<PaintOwnerSnapshot>,
+    /// Projected paint/descendants property endpoints for exactly the owners
+    /// in `owner_nodes`. The producer derives both stores from the same
+    /// chunk-owner ancestor closure; this exact key-set rule does not prove
+    /// completeness for owners outside the artifact scene.
+    pub(crate) owner_property_states: Vec<PaintOwnerPropertyStateSnapshot>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PaintOwnerSnapshot {
     pub(crate) owner: NodeKey,
     pub(crate) parent: Option<NodeKey>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PaintOwnerPropertyStateSnapshot {
+    pub(crate) owner: NodeKey,
+    pub(crate) paint: PropertyTreeState,
+    pub(crate) descendants: PropertyTreeState,
+}
+
+/// Restricts the two stores already materialized by coverage recording to the
+/// clip/effect closure of `target` chunks and owner endpoints. Spatial stores
+/// remain the separate Stage C preflight responsibility; this artifact-local
+/// projection is not a global property-tree completeness claim.
+pub(super) fn project_clip_effect_snapshot_closure(
+    target: &mut PaintArtifact,
+    source: &PaintArtifact,
+) -> Option<()> {
+    let states = target
+        .chunks
+        .iter()
+        .map(|chunk| chunk.properties)
+        .chain(
+            target
+                .owner_property_states
+                .iter()
+                .flat_map(|snapshot| [snapshot.paint, snapshot.descendants]),
+        )
+        .collect::<Vec<_>>();
+
+    let clip_nodes = source
+        .clip_nodes
+        .iter()
+        .map(|snapshot| (snapshot.id, *snapshot))
+        .collect::<FxHashMap<_, _>>();
+    let effect_nodes = source
+        .effect_nodes
+        .iter()
+        .map(|snapshot| (snapshot.id, *snapshot))
+        .collect::<FxHashMap<_, _>>();
+    let mut clips = FxHashSet::default();
+    let mut effects = FxHashSet::default();
+    let mut pending_clips = states
+        .iter()
+        .filter_map(|state| state.clip)
+        .collect::<Vec<_>>();
+    let mut pending_effects = states
+        .iter()
+        .filter_map(|state| state.effect)
+        .collect::<Vec<_>>();
+    while let Some(id) = pending_clips.pop() {
+        if clips.insert(id) {
+            if let Some(parent) = clip_nodes.get(&id)?.parent {
+                pending_clips.push(parent);
+            }
+        }
+    }
+    while let Some(id) = pending_effects.pop() {
+        if effects.insert(id) {
+            if let Some(parent) = effect_nodes.get(&id)?.parent {
+                pending_effects.push(parent);
+            }
+        }
+    }
+    target.clip_nodes = source
+        .clip_nodes
+        .iter()
+        .copied()
+        .filter(|snapshot| clips.contains(&snapshot.id))
+        .collect();
+    target.effect_nodes = source
+        .effect_nodes
+        .iter()
+        .copied()
+        .filter(|snapshot| effects.contains(&snapshot.id))
+        .collect();
+    Some(())
+}
+
+/// Returns only the clip/effect snapshots that participate in chunk raster
+/// semantics. Owner endpoints may legitimately extend the artifact stores,
+/// but those endpoint-only snapshots are transition data rather than raster
+/// identity. Source order is preserved for the frozen identity callers.
+pub(super) fn chunk_raster_property_snapshot_closure(
+    artifact: &PaintArtifact,
+) -> Option<(Vec<ClipNodeSnapshot>, Vec<EffectNodeSnapshot>)> {
+    let clip_nodes = artifact
+        .clip_nodes
+        .iter()
+        .map(|snapshot| (snapshot.id, *snapshot))
+        .collect::<FxHashMap<_, _>>();
+    let effect_nodes = artifact
+        .effect_nodes
+        .iter()
+        .map(|snapshot| (snapshot.id, *snapshot))
+        .collect::<FxHashMap<_, _>>();
+    let mut clips = FxHashSet::default();
+    let mut effects = FxHashSet::default();
+    let mut pending_clips = artifact
+        .chunks
+        .iter()
+        .filter_map(|chunk| chunk.properties.clip)
+        .collect::<Vec<_>>();
+    let mut pending_effects = artifact
+        .chunks
+        .iter()
+        .filter_map(|chunk| chunk.properties.effect)
+        .collect::<Vec<_>>();
+    while let Some(id) = pending_clips.pop() {
+        if clips.insert(id) {
+            if let Some(parent) = clip_nodes.get(&id).and_then(|snapshot| snapshot.parent) {
+                pending_clips.push(parent);
+            }
+        }
+    }
+    while let Some(id) = pending_effects.pop() {
+        if effects.insert(id) {
+            if let Some(parent) = effect_nodes.get(&id).and_then(|snapshot| snapshot.parent) {
+                pending_effects.push(parent);
+            }
+        }
+    }
+    Some((
+        artifact
+            .clip_nodes
+            .iter()
+            .copied()
+            .filter(|snapshot| clips.contains(&snapshot.id))
+            .collect(),
+        artifact
+            .effect_nodes
+            .iter()
+            .copied()
+            .filter(|snapshot| effects.contains(&snapshot.id))
+            .collect(),
+    ))
 }
 
 #[derive(Clone, Debug)]
@@ -1772,6 +1916,7 @@ impl RetainedChildMaskPlan {
             layout_position_nodes: Vec::new(),
             visual_offset_nodes: Vec::new(),
             scroll_nodes: Vec::new(),
+            owner_property_states: Vec::new(),
             owner_nodes: vec![PaintOwnerSnapshot {
                 owner,
                 parent: None,

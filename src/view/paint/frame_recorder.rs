@@ -2306,9 +2306,11 @@ where
 /// V2 candidate preflight. This is deliberately not called by the existing
 /// retained recorder: a missing spatial contract must reject the future V2
 /// candidate without changing the current retained authority before cutover.
-/// On success the artifact owns every transitive spatial snapshot needed by a
-/// sealed layerizer plan and no later stage needs the arena.
-fn populate_referenced_property_snapshots(
+/// On success the artifact owns every transitive property snapshot needed by
+/// its chunk states and recorded owner endpoints, and no later stage needs the
+/// arena. This closure is complete only for the artifact's admitted owner set;
+/// it is not a global property-tree completeness claim.
+pub(super) fn populate_referenced_property_snapshots(
     artifact: &mut PaintArtifact,
     property_trees: &PropertyTrees,
 ) -> Result<(), Vec<FrameArtifactFallbackReason>> {
@@ -2317,15 +2319,63 @@ fn populate_referenced_property_snapshots(
     artifact.visual_offset_nodes.clear();
     artifact.scroll_nodes.clear();
 
+    let referenced_states = artifact
+        .chunks
+        .iter()
+        .map(|chunk| (chunk.owner, chunk.properties))
+        .chain(artifact.owner_property_states.iter().flat_map(|snapshot| {
+            [
+                (snapshot.owner, snapshot.paint),
+                (snapshot.owner, snapshot.descendants),
+            ]
+        }))
+        .collect::<Vec<_>>();
+
+    let mut clips = FxHashMap::default();
+    for snapshot in artifact.clip_nodes.iter().copied() {
+        if merge_snapshot(&mut clips, snapshot.id, snapshot) == SnapshotMerge::Conflict {
+            return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+                snapshot.owner,
+            )]);
+        }
+    }
+    let mut effects = FxHashMap::default();
+    for snapshot in artifact.effect_nodes.iter().copied() {
+        if merge_snapshot(&mut effects, snapshot.id, snapshot) == SnapshotMerge::Conflict {
+            return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
+                snapshot.owner,
+            )]);
+        }
+    }
     let mut transforms = FxHashMap::<TransformNodeId, TransformNodeSnapshot>::default();
     let mut positions = FxHashMap::<LayoutPositionNodeId, LayoutPositionNodeSnapshot>::default();
     let mut visuals = FxHashMap::<VisualOffsetNodeId, VisualOffsetNodeSnapshot>::default();
     let mut scrolls = FxHashMap::<ScrollNodeId, ScrollNodeSnapshot>::default();
-    for chunk in &artifact.chunks {
-        let invalid = || vec![FrameArtifactFallbackReason::PropertyBoundary(chunk.owner)];
+    for (owner, state) in referenced_states {
+        let invalid = || vec![FrameArtifactFallbackReason::PropertyBoundary(owner)];
+        for snapshot in property_trees
+            .clip_snapshot_for(state.clip)
+            .ok_or_else(invalid)?
+        {
+            match merge_snapshot(&mut clips, snapshot.id, snapshot) {
+                SnapshotMerge::Inserted => artifact.clip_nodes.push(snapshot),
+                SnapshotMerge::Identical => {}
+                SnapshotMerge::Conflict => return Err(invalid()),
+            }
+        }
+        for snapshot in property_trees
+            .effect_snapshot_for(state.effect)
+            .ok_or_else(invalid)?
+        {
+            match merge_snapshot(&mut effects, snapshot.id, snapshot) {
+                SnapshotMerge::Inserted => artifact.effect_nodes.push(snapshot),
+                SnapshotMerge::Identical => {}
+                SnapshotMerge::Conflict => return Err(invalid()),
+            }
+        }
         let mut anchor_visual_roots = Vec::new();
         for snapshot in property_trees
-            .transform_snapshot_chain_for(chunk.properties.transform)
+            .transform_snapshot_chain_for(state.transform)
             .ok_or_else(invalid)?
         {
             match merge_snapshot(&mut transforms, snapshot.id, snapshot) {
@@ -2335,7 +2385,7 @@ fn populate_referenced_property_snapshots(
             }
         }
         for snapshot in property_trees
-            .layout_position_snapshot_chain_for(chunk.properties.layout_position)
+            .layout_position_snapshot_chain_for(state.layout_position)
             .ok_or_else(invalid)?
         {
             if let SpatialPositionReference::Anchor(anchor) = snapshot.reference {
@@ -2360,7 +2410,7 @@ fn populate_referenced_property_snapshots(
             }
         }
         for snapshot in property_trees
-            .visual_offset_snapshot_chain_for(chunk.properties.visual_offset)
+            .visual_offset_snapshot_chain_for(state.visual_offset)
             .ok_or_else(invalid)?
         {
             match merge_snapshot(&mut visuals, snapshot.id, snapshot) {
@@ -2382,7 +2432,7 @@ fn populate_referenced_property_snapshots(
             }
         }
         for snapshot in property_trees
-            .scroll_snapshot_chain_for(chunk.properties.scroll)
+            .scroll_snapshot_chain_for(state.scroll)
             .ok_or_else(invalid)?
         {
             match merge_snapshot(&mut scrolls, snapshot.id, snapshot) {
@@ -2417,6 +2467,7 @@ fn materialize_transform_surface_steps(
             crate::view::compositor::property_tree::EffectNodeSnapshot,
         >,
         owners: FxHashMap<NodeKey, super::PaintOwnerSnapshot>,
+        owner_property_states: FxHashMap<NodeKey, super::PaintOwnerPropertyStateSnapshot>,
     }
     impl SpanBuilder {
         fn new() -> Self {
@@ -2428,6 +2479,7 @@ fn materialize_transform_surface_steps(
                 clips: FxHashMap::default(),
                 effects: FxHashMap::default(),
                 owners: FxHashMap::default(),
+                owner_property_states: FxHashMap::default(),
             }
         }
 
@@ -2445,6 +2497,7 @@ fn materialize_transform_surface_steps(
             self.clips.clear();
             self.effects.clear();
             self.owners.clear();
+            self.owner_property_states.clear();
         }
     }
 
@@ -2458,6 +2511,7 @@ fn materialize_transform_surface_steps(
                 clip_snapshot,
                 effect_snapshot,
                 owner_snapshot,
+                owner_property_state_snapshot,
                 ops: Some(ops),
                 ..
             } => {
@@ -2504,6 +2558,22 @@ fn materialize_transform_surface_steps(
                         SnapshotMerge::Conflict => {
                             return Err(conflict(
                                 PaintCoverageValidationError::ConflictingOwnerSnapshot(
+                                    snapshot.owner,
+                                ),
+                            ));
+                        }
+                    }
+                }
+                for snapshot in owner_property_state_snapshot {
+                    match merge_snapshot(&mut span.owner_property_states, snapshot.owner, snapshot)
+                    {
+                        SnapshotMerge::Inserted => {
+                            span.artifact.owner_property_states.push(snapshot)
+                        }
+                        SnapshotMerge::Identical => {}
+                        SnapshotMerge::Conflict => {
+                            return Err(conflict(
+                                PaintCoverageValidationError::ConflictingOwnerPropertyState(
                                     snapshot.owner,
                                 ),
                             ));
@@ -2713,7 +2783,7 @@ fn record_frame_artifact_with_policy_and_stack(
 ///
 /// Policy-free by construction: every property assertion has run by the time
 /// this is called, so the only failures left are snapshot conflicts between
-/// two chunks that claim the same node.
+/// two chunks that claim the same node or owner endpoint pair.
 pub(super) fn materialize_frame_artifact(
     manifest: super::PaintCoverageManifest,
     target: PaintArtifactTarget,
@@ -2727,12 +2797,14 @@ pub(super) fn materialize_frame_artifact(
     let mut seen_clip_nodes = FxHashMap::default();
     let mut seen_effect_nodes = FxHashMap::default();
     let mut seen_owner_nodes = FxHashMap::default();
+    let mut seen_owner_property_states = FxHashMap::default();
     for item in manifest.items {
         let PaintCoverageItem::ArtifactChunk {
             chunk,
             clip_snapshot,
             effect_snapshot,
             owner_snapshot,
+            owner_property_state_snapshot,
             ops: Some(ops),
             ..
         } = item
@@ -2804,6 +2876,25 @@ pub(super) fn materialize_frame_artifact(
                         .reasons
                         .push(FrameArtifactFallbackReason::Validation(
                             PaintCoverageValidationError::ConflictingOwnerSnapshot(snapshot.owner),
+                        ));
+                    return fallback_or_forced(mode, eligibility);
+                }
+                SnapshotMerge::Identical => {}
+            }
+        }
+        for snapshot in owner_property_state_snapshot {
+            match merge_snapshot(&mut seen_owner_property_states, snapshot.owner, snapshot) {
+                SnapshotMerge::Inserted => {
+                    artifact.owner_property_states.push(snapshot);
+                }
+                SnapshotMerge::Conflict => {
+                    eligibility.eligible = false;
+                    eligibility
+                        .reasons
+                        .push(FrameArtifactFallbackReason::Validation(
+                            PaintCoverageValidationError::ConflictingOwnerPropertyState(
+                                snapshot.owner,
+                            ),
                         ));
                     return fallback_or_forced(mode, eligibility);
                 }
@@ -3332,6 +3423,7 @@ pub(super) fn canonical_manifest_matches(
                     clip_snapshot: left_clip_snapshot,
                     effect_snapshot: left_effect_snapshot,
                     owner_snapshot: left_owner_snapshot,
+                    owner_property_state_snapshot: left_owner_property_state_snapshot,
                     ops: None,
                 },
                 PaintCoverageItem::ArtifactChunk {
@@ -3340,6 +3432,7 @@ pub(super) fn canonical_manifest_matches(
                     clip_snapshot: right_clip_snapshot,
                     effect_snapshot: right_effect_snapshot,
                     owner_snapshot: right_owner_snapshot,
+                    owner_property_state_snapshot: right_owner_property_state_snapshot,
                     ops: Some(_),
                 },
             ) => {
@@ -3356,6 +3449,7 @@ pub(super) fn canonical_manifest_matches(
                     && left_clip_snapshot == right_clip_snapshot
                     && left_effect_snapshot == right_effect_snapshot
                     && left_owner_snapshot == right_owner_snapshot
+                    && left_owner_property_state_snapshot == right_owner_property_state_snapshot
             }
             (
                 PaintCoverageItem::TransparentNode {

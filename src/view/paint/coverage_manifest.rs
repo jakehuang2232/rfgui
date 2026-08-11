@@ -12,7 +12,7 @@ use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::{
     LegacyPaintReason, PaintChunkMetadata, PaintContentRevision, PaintNodePhase, PaintNodePlan,
-    PaintOwnerSnapshot, PaintPropertyScope, PaintRecordingContext,
+    PaintOwnerPropertyStateSnapshot, PaintOwnerSnapshot, PaintPropertyScope, PaintRecordingContext,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -88,6 +88,7 @@ pub(crate) enum PaintCoverageItem {
         clip_snapshot: Vec<ClipNodeSnapshot>,
         effect_snapshot: Vec<EffectNodeSnapshot>,
         owner_snapshot: Vec<PaintOwnerSnapshot>,
+        owner_property_state_snapshot: Vec<PaintOwnerPropertyStateSnapshot>,
         ops: Option<Vec<super::PaintOp>>,
     },
     TransparentNode {
@@ -143,6 +144,7 @@ pub(crate) enum PaintCoverageValidationError {
     InvalidClipSnapshot(NodeKey),
     InvalidEffectSnapshot(NodeKey),
     InvalidOwnerSnapshot(NodeKey),
+    ConflictingOwnerPropertyState(NodeKey),
     ConflictingClipSnapshot(ClipNodeId),
     ConflictingEffectSnapshot(EffectNodeId),
     ConflictingOwnerSnapshot(NodeKey),
@@ -721,6 +723,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
         deferred_roots: &'a FxHashSet<NodeKey>,
         properties: &'a PropertyTrees,
         owner_parents: &'a FxHashMap<NodeKey, Option<NodeKey>>,
+        observed_owner_property_states: &'a mut FxHashMap<NodeKey, PaintOwnerPropertyStateSnapshot>,
         generations: &'a PaintGenerationTracker,
         recording_mode: CoverageRecordingMode,
         transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
@@ -1037,6 +1040,28 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     return;
                 };
                 contents_properties.clip = projected;
+            }
+            let owner_property_state = PaintOwnerPropertyStateSnapshot {
+                owner: key,
+                paint: properties,
+                descendants: contents_properties,
+            };
+            if let Some(existing) = self.observed_owner_property_states.get(&key) {
+                if *existing != owner_property_state {
+                    self.validation_errors.push(
+                        PaintCoverageValidationError::ConflictingOwnerPropertyState(key),
+                    );
+                    self.push_legacy_boundary(
+                        key,
+                        stable_id,
+                        LegacyPaintReason::MissingPaintIdentity,
+                        order,
+                    );
+                    return;
+                }
+            } else {
+                self.observed_owner_property_states
+                    .insert(key, owner_property_state);
             }
             recording_context.authoritative_self_clip = self
                 .properties
@@ -1383,9 +1408,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     );
                     return None;
                 }
-                let Some(mut clip_snapshot) =
-                    self.properties.clip_snapshot_for(chunk.properties.clip)
-                else {
+                let Some(mut clip_snapshot) = self.clip_snapshot_for(chunk.properties) else {
                     self.reject_invalid_chunk(
                         key,
                         stable_id,
@@ -1394,9 +1417,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     );
                     return None;
                 };
-                let Some(mut effect_snapshot) =
-                    self.properties.effect_snapshot_for(chunk.properties.effect)
-                else {
+                let Some(mut effect_snapshot) = self.effect_snapshot_for(chunk.properties) else {
                     self.reject_invalid_chunk(
                         key,
                         stable_id,
@@ -1405,45 +1426,9 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     );
                     return None;
                 };
-                if let Some(authority) = self.legacy_text_area_authority
-                    && authority.detaches_clip_snapshot()
-                {
-                    let Some(detached) = authority.detach_clip_snapshot(&clip_snapshot) else {
-                        self.reject_invalid_chunk(
-                            key,
-                            stable_id,
-                            order.clone(),
-                            PaintCoverageValidationError::InvalidClipSnapshot(key),
-                        );
-                        return None;
-                    };
-                    clip_snapshot = detached;
-                }
-                if let Some(authority) = self.effect_surface_authority {
-                    let Some(detached) =
-                        authority.detach_effect_snapshot(chunk.properties.effect, &effect_snapshot)
-                    else {
-                        self.reject_invalid_chunk(
-                            key,
-                            stable_id,
-                            order.clone(),
-                            PaintCoverageValidationError::InvalidEffectSnapshot(key),
-                        );
-                        return None;
-                    };
-                    effect_snapshot = detached;
-                    let Some(detached) = authority.detach_clip_snapshot(&clip_snapshot) else {
-                        self.reject_invalid_chunk(
-                            key,
-                            stable_id,
-                            order.clone(),
-                            PaintCoverageValidationError::InvalidClipSnapshot(key),
-                        );
-                        return None;
-                    };
-                    clip_snapshot = detached;
-                }
-                let Some(owner_snapshot) = self.owner_snapshot_for(key) else {
+                let Some((owner_snapshot, owner_property_state_snapshot)) =
+                    self.owner_snapshot_for(key)
+                else {
                     self.reject_invalid_chunk(
                         key,
                         stable_id,
@@ -1452,12 +1437,75 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     );
                     return None;
                 };
+                for endpoint in &owner_property_state_snapshot {
+                    for state in [endpoint.paint, endpoint.descendants] {
+                        let Some(endpoint_clips) = self.clip_snapshot_for(state) else {
+                            self.reject_invalid_chunk(
+                                key,
+                                stable_id,
+                                order.clone(),
+                                PaintCoverageValidationError::InvalidClipSnapshot(endpoint.owner),
+                            );
+                            return None;
+                        };
+                        for snapshot in endpoint_clips {
+                            match clip_snapshot
+                                .iter()
+                                .find(|existing| existing.id == snapshot.id)
+                            {
+                                Some(existing) if *existing != snapshot => {
+                                    self.reject_invalid_chunk(
+                                        key,
+                                        stable_id,
+                                        order.clone(),
+                                        PaintCoverageValidationError::ConflictingClipSnapshot(
+                                            snapshot.id,
+                                        ),
+                                    );
+                                    return None;
+                                }
+                                Some(_) => {}
+                                None => clip_snapshot.push(snapshot),
+                            }
+                        }
+                        let Some(endpoint_effects) = self.effect_snapshot_for(state) else {
+                            self.reject_invalid_chunk(
+                                key,
+                                stable_id,
+                                order.clone(),
+                                PaintCoverageValidationError::InvalidEffectSnapshot(endpoint.owner),
+                            );
+                            return None;
+                        };
+                        for snapshot in endpoint_effects {
+                            match effect_snapshot
+                                .iter()
+                                .find(|existing| existing.id == snapshot.id)
+                            {
+                                Some(existing) if *existing != snapshot => {
+                                    self.reject_invalid_chunk(
+                                        key,
+                                        stable_id,
+                                        order.clone(),
+                                        PaintCoverageValidationError::ConflictingEffectSnapshot(
+                                            snapshot.id,
+                                        ),
+                                    );
+                                    return None;
+                                }
+                                Some(_) => {}
+                                None => effect_snapshot.push(snapshot),
+                            }
+                        }
+                    }
+                }
                 prepared.push(PaintCoverageItem::ArtifactChunk {
                     order,
                     chunk,
                     clip_snapshot,
                     effect_snapshot,
                     owner_snapshot,
+                    owner_property_state_snapshot,
                     ops,
                 });
             }
@@ -1506,19 +1554,51 @@ fn record_coverage_manifest_with_property_authorities_impl(
             }
         }
 
-        fn owner_snapshot_for(&self, leaf: NodeKey) -> Option<Vec<PaintOwnerSnapshot>> {
-            let mut snapshots = Vec::new();
+        fn clip_snapshot_for(&self, state: PropertyTreeState) -> Option<Vec<ClipNodeSnapshot>> {
+            let mut snapshots = self.properties.clip_snapshot_for(state.clip)?;
+            if let Some(authority) = self.legacy_text_area_authority
+                && authority.detaches_clip_snapshot()
+            {
+                snapshots = authority.detach_clip_snapshot(&snapshots)?;
+            }
+            if let Some(authority) = self.effect_surface_authority {
+                snapshots = authority.detach_clip_snapshot(&snapshots)?;
+            }
+            Some(snapshots)
+        }
+
+        fn effect_snapshot_for(&self, state: PropertyTreeState) -> Option<Vec<EffectNodeSnapshot>> {
+            let snapshots = self.properties.effect_snapshot_for(state.effect)?;
+            match self.effect_surface_authority {
+                Some(authority) => authority.detach_effect_snapshot(state.effect, &snapshots),
+                None => Some(snapshots),
+            }
+        }
+
+        /// Derives topology and endpoint payloads from the same chunk-owner
+        /// ancestor closure. It deliberately says nothing about owners outside
+        /// this artifact scene; traversal observation alone never admits one.
+        fn owner_snapshot_for(
+            &self,
+            leaf: NodeKey,
+        ) -> Option<(
+            Vec<PaintOwnerSnapshot>,
+            Vec<PaintOwnerPropertyStateSnapshot>,
+        )> {
+            let mut topology = Vec::new();
+            let mut property_states = Vec::new();
             let mut seen = FxHashSet::default();
             let mut cursor = Some(leaf);
             while let Some(owner) = cursor {
-                if !seen.insert(owner) || snapshots.len() >= usize::from(u8::MAX) {
+                if !seen.insert(owner) || topology.len() >= usize::from(u8::MAX) {
                     return None;
                 }
                 let parent = *self.owner_parents.get(&owner)?;
-                snapshots.push(PaintOwnerSnapshot { owner, parent });
+                topology.push(PaintOwnerSnapshot { owner, parent });
+                property_states.push(*self.observed_owner_property_states.get(&owner)?);
                 cursor = parent;
             }
-            Some(snapshots)
+            Some((topology, property_states))
         }
 
         fn reject_invalid_chunk(
@@ -1553,12 +1633,14 @@ fn record_coverage_manifest_with_property_authorities_impl(
         }
     }
 
+    let mut observed_owner_property_states = FxHashMap::default();
     let mut recorder = Recorder {
         arena,
         force_legacy_roots,
         deferred_roots: &deferred_set,
         properties: property_trees,
         owner_parents: &owner_parents,
+        observed_owner_property_states: &mut observed_owner_property_states,
         generations: paint_generations,
         recording_mode,
         transform_surface_authority,
@@ -1868,6 +1950,7 @@ mod tests {
                 layout_position_nodes: Vec::new(),
                 visual_offset_nodes: Vec::new(),
                 scroll_nodes: Vec::new(),
+                owner_property_states: Vec::new(),
                 owner_nodes: Vec::new(),
             };
             PaintNodePlan {

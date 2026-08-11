@@ -18,8 +18,9 @@ use crate::view::node_arena::Node;
 use crate::view::paint::tests::exact_isolation_fixture;
 use crate::view::paint::{
     PaintBakedScrollHostWitness, PaintChunk, PaintChunkId, PaintChunkRole, PaintContentRevision,
-    PaintNodePhase, PaintPayloadIdentity, PaintPropertyScope, PaintScrollContentWitness,
-    PlannedBoundary, PlannedBoundaryKind, RETAINED_CHILD_MASK_SLOT, RetainedSurfaceCompileAction,
+    PaintNodePhase, PaintOwnerPropertyStateSnapshot, PaintPayloadIdentity, PaintPropertyScope,
+    PaintScrollContentWitness, PlannedBoundary, PlannedBoundaryKind, RETAINED_CHILD_MASK_SLOT,
+    RetainedSurfaceCompileAction,
 };
 use crate::view::test_support::{commit_child, commit_element, measure_and_place, new_test_arena};
 use crate::view::viewport::Viewport;
@@ -672,7 +673,16 @@ fn stage_c_classification_artifact_fixture(
         let generation = generations
             .local_generations_for(owner)
             .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)])?;
-        artifact.owner_nodes.push(PaintOwnerSnapshot { owner, parent });
+        artifact
+            .owner_nodes
+            .push(PaintOwnerSnapshot { owner, parent });
+        artifact
+            .owner_property_states
+            .push(PaintOwnerPropertyStateSnapshot {
+                owner,
+                paint: state.paint,
+                descendants: state.descendants,
+            });
         artifact.chunks.push(PaintChunk {
             id: PaintChunkId {
                 owner,

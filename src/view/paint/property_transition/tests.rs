@@ -16,7 +16,8 @@ use crate::view::{
 
 use crate::view::paint::{
     DrawRectOp, PaintChunk, PaintChunkId, PaintChunkRole, PaintContentRevision, PaintNodePhase,
-    PaintOp, PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope,
+    PaintOp, PaintOwnerPropertyStateSnapshot, PaintOwnerSnapshot, PaintPayloadIdentity,
+    PaintPropertyScope,
 };
 
 fn insert_owner(arena: &mut NodeArena, stable_id: u64) -> NodeKey {
@@ -238,6 +239,18 @@ fn complete_artifact() -> (
                 parent: Some(root),
             },
         ],
+        owner_property_states: vec![
+            PaintOwnerPropertyStateSnapshot {
+                owner: root,
+                paint: PropertyTreeState::default(),
+                descendants: PropertyTreeState::default(),
+            },
+            PaintOwnerPropertyStateSnapshot {
+                owner: child,
+                paint: PropertyTreeState::default(),
+                descendants: PropertyTreeState::default(),
+            },
+        ],
         ..PaintArtifact::default()
     };
     let from = PropertyTreeState {
@@ -347,6 +360,93 @@ fn classifier_rejects_every_missing_dimension_with_a_typed_owner() {
             Err(expected),
         );
     }
+}
+
+#[test]
+fn artifact_owner_property_state_keys_must_match_owner_topology_in_both_directions() {
+    let (artifact, _, _, _, outside) = complete_artifact();
+    let topology_owner = artifact.owner_nodes[0].owner;
+
+    let mut missing = artifact.clone();
+    missing
+        .owner_property_states
+        .retain(|snapshot| snapshot.owner != topology_owner);
+    assert_eq!(
+        PropertySnapshotGraph::try_from_artifact(&missing).err(),
+        Some(TransitionError::MissingOwnerPropertyState(topology_owner)),
+    );
+
+    let mut unreferenced = artifact;
+    unreferenced
+        .owner_property_states
+        .push(PaintOwnerPropertyStateSnapshot {
+            owner: outside,
+            paint: PropertyTreeState::default(),
+            descendants: PropertyTreeState::default(),
+        });
+    assert_eq!(
+        PropertySnapshotGraph::try_from_artifact(&unreferenced).err(),
+        Some(TransitionError::UnreferencedOwnerPropertyState(outside)),
+    );
+
+    let mut duplicate = unreferenced;
+    duplicate.owner_property_states.pop();
+    duplicate
+        .owner_property_states
+        .push(duplicate.owner_property_states[0]);
+    assert_eq!(
+        PropertySnapshotGraph::try_from_artifact(&duplicate).err(),
+        Some(TransitionError::DuplicateOwnerPropertyState(
+            duplicate.owner_property_states[0].owner,
+        )),
+    );
+}
+
+#[test]
+fn artifact_rejects_a_dangling_endpoint_before_any_owner_is_classified() {
+    let (mut artifact, _, _, _, missing) = complete_artifact();
+    let owner = artifact.owner_nodes[0].owner;
+    artifact
+        .owner_property_states
+        .iter_mut()
+        .find(|snapshot| snapshot.owner == owner)
+        .expect("root endpoint")
+        .descendants
+        .scroll = Some(ScrollNodeId(missing));
+
+    assert_eq!(
+        PropertySnapshotGraph::try_from_artifact(&artifact).err(),
+        Some(TransitionError::InvalidOwnerPropertyState {
+            owner,
+            endpoint: OwnerPropertyStateEndpoint::Descendants,
+            reason: PropertyStateReferenceError::UnknownScroll(ScrollNodeId(missing)),
+        }),
+    );
+}
+
+#[test]
+fn dangling_endpoint_rejection_preserves_owner_side_and_property_reason() {
+    let (mut artifact, _, _, owner, missing) = complete_artifact();
+    let clip = ClipNodeId {
+        owner: missing,
+        role: ClipNodeRole::SelfClip,
+    };
+    artifact
+        .owner_property_states
+        .iter_mut()
+        .find(|snapshot| snapshot.owner == owner)
+        .expect("child endpoint")
+        .paint
+        .clip = Some(clip);
+
+    assert_eq!(
+        PropertySnapshotGraph::try_from_artifact(&artifact).err(),
+        Some(TransitionError::InvalidOwnerPropertyState {
+            owner,
+            endpoint: OwnerPropertyStateEndpoint::Paint,
+            reason: PropertyStateReferenceError::UnknownClip(clip),
+        }),
+    );
 }
 
 #[test]
@@ -525,6 +625,12 @@ fn transition_error_taxonomy_is_exhaustive() {
                 "unknown-layout-position-reference"
             }
             TransitionError::UnknownVisualOffsetReference(_) => "unknown-visual-offset-reference",
+            TransitionError::DuplicateOwnerPropertyState(_) => "duplicate-owner-property-state",
+            TransitionError::MissingOwnerPropertyState(_) => "missing-owner-property-state",
+            TransitionError::UnreferencedOwnerPropertyState(_) => {
+                "unreferenced-owner-property-state"
+            }
+            TransitionError::InvalidOwnerPropertyState { .. } => "invalid-owner-property-state",
             TransitionError::DuplicateOwner(_) => "duplicate-owner",
             TransitionError::InvalidOwner(_) => "invalid-owner",
             TransitionError::MissingOwnerParent(_) => "missing-owner-parent",

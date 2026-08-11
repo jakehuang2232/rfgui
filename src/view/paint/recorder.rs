@@ -6,7 +6,7 @@ use crate::view::node_arena::{NodeArena, NodeKey};
 
 #[cfg(test)]
 use super::PaintChunkMetadata;
-use super::{PaintArtifact, PaintOwnerSnapshot};
+use super::{PaintArtifact, PaintOwnerPropertyStateSnapshot, PaintOwnerSnapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum LegacyPaintReason {
@@ -69,6 +69,9 @@ pub(crate) fn record_root(
     let Some(properties) = property_trees.paint_state_for(root) else {
         return legacy(root, stable_id, LegacyPaintReason::MissingPaintIdentity);
     };
+    let Some(owner_property_state) = property_trees.node_state_for(root) else {
+        return legacy(root, stable_id, LegacyPaintReason::MissingPaintIdentity);
+    };
     let Some(generations) = paint_generations.local_generations_for(root) else {
         return legacy(root, stable_id, LegacyPaintReason::MissingPaintIdentity);
     };
@@ -92,9 +95,40 @@ pub(crate) fn record_root(
             };
             artifact.clip_nodes = clip_nodes;
             artifact.effect_nodes = effect_nodes;
+            for state in [owner_property_state.paint, owner_property_state.descendants] {
+                let Some(clips) = property_trees.clip_snapshot_for(state.clip) else {
+                    return legacy(root, stable_id, LegacyPaintReason::MissingPaintIdentity);
+                };
+                for snapshot in clips {
+                    if !artifact
+                        .clip_nodes
+                        .iter()
+                        .any(|existing| existing.id == snapshot.id)
+                    {
+                        artifact.clip_nodes.push(snapshot);
+                    }
+                }
+                let Some(effects) = property_trees.effect_snapshot_for(state.effect) else {
+                    return legacy(root, stable_id, LegacyPaintReason::MissingPaintIdentity);
+                };
+                for snapshot in effects {
+                    if !artifact
+                        .effect_nodes
+                        .iter()
+                        .any(|existing| existing.id == snapshot.id)
+                    {
+                        artifact.effect_nodes.push(snapshot);
+                    }
+                }
+            }
             artifact.owner_nodes = vec![PaintOwnerSnapshot {
                 owner: root,
                 parent: None,
+            }];
+            artifact.owner_property_states = vec![PaintOwnerPropertyStateSnapshot {
+                owner: root,
+                paint: owner_property_state.paint,
+                descendants: owner_property_state.descendants,
             }];
             PaintRecordOutcome::Artifact(artifact)
         }

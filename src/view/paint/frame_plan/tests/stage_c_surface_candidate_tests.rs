@@ -192,6 +192,17 @@ fn stage_c_scroll_surface_rejects_a_missing_contents_clip_with_exact_identity() 
     artifact
         .clip_nodes
         .retain(|snapshot| snapshot.id != expected);
+    // Keep this C2a test focused on the scroll snapshot's required contents
+    // clip. Batch 1 separately proves that a dangling owner endpoint rejects
+    // at artifact construction, so this synthetic endpoint must remain valid
+    // to reach the candidate-specific contract below.
+    for snapshot in &mut artifact.owner_property_states {
+        for state in [&mut snapshot.paint, &mut snapshot.descendants] {
+            if state.clip == Some(expected) {
+                state.clip = None;
+            }
+        }
+    }
 
     assert_eq!(
         derive_artifact_surface_candidates(

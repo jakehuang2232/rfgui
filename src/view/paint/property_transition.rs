@@ -38,6 +38,14 @@ pub(crate) enum TransitionError {
     UnknownScrollReference(ScrollNodeId),
     UnknownLayoutPositionReference(LayoutPositionNodeId),
     UnknownVisualOffsetReference(VisualOffsetNodeId),
+    DuplicateOwnerPropertyState(NodeKey),
+    MissingOwnerPropertyState(NodeKey),
+    UnreferencedOwnerPropertyState(NodeKey),
+    InvalidOwnerPropertyState {
+        owner: NodeKey,
+        endpoint: OwnerPropertyStateEndpoint,
+        reason: PropertyStateReferenceError,
+    },
     DuplicateOwner(NodeKey),
     InvalidOwner(NodeKey),
     MissingOwnerParent(NodeKey),
@@ -51,6 +59,22 @@ pub(crate) enum TransitionError {
         previous_chunk: usize,
         current_chunk: usize,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OwnerPropertyStateEndpoint {
+    Paint,
+    Descendants,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PropertyStateReferenceError {
+    UnknownTransform(TransformNodeId),
+    UnknownClip(ClipNodeId),
+    UnknownEffect(EffectNodeId),
+    UnknownScroll(ScrollNodeId),
+    UnknownLayoutPosition(LayoutPositionNodeId),
+    UnknownVisualOffset(VisualOffsetNodeId),
 }
 
 /// Validated, arena-independent property snapshot graph backing C1.
@@ -158,46 +182,120 @@ impl PropertySnapshotGraph {
             TransitionError::CyclicEffect,
         )?;
 
-        Ok(Self {
+        let graph = Self {
             transforms,
             clips: clip_parents,
             effects: effect_parents,
             scrolls,
             layout_positions,
             visual_offsets,
-        })
+        };
+
+        let mut owner_property_states = FxHashSet::default();
+        for snapshot in &artifact.owner_property_states {
+            if !owner_property_states.insert(snapshot.owner) {
+                return Err(TransitionError::DuplicateOwnerPropertyState(snapshot.owner));
+            }
+        }
+        let owner_nodes = artifact
+            .owner_nodes
+            .iter()
+            .map(|snapshot| snapshot.owner)
+            .collect::<FxHashSet<_>>();
+        if let Some(snapshot) = artifact
+            .owner_property_states
+            .iter()
+            .find(|snapshot| !owner_nodes.contains(&snapshot.owner))
+        {
+            return Err(TransitionError::UnreferencedOwnerPropertyState(
+                snapshot.owner,
+            ));
+        }
+        if let Some(snapshot) = artifact
+            .owner_nodes
+            .iter()
+            .find(|snapshot| !owner_property_states.contains(&snapshot.owner))
+        {
+            return Err(TransitionError::MissingOwnerPropertyState(snapshot.owner));
+        }
+        for snapshot in &artifact.owner_property_states {
+            for (endpoint, state) in [
+                (OwnerPropertyStateEndpoint::Paint, snapshot.paint),
+                (
+                    OwnerPropertyStateEndpoint::Descendants,
+                    snapshot.descendants,
+                ),
+            ] {
+                graph.validate_state_references(state).map_err(|reason| {
+                    TransitionError::InvalidOwnerPropertyState {
+                        owner: snapshot.owner,
+                        endpoint,
+                        reason,
+                    }
+                })?;
+            }
+        }
+
+        Ok(graph)
     }
 
     fn validate_state(&self, state: PropertyTreeState) -> Result<(), TransitionError> {
+        self.validate_state_references(state)
+            .map_err(|reason| match reason {
+                PropertyStateReferenceError::UnknownTransform(id) => {
+                    TransitionError::UnknownTransformReference(id)
+                }
+                PropertyStateReferenceError::UnknownClip(id) => {
+                    TransitionError::UnknownClipReference(id)
+                }
+                PropertyStateReferenceError::UnknownEffect(id) => {
+                    TransitionError::UnknownEffectReference(id)
+                }
+                PropertyStateReferenceError::UnknownScroll(id) => {
+                    TransitionError::UnknownScrollReference(id)
+                }
+                PropertyStateReferenceError::UnknownLayoutPosition(id) => {
+                    TransitionError::UnknownLayoutPositionReference(id)
+                }
+                PropertyStateReferenceError::UnknownVisualOffset(id) => {
+                    TransitionError::UnknownVisualOffsetReference(id)
+                }
+            })
+    }
+
+    fn validate_state_references(
+        &self,
+        state: PropertyTreeState,
+    ) -> Result<(), PropertyStateReferenceError> {
         validate_reference(
             state.transform,
             &self.transforms,
-            TransitionError::UnknownTransformReference,
+            PropertyStateReferenceError::UnknownTransform,
         )?;
         validate_reference(
             state.clip,
             &self.clips,
-            TransitionError::UnknownClipReference,
+            PropertyStateReferenceError::UnknownClip,
         )?;
         validate_reference(
             state.effect,
             &self.effects,
-            TransitionError::UnknownEffectReference,
+            PropertyStateReferenceError::UnknownEffect,
         )?;
         validate_reference(
             state.scroll,
             &self.scrolls,
-            TransitionError::UnknownScrollReference,
+            PropertyStateReferenceError::UnknownScroll,
         )?;
         validate_reference(
             state.layout_position,
             &self.layout_positions,
-            TransitionError::UnknownLayoutPositionReference,
+            PropertyStateReferenceError::UnknownLayoutPosition,
         )?;
         validate_reference(
             state.visual_offset,
             &self.visual_offsets,
-            TransitionError::UnknownVisualOffsetReference,
+            PropertyStateReferenceError::UnknownVisualOffset,
         )
     }
 
@@ -212,11 +310,11 @@ impl PropertySnapshotGraph {
     }
 }
 
-fn validate_reference<Id: Copy + Eq + std::hash::Hash>(
+fn validate_reference<Id: Copy + Eq + std::hash::Hash, Error>(
     id: Option<Id>,
     snapshots: &FxHashMap<Id, Option<Id>>,
-    missing: impl FnOnce(Id) -> TransitionError,
-) -> Result<(), TransitionError> {
+    missing: impl FnOnce(Id) -> Error,
+) -> Result<(), Error> {
     if let Some(id) = id
         && !snapshots.contains_key(&id)
     {

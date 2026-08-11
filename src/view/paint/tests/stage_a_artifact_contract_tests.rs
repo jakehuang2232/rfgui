@@ -186,9 +186,11 @@ fn extend_unique<T: Copy + PartialEq>(store: &mut Vec<T>, snapshots: impl IntoIt
     }
 }
 
-/// Store order is contractual: recording appends the first-seen transitive
-/// closure, while compiler sealing and artifact equality consume that order.
-/// These assertions intentionally pin the deterministic `Vec` sequence.
+/// Store order is contractual: recording appends each chunk-referenced closure
+/// first, then the paint/descendants closures for that chunk owner's topology.
+/// The five fixtures currently add 0 clip and 0 effect nodes from the endpoint
+/// pass, but that measured corpus boundary is not a global completeness claim:
+/// a valid artifact may own endpoint-only snapshots no chunk references.
 fn assert_complete_artifact_store_profile(
     name: &str,
     arena: &NodeArena,
@@ -199,7 +201,10 @@ fn assert_complete_artifact_store_profile(
 ) {
     let mut clips = Vec::new();
     let mut effects = Vec::new();
+    let mut chunk_clips = Vec::new();
+    let mut chunk_effects = Vec::new();
     let mut owners = Vec::new();
+    let mut owner_property_states = Vec::new();
 
     for (owner, _, _, _, _, state) in expected {
         extend_unique(
@@ -209,10 +214,22 @@ fn assert_complete_artifact_store_profile(
                 .expect("complete clip snapshot closure"),
         );
         extend_unique(
+            &mut chunk_clips,
+            properties
+                .clip_snapshot_for(state.clip)
+                .expect("complete chunk-only clip closure"),
+        );
+        extend_unique(
             &mut effects,
             properties
                 .effect_snapshot_for(state.effect)
                 .expect("complete effect snapshot closure"),
+        );
+        extend_unique(
+            &mut chunk_effects,
+            properties
+                .effect_snapshot_for(state.effect)
+                .expect("complete chunk-only effect closure"),
         );
         let mut cursor = Some(*owner);
         while let Some(owner) = cursor {
@@ -220,6 +237,29 @@ fn assert_complete_artifact_store_profile(
                 .then(|| arena.parent_of(owner))
                 .flatten();
             extend_unique(&mut owners, [PaintOwnerSnapshot { owner, parent }]);
+            let state = properties
+                .node_state_for(owner)
+                .expect("Stage A owner endpoint state");
+            let endpoint = PaintOwnerPropertyStateSnapshot {
+                owner,
+                paint: state.paint,
+                descendants: state.descendants,
+            };
+            extend_unique(&mut owner_property_states, [endpoint]);
+            for state in [endpoint.paint, endpoint.descendants] {
+                extend_unique(
+                    &mut clips,
+                    properties
+                        .clip_snapshot_for(state.clip)
+                        .expect("complete owner endpoint clip closure"),
+                );
+                extend_unique(
+                    &mut effects,
+                    properties
+                        .effect_snapshot_for(state.effect)
+                        .expect("complete owner endpoint effect closure"),
+                );
+            }
             cursor = parent;
         }
     }
@@ -249,6 +289,23 @@ fn assert_complete_artifact_store_profile(
         "{name}: Stage A fixture scroll store profile"
     );
     assert_eq!(artifact.owner_nodes, owners, "{name}: complete owner store");
+    assert_eq!(
+        clips.len(),
+        chunk_clips.len(),
+        "{name}: five-fixture endpoint clip expansion remains measured at 0"
+    );
+    assert_eq!(
+        effects.len(),
+        chunk_effects.len(),
+        "{name}: five-fixture endpoint effect expansion remains measured at 0"
+    );
+    // Expected endpoints use the same admitted chunk-owner ancestor closure as
+    // the topology gate. Exact equality is local to that artifact owner set,
+    // not proof about owners that the artifact did not admit.
+    assert_eq!(
+        artifact.owner_property_states, owner_property_states,
+        "{name}: complete owner endpoint store"
+    );
 }
 
 fn record_artifact(arena: &NodeArena, roots: &[NodeKey]) -> (PaintArtifact, PropertyTrees) {
@@ -391,4 +448,24 @@ fn stage_a_text_area_artifact_contract_preserves_generic_chunk_semantics() {
         }
         assert_generic_artifact_contract(name, &arena, &roots, &properties, &artifact, &expected);
     }
+}
+
+#[test]
+fn stage_a_owner_property_endpoints_preserve_distinct_paint_and_descendants() {
+    let (arena, roots, root) = prepared_plain_text_area_tree("owner endpoint contract");
+    let (artifact, properties) = record_artifact(&arena, &roots);
+    let expected = properties
+        .node_state_for(root)
+        .expect("plain TextArea property endpoints");
+    let [actual] = artifact.owner_property_states.as_slice() else {
+        panic!("plain TextArea must record exactly one owner endpoint pair")
+    };
+
+    assert_eq!(actual.owner, root);
+    assert_eq!(actual.paint, expected.paint);
+    assert_eq!(actual.descendants, expected.descendants);
+    assert_ne!(
+        actual.paint, actual.descendants,
+        "producer must not collapse the two endpoint roles"
+    );
 }

@@ -6952,6 +6952,8 @@ fn project_property_boundary_dag(
 pub(super) fn property_scroll_receiver_artifact_identity(
     artifact: &PaintArtifact,
 ) -> Option<PropertyScrollReceiverArtifactIdentity> {
+    let (clip_nodes, effect_nodes) =
+        super::artifact::chunk_raster_property_snapshot_closure(artifact)?;
     let mut cursor = 0usize;
     let mut chunks = Vec::with_capacity(artifact.chunks.len());
     for chunk in &artifact.chunks {
@@ -6976,8 +6978,8 @@ pub(super) fn property_scroll_receiver_artifact_identity(
     }
     (cursor == artifact.ops.len()).then(|| PropertyScrollReceiverArtifactIdentity {
         owner_topology: artifact.owner_nodes.clone(),
-        clip_nodes: artifact.clip_nodes.clone(),
-        effect_nodes: artifact.effect_nodes.clone(),
+        clip_nodes,
+        effect_nodes,
         chunks,
         op_count: artifact.ops.len(),
         opaque_count: opaque_order_count(artifact),
@@ -10278,6 +10280,13 @@ fn detach_ancestor_clip_chain(
             .is_some_and(|clip| ancestor_ids.contains(&clip))
         {
             chunk.properties.clip = None;
+        }
+    }
+    for endpoints in &mut artifact.owner_property_states {
+        for state in [&mut endpoints.paint, &mut endpoints.descendants] {
+            if state.clip.is_some_and(|clip| ancestor_ids.contains(&clip)) {
+                state.clip = None;
+            }
         }
     }
     artifact
