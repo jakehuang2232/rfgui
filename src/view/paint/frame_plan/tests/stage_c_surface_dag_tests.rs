@@ -1,16 +1,15 @@
-//! C2b ordered receiver reconstruction over the frozen C0a and C0c inputs.
+//! C2 ordered receiver reconstruction over artifact-derived inputs.
 //!
-//! Consumption transitions remain the independently classified C1 stream.
-//! This module verifies only their attachment to artifact-derived surface
-//! nodes and the separate reconstruction of generic receivers. It does not
-//! derive transition endpoints from chunks or prove clip-space rebasing; both
-//! remain later C2 gates.
+//! Consumption transitions are classified from the artifact's keyed owner
+//! endpoints. This module verifies their attachment to artifact-derived
+//! surface nodes and the separate reconstruction of generic receivers. It
+//! does not prove clip-space rebasing, which remains a later C2 gate.
 
 use std::{cmp::Reverse, collections::BTreeSet};
 
 use super::*;
 use crate::view::paint::{
-    ArtifactTransitionRequest, LayerizationPolicy, SurfaceDag, SurfaceDagError, SurfaceDagNodeKind,
+    LayerizationPolicy, SurfaceDag, SurfaceDagError, SurfaceDagNodeKind,
     classify_artifact_transition_sequence, reconstruct_surface_dag,
 };
 
@@ -128,17 +127,7 @@ fn stage_c_eight_legacy_success_shapes_reconstruct_the_same_generic_receivers() 
         let artifact =
             stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
                 .expect("C2b closed artifact");
-        let requests = legacy
-            .nodes
-            .iter()
-            .map(|node| {
-                ArtifactTransitionRequest::new(
-                    node.owner,
-                    node.consumption.expected_before,
-                    node.consumption.projected_after,
-                )
-            })
-            .collect::<Vec<_>>();
+        let requests = stage_c_artifact_surface_transition_requests(&artifact);
         let events = classify_artifact_transition_sequence(&artifact, &requests)
             .expect("C2b classified consumption stream");
         let surface_dag = reconstruct_surface_dag(
@@ -200,17 +189,7 @@ fn stage_c_native_forest_reconstructs_branch_and_multi_root_receivers() {
     let artifact =
         stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations)
             .expect("C2b native closed artifact");
-    let requests = forest
-        .boundaries
-        .iter()
-        .map(|boundary| {
-            ArtifactTransitionRequest::new(
-                boundary.boundary_root,
-                boundary.projection.live_input,
-                boundary.projection.projected_output,
-            )
-        })
-        .collect::<Vec<_>>();
+    let requests = stage_c_artifact_surface_transition_requests(&artifact);
     let events = classify_artifact_transition_sequence(&artifact, &requests)
         .expect("C2b native classified transitions");
     let surface_dag = reconstruct_surface_dag(
@@ -288,32 +267,10 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
     }
 
     let (arena, root, properties, generations) = same_owner_transform_effect_scroll_roles_fixture();
-    let plan = plan_property_scroll_interleave_scaffold_with_context(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        TransformSurfacePlanContext::default(),
-    )
-    .expect("C2b co-located fixture");
-    let legacy = &plan
-        .property_scroll_planning_scaffold()
-        .expect("C2b co-located DAG")
-        .boundary_dag;
     let artifact =
         stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
             .expect("C2b co-located artifact");
-    let requests = legacy
-        .nodes
-        .iter()
-        .map(|node| {
-            ArtifactTransitionRequest::new(
-                node.owner,
-                node.consumption.expected_before,
-                node.consumption.projected_after,
-            )
-        })
-        .collect::<Vec<_>>();
+    let requests = stage_c_artifact_surface_transition_requests(&artifact);
     let events = classify_artifact_transition_sequence(&artifact, &requests)
         .expect("C2b co-located transitions");
 
@@ -369,18 +326,7 @@ fn stage_c_surface_dag_accepts_the_production_leaf_first_owner_order() {
         stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
             .expect("C2b transform-scroll artifact");
     reorder_artifact_leaf_first(&arena, &mut artifact);
-    let requests = legacy
-        .nodes
-        .iter()
-        .rev()
-        .map(|node| {
-            ArtifactTransitionRequest::new(
-                node.owner,
-                node.consumption.expected_before,
-                node.consumption.projected_after,
-            )
-        })
-        .collect::<Vec<_>>();
+    let requests = stage_c_artifact_surface_transition_requests(&artifact);
     let events = classify_artifact_transition_sequence(&artifact, &requests)
         .expect("C2c leaf-first transition stream");
     let surface_dag = reconstruct_surface_dag(
@@ -416,34 +362,11 @@ fn stage_c_surface_dag_accepts_the_production_leaf_first_owner_order() {
 fn stage_c_surface_dag_accepts_a_leaf_first_nested_scroll_chain() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::NestedScroll);
-    let plan = plan_property_scroll_interleave_scaffold_with_context(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        TransformSurfacePlanContext::default(),
-    )
-    .expect("C2c nested-scroll fixture");
-    let legacy = &plan
-        .property_scroll_planning_scaffold()
-        .expect("C2c nested-scroll DAG")
-        .boundary_dag;
     let mut artifact =
         stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
             .expect("C2c nested-scroll artifact");
     reorder_artifact_leaf_first(&arena, &mut artifact);
-    let requests = legacy
-        .nodes
-        .iter()
-        .rev()
-        .map(|node| {
-            ArtifactTransitionRequest::new(
-                node.owner,
-                node.consumption.expected_before,
-                node.consumption.projected_after,
-            )
-        })
-        .collect::<Vec<_>>();
+    let requests = stage_c_artifact_surface_transition_requests(&artifact);
     let events = classify_artifact_transition_sequence(&artifact, &requests)
         .expect("C2c leaf-first nested-scroll transitions");
     let surface_dag = reconstruct_surface_dag(

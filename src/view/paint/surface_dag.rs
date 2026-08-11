@@ -381,6 +381,11 @@ fn derive_artifact_surface_candidates_from_validated(
     Ok(candidates)
 }
 
+/// Artifact-local attachment invariant between one classified endpoint pair
+/// and one surface candidate. This is not an independent source differential:
+/// both inputs originate in the artifact. It still rejects event/candidate
+/// pairing mistakes because the transition must consume this candidate's
+/// specific property id, not merely any property of the same family.
 fn transition_consumes_kind(transition: PropertyStateTransition, kind: SurfaceDagNodeKind) -> bool {
     match kind {
         SurfaceDagNodeKind::Transform(transform) => {

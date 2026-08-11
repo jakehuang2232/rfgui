@@ -5,8 +5,9 @@ use std::sync::Arc;
 use slotmap::Key;
 
 use crate::style::{
-    AnchorName, Angle, BoxShadow, Color, Layout, Length, Opacity, ParsedValue, Position, PropertyId,
-    Rotate, Scale, ScrollDirection, Style, Transform, Transition, TransitionProperty, Transitions,
+    AnchorName, Angle, BoxShadow, Color, Layout, Length, Opacity, ParsedValue, Position,
+    PropertyId, Rotate, Scale, ScrollDirection, Style, Transform, Transition, TransitionProperty,
+    Transitions,
 };
 use crate::view::base_component::{
     BoxModelSnapshot, BuildState, DirtyPassMask, ElementTrait, EventTarget, Image,
@@ -17,10 +18,11 @@ use crate::view::frame_graph::{FrameGraph, FramePassTestPayload};
 use crate::view::node_arena::Node;
 use crate::view::paint::tests::exact_isolation_fixture;
 use crate::view::paint::{
-    PaintBakedScrollHostWitness, PaintChunk, PaintChunkId, PaintChunkRole, PaintContentRevision,
-    PaintNodePhase, PaintOwnerPropertyStateSnapshot, PaintPayloadIdentity, PaintPropertyScope,
+    ArtifactTransitionRequest, LayerizationPolicy, PaintBakedScrollHostWitness, PaintChunk,
+    PaintChunkId, PaintChunkRole, PaintContentRevision, PaintNodePhase,
+    PaintOwnerPropertyStateSnapshot, PaintPayloadIdentity, PaintPropertyScope,
     PaintScrollContentWitness, PlannedBoundary, PlannedBoundaryKind, RETAINED_CHILD_MASK_SLOT,
-    RetainedSurfaceCompileAction,
+    RetainedSurfaceCompileAction, SurfaceDagNodeKind, derive_artifact_surface_candidates,
 };
 use crate::view::test_support::{commit_child, commit_element, measure_and_place, new_test_arena};
 use crate::view::viewport::Viewport;
@@ -786,6 +788,171 @@ fn assert_stage_c_classified_cursors_match_artifact_traversal(
             artifact.chunks[expected_chunk].op_range.start,
         );
     }
+}
+
+/// Reconstructs the C0a surface-consumption edges from artifact data only.
+///
+/// Each scroll owner's descendants endpoint is the live input for its
+/// detached surface stack. Ancestor transform/effect candidates are consumed
+/// in owner order before the terminal scroll boundary. Requests are emitted
+/// in artifact candidate order, which is deliberately independent of owner
+/// topology order. A candidate observed through multiple scroll witnesses
+/// must derive the same exact edge.
+///
+/// Precondition: every candidate belongs to at least one `ScrollContent`
+/// terminal's owner path, as all accepted C0a scroll-interleave shapes do.
+/// A transform/effect-only artifact is outside this helper's contract and
+/// deliberately fails the final missing-edge assertion; C3 must not reuse the
+/// helper without defining that separate derivation.
+///
+/// The terminal `cursor == projected_paint` equality below is a behavioral
+/// contract between both stored endpoints, not defensive test scaffolding. It
+/// must not be relaxed merely to admit a new fixture.
+fn stage_c_artifact_surface_transition_requests(
+    artifact: &PaintArtifact,
+) -> Vec<ArtifactTransitionRequest> {
+    fn record_edge(
+        edges: &mut FxHashMap<SurfaceDagNodeKind, (PropertyTreeState, PropertyTreeState)>,
+        kind: SurfaceDagNodeKind,
+        from: PropertyTreeState,
+        to: PropertyTreeState,
+    ) {
+        if let Some(existing) = edges.insert(kind, (from, to)) {
+            assert_eq!(
+                existing,
+                (from, to),
+                "one artifact candidate cannot have conflicting consumption edges",
+            );
+        }
+    }
+
+    let candidates = derive_artifact_surface_candidates(
+        artifact,
+        LayerizationPolicy::PreservePropertyBoundaries,
+    )
+    .expect("closed artifact must derive surface candidates");
+    let parents = artifact
+        .owner_nodes
+        .iter()
+        .map(|snapshot| (snapshot.owner, snapshot.parent))
+        .collect::<FxHashMap<_, _>>();
+    let mut edges = FxHashMap::default();
+
+    for terminal in candidates.iter().copied() {
+        let SurfaceDagNodeKind::ScrollContent {
+            scroll,
+            contents_clip,
+        } = terminal.kind()
+        else {
+            continue;
+        };
+        let endpoints = artifact
+            .owner_property_states
+            .iter()
+            .find(|snapshot| snapshot.owner == terminal.target())
+            .expect("closed artifact must carry terminal owner endpoints");
+        let mut owner_path = Vec::new();
+        let mut owner = Some(terminal.target());
+        while let Some(current) = owner {
+            owner_path.push(current);
+            owner = parents
+                .get(&current)
+                .copied()
+                .expect("closed artifact must carry every owner parent");
+        }
+        owner_path.reverse();
+
+        let mut cursor = endpoints.descendants;
+        for owner in &owner_path {
+            for boundary in candidates
+                .iter()
+                .copied()
+                .filter(|candidate| candidate.target() == *owner)
+            {
+                let before = cursor;
+                match boundary.kind() {
+                    SurfaceDagNodeKind::Transform(transform)
+                        if cursor.transform == Some(transform) =>
+                    {
+                        cursor.transform = None;
+                    }
+                    SurfaceDagNodeKind::Effect(effect) if cursor.effect == Some(effect) => {
+                        cursor.effect = None;
+                    }
+                    SurfaceDagNodeKind::Transform(_)
+                    | SurfaceDagNodeKind::Effect(_)
+                    | SurfaceDagNodeKind::ScrollContent { .. } => continue,
+                }
+                record_edge(&mut edges, boundary.kind(), before, cursor);
+            }
+        }
+
+        assert_eq!(
+            cursor.scroll,
+            Some(scroll),
+            "terminal descendants endpoint must reference its scroll candidate",
+        );
+        assert_eq!(
+            cursor.clip,
+            Some(contents_clip),
+            "terminal descendants endpoint must reference its contents clip",
+        );
+        let before = cursor;
+        cursor.scroll = None;
+        cursor.clip = artifact
+            .clip_nodes
+            .iter()
+            .find(|snapshot| snapshot.id == contents_clip)
+            .expect("closed artifact must carry the terminal contents clip")
+            .parent;
+        record_edge(&mut edges, terminal.kind(), before, cursor);
+
+        let mut projected_paint = endpoints.paint;
+        for owner in &owner_path {
+            for boundary in candidates
+                .iter()
+                .copied()
+                .filter(|candidate| candidate.target() == *owner)
+            {
+                match boundary.kind() {
+                    SurfaceDagNodeKind::Transform(transform)
+                        if projected_paint.transform == Some(transform) =>
+                    {
+                        projected_paint.transform = None;
+                    }
+                    SurfaceDagNodeKind::Effect(effect)
+                        if projected_paint.effect == Some(effect) =>
+                    {
+                        projected_paint.effect = None;
+                    }
+                    SurfaceDagNodeKind::ScrollContent { scroll, .. }
+                        if boundary.kind() != terminal.kind()
+                            && projected_paint.scroll == Some(scroll) =>
+                    {
+                        projected_paint.scroll = None;
+                    }
+                    SurfaceDagNodeKind::Transform(_)
+                    | SurfaceDagNodeKind::Effect(_)
+                    | SurfaceDagNodeKind::ScrollContent { .. } => {}
+                }
+            }
+        }
+        assert_eq!(
+            cursor, projected_paint,
+            "artifact descendants consumption must terminate at projected paint",
+        );
+    }
+
+    candidates
+        .into_iter()
+        .map(|candidate| {
+            let (from, to) = edges
+                .get(&candidate.kind())
+                .copied()
+                .expect("every surface candidate must have one artifact-derived edge");
+            ArtifactTransitionRequest::new(candidate.target(), from, to)
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

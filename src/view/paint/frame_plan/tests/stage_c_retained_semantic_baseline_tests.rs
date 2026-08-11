@@ -1,7 +1,5 @@
 use super::*;
-use crate::view::paint::{
-    ArtifactTransitionRequest, ClassifiedTransitionEvent, classify_artifact_transition_sequence,
-};
+use crate::view::paint::{ClassifiedTransitionEvent, classify_artifact_transition_sequence};
 
 const ROOT: u64 = 0xb4_0001;
 const INNER_A: u64 = 0xb4_0002;
@@ -253,7 +251,9 @@ const EMPTY: FrozenPropertyState = state(None, None, None, None, None, None);
 /// builds this planner context from the live paint offset and scissor. This
 /// corpus uses the zero-offset, unclipped production test context under which
 /// its receiver insertion seals were recorded; a different context is not the
-/// same frozen input and may legitimately fail closed.
+/// same frozen input and may legitimately fail closed. Artifact-derived owner
+/// endpoints are classified independently and compared directly with these
+/// C0a expectations, closing the C1b M1 round-trip gap.
 #[test]
 fn stage_c_nine_scroll_interleave_semantics_are_frozen_before_v2() {
     let cases: &[(
@@ -636,21 +636,10 @@ fn stage_c_nine_scroll_interleave_semantics_are_frozen_before_v2() {
         let artifact =
             stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
                 .expect("C1 structural artifact must close over the synced property trees");
-        let requests = scaffold
-            .boundary_dag
-            .nodes
-            .iter()
-            .map(|node| {
-                ArtifactTransitionRequest::new(
-                    node.owner,
-                    node.consumption.expected_before,
-                    node.consumption.projected_after,
-                )
-            })
-            .collect::<Vec<_>>();
+        let requests = stage_c_artifact_surface_transition_requests(&artifact);
         let classified = classify_artifact_transition_sequence(&artifact, &requests)
             .expect("C1 artifact transition classification");
-        assert_eq!(classified.len(), scaffold.boundary_dag.nodes.len());
+        assert_eq!(classified.len(), expected_events.len());
         assert_stage_c_classified_cursors_match_artifact_traversal(&arena, &artifact, &classified);
         let actual_events = classified
             .into_iter()
@@ -663,7 +652,7 @@ fn stage_c_nine_scroll_interleave_semantics_are_frozen_before_v2() {
                 )
             })
             .collect::<Vec<_>>();
-        assert_eq!(actual_events, planner_events);
+        assert_eq!(actual_events, expected_events);
         match shape {
             ScrollInterleaveFixtureShape::TransformScroll => {
                 transform_scroll_events = Some(actual_events)
