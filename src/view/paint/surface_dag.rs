@@ -4,8 +4,8 @@ use rustc_hash::FxHashMap;
 
 use crate::view::{
     compositor::property_tree::{
-        ClipNodeId, ClipNodeRole, EffectNodeId, PropertyStateTransition, PropertyTreeState,
-        ScrollNodeId, TransformNodeId,
+        ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, PropertyStateTransition,
+        PropertyTreeState, ScrollNodeId, TransformNodeId,
     },
     node_arena::NodeKey,
 };
@@ -84,23 +84,145 @@ impl SurfaceDagTargetId {
 }
 
 /// The clip-space obligation carried by a detached scroll-content surface.
-/// `outer_clip` is the contents clip's immediate clip-forest parent;
-/// `local_clip` is the identity that a later C2 batch must rebase into the
-/// detached content's coordinate space. Receiver-space equivalence is not
-/// implied by this type.
+/// `receiver_clip` is the contents clip's immediate clip-forest parent and is
+/// proven below to remain in receiver space. `local_clip` is the scroll
+/// contents boundary where descendant raster-local clips are detached.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SurfaceDagClipRebase {
-    outer_clip: Option<ClipNodeId>,
+    receiver_clip: Option<ClipNodeId>,
     local_clip: ClipNodeId,
 }
 
 impl SurfaceDagClipRebase {
-    pub(crate) fn outer_clip(self) -> Option<ClipNodeId> {
-        self.outer_clip
+    fn from_validated(
+        local_clip: ClipNodeId,
+        snapshots: &PropertySnapshotGraph,
+    ) -> Result<Self, SurfaceDagError> {
+        Ok(Self {
+            receiver_clip: snapshots.clip_parent(local_clip)?,
+            local_clip,
+        })
+    }
+
+    pub(crate) fn try_from_artifact(
+        artifact: &PaintArtifact,
+        local_clip: ClipNodeId,
+    ) -> Result<Self, SurfaceDagError> {
+        let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
+        let scroll = ScrollNodeId(local_clip.owner);
+        let expected = ClipNodeId {
+            owner: local_clip.owner,
+            role: ClipNodeRole::ContentsClip,
+        };
+        if local_clip != expected
+            || !artifact
+                .scroll_nodes
+                .iter()
+                .any(|snapshot| snapshot.id == scroll && snapshot.owner == local_clip.owner)
+        {
+            return Err(SurfaceDagError::MissingScrollContentsClip { scroll, expected });
+        }
+        Self::from_validated(local_clip, &snapshots)
+    }
+
+    pub(crate) fn receiver_clip(self) -> Option<ClipNodeId> {
+        self.receiver_clip
     }
 
     pub(crate) fn local_clip(self) -> ClipNodeId {
         self.local_clip
+    }
+
+    /// Splits one live clip chain at this scroll contents boundary.
+    ///
+    /// The boundary and its ancestor suffix stay in receiver space. The
+    /// descendant prefix remains raster-local, with its nearest-boundary node
+    /// detached into a local root. Spatial payload comes only from the
+    /// artifact snapshots; neither PropertyTrees nor a legacy witness is
+    /// available here.
+    ///
+    /// Local snapshot generations deliberately remain live generations. The
+    /// specialized legacy TextArea path instead requires
+    /// `DETACHED_LOCAL_CLIP_GENERATION`; reconciling or retiring those compiler
+    /// admission predicates belongs to the C3b pre-reuse admission
+    /// reconciliation batch and must precede any C3b reuse claim.
+    pub(crate) fn project_clip_space(
+        self,
+        artifact: &PaintArtifact,
+        live: PropertyTreeState,
+    ) -> Result<SurfaceDagClipProjection, SurfaceDagError> {
+        let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
+        snapshots.validate_state(live)?;
+        let scroll = ScrollNodeId(self.local_clip.owner);
+        if live.scroll != Some(scroll) {
+            return Err(SurfaceDagError::ClipRebaseScroll {
+                expected: scroll,
+                actual: live.scroll,
+            });
+        }
+        if snapshots.clip_parent(self.local_clip)? != self.receiver_clip {
+            return Err(SurfaceDagError::ClipRebaseOutsideBoundary {
+                live: live.clip,
+                boundary: self.local_clip,
+            });
+        }
+
+        let clips = artifact
+            .clip_nodes
+            .iter()
+            .map(|snapshot| (snapshot.id, *snapshot))
+            .collect::<FxHashMap<_, _>>();
+        let mut local_clips = Vec::new();
+        let mut cursor = live.clip;
+        while cursor != Some(self.local_clip) {
+            let Some(id) = cursor else {
+                return Err(SurfaceDagError::ClipRebaseOutsideBoundary {
+                    live: live.clip,
+                    boundary: self.local_clip,
+                });
+            };
+            let snapshot = clips
+                .get(&id)
+                .copied()
+                .ok_or(TransitionError::UnknownClipReference(id))?;
+            local_clips.push(snapshot);
+            cursor = snapshot.parent;
+        }
+        if let Some(root) = local_clips.last_mut() {
+            root.parent = None;
+        }
+        let local_clip = local_clips.first().map(|snapshot| snapshot.id);
+        Ok(SurfaceDagClipProjection {
+            receiver_clip: self.receiver_clip,
+            local_state: PropertyTreeState {
+                clip: local_clip,
+                scroll: None,
+                ..live
+            },
+            local_clips,
+        })
+    }
+}
+
+/// Artifact-derived split between receiver and detached raster clip spaces.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceDagClipProjection {
+    receiver_clip: Option<ClipNodeId>,
+    local_state: PropertyTreeState,
+    local_clips: Vec<ClipNodeSnapshot>,
+}
+
+impl SurfaceDagClipProjection {
+    pub(crate) fn receiver_clip(&self) -> Option<ClipNodeId> {
+        self.receiver_clip
+    }
+
+    pub(crate) fn local_state(&self) -> PropertyTreeState {
+        self.local_state
+    }
+
+    pub(crate) fn local_clips(&self) -> &[ClipNodeSnapshot] {
+        &self.local_clips
     }
 }
 
@@ -275,6 +397,14 @@ pub(crate) enum SurfaceDagError {
         index: usize,
         expected: SurfaceDagNodeKind,
     },
+    ClipRebaseScroll {
+        expected: ScrollNodeId,
+        actual: Option<ScrollNodeId>,
+    },
+    ClipRebaseOutsideBoundary {
+        live: Option<ClipNodeId>,
+        boundary: ClipNodeId,
+    },
     SurfaceNodeOrdinalOverflow(usize),
     UnknownSurfaceReceiver(SurfaceDagNodeId),
     CyclicSurfaceReceiver(SurfaceDagNodeId),
@@ -358,7 +488,7 @@ fn derive_artifact_surface_candidates_from_validated(
                 owner,
                 role: ClipNodeRole::ContentsClip,
             };
-            let outer_clip = snapshots.clip_parent(contents_clip).map_err(|_| {
+            snapshots.clip_parent(contents_clip).map_err(|_| {
                 SurfaceDagError::MissingScrollContentsClip {
                     scroll,
                     expected: contents_clip,
@@ -371,10 +501,10 @@ fn derive_artifact_surface_candidates_from_validated(
                     scroll,
                     contents_clip,
                 },
-                clip_rebase: Some(SurfaceDagClipRebase {
-                    outer_clip,
-                    local_clip: contents_clip,
-                }),
+                clip_rebase: Some(SurfaceDagClipRebase::from_validated(
+                    contents_clip,
+                    snapshots,
+                )?),
             });
         }
     }

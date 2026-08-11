@@ -239,7 +239,7 @@ impl PropertySnapshotGraph {
         Ok(graph)
     }
 
-    fn validate_state(&self, state: PropertyTreeState) -> Result<(), TransitionError> {
+    pub(crate) fn validate_state(&self, state: PropertyTreeState) -> Result<(), TransitionError> {
         self.validate_state_references(state)
             .map_err(|reason| match reason {
                 PropertyStateReferenceError::UnknownTransform(id) => {

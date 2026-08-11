@@ -32,8 +32,8 @@ use super::super::coverage_manifest::{
     project_recorded_node_properties, rebind_legacy_behavior_flags,
 };
 use super::super::{
-    ConsumedAncestorProperty, PaintRecordingContext, PaintScrollContentWitness,
-    PaintTextContentSource, PaintTextSelectionSource,
+    ConsumedAncestorProperty, PaintArtifact, PaintRecordingContext, PaintScrollContentWitness,
+    PaintTextContentSource, PaintTextSelectionSource, SurfaceDagClipRebase,
 };
 
 const LOCAL_SCISSOR: [u32; 4] = [4, 4, 40, 40];
@@ -306,28 +306,75 @@ fn projection_covers_the_outer_clip_and_the_rebased_local_clip() {
     let authority =
         PaintLegacyTextAreaCoverageAuthority::Local(witness).for_target(scene.content_root);
 
+    let artifact = PaintArtifact {
+        clip_nodes: vec![
+            scene.live_contents_clip,
+            scene.outer.contents_clip_snapshot(),
+        ],
+        scroll_nodes: vec![scene.outer.scroll_snapshot()],
+        ..PaintArtifact::default()
+    };
+    let rebase =
+        SurfaceDagClipRebase::try_from_artifact(&artifact, scene.outer.contents_clip_snapshot().id)
+            .expect("artifact-only C2 clip boundary");
+
+    let legacy_outer =
+        projected(authority.project_for(scene.content_root, scene.live_under_outer_clip()));
+    let artifact_outer = rebase
+        .project_clip_space(&artifact, scene.live_under_outer_clip())
+        .expect("artifact-only outer clip projection");
     assert_eq!(
-        projected(authority.project_for(scene.content_root, scene.live_under_outer_clip())),
+        legacy_outer,
         PropertyTreeState::default(),
         "the outer scroll/clip pair is consumed whole",
     );
     assert_eq!(
-        projected(authority.project_for(scene.content_root, scene.live_under_local_clip())),
+        artifact_outer.local_state(),
+        legacy_outer,
+        "artifact and C0a agree when the boundary clip has no local prefix",
+    );
+    assert_eq!(artifact_outer.receiver_clip(), None);
+    assert!(artifact_outer.local_clips().is_empty());
+
+    let legacy_local =
+        projected(authority.project_for(scene.content_root, scene.live_under_local_clip()));
+    let artifact_local = rebase
+        .project_clip_space(&artifact, scene.live_under_local_clip())
+        .expect("artifact-only descendant clip projection");
+    assert_eq!(
+        legacy_local,
         PropertyTreeState {
             clip: Some(witness.local_contents_clip().id),
             ..Default::default()
         },
         "the descendant contents clip is rebased onto the detached surface, not dropped",
     );
+    assert_eq!(artifact_local.local_state(), legacy_local);
+    assert_eq!(artifact_local.receiver_clip(), None);
+    let [localized] = artifact_local.local_clips() else {
+        panic!("the descendant clip must remain as one localized snapshot")
+    };
     assert_eq!(
-        witness.local_contents_clip().parent,
-        None,
-        "the rebased clip is a detached root",
+        localized.parent, None,
+        "the rebased clip is a detached root"
     );
     assert_eq!(
-        witness.local_contents_clip().logical_scissor,
-        LOCAL_SCISSOR,
+        localized.logical_scissor, LOCAL_SCISSOR,
         "the rebased clip keeps the planner-verified local scissor",
+    );
+    assert_eq!(localized.id, witness.local_contents_clip().id);
+    assert_eq!(localized.owner, witness.local_contents_clip().owner);
+    assert_eq!(localized.behavior, witness.local_contents_clip().behavior);
+    assert_eq!(localized.generation, scene.live_contents_clip.generation);
+    assert_eq!(
+        witness.local_contents_clip().generation,
+        super::super::artifact::DETACHED_LOCAL_CLIP_GENERATION,
+        "the specialized legacy admission generation remains a named C3b reconciliation",
+    );
+    assert_ne!(
+        localized.generation,
+        witness.local_contents_clip().generation,
+        "this spatial differential deliberately excludes the legacy admission generation",
     );
 }
 
