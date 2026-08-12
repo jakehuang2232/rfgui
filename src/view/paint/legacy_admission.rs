@@ -925,7 +925,12 @@ impl RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
             && other.paint_grammar.is_canonical()
             && self.paint_grammar == other.paint_grammar
             && self.artifact_source == other.artifact_source
-            && self.artifact_space_transition == other.artifact_space_transition
+            && self
+                .artifact_space_transition
+                .source_bits_eq(other.artifact_space_transition)
+            && self
+                .artifact_space_transition
+                .semantic_revision_eq(other.artifact_space_transition)
             && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
             && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
     }
@@ -1011,7 +1016,12 @@ impl RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot {
             && self.paint_grammar == other.paint_grammar
             && self.artifact_source == other.artifact_source
             && self.selection_source == other.selection_source
-            && self.artifact_space_transition == other.artifact_space_transition
+            && self
+                .artifact_space_transition
+                .source_bits_eq(other.artifact_space_transition)
+            && self
+                .artifact_space_transition
+                .semantic_revision_eq(other.artifact_space_transition)
             && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
             && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
     }
@@ -1112,7 +1122,12 @@ impl RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
             && other.paint_grammar.is_canonical()
             && self.paint_grammar == other.paint_grammar
             && self.artifact_source == other.artifact_source
-            && self.artifact_space_transition == other.artifact_space_transition
+            && self
+                .artifact_space_transition
+                .source_bits_eq(other.artifact_space_transition)
+            && self
+                .artifact_space_transition
+                .semantic_revision_eq(other.artifact_space_transition)
             && scroll_geometry_snapshots_bitwise_equal(self.scroll, other.scroll)
             && composite_bounds_bitwise_equal(self.source_bounds, other.source_bounds)
     }

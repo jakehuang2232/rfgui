@@ -2693,6 +2693,7 @@ pub(crate) enum PaintArtifactContractViolation {
     SelectionSourceParity,
     TransitionOrigin,
     TransitionRevision,
+    TransitionRevisionParity,
     TransitionSourceParity,
 }
 
@@ -3075,16 +3076,31 @@ pub(crate) struct TextPayloadNodeIdentity {
     pub(crate) preedit_cursor: Option<(usize, usize)>,
 }
 
-/// Bitwise-stable projection between two artifact coordinate spaces.
+/// Exact source record for a projection between two artifact coordinate spaces.
 ///
 /// This is geometry/composite-side data. It validates how an already-recorded
 /// host artifact projects into another artifact space, and must not be folded
-/// into persistent texture keys or resident raster identity.
+/// into persistent texture keys or resident raster identity. Structural
+/// equality includes the source origins and semantic revision; it is not a
+/// derived spatial-transition comparison.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PaintArtifactSpaceTransition {
     from_origin_bits: [u32; 2],
     to_origin_bits: [u32; 2],
     semantic_revision: u64,
+}
+
+/// Bitwise result of evaluating `to - from` at `f32` on both spatial axes.
+///
+/// Reassociated source origins may produce this same value. Semantic revision
+/// is deliberately absent and must be compared independently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PaintArtifactSpaceTranslationBits([u32; 2]);
+
+impl PaintArtifactSpaceTranslationBits {
+    pub(crate) fn into_bits(self) -> [u32; 2] {
+        self.0
+    }
 }
 
 impl PaintArtifactSpaceTransition {
@@ -3145,11 +3161,17 @@ impl PaintArtifactSpaceTransition {
     ) -> Result<(), PaintArtifactContractRejection> {
         self.validate_for_owner(owner)?;
         expected.validate_for_owner(owner)?;
-        (self == expected)
+        if !self.source_bits_eq(expected) {
+            return Err(PaintArtifactContractRejection {
+                owner,
+                violation: PaintArtifactContractViolation::TransitionSourceParity,
+            });
+        }
+        self.semantic_revision_eq(expected)
             .then_some(())
             .ok_or(PaintArtifactContractRejection {
                 owner,
-                violation: PaintArtifactContractViolation::TransitionSourceParity,
+                violation: PaintArtifactContractViolation::TransitionRevisionParity,
             })
     }
 
@@ -3175,11 +3197,37 @@ impl PaintArtifactSpaceTransition {
         self.semantic_revision
     }
 
-    pub(crate) fn translation(self) -> Option<[f32; 2]> {
+    /// Exact parity of both recorded origin bit pairs. This is stricter than
+    /// equality of their derived translation.
+    pub(crate) fn source_bits_eq(self, other: Self) -> bool {
+        self.from_origin_bits == other.from_origin_bits
+            && self.to_origin_bits == other.to_origin_bits
+    }
+
+    pub(crate) fn semantic_revision_eq(self, other: Self) -> bool {
+        self.semantic_revision == other.semantic_revision
+    }
+
+    fn derived_translation(self) -> Option<[f32; 2]> {
         let from = self.from_origin_bits.map(f32::from_bits);
         let to = self.to_origin_bits.map(f32::from_bits);
         let translation = [to[0] - from[0], to[1] - from[1]];
-        translation.into_iter().all(f32::is_finite).then_some(translation)
+        translation
+            .into_iter()
+            .all(f32::is_finite)
+            .then_some(translation)
+    }
+
+    /// Artifact-only seam for a later cross-source spatial differential.
+    /// Production admission must continue comparing exact source bits and the
+    /// semantic revision independently.
+    pub(crate) fn translation_bits(self) -> Option<PaintArtifactSpaceTranslationBits> {
+        self.derived_translation()
+            .map(|translation| PaintArtifactSpaceTranslationBits(translation.map(f32::to_bits)))
+    }
+
+    pub(crate) fn translation(self) -> Option<[f32; 2]> {
+        self.derived_translation()
     }
 
     pub(crate) fn project_bounds_bits(self, bounds_bits: [u32; 4]) -> Option<[u32; 4]> {
@@ -3900,6 +3948,8 @@ impl PreparedSvgIdentity {
 
 #[cfg(test)]
 mod consumed_ancestor_property_tests;
+#[cfg(test)]
+mod paint_artifact_contract_violation_tests;
 #[cfg(test)]
 mod paint_artifact_space_transition_tests;
 #[cfg(test)]

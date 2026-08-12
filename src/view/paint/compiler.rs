@@ -10255,8 +10255,12 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
         || host_raster_oracle.content_root() != local_raster_oracle.content_root()
         || host_raster_oracle.text_area_root() != local_raster_oracle.text_area_root()
         || host_raster_oracle.artifact_source() != local_raster_oracle.artifact_source()
-        || host_raster_oracle.artifact_space_transition()
-            != local_raster_oracle.artifact_space_transition()
+        || !host_raster_oracle
+            .artifact_space_transition()
+            .source_bits_eq(local_raster_oracle.artifact_space_transition())
+        || !host_raster_oracle
+            .artifact_space_transition()
+            .semantic_revision_eq(local_raster_oracle.artifact_space_transition())
     {
         return None;
     }
@@ -10693,8 +10697,12 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
         || host_raster_oracle.text_area_root() != local_raster_oracle.text_area_root()
         || host_raster_oracle.artifact_source() != local_raster_oracle.artifact_source()
         || host_raster_oracle.selection_source() != local_raster_oracle.selection_source()
-        || host_raster_oracle.artifact_space_transition()
-            != local_raster_oracle.artifact_space_transition()
+        || !host_raster_oracle
+            .artifact_space_transition()
+            .source_bits_eq(local_raster_oracle.artifact_space_transition())
+        || !host_raster_oracle
+            .artifact_space_transition()
+            .semantic_revision_eq(local_raster_oracle.artifact_space_transition())
     {
         return None;
     }

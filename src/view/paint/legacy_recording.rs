@@ -848,7 +848,15 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
         ..Default::default()
     };
     let transition = local.raster_oracle.artifact_space_transition;
-    if host.raster_oracle.artifact_space_transition != transition {
+    if !host
+        .raster_oracle
+        .artifact_space_transition
+        .source_bits_eq(transition)
+        || !host
+            .raster_oracle
+            .artifact_space_transition
+            .semantic_revision_eq(transition)
+    {
         return None;
     }
     let delta = transition.translation()?;

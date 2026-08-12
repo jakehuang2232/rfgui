@@ -12,6 +12,11 @@ fn artifact_space_transition_projects_host_bounds_into_local_space() {
 
     assert_eq!(transition.translation(), Some([-12.0, -7.0]));
     assert_eq!(
+        transition.translation_bits().unwrap().into_bits(),
+        [(-12.0_f32).to_bits(), (-7.0_f32).to_bits()],
+        "each axis must evaluate to - from at f32 before the bitwise comparison",
+    );
+    assert_eq!(
         transition.project_bounds_bits([20.0_f32, 11.0_f32, 40.0_f32, 18.0_f32].map(f32::to_bits)),
         Some([8.0_f32, 4.0_f32, 40.0_f32, 18.0_f32].map(f32::to_bits))
     );
@@ -63,7 +68,7 @@ fn artifact_space_transition_field_tampers_return_typed_owner_rejections() {
             .validate_expected_for_owner(owner, expected),
         Err(PaintArtifactContractRejection {
             owner,
-            violation: PaintArtifactContractViolation::TransitionSourceParity,
+            violation: PaintArtifactContractViolation::TransitionRevisionParity,
         })
     );
 
@@ -93,7 +98,60 @@ fn artifact_space_transition_field_tampers_return_typed_owner_rejections() {
 }
 
 #[test]
-fn synchronized_transition_copies_still_require_independent_source_parity() {
+fn reassociated_origins_share_spatial_bits_but_not_exact_source_parity() {
+    let owner = NodeKey::null();
+    let expected = PaintArtifactSpaceTransition::from_bits(
+        [12.0_f32.to_bits(), 7.0_f32.to_bits()],
+        [0.0_f32.to_bits(), 0.0_f32.to_bits()],
+        9,
+    )
+    .unwrap();
+    let reassociated = PaintArtifactSpaceTransition::from_bits(
+        [20.0_f32.to_bits(), 11.0_f32.to_bits()],
+        [8.0_f32.to_bits(), 4.0_f32.to_bits()],
+        9,
+    )
+    .unwrap();
+
+    assert_eq!(reassociated.translation_bits(), expected.translation_bits());
+    assert_ne!(reassociated, expected, "structural equality stays exact");
+    assert!(!reassociated.source_bits_eq(expected));
+    assert!(reassociated.semantic_revision_eq(expected));
+    assert_eq!(
+        reassociated.validate_expected_for_owner(owner, expected),
+        Err(PaintArtifactContractRejection {
+            owner,
+            violation: PaintArtifactContractViolation::TransitionSourceParity,
+        })
+    );
+}
+
+#[test]
+fn semantic_revision_parity_is_independent_of_spatial_and_source_bits() {
+    let owner = NodeKey::null();
+    let expected = PaintArtifactSpaceTransition::from_bits(
+        [12.0_f32.to_bits(), 7.0_f32.to_bits()],
+        [0.0_f32.to_bits(), 0.0_f32.to_bits()],
+        9,
+    )
+    .unwrap();
+    let revised = expected.tamper_revision_for_test();
+
+    assert_eq!(revised.translation_bits(), expected.translation_bits());
+    assert_ne!(revised, expected, "structural equality includes revision");
+    assert!(revised.source_bits_eq(expected));
+    assert!(!revised.semantic_revision_eq(expected));
+    assert_eq!(
+        revised.validate_expected_for_owner(owner, expected),
+        Err(PaintArtifactContractRejection {
+            owner,
+            violation: PaintArtifactContractViolation::TransitionRevisionParity,
+        })
+    );
+}
+
+#[test]
+fn synchronized_transition_copies_still_require_independent_expected_parity() {
     let owner = NodeKey::null();
     let expected = PaintArtifactSpaceTransition::from_bits(
         [12.0_f32.to_bits(), 7.0_f32.to_bits()],
@@ -110,7 +168,7 @@ fn synchronized_transition_copies_still_require_independent_source_parity() {
             transition.validate_expected_for_owner(owner, expected),
             Err(PaintArtifactContractRejection {
                 owner,
-                violation: PaintArtifactContractViolation::TransitionSourceParity,
+                violation: PaintArtifactContractViolation::TransitionRevisionParity,
             })
         );
     }
