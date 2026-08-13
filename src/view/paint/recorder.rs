@@ -127,6 +127,7 @@ pub(crate) fn record_root(
             }];
             artifact.owner_property_states = vec![PaintOwnerPropertyStateSnapshot {
                 owner: root,
+                stable_id,
                 paint: owner_property_state.paint,
                 descendants: owner_property_state.descendants,
             }];

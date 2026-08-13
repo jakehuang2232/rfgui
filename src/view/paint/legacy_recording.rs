@@ -48,6 +48,7 @@ use super::{
 fn replace_owner_topology_with_property_endpoints(
     artifact: &mut PaintArtifact,
     owners: &[super::PaintOwnerSnapshot],
+    arena: &NodeArena,
     property_trees: &PropertyTrees,
 ) -> Result<(), Vec<FrameArtifactFallbackReason>> {
     let existing = artifact
@@ -68,8 +69,17 @@ fn replace_owner_topology_with_property_endpoints(
                     PaintCoverageValidationError::InvalidOwnerSnapshot(topology.owner),
                 )]
             })?;
+        let stable_id = arena
+            .get(topology.owner)
+            .map(|node| node.element.stable_id())
+            .ok_or_else(|| {
+                vec![FrameArtifactFallbackReason::Validation(
+                    PaintCoverageValidationError::InvalidOwnerSnapshot(topology.owner),
+                )]
+            })?;
         endpoints.push(super::PaintOwnerPropertyStateSnapshot {
             owner: topology.owner,
+            stable_id,
             paint: state.paint,
             descendants: state.descendants,
         });
@@ -1811,7 +1821,7 @@ pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artif
     }
     // Coverage materializes chunk owners and ancestors. C3a also seals
     // generated no-paint siblings from the source oracle.
-    replace_owner_topology_with_property_endpoints(&mut artifact, &owners, property_trees)?;
+    replace_owner_topology_with_property_endpoints(&mut artifact, &owners, arena, property_trees)?;
     let raster_after = record_atomic_projection_live_raster_oracle(
         arena,
         roots,
@@ -2087,7 +2097,7 @@ pub(super) fn record_baked_scroll_focused_atomic_projection_text_area_subtree_ho
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
     }
-    replace_owner_topology_with_property_endpoints(&mut artifact, &owners, property_trees)?;
+    replace_owner_topology_with_property_endpoints(&mut artifact, &owners, arena, property_trees)?;
     let raster_after = record_atomic_projection_live_raster_oracle(
         arena,
         roots,
@@ -2278,7 +2288,7 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
     }
-    replace_owner_topology_with_property_endpoints(&mut artifact, &owners, property_trees)?;
+    replace_owner_topology_with_property_endpoints(&mut artifact, &owners, arena, property_trees)?;
     let mut selection_indices = artifact
         .chunks
         .iter()
@@ -2765,6 +2775,7 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
     replace_owner_topology_with_property_endpoints(
         &mut artifact,
         &expected_owners,
+        arena,
         property_trees,
     )?;
     let raster_after = record_atomic_projection_live_raster_oracle(
@@ -3013,6 +3024,7 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
     replace_owner_topology_with_property_endpoints(
         &mut artifact,
         &expected_owners,
+        arena,
         property_trees,
     )?;
     let raster_after = record_atomic_projection_live_raster_oracle(
@@ -3307,6 +3319,7 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
     replace_owner_topology_with_property_endpoints(
         &mut artifact,
         &expected_owners,
+        arena,
         property_trees,
     )?;
     let mut selection_indices = artifact

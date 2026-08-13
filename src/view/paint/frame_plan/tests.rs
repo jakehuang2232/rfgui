@@ -682,6 +682,7 @@ fn stage_c_classification_artifact_fixture(
             .owner_property_states
             .push(PaintOwnerPropertyStateSnapshot {
                 owner,
+                stable_id: node.element.stable_id(),
                 paint: state.paint,
                 descendants: state.descendants,
             });

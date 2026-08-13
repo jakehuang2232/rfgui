@@ -1043,6 +1043,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
             }
             let owner_property_state = PaintOwnerPropertyStateSnapshot {
                 owner: key,
+                stable_id,
                 paint: properties,
                 descendants: contents_properties,
             };

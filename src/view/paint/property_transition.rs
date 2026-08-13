@@ -41,6 +41,15 @@ pub(crate) enum TransitionError {
     DuplicateOwnerPropertyState(NodeKey),
     MissingOwnerPropertyState(NodeKey),
     UnreferencedOwnerPropertyState(NodeKey),
+    InvalidOwnerStableId {
+        owner: NodeKey,
+        stable_id: u64,
+    },
+    DuplicateOwnerStableId {
+        stable_id: u64,
+        first_owner: NodeKey,
+        duplicate_owner: NodeKey,
+    },
     InvalidOwnerPropertyState {
         owner: NodeKey,
         endpoint: OwnerPropertyStateEndpoint,
@@ -75,6 +84,62 @@ pub(crate) enum PropertyStateReferenceError {
     UnknownScroll(ScrollNodeId),
     UnknownLayoutPosition(LayoutPositionNodeId),
     UnknownVisualOffset(VisualOffsetNodeId),
+}
+
+/// Validates the one keyed owner store shared by property-state and owner
+/// graph construction. Keeping exact owner coverage and persistent identity
+/// checks here prevents the two artifact views from accepting different
+/// owner sets or duplicate stable identities.
+fn validate_owner_property_state_store(
+    artifact: &PaintArtifact,
+) -> Result<FxHashMap<NodeKey, u64>, TransitionError> {
+    let mut owner_property_states = FxHashSet::default();
+    for snapshot in &artifact.owner_property_states {
+        if !owner_property_states.insert(snapshot.owner) {
+            return Err(TransitionError::DuplicateOwnerPropertyState(snapshot.owner));
+        }
+    }
+    let owner_nodes = artifact
+        .owner_nodes
+        .iter()
+        .map(|snapshot| snapshot.owner)
+        .collect::<FxHashSet<_>>();
+    if let Some(snapshot) = artifact
+        .owner_property_states
+        .iter()
+        .find(|snapshot| !owner_nodes.contains(&snapshot.owner))
+    {
+        return Err(TransitionError::UnreferencedOwnerPropertyState(
+            snapshot.owner,
+        ));
+    }
+    if let Some(snapshot) = artifact
+        .owner_nodes
+        .iter()
+        .find(|snapshot| !owner_property_states.contains(&snapshot.owner))
+    {
+        return Err(TransitionError::MissingOwnerPropertyState(snapshot.owner));
+    }
+
+    let mut owners_by_stable_id = FxHashMap::default();
+    let mut stable_ids = FxHashMap::default();
+    for snapshot in &artifact.owner_property_states {
+        if snapshot.stable_id == 0 {
+            return Err(TransitionError::InvalidOwnerStableId {
+                owner: snapshot.owner,
+                stable_id: snapshot.stable_id,
+            });
+        }
+        if let Some(first_owner) = owners_by_stable_id.insert(snapshot.stable_id, snapshot.owner) {
+            return Err(TransitionError::DuplicateOwnerStableId {
+                stable_id: snapshot.stable_id,
+                first_owner,
+                duplicate_owner: snapshot.owner,
+            });
+        }
+        stable_ids.insert(snapshot.owner, snapshot.stable_id);
+    }
+    Ok(stable_ids)
 }
 
 /// Validated, arena-independent property snapshot graph backing C1.
@@ -191,33 +256,7 @@ impl PropertySnapshotGraph {
             visual_offsets,
         };
 
-        let mut owner_property_states = FxHashSet::default();
-        for snapshot in &artifact.owner_property_states {
-            if !owner_property_states.insert(snapshot.owner) {
-                return Err(TransitionError::DuplicateOwnerPropertyState(snapshot.owner));
-            }
-        }
-        let owner_nodes = artifact
-            .owner_nodes
-            .iter()
-            .map(|snapshot| snapshot.owner)
-            .collect::<FxHashSet<_>>();
-        if let Some(snapshot) = artifact
-            .owner_property_states
-            .iter()
-            .find(|snapshot| !owner_nodes.contains(&snapshot.owner))
-        {
-            return Err(TransitionError::UnreferencedOwnerPropertyState(
-                snapshot.owner,
-            ));
-        }
-        if let Some(snapshot) = artifact
-            .owner_nodes
-            .iter()
-            .find(|snapshot| !owner_property_states.contains(&snapshot.owner))
-        {
-            return Err(TransitionError::MissingOwnerPropertyState(snapshot.owner));
-        }
+        validate_owner_property_state_store(artifact)?;
         for snapshot in &artifact.owner_property_states {
             for (endpoint, state) in [
                 (OwnerPropertyStateEndpoint::Paint, snapshot.paint),
@@ -427,6 +466,7 @@ pub(crate) fn artifact_cursors(
 /// for every owner reachable from a chunk.
 pub(crate) struct ArtifactOwnerGraph {
     parents: FxHashMap<NodeKey, Option<NodeKey>>,
+    stable_ids: FxHashMap<NodeKey, u64>,
     scene_root_ordinals: FxHashMap<NodeKey, u32>,
     first_chunk_indices: FxHashMap<NodeKey, usize>,
 }
@@ -448,6 +488,7 @@ impl ArtifactOwnerGraph {
             TransitionError::MissingOwnerParent,
             TransitionError::CyclicOwner,
         )?;
+        let stable_ids = validate_owner_property_state_store(artifact)?;
 
         let mut root_ordinals = FxHashMap::default();
         for snapshot in &artifact.owner_nodes {
@@ -519,6 +560,7 @@ impl ArtifactOwnerGraph {
 
         Ok(Self {
             parents,
+            stable_ids,
             scene_root_ordinals,
             first_chunk_indices,
         })
@@ -543,6 +585,15 @@ impl ArtifactOwnerGraph {
 
     pub(crate) fn parent(&self, owner: NodeKey) -> Result<Option<NodeKey>, TransitionError> {
         self.parents
+            .get(&owner)
+            .copied()
+            .ok_or(TransitionError::UnknownTarget(owner))
+    }
+
+    /// Persistent owner identity only. A retained surface key must also carry
+    /// the surface role derived from its `SurfaceDagNodeKind`.
+    pub(crate) fn stable_id(&self, owner: NodeKey) -> Result<u64, TransitionError> {
+        self.stable_ids
             .get(&owner)
             .copied()
             .ok_or(TransitionError::UnknownTarget(owner))

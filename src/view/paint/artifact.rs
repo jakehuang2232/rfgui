@@ -1558,6 +1558,12 @@ pub(crate) struct PaintOwnerSnapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PaintOwnerPropertyStateSnapshot {
     pub(crate) owner: NodeKey,
+    /// Persistent identity for this owner across frames. This lives beside
+    /// the owner's property endpoints rather than on [`PaintOwnerSnapshot`]
+    /// so the lightweight topology store does not become a second identity
+    /// authority. A retained surface key still combines this value with its
+    /// surface role; `stable_id` alone is not a complete persistent key.
+    pub(crate) stable_id: u64,
     pub(crate) paint: PropertyTreeState,
     pub(crate) descendants: PropertyTreeState,
 }

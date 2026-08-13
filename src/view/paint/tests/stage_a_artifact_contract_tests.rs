@@ -242,6 +242,11 @@ fn assert_complete_artifact_store_profile(
                 .expect("Stage A owner endpoint state");
             let endpoint = PaintOwnerPropertyStateSnapshot {
                 owner,
+                stable_id: arena
+                    .get(owner)
+                    .expect("Stage A owner endpoint identity")
+                    .element
+                    .stable_id(),
                 paint: state.paint,
                 descendants: state.descendants,
             };
@@ -462,10 +467,98 @@ fn stage_a_owner_property_endpoints_preserve_distinct_paint_and_descendants() {
     };
 
     assert_eq!(actual.owner, root);
+    assert_eq!(
+        actual.stable_id,
+        arena.get(root).unwrap().element.stable_id(),
+    );
     assert_eq!(actual.paint, expected.paint);
     assert_eq!(actual.descendants, expected.descendants);
     assert_ne!(
         actual.paint, actual.descendants,
         "producer must not collapse the two endpoint roles"
+    );
+}
+
+#[test]
+fn stage_a_owner_stable_identity_survives_transparent_ancestry_across_frames() {
+    let (mut arena, roots, root, transparent_projection, projected_text) =
+        prepared_projection_text_area_tree();
+    let (first, _) = record_artifact(&arena, &roots);
+    arena
+        .get_mut(projected_text)
+        .expect("projected text owner")
+        .element
+        .as_any_mut()
+        .downcast_mut::<Text>()
+        .expect("projection leaf remains Text")
+        .set_text("projected changed");
+    measure_and_place(
+        &mut arena,
+        root,
+        LayoutConstraints {
+            max_width: 132.0,
+            max_height: 240.0,
+            viewport_width: 320.0,
+            viewport_height: 240.0,
+            percent_base_width: Some(320.0),
+            percent_base_height: Some(240.0),
+        },
+        LayoutPlacement {
+            parent_x: 7.25,
+            parent_y: 11.75,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 132.0,
+            available_height: 240.0,
+            viewport_width: 320.0,
+            viewport_height: 240.0,
+            percent_base_width: Some(320.0),
+            percent_base_height: Some(240.0),
+        },
+    );
+    settle_plain_text_area(&arena, root);
+    let (second, _) = record_artifact(&arena, &roots);
+    let identities = |artifact: &PaintArtifact| {
+        artifact
+            .owner_property_states
+            .iter()
+            .map(|snapshot| (snapshot.owner, snapshot.stable_id))
+            .collect::<Vec<_>>()
+    };
+
+    assert!(
+        !first
+            .chunks
+            .iter()
+            .any(|chunk| chunk.owner == transparent_projection),
+        "transparent ancestor must contribute identity without its own chunk",
+    );
+    let expected_stable_id = arena
+        .get(transparent_projection)
+        .expect("transparent projection owner")
+        .element
+        .stable_id();
+    assert_ne!(expected_stable_id, 0);
+    assert!(first.owner_property_states.iter().any(|snapshot| {
+        snapshot.owner == transparent_projection && snapshot.stable_id == expected_stable_id
+    }));
+    let projected_payload = |artifact: &PaintArtifact| {
+        artifact
+            .chunks
+            .iter()
+            .find(|chunk| chunk.owner == projected_text)
+            .expect("projected text chunk")
+            .payload_identity
+            .clone()
+    };
+    assert_ne!(
+        projected_payload(&second),
+        projected_payload(&first),
+        "the second artifact must contain the authored text mutation",
+    );
+    assert_eq!(
+        identities(&second),
+        identities(&first),
+        "the same owners must retain their artifact identity across frames",
     );
 }

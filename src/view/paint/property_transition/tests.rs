@@ -242,11 +242,13 @@ fn complete_artifact() -> (
         owner_property_states: vec![
             PaintOwnerPropertyStateSnapshot {
                 owner: root,
+                stable_id: 0xc1_0001,
                 paint: PropertyTreeState::default(),
                 descendants: PropertyTreeState::default(),
             },
             PaintOwnerPropertyStateSnapshot {
                 owner: child,
+                stable_id: 0xc1_0002,
                 paint: PropertyTreeState::default(),
                 descendants: PropertyTreeState::default(),
             },
@@ -274,7 +276,7 @@ fn complete_artifact() -> (
 
 #[test]
 fn classifier_preserves_all_six_dimensions_without_receiver_grammar() {
-    let (artifact, from, to, target, _) = complete_artifact();
+    let (artifact, from, to, target, missing) = complete_artifact();
     let snapshots = PropertySnapshotGraph::try_from_artifact(&artifact).expect("closed snapshots");
     assert_eq!(
         snapshots.clip_parent(from.clip.expect("child clip")),
@@ -286,6 +288,15 @@ fn classifier_preserves_all_six_dimensions_without_receiver_grammar() {
 
     let cursors = artifact_cursors(&artifact).expect("artifact traversal");
     let owners = ArtifactOwnerGraph::try_from_artifact(&artifact).expect("owner graph");
+    assert_eq!(
+        owners.stable_id(artifact.owner_nodes[0].owner),
+        Ok(0xc1_0001),
+    );
+    assert_eq!(owners.stable_id(target), Ok(0xc1_0002));
+    assert_eq!(
+        owners.stable_id(missing),
+        Err(TransitionError::UnknownTarget(missing)),
+    );
     assert_eq!(
         owners.parent(target),
         Ok(Some(artifact.owner_nodes[0].owner))
@@ -381,6 +392,7 @@ fn artifact_owner_property_state_keys_must_match_owner_topology_in_both_directio
         .owner_property_states
         .push(PaintOwnerPropertyStateSnapshot {
             owner: outside,
+            stable_id: 0xc1_00ff,
             paint: PropertyTreeState::default(),
             descendants: PropertyTreeState::default(),
         });
@@ -399,6 +411,49 @@ fn artifact_owner_property_state_keys_must_match_owner_topology_in_both_directio
         Some(TransitionError::DuplicateOwnerPropertyState(
             duplicate.owner_property_states[0].owner,
         )),
+    );
+}
+
+#[test]
+fn artifact_owner_stable_identity_rejects_zero_through_both_validated_views() {
+    let (mut artifact, _, _, _, _) = complete_artifact();
+    let owner = artifact.owner_property_states[0].owner;
+    artifact.owner_property_states[0].stable_id = 0;
+    let expected = TransitionError::InvalidOwnerStableId {
+        owner,
+        stable_id: 0,
+    };
+
+    assert_eq!(
+        PropertySnapshotGraph::try_from_artifact(&artifact).err(),
+        Some(expected),
+    );
+    assert_eq!(
+        ArtifactOwnerGraph::try_from_artifact(&artifact).err(),
+        Some(expected),
+    );
+}
+
+#[test]
+fn artifact_owner_stable_identity_rejects_duplicates_with_both_owners() {
+    let (mut artifact, _, _, _, _) = complete_artifact();
+    let first_owner = artifact.owner_property_states[0].owner;
+    let duplicate_owner = artifact.owner_property_states[1].owner;
+    let stable_id = artifact.owner_property_states[0].stable_id;
+    artifact.owner_property_states[1].stable_id = stable_id;
+    let expected = TransitionError::DuplicateOwnerStableId {
+        stable_id,
+        first_owner,
+        duplicate_owner,
+    };
+
+    assert_eq!(
+        PropertySnapshotGraph::try_from_artifact(&artifact).err(),
+        Some(expected),
+    );
+    assert_eq!(
+        ArtifactOwnerGraph::try_from_artifact(&artifact).err(),
+        Some(expected),
     );
 }
 
@@ -543,6 +598,14 @@ fn scene_root_ordinal_is_derived_from_owner_store_order() {
         owner: second_root,
         parent: None,
     });
+    artifact
+        .owner_property_states
+        .push(PaintOwnerPropertyStateSnapshot {
+            owner: second_root,
+            stable_id: 0xc1_00ff,
+            paint: PropertyTreeState::default(),
+            descendants: PropertyTreeState::default(),
+        });
 
     let owners = ArtifactOwnerGraph::try_from_artifact(&artifact).expect("two-root owner graph");
     let first = owners.scene_target(child).expect("first rooted target");
@@ -630,6 +693,8 @@ fn transition_error_taxonomy_is_exhaustive() {
             TransitionError::UnreferencedOwnerPropertyState(_) => {
                 "unreferenced-owner-property-state"
             }
+            TransitionError::InvalidOwnerStableId { .. } => "invalid-owner-stable-id",
+            TransitionError::DuplicateOwnerStableId { .. } => "duplicate-owner-stable-id",
             TransitionError::InvalidOwnerPropertyState { .. } => "invalid-owner-property-state",
             TransitionError::DuplicateOwner(_) => "duplicate-owner",
             TransitionError::InvalidOwner(_) => "invalid-owner",
