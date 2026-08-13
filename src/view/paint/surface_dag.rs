@@ -61,6 +61,36 @@ impl SurfaceDagSceneRootId {
     fn from_scene_target(target: ArtifactSceneTarget) -> Self {
         Self(target.scene_root_ordinal())
     }
+
+    pub(crate) fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// One complete scene identity admitted by the artifact owner graph.
+///
+/// Roots are retained even when they produce no surface. `stable_id` is
+/// persistent identity payload, not an execution ordinal; it derives from the
+/// same keyed owner snapshot as surface-node identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceDagSceneRoot {
+    id: SurfaceDagSceneRootId,
+    target: NodeKey,
+    stable_id: u64,
+}
+
+impl SurfaceDagSceneRoot {
+    pub(crate) fn id(self) -> SurfaceDagSceneRootId {
+        self.id
+    }
+
+    pub(crate) fn target(self) -> NodeKey {
+        self.target
+    }
+
+    pub(crate) fn stable_id(self) -> u64 {
+        self.stable_id
+    }
 }
 
 /// Generic receiver identity for every surface kind.
@@ -236,6 +266,7 @@ impl SurfaceDagClipProjection {
 pub(crate) struct SurfaceDagNode {
     id: SurfaceDagNodeId,
     target: NodeKey,
+    stable_id: u64,
     cursor: ArtifactCursor,
     kind: SurfaceDagNodeKind,
     receiver: SurfaceDagTargetId,
@@ -250,6 +281,12 @@ impl SurfaceDagNode {
 
     pub(crate) fn target(&self) -> NodeKey {
         self.target
+    }
+
+    /// Persistent owner identity only. A retained surface key must combine it
+    /// with this node's [`SurfaceDagNodeKind`]; it is never an execution id.
+    pub(crate) fn stable_id(&self) -> u64 {
+        self.stable_id
     }
 
     pub(crate) fn cursor(&self) -> ArtifactCursor {
@@ -277,12 +314,37 @@ impl SurfaceDagNode {
 /// its separately classified consumption stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SurfaceDag {
+    roots: Vec<SurfaceDagSceneRoot>,
     nodes: Vec<SurfaceDagNode>,
 }
 
 impl SurfaceDag {
+    /// Complete admitted scene-root registry, including roots with no surface.
+    /// This is complete only for the artifact owner set, not for the arena.
+    pub(crate) fn roots(&self) -> &[SurfaceDagSceneRoot] {
+        &self.roots
+    }
+
     pub(crate) fn nodes(&self) -> &[SurfaceDagNode] {
         &self.nodes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn roots_from_artifact_for_test(
+        artifact: &PaintArtifact,
+    ) -> Result<Vec<SurfaceDagSceneRoot>, SurfaceDagError> {
+        let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
+        derive_surface_dag_scene_roots(&owners)
+    }
+
+    fn scene_root(
+        &self,
+        id: SurfaceDagSceneRootId,
+    ) -> Result<&SurfaceDagSceneRoot, SurfaceDagError> {
+        self.roots
+            .get(id.index())
+            .filter(|root| root.id == id)
+            .ok_or(SurfaceDagError::UnknownSceneRootReceiver(id))
     }
 
     fn surface_node(&self, id: SurfaceDagNodeId) -> Result<&SurfaceDagNode, SurfaceDagError> {
@@ -299,10 +361,18 @@ impl SurfaceDag {
         &self,
         receiver: SurfaceDagTargetId,
     ) -> Result<Option<&SurfaceDagNode>, SurfaceDagError> {
-        let SurfaceDagTargetId::Surface(id) = receiver else {
-            return Ok(None);
-        };
-        self.surface_node(id).map(Some)
+        match receiver {
+            SurfaceDagTargetId::SceneRoot(id) => {
+                self.scene_root(id)?;
+                Ok(None)
+            }
+            SurfaceDagTargetId::Surface(id) => self.surface_node(id).map(Some),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn omit_scene_root_for_test(&mut self, id: SurfaceDagSceneRootId) {
+        self.roots.retain(|root| root.id != id);
     }
 
     fn validate_receiver_acyclicity(&self) -> Result<(), SurfaceDagError> {
@@ -311,7 +381,8 @@ impl SurfaceDag {
             let mut reached_scene_root = false;
             for _ in 0..self.nodes.len() {
                 match receiver {
-                    SurfaceDagTargetId::SceneRoot(_) => {
+                    SurfaceDagTargetId::SceneRoot(id) => {
+                        self.scene_root(id)?;
                         reached_scene_root = true;
                         break;
                     }
@@ -326,6 +397,23 @@ impl SurfaceDag {
         }
         Ok(())
     }
+}
+
+fn derive_surface_dag_scene_roots(
+    owners: &ArtifactOwnerGraph,
+) -> Result<Vec<SurfaceDagSceneRoot>, SurfaceDagError> {
+    owners
+        .scene_roots()
+        .iter()
+        .copied()
+        .map(|scene_target| {
+            Ok(SurfaceDagSceneRoot {
+                id: SurfaceDagSceneRootId::from_scene_target(scene_target),
+                target: scene_target.target(),
+                stable_id: owners.stable_id(scene_target.target())?,
+            })
+        })
+        .collect()
 }
 
 /// One artifact-derived surface boundary before receiver reconstruction.
@@ -406,6 +494,7 @@ pub(crate) enum SurfaceDagError {
         boundary: ClipNodeId,
     },
     SurfaceNodeOrdinalOverflow(usize),
+    UnknownSceneRootReceiver(SurfaceDagSceneRootId),
     UnknownSurfaceReceiver(SurfaceDagNodeId),
     CyclicSurfaceReceiver(SurfaceDagNodeId),
 }
@@ -577,6 +666,7 @@ pub(crate) fn reconstruct_surface_dag(
     let candidates = derive_artifact_surface_candidates_from_validated(
         artifact, policy, &snapshots, &owners, &cursors,
     )?;
+    let roots = derive_surface_dag_scene_roots(&owners)?;
     if candidates.len() != events.len() {
         return Err(SurfaceDagError::TransitionCount {
             candidates: candidates.len(),
@@ -652,6 +742,7 @@ pub(crate) fn reconstruct_surface_dag(
         nodes.push(SurfaceDagNode {
             id,
             target: owner,
+            stable_id: owners.stable_id(owner)?,
             cursor: candidate.cursor(),
             kind: candidate.kind(),
             receiver,
@@ -661,7 +752,7 @@ pub(crate) fn reconstruct_surface_dag(
         previous_id_by_owner.insert(owner, id);
     }
 
-    let surface_dag = SurfaceDag { nodes };
+    let surface_dag = SurfaceDag { roots, nodes };
     surface_dag.validate_receiver_acyclicity()?;
     Ok(surface_dag)
 }

@@ -137,11 +137,17 @@ fn stage_c_eight_legacy_success_shapes_reconstruct_the_same_generic_receivers() 
         )
         .expect("C2b reconstructed surface DAG");
         assert_eq!(surface_dag.nodes().len(), legacy.nodes.len());
+        let stable_ids = artifact
+            .owner_property_states
+            .iter()
+            .map(|snapshot| (snapshot.owner, snapshot.stable_id))
+            .collect::<FxHashMap<_, _>>();
 
         for ((legacy_node, event), actual) in
             legacy.nodes.iter().zip(&events).zip(surface_dag.nodes())
         {
             assert_eq!(actual.target(), legacy_node.owner);
+            assert_eq!(actual.stable_id(), stable_ids[&legacy_node.owner]);
             assert_eq!(actual.cursor(), event.cursor());
             assert_eq!(actual.transition(), event.transition());
             match (&legacy_node.kind, actual.kind()) {
@@ -199,6 +205,19 @@ fn stage_c_native_forest_reconstructs_branch_and_multi_root_receivers() {
     )
     .expect("C2b native surface DAG");
     assert_eq!(surface_dag.nodes().len(), forest.boundaries.len());
+    assert_eq!(surface_dag.roots().len(), roots.len());
+    for (ordinal, (root, expected_target)) in surface_dag.roots().iter().zip(&roots).enumerate() {
+        assert_eq!(root.id().index(), ordinal);
+        assert_eq!(root.target(), *expected_target);
+        assert_eq!(
+            root.stable_id(),
+            arena
+                .get(*expected_target)
+                .expect("native scene root")
+                .element
+                .stable_id(),
+        );
+    }
 
     for (boundary, node) in forest.boundaries.iter().zip(surface_dag.nodes()) {
         assert_eq!(node.target(), boundary.boundary_root);
@@ -263,6 +282,7 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
             SurfaceDagError::ClipRebaseScroll { .. } => "clip-rebase-scroll",
             SurfaceDagError::ClipRebaseOutsideBoundary { .. } => "clip-rebase-outside-boundary",
             SurfaceDagError::SurfaceNodeOrdinalOverflow(_) => "surface-node-ordinal-overflow",
+            SurfaceDagError::UnknownSceneRootReceiver(_) => "unknown-scene-root-receiver",
             SurfaceDagError::UnknownSurfaceReceiver(_) => "unknown-surface-receiver",
             SurfaceDagError::CyclicSurfaceReceiver(_) => "cyclic-surface-receiver",
         }
@@ -304,6 +324,84 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
             expected: SurfaceDagNodeKind::Transform(TransformNodeId(root)),
         }),
         "co-located target/cursor equality cannot hide a kind-order mismatch",
+    );
+}
+
+#[test]
+fn stage_c_surface_dag_retains_plain_roots_without_minting_surfaces() {
+    let fixture = super::property_boundary_forest_plain_root_tests::plain_root_fixture();
+    let artifact = stage_c_classification_artifact_fixture(
+        &fixture.arena,
+        &fixture.roots,
+        &fixture.properties,
+        &fixture.generations,
+    )
+    .expect("C3 identity graph fixture");
+    let roots = SurfaceDag::roots_from_artifact_for_test(&artifact)
+        .expect("C3 complete scene-root identity registry");
+    let candidates = derive_artifact_surface_candidates(
+        &artifact,
+        LayerizationPolicy::PreservePropertyBoundaries,
+    )
+    .expect("C3 artifact surface candidates");
+
+    assert_eq!(roots.len(), 5);
+    assert_eq!(candidates.len(), 4);
+    assert_eq!(
+        roots
+            .iter()
+            .map(|root| (root.id().index(), root.target(), root.stable_id()))
+            .collect::<Vec<_>>(),
+        fixture
+            .roots
+            .iter()
+            .enumerate()
+            .map(|(ordinal, root)| {
+                (
+                    ordinal,
+                    *root,
+                    fixture
+                        .arena
+                        .get(*root)
+                        .expect("scene root")
+                        .element
+                        .stable_id(),
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    let plain_roots = [fixture.roots[0], fixture.roots[2], fixture.roots[4]];
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| !plain_roots.contains(&candidate.target())),
+        "three plain roots must remain identities without minting surfaces",
+    );
+}
+
+#[test]
+fn stage_c_surface_dag_rejects_an_unknown_scene_root_receiver() {
+    let (arena, root, properties, generations) =
+        property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::FrameRootScroll);
+    let artifact =
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
+            .expect("C3 scene-root fixture");
+    let requests = stage_c_artifact_surface_transition_requests(&artifact);
+    let events = classify_artifact_transition_sequence(&artifact, &requests)
+        .expect("C3 scene-root transitions");
+    let mut surface_dag = reconstruct_surface_dag(
+        &artifact,
+        &events,
+        LayerizationPolicy::PreservePropertyBoundaries,
+    )
+    .expect("C3 scene-root DAG");
+    let root_id = surface_dag.roots()[0].id();
+    let receiver = surface_dag.nodes()[0].receiver();
+    surface_dag.omit_scene_root_for_test(root_id);
+
+    assert_eq!(
+        surface_dag.receiver_node(receiver),
+        Err(SurfaceDagError::UnknownSceneRootReceiver(root_id)),
     );
 }
 

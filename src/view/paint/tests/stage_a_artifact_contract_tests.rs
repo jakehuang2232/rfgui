@@ -525,6 +525,21 @@ fn stage_a_owner_stable_identity_survives_transparent_ancestry_across_frames() {
             .map(|snapshot| (snapshot.owner, snapshot.stable_id))
             .collect::<Vec<_>>()
     };
+    let scene_root_identities = |artifact: &PaintArtifact| {
+        SurfaceDag::roots_from_artifact_for_test(artifact)
+            .expect("validated Stage C scene-root identity graph")
+            .into_iter()
+            .map(|scene_root| {
+                (
+                    scene_root.id().index(),
+                    scene_root.target(),
+                    scene_root.stable_id(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let first_scene_root_identities = scene_root_identities(&first);
+    let second_scene_root_identities = scene_root_identities(&second);
 
     assert!(
         !first
@@ -560,5 +575,17 @@ fn stage_a_owner_stable_identity_survives_transparent_ancestry_across_frames() {
         identities(&second),
         identities(&first),
         "the same owners must retain their artifact identity across frames",
+    );
+    assert_eq!(
+        first_scene_root_identities
+            .iter()
+            .map(|(_, target, _)| *target)
+            .collect::<Vec<_>>(),
+        roots,
+        "the typed scene-root registry must cover every authored root",
+    );
+    assert_eq!(
+        second_scene_root_identities, first_scene_root_identities,
+        "the changed frame must retain the same typed scene-root identities",
     );
 }

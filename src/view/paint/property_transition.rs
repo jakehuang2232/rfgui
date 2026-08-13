@@ -467,6 +467,7 @@ pub(crate) fn artifact_cursors(
 pub(crate) struct ArtifactOwnerGraph {
     parents: FxHashMap<NodeKey, Option<NodeKey>>,
     stable_ids: FxHashMap<NodeKey, u64>,
+    scene_roots: Vec<ArtifactSceneTarget>,
     scene_root_ordinals: FxHashMap<NodeKey, u32>,
     first_chunk_indices: FxHashMap<NodeKey, usize>,
 }
@@ -491,11 +492,16 @@ impl ArtifactOwnerGraph {
         let stable_ids = validate_owner_property_state_store(artifact)?;
 
         let mut root_ordinals = FxHashMap::default();
+        let mut scene_roots = Vec::new();
         for snapshot in &artifact.owner_nodes {
             if snapshot.parent.is_none() {
                 let ordinal = u32::try_from(root_ordinals.len())
                     .map_err(|_| TransitionError::SceneRootOrdinalOverflow(snapshot.owner))?;
                 root_ordinals.insert(snapshot.owner, ordinal);
+                scene_roots.push(ArtifactSceneTarget {
+                    scene_root_ordinal: ordinal,
+                    target: snapshot.owner,
+                });
             }
         }
 
@@ -561,6 +567,7 @@ impl ArtifactOwnerGraph {
         Ok(Self {
             parents,
             stable_ids,
+            scene_roots,
             scene_root_ordinals,
             first_chunk_indices,
         })
@@ -597,6 +604,13 @@ impl ArtifactOwnerGraph {
             .get(&owner)
             .copied()
             .ok_or(TransitionError::UnknownTarget(owner))
+    }
+
+    /// Complete parentless owner registry in the same validated store order
+    /// that assigned each [`ArtifactSceneTarget::scene_root_ordinal`]. Plain
+    /// roots remain present even when they produce no surface candidate.
+    pub(crate) fn scene_roots(&self) -> &[ArtifactSceneTarget] {
+        &self.scene_roots
     }
 
     pub(crate) fn cursor_for_target(

@@ -1,11 +1,11 @@
 use super::*;
 
-struct PlainRootFixture {
-    arena: NodeArena,
-    roots: Vec<NodeKey>,
-    property_roots: [NodeKey; 2],
-    properties: PropertyTrees,
-    generations: PaintGenerationTracker,
+pub(super) struct PlainRootFixture {
+    pub(super) arena: NodeArena,
+    pub(super) roots: Vec<NodeKey>,
+    pub(super) property_roots: [NodeKey; 2],
+    pub(super) properties: PropertyTrees,
+    pub(super) generations: PaintGenerationTracker,
 }
 
 fn root_element(stable_id: u64, color: Color) -> Element {
@@ -17,7 +17,7 @@ fn root_element(stable_id: u64, color: Color) -> Element {
     element
 }
 
-fn plain_root_fixture() -> PlainRootFixture {
+pub(super) fn plain_root_fixture() -> PlainRootFixture {
     let mut arena = new_test_arena();
     let plain_before = commit_element(
         &mut arena,
