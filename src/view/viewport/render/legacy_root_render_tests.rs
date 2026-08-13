@@ -2301,6 +2301,7 @@ fn assert_composite_dirty_preserved(arena: &NodeArena, key: NodeKey) {
 }
 
 mod canary_tests;
+mod authority_deletion_inventory_tests;
 mod composite_dirty_tests;
 mod mode_and_failure_tests;
 mod native_authority_tests;
