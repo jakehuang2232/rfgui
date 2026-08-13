@@ -9542,12 +9542,84 @@ fn chunk_bounds_bits(chunk: &super::PaintChunk) -> [u32; 4] {
     ]
 }
 
+/// Derives one translation from independently recorded host/local artifact
+/// chunks. Every pair must describe the same chunk and preserve its size, and
+/// every position delta must agree bitwise.
+///
+/// This is deliberately narrower than a generic artifact-space origin model:
+/// owner property-state endpoints do not identify either origin, exact source
+/// bits and semantic revisions remain separate admission checks, and the two
+/// current runtime producers always use a zero target origin. Consequently a
+/// future non-zero target-origin producer needs its own differential corpus.
+fn artifact_chunk_pair_translation_bits<'a>(
+    pairs: impl IntoIterator<Item = (&'a super::PaintChunk, &'a super::PaintChunk)>,
+) -> Option<[u32; 2]> {
+    let mut expected = None;
+    for (host, local) in pairs {
+        let host_bounds = chunk_bounds_bits(host);
+        let local_bounds = chunk_bounds_bits(local);
+        if host.id != local.id
+            || host.owner != local.owner
+            || host_bounds[2..] != local_bounds[2..]
+        {
+            return None;
+        }
+        let host_position = [host_bounds[0], host_bounds[1]].map(f32::from_bits);
+        let local_position = [local_bounds[0], local_bounds[1]].map(f32::from_bits);
+        let translation = [
+            local_position[0] - host_position[0],
+            local_position[1] - host_position[1],
+        ];
+        if !translation.into_iter().all(f32::is_finite) {
+            return None;
+        }
+        let translation_bits = translation.map(f32::to_bits);
+        match expected {
+            Some(expected) if expected != translation_bits => return None,
+            Some(_) => {}
+            None => expected = Some(translation_bits),
+        }
+    }
+    expected
+}
+
+fn artifact_space_transition_matches_chunk_pairs<'a>(
+    transition: super::PaintArtifactSpaceTransition,
+    pairs: impl IntoIterator<Item = (&'a super::PaintChunk, &'a super::PaintChunk)>,
+) -> bool {
+    let Some(artifact_translation_bits) = artifact_chunk_pair_translation_bits(pairs) else {
+        return false;
+    };
+    transition
+        .translation_bits()
+        .is_some_and(|translation| translation.into_bits() == artifact_translation_bits)
+}
+
 fn classify_optional_child_mask_semantics<'a>(
     artifact: &PaintArtifact,
     chunks: &'a [super::PaintChunk],
     content_root: crate::view::node_arena::NodeKey,
     mask_properties: PropertyTreeState,
 ) -> Option<(&'a super::PaintChunk, &'a [super::PaintChunk])> {
+    let (wrapper, _, semantic) = classify_optional_child_mask_semantics_with_masks(
+        artifact,
+        chunks,
+        content_root,
+        mask_properties,
+    )?;
+    Some((wrapper, semantic))
+}
+
+fn classify_optional_child_mask_semantics_with_masks<'a>(
+    artifact: &PaintArtifact,
+    chunks: &'a [super::PaintChunk],
+    content_root: crate::view::node_arena::NodeKey,
+    mask_properties: PropertyTreeState,
+) -> Option<(
+    &'a super::PaintChunk,
+    Option<(&'a super::PaintChunk, &'a super::PaintChunk)>,
+    &'a [super::PaintChunk],
+)> {
     let (wrapper, tail) = chunks.split_first()?;
     let is_mask = |chunk: &super::PaintChunk| chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT;
     let has_boundary_mask = tail.first().is_some_and(|chunk| is_mask(chunk))
@@ -9556,7 +9628,7 @@ fn classify_optional_child_mask_semantics<'a>(
         return tail
             .iter()
             .all(|chunk| !is_mask(chunk))
-            .then_some((wrapper, tail));
+            .then_some((wrapper, None, tail));
     }
     let (mask_end, with_begin) = tail.split_last()?;
     let (mask_begin, semantic) = with_begin.split_first()?;
@@ -9584,7 +9656,7 @@ fn classify_optional_child_mask_semantics<'a>(
         && mask_exact(mask_end, super::PaintNodePhase::AfterChildren)
         && chunk_bounds_bits(mask_begin) == chunk_bounds_bits(mask_end)
         && mask_begin.payload_identity == mask_end.payload_identity)
-        .then_some((wrapper, semantic))
+        .then_some((wrapper, Some((mask_begin, mask_end)), semantic))
 }
 
 pub(crate) fn validate_scroll_scene_host_before_artifact(
@@ -10386,6 +10458,27 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
             ),
             _ => return None,
         };
+    let mut artifact_translation_pairs = vec![
+        (host_wrapper, local_wrapper),
+        (host_root_glyph, local_root_glyph),
+        (host_projection_glyph, local_projection_glyph),
+    ];
+    match (host_masks, local_masks) {
+        (None, None) => {}
+        (Some((host_begin, host_end)), Some((local_begin, local_end))) => {
+            artifact_translation_pairs.extend([
+                (host_begin, local_begin),
+                (host_end, local_end),
+            ]);
+        }
+        _ => return None,
+    }
+    if !artifact_space_transition_matches_chunk_pairs(
+        artifact_space_transition,
+        artifact_translation_pairs,
+    ) {
+        return None;
+    }
     let content_zero_bounds_bits = atomic_projection_content_zero_bounds_bits(outer_scroll);
     let outer_state = PropertyTreeState {
         clip: Some(outer_contents_clip.id),
@@ -10777,26 +10870,54 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
     };
     let (root_before, host_tail) = host_artifact.chunks.split_first()?;
     let (overlay, host_content_chunks) = host_tail.split_last()?;
-    let Some((host_wrapper, [host_selection, host_root_glyph, host_projection_glyph])) =
-        classify_optional_child_mask_semantics(
-            &host_artifact,
-            host_content_chunks,
-            content_root,
-            outer_state,
-        )
+    let Some((
+        host_wrapper,
+        host_masks,
+        [host_selection, host_root_glyph, host_projection_glyph],
+    )) = classify_optional_child_mask_semantics_with_masks(
+        &host_artifact,
+        host_content_chunks,
+        content_root,
+        outer_state,
+    )
     else {
         return None;
     };
-    let Some((local_wrapper, [local_selection, local_root_glyph, local_projection_glyph])) =
-        classify_optional_child_mask_semantics(
-            &local_artifact,
-            local_artifact.chunks.as_slice(),
-            content_root,
-            Default::default(),
-        )
+    let Some((
+        local_wrapper,
+        local_masks,
+        [local_selection, local_root_glyph, local_projection_glyph],
+    )) = classify_optional_child_mask_semantics_with_masks(
+        &local_artifact,
+        local_artifact.chunks.as_slice(),
+        content_root,
+        Default::default(),
+    )
     else {
         return None;
     };
+    let mut artifact_translation_pairs = vec![
+        (host_wrapper, local_wrapper),
+        (host_selection, local_selection),
+        (host_root_glyph, local_root_glyph),
+        (host_projection_glyph, local_projection_glyph),
+    ];
+    match (host_masks, local_masks) {
+        (None, None) => {}
+        (Some((host_begin, host_end)), Some((local_begin, local_end))) => {
+            artifact_translation_pairs.extend([
+                (host_begin, local_begin),
+                (host_end, local_end),
+            ]);
+        }
+        _ => return None,
+    }
+    if !artifact_space_transition_matches_chunk_pairs(
+        artifact_space_transition,
+        artifact_translation_pairs,
+    ) {
+        return None;
+    }
     if local_selection
         .payload_identity
         .text_selection_identity()
@@ -10844,13 +10965,9 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
             ) == Some(chunk_bounds_bits(local)))
         .then_some(())
     };
-    let mask_pairs_match = match (host_artifact.chunks.len(), local_artifact.chunks.len()) {
-        (6, 4) => true,
-        (8, 6) => {
-            let host_begin = &host_artifact.chunks[2];
-            let host_end = &host_artifact.chunks[6];
-            let local_begin = &local_artifact.chunks[1];
-            let local_end = &local_artifact.chunks[5];
+    let mask_pairs_match = match (host_masks, local_masks) {
+        (None, None) => true,
+        (Some((host_begin, host_end)), Some((local_begin, local_end))) => {
             let pair = |host: &super::PaintChunk, local: &super::PaintChunk| {
                 let [PaintOp::DrawRect(host_mask)] =
                     host_artifact.ops.get(host.op_range.clone())?
