@@ -237,6 +237,48 @@ fn artifact_graph(with_border: bool) -> Result<FrameGraph, String> {
     Ok(graph)
 }
 
+fn closed_zero_surface_artifact(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    properties: &PropertyTrees,
+    generations: &PaintGenerationTracker,
+) -> Result<(PaintArtifact, FrameArtifactEligibility), String> {
+    let outcome = record_closed_single_target_frame_artifact(
+        arena,
+        roots,
+        properties,
+        generations,
+        RendererMode::ForcedForTests,
+    )
+    .map_err(|error| format!("zero-surface V2 recording failed: {error:?}"))?;
+    let FrameArtifactRecordOutcome::Artifact {
+        artifact,
+        eligibility,
+    } = outcome
+    else {
+        return Err("forced zero-surface V2 recording silently fell back".to_owned());
+    };
+    Ok((artifact, eligibility))
+}
+
+fn zero_surface_v2_graph(with_border: bool) -> Result<FrameGraph, String> {
+    let (arena, roots) = fixture(with_border);
+    let (properties, generations) = sync_identity(&arena, &roots);
+    let (artifact, eligibility) =
+        closed_zero_surface_artifact(&arena, &roots, &properties, &generations)?;
+    if !eligibility.eligible {
+        return Err(format!(
+            "pixel fixture is not zero-surface V2 eligible: {eligibility:?}"
+        ));
+    }
+    let prepared = prepare_single_target_surface_dag_frame(artifact)
+        .map_err(|error| format!("zero-surface V2 preparation failed: {error:?}"))?;
+    let (mut graph, ctx, target) = graph_prelude();
+    let _ = emit_single_target_surface_dag_frame(prepared, &mut graph, ctx);
+    add_present(&mut graph, &target)?;
+    Ok(graph)
+}
+
 fn legacy_graph(with_border: bool) -> Result<FrameGraph, String> {
     let (mut arena, roots) = fixture(with_border);
     let (mut graph, mut ctx, target) = graph_prelude();
@@ -2172,6 +2214,25 @@ fn artifact_self_clip_graph() -> Result<FrameGraph, String> {
     drop(arena);
     let (mut graph, ctx, target) = self_clip_graph_prelude();
     let _ = compile_artifact(&artifact, &mut graph, ctx);
+    add_present(&mut graph, &target)?;
+    Ok(graph)
+}
+
+fn zero_surface_v2_self_clip_graph() -> Result<FrameGraph, String> {
+    let (arena, roots) = self_clip_fixture();
+    let (properties, generations) = sync_identity(&arena, &roots);
+    let (artifact, eligibility) =
+        closed_zero_surface_artifact(&arena, &roots, &properties, &generations)?;
+    if !eligibility.eligible {
+        return Err(format!(
+            "self-clip pixel fixture is not zero-surface V2 eligible: {eligibility:?}"
+        ));
+    }
+    drop(arena);
+    let prepared = prepare_single_target_surface_dag_frame(artifact)
+        .map_err(|error| format!("self-clip zero-surface V2 preparation failed: {error:?}"))?;
+    let (mut graph, ctx, target) = self_clip_graph_prelude();
+    let _ = emit_single_target_surface_dag_frame(prepared, &mut graph, ctx);
     add_present(&mut graph, &target)?;
     Ok(graph)
 }

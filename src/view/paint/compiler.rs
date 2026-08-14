@@ -28,6 +28,10 @@ use super::artifact::{
     DETACHED_LOCAL_CLIP_GENERATION, PaintChunkRasterIdentity, TextSelectionPayloadIdentity,
 };
 use super::legacy_admission::RetainedInteractiveTextAreaResidentRasterSeal;
+use super::surface_dag::{
+    LayerizationPolicy, SurfaceDag, SurfaceDagError, SurfaceDagExecutionOrder,
+    derive_artifact_surface_candidates, reconstruct_surface_dag,
+};
 use super::{
     EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactTarget, PaintChunkRole,
     PaintOp, PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope, PreparedImageIdentity,
@@ -4332,6 +4336,114 @@ pub(crate) enum RetainedSurfaceCompileAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ArtifactCompileErrorKind {
     InvalidStore,
+}
+
+/// Typed rejection for the first C3 production slice. This preparation gate
+/// accepts only one current frame target whose artifact-derived layerization
+/// contains no detached surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SingleTargetSurfaceDagPrepareError {
+    InvalidArtifactStore,
+    UnsupportedTarget(PaintArtifactTarget),
+    SurfaceDag(SurfaceDagError),
+    DetachedSurfacesUnsupported { candidates: usize },
+}
+
+/// Compiler-owned proof for one completely validated current-target artifact
+/// whose generic Surface DAG contains zero detached surfaces.
+///
+/// `resolved_clips` is the artifact's own validated clip closure. It is not a
+/// detached-surface rebase: this C3 slice has no local backing or receiver clip
+/// space. The token is intentionally non-`Clone`; its paired emitter consumes
+/// the only prepared frame value.
+#[derive(Debug)]
+pub(crate) struct ValidatedSingleTargetSurfaceDagFrame {
+    artifact: PaintArtifact,
+    resolved_clips: Vec<ResolvedClip>,
+    surface_dag: SurfaceDag,
+    execution_order: SurfaceDagExecutionOrder,
+}
+
+/// Completes every validation needed by the zero-surface C3 emitter without
+/// receiving a frame graph, arena, or mutable renderer state. A rejection is
+/// therefore necessarily earlier than graph mutation.
+pub(crate) fn prepare_single_target_surface_dag_frame(
+    artifact: PaintArtifact,
+) -> Result<ValidatedSingleTargetSurfaceDagFrame, SingleTargetSurfaceDagPrepareError> {
+    let Some(validated) = validate_artifact_store(&artifact) else {
+        return Err(SingleTargetSurfaceDagPrepareError::InvalidArtifactStore);
+    };
+    if !matches!(validated.target, ValidatedArtifactTarget::CurrentTarget) {
+        return Err(SingleTargetSurfaceDagPrepareError::UnsupportedTarget(
+            artifact.target,
+        ));
+    }
+
+    let candidates = derive_artifact_surface_candidates(
+        &artifact,
+        LayerizationPolicy::PreservePropertyBoundaries,
+    )
+    .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+    if !candidates.is_empty() {
+        return Err(
+            SingleTargetSurfaceDagPrepareError::DetachedSurfacesUnsupported {
+                candidates: candidates.len(),
+            },
+        );
+    }
+    let surface_dag = reconstruct_surface_dag(
+        &artifact,
+        &[],
+        LayerizationPolicy::PreservePropertyBoundaries,
+    )
+    .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+    let execution_order = surface_dag
+        .derive_execution_order()
+        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+
+    Ok(ValidatedSingleTargetSurfaceDagFrame {
+        artifact,
+        resolved_clips: validated.resolved_clips,
+        surface_dag,
+        execution_order,
+    })
+}
+
+impl ValidatedSingleTargetSurfaceDagFrame {
+    #[cfg(test)]
+    pub(crate) fn artifact(&self) -> &PaintArtifact {
+        &self.artifact
+    }
+
+    #[cfg(test)]
+    pub(crate) fn surface_dag(&self) -> &SurfaceDag {
+        &self.surface_dag
+    }
+
+    #[cfg(test)]
+    pub(crate) fn execution_order(&self) -> &SurfaceDagExecutionOrder {
+        &self.execution_order
+    }
+}
+
+/// Consumes a preparation-only capability. With zero detached surfaces there
+/// are no execution nodes to visit; artifact chunk/op order is the complete
+/// execution stream and was sealed together with its terminal cursor.
+pub(crate) fn emit_single_target_surface_dag_frame(
+    prepared: ValidatedSingleTargetSurfaceDagFrame,
+    graph: &mut FrameGraph,
+    mut ctx: UiBuildContext,
+) -> BuildState {
+    let ValidatedSingleTargetSurfaceDagFrame {
+        artifact,
+        resolved_clips,
+        surface_dag: _surface_dag,
+        execution_order: _execution_order,
+    } = prepared;
+    #[cfg(test)]
+    ARTIFACT_COMPILE_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    compile_validated_artifact(&artifact, resolved_clips, graph, &mut ctx);
+    ctx.into_state()
 }
 
 pub(crate) struct ArtifactCompileError {

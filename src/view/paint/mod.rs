@@ -104,8 +104,10 @@ pub(crate) use compiler::{
     RetainedSurfaceCompositeGeometryStamp, RetainedSurfaceRasterIdentity,
     RetainedSurfaceRasterInputs, RetainedSurfaceRasterRole, RetainedSurfaceRasterStamp,
     RetainedSurfaceRasterStepStamp, RetainedSurfaceResidentKey, RootEffectCompileAction,
-    RootEffectRasterInputs, RootEffectRasterStamp, ValidatedEffectPropertySurfaceArtifact,
-    emit_validated_effect_property_surface_artifact,
+    RootEffectRasterInputs, RootEffectRasterStamp, SingleTargetSurfaceDagPrepareError,
+    ValidatedEffectPropertySurfaceArtifact, ValidatedSingleTargetSurfaceDagFrame,
+    emit_single_target_surface_dag_frame, emit_validated_effect_property_surface_artifact,
+    prepare_single_target_surface_dag_frame,
     property_effect_composite_geometry_stamp_is_canonical,
     property_effect_surface_raster_stamp_is_canonical_at_depth,
     property_effect_surface_raster_stamp_validates_contract_at_depth,
@@ -157,8 +159,9 @@ pub(crate) use frame_plan::{
 pub(crate) use frame_recorder::{
     ForcedFrameArtifactError, FrameArtifactDebugBoundary, FrameArtifactDebugBoundaryKind,
     FrameArtifactEligibility, FrameArtifactFallbackReason, FrameArtifactRecordOutcome,
-    RendererMode, record_clip_enabled_frame_artifact, record_frame_artifact,
-    record_property_neutral_frame_artifact, record_root_group_opacity_frame_artifact,
+    RendererMode, record_clip_enabled_frame_artifact, record_closed_single_target_frame_artifact,
+    record_frame_artifact, record_property_neutral_frame_artifact,
+    record_root_group_opacity_frame_artifact,
 };
 #[cfg(test)]
 pub(crate) fn canonical_manifest_matches_for_test(

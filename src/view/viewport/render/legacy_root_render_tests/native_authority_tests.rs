@@ -64,8 +64,11 @@ fn transparent_native_text_root_uses_host_generic_root_effect_artifact() {
     };
     assert!(candidate.eligibility.eligible);
     assert!(trace.rejections.is_empty());
+    let RecordedArtifactPayload::ExistingArtifact(artifact) = &candidate.payload else {
+        panic!("transparent native root opacity must remain on the existing artifact path")
+    };
     assert!(matches!(
-        candidate.artifact.target,
+        artifact.target,
         crate::view::paint::PaintArtifactTarget::RootOpacityGroup { root: owner, .. }
             if owner == root
     ));
@@ -248,15 +251,17 @@ fn native_root_opacity_contract_rejects_property_resource_and_topology_drift() {
     let root = roots[0];
     let (properties, generations) = synced_paint_state(&arena, &roots);
     let effect = crate::view::compositor::property_tree::EffectNodeId(root);
-    let AutoAuthorityDecision::Artifact { candidate, .. } =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true)
-    else {
-        panic!("baseline native root opacity must select artifact")
+    let candidate = || {
+        let AutoAuthorityDecision::Artifact { candidate, .. } =
+            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true)
+        else {
+            panic!("baseline native root opacity must select artifact")
+        };
+        candidate
     };
     let compile_tampered = |candidate: RecordedArtifactCandidate| {
         let mut graph = FrameGraph::new();
-        let mut compile_ctx =
-            UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+        let mut compile_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         let target = compile_ctx.allocate_target(&mut graph);
         compile_ctx.set_current_target(target);
         let key = crate::view::base_component::root_effect_stable_key(root);
@@ -275,9 +280,13 @@ fn native_root_opacity_contract_rejects_property_resource_and_topology_drift() {
         };
         try_compile_recorded_artifact_frame(&mut graph, candidate, &compile_ctx, Some(&plan))
     };
-    let mut generation_tamper = candidate.clone();
-    generation_tamper
-        .artifact
+    let mut generation_tamper = candidate();
+    let RecordedArtifactPayload::ExistingArtifact(generation_artifact) =
+        &mut generation_tamper.payload
+    else {
+        panic!("root opacity tamper requires the existing artifact path")
+    };
+    generation_artifact
         .effect_nodes
         .iter_mut()
         .find(|snapshot| snapshot.id == effect)
@@ -289,9 +298,12 @@ fn native_root_opacity_contract_rejects_property_resource_and_topology_drift() {
             crate::view::paint::ArtifactCompileErrorKind::InvalidStore
         )
     ));
-    let mut opacity_tamper = candidate;
-    opacity_tamper
-        .artifact
+    let mut opacity_tamper = candidate();
+    let RecordedArtifactPayload::ExistingArtifact(opacity_artifact) = &mut opacity_tamper.payload
+    else {
+        panic!("root opacity tamper requires the existing artifact path")
+    };
+    opacity_artifact
         .effect_nodes
         .iter_mut()
         .find(|snapshot| snapshot.id == effect)

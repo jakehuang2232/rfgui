@@ -1,4 +1,4 @@
-#![allow(dead_code)] // The C2 graph remains graph-inert until the C3 consumer lands.
+#![allow(dead_code)] // C3a consumes the zero-surface path; later C3 slices consume the remaining seams.
 
 use std::ops::Range;
 

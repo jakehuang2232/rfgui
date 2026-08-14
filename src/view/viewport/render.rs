@@ -113,6 +113,9 @@ enum AutoAuthorityRejection {
     Artifact {
         eligibility: crate::view::paint::FrameArtifactEligibility,
     },
+    ArtifactPrepare {
+        error: crate::view::paint::SingleTargetSurfaceDagPrepareError,
+    },
 }
 
 /// Observational history of rejected candidates during one authority search.
@@ -137,6 +140,18 @@ impl AutoAuthorityTrace {
         if self.capture_rejections {
             self.rejections.push(rejection());
         }
+    }
+}
+
+fn auto_artifact_legacy_fallback_stage(trace: &AutoAuthorityTrace) -> PaintAuthorityFallbackStage {
+    if trace
+        .rejections
+        .iter()
+        .any(|rejection| matches!(rejection, AutoAuthorityRejection::ArtifactPrepare { .. }))
+    {
+        PaintAuthorityFallbackStage::Prepare
+    } else {
+        PaintAuthorityFallbackStage::Selection
     }
 }
 
@@ -172,6 +187,9 @@ impl AutoAuthorityRejection {
             }
             Self::Artifact { eligibility } => {
                 format!("artifact:{:?}", eligibility.reasons)
+            }
+            Self::ArtifactPrepare { error } => {
+                format!("artifact-prepare:{error:?}")
             }
         }
     }
@@ -1181,6 +1199,11 @@ fn selection_rejection_debug_records(
                 DebugFallbackStage::Selection,
                 artifact_rejection_debug_records(eligibility),
             ),
+            AutoAuthorityRejection::ArtifactPrepare { .. } => (
+                "artifact-surface-dag",
+                DebugFallbackStage::Preparation,
+                Vec::new(),
+            ),
         },
         PaintAuthoritySelectionRejection::Plan { authority, error } => (
             authority.label(),
@@ -1369,10 +1392,22 @@ fn take_paint_authority_test_snapshot() -> Option<PaintAuthorityTelemetrySnapsho
     LAST_PAINT_AUTHORITY_TELEMETRY.with(|snapshot| snapshot.borrow_mut().take())
 }
 
-#[derive(Clone, Debug)]
+enum RecordedArtifactPayload {
+    /// C3a current-target path, fully prepared before the common clear.
+    SingleTargetSurfaceDag(crate::view::paint::ValidatedSingleTargetSurfaceDagFrame),
+    /// Existing root-effect and ArtifactCanary compiler path. These are not
+    /// part of the C3a zero-surface acceptance claim.
+    ExistingArtifact(crate::view::paint::PaintArtifact),
+}
+
 struct RecordedArtifactCandidate {
-    artifact: crate::view::paint::PaintArtifact,
+    payload: RecordedArtifactPayload,
     eligibility: crate::view::paint::FrameArtifactEligibility,
+}
+
+enum RecordedArtifactCandidateRejection {
+    Eligibility(crate::view::paint::FrameArtifactEligibility),
+    Prepare(crate::view::paint::SingleTargetSurfaceDagPrepareError),
 }
 
 /// One owning M11A decision. Selection records or plans only; it has no
@@ -1710,7 +1745,7 @@ fn record_auto_artifact_candidate(
     roots: &[crate::view::node_arena::NodeKey],
     property_trees: &crate::view::compositor::PropertyTrees,
     paint_generations: &crate::view::compositor::PaintGenerationTracker,
-) -> Result<RecordedArtifactCandidate, crate::view::paint::FrameArtifactEligibility> {
+) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
     // RetainedAuto owns and records the complete frame.
     let has_single_root_effect = roots.first().is_some_and(|root| {
         roots.len() == 1
@@ -1727,7 +1762,7 @@ fn record_auto_artifact_candidate(
             crate::view::paint::RendererMode::Auto,
         )
     } else {
-        crate::view::paint::record_clip_enabled_frame_artifact(
+        crate::view::paint::record_closed_single_target_frame_artifact(
             arena,
             roots,
             property_trees,
@@ -1740,12 +1775,25 @@ fn record_auto_artifact_candidate(
         crate::view::paint::FrameArtifactRecordOutcome::Artifact {
             artifact,
             eligibility,
-        } => Ok(RecordedArtifactCandidate {
-            artifact,
-            eligibility,
-        }),
+        } => {
+            let payload = match artifact.target {
+                crate::view::paint::PaintArtifactTarget::CurrentTarget => {
+                    RecordedArtifactPayload::SingleTargetSurfaceDag(
+                        crate::view::paint::prepare_single_target_surface_dag_frame(artifact)
+                            .map_err(RecordedArtifactCandidateRejection::Prepare)?,
+                    )
+                }
+                crate::view::paint::PaintArtifactTarget::RootOpacityGroup { .. } => {
+                    RecordedArtifactPayload::ExistingArtifact(artifact)
+                }
+            };
+            Ok(RecordedArtifactCandidate {
+                payload,
+                eligibility,
+            })
+        }
         crate::view::paint::FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) => {
-            Err(eligibility)
+            Err(RecordedArtifactCandidateRejection::Eligibility(eligibility))
         }
     }
 }
@@ -1997,8 +2045,11 @@ fn select_retained_auto_authority_with_semantics(
         if is_exact_native_root_opacity_artifact(arena, roots, property_trees) {
             match record_auto_artifact_candidate(arena, roots, property_trees, paint_generations) {
                 Ok(candidate) => return AutoAuthorityDecision::Artifact { candidate, trace },
-                Err(eligibility) => {
+                Err(RecordedArtifactCandidateRejection::Eligibility(eligibility)) => {
                     trace.capture(|| AutoAuthorityRejection::Artifact { eligibility });
+                }
+                Err(RecordedArtifactCandidateRejection::Prepare(error)) => {
+                    trace.capture(|| AutoAuthorityRejection::ArtifactPrepare { error });
                 }
             }
         }
@@ -2049,8 +2100,12 @@ fn select_retained_auto_authority_with_semantics(
 
     match record_auto_artifact_candidate(arena, roots, property_trees, paint_generations) {
         Ok(candidate) => AutoAuthorityDecision::Artifact { candidate, trace },
-        Err(eligibility) => {
+        Err(RecordedArtifactCandidateRejection::Eligibility(eligibility)) => {
             trace.capture(|| AutoAuthorityRejection::Artifact { eligibility });
+            AutoAuthorityDecision::Legacy { trace }
+        }
+        Err(RecordedArtifactCandidateRejection::Prepare(error)) => {
+            trace.capture(|| AutoAuthorityRejection::ArtifactPrepare { error });
             AutoAuthorityDecision::Legacy { trace }
         }
     }
@@ -2332,7 +2387,7 @@ fn try_build_property_neutral_artifact_frame(
         } => try_compile_recorded_artifact_frame(
             graph,
             RecordedArtifactCandidate {
-                artifact,
+                payload: RecordedArtifactPayload::ExistingArtifact(artifact),
                 eligibility,
             },
             ctx,
@@ -2351,57 +2406,74 @@ fn try_compile_recorded_artifact_frame(
     root_effect_plan: Option<&RootEffectBuildPlan>,
 ) -> PropertyNeutralArtifactAttempt {
     let RecordedArtifactCandidate {
-        artifact,
+        payload,
         eligibility,
     } = candidate;
     let artifact_ctx =
         crate::view::base_component::UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-    let root_effect = match artifact.target {
-        crate::view::paint::PaintArtifactTarget::RootOpacityGroup { root, .. } => {
-            let Some(plan) = root_effect_plan.filter(|plan| {
-                plan.key == crate::view::base_component::root_effect_stable_key(root)
-            }) else {
-                return PropertyNeutralArtifactAttempt::CompileRejected(
-                    crate::view::paint::ArtifactCompileErrorKind::InvalidStore,
-                );
-            };
-            let Some(stamp) =
-                crate::view::paint::validated_root_effect_raster_stamp(&artifact, plan.target)
-            else {
-                return PropertyNeutralArtifactAttempt::CompileRejected(
-                    crate::view::paint::ArtifactCompileErrorKind::InvalidStore,
-                );
-            };
-            let action = plan
-                .committed
-                .compile_action(&stamp, plan.key, plan.pair_resident);
-            Some((
-                action,
-                PendingRootEffectTransaction::Commit {
-                    stamp,
-                    key: plan.key,
-                    action,
-                },
-            ))
+    match payload {
+        RecordedArtifactPayload::SingleTargetSurfaceDag(prepared) => {
+            let state = crate::view::paint::emit_single_target_surface_dag_frame(
+                prepared,
+                graph,
+                artifact_ctx,
+            );
+            PropertyNeutralArtifactAttempt::Compiled {
+                state,
+                eligibility,
+                root_effect_transaction: None,
+            }
         }
-        crate::view::paint::PaintArtifactTarget::CurrentTarget => None,
-    };
-    let compiled = match &root_effect {
-        Some((action, _)) => crate::view::paint::try_compile_root_effect_artifact(
-            &artifact,
-            *action,
-            graph,
-            artifact_ctx,
-        ),
-        None => crate::view::paint::try_compile_artifact(&artifact, graph, artifact_ctx),
-    };
-    match compiled {
-        Ok(state) => PropertyNeutralArtifactAttempt::Compiled {
-            state,
-            eligibility,
-            root_effect_transaction: root_effect.map(|(_, transaction)| transaction),
-        },
-        Err(error) => PropertyNeutralArtifactAttempt::CompileRejected(error.kind()),
+        RecordedArtifactPayload::ExistingArtifact(artifact) => {
+            let root_effect = match artifact.target {
+                crate::view::paint::PaintArtifactTarget::RootOpacityGroup { root, .. } => {
+                    let Some(plan) = root_effect_plan.filter(|plan| {
+                        plan.key == crate::view::base_component::root_effect_stable_key(root)
+                    }) else {
+                        return PropertyNeutralArtifactAttempt::CompileRejected(
+                            crate::view::paint::ArtifactCompileErrorKind::InvalidStore,
+                        );
+                    };
+                    let Some(stamp) = crate::view::paint::validated_root_effect_raster_stamp(
+                        &artifact,
+                        plan.target,
+                    ) else {
+                        return PropertyNeutralArtifactAttempt::CompileRejected(
+                            crate::view::paint::ArtifactCompileErrorKind::InvalidStore,
+                        );
+                    };
+                    let action = plan
+                        .committed
+                        .compile_action(&stamp, plan.key, plan.pair_resident);
+                    Some((
+                        action,
+                        PendingRootEffectTransaction::Commit {
+                            stamp,
+                            key: plan.key,
+                            action,
+                        },
+                    ))
+                }
+                crate::view::paint::PaintArtifactTarget::CurrentTarget => None,
+            };
+            let compiled = match &root_effect {
+                Some((action, _)) => crate::view::paint::try_compile_root_effect_artifact(
+                    &artifact,
+                    *action,
+                    graph,
+                    artifact_ctx,
+                ),
+                None => crate::view::paint::try_compile_artifact(&artifact, graph, artifact_ctx),
+            };
+            match compiled {
+                Ok(state) => PropertyNeutralArtifactAttempt::Compiled {
+                    state,
+                    eligibility,
+                    root_effect_transaction: root_effect.map(|(_, transaction)| transaction),
+                },
+                Err(error) => PropertyNeutralArtifactAttempt::CompileRejected(error.kind()),
+            }
+        }
     }
 }
 
@@ -3865,6 +3937,9 @@ impl Viewport {
             (retained_transform_selection, None)
         };
         retained_transform_selection = selection;
+        let auto_legacy_fallback_stage = auto_authority_trace
+            .as_ref()
+            .map(|(_, trace)| auto_artifact_legacy_fallback_stage(trace));
         let mut paint_authority_telemetry = capture_paint_authority_telemetry.then(|| {
             PaintAuthorityTelemetry::from_selection(
                 self.paint_renderer_mode,
@@ -3929,10 +4004,13 @@ impl Viewport {
                     | RetainedTransformCanarySelection::EffectTreePlanRejected(_)
                     | RetainedTransformCanarySelection::ScrollHostShapeRejected { .. }
                     | RetainedTransformCanarySelection::ScrollHostPlanRejected(_)
-                    | RetainedTransformCanarySelection::ScrollSceneShapeRejected { .. }
-                    | RetainedTransformCanarySelection::AutoLegacy => {
+                    | RetainedTransformCanarySelection::ScrollSceneShapeRejected { .. } => {
                         Some(PaintAuthorityFallbackStage::Selection)
                     }
+                    RetainedTransformCanarySelection::AutoLegacy => Some(
+                        auto_legacy_fallback_stage
+                            .unwrap_or(PaintAuthorityFallbackStage::Selection),
+                    ),
                     RetainedTransformCanarySelection::AutoArtifact(_) => {
                         Some(PaintAuthorityFallbackStage::Compile)
                     }

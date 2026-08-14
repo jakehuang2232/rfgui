@@ -6,7 +6,8 @@ use crate::style::{
 use crate::view::base_component::{
     BoxModelSnapshot, BuildState, DirtyFlags, DirtyPassMask, Element, ElementTrait, EventTarget,
     Image, LayoutConstraints, LayoutPlacement, Layoutable, Renderable,
-    ShadowPaintRecordingCapability, Size, Svg, Text, TextArea, UiBuildContext,
+    ShadowPaintRecordingCapability, Size, SpatialPlacementSnapshot,
+    SpatialPositionReferenceSnapshot, Svg, Text, TextArea, UiBuildContext,
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::frame_graph::FrameGraph;
@@ -75,10 +76,10 @@ use super::{
     AutoAuthorityDecision, AutoAuthorityKind, AutoAuthorityRejection, AutoAuthorityTrace,
     CachedCompiledGraph, FrameDisposition, PaintAuthorityFallbackStage, PaintAuthorityKind,
     PaintAuthorityTelemetry, PendingRootEffectTransaction, PropertyNeutralArtifactAttempt,
-    RecordedArtifactCandidate, RetainedAutoTerminalFailureStage, RetainedTransformCanarySelection,
-    RootEffectBuildPlan, RootEffectRetainedState, Viewport,
-    begin_paint_authority_telemetry_attempt, build_root_legacy, debug_legacy_fallback,
-    direct_scroll_transform_prepare_rejection_dispatch,
+    RecordedArtifactCandidate, RecordedArtifactPayload, RetainedAutoTerminalFailureStage,
+    RetainedTransformCanarySelection, RootEffectBuildPlan, RootEffectRetainedState, Viewport,
+    auto_artifact_legacy_fallback_stage, begin_paint_authority_telemetry_attempt,
+    build_root_legacy, debug_legacy_fallback, direct_scroll_transform_prepare_rejection_dispatch,
     direct_scroll_transform_prepare_rejection_fallback_stage, enable_paint_authority_test_capture,
     finish_frame_dirty_lifecycle, frame_disposition, paint_authority_test_capture_enabled,
     preflight_direct_scroll_transform_selection, preflight_transform_effect_scroll_selection,
@@ -1833,20 +1834,26 @@ fn assert_native_root_opacity_artifact(
     assert!(candidate.eligibility.eligible, "{host}: eligibility");
     assert!(trace.rejections.is_empty(), "{host}: {trace:?}");
     if opacity.to_bits() == 1.0_f32.to_bits() {
+        let RecordedArtifactPayload::SingleTargetSurfaceDag(prepared) = &candidate.payload else {
+            panic!("{host}: opacity=1 current target must use the C3a zero-surface seal")
+        };
         assert!(matches!(
-            candidate.artifact.target,
+            prepared.artifact().target,
             crate::view::paint::PaintArtifactTarget::CurrentTarget
         ));
     } else {
+        let RecordedArtifactPayload::ExistingArtifact(artifact) = &candidate.payload else {
+            panic!("{host}: root opacity remains on the existing artifact path")
+        };
         assert!(matches!(
-            candidate.artifact.target,
+            artifact.target,
             crate::view::paint::PaintArtifactTarget::RootOpacityGroup {
                 root: owner,
                 effect,
             } if owner == root
                 && effect == crate::view::compositor::property_tree::EffectNodeId(root)
         ));
-        assert!(candidate.artifact.effect_nodes.iter().any(|snapshot| {
+        assert!(artifact.effect_nodes.iter().any(|snapshot| {
             snapshot.id == crate::view::compositor::property_tree::EffectNodeId(root)
                 && snapshot.opacity.to_bits() == opacity.to_bits()
                 && snapshot.generation != 0
@@ -2017,6 +2024,16 @@ impl ElementTrait for TransparentContentsClipParent {
             border_radius: 0.0,
             should_render: true,
         }
+    }
+
+    fn compositor_spatial_placement_snapshot(&self) -> Option<SpatialPlacementSnapshot> {
+        Some(SpatialPlacementSnapshot::new(
+            SpatialPositionReferenceSnapshot::LayoutParent(None),
+            [0.0; 2],
+            [0.0; 2],
+            [0.0; 2],
+            [0.0; 2],
+        ))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -2319,6 +2336,7 @@ mod scroll_forest_tests;
 mod scroll_production_dispatch_tests;
 mod scroll_topology_tests;
 mod stage_a_reuse_contract_tests;
+mod stage_c_zero_surface_v2_tests;
 mod telemetry_tests;
 mod text_area_caret_reuse_tests;
 mod text_area_interaction_tests;

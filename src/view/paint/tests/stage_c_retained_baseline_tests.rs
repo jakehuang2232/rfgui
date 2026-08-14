@@ -48,7 +48,8 @@ mod nested {
     );
 }
 
-/// Names of the ignored native GPU tests present at the start of Stage C.
+/// Names of the 23 ignored native GPU tests present at the start of Stage C,
+/// plus each named V2 hardware gate added during the migration.
 ///
 /// This inventory guards deletion and renaming only. It neither executes the
 /// hardware tests in normal CI nor prevents a named test body from being
@@ -69,6 +70,7 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
     .collect::<BTreeSet<_>>();
     let expected = expected_names([
         "native_offscreen_legacy_and_artifact_pixels_match",
+        "native_zero_surface_v2_matches_legacy_pixels",
         "native_forced_transform_surface_matches_legacy_pixels",
         "native_forced_nested_transform_surfaces_match_legacy_pixels",
         "native_forced_nested_r_u_and_u_u_frames_match_legacy_pixels",

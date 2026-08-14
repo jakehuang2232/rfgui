@@ -127,6 +127,41 @@ pub(crate) fn record_clip_enabled_frame_artifact(
     )
 }
 
+/// C3a current-target producer entry point. It is the only pre-cutover
+/// production path allowed to close the artifact's transitive spatial
+/// snapshots; existing retained and ArtifactCanary recorders deliberately
+/// keep their frozen stores unchanged.
+pub(crate) fn record_closed_single_target_frame_artifact(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    mode: RendererMode,
+) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
+    let outcome =
+        record_clip_enabled_frame_artifact(arena, roots, property_trees, paint_generations, mode)?;
+    let FrameArtifactRecordOutcome::Artifact {
+        mut artifact,
+        mut eligibility,
+    } = outcome
+    else {
+        return Ok(outcome);
+    };
+    if let Err(reasons) = populate_referenced_property_snapshots(&mut artifact, property_trees) {
+        eligibility.eligible = false;
+        for reason in reasons {
+            if !eligibility.reasons.contains(&reason) {
+                eligibility.reasons.push(reason);
+            }
+        }
+        return fallback_or_forced(mode, eligibility);
+    }
+    Ok(FrameArtifactRecordOutcome::Artifact {
+        artifact,
+        eligibility,
+    })
+}
+
 /// M6C1 production entry point. One frame root and one root-owned effect become
 /// the sole opacity authority; every recorded paint op is neutralized and the
 /// compiler applies the owning effect exactly once at the group composite.
@@ -2303,9 +2338,10 @@ where
     }
 }
 
-/// V2 candidate preflight. This is deliberately not called by the existing
-/// retained recorder: a missing spatial contract must reject the future V2
-/// candidate without changing the current retained authority before cutover.
+/// V2 candidate preflight. Before cutover it is called only by
+/// [`record_closed_single_target_frame_artifact`]; existing retained and
+/// ArtifactCanary recorder paths must not call it or change their frozen
+/// artifact stores.
 /// On success the artifact owns every transitive property snapshot needed by
 /// its chunk states and recorded owner endpoints, and no later stage needs the
 /// arena. This closure is complete only for the artifact's admitted owner set;
