@@ -1,5 +1,7 @@
 #![allow(dead_code)] // The C2 graph remains graph-inert until the C3 consumer lands.
 
+use std::ops::Range;
+
 use rustc_hash::FxHashMap;
 
 use crate::view::{
@@ -110,6 +112,116 @@ impl SurfaceDagTargetId {
             Self::SceneRoot(root) => Some(root.0),
             Self::Surface(_) => None,
         }
+    }
+}
+
+/// Dense parent-before-child identity used only while executing a Surface DAG.
+///
+/// This is deliberately distinct from [`SurfaceDagNodeId`]. The latter stays
+/// attached to artifact-store identity even when the execution projection
+/// moves that source node to a different ordinal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct SurfaceDagExecutionNodeId(u32);
+
+impl SurfaceDagExecutionNodeId {
+    pub(crate) fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// Receiver identity after the source graph has been projected into execution
+/// order. A surface receiver always names an earlier execution node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum SurfaceDagExecutionTargetId {
+    SceneRoot(SurfaceDagSceneRootId),
+    Surface(SurfaceDagExecutionNodeId),
+}
+
+/// One scene root and its contiguous execution-node range.
+///
+/// Roots do not receive a second execution identity: their existing ordinal is
+/// already the required order. Only surface nodes are remapped; empty spans
+/// preserve admitted plain roots that produce no surface.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceDagExecutionRoot {
+    identity: SurfaceDagSceneRoot,
+    node_span: Range<u32>,
+}
+
+impl SurfaceDagExecutionRoot {
+    pub(crate) fn identity(&self) -> SurfaceDagSceneRoot {
+        self.identity
+    }
+
+    pub(crate) fn node_span(&self) -> Range<u32> {
+        self.node_span.clone()
+    }
+}
+
+/// One source surface in parent-before-child execution order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceDagExecutionNode {
+    id: SurfaceDagExecutionNodeId,
+    source: SurfaceDagNodeId,
+    scene_root: SurfaceDagSceneRootId,
+    receiver: SurfaceDagExecutionTargetId,
+}
+
+impl SurfaceDagExecutionNode {
+    pub(crate) fn id(self) -> SurfaceDagExecutionNodeId {
+        self.id
+    }
+
+    pub(crate) fn source(self) -> SurfaceDagNodeId {
+        self.source
+    }
+
+    pub(crate) fn scene_root(self) -> SurfaceDagSceneRootId {
+        self.scene_root
+    }
+
+    pub(crate) fn receiver(self) -> SurfaceDagExecutionTargetId {
+        self.receiver
+    }
+}
+
+/// O(N) execution projection over one validated Surface DAG.
+///
+/// This supplies the parent-first and same-root-span preconditions required by
+/// the retained executors. A C3 consumer must still iterate this order when it
+/// wires compiler depth, prepare, emit, and execute; constructing the remap
+/// alone does not discharge that wiring contract.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceDagExecutionOrder {
+    roots: Vec<SurfaceDagExecutionRoot>,
+    nodes: Vec<SurfaceDagExecutionNode>,
+    source_to_execution: Vec<SurfaceDagExecutionNodeId>,
+}
+
+impl SurfaceDagExecutionOrder {
+    pub(crate) fn roots(&self) -> &[SurfaceDagExecutionRoot] {
+        &self.roots
+    }
+
+    pub(crate) fn nodes(&self) -> &[SurfaceDagExecutionNode] {
+        &self.nodes
+    }
+
+    pub(crate) fn execution_id(
+        &self,
+        source: SurfaceDagNodeId,
+    ) -> Option<SurfaceDagExecutionNodeId> {
+        self.source_to_execution.get(source.index()).copied()
+    }
+
+    pub(crate) fn source_node_id(
+        &self,
+        execution: SurfaceDagExecutionNodeId,
+    ) -> Option<SurfaceDagNodeId> {
+        self.nodes
+            .get(execution.index())
+            .filter(|node| node.id == execution)
+            .map(|node| node.source)
     }
 }
 
@@ -329,6 +441,94 @@ impl SurfaceDag {
         &self.nodes
     }
 
+    /// Projects artifact-store nodes into receiver-tree preorder.
+    ///
+    /// The source scan is already ordered by [`SurfaceDagNodeId`], so appending
+    /// each child to its receiver's adjacency list fixes the sibling tie-break
+    /// without any per-parent sort. Iterative preorder then visits every edge
+    /// once, preserving O(N) time and O(N) storage.
+    pub(crate) fn derive_execution_order(
+        &self,
+    ) -> Result<SurfaceDagExecutionOrder, SurfaceDagError> {
+        let mut root_children = vec![Vec::new(); self.roots.len()];
+        let mut surface_children = vec![Vec::new(); self.nodes.len()];
+        for node in &self.nodes {
+            match node.receiver {
+                SurfaceDagTargetId::SceneRoot(root) => {
+                    self.scene_root(root)?;
+                    root_children[root.index()].push(node.id);
+                }
+                SurfaceDagTargetId::Surface(parent) => {
+                    self.surface_node(parent)?;
+                    surface_children[parent.index()].push(node.id);
+                }
+            }
+        }
+
+        let execution_ordinal = |ordinal: usize| {
+            u32::try_from(ordinal)
+                .map(SurfaceDagExecutionNodeId)
+                .map_err(|_| SurfaceDagError::ExecutionNodeOrdinalOverflow(ordinal))
+        };
+        let span_ordinal = |ordinal: usize| {
+            u32::try_from(ordinal)
+                .map_err(|_| SurfaceDagError::ExecutionNodeOrdinalOverflow(ordinal))
+        };
+        let mut roots = Vec::with_capacity(self.roots.len());
+        let mut nodes = Vec::with_capacity(self.nodes.len());
+        let mut source_to_execution = vec![None; self.nodes.len()];
+
+        for root in &self.roots {
+            self.scene_root(root.id)?;
+            let start = span_ordinal(nodes.len())?;
+            let mut stack = root_children[root.id.index()]
+                .iter()
+                .rev()
+                .copied()
+                .map(|source| (source, SurfaceDagExecutionTargetId::SceneRoot(root.id)))
+                .collect::<Vec<_>>();
+            while let Some((source, receiver)) = stack.pop() {
+                self.surface_node(source)?;
+                if source_to_execution[source.index()].is_some() {
+                    return Err(SurfaceDagError::CyclicSurfaceReceiver(source));
+                }
+                let id = execution_ordinal(nodes.len())?;
+                source_to_execution[source.index()] = Some(id);
+                nodes.push(SurfaceDagExecutionNode {
+                    id,
+                    source,
+                    scene_root: root.id,
+                    receiver,
+                });
+                stack.extend(
+                    surface_children[source.index()]
+                        .iter()
+                        .rev()
+                        .copied()
+                        .map(|child| (child, SurfaceDagExecutionTargetId::Surface(id))),
+                );
+            }
+            let end = span_ordinal(nodes.len())?;
+            roots.push(SurfaceDagExecutionRoot {
+                identity: *root,
+                node_span: start..end,
+            });
+        }
+
+        let mut dense_source_to_execution = Vec::with_capacity(self.nodes.len());
+        for (index, execution) in source_to_execution.into_iter().enumerate() {
+            let Some(execution) = execution else {
+                return Err(SurfaceDagError::CyclicSurfaceReceiver(self.nodes[index].id));
+            };
+            dense_source_to_execution.push(execution);
+        }
+        Ok(SurfaceDagExecutionOrder {
+            roots,
+            nodes,
+            source_to_execution: dense_source_to_execution,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn roots_from_artifact_for_test(
         artifact: &PaintArtifact,
@@ -494,6 +694,7 @@ pub(crate) enum SurfaceDagError {
         boundary: ClipNodeId,
     },
     SurfaceNodeOrdinalOverflow(usize),
+    ExecutionNodeOrdinalOverflow(usize),
     UnknownSceneRootReceiver(SurfaceDagSceneRootId),
     UnknownSurfaceReceiver(SurfaceDagNodeId),
     CyclicSurfaceReceiver(SurfaceDagNodeId),

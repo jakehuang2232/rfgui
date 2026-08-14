@@ -83,9 +83,10 @@ pub(crate) use property_transition::{
 #[allow(unused_imports)]
 pub(crate) use surface_dag::{
     ArtifactSurfaceCandidate, LayerizationPolicy, SurfaceDag, SurfaceDagClipProjection,
-    SurfaceDagClipRebase, SurfaceDagError, SurfaceDagNode, SurfaceDagNodeId, SurfaceDagNodeKind,
-    SurfaceDagSceneRoot, SurfaceDagSceneRootId, SurfaceDagTargetId,
-    derive_artifact_surface_candidates, reconstruct_surface_dag,
+    SurfaceDagClipRebase, SurfaceDagError, SurfaceDagExecutionNode, SurfaceDagExecutionNodeId,
+    SurfaceDagExecutionOrder, SurfaceDagExecutionRoot, SurfaceDagExecutionTargetId, SurfaceDagNode,
+    SurfaceDagNodeId, SurfaceDagNodeKind, SurfaceDagSceneRoot, SurfaceDagSceneRootId,
+    SurfaceDagTargetId, derive_artifact_surface_candidates, reconstruct_surface_dag,
 };
 pub(crate) use composite_edge::{
     PaintCompositeEdge, emit_paint_composite_edges, intersect_logical_scissors,

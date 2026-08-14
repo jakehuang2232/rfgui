@@ -9,7 +9,8 @@ use std::{cmp::Reverse, collections::BTreeSet};
 
 use super::*;
 use crate::view::paint::{
-    LayerizationPolicy, SurfaceDag, SurfaceDagError, SurfaceDagNodeKind,
+    LayerizationPolicy, SurfaceDag, SurfaceDagError, SurfaceDagExecutionOrder,
+    SurfaceDagExecutionTargetId, SurfaceDagNodeKind, SurfaceDagTargetId,
     classify_artifact_transition_sequence, reconstruct_surface_dag,
 };
 
@@ -56,6 +57,70 @@ fn assert_receiver_chain_reaches_scene_root(
         }
     }
     panic!("receiver-chain gate must reach a scene root within the node bound");
+}
+
+fn reconstruct_artifact_surface_dag(artifact: &PaintArtifact) -> SurfaceDag {
+    let requests = stage_c_artifact_surface_transition_requests(artifact);
+    let events = classify_artifact_transition_sequence(artifact, &requests)
+        .expect("closed artifact transition stream");
+    reconstruct_surface_dag(
+        artifact,
+        &events,
+        LayerizationPolicy::PreservePropertyBoundaries,
+    )
+    .expect("closed artifact surface DAG")
+}
+
+fn assert_execution_order_contract(surface_dag: &SurfaceDag, execution: &SurfaceDagExecutionOrder) {
+    assert_eq!(execution.roots().len(), surface_dag.roots().len());
+    assert_eq!(execution.nodes().len(), surface_dag.nodes().len());
+    let mut next_node = 0_u32;
+    let mut seen_sources = vec![false; surface_dag.nodes().len()];
+    for (source_root, execution_root) in surface_dag.roots().iter().zip(execution.roots()) {
+        assert_eq!(execution_root.identity(), *source_root);
+        let span = execution_root.node_span();
+        assert_eq!(span.start, next_node);
+        assert!(span.end >= span.start);
+        assert!(span.end as usize <= execution.nodes().len());
+        for ordinal in span.clone() {
+            let node = execution.nodes()[ordinal as usize];
+            assert_eq!(node.id().index(), ordinal as usize);
+            assert_eq!(node.scene_root(), source_root.id());
+            assert_eq!(execution.execution_id(node.source()), Some(node.id()));
+            assert_eq!(execution.source_node_id(node.id()), Some(node.source()));
+            let source_node = surface_dag.nodes()[node.source().index()];
+            assert_eq!(source_node.id(), node.source());
+            match (source_node.receiver(), node.receiver()) {
+                (
+                    SurfaceDagTargetId::SceneRoot(source_receiver),
+                    SurfaceDagExecutionTargetId::SceneRoot(execution_receiver),
+                ) => assert_eq!(execution_receiver, source_receiver),
+                (
+                    SurfaceDagTargetId::Surface(source_receiver),
+                    SurfaceDagExecutionTargetId::Surface(execution_receiver),
+                ) => assert_eq!(
+                    execution.execution_id(source_receiver),
+                    Some(execution_receiver),
+                ),
+                _ => panic!("execution remap must preserve receiver kind"),
+            }
+            assert!(!seen_sources[node.source().index()]);
+            seen_sources[node.source().index()] = true;
+            match node.receiver() {
+                SurfaceDagExecutionTargetId::SceneRoot(root) => {
+                    assert_eq!(root, source_root.id());
+                }
+                SurfaceDagExecutionTargetId::Surface(parent) => {
+                    assert!(parent.index() < node.id().index());
+                    assert!(span.start as usize <= parent.index());
+                    assert!(parent.index() < span.end as usize);
+                }
+            }
+        }
+        next_node = span.end;
+    }
+    assert_eq!(next_node as usize, execution.nodes().len());
+    assert!(seen_sources.into_iter().all(|seen| seen));
 }
 
 fn assert_receiver_matches_legacy(
@@ -282,6 +347,7 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
             SurfaceDagError::ClipRebaseScroll { .. } => "clip-rebase-scroll",
             SurfaceDagError::ClipRebaseOutsideBoundary { .. } => "clip-rebase-outside-boundary",
             SurfaceDagError::SurfaceNodeOrdinalOverflow(_) => "surface-node-ordinal-overflow",
+            SurfaceDagError::ExecutionNodeOrdinalOverflow(_) => "execution-node-ordinal-overflow",
             SurfaceDagError::UnknownSceneRootReceiver(_) => "unknown-scene-root-receiver",
             SurfaceDagError::UnknownSurfaceReceiver(_) => "unknown-surface-receiver",
             SurfaceDagError::CyclicSurfaceReceiver(_) => "cyclic-surface-receiver",
@@ -324,6 +390,158 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
             expected: SurfaceDagNodeKind::Transform(TransformNodeId(root)),
         }),
         "co-located target/cursor equality cannot hide a kind-order mismatch",
+    );
+}
+
+#[test]
+fn stage_c_execution_order_remaps_a_leaf_first_forward_receiver() {
+    let (arena, root, properties, generations) =
+        property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformScroll);
+    let mut artifact =
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
+            .expect("leaf-first execution artifact");
+    reorder_artifact_leaf_first(&arena, &mut artifact);
+    let surface_dag = reconstruct_artifact_surface_dag(&artifact);
+    let execution = surface_dag
+        .derive_execution_order()
+        .expect("leaf-first execution order");
+    assert_execution_order_contract(&surface_dag, &execution);
+
+    let [scroll, transform] = surface_dag.nodes() else {
+        panic!("leaf-first transform-scroll must retain two source nodes")
+    };
+    assert_eq!(
+        execution
+            .nodes()
+            .iter()
+            .map(|node| node.source())
+            .collect::<Vec<_>>(),
+        vec![transform.id(), scroll.id()],
+    );
+    assert_eq!(
+        execution.nodes()[1].receiver(),
+        SurfaceDagExecutionTargetId::Surface(execution.nodes()[0].id()),
+    );
+}
+
+#[test]
+fn stage_c_execution_order_remaps_a_leaf_first_nested_scroll_chain() {
+    let (arena, root, properties, generations) =
+        property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::NestedScroll);
+    let mut artifact =
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
+            .expect("leaf-first nested execution artifact");
+    reorder_artifact_leaf_first(&arena, &mut artifact);
+    let surface_dag = reconstruct_artifact_surface_dag(&artifact);
+    let execution = surface_dag
+        .derive_execution_order()
+        .expect("leaf-first nested execution order");
+    assert_execution_order_contract(&surface_dag, &execution);
+
+    let [inner, outer] = surface_dag.nodes() else {
+        panic!("leaf-first nested scroll must retain two source nodes")
+    };
+    assert_eq!(
+        execution
+            .nodes()
+            .iter()
+            .map(|node| node.source())
+            .collect::<Vec<_>>(),
+        vec![outer.id(), inner.id()],
+    );
+    assert_eq!(
+        execution.nodes()[1].receiver(),
+        SurfaceDagExecutionTargetId::Surface(execution.nodes()[0].id()),
+    );
+}
+
+#[test]
+fn stage_c_execution_order_preserves_multi_root_preorder_and_sibling_tie_break() {
+    let (arena, roots, properties, generations) = native_scroll_forest_plan_fixture();
+    let artifact =
+        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations)
+            .expect("native execution artifact");
+    let surface_dag = reconstruct_artifact_surface_dag(&artifact);
+    let execution = surface_dag
+        .derive_execution_order()
+        .expect("native execution order");
+    assert_execution_order_contract(&surface_dag, &execution);
+
+    assert_eq!(
+        execution
+            .roots()
+            .iter()
+            .map(|root| root.node_span())
+            .collect::<Vec<_>>(),
+        vec![0..4, 4..6],
+    );
+    let parent = execution
+        .execution_id(surface_dag.nodes()[1].id())
+        .expect("shared branch parent execution id");
+    let left = execution
+        .execution_id(surface_dag.nodes()[2].id())
+        .expect("left sibling execution id");
+    let right = execution
+        .execution_id(surface_dag.nodes()[3].id())
+        .expect("right sibling execution id");
+    assert!(left.index() < right.index());
+    assert_eq!(
+        [
+            execution.nodes()[left.index()].receiver(),
+            execution.nodes()[right.index()].receiver()
+        ],
+        [
+            SurfaceDagExecutionTargetId::Surface(parent),
+            SurfaceDagExecutionTargetId::Surface(parent),
+        ],
+        "siblings keep source-ID order while naming the same earlier parent",
+    );
+}
+
+#[test]
+fn stage_c_execution_order_retains_empty_plain_root_spans() {
+    let (mut arena, native_roots, mut properties, mut generations) =
+        native_scroll_forest_plan_fixture();
+    let plain_before = arena.insert(Node::new(Box::new(Element::new_with_id(
+        0xc3_5201, 0.0, 0.0, 20.0, 20.0,
+    ))));
+    let plain_between = arena.insert(Node::new(Box::new(Element::new_with_id(
+        0xc3_5202, 0.0, 0.0, 20.0, 20.0,
+    ))));
+    let plain_after = arena.insert(Node::new(Box::new(Element::new_with_id(
+        0xc3_5203, 0.0, 0.0, 20.0, 20.0,
+    ))));
+    let roots = vec![
+        plain_before,
+        native_roots[0],
+        plain_between,
+        native_roots[1],
+        plain_after,
+    ];
+    properties.sync(&arena, &roots);
+    generations.sync(&arena, &roots, &properties);
+    let artifact =
+        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations)
+            .expect("plain-root execution artifact");
+    let surface_dag = reconstruct_artifact_surface_dag(&artifact);
+    let execution = surface_dag
+        .derive_execution_order()
+        .expect("plain-root execution order");
+    assert_execution_order_contract(&surface_dag, &execution);
+
+    assert_eq!(
+        execution
+            .roots()
+            .iter()
+            .map(|root| (root.identity().target(), root.node_span()))
+            .collect::<Vec<_>>(),
+        vec![
+            (plain_before, 0..0),
+            (native_roots[0], 0..4),
+            (plain_between, 4..4),
+            (native_roots[1], 4..6),
+            (plain_after, 6..6),
+        ],
     );
 }
 
