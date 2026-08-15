@@ -103,6 +103,7 @@ pub(crate) use compiler::{
     RetainedSurfaceArtifactSpanStamp, RetainedSurfaceChunkStamp, RetainedSurfaceCompileAction,
     RetainedSurfaceCompositeGeometryStamp, RetainedSurfaceRasterIdentity,
     RetainedSurfaceRasterInputs, RetainedSurfaceRasterRole, RetainedSurfaceRasterStamp,
+    RetainedSurfaceRasterStampParts,
     RetainedSurfaceRasterStepStamp, RetainedSurfaceResidentKey, RootEffectCompileAction,
     RootEffectRasterInputs, RootEffectRasterStamp, SingleTargetSurfaceDagPrepareError,
     ValidatedEffectPropertySurfaceArtifact, ValidatedSingleTargetSurfaceDagFrame,

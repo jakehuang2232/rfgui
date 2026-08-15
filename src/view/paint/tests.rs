@@ -2545,7 +2545,7 @@ fn validated_atomic_projection_selection_scroll_scene_fixture(
     .expect("valid selection grammar must selector-plan-compile one property-scroll scene")
 }
 
-fn atomic_projection_content_stamp_for_test(
+pub(super) fn atomic_projection_content_stamp_for_test(
     projected_content: &'static str,
     stable_id: u64,
 ) -> Option<RetainedSurfaceRasterStamp> {

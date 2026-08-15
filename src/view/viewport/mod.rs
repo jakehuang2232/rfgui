@@ -1199,35 +1199,37 @@ mod retained_surface_state_tests {
                 },
             ),
         ];
-        crate::view::paint::RetainedSurfaceRasterStamp {
-            identity: crate::view::paint::RetainedSurfaceRasterIdentity {
-                boundary_root: root,
-                stable_id,
-                color_key,
-                role: crate::view::paint::RetainedSurfaceRasterRole::Transform,
-                scroll_content_tile: None,
+        crate::view::paint::RetainedSurfaceRasterStamp::from_legacy_parts(
+            crate::view::paint::RetainedSurfaceRasterStampParts {
+                identity: crate::view::paint::RetainedSurfaceRasterIdentity {
+                    boundary_root: root,
+                    stable_id,
+                    color_key,
+                    role: crate::view::paint::RetainedSurfaceRasterRole::Transform,
+                    scroll_content_tile: None,
+                },
+                target: crate::view::paint::RetainedSurfaceRasterInputs {
+                    color,
+                    depth,
+                    scale_factor_bits: 2.0_f32.to_bits(),
+                    source_bounds_bits: [
+                        4.0_f32.to_bits(),
+                        5.0_f32.to_bits(),
+                        20.0_f32.to_bits(),
+                        10.0_f32.to_bits(),
+                    ],
+                },
+                owner_topology: Vec::new(),
+                clip_nodes: Vec::new(),
+                chunks,
+                op_count: 1,
+                opaque_order_span: 0..1,
+                ordered_steps,
+                scroll_host: None,
+                property_effect: None,
+                native_scroll_children: Vec::new(),
             },
-            target: crate::view::paint::RetainedSurfaceRasterInputs {
-                color,
-                depth,
-                scale_factor_bits: 2.0_f32.to_bits(),
-                source_bounds_bits: [
-                    4.0_f32.to_bits(),
-                    5.0_f32.to_bits(),
-                    20.0_f32.to_bits(),
-                    10.0_f32.to_bits(),
-                ],
-            },
-            owner_topology: Vec::new(),
-            clip_nodes: Vec::new(),
-            chunks,
-            op_count: 1,
-            opaque_order_span: 0..1,
-            ordered_steps,
-            scroll_host: None,
-            property_effect: None,
-            native_scroll_children: Vec::new(),
-        }
+        )
     }
 
     fn property_scene_stamp(

@@ -285,7 +285,7 @@ fn effect_transform_fixture() -> EffectTransformForestFixture {
         role: RetainedSurfaceRasterRole::PropertyEffect,
         scroll_content_tile: None,
     };
-    let parent = RetainedSurfaceRasterStamp {
+    let parent = RetainedSurfaceRasterStamp::from_legacy_parts(RetainedSurfaceRasterStampParts {
         identity: effect_identity,
         target: target(effect_stable_id, PropertyBoundaryForestRole::Effect),
         owner_topology: Vec::new(),
@@ -314,7 +314,7 @@ fn effect_transform_fixture() -> EffectTransformForestFixture {
             }],
         }),
         native_scroll_children: Vec::new(),
-    };
+    });
     let forest = PropertyBoundaryForest {
         roots: vec![PropertyBoundaryForestRoot {
             scene_root_ordinal: 0,

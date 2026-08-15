@@ -29,8 +29,8 @@ use super::artifact::{
 };
 use super::legacy_admission::RetainedInteractiveTextAreaResidentRasterSeal;
 use super::surface_dag::{
-    LayerizationPolicy, SurfaceDag, SurfaceDagError, SurfaceDagExecutionOrder,
-    derive_artifact_surface_candidates, reconstruct_surface_dag,
+    LayerizationPolicy, SurfaceDag, SurfaceDagClipProjection, SurfaceDagError,
+    SurfaceDagExecutionOrder, derive_artifact_surface_candidates, reconstruct_surface_dag,
 };
 use super::{
     EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactTarget, PaintChunkRole,
@@ -2404,8 +2404,20 @@ impl RetainedSurfaceRasterInputs {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RetainedSurfaceRasterStamp {
+/// Which authority produced a detached scroll-content raster's local clip
+/// generations. The discriminator belongs to the complete raster stamp, not
+/// [`RetainedSurfaceRasterIdentity`], so changing authority keeps the same
+/// resident allocation key while forcing a raster refresh.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalClipGenerationSemantics {
+    LegacyDetached,
+    ArtifactLive,
+}
+
+/// Constructor payload shared by the legacy and artifact-live stamp paths.
+/// It deliberately carries no generation semantics; only the constructors
+/// below can mint that private field.
+pub(crate) struct RetainedSurfaceRasterStampParts {
     /// Component grammar is deliberately absent. Exact resident content is
     /// identified by the generic owner topology, local clips, ordered chunk
     /// headers, payload identities, op counts, and opaque span below.
@@ -2428,6 +2440,99 @@ pub(crate) struct RetainedSurfaceRasterStamp {
     /// Existing retained grammars must keep this empty.
     pub(crate) native_scroll_children:
         Vec<super::frame_plan::NativeScrollForestChildRasterDependency>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RetainedSurfaceRasterStamp {
+    pub(crate) identity: RetainedSurfaceRasterIdentity,
+    pub(crate) target: RetainedSurfaceRasterInputs,
+    pub(crate) owner_topology: Vec<PaintOwnerSnapshot>,
+    pub(crate) clip_nodes: Vec<ClipNodeSnapshot>,
+    pub(crate) chunks: Vec<RetainedSurfaceChunkStamp>,
+    pub(crate) op_count: usize,
+    pub(crate) opaque_order_span: Range<u32>,
+    pub(crate) ordered_steps: Vec<RetainedSurfaceRasterStepStamp>,
+    pub(crate) scroll_host: Option<RetainedScrollHostRasterDependency>,
+    pub(crate) property_effect: Option<PropertyEffectRasterIdentityInputs>,
+    pub(crate) native_scroll_children:
+        Vec<super::frame_plan::NativeScrollForestChildRasterDependency>,
+    local_clip_generation_semantics: Option<LocalClipGenerationSemantics>,
+}
+
+impl RetainedSurfaceRasterStamp {
+    pub(crate) fn from_legacy_parts(parts: RetainedSurfaceRasterStampParts) -> Self {
+        let local_clip_generation_semantics = (parts.identity.role
+            == RetainedSurfaceRasterRole::ScrollContent
+            && parts.identity.scroll_content_tile.is_none()
+            && !parts.clip_nodes.is_empty())
+        .then_some(LocalClipGenerationSemantics::LegacyDetached);
+        Self::from_parts(parts, local_clip_generation_semantics)
+    }
+
+    /// Mints the artifact-live variant only from the unforgeable clip-space
+    /// projection. Callers cannot supply a second copy of the local clips.
+    #[allow(dead_code)] // C3b0 seam; the first production caller lands with the Surface DAG executor.
+    pub(crate) fn from_artifact_live_clip_projection(
+        mut parts: RetainedSurfaceRasterStampParts,
+        projection: SurfaceDagClipProjection,
+    ) -> Option<Self> {
+        if parts.identity.role != RetainedSurfaceRasterRole::ScrollContent
+            || parts.identity.scroll_content_tile.is_some()
+            || !parts.clip_nodes.is_empty()
+            || projection.local_state().scroll.is_some()
+        {
+            return None;
+        }
+        let clip_nodes = projection.local_clips().to_vec();
+        if projection.local_state().clip != clip_nodes.first().map(|clip| clip.id)
+            || clip_nodes.iter().any(|clip| clip.generation == 0)
+        {
+            return None;
+        }
+        parts.clip_nodes = clip_nodes;
+        let semantics =
+            (!parts.clip_nodes.is_empty()).then_some(LocalClipGenerationSemantics::ArtifactLive);
+        Some(Self::from_parts(parts, semantics))
+    }
+
+    fn from_parts(
+        parts: RetainedSurfaceRasterStampParts,
+        local_clip_generation_semantics: Option<LocalClipGenerationSemantics>,
+    ) -> Self {
+        Self {
+            identity: parts.identity,
+            target: parts.target,
+            owner_topology: parts.owner_topology,
+            clip_nodes: parts.clip_nodes,
+            chunks: parts.chunks,
+            op_count: parts.op_count,
+            opaque_order_span: parts.opaque_order_span,
+            ordered_steps: parts.ordered_steps,
+            scroll_host: parts.scroll_host,
+            property_effect: parts.property_effect,
+            native_scroll_children: parts.native_scroll_children,
+            local_clip_generation_semantics,
+        }
+    }
+
+    fn local_clip_generation_is_canonical(&self, clip: ClipNodeSnapshot) -> bool {
+        match self.local_clip_generation_semantics {
+            Some(LocalClipGenerationSemantics::LegacyDetached) => {
+                clip.generation == DETACHED_LOCAL_CLIP_GENERATION
+            }
+            Some(LocalClipGenerationSemantics::ArtifactLive) => clip.generation != 0,
+            None => false,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_local_clip_generation_semantics_for_test(
+        mut self,
+        semantics: Option<LocalClipGenerationSemantics>,
+    ) -> Self {
+        self.local_clip_generation_semantics = semantics;
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3454,7 +3559,7 @@ fn build_transform_scroll_receiver_raster_stamp(
             | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return None,
         }
     }
-    let stamp = RetainedSurfaceRasterStamp {
+    let stamp = RetainedSurfaceRasterStamp::from_legacy_parts(RetainedSurfaceRasterStampParts {
         identity,
         target,
         owner_topology,
@@ -3466,7 +3571,7 @@ fn build_transform_scroll_receiver_raster_stamp(
         scroll_host: None,
         property_effect: None,
         native_scroll_children: Vec::new(),
-    };
+    });
     Some(stamp)
 }
 
@@ -3852,7 +3957,7 @@ pub(crate) fn validated_effect_scroll_receiver_raster_stamp(
             | RetainedSurfaceRasterStepStamp::ScrollBoundary(_) => return None,
         }
     }
-    let stamp = RetainedSurfaceRasterStamp {
+    let stamp = RetainedSurfaceRasterStamp::from_legacy_parts(RetainedSurfaceRasterStampParts {
         identity,
         target,
         owner_topology: owners,
@@ -3867,7 +3972,7 @@ pub(crate) fn validated_effect_scroll_receiver_raster_stamp(
             content: contract.content().to_vec(),
         }),
         native_scroll_children: Vec::new(),
-    };
+    });
     effect_scroll_receiver_raster_stamp_validates_contract(&stamp, contract).then_some(stamp)
 }
 
@@ -3985,7 +4090,7 @@ pub(crate) fn validated_transform_effect_scroll_outer_raster_stamp(
             | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return None,
         }
     }
-    let stamp = RetainedSurfaceRasterStamp {
+    let stamp = RetainedSurfaceRasterStamp::from_legacy_parts(RetainedSurfaceRasterStampParts {
         identity,
         target,
         owner_topology,
@@ -3997,7 +4102,7 @@ pub(crate) fn validated_transform_effect_scroll_outer_raster_stamp(
         scroll_host: None,
         property_effect: None,
         native_scroll_children: Vec::new(),
-    };
+    });
     transform_effect_scroll_outer_raster_stamp_validates_contract(
         &stamp,
         outer_transform,
@@ -4126,7 +4231,7 @@ pub(crate) fn validated_effect_transform_scroll_outer_raster_stamp(
             | RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => return None,
         }
     }
-    let stamp = RetainedSurfaceRasterStamp {
+    let stamp = RetainedSurfaceRasterStamp::from_legacy_parts(RetainedSurfaceRasterStampParts {
         identity,
         target,
         owner_topology: owners,
@@ -4141,7 +4246,7 @@ pub(crate) fn validated_effect_transform_scroll_outer_raster_stamp(
             content: outer_contract.content().to_vec(),
         }),
         native_scroll_children: Vec::new(),
-    };
+    });
     effect_transform_scroll_outer_raster_stamp_validates_contract(
         &stamp,
         outer_contract,
@@ -5049,19 +5154,21 @@ pub(crate) fn validated_native_scroll_forest_content_raster_stamp(
     {
         return None;
     }
-    Some(RetainedSurfaceRasterStamp {
-        identity,
-        target,
-        owner_topology: artifact_span.owner_topology.clone(),
-        clip_nodes: artifact_span.clip_nodes.clone(),
-        chunks: artifact_span.chunks.clone(),
-        op_count: artifact_span.op_count,
-        opaque_order_span: aggregate_opaque_order_span,
-        ordered_steps: vec![RetainedSurfaceRasterStepStamp::ArtifactSpan(artifact_span)],
-        scroll_host: None,
-        property_effect: None,
-        native_scroll_children: child_dependencies,
-    })
+    Some(RetainedSurfaceRasterStamp::from_legacy_parts(
+        RetainedSurfaceRasterStampParts {
+            identity,
+            target,
+            owner_topology: artifact_span.owner_topology.clone(),
+            clip_nodes: artifact_span.clip_nodes.clone(),
+            chunks: artifact_span.chunks.clone(),
+            op_count: artifact_span.op_count,
+            opaque_order_span: aggregate_opaque_order_span,
+            ordered_steps: vec![RetainedSurfaceRasterStepStamp::ArtifactSpan(artifact_span)],
+            scroll_host: None,
+            property_effect: None,
+            native_scroll_children: child_dependencies,
+        },
+    ))
 }
 
 fn native_scroll_forest_program_identity_is_canonical(
@@ -5345,7 +5452,7 @@ pub(crate) fn validated_scroll_content_effect_receiver_raster_stamp(
         chunks.extend(span.chunks.iter().cloned());
         op_count = op_count.checked_add(span.op_count)?;
     }
-    let stamp = RetainedSurfaceRasterStamp {
+    let stamp = RetainedSurfaceRasterStamp::from_legacy_parts(RetainedSurfaceRasterStampParts {
         identity,
         target,
         owner_topology,
@@ -5357,7 +5464,7 @@ pub(crate) fn validated_scroll_content_effect_receiver_raster_stamp(
         scroll_host: None,
         property_effect: None,
         native_scroll_children: Vec::new(),
-    };
+    });
     scroll_content_effect_receiver_raster_stamp_validates_contract(
         &stamp,
         validated.content_root,
@@ -5755,7 +5862,7 @@ fn validated_retained_surface_tree_raster_stamp_with_scroll(
     if aggregate_opaque_order_span != (0..cursor) {
         return None;
     }
-    let stamp = RetainedSurfaceRasterStamp {
+    let stamp = RetainedSurfaceRasterStamp::from_legacy_parts(RetainedSurfaceRasterStampParts {
         identity,
         target,
         owner_topology,
@@ -5767,7 +5874,7 @@ fn validated_retained_surface_tree_raster_stamp_with_scroll(
         scroll_host,
         property_effect: None,
         native_scroll_children: Vec::new(),
-    };
+    });
     retained_surface_raster_stamp_is_canonical_at_depth(&stamp, depth).then_some(stamp)
 }
 
@@ -5837,7 +5944,7 @@ pub(crate) fn validated_property_scene_surface_raster_stamp(
     if aggregate_opaque_order_span != (0..cursor) {
         return None;
     }
-    let stamp = RetainedSurfaceRasterStamp {
+    let stamp = RetainedSurfaceRasterStamp::from_legacy_parts(RetainedSurfaceRasterStampParts {
         identity,
         target,
         owner_topology,
@@ -5849,7 +5956,7 @@ pub(crate) fn validated_property_scene_surface_raster_stamp(
         scroll_host: None,
         property_effect: None,
         native_scroll_children: Vec::new(),
-    };
+    });
     property_scene_surface_raster_stamp_is_canonical_at_depth(&stamp, depth).then_some(stamp)
 }
 
@@ -6151,7 +6258,7 @@ pub(crate) fn validated_property_effect_surface_raster_stamp(
     if aggregate_opaque_order_span != (0..cursor) {
         return None;
     }
-    let stamp = RetainedSurfaceRasterStamp {
+    let stamp = RetainedSurfaceRasterStamp::from_legacy_parts(RetainedSurfaceRasterStampParts {
         identity,
         target,
         owner_topology,
@@ -6166,7 +6273,7 @@ pub(crate) fn validated_property_effect_surface_raster_stamp(
             content: contract.content().to_vec(),
         }),
         native_scroll_children: Vec::new(),
-    };
+    });
     property_effect_surface_raster_stamp_validates_contract_at_depth(&stamp, contract, depth)
         .then_some(stamp)
 }
@@ -6729,7 +6836,7 @@ pub(crate) fn validated_property_boundary_forest_surface_raster_stamp(
     if aggregate_opaque_order_span != (0..cursor) {
         return None;
     }
-    let stamp = RetainedSurfaceRasterStamp {
+    let stamp = RetainedSurfaceRasterStamp::from_legacy_parts(RetainedSurfaceRasterStampParts {
         identity,
         target,
         owner_topology,
@@ -6741,7 +6848,7 @@ pub(crate) fn validated_property_boundary_forest_surface_raster_stamp(
         scroll_host: None,
         property_effect,
         native_scroll_children: Vec::new(),
-    };
+    });
     property_boundary_forest_surface_stamp_is_canonical_at_depth(&stamp, depth).then_some(stamp)
 }
 
@@ -7133,7 +7240,7 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                 || clip.id.role != ClipNodeRole::ContentsClip
                 || clip.parent.is_some()
                 || clip.behavior != ClipBehavior::Intersect
-                || clip.generation != super::artifact::DETACHED_LOCAL_CLIP_GENERATION
+                || !stamp.local_clip_generation_is_canonical(*clip)
             {
                 return false;
             }
