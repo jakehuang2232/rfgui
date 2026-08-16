@@ -64,7 +64,7 @@ fn owner_state_edge(
     let state = properties
         .node_state_for(owner)
         .expect("C1c owner property state");
-    (state.paint, state.descendants)
+    (state.descendants, state.paint)
 }
 
 fn assert_exact_transition(
@@ -99,8 +99,8 @@ fn stage_c_all_eleven_scroll_capabilities_classify_from_closed_artifacts() {
         panic!("depth-four must classify one explicit scroll edge")
     };
     assert_exact_transition(*event, fourth, from, to);
-    assert_eq!(event.transition().scroll.from, from.scroll);
-    assert_eq!(event.transition().scroll.to, Some(ScrollNodeId(fourth)));
+    assert_eq!(event.transition().scroll.from, Some(ScrollNodeId(fourth)));
+    assert_eq!(event.transition().scroll.to, to.scroll);
 
     let (arena, roots, properties, generations) = native_scroll_forest_plan_fixture();
     let plan = plan_native_scroll_forest_scaffold_with_context(

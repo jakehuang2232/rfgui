@@ -61,6 +61,30 @@ fn recorded_zero_surface_artifact(
     (artifact, eligibility)
 }
 
+fn recorded_single_effect_surface_artifact() -> crate::view::paint::PaintArtifact {
+    let (arena, roots, _) = prepared_zero_surface_three_chunk_frame();
+    let (mut artifact, _) = recorded_zero_surface_artifact(&arena, &roots);
+    let owner = roots[0];
+    let effect = crate::view::compositor::property_tree::EffectNodeId(owner);
+    artifact
+        .effect_nodes
+        .push(crate::view::compositor::property_tree::EffectNodeSnapshot {
+            id: effect,
+            owner,
+            parent: None,
+            opacity: 0.5,
+            generation: 1,
+        });
+    artifact
+        .owner_property_states
+        .iter_mut()
+        .find(|snapshot| snapshot.owner == owner)
+        .expect("root owner endpoint")
+        .descendants
+        .effect = Some(effect);
+    artifact
+}
+
 fn prepare_error_label(
     error: crate::view::paint::SingleTargetSurfaceDagPrepareError,
 ) -> &'static str {
@@ -132,25 +156,7 @@ fn stage_c_zero_surface_prepare_seals_exact_multi_root_artifact_order() {
 
 #[test]
 fn stage_c_zero_surface_prepare_rejects_a_purpose_named_detached_surface() {
-    let (arena, roots, _) = prepared_zero_surface_three_chunk_frame();
-    let (mut artifact, _) = recorded_zero_surface_artifact(&arena, &roots);
-    let effect = crate::view::compositor::property_tree::EffectNodeId(roots[0]);
-    artifact
-        .effect_nodes
-        .push(crate::view::compositor::property_tree::EffectNodeSnapshot {
-            id: effect,
-            owner: roots[0],
-            parent: None,
-            opacity: 0.5,
-            generation: 1,
-        });
-    artifact
-        .owner_property_states
-        .iter_mut()
-        .find(|snapshot| snapshot.owner == roots[0])
-        .expect("root owner endpoint")
-        .paint
-        .effect = Some(effect);
+    let artifact = recorded_single_effect_surface_artifact();
 
     let error = crate::view::paint::prepare_single_target_surface_dag_frame(artifact)
         .expect_err("C3a must reject rather than reinterpret a detached candidate");
@@ -174,6 +180,28 @@ fn stage_c_zero_surface_prepare_rejects_a_purpose_named_detached_surface() {
         auto_artifact_legacy_fallback_stage(&trace),
         PaintAuthorityFallbackStage::Prepare,
     );
+}
+
+#[test]
+fn stage_c_valid_detached_rejection_keeps_graph_and_compile_state_unchanged() {
+    let artifact = recorded_single_effect_surface_artifact();
+    let mut graph = FrameGraph::new();
+    let mut ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let target = ctx.allocate_target(&mut graph);
+    ctx.set_current_target(target);
+    let before = graph.build_state_snapshot_for_test();
+    crate::view::paint::take_artifact_compile_count();
+
+    let error = crate::view::paint::prepare_single_target_surface_dag_frame(artifact)
+        .expect_err("valid detached surface remains outside the C3a acceptance slice");
+    assert_eq!(
+        error,
+        crate::view::paint::SingleTargetSurfaceDagPrepareError::DetachedSurfacesUnsupported {
+            candidates: 1,
+        },
+    );
+    assert_eq!(graph.build_state_snapshot_for_test(), before);
+    assert_eq!(crate::view::paint::take_artifact_compile_count(), 0);
 }
 
 #[test]

@@ -13,9 +13,9 @@ use crate::view::{
 };
 
 use super::{
-    ArtifactCursor, ArtifactOwnerGraph, ArtifactSceneTarget, ClassifiedTransitionEvent,
-    PaintArtifact, PropertySnapshotGraph, TransitionError, artifact_cursors,
-    classify_property_transition,
+    ArtifactCursor, ArtifactOwnerGraph, ArtifactSceneTarget, ArtifactTransitionRequest,
+    ClassifiedTransitionEvent, PaintArtifact, PropertySnapshotGraph, TransitionError,
+    artifact_cursors, classify_property_transition,
 };
 
 /// Explicit C2 layerization input. The first policy preserves every authored
@@ -685,6 +685,23 @@ pub(crate) enum SurfaceDagError {
         index: usize,
         expected: SurfaceDagNodeKind,
     },
+    ArtifactTransitionDerivationStalled {
+        witness: NodeKey,
+        state: PropertyTreeState,
+    },
+    ConflictingArtifactTransition {
+        kind: SurfaceDagNodeKind,
+        first_witness: NodeKey,
+        conflicting_witness: NodeKey,
+    },
+    ArtifactTransitionTerminalMismatch {
+        witness: NodeKey,
+        expected: PropertyTreeState,
+        actual: PropertyTreeState,
+    },
+    MissingArtifactTransition {
+        kind: SurfaceDagNodeKind,
+    },
     ClipRebaseScroll {
         expected: ScrollNodeId,
         actual: Option<ScrollNodeId>,
@@ -799,6 +816,256 @@ fn derive_artifact_surface_candidates_from_validated(
         }
     }
     Ok(candidates)
+}
+
+#[derive(Clone, Copy)]
+struct DerivedArtifactTransition {
+    witness: NodeKey,
+    from: PropertyTreeState,
+    to: PropertyTreeState,
+}
+
+fn owner_is_ancestor_of(
+    owners: &ArtifactOwnerGraph,
+    ancestor: NodeKey,
+    mut owner: NodeKey,
+) -> Result<bool, SurfaceDagError> {
+    loop {
+        if owner == ancestor {
+            return Ok(true);
+        }
+        let Some(parent) = owners.parent(owner)? else {
+            return Ok(false);
+        };
+        owner = parent;
+    }
+}
+
+fn consumed_dimensions_match(
+    kind: SurfaceDagNodeKind,
+    first: DerivedArtifactTransition,
+    second: DerivedArtifactTransition,
+) -> bool {
+    match kind {
+        SurfaceDagNodeKind::Transform(_) => {
+            first.from.transform == second.from.transform
+                && first.to.transform == second.to.transform
+        }
+        SurfaceDagNodeKind::Effect(_) => {
+            first.from.effect == second.from.effect && first.to.effect == second.to.effect
+        }
+        SurfaceDagNodeKind::ScrollContent { .. } => {
+            first.from.scroll == second.from.scroll
+                && first.to.scroll == second.to.scroll
+                && first.from.clip == second.from.clip
+                && first.to.clip == second.to.clip
+        }
+    }
+}
+
+/// Derives the production consumption stream from artifact-owned endpoints.
+///
+/// Every surface-bearing owner is a witness. A witness starts in its
+/// descendants space and scans the root-to-owner candidate path. Deeper
+/// witnesses replace shallower same-branch context only after both edges agree
+/// on the property dimensions actually consumed; incomparable branches must
+/// agree on the complete edge.
+///
+/// Transform, effect, and scroll have a receiver carrier, so consuming their
+/// local surface identity clears that dimension and the receiver re-establishes
+/// ancestor context. Clip has no receiver carrier, so a consumed scroll
+/// boundary explicitly advances its contents clip to the clip parent.
+///
+/// Owners without a surface candidate emit no edge and carry no terminal
+/// closure obligation. Their inline property handling remains a dependency on
+/// the existing artifact compiler; this function does not establish it.
+pub(crate) fn derive_artifact_surface_transition_requests(
+    artifact: &PaintArtifact,
+    policy: LayerizationPolicy,
+) -> Result<Vec<ArtifactTransitionRequest>, SurfaceDagError> {
+    let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
+    let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
+    let candidates = derive_artifact_surface_candidates_from_validated(
+        artifact,
+        policy,
+        &snapshots,
+        &owners,
+        &artifact_cursors(artifact)?,
+    )?;
+    let endpoints = artifact
+        .owner_property_states
+        .iter()
+        .map(|snapshot| (snapshot.owner, *snapshot))
+        .collect::<FxHashMap<_, _>>();
+    let mut derived = FxHashMap::<SurfaceDagNodeKind, DerivedArtifactTransition>::default();
+
+    let mut witness_owners = Vec::new();
+    for candidate in &candidates {
+        if witness_owners.last().copied() != Some(candidate.target()) {
+            witness_owners.push(candidate.target());
+        }
+    }
+
+    for witness in witness_owners {
+        let endpoint = endpoints
+            .get(&witness)
+            .copied()
+            .ok_or(TransitionError::MissingOwnerPropertyState(witness))?;
+        let mut owner_path = Vec::new();
+        let mut owner = Some(witness);
+        while let Some(current) = owner {
+            owner_path.push(current);
+            owner = owners.parent(current)?;
+        }
+        owner_path.reverse();
+
+        let mut cursor = endpoint.descendants;
+        let mut local_edges = Vec::new();
+        for path_owner in &owner_path {
+            for candidate in candidates
+                .iter()
+                .copied()
+                .filter(|candidate| candidate.target() == *path_owner)
+            {
+                let from = cursor;
+                let consumed = match candidate.kind() {
+                    SurfaceDagNodeKind::Transform(transform)
+                        if cursor.transform == Some(transform) =>
+                    {
+                        cursor.transform = None;
+                        true
+                    }
+                    SurfaceDagNodeKind::Effect(effect) if cursor.effect == Some(effect) => {
+                        cursor.effect = None;
+                        true
+                    }
+                    SurfaceDagNodeKind::ScrollContent {
+                        scroll,
+                        contents_clip,
+                    } if cursor.scroll == Some(scroll) && cursor.clip == Some(contents_clip) => {
+                        cursor.scroll = None;
+                        cursor.clip = snapshots.clip_parent(contents_clip)?;
+                        true
+                    }
+                    SurfaceDagNodeKind::Transform(_)
+                    | SurfaceDagNodeKind::Effect(_)
+                    | SurfaceDagNodeKind::ScrollContent { .. } => false,
+                };
+                if consumed {
+                    local_edges.push((candidate.kind(), from, cursor));
+                }
+            }
+        }
+        if local_edges.is_empty() {
+            return Err(SurfaceDagError::ArtifactTransitionDerivationStalled {
+                witness,
+                state: cursor,
+            });
+        }
+
+        let mut projected_paint = endpoint.paint;
+        for path_owner in &owner_path {
+            for candidate in candidates
+                .iter()
+                .copied()
+                .filter(|candidate| candidate.target() == *path_owner)
+            {
+                match candidate.kind() {
+                    SurfaceDagNodeKind::Transform(transform)
+                        if projected_paint.transform == Some(transform) =>
+                    {
+                        projected_paint.transform = None;
+                    }
+                    SurfaceDagNodeKind::Effect(effect)
+                        if projected_paint.effect == Some(effect) =>
+                    {
+                        projected_paint.effect = None;
+                    }
+                    SurfaceDagNodeKind::ScrollContent { scroll, .. }
+                        if projected_paint.scroll == Some(scroll) =>
+                    {
+                        projected_paint.scroll = None;
+                    }
+                    SurfaceDagNodeKind::Transform(_)
+                    | SurfaceDagNodeKind::Effect(_)
+                    | SurfaceDagNodeKind::ScrollContent { .. } => {}
+                }
+            }
+        }
+
+        if cursor.transform != projected_paint.transform
+            || cursor.effect != projected_paint.effect
+            || cursor.scroll != projected_paint.scroll
+        {
+            return Err(SurfaceDagError::ArtifactTransitionTerminalMismatch {
+                witness,
+                expected: projected_paint,
+                actual: cursor,
+            });
+        }
+        if cursor != projected_paint {
+            let (_, _, terminal) = local_edges
+                .last_mut()
+                .expect("a surface-bearing witness matched at least one candidate");
+            terminal.clip = projected_paint.clip;
+            terminal.layout_position = projected_paint.layout_position;
+            terminal.visual_offset = projected_paint.visual_offset;
+        }
+
+        for (kind, from, to) in local_edges {
+            let next = DerivedArtifactTransition { witness, from, to };
+            let Some(previous) = derived.get(&kind).copied() else {
+                derived.insert(kind, next);
+                continue;
+            };
+            if previous.witness == witness {
+                if previous.from != from || previous.to != to {
+                    return Err(SurfaceDagError::ConflictingArtifactTransition {
+                        kind,
+                        first_witness: previous.witness,
+                        conflicting_witness: witness,
+                    });
+                }
+                continue;
+            }
+            let previous_is_ancestor = owner_is_ancestor_of(&owners, previous.witness, witness)?;
+            let next_is_ancestor = owner_is_ancestor_of(&owners, witness, previous.witness)?;
+            if previous_is_ancestor || next_is_ancestor {
+                if !consumed_dimensions_match(kind, previous, next) {
+                    return Err(SurfaceDagError::ConflictingArtifactTransition {
+                        kind,
+                        first_witness: previous.witness,
+                        conflicting_witness: witness,
+                    });
+                }
+                if previous_is_ancestor {
+                    derived.insert(kind, next);
+                }
+            } else if previous.from != from || previous.to != to {
+                return Err(SurfaceDagError::ConflictingArtifactTransition {
+                    kind,
+                    first_witness: previous.witness,
+                    conflicting_witness: witness,
+                });
+            }
+        }
+    }
+
+    candidates
+        .into_iter()
+        .map(|candidate| {
+            let edge = derived.get(&candidate.kind()).copied().ok_or(
+                SurfaceDagError::MissingArtifactTransition {
+                    kind: candidate.kind(),
+                },
+            )?;
+            Ok(ArtifactTransitionRequest::new(
+                candidate.target(),
+                edge.from,
+                edge.to,
+            ))
+        })
+        .collect()
 }
 
 /// Artifact-local attachment invariant between one classified endpoint pair

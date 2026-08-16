@@ -23,6 +23,7 @@ use crate::view::paint::{
     PaintOwnerPropertyStateSnapshot, PaintPayloadIdentity, PaintPropertyScope,
     PaintScrollContentWitness, PlannedBoundary, PlannedBoundaryKind, RETAINED_CHILD_MASK_SLOT,
     RetainedSurfaceCompileAction, SurfaceDagNodeKind, derive_artifact_surface_candidates,
+    derive_artifact_surface_transition_requests,
 };
 use crate::view::test_support::{commit_child, commit_element, measure_and_place, new_test_arena};
 use crate::view::viewport::Viewport;
@@ -2698,5 +2699,6 @@ mod stage_c_retained_semantic_baseline_tests;
 mod stage_c_scroll_capability_corpus_tests;
 mod stage_c_surface_candidate_tests;
 mod stage_c_surface_dag_tests;
+mod stage_c_surface_transition_derivation_tests;
 mod stage_c_transition_capability_tests;
 mod transform_isolation_tests;

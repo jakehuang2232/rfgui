@@ -344,6 +344,16 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
             SurfaceDagError::TransitionTarget { .. } => "transition-target",
             SurfaceDagError::TransitionCursor { .. } => "transition-cursor",
             SurfaceDagError::TransitionKind { .. } => "transition-kind",
+            SurfaceDagError::ArtifactTransitionDerivationStalled { .. } => {
+                "artifact-transition-derivation-stalled"
+            }
+            SurfaceDagError::ConflictingArtifactTransition { .. } => {
+                "conflicting-artifact-transition"
+            }
+            SurfaceDagError::ArtifactTransitionTerminalMismatch { .. } => {
+                "artifact-transition-terminal-mismatch"
+            }
+            SurfaceDagError::MissingArtifactTransition { .. } => "missing-artifact-transition",
             SurfaceDagError::ClipRebaseScroll { .. } => "clip-rebase-scroll",
             SurfaceDagError::ClipRebaseOutsideBoundary { .. } => "clip-rebase-outside-boundary",
             SurfaceDagError::SurfaceNodeOrdinalOverflow(_) => "surface-node-ordinal-overflow",

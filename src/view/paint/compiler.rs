@@ -30,12 +30,13 @@ use super::artifact::{
 use super::legacy_admission::RetainedInteractiveTextAreaResidentRasterSeal;
 use super::surface_dag::{
     LayerizationPolicy, SurfaceDag, SurfaceDagClipProjection, SurfaceDagError,
-    SurfaceDagExecutionOrder, derive_artifact_surface_candidates, reconstruct_surface_dag,
+    SurfaceDagExecutionOrder, derive_artifact_surface_candidates,
+    derive_artifact_surface_transition_requests, reconstruct_surface_dag,
 };
 use super::{
     EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactTarget, PaintChunkRole,
     PaintOp, PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope, PreparedImageIdentity,
-    PreparedShadowOp, PreparedSvgIdentity, PreparedTextOp,
+    PreparedShadowOp, PreparedSvgIdentity, PreparedTextOp, classify_artifact_transition_sequence,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4470,8 +4471,9 @@ pub(crate) struct ValidatedSingleTargetSurfaceDagFrame {
 }
 
 /// Completes every validation needed by the zero-surface C3 emitter without
-/// receiving a frame graph, arena, or mutable renderer state. A rejection is
-/// therefore necessarily earlier than graph mutation.
+/// receiving a frame graph, arena, viewport, resident pool, component, or
+/// mutable renderer state. A rejection is therefore necessarily earlier than
+/// graph, pool, or component mutation.
 pub(crate) fn prepare_single_target_surface_dag_frame(
     artifact: PaintArtifact,
 ) -> Result<ValidatedSingleTargetSurfaceDagFrame, SingleTargetSurfaceDagPrepareError> {
@@ -4489,6 +4491,23 @@ pub(crate) fn prepare_single_target_surface_dag_frame(
         LayerizationPolicy::PreservePropertyBoundaries,
     )
     .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+    let requests = derive_artifact_surface_transition_requests(
+        &artifact,
+        LayerizationPolicy::PreservePropertyBoundaries,
+    )
+    .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+    let events = classify_artifact_transition_sequence(&artifact, &requests)
+        .map_err(SurfaceDagError::Transition)
+        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+    let surface_dag = reconstruct_surface_dag(
+        &artifact,
+        &events,
+        LayerizationPolicy::PreservePropertyBoundaries,
+    )
+    .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+    let execution_order = surface_dag
+        .derive_execution_order()
+        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
     if !candidates.is_empty() {
         return Err(
             SingleTargetSurfaceDagPrepareError::DetachedSurfacesUnsupported {
@@ -4496,15 +4515,6 @@ pub(crate) fn prepare_single_target_surface_dag_frame(
             },
         );
     }
-    let surface_dag = reconstruct_surface_dag(
-        &artifact,
-        &[],
-        LayerizationPolicy::PreservePropertyBoundaries,
-    )
-    .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-    let execution_order = surface_dag
-        .derive_execution_order()
-        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
 
     Ok(ValidatedSingleTargetSurfaceDagFrame {
         artifact,
