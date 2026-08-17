@@ -101,7 +101,13 @@ pub(crate) use compiler::validate_media_content_artifact_for_test;
 #[allow(unused_imports)]
 // C3 state/lifecycle landed before the C4 producer consumes every stamp type.
 pub(crate) use compiler::{
-    ArtifactCompileErrorKind, NestedSurfaceRasterDependency, PropertyEffectCompositeBasisStamp,
+    ArtifactCompileErrorKind, ArtifactSurfaceCompositeGeometryStamp,
+    ArtifactSurfaceLocalizationError, ArtifactSurfacePaintOpKind, ArtifactSurfaceRasterContext,
+    ArtifactSurfaceRasterPlanError, ArtifactSurfaceRasterTargetId, NestedSurfaceRasterDependency,
+    PreparedArtifactSurfaceRasterChunk, PreparedArtifactSurfaceRasterNode,
+    PreparedArtifactSurfaceRasterPlan, PreparedArtifactSurfaceRasterRoot,
+    PreparedArtifactSurfaceRasterSpan, PreparedArtifactSurfaceRasterStep,
+    PropertyEffectCompositeBasisStamp,
     PropertyEffectRasterIdentityInputs, RetainedAtomicProjectionTextAreaResidentRasterSeal,
     RetainedPropertySceneTransactionStamp, RetainedScrollHostRasterDependency,
     RetainedSurfaceArtifactSpanStamp, RetainedSurfaceChunkStamp, RetainedSurfaceCompileAction,
@@ -112,6 +118,7 @@ pub(crate) use compiler::{
     RootEffectRasterInputs, RootEffectRasterStamp, SingleTargetSurfaceDagPrepareError,
     ValidatedEffectPropertySurfaceArtifact, ValidatedSingleTargetSurfaceDagFrame,
     emit_single_target_surface_dag_frame, emit_validated_effect_property_surface_artifact,
+    localize_artifact_surface_op, prepare_artifact_surface_raster_plan,
     prepare_single_target_surface_dag_frame,
     property_effect_composite_geometry_stamp_is_canonical,
     property_effect_surface_raster_stamp_is_canonical_at_depth,

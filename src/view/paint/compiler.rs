@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
-use crate::view::base_component::{AncestorClipContext, BuildState, Text, UiBuildContext};
+use crate::view::base_component::{
+    AncestorClipContext, BuildState, RetainedSurfaceBounds, Text, UiBuildContext,
+};
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
     LayoutPositionNodeId, LayoutPositionNodeSnapshot, PropertyTreeState, ScrollNodeId,
@@ -29,9 +31,12 @@ use super::artifact::{
 };
 use super::legacy_admission::RetainedInteractiveTextAreaResidentRasterSeal;
 use super::surface_dag::{
-    LayerizationPolicy, SurfaceDag, SurfaceDagClipProjection, SurfaceDagError,
-    SurfaceDagExecutionOrder, derive_artifact_surface_candidates,
-    derive_artifact_surface_transition_requests, reconstruct_surface_dag,
+    ArtifactSurfaceCoverageForest, ArtifactSurfaceCoverageSpan, ArtifactSurfaceCoverageStep,
+    LayerizationPolicy, SurfaceDag, SurfaceDagClipClosureProjection, SurfaceDagClipProjection,
+    SurfaceDagError, SurfaceDagExecutionNodeId, SurfaceDagExecutionOrder,
+    SurfaceDagExecutionTargetId, SurfaceDagNodeId, SurfaceDagNodeKind,
+    derive_artifact_surface_coverage_forest, derive_artifact_surface_transition_requests,
+    reconstruct_surface_dag,
 };
 use super::{
     EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactTarget, PaintChunkRole,
@@ -195,7 +200,10 @@ pub(crate) fn validate_frame_root_scroll_content_artifact(
                 }
                 super::PaintTextContentSource::Selection(_) => {
                     text_area_roles
-                        == [PaintChunkRole::SelectionUnderlay, PaintChunkRole::TextGlyphs]
+                        == [
+                            PaintChunkRole::SelectionUnderlay,
+                            PaintChunkRole::TextGlyphs,
+                        ]
                 }
                 super::PaintTextContentSource::Preedit => false,
             };
@@ -989,11 +997,7 @@ impl DirectNestedScrollTextPaintWitness {
             .all(f32::is_finite)
             && bounds[2] > 0.0
             && bounds[3] > 0.0
-            && [
-                bounds[0] + paint_offset[0],
-                bounds[1] + paint_offset[1],
-            ]
-            .map(f32::to_bits)
+            && [bounds[0] + paint_offset[0], bounds[1] + paint_offset[1]].map(f32::to_bits)
                 == self.actual_origin_bits
     }
 }
@@ -1038,9 +1042,7 @@ pub(crate) fn plan_direct_nested_scroll_text_paint_witness(
     };
     for (index, &owner) in reversed_path.iter().enumerate() {
         let node = arena.get(owner)?;
-        let recording_context = node
-            .element
-            .shadow_paint_recording_context(parent_context);
+        let recording_context = node.element.shadow_paint_recording_context(parent_context);
         let Some(&child) = reversed_path.get(index + 1) else {
             let text = node.element.as_any().downcast_ref::<Text>()?;
             if node.element.stable_id() != content_stable_id
@@ -1068,16 +1070,12 @@ pub(crate) fn plan_direct_nested_scroll_text_paint_witness(
             };
             return witness.is_canonical().then_some(witness);
         };
-        if arena.parent_of(child) != Some(owner)
-            || !node.element.children().contains(&child)
-        {
+        if arena.parent_of(child) != Some(owner) || !node.element.children().contains(&child) {
             return None;
         }
-        parent_context = node.element.shadow_paint_recording_context_for_child(
-            child,
-            arena,
-            recording_context,
-        );
+        parent_context =
+            node.element
+                .shadow_paint_recording_context_for_child(child, arena, recording_context);
     }
     None
 }
@@ -1113,12 +1111,10 @@ pub(crate) fn validate_direct_nested_scroll_segment_boundary_program(
         child_cutouts,
         &overlay_after,
     )?;
-    (rebuilt == *expected_stamp).then_some(
-        ValidatedDirectNestedScrollSegmentBoundaryProgram {
-            host_before,
-            overlay_after,
-        },
-    )
+    (rebuilt == *expected_stamp).then_some(ValidatedDirectNestedScrollSegmentBoundaryProgram {
+        host_before,
+        overlay_after,
+    })
 }
 
 impl ValidatedDirectNestedScrollSegmentBoundaryProgram {
@@ -1202,12 +1198,11 @@ pub(crate) fn validate_direct_nested_scroll_text_run(
     };
     chunk.bounds.x = legacy_origin[0];
     chunk.bounds.y = legacy_origin[1];
-    chunk.payload_identity = PaintPayloadIdentity::prepared_texts(
-        artifact.ops.iter().filter_map(|op| match op {
+    chunk.payload_identity =
+        PaintPayloadIdentity::prepared_texts(artifact.ops.iter().filter_map(|op| match op {
             PaintOp::PreparedText(prepared) => Some(prepared),
             _ => None,
-        }),
-    );
+        }));
     let legacy_bounds_bits = [
         paint.actual_origin_bits[0],
         paint.actual_origin_bits[1],
@@ -1515,7 +1510,10 @@ impl ValidatedNativeScrollForestBoundaryProgram {
         self.content_program_opaque_terminal
     }
 
-    pub(crate) fn matches_compiler_stamp(&self, expected: &NativeScrollForestCompilerStamp) -> bool {
+    pub(crate) fn matches_compiler_stamp(
+        &self,
+        expected: &NativeScrollForestCompilerStamp,
+    ) -> bool {
         self.stamp == *expected
             && self.content_program_opaque_terminal == expected.content_opaque_count
     }
@@ -1752,8 +1750,8 @@ impl ValidatedFrameRootScrollReceiver {
                 let ValidatedFrameRootScrollReceiverStep::Artifact { artifact, .. } = step else {
                     return None;
                 };
-                opaque_terminal = opaque_terminal
-                    .checked_add(super::frame_plan::opaque_order_count(artifact))?;
+                opaque_terminal =
+                    opaque_terminal.checked_add(super::frame_plan::opaque_order_count(artifact))?;
                 super::frame_plan::property_scroll_receiver_artifact_identity(artifact)
             })
             .collect::<Option<Vec<_>>>();
@@ -2044,6 +2042,11 @@ pub(crate) fn emit_validated_frame_root_scroll_receiver<F>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ArtifactStoreValidationPolicy {
     General,
+    /// Generic Stage C artifact program. Property references remain in their
+    /// authored spaces so the Surface DAG can consume them; payload, owner,
+    /// clip, effect, ordering, and opacity contracts are still validated by
+    /// the shared store validator below.
+    SurfaceDag,
     /// Planning-only policy for scene-level spans surrounding retained
     /// property surfaces.  These spans may carry exact rectangular clips but
     /// no transform/effect/scroll boundary of their own.
@@ -4444,6 +4447,309 @@ pub(crate) enum ArtifactCompileErrorKind {
     InvalidStore,
 }
 
+/// Minimal host facts required to seal detached raster descriptors and final
+/// composite placement. Unlike artifact-derived capability tokens, this value
+/// carries no claimed derivation result: every field has an independently
+/// checkable invariant, so value validation is sufficient and provenance
+/// gating would add no protection. Frame tokens, texture handles, persistent
+/// pool state, and mutable targets are deliberately absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ArtifactSurfaceRasterContext {
+    scale_factor_bits: u32,
+    target_format: wgpu::TextureFormat,
+    paint_offset_bits: [u32; 2],
+    incoming_scissor: Option<[u32; 4]>,
+    max_texture_dimension_2d: u32,
+    max_texture_bytes: u64,
+}
+
+impl ArtifactSurfaceRasterContext {
+    pub(crate) fn new(
+        scale_factor: f32,
+        target_format: wgpu::TextureFormat,
+        paint_offset: [f32; 2],
+        incoming_scissor: Option<[u32; 4]>,
+        max_texture_dimension_2d: u32,
+        max_texture_bytes: u64,
+    ) -> Option<Self> {
+        if !scale_factor.is_finite()
+            || scale_factor <= 0.0
+            || paint_offset.into_iter().any(|value| !value.is_finite())
+            || incoming_scissor.is_some_and(|[x, y, width, height]| {
+                width == 0
+                    || height == 0
+                    || x.checked_add(width).is_none()
+                    || y.checked_add(height).is_none()
+            })
+            || max_texture_dimension_2d == 0
+            || max_texture_bytes == 0
+        {
+            return None;
+        }
+        Some(Self {
+            scale_factor_bits: scale_factor.to_bits(),
+            target_format,
+            paint_offset_bits: paint_offset.map(f32::to_bits),
+            incoming_scissor,
+            max_texture_dimension_2d,
+            max_texture_bytes,
+        })
+    }
+
+    fn scale_factor(self) -> f32 {
+        f32::from_bits(self.scale_factor_bits)
+    }
+
+    fn paint_offset(self) -> [f32; 2] {
+        self.paint_offset_bits.map(f32::from_bits)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtifactSurfaceRasterTargetId {
+    SceneRoot(super::SurfaceDagSceneRootId),
+    Surface(SurfaceDagNodeId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtifactSurfaceRasterPlanError {
+    ArtifactProgram(SingleTargetSurfaceDagPrepareError),
+    SurfaceDag(SurfaceDagError),
+    MissingSurfaceSnapshot(SurfaceDagNodeId),
+    MissingCoverageNode(SurfaceDagNodeId),
+    EmptySurfaceBounds(SurfaceDagNodeId),
+    InvalidSurfaceBounds(SurfaceDagNodeId),
+    InvalidDescriptor(SurfaceDagNodeId),
+    TextureBudgetExceeded(SurfaceDagNodeId),
+    InvalidCoverageSpan(ArtifactSurfaceRasterTargetId),
+    InvalidChunkBounds {
+        target: ArtifactSurfaceRasterTargetId,
+        chunk_index: usize,
+    },
+    Localization {
+        target: ArtifactSurfaceRasterTargetId,
+        chunk_index: usize,
+        op_index: usize,
+        reason: ArtifactSurfaceLocalizationError,
+    },
+    LocalizedPayload {
+        target: ArtifactSurfaceRasterTargetId,
+        chunk_index: usize,
+    },
+    InvalidNestedSurface {
+        parent: SurfaceDagNodeId,
+        child: SurfaceDagNodeId,
+    },
+}
+
+impl From<SurfaceDagError> for ArtifactSurfaceRasterPlanError {
+    fn from(error: SurfaceDagError) -> Self {
+        Self::SurfaceDag(error)
+    }
+}
+
+/// Pure artifact-stage program. This is the only input accepted by the later
+/// graph-inert raster descriptor stage; it contains no viewport facts.
+#[derive(Debug)]
+struct ValidatedArtifactSurfaceDagProgram {
+    artifact: PaintArtifact,
+    resolved_clips: Vec<ResolvedClip>,
+    surface_dag: SurfaceDag,
+    execution_order: SurfaceDagExecutionOrder,
+    coverage: ArtifactSurfaceCoverageForest,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedArtifactSurfaceRasterChunk {
+    source: PaintChunkRasterIdentity,
+    localized_bounds_bits: [u32; 4],
+    localized_state: PropertyTreeState,
+    localized_payload: PaintPayloadIdentity,
+    localized_ops: Vec<PaintOp>,
+}
+
+impl PreparedArtifactSurfaceRasterChunk {
+    pub(crate) fn source(&self) -> &PaintChunkRasterIdentity {
+        &self.source
+    }
+
+    pub(crate) fn localized_bounds_bits(&self) -> [u32; 4] {
+        self.localized_bounds_bits
+    }
+
+    pub(crate) fn localized_state(&self) -> PropertyTreeState {
+        self.localized_state
+    }
+
+    pub(crate) fn localized_payload(&self) -> &PaintPayloadIdentity {
+        &self.localized_payload
+    }
+
+    pub(crate) fn localized_ops(&self) -> &[PaintOp] {
+        &self.localized_ops
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedArtifactSurfaceRasterSpan {
+    chunk_range: Range<usize>,
+    op_range: Range<usize>,
+    local_clips: Vec<ClipNodeSnapshot>,
+    chunks: Vec<PreparedArtifactSurfaceRasterChunk>,
+}
+
+impl PreparedArtifactSurfaceRasterSpan {
+    pub(crate) fn chunk_range(&self) -> Range<usize> {
+        self.chunk_range.clone()
+    }
+
+    pub(crate) fn op_range(&self) -> Range<usize> {
+        self.op_range.clone()
+    }
+
+    pub(crate) fn local_clips(&self) -> &[ClipNodeSnapshot] {
+        &self.local_clips
+    }
+
+    pub(crate) fn chunks(&self) -> &[PreparedArtifactSurfaceRasterChunk] {
+        &self.chunks
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtifactSurfaceCompositeGeometryStamp {
+    Transform {
+        source_bounds_bits: [u32; 4],
+        destination_bounds_bits: [u32; 4],
+        receiver_transform_bits: [u32; 16],
+        receiver_clip: Option<ClipNodeId>,
+    },
+    Effect {
+        source_bounds_bits: [u32; 4],
+        destination_bounds_bits: [u32; 4],
+        opacity_bits: u32,
+        generation: u64,
+        receiver_clip: Option<ClipNodeId>,
+    },
+    ScrollContent {
+        source_bounds_bits: [u32; 4],
+        destination_bounds_bits: [u32; 4],
+        offset_bits: [u32; 2],
+        generation: u64,
+        receiver_clip: Option<ClipNodeId>,
+    },
+}
+
+impl ArtifactSurfaceCompositeGeometryStamp {
+    fn destination_bounds_bits(self) -> [u32; 4] {
+        match self {
+            Self::Transform {
+                destination_bounds_bits,
+                ..
+            }
+            | Self::Effect {
+                destination_bounds_bits,
+                ..
+            }
+            | Self::ScrollContent {
+                destination_bounds_bits,
+                ..
+            } => destination_bounds_bits,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum PreparedArtifactSurfaceRasterStep {
+    ArtifactSpan(PreparedArtifactSurfaceRasterSpan),
+    NestedSurface(SurfaceDagExecutionNodeId),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedArtifactSurfaceRasterNode {
+    execution_id: SurfaceDagExecutionNodeId,
+    source: SurfaceDagNodeId,
+    receiver: SurfaceDagExecutionTargetId,
+    identity: RetainedSurfaceRasterIdentity,
+    target: RetainedSurfaceRasterInputs,
+    geometry: ArtifactSurfaceCompositeGeometryStamp,
+    clip_closure: Option<SurfaceDagClipClosureProjection>,
+    steps: Vec<PreparedArtifactSurfaceRasterStep>,
+}
+
+impl PreparedArtifactSurfaceRasterNode {
+    pub(crate) fn execution_id(&self) -> SurfaceDagExecutionNodeId {
+        self.execution_id
+    }
+
+    pub(crate) fn source(&self) -> SurfaceDagNodeId {
+        self.source
+    }
+
+    pub(crate) fn receiver(&self) -> SurfaceDagExecutionTargetId {
+        self.receiver
+    }
+
+    pub(crate) fn identity(&self) -> RetainedSurfaceRasterIdentity {
+        self.identity
+    }
+
+    pub(crate) fn target(&self) -> &RetainedSurfaceRasterInputs {
+        &self.target
+    }
+
+    pub(crate) fn geometry(&self) -> ArtifactSurfaceCompositeGeometryStamp {
+        self.geometry
+    }
+
+    pub(crate) fn clip_closure(&self) -> Option<&SurfaceDagClipClosureProjection> {
+        self.clip_closure.as_ref()
+    }
+
+    pub(crate) fn steps(&self) -> &[PreparedArtifactSurfaceRasterStep] {
+        &self.steps
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedArtifactSurfaceRasterRoot {
+    scene_root: super::SurfaceDagSceneRootId,
+    steps: Vec<PreparedArtifactSurfaceRasterStep>,
+}
+
+impl PreparedArtifactSurfaceRasterRoot {
+    pub(crate) fn scene_root(&self) -> super::SurfaceDagSceneRootId {
+        self.scene_root
+    }
+
+    pub(crate) fn steps(&self) -> &[PreparedArtifactSurfaceRasterStep] {
+        &self.steps
+    }
+}
+
+/// Graph-inert descriptor and localization seal. It is intentionally not an
+/// emit capability and has no production consumer in this prerequisite batch.
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedArtifactSurfaceRasterPlan {
+    context: ArtifactSurfaceRasterContext,
+    roots: Vec<PreparedArtifactSurfaceRasterRoot>,
+    nodes: Vec<PreparedArtifactSurfaceRasterNode>,
+}
+
+impl PreparedArtifactSurfaceRasterPlan {
+    pub(crate) fn context(&self) -> ArtifactSurfaceRasterContext {
+        self.context
+    }
+
+    pub(crate) fn roots(&self) -> &[PreparedArtifactSurfaceRasterRoot] {
+        &self.roots
+    }
+
+    pub(crate) fn nodes(&self) -> &[PreparedArtifactSurfaceRasterNode] {
+        &self.nodes
+    }
+}
+
 /// Typed rejection for the first C3 production slice. This preparation gate
 /// accepts only one current frame target whose artifact-derived layerization
 /// contains no detached surfaces.
@@ -4470,14 +4776,12 @@ pub(crate) struct ValidatedSingleTargetSurfaceDagFrame {
     execution_order: SurfaceDagExecutionOrder,
 }
 
-/// Completes every validation needed by the zero-surface C3 emitter without
-/// receiving a frame graph, arena, viewport, resident pool, component, or
-/// mutable renderer state. A rejection is therefore necessarily earlier than
-/// graph, pool, or component mutation.
-pub(crate) fn prepare_single_target_surface_dag_frame(
+fn validate_artifact_surface_dag_program(
     artifact: PaintArtifact,
-) -> Result<ValidatedSingleTargetSurfaceDagFrame, SingleTargetSurfaceDagPrepareError> {
-    let Some(validated) = validate_artifact_store(&artifact) else {
+) -> Result<ValidatedArtifactSurfaceDagProgram, SingleTargetSurfaceDagPrepareError> {
+    let Some(validated) =
+        validate_artifact_store_with_policy(&artifact, ArtifactStoreValidationPolicy::SurfaceDag)
+    else {
         return Err(SingleTargetSurfaceDagPrepareError::InvalidArtifactStore);
     };
     if !matches!(validated.target, ValidatedArtifactTarget::CurrentTarget) {
@@ -4486,11 +4790,6 @@ pub(crate) fn prepare_single_target_surface_dag_frame(
         ));
     }
 
-    let candidates = derive_artifact_surface_candidates(
-        &artifact,
-        LayerizationPolicy::PreservePropertyBoundaries,
-    )
-    .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
     let requests = derive_artifact_surface_transition_requests(
         &artifact,
         LayerizationPolicy::PreservePropertyBoundaries,
@@ -4508,20 +4807,611 @@ pub(crate) fn prepare_single_target_surface_dag_frame(
     let execution_order = surface_dag
         .derive_execution_order()
         .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-    if !candidates.is_empty() {
-        return Err(
-            SingleTargetSurfaceDagPrepareError::DetachedSurfacesUnsupported {
-                candidates: candidates.len(),
-            },
-        );
-    }
+    let coverage = derive_artifact_surface_coverage_forest(
+        &artifact,
+        &surface_dag,
+        LayerizationPolicy::PreservePropertyBoundaries,
+    )
+    .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
 
-    Ok(ValidatedSingleTargetSurfaceDagFrame {
+    Ok(ValidatedArtifactSurfaceDagProgram {
         artifact,
         resolved_clips: validated.resolved_clips,
         surface_dag,
         execution_order,
+        coverage,
     })
+}
+
+/// Completes every validation needed by the zero-surface C3 emitter without
+/// receiving a frame graph, arena, viewport, resident pool, component, or
+/// mutable renderer state. A rejection is therefore necessarily earlier than
+/// graph, pool, or component mutation.
+pub(crate) fn prepare_single_target_surface_dag_frame(
+    artifact: PaintArtifact,
+) -> Result<ValidatedSingleTargetSurfaceDagFrame, SingleTargetSurfaceDagPrepareError> {
+    let program = validate_artifact_surface_dag_program(artifact)?;
+    if !program.surface_dag.nodes().is_empty() {
+        return Err(
+            SingleTargetSurfaceDagPrepareError::DetachedSurfacesUnsupported {
+                candidates: program.surface_dag.nodes().len(),
+            },
+        );
+    }
+
+    let ValidatedArtifactSurfaceDagProgram {
+        artifact,
+        resolved_clips,
+        surface_dag,
+        execution_order,
+        coverage: _,
+    } = program;
+
+    Ok(ValidatedSingleTargetSurfaceDagFrame {
+        artifact,
+        resolved_clips,
+        surface_dag,
+        execution_order,
+    })
+}
+
+fn translated_chunk_bounds_bits(
+    bounds: crate::view::base_component::Rect,
+    delta: [f32; 2],
+) -> Option<[u32; 4]> {
+    let translated = [
+        bounds.x + delta[0],
+        bounds.y + delta[1],
+        bounds.width,
+        bounds.height,
+    ];
+    (translated.into_iter().all(f32::is_finite)
+        && translated[2] >= 0.0
+        && translated[3] >= 0.0
+        && (translated[0] + translated[2]).is_finite()
+        && (translated[1] + translated[3]).is_finite())
+    .then(|| translated.map(f32::to_bits))
+}
+
+fn union_bounds_bits(left: [u32; 4], right: [u32; 4]) -> Option<[u32; 4]> {
+    let [lx, ly, lw, lh] = left.map(f32::from_bits);
+    let [rx, ry, rw, rh] = right.map(f32::from_bits);
+    let min_x = lx.min(rx);
+    let min_y = ly.min(ry);
+    let max_x = (lx + lw).max(rx + rw);
+    let max_y = (ly + lh).max(ry + rh);
+    let union = [min_x, min_y, max_x - min_x, max_y - min_y];
+    (union.into_iter().all(f32::is_finite) && union[2] > 0.0 && union[3] > 0.0)
+        .then(|| union.map(f32::to_bits))
+}
+
+fn append_bounds(accumulated: &mut Option<[u32; 4]>, next: [u32; 4]) -> Option<()> {
+    *accumulated = Some(match *accumulated {
+        Some(current) => union_bounds_bits(current, next)?,
+        None => next,
+    });
+    Some(())
+}
+
+fn prepare_artifact_surface_span(
+    artifact: &PaintArtifact,
+    target: ArtifactSurfaceRasterTargetId,
+    span: &ArtifactSurfaceCoverageSpan,
+    delta: [f32; 2],
+) -> Result<PreparedArtifactSurfaceRasterSpan, ArtifactSurfaceRasterPlanError> {
+    let chunk_range = span.chunk_range();
+    let op_range = span.op_range();
+    let chunks = artifact
+        .chunks
+        .get(chunk_range.clone())
+        .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?;
+    if chunks.len() != span.localized_states().len()
+        || chunks.first().map(|chunk| chunk.op_range.start) != Some(op_range.start)
+        || chunks.last().map(|chunk| chunk.op_range.end) != Some(op_range.end)
+    {
+        return Err(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target));
+    }
+
+    let mut prepared = Vec::with_capacity(chunks.len());
+    for (local_index, (chunk, localized_state)) in
+        chunks.iter().zip(span.localized_states()).enumerate()
+    {
+        let chunk_index = chunk_range.start + local_index;
+        let ops = artifact
+            .ops
+            .get(chunk.op_range.clone())
+            .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?;
+        let localized_ops = ops
+            .iter()
+            .enumerate()
+            .map(|(op_offset, op)| {
+                localize_artifact_surface_op(op, delta).map_err(|reason| {
+                    ArtifactSurfaceRasterPlanError::Localization {
+                        target,
+                        chunk_index,
+                        op_index: chunk.op_range.start + op_offset,
+                        reason,
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let localized_payload = chunk
+            .payload_identity
+            .rebuild_from_localized_ops(&localized_ops)
+            .ok_or(ArtifactSurfaceRasterPlanError::LocalizedPayload {
+                target,
+                chunk_index,
+            })?;
+        let localized_bounds_bits = translated_chunk_bounds_bits(chunk.bounds, delta).ok_or(
+            ArtifactSurfaceRasterPlanError::InvalidChunkBounds {
+                target,
+                chunk_index,
+            },
+        )?;
+        prepared.push(PreparedArtifactSurfaceRasterChunk {
+            source: PaintChunkRasterIdentity {
+                id: chunk.id,
+                owner: chunk.owner,
+                bounds_bits: [
+                    chunk.bounds.x.to_bits(),
+                    chunk.bounds.y.to_bits(),
+                    chunk.bounds.width.to_bits(),
+                    chunk.bounds.height.to_bits(),
+                ],
+                payload_identity: chunk.payload_identity.clone(),
+            },
+            localized_bounds_bits,
+            localized_state: *localized_state,
+            localized_payload,
+            localized_ops,
+        });
+    }
+    Ok(PreparedArtifactSurfaceRasterSpan {
+        chunk_range,
+        op_range,
+        local_clips: span.local_clips().to_vec(),
+        chunks: prepared,
+    })
+}
+
+fn surface_raster_translation(
+    surface: SurfaceDagNodeId,
+    kind: SurfaceDagNodeKind,
+    scrolls: &FxHashMap<ScrollNodeId, ScrollNodeSnapshot>,
+) -> Result<[f32; 2], ArtifactSurfaceRasterPlanError> {
+    match kind {
+        SurfaceDagNodeKind::Transform(_) | SurfaceDagNodeKind::Effect(_) => Ok([0.0, 0.0]),
+        SurfaceDagNodeKind::ScrollContent { scroll, .. } => scrolls
+            .get(&scroll)
+            .map(|snapshot| [snapshot.offset.x, snapshot.offset.y])
+            .ok_or(ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(
+                surface,
+            )),
+    }
+}
+
+fn transform_destination_bounds(
+    source_bounds_bits: [u32; 4],
+    matrix: glam::Mat4,
+    offset: [f32; 2],
+) -> Option<[u32; 4]> {
+    let [x, y, width, height] = source_bounds_bits.map(f32::from_bits);
+    let corners = [
+        glam::Vec3::new(x, y, 0.0),
+        glam::Vec3::new(x + width, y, 0.0),
+        glam::Vec3::new(x + width, y + height, 0.0),
+        glam::Vec3::new(x, y + height, 0.0),
+    ];
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for corner in corners {
+        let projected = matrix * corner.extend(1.0);
+        if !projected.is_finite() || projected.w.abs() <= 0.000_001 {
+            return None;
+        }
+        let px = projected.x / projected.w + offset[0];
+        let py = projected.y / projected.w + offset[1];
+        min_x = min_x.min(px);
+        min_y = min_y.min(py);
+        max_x = max_x.max(px);
+        max_y = max_y.max(py);
+    }
+    let bounds = [min_x, min_y, max_x - min_x, max_y - min_y];
+    (bounds.into_iter().all(f32::is_finite) && bounds[2] > 0.0 && bounds[3] > 0.0)
+        .then(|| bounds.map(f32::to_bits))
+}
+
+fn surface_identity(
+    kind: SurfaceDagNodeKind,
+    owner: NodeKey,
+    stable_id: u64,
+) -> RetainedSurfaceRasterIdentity {
+    let (role, color_key) = match kind {
+        SurfaceDagNodeKind::Transform(_) => (
+            RetainedSurfaceRasterRole::Transform,
+            crate::view::base_component::transformed_layer_stable_key(stable_id),
+        ),
+        SurfaceDagNodeKind::Effect(_) => (
+            RetainedSurfaceRasterRole::PropertyEffect,
+            crate::view::base_component::isolation_layer_stable_key(stable_id),
+        ),
+        SurfaceDagNodeKind::ScrollContent { .. } => (
+            RetainedSurfaceRasterRole::ScrollContent,
+            crate::view::base_component::scroll_content_layer_stable_key(stable_id),
+        ),
+    };
+    RetainedSurfaceRasterIdentity {
+        boundary_root: owner,
+        stable_id,
+        color_key,
+        role,
+        scroll_content_tile: None,
+    }
+}
+
+fn surface_composite_geometry(
+    node: &super::SurfaceDagNode,
+    source_bounds_bits: [u32; 4],
+    receiver: SurfaceDagExecutionTargetId,
+    receiver_transform: Option<TransformNodeId>,
+    context: ArtifactSurfaceRasterContext,
+    transforms: &FxHashMap<TransformNodeId, TransformNodeSnapshot>,
+    effects: &FxHashMap<EffectNodeId, EffectNodeSnapshot>,
+    scrolls: &FxHashMap<ScrollNodeId, ScrollNodeSnapshot>,
+    closure: Option<&SurfaceDagClipClosureProjection>,
+) -> Result<ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceRasterPlanError> {
+    let root_offset = matches!(receiver, SurfaceDagExecutionTargetId::SceneRoot(_))
+        .then(|| context.paint_offset())
+        .unwrap_or([0.0, 0.0]);
+    let receiver_clip = closure
+        .map(SurfaceDagClipClosureProjection::receiver_clip)
+        .unwrap_or(node.transition().clip.to);
+    match node.kind() {
+        SurfaceDagNodeKind::Transform(transform) => {
+            let snapshot = transforms.get(&transform).copied().ok_or(
+                ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(node.id()),
+            )?;
+            let receiver_transform = match receiver_transform {
+                Some(receiver) => {
+                    let receiver = transforms.get(&receiver).copied().ok_or(
+                        ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(node.id()),
+                    )?;
+                    let determinant = receiver.owner_viewport_transform.determinant();
+                    if !determinant.is_finite() || determinant.abs() <= 0.000_001 {
+                        return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
+                            node.id(),
+                        ));
+                    }
+                    receiver.owner_viewport_transform.inverse() * snapshot.owner_viewport_transform
+                }
+                None => snapshot.owner_viewport_transform,
+            };
+            if !receiver_transform.is_finite() {
+                return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
+                    node.id(),
+                ));
+            }
+            let destination_bounds_bits =
+                transform_destination_bounds(source_bounds_bits, receiver_transform, root_offset)
+                    .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
+                    node.id(),
+                ))?;
+            Ok(ArtifactSurfaceCompositeGeometryStamp::Transform {
+                source_bounds_bits,
+                destination_bounds_bits,
+                receiver_transform_bits: receiver_transform.to_cols_array().map(f32::to_bits),
+                receiver_clip,
+            })
+        }
+        SurfaceDagNodeKind::Effect(effect) => {
+            let snapshot = effects.get(&effect).copied().ok_or(
+                ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(node.id()),
+            )?;
+            let mut destination = source_bounds_bits.map(f32::from_bits);
+            destination[0] += root_offset[0];
+            destination[1] += root_offset[1];
+            if destination.into_iter().any(|value| !value.is_finite())
+                || !snapshot.opacity.is_finite()
+                || !(0.0..=1.0).contains(&snapshot.opacity)
+                || snapshot.generation == 0
+            {
+                return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
+                    node.id(),
+                ));
+            }
+            Ok(ArtifactSurfaceCompositeGeometryStamp::Effect {
+                source_bounds_bits,
+                destination_bounds_bits: destination.map(f32::to_bits),
+                opacity_bits: snapshot.opacity.to_bits(),
+                generation: snapshot.generation,
+                receiver_clip,
+            })
+        }
+        SurfaceDagNodeKind::ScrollContent { scroll, .. } => {
+            let snapshot = scrolls.get(&scroll).copied().ok_or(
+                ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(node.id()),
+            )?;
+            let offset = [snapshot.offset.x, snapshot.offset.y];
+            let mut destination = source_bounds_bits.map(f32::from_bits);
+            destination[0] = destination[0] - offset[0] + root_offset[0];
+            destination[1] = destination[1] - offset[1] + root_offset[1];
+            if destination.into_iter().any(|value| !value.is_finite()) || snapshot.generation == 0 {
+                return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
+                    node.id(),
+                ));
+            }
+            Ok(ArtifactSurfaceCompositeGeometryStamp::ScrollContent {
+                source_bounds_bits,
+                destination_bounds_bits: destination.map(f32::to_bits),
+                offset_bits: offset.map(f32::to_bits),
+                generation: snapshot.generation,
+                receiver_clip,
+            })
+        }
+    }
+}
+
+fn prepare_artifact_surface_raster_plan_from_program(
+    program: ValidatedArtifactSurfaceDagProgram,
+    context: ArtifactSurfaceRasterContext,
+) -> Result<PreparedArtifactSurfaceRasterPlan, ArtifactSurfaceRasterPlanError> {
+    let transforms = program
+        .artifact
+        .transform_nodes
+        .iter()
+        .map(|snapshot| (snapshot.id, *snapshot))
+        .collect::<FxHashMap<_, _>>();
+    let effects = program
+        .artifact
+        .effect_nodes
+        .iter()
+        .map(|snapshot| (snapshot.id, *snapshot))
+        .collect::<FxHashMap<_, _>>();
+    let scrolls = program
+        .artifact
+        .scroll_nodes
+        .iter()
+        .map(|snapshot| (snapshot.id, *snapshot))
+        .collect::<FxHashMap<_, _>>();
+
+    let mut prepared_nodes: Vec<Option<PreparedArtifactSurfaceRasterNode>> =
+        vec![None; program.execution_order.nodes().len()];
+    let mut total_texture_bytes = 0_u64;
+    for execution in program.execution_order.nodes().iter().rev().copied() {
+        let source = execution.source();
+        let node = program
+            .surface_dag
+            .nodes()
+            .get(source.index())
+            .filter(|node| node.id() == source)
+            .ok_or(ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(
+                source,
+            ))?;
+        let coverage = program
+            .coverage
+            .nodes()
+            .get(source.index())
+            .filter(|coverage| coverage.surface() == source)
+            .ok_or(ArtifactSurfaceRasterPlanError::MissingCoverageNode(source))?;
+        let delta = surface_raster_translation(source, node.kind(), &scrolls)?;
+        let mut bounds = None;
+        let mut steps = Vec::with_capacity(coverage.steps().len());
+        for step in coverage.steps() {
+            match step {
+                ArtifactSurfaceCoverageStep::ArtifactSpan(span) => {
+                    let prepared = prepare_artifact_surface_span(
+                        &program.artifact,
+                        ArtifactSurfaceRasterTargetId::Surface(source),
+                        span,
+                        delta,
+                    )?;
+                    for chunk in &prepared.chunks {
+                        let [_, _, width, height] = chunk.localized_bounds_bits.map(f32::from_bits);
+                        if width > 0.0 && height > 0.0 {
+                            append_bounds(&mut bounds, chunk.localized_bounds_bits).ok_or(
+                                ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(source),
+                            )?;
+                        }
+                    }
+                    steps.push(PreparedArtifactSurfaceRasterStep::ArtifactSpan(prepared));
+                }
+                ArtifactSurfaceCoverageStep::NestedSurface(child_source) => {
+                    let child_execution = program
+                        .execution_order
+                        .execution_id(*child_source)
+                        .ok_or(ArtifactSurfaceRasterPlanError::InvalidNestedSurface {
+                            parent: source,
+                            child: *child_source,
+                        })?;
+                    let child = prepared_nodes
+                        .get(child_execution.index())
+                        .and_then(Option::as_ref)
+                        .ok_or(ArtifactSurfaceRasterPlanError::InvalidNestedSurface {
+                            parent: source,
+                            child: *child_source,
+                        })?;
+                    if child.receiver != SurfaceDagExecutionTargetId::Surface(execution.id()) {
+                        return Err(ArtifactSurfaceRasterPlanError::InvalidNestedSurface {
+                            parent: source,
+                            child: *child_source,
+                        });
+                    }
+                    append_bounds(&mut bounds, child.geometry.destination_bounds_bits())
+                        .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(source))?;
+                    steps.push(PreparedArtifactSurfaceRasterStep::NestedSurface(
+                        child_execution,
+                    ));
+                }
+            }
+        }
+        let source_bounds_bits =
+            bounds.ok_or(ArtifactSurfaceRasterPlanError::EmptySurfaceBounds(source))?;
+        let identity = surface_identity(node.kind(), node.target(), node.stable_id());
+        let [x, y, width, height] = source_bounds_bits.map(f32::from_bits);
+        let color = crate::view::base_component::texture_desc_for_logical_bounds(
+            RetainedSurfaceBounds {
+                x,
+                y,
+                width,
+                height,
+                corner_radii: [0.0; 4],
+            },
+            context.scale_factor(),
+            None,
+            context.target_format,
+        );
+        let (color, depth) = crate::view::base_component::persistent_target_texture_descriptors(
+            color,
+            identity.color_key,
+        );
+        if color.width() > context.max_texture_dimension_2d
+            || color.height() > context.max_texture_dimension_2d
+            || depth.width() > context.max_texture_dimension_2d
+            || depth.height() > context.max_texture_dimension_2d
+        {
+            return Err(ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(
+                source,
+            ));
+        }
+        let color_bytes = crate::view::raster_cost::texture_desc_payload_bytes(&color);
+        let depth_bytes = crate::view::raster_cost::texture_desc_payload_bytes(&depth);
+        if !color_bytes.confidence.budget_usable() || !depth_bytes.confidence.budget_usable() {
+            return Err(ArtifactSurfaceRasterPlanError::InvalidDescriptor(source));
+        }
+        total_texture_bytes = total_texture_bytes
+            .checked_add(color_bytes.bytes)
+            .and_then(|bytes| bytes.checked_add(depth_bytes.bytes))
+            .filter(|bytes| *bytes <= context.max_texture_bytes)
+            .ok_or(ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(
+                source,
+            ))?;
+        let target = RetainedSurfaceRasterInputs {
+            color,
+            depth,
+            scale_factor_bits: context.scale_factor_bits,
+            source_bounds_bits,
+        };
+        if !target.has_canonical_descriptor_pair_for(identity) {
+            return Err(ArtifactSurfaceRasterPlanError::InvalidDescriptor(source));
+        }
+        let geometry = surface_composite_geometry(
+            node,
+            source_bounds_bits,
+            execution.receiver(),
+            match node.receiver() {
+                super::SurfaceDagTargetId::SceneRoot(_) => None,
+                super::SurfaceDagTargetId::Surface(receiver) => {
+                    let receiver = program
+                        .surface_dag
+                        .nodes()
+                        .get(receiver.index())
+                        .filter(|candidate| candidate.id() == receiver)
+                        .ok_or(ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(
+                            source,
+                        ))?;
+                    match receiver.kind() {
+                        SurfaceDagNodeKind::Transform(transform) => Some(transform),
+                        SurfaceDagNodeKind::Effect(_)
+                        | SurfaceDagNodeKind::ScrollContent { .. } => {
+                            if receiver.transition().transform.from
+                                != receiver.transition().transform.to
+                            {
+                                return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
+                                    source,
+                                ));
+                            }
+                            receiver.transition().transform.from
+                        }
+                    }
+                }
+            },
+            context,
+            &transforms,
+            &effects,
+            &scrolls,
+            coverage.clip_closure(),
+        )?;
+        prepared_nodes[execution.id().index()] = Some(PreparedArtifactSurfaceRasterNode {
+            execution_id: execution.id(),
+            source,
+            receiver: execution.receiver(),
+            identity,
+            target,
+            geometry,
+            clip_closure: coverage.clip_closure().cloned(),
+            steps,
+        });
+    }
+    let nodes = prepared_nodes
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            ArtifactSurfaceRasterPlanError::SurfaceDag(
+                SurfaceDagError::ExecutionNodeOrdinalOverflow(
+                    program.execution_order.nodes().len(),
+                ),
+            )
+        })?;
+
+    let mut roots = Vec::with_capacity(program.coverage.roots().len());
+    for root in program.coverage.roots() {
+        let target = ArtifactSurfaceRasterTargetId::SceneRoot(root.scene_root());
+        let mut steps = Vec::with_capacity(root.steps().len());
+        for step in root.steps() {
+            match step {
+                ArtifactSurfaceCoverageStep::ArtifactSpan(span) => {
+                    steps.push(PreparedArtifactSurfaceRasterStep::ArtifactSpan(
+                        prepare_artifact_surface_span(&program.artifact, target, span, [0.0, 0.0])?,
+                    ))
+                }
+                ArtifactSurfaceCoverageStep::NestedSurface(child_source) => {
+                    let child_execution = program
+                        .execution_order
+                        .execution_id(*child_source)
+                        .ok_or(ArtifactSurfaceRasterPlanError::InvalidNestedSurface {
+                            parent: *child_source,
+                            child: *child_source,
+                        })?;
+                    let child = nodes.get(child_execution.index()).ok_or(
+                        ArtifactSurfaceRasterPlanError::InvalidNestedSurface {
+                            parent: *child_source,
+                            child: *child_source,
+                        },
+                    )?;
+                    if child.receiver != SurfaceDagExecutionTargetId::SceneRoot(root.scene_root()) {
+                        return Err(ArtifactSurfaceRasterPlanError::InvalidNestedSurface {
+                            parent: *child_source,
+                            child: *child_source,
+                        });
+                    }
+                    steps.push(PreparedArtifactSurfaceRasterStep::NestedSurface(
+                        child_execution,
+                    ));
+                }
+            }
+        }
+        roots.push(PreparedArtifactSurfaceRasterRoot {
+            scene_root: root.scene_root(),
+            steps,
+        });
+    }
+
+    Ok(PreparedArtifactSurfaceRasterPlan {
+        context,
+        roots,
+        nodes,
+    })
+}
+
+pub(crate) fn prepare_artifact_surface_raster_plan(
+    artifact: PaintArtifact,
+    context: ArtifactSurfaceRasterContext,
+) -> Result<PreparedArtifactSurfaceRasterPlan, ArtifactSurfaceRasterPlanError> {
+    let program = validate_artifact_surface_dag_program(artifact)
+        .map_err(ArtifactSurfaceRasterPlanError::ArtifactProgram)?;
+    prepare_artifact_surface_raster_plan_from_program(program, context)
 }
 
 impl ValidatedSingleTargetSurfaceDagFrame {
@@ -5509,7 +6399,8 @@ pub(crate) fn validated_scroll_text_area_content_raster_stamp(
             matches!(text_area_chunks.as_slice(), [glyph]
                 if glyph.id.role == PaintChunkRole::TextGlyphs)
         }
-        super::PaintTextContentSource::Selection(source) => matches!(text_area_chunks.as_slice(), [selection, glyph]
+        super::PaintTextContentSource::Selection(source) => {
+            matches!(text_area_chunks.as_slice(), [selection, glyph]
             if selection.id.role == PaintChunkRole::SelectionUnderlay
                 && selection.payload_identity.matches_exact_text_selection(
                     source.start_char,
@@ -5518,7 +6409,8 @@ pub(crate) fn validated_scroll_text_area_content_raster_stamp(
                     selection.op_count,
                     selection.bounds_bits,
                 )
-                && glyph.id.role == PaintChunkRole::TextGlyphs),
+                && glyph.id.role == PaintChunkRole::TextGlyphs)
+        }
         super::PaintTextContentSource::Preedit => false,
     };
     if !paint_source.is_canonical() || !grammar_matches {
@@ -5629,14 +6521,8 @@ fn artifact_span_matches_atomic_projection_dependency(
         return false;
     };
     raster_chunk_matches_atomic_seal(wrapper, &dependency.wrapper_chunk)
-        && raster_chunk_matches_atomic_seal(
-            text_area_glyph,
-            &dependency.text_area_glyph_chunk,
-        )
-        && raster_chunk_matches_atomic_seal(
-            projection_glyph,
-            &dependency.projection_glyph_chunk,
-        )
+        && raster_chunk_matches_atomic_seal(text_area_glyph, &dependency.text_area_glyph_chunk)
+        && raster_chunk_matches_atomic_seal(projection_glyph, &dependency.projection_glyph_chunk)
 }
 
 fn artifact_span_matches_atomic_projection_selection_dependency(
@@ -5664,14 +6550,8 @@ fn artifact_span_matches_atomic_projection_selection_dependency(
             .text_selection_identity()
             .as_ref()
             == Some(&dependency.selection)
-        && raster_chunk_matches_atomic_seal(
-            text_area_glyph,
-            &dependency.text_area_glyph_chunk,
-        )
-        && raster_chunk_matches_atomic_seal(
-            projection_glyph,
-            &dependency.projection_glyph_chunk,
-        )
+        && raster_chunk_matches_atomic_seal(text_area_glyph, &dependency.text_area_glyph_chunk)
+        && raster_chunk_matches_atomic_seal(projection_glyph, &dependency.projection_glyph_chunk)
 }
 
 /// Constructs the C3a offset-zero atomic-projection TextArea raster identity.
@@ -7313,13 +8193,8 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
                 || semantic.iter().any(|chunk| {
                     chunk.id.owner != chunk.owner
                         || match chunk.clip {
-                            None => !is_descendant_of(
-                                chunk.owner,
-                                stamp.identity.boundary_root,
-                            ),
-                            Some(id) => {
-                                id != clip.id || !is_descendant_of(chunk.owner, clip.owner)
-                            }
+                            None => !is_descendant_of(chunk.owner, stamp.identity.boundary_root),
+                            Some(id) => id != clip.id || !is_descendant_of(chunk.owner, clip.owner),
                         }
                 })
             {
@@ -8031,9 +8906,9 @@ fn exact_self_clip_shadow_prefix_len(
         })
         || clip.generation == 0
         || !chunk.properties.legacy_boundary_eq(PropertyTreeState {
-                clip: Some(self_clip),
-                ..Default::default()
-            })
+            clip: Some(self_clip),
+            ..Default::default()
+        })
     {
         return None;
     }
@@ -8925,7 +9800,6 @@ impl ValidatedScrollSceneFocusedAtomicProjectionTextAreaPlanParts {
         self.base.resident()
     }
 
-
     pub(crate) fn identity(&self) -> FocusedAtomicProjectionTextAreaPlanIdentity {
         self.frozen_identity.clone()
     }
@@ -9545,8 +10419,7 @@ pub(crate) struct RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal {
     pub(crate) selection_chunk: PaintChunkRasterIdentity,
     pub(crate) text_area_glyph_chunk: PaintChunkRasterIdentity,
     pub(crate) projection_glyph_chunk: PaintChunkRasterIdentity,
-    frozen_raster_identity:
-        RetainedAtomicProjectionSelectionTextAreaFrozenResidentRasterIdentity,
+    frozen_raster_identity: RetainedAtomicProjectionSelectionTextAreaFrozenResidentRasterIdentity,
 }
 
 impl RetainedAtomicProjectionSelectionTextAreaResidentRasterSeal {
@@ -9787,9 +10660,7 @@ fn artifact_chunk_pair_translation_bits<'a>(
     for (host, local) in pairs {
         let host_bounds = chunk_bounds_bits(host);
         let local_bounds = chunk_bounds_bits(local);
-        if host.id != local.id
-            || host.owner != local.owner
-            || host_bounds[2..] != local_bounds[2..]
+        if host.id != local.id || host.owner != local.owner || host_bounds[2..] != local_bounds[2..]
         {
             return None;
         }
@@ -10057,17 +10928,18 @@ pub(crate) fn validate_scroll_scene_text_area_content_artifact(
         content_root,
         Default::default(),
     )?;
-    let chunks_match_grammar = wrapper_matches(wrapper) && match paint_source {
-        super::PaintTextContentSource::Glyphs => {
-            matches!(semantic, [glyphs] if glyph_matches(glyphs))
-        }
-        super::PaintTextContentSource::Selection(_) => matches!(
-            semantic,
-            [selection, glyphs]
-                if selection_matches(selection) && glyph_matches(glyphs)
-        ),
-        super::PaintTextContentSource::Preedit => false,
-    };
+    let chunks_match_grammar = wrapper_matches(wrapper)
+        && match paint_source {
+            super::PaintTextContentSource::Glyphs => {
+                matches!(semantic, [glyphs] if glyph_matches(glyphs))
+            }
+            super::PaintTextContentSource::Selection(_) => matches!(
+                semantic,
+                [selection, glyphs]
+                    if selection_matches(selection) && glyph_matches(glyphs)
+            ),
+            super::PaintTextContentSource::Preedit => false,
+        };
     let owner_nodes = artifact
         .owner_nodes
         .iter()
@@ -10222,12 +11094,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_content_artifact
             parent: Some(content_root),
         },
     ];
-    expected_owners.extend(
-        artifact_source
-            .descendant_owner_topology
-            .iter()
-            .copied(),
-    );
+    expected_owners.extend(artifact_source.descendant_owner_topology.iter().copied());
     let localized_projection_bounds_bits = artifact_space_transition
         .project_bounds_bits(artifact_source.projection_text_bounds_bits)?;
     if !matches!(validated.target, ValidatedArtifactTarget::CurrentTarget)
@@ -10695,10 +11562,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
     match (host_masks, local_masks) {
         (None, None) => {}
         (Some((host_begin, host_end)), Some((local_begin, local_end))) => {
-            artifact_translation_pairs.extend([
-                (host_begin, local_begin),
-                (host_end, local_end),
-            ]);
+            artifact_translation_pairs.extend([(host_begin, local_begin), (host_end, local_end)]);
         }
         _ => return None,
     }
@@ -10843,8 +11707,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
         || host_root_glyph.id.scope != PaintPropertyScope::Contents
         || host_projection_glyph.owner != artifact_source.projection_text_owner
         || host_projection_glyph.id.scope != PaintPropertyScope::SelfPaint
-        || chunk_bounds_bits(host_projection_glyph)
-            != artifact_source.projection_text_bounds_bits
+        || chunk_bounds_bits(host_projection_glyph) != artifact_source.projection_text_bounds_bits
         || overlay.owner != boundary_root
         || overlay.id.owner != boundary_root
         || overlay.id.scope != PaintPropertyScope::SelfPaint
@@ -10855,7 +11718,9 @@ pub(super) fn validate_scroll_scene_atomic_projection_text_area_plan_parts(
         || chunk_bounds_bits(overlay) != source_bounds_bits
         || local_wrapper.properties.legacy_boundary_dimensions() != Default::default()
         || chunk_bounds_bits(local_wrapper) != content_zero_bounds_bits
-        || !local_root_glyph.properties.legacy_boundary_eq(local_glyph_state)
+        || !local_root_glyph
+            .properties
+            .legacy_boundary_eq(local_glyph_state)
         || !local_projection_glyph
             .properties
             .legacy_boundary_eq(local_glyph_state)
@@ -11099,16 +11964,13 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
     };
     let (root_before, host_tail) = host_artifact.chunks.split_first()?;
     let (overlay, host_content_chunks) = host_tail.split_last()?;
-    let Some((
-        host_wrapper,
-        host_masks,
-        [host_selection, host_root_glyph, host_projection_glyph],
-    )) = classify_optional_child_mask_semantics_with_masks(
-        &host_artifact,
-        host_content_chunks,
-        content_root,
-        outer_state,
-    )
+    let Some((host_wrapper, host_masks, [host_selection, host_root_glyph, host_projection_glyph])) =
+        classify_optional_child_mask_semantics_with_masks(
+            &host_artifact,
+            host_content_chunks,
+            content_root,
+            outer_state,
+        )
     else {
         return None;
     };
@@ -11134,10 +11996,7 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
     match (host_masks, local_masks) {
         (None, None) => {}
         (Some((host_begin, host_end)), Some((local_begin, local_end))) => {
-            artifact_translation_pairs.extend([
-                (host_begin, local_begin),
-                (host_end, local_end),
-            ]);
+            artifact_translation_pairs.extend([(host_begin, local_begin), (host_end, local_end)]);
         }
         _ => return None,
     }
@@ -11243,8 +12102,12 @@ pub(super) fn validate_scroll_scene_atomic_projection_selection_text_area_plan_p
         || root_before.properties.legacy_boundary_dimensions() != Default::default()
         || chunk_bounds_bits(root_before) != source_bounds_bits
         || !host_wrapper.properties.legacy_boundary_eq(outer_state)
-        || !host_selection.properties.legacy_boundary_eq(host_local_state)
-        || !host_root_glyph.properties.legacy_boundary_eq(host_local_state)
+        || !host_selection
+            .properties
+            .legacy_boundary_eq(host_local_state)
+        || !host_root_glyph
+            .properties
+            .legacy_boundary_eq(host_local_state)
         || !host_projection_glyph
             .properties
             .legacy_boundary_eq(host_local_state)
@@ -11437,9 +12300,7 @@ pub(crate) fn validate_scroll_scene_interactive_text_area_content_artifact(
             return None;
         }
         let ops = &artifact.ops[selection.op_range.clone()];
-        let seal = selection
-            .payload_identity
-            .text_selection_identity()?;
+        let seal = selection.payload_identity.text_selection_identity()?;
         (selection.owner == text_area_root
             && selection.id.owner == text_area_root
             && selection.id.scope == PaintPropertyScope::Contents
@@ -11800,6 +12661,150 @@ pub(super) fn localize_exact_nested_scroll_leaf_op(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtifactSurfacePaintOpKind {
+    DrawRect,
+    InlineIfcDecoration,
+    Shadow,
+    ScrollbarOverlay,
+    Text,
+    Image,
+    Svg,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtifactSurfaceLocalizationError {
+    NonFiniteTranslation,
+    EmbeddedClip(ArtifactSurfacePaintOpKind),
+    InvalidLocalizedOp(ArtifactSurfacePaintOpKind),
+}
+
+fn artifact_surface_paint_op_kind(op: &PaintOp) -> ArtifactSurfacePaintOpKind {
+    match op {
+        PaintOp::DrawRect(_) => ArtifactSurfacePaintOpKind::DrawRect,
+        PaintOp::PreparedInlineIfcDecoration(_) => ArtifactSurfacePaintOpKind::InlineIfcDecoration,
+        PaintOp::PreparedShadow(_) => ArtifactSurfacePaintOpKind::Shadow,
+        PaintOp::PreparedScrollbarOverlay(_) => ArtifactSurfacePaintOpKind::ScrollbarOverlay,
+        PaintOp::PreparedText(_) => ArtifactSurfacePaintOpKind::Text,
+        PaintOp::PreparedImage(_) => ArtifactSurfacePaintOpKind::Image,
+        PaintOp::PreparedSvg(_) => ArtifactSurfacePaintOpKind::Svg,
+    }
+}
+
+fn translate_artifact_surface_texture_params(
+    params: &mut crate::view::render_pass::texture_composite_pass::TextureCompositeParams,
+    delta: [f32; 2],
+    kind: ArtifactSurfacePaintOpKind,
+) -> Result<(), ArtifactSurfaceLocalizationError> {
+    if params.scissor_rect.is_some() {
+        return Err(ArtifactSurfaceLocalizationError::EmbeddedClip(kind));
+    }
+    params.bounds[0] += delta[0];
+    params.bounds[1] += delta[1];
+    if let Some(quad) = &mut params.quad_positions {
+        for point in quad {
+            point[0] += delta[0];
+            point[1] += delta[1];
+        }
+    }
+    params
+        .bounds
+        .iter()
+        .copied()
+        .chain(params.quad_positions.iter().flatten().flatten().copied())
+        .all(f32::is_finite)
+        .then_some(())
+        .ok_or(ArtifactSurfaceLocalizationError::InvalidLocalizedOp(kind))
+}
+
+/// Translates one generic artifact op into a detached surface's raster space.
+/// All seven op variants are represented. Embedded per-op clips reject with a
+/// typed reason because clip localization belongs to the coverage closure,
+/// not to an opaque prepared payload.
+pub(crate) fn localize_artifact_surface_op(
+    op: &PaintOp,
+    delta: [f32; 2],
+) -> Result<PaintOp, ArtifactSurfaceLocalizationError> {
+    if delta.into_iter().any(|value| !value.is_finite()) {
+        return Err(ArtifactSurfaceLocalizationError::NonFiniteTranslation);
+    }
+    let kind = artifact_surface_paint_op_kind(op);
+    let invalid = || ArtifactSurfaceLocalizationError::InvalidLocalizedOp(kind);
+    match op {
+        PaintOp::DrawRect(rect) => {
+            let mut localized = rect.clone();
+            translate_nested_scroll_position(&mut localized.params.position, delta)
+                .ok_or_else(invalid)?;
+            Ok(PaintOp::DrawRect(localized))
+        }
+        PaintOp::PreparedInlineIfcDecoration(decoration) => {
+            let mut fill = decoration.fill.clone();
+            translate_nested_scroll_position(&mut fill.position, delta).ok_or_else(invalid)?;
+            let border = match &decoration.border {
+                Some(border) => {
+                    let mut border = border.clone();
+                    translate_nested_scroll_position(&mut border.position, delta)
+                        .ok_or_else(invalid)?;
+                    Some(border)
+                }
+                None => None,
+            };
+            super::PreparedInlineIfcDecorationOp::new(decoration.descriptor.clone(), fill, border)
+                .map(PaintOp::PreparedInlineIfcDecoration)
+                .ok_or_else(invalid)
+        }
+        PaintOp::PreparedShadow(shadow) => {
+            let mut mesh = shadow.mesh.clone();
+            for vertex in &mut mesh.vertices {
+                translate_nested_scroll_position(vertex, delta).ok_or_else(invalid)?;
+            }
+            PreparedShadowOp::new(mesh, shadow.params)
+                .map(PaintOp::PreparedShadow)
+                .ok_or_else(invalid)
+        }
+        PaintOp::PreparedScrollbarOverlay(overlay) => overlay
+            .translated_by(delta)
+            .map(PaintOp::PreparedScrollbarOverlay)
+            .ok_or_else(invalid),
+        PaintOp::PreparedText(text) => {
+            let mut params = text.params.clone();
+            if params.scissor_rect.is_some() || params.stencil_clip_id.is_some() {
+                return Err(ArtifactSurfaceLocalizationError::EmbeddedClip(kind));
+            }
+            for fragment in &mut params.fragments {
+                translate_nested_scroll_position(&mut fragment.origin, delta)
+                    .ok_or_else(invalid)?;
+            }
+            for glyph in &mut params.staging_input.glyphs {
+                let fragment = params
+                    .fragments
+                    .get(glyph.paint.fragment_index as usize)
+                    .ok_or_else(invalid)?;
+                glyph.final_paint_pos = [
+                    fragment.origin[0] + glyph.paint.local_pos[0],
+                    fragment.origin[1] + glyph.paint.local_pos[1],
+                ];
+                if glyph.final_paint_pos.iter().any(|value| !value.is_finite()) {
+                    return Err(invalid());
+                }
+            }
+            PreparedTextOp::new(params)
+                .map(PaintOp::PreparedText)
+                .ok_or_else(invalid)
+        }
+        PaintOp::PreparedImage(image) => {
+            let mut localized = image.clone();
+            translate_artifact_surface_texture_params(&mut localized.params, delta, kind)?;
+            Ok(PaintOp::PreparedImage(localized))
+        }
+        PaintOp::PreparedSvg(svg) => {
+            let mut localized = svg.clone();
+            translate_artifact_surface_texture_params(&mut localized.params, delta, kind)?;
+            Ok(PaintOp::PreparedSvg(localized))
+        }
+    }
+}
+
 /// Rebuild the complete payload identity from already-localized ops. This is
 /// the sole nested-scroll identity path; identity and op coordinates cannot be
 /// translated independently.
@@ -12085,6 +13090,7 @@ fn validate_artifact_store_with_policy(
             ArtifactStoreValidationPolicy::General => {
                 chunk.properties.transform.is_none() && chunk.properties.scroll.is_none()
             }
+            ArtifactStoreValidationPolicy::SurfaceDag => true,
             ArtifactStoreValidationPolicy::PropertyScene => {
                 chunk.properties.transform.is_none()
                     && chunk.properties.effect.is_none()
@@ -12140,9 +13146,9 @@ fn validate_artifact_store_with_policy(
                 chunk.properties.legacy_boundary_dimensions() == Default::default()
                     || local_clip.is_some_and(|clip| {
                         chunk.properties.legacy_boundary_eq(PropertyTreeState {
-                                clip: Some(clip),
-                                ..Default::default()
-                            })
+                            clip: Some(clip),
+                            ..Default::default()
+                        })
                     })
             }
             ArtifactStoreValidationPolicy::ScrollSceneTextAreaContent {
@@ -12154,9 +13160,9 @@ fn validate_artifact_store_with_policy(
                     chunk.properties.legacy_boundary_dimensions() == Default::default()
                 } else if chunk.owner == text_area_root {
                     chunk.properties.legacy_boundary_eq(PropertyTreeState {
-                            clip: Some(contents_clip),
-                            ..Default::default()
-                        })
+                        clip: Some(contents_clip),
+                        ..Default::default()
+                    })
                 } else {
                     false
                 }
@@ -12171,9 +13177,9 @@ fn validate_artifact_store_with_policy(
                     chunk.properties.legacy_boundary_dimensions() == Default::default()
                 } else if chunk.owner == text_area_root || chunk.owner == projection_text_root {
                     chunk.properties.legacy_boundary_eq(PropertyTreeState {
-                            clip: Some(contents_clip),
-                            ..Default::default()
-                        })
+                        clip: Some(contents_clip),
+                        ..Default::default()
+                    })
                 } else {
                     false
                 }
@@ -12424,6 +13430,20 @@ fn validate_artifact_store_with_policy(
                                 }
                             }
                         }
+                        ArtifactStoreValidationPolicy::SurfaceDag => {
+                            (ops.is_empty()
+                                && chunk.payload_identity
+                                    == PaintPayloadIdentity::prepared_shadows(std::iter::empty()))
+                                || matches!(
+                                    ops,
+                                    [PaintOp::PreparedScrollbarOverlay(overlay)]
+                                        if overlay.has_canonical_identity()
+                                            && chunk.payload_identity
+                                                == PaintPayloadIdentity::prepared_scrollbar_overlay(
+                                                    overlay,
+                                                )
+                                )
+                        }
                         _ => false,
                     };
                 if !allowed {
@@ -12562,6 +13582,7 @@ fn validate_artifact_store_with_policy(
                     | ArtifactStoreValidationPolicy::ScrollSceneAtomicProjectionTextAreaContent { .. }
                     | ArtifactStoreValidationPolicy::ScrollSceneOverlay { .. }
                     | ArtifactStoreValidationPolicy::NativeScrollForest { .. }
+                    | ArtifactStoreValidationPolicy::SurfaceDag
             ) {
                 return None;
             }

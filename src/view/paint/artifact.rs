@@ -115,13 +115,10 @@ impl PaintDeferredViewportSelfClipWitness {
     }
 }
 
-
 /// Typed raster-local generation for a detached contents clip. Live property
 /// generations include viewport-space ancestry and therefore cannot
 /// participate in a reusable offset-zero content identity.
 pub(crate) const DETACHED_LOCAL_CLIP_GENERATION: u64 = 1;
-
-
 
 /// One frozen property boundary in root-to-surface order. The snapshot's
 /// parent id must name the nearest earlier entry with the same role.
@@ -1123,8 +1120,6 @@ impl PaintScrollContentWitness {
         )
     }
 }
-
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PaintTransformSurfaceWitness {
@@ -2425,6 +2420,52 @@ impl PreparedScrollbarOverlayOp {
         self.identity.clone()
     }
 
+    /// Rebuilds every spatial primitive in one indivisible overlay while
+    /// retaining the axis order and semantic witness frozen by this type.
+    pub(crate) fn translated_by(&self, delta: [f32; 2]) -> Option<Self> {
+        if delta.into_iter().any(|value| !value.is_finite()) {
+            return None;
+        }
+        let mut translated = self.clone();
+        let translate_shadow = |shadow: &mut PreparedScrollbarShadowOp| -> Option<()> {
+            for vertex in &mut shadow.mesh.vertices {
+                vertex[0] += delta[0];
+                vertex[1] += delta[1];
+                if vertex.iter().any(|value| !value.is_finite()) {
+                    return None;
+                }
+            }
+            Some(())
+        };
+        let translate_rect = |rect: &mut DrawRectOp| -> Option<()> {
+            rect.params.position[0] += delta[0];
+            rect.params.position[1] += delta[1];
+            rect.params
+                .position
+                .iter()
+                .all(|value| value.is_finite())
+                .then_some(())
+        };
+        translate_shadow(&mut translated.track_shadow)?;
+        translate_rect(&mut translated.track)?;
+        translate_shadow(&mut translated.thumb_shadow)?;
+        translate_rect(&mut translated.thumb)?;
+        if let Some(axis) = translated.secondary.as_deref_mut() {
+            translate_shadow(&mut axis.track_shadow)?;
+            translate_rect(&mut axis.track)?;
+            translate_shadow(&mut axis.thumb_shadow)?;
+            translate_rect(&mut axis.thumb)?;
+        }
+        translated.identity = PreparedScrollbarOverlayIdentity::from_parts(
+            &translated.track_shadow,
+            &translated.track,
+            &translated.thumb_shadow,
+            &translated.thumb,
+            translated.secondary.as_deref(),
+        )?;
+        Some(translated)
+    }
+
     pub(crate) fn has_baked_opacity(&self, expected_bits: u32) -> bool {
         self.track_shadow.params.opacity.to_bits() == expected_bits
             && self.track.params.opacity.to_bits() == expected_bits
@@ -2900,8 +2941,6 @@ impl TextSelectionPayloadIdentity {
     }
 }
 
-
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PreparedDrawRectParamsIdentity {
     position_bits: [u32; 2],
@@ -3283,12 +3322,10 @@ impl TextPreeditPayloadIdentity {
                     && self.ime_preedit.is_char_boundary(end)
             })
             || self.unified_ifc_source_revision == 0
-            || !self
-                .artifact_space_transition
-                .is_some_and(|transition| {
-                    transition.is_canonical()
-                        && transition.semantic_revision() == self.unified_ifc_source_revision
-                })
+            || !self.artifact_space_transition.is_some_and(|transition| {
+                transition.is_canonical()
+                    && transition.semantic_revision() == self.unified_ifc_source_revision
+            })
             || self.generated_topology.is_empty()
             || !preedit_glyph_identity_is_exact(
                 &self.glyph_identity,
@@ -3468,11 +3505,169 @@ pub(crate) fn preedit_underline_identity_is_exact(
     [left, top, right - left, bottom - top].map(f32::to_bits) == bounds_bits
 }
 
-
 impl PaintPayloadIdentity {
-    pub(crate) fn text_selection_identity(
-        &self,
-    ) -> Option<TextSelectionPayloadIdentity> {
+    /// Rebuilds the same semantic payload variant from already-localized ops.
+    /// Spatial bits may change; asset/source identity and typed payload shape
+    /// must remain the variant and cardinality frozen by `self`.
+    pub(crate) fn rebuild_from_localized_ops(&self, ops: &[PaintOp]) -> Option<Self> {
+        match self {
+            Self::None => ops.is_empty().then_some(Self::None),
+            Self::PreparedRects(expected) => {
+                let rects = ops
+                    .iter()
+                    .map(|op| match op {
+                        PaintOp::DrawRect(rect) => Some(rect),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                if rects.len() != expected.len() {
+                    return None;
+                }
+                Self::prepared_rects(rects)
+            }
+            Self::TextSelection(selection) => {
+                let rects = ops
+                    .iter()
+                    .map(|op| match op {
+                        PaintOp::DrawRect(rect) => Some(rect),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                (rects.len() == selection.rects.len()).then(|| {
+                    Self::prepared_text_selection(
+                        selection.start_char,
+                        selection.end_char,
+                        selection.color_rgba_bits,
+                        rects,
+                    )
+                })?
+            }
+            Self::PreparedShadows(expected_shadows, expected_rects) => {
+                let (shadows, rects) = ops.split_at(expected_shadows.len());
+                let shadows = shadows
+                    .iter()
+                    .map(|op| match op {
+                        PaintOp::PreparedShadow(shadow) => Some(shadow),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                let rects = rects
+                    .iter()
+                    .map(|op| match op {
+                        PaintOp::DrawRect(rect) => Some(rect),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                if rects.len() != expected_rects.len() {
+                    return None;
+                }
+                Self::prepared_shadows_with_decoration(shadows, rects)
+            }
+            Self::PreparedTexts(expected) => {
+                let texts = ops
+                    .iter()
+                    .map(|op| match op {
+                        PaintOp::PreparedText(text) => Some(text),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                (texts.len() == expected.len()).then(|| Self::prepared_texts(texts))
+            }
+            Self::PreparedScrollbarOverlay(_) => match ops {
+                [PaintOp::PreparedScrollbarOverlay(overlay)] => {
+                    Some(Self::prepared_scrollbar_overlay(overlay))
+                }
+                _ => None,
+            },
+            Self::InlineIfcDecorations(expected_shadows, expected_decorations) => {
+                let (shadows, decorations) = ops.split_at(expected_shadows.len());
+                let shadows = shadows
+                    .iter()
+                    .map(|op| match op {
+                        PaintOp::PreparedShadow(shadow) => Some(shadow),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                let decorations = decorations
+                    .iter()
+                    .map(|op| match op {
+                        PaintOp::PreparedInlineIfcDecoration(decoration) => Some(decoration),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                (decorations.len() == expected_decorations.len())
+                    .then(|| Self::inline_ifc_decorations_with_shadows(shadows, decorations))
+            }
+            Self::Image(_, expected_rects) | Self::ImageWithShadows(_, _, expected_rects) => {
+                let (image, prefix) = ops.split_last()?;
+                let PaintOp::PreparedImage(image) = image else {
+                    return None;
+                };
+                let shadow_count = match self {
+                    Self::ImageWithShadows(_, shadows, _) => shadows.len(),
+                    Self::Image(_, _) => 0,
+                    _ => unreachable!(),
+                };
+                let (shadows, rects) = prefix.split_at(shadow_count);
+                let shadows = shadows
+                    .iter()
+                    .map(|op| match op {
+                        PaintOp::PreparedShadow(shadow) => Some(shadow),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                let rects = rects
+                    .iter()
+                    .map(|op| match op {
+                        PaintOp::DrawRect(rect) => Some(rect),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                (rects.len() == expected_rects.len()).then(|| {
+                    Self::image_with_shadows_and_decoration(
+                        PreparedImageIdentity::from_op(image),
+                        shadows,
+                        rects,
+                    )
+                })?
+            }
+            Self::Svg(_, expected_rects) | Self::SvgWithShadows(_, _, expected_rects) => {
+                let (svg, prefix) = ops.split_last()?;
+                let PaintOp::PreparedSvg(svg) = svg else {
+                    return None;
+                };
+                let shadow_count = match self {
+                    Self::SvgWithShadows(_, shadows, _) => shadows.len(),
+                    Self::Svg(_, _) => 0,
+                    _ => unreachable!(),
+                };
+                let (shadows, rects) = prefix.split_at(shadow_count);
+                let shadows = shadows
+                    .iter()
+                    .map(|op| match op {
+                        PaintOp::PreparedShadow(shadow) => Some(shadow),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                let rects = rects
+                    .iter()
+                    .map(|op| match op {
+                        PaintOp::DrawRect(rect) => Some(rect),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                (rects.len() == expected_rects.len()).then(|| {
+                    Self::svg_with_shadows_and_decoration(
+                        PreparedSvgIdentity::from_op(svg)?,
+                        shadows,
+                        rects,
+                    )
+                })?
+            }
+        }
+    }
+
+    pub(crate) fn text_selection_identity(&self) -> Option<TextSelectionPayloadIdentity> {
         let Self::TextSelection(seal) = self else {
             return None;
         };
@@ -3550,7 +3745,9 @@ impl PaintPayloadIdentity {
             color_rgba_bits,
             rects,
         };
-        selection.is_canonical().then_some(Self::TextSelection(selection))
+        selection
+            .is_canonical()
+            .then_some(Self::TextSelection(selection))
     }
 
     pub(crate) fn matches_exact_text_selection(
