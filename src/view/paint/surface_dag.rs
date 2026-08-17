@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::view::{
     compositor::property_tree::{
@@ -347,6 +347,11 @@ impl SurfaceDagClipRebase {
 }
 
 /// Artifact-derived split between receiver and detached raster clip spaces.
+///
+/// This is the transitional single-chain C2 proof type. The later production
+/// wiring batch must migrate its proof tests and delete this type together with
+/// `project_clip_space` and the raster-stamp constructor that consumes it; it
+/// must not survive as an alternative to the surface-wide closure below.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SurfaceDagClipProjection {
     receiver_clip: Option<ClipNodeId>,
@@ -365,6 +370,120 @@ impl SurfaceDagClipProjection {
 
     pub(crate) fn local_clips(&self) -> &[ClipNodeSnapshot] {
         &self.local_clips
+    }
+}
+
+/// Surface-wide clip closure derived from every logically covered artifact
+/// chunk in painter order. Unlike [`SurfaceDagClipProjection`], this is not a
+/// mergeable single-chain value: only the shared artifact surface walk can
+/// construct the complete deterministic union. An empty `local_clips` union
+/// retains `receiver_clip`, but carries no local generation authority: the
+/// eventual raster-generation semantics is not applicable (`None`), rather
+/// than either `ArtifactLive` or `LegacyDetached`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceDagClipClosureProjection {
+    receiver_clip: Option<ClipNodeId>,
+    local_clips: Vec<ClipNodeSnapshot>,
+}
+
+impl SurfaceDagClipClosureProjection {
+    pub(crate) fn receiver_clip(&self) -> Option<ClipNodeId> {
+        self.receiver_clip
+    }
+
+    pub(crate) fn local_clips(&self) -> &[ClipNodeSnapshot] {
+        &self.local_clips
+    }
+}
+
+/// One direct painter-order run. Every chunk occurs in exactly one span at
+/// its innermost active surface, or at the scene root when no surface is
+/// active. Ancestors cover the span only through [`ArtifactSurfaceCoverageStep::NestedSurface`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ArtifactSurfaceCoverageSpan {
+    chunk_range: Range<usize>,
+    op_range: Range<usize>,
+    localized_states: Vec<PropertyTreeState>,
+    local_clips: Vec<ClipNodeSnapshot>,
+}
+
+impl ArtifactSurfaceCoverageSpan {
+    pub(crate) fn chunk_range(&self) -> Range<usize> {
+        self.chunk_range.clone()
+    }
+
+    pub(crate) fn op_range(&self) -> Range<usize> {
+        self.op_range.clone()
+    }
+
+    pub(crate) fn localized_states(&self) -> &[PropertyTreeState] {
+        &self.localized_states
+    }
+
+    pub(crate) fn local_clips(&self) -> &[ClipNodeSnapshot] {
+        &self.local_clips
+    }
+}
+
+/// The complete generic coverage vocabulary. The five exact-shape retained
+/// raster dependencies remain live in the legacy executor, but cannot be
+/// represented by this Stage C ownership forest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ArtifactSurfaceCoverageStep {
+    ArtifactSpan(ArtifactSurfaceCoverageSpan),
+    NestedSurface(SurfaceDagNodeId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ArtifactSurfaceCoverageRoot {
+    scene_root: SurfaceDagSceneRootId,
+    steps: Vec<ArtifactSurfaceCoverageStep>,
+}
+
+impl ArtifactSurfaceCoverageRoot {
+    pub(crate) fn scene_root(&self) -> SurfaceDagSceneRootId {
+        self.scene_root
+    }
+
+    pub(crate) fn steps(&self) -> &[ArtifactSurfaceCoverageStep] {
+        &self.steps
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ArtifactSurfaceCoverageNode {
+    surface: SurfaceDagNodeId,
+    steps: Vec<ArtifactSurfaceCoverageStep>,
+    clip_closure: Option<SurfaceDagClipClosureProjection>,
+}
+
+impl ArtifactSurfaceCoverageNode {
+    pub(crate) fn surface(&self) -> SurfaceDagNodeId {
+        self.surface
+    }
+
+    pub(crate) fn steps(&self) -> &[ArtifactSurfaceCoverageStep] {
+        &self.steps
+    }
+
+    pub(crate) fn clip_closure(&self) -> Option<&SurfaceDagClipClosureProjection> {
+        self.clip_closure.as_ref()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ArtifactSurfaceCoverageForest {
+    roots: Vec<ArtifactSurfaceCoverageRoot>,
+    nodes: Vec<ArtifactSurfaceCoverageNode>,
+}
+
+impl ArtifactSurfaceCoverageForest {
+    pub(crate) fn roots(&self) -> &[ArtifactSurfaceCoverageRoot] {
+        &self.roots
+    }
+
+    pub(crate) fn nodes(&self) -> &[ArtifactSurfaceCoverageNode] {
+        &self.nodes
     }
 }
 
@@ -702,6 +821,11 @@ pub(crate) enum SurfaceDagError {
     MissingArtifactTransition {
         kind: SurfaceDagNodeKind,
     },
+    NonReceiverClosedChunkSurfaceChain {
+        chunk_index: usize,
+        surface: SurfaceDagNodeId,
+        expected_receiver: SurfaceDagTargetId,
+    },
     ClipRebaseScroll {
         expected: ScrollNodeId,
         actual: Option<ScrollNodeId>,
@@ -825,6 +949,135 @@ struct DerivedArtifactTransition {
     to: PropertyTreeState,
 }
 
+#[derive(Clone, Copy)]
+enum ArtifactSurfaceWalkMode {
+    BoundaryTransition,
+    ChunkCoverage,
+}
+
+struct ArtifactSurfaceWalk {
+    edges: Vec<(SurfaceDagNodeKind, PropertyTreeState, PropertyTreeState)>,
+    matched: Vec<SurfaceDagNodeKind>,
+    localized_state: PropertyTreeState,
+    local_clips: Vec<(SurfaceDagNodeKind, Vec<ClipNodeSnapshot>)>,
+}
+
+fn artifact_owner_path(
+    owners: &ArtifactOwnerGraph,
+    owner: NodeKey,
+) -> Result<Vec<NodeKey>, SurfaceDagError> {
+    let mut path = Vec::new();
+    let mut cursor = Some(owner);
+    while let Some(current) = cursor {
+        path.push(current);
+        cursor = owners.parent(current)?;
+    }
+    path.reverse();
+    Ok(path)
+}
+
+fn local_clip_chain(
+    artifact_clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
+    live_clip: Option<ClipNodeId>,
+    boundary: ClipNodeId,
+) -> Result<Vec<ClipNodeSnapshot>, SurfaceDagError> {
+    let mut local = Vec::new();
+    let mut cursor = live_clip;
+    while cursor != Some(boundary) {
+        let Some(id) = cursor else {
+            return Err(SurfaceDagError::ClipRebaseOutsideBoundary {
+                live: live_clip,
+                boundary,
+            });
+        };
+        let snapshot = artifact_clips
+            .get(&id)
+            .copied()
+            .ok_or(TransitionError::UnknownClipReference(id))?;
+        local.push(snapshot);
+        cursor = snapshot.parent;
+    }
+    if let Some(root) = local.last_mut() {
+        root.parent = None;
+    }
+    Ok(local)
+}
+
+fn walk_artifact_surface_path(
+    state: PropertyTreeState,
+    owner_path: &[NodeKey],
+    candidates: &[ArtifactSurfaceCandidate],
+    snapshots: &PropertySnapshotGraph,
+    artifact_clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
+    mode: ArtifactSurfaceWalkMode,
+) -> Result<ArtifactSurfaceWalk, SurfaceDagError> {
+    let mut receiver_state = state;
+    let mut localized_state = state;
+    let mut edges = Vec::new();
+    let mut matched = Vec::new();
+    let mut local_clips = Vec::new();
+
+    for path_owner in owner_path {
+        for candidate in candidates
+            .iter()
+            .copied()
+            .filter(|candidate| candidate.target() == *path_owner)
+        {
+            let from = receiver_state;
+            let consumed = match candidate.kind() {
+                SurfaceDagNodeKind::Transform(transform)
+                    if receiver_state.transform == Some(transform) =>
+                {
+                    receiver_state.transform = None;
+                    localized_state.transform = None;
+                    true
+                }
+                SurfaceDagNodeKind::Effect(effect) if receiver_state.effect == Some(effect) => {
+                    receiver_state.effect = None;
+                    localized_state.effect = None;
+                    true
+                }
+                SurfaceDagNodeKind::ScrollContent {
+                    scroll,
+                    contents_clip,
+                } if receiver_state.scroll == Some(scroll) => {
+                    let clips = match mode {
+                        ArtifactSurfaceWalkMode::BoundaryTransition => {
+                            if receiver_state.clip != Some(contents_clip) {
+                                continue;
+                            }
+                            Vec::new()
+                        }
+                        ArtifactSurfaceWalkMode::ChunkCoverage => {
+                            local_clip_chain(artifact_clips, receiver_state.clip, contents_clip)?
+                        }
+                    };
+                    receiver_state.scroll = None;
+                    receiver_state.clip = snapshots.clip_parent(contents_clip)?;
+                    localized_state.scroll = None;
+                    localized_state.clip = clips.first().map(|clip| clip.id);
+                    local_clips.push((candidate.kind(), clips));
+                    true
+                }
+                SurfaceDagNodeKind::Transform(_)
+                | SurfaceDagNodeKind::Effect(_)
+                | SurfaceDagNodeKind::ScrollContent { .. } => false,
+            };
+            if consumed {
+                edges.push((candidate.kind(), from, receiver_state));
+                matched.push(candidate.kind());
+            }
+        }
+    }
+
+    Ok(ArtifactSurfaceWalk {
+        edges,
+        matched,
+        localized_state,
+        local_clips,
+    })
+}
+
 fn owner_is_ancestor_of(
     owners: &ArtifactOwnerGraph,
     ancestor: NodeKey,
@@ -892,6 +1145,11 @@ pub(crate) fn derive_artifact_surface_transition_requests(
         &owners,
         &artifact_cursors(artifact)?,
     )?;
+    let artifact_clips = artifact
+        .clip_nodes
+        .iter()
+        .map(|snapshot| (snapshot.id, *snapshot))
+        .collect::<FxHashMap<_, _>>();
     let endpoints = artifact
         .owner_property_states
         .iter()
@@ -911,51 +1169,21 @@ pub(crate) fn derive_artifact_surface_transition_requests(
             .get(&witness)
             .copied()
             .ok_or(TransitionError::MissingOwnerPropertyState(witness))?;
-        let mut owner_path = Vec::new();
-        let mut owner = Some(witness);
-        while let Some(current) = owner {
-            owner_path.push(current);
-            owner = owners.parent(current)?;
-        }
-        owner_path.reverse();
-
-        let mut cursor = endpoint.descendants;
-        let mut local_edges = Vec::new();
-        for path_owner in &owner_path {
-            for candidate in candidates
-                .iter()
-                .copied()
-                .filter(|candidate| candidate.target() == *path_owner)
-            {
-                let from = cursor;
-                let consumed = match candidate.kind() {
-                    SurfaceDagNodeKind::Transform(transform)
-                        if cursor.transform == Some(transform) =>
-                    {
-                        cursor.transform = None;
-                        true
-                    }
-                    SurfaceDagNodeKind::Effect(effect) if cursor.effect == Some(effect) => {
-                        cursor.effect = None;
-                        true
-                    }
-                    SurfaceDagNodeKind::ScrollContent {
-                        scroll,
-                        contents_clip,
-                    } if cursor.scroll == Some(scroll) && cursor.clip == Some(contents_clip) => {
-                        cursor.scroll = None;
-                        cursor.clip = snapshots.clip_parent(contents_clip)?;
-                        true
-                    }
-                    SurfaceDagNodeKind::Transform(_)
-                    | SurfaceDagNodeKind::Effect(_)
-                    | SurfaceDagNodeKind::ScrollContent { .. } => false,
-                };
-                if consumed {
-                    local_edges.push((candidate.kind(), from, cursor));
-                }
-            }
-        }
+        let owner_path = artifact_owner_path(&owners, witness)?;
+        let walk = walk_artifact_surface_path(
+            endpoint.descendants,
+            &owner_path,
+            &candidates,
+            &snapshots,
+            &artifact_clips,
+            ArtifactSurfaceWalkMode::BoundaryTransition,
+        )?;
+        let cursor = walk
+            .edges
+            .last()
+            .map(|(_, _, to)| *to)
+            .unwrap_or(endpoint.descendants);
+        let mut local_edges = walk.edges;
         if local_edges.is_empty() {
             return Err(SurfaceDagError::ArtifactTransitionDerivationStalled {
                 witness,
@@ -1066,6 +1294,269 @@ pub(crate) fn derive_artifact_surface_transition_requests(
             ))
         })
         .collect()
+}
+
+fn surface_kind_family(kind: SurfaceDagNodeKind) -> u8 {
+    match kind {
+        SurfaceDagNodeKind::Transform(_) => 0,
+        SurfaceDagNodeKind::Effect(_) => 1,
+        SurfaceDagNodeKind::ScrollContent { .. } => 2,
+    }
+}
+
+fn append_coverage_span(
+    steps: &mut Vec<ArtifactSurfaceCoverageStep>,
+    chunk_index: usize,
+    op_range: Range<usize>,
+    localized_state: PropertyTreeState,
+    local_clips: &[ClipNodeSnapshot],
+) {
+    if let Some(ArtifactSurfaceCoverageStep::ArtifactSpan(span)) = steps.last_mut()
+        && span.chunk_range.end == chunk_index
+        && span.op_range.end == op_range.start
+    {
+        span.chunk_range.end = chunk_index + 1;
+        span.op_range.end = op_range.end;
+        span.localized_states.push(localized_state);
+        for clip in local_clips {
+            if !span
+                .local_clips
+                .iter()
+                .any(|existing| existing.id == clip.id)
+            {
+                span.local_clips.push(*clip);
+            }
+        }
+        return;
+    }
+    steps.push(ArtifactSurfaceCoverageStep::ArtifactSpan(
+        ArtifactSurfaceCoverageSpan {
+            chunk_range: chunk_index..chunk_index + 1,
+            op_range,
+            localized_states: vec![localized_state],
+            local_clips: local_clips.to_vec(),
+        },
+    ));
+}
+
+/// Derives hierarchical painter coverage without minting raster stamps or
+/// admitting detached surfaces into production.
+///
+/// Artifact cursor order fixes direct span order. Surface receiver order fixes
+/// logical nesting and is never used as a substitute painter ordinal. Each
+/// chunk appears directly once at its innermost active surface; ancestors own
+/// only a `NestedSurface` step. The output vocabulary deliberately contains no
+/// exact-shape legacy raster dependency.
+pub(crate) fn derive_artifact_surface_coverage_forest(
+    artifact: &PaintArtifact,
+    surface_dag: &SurfaceDag,
+    policy: LayerizationPolicy,
+) -> Result<ArtifactSurfaceCoverageForest, SurfaceDagError> {
+    let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
+    let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
+    let cursors = artifact_cursors(artifact)?;
+    let candidates = derive_artifact_surface_candidates_from_validated(
+        artifact, policy, &snapshots, &owners, &cursors,
+    )?;
+    if candidates.len() != surface_dag.nodes.len() {
+        return Err(SurfaceDagError::TransitionCount {
+            candidates: candidates.len(),
+            events: surface_dag.nodes.len(),
+        });
+    }
+    for (index, (candidate, node)) in candidates.iter().zip(&surface_dag.nodes).enumerate() {
+        if candidate.target() != node.target {
+            return Err(SurfaceDagError::TransitionTarget {
+                index,
+                expected: candidate.target(),
+                actual: node.target,
+            });
+        }
+        if candidate.cursor() != node.cursor {
+            return Err(SurfaceDagError::TransitionCursor {
+                index,
+                expected: candidate.cursor(),
+                actual: node.cursor,
+            });
+        }
+        if candidate.kind() != node.kind {
+            return Err(SurfaceDagError::TransitionKind {
+                index,
+                expected: candidate.kind(),
+            });
+        }
+    }
+
+    let artifact_clips = artifact
+        .clip_nodes
+        .iter()
+        .map(|snapshot| (snapshot.id, *snapshot))
+        .collect::<FxHashMap<_, _>>();
+    let node_by_kind = surface_dag
+        .nodes
+        .iter()
+        .map(|node| (node.kind, node.id))
+        .collect::<FxHashMap<_, _>>();
+    let mut roots = surface_dag
+        .roots
+        .iter()
+        .map(|root| ArtifactSurfaceCoverageRoot {
+            scene_root: root.id,
+            steps: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let mut nodes = surface_dag
+        .nodes
+        .iter()
+        .map(|node| ArtifactSurfaceCoverageNode {
+            surface: node.id,
+            steps: Vec::new(),
+            clip_closure: node
+                .clip_rebase
+                .map(|rebase| SurfaceDagClipClosureProjection {
+                    receiver_clip: rebase.receiver_clip,
+                    local_clips: Vec::new(),
+                }),
+        })
+        .collect::<Vec<_>>();
+    let mut closure_clip_ids = vec![FxHashSet::default(); nodes.len()];
+    let mut nested_inserted = vec![false; nodes.len()];
+
+    for (chunk_index, chunk) in artifact.chunks.iter().enumerate() {
+        let owner_path = artifact_owner_path(&owners, chunk.owner)?;
+        let walk = walk_artifact_surface_path(
+            chunk.properties,
+            &owner_path,
+            &candidates,
+            &snapshots,
+            &artifact_clips,
+            ArtifactSurfaceWalkMode::ChunkCoverage,
+        )?;
+        let matched_ids = walk
+            .matched
+            .iter()
+            .filter_map(|kind| node_by_kind.get(kind).copied())
+            .collect::<Vec<_>>();
+        let matched_set = matched_ids.iter().copied().collect::<FxHashSet<_>>();
+
+        let scene_root =
+            SurfaceDagSceneRootId::from_scene_target(owners.scene_target(chunk.owner)?);
+        let logical_chain = if let Some(innermost) = matched_ids.last().copied() {
+            let mut reversed = Vec::new();
+            let mut cursor = SurfaceDagTargetId::Surface(innermost);
+            let mut descendant_kind = surface_dag.surface_node(innermost)?.kind;
+            loop {
+                match cursor {
+                    SurfaceDagTargetId::SceneRoot(root) => {
+                        if root != scene_root {
+                            return Err(SurfaceDagError::NonReceiverClosedChunkSurfaceChain {
+                                chunk_index,
+                                surface: innermost,
+                                expected_receiver: SurfaceDagTargetId::SceneRoot(scene_root),
+                            });
+                        }
+                        break;
+                    }
+                    SurfaceDagTargetId::Surface(id) => {
+                        let node = surface_dag.surface_node(id)?;
+                        if !matched_set.contains(&id)
+                            && surface_kind_family(node.kind)
+                                != surface_kind_family(descendant_kind)
+                        {
+                            return Err(SurfaceDagError::NonReceiverClosedChunkSurfaceChain {
+                                chunk_index,
+                                surface: innermost,
+                                expected_receiver: SurfaceDagTargetId::Surface(id),
+                            });
+                        }
+                        reversed.push(id);
+                        descendant_kind = node.kind;
+                        cursor = node.receiver;
+                    }
+                }
+            }
+            if matched_ids.iter().any(|id| !reversed.contains(id)) {
+                return Err(SurfaceDagError::NonReceiverClosedChunkSurfaceChain {
+                    chunk_index,
+                    surface: innermost,
+                    expected_receiver: surface_dag.surface_node(innermost)?.receiver,
+                });
+            }
+            reversed.reverse();
+            reversed
+        } else {
+            Vec::new()
+        };
+
+        for (kind, clips) in &walk.local_clips {
+            let Some(surface) = node_by_kind.get(kind).copied() else {
+                continue;
+            };
+            let Some(closure) = nodes[surface.index()].clip_closure.as_mut() else {
+                continue;
+            };
+            for clip in clips {
+                if closure_clip_ids[surface.index()].insert(clip.id) {
+                    closure.local_clips.push(*clip);
+                } else if !closure.local_clips.iter().any(|existing| existing == clip) {
+                    return Err(SurfaceDagError::ClipRebaseOutsideBoundary {
+                        live: Some(clip.id),
+                        boundary: match kind {
+                            SurfaceDagNodeKind::ScrollContent { contents_clip, .. } => {
+                                *contents_clip
+                            }
+                            _ => clip.id,
+                        },
+                    });
+                }
+            }
+        }
+
+        for surface in &logical_chain {
+            if nested_inserted[surface.index()] {
+                continue;
+            }
+            let receiver = surface_dag.surface_node(*surface)?.receiver;
+            match receiver {
+                SurfaceDagTargetId::SceneRoot(root) => roots[root.index()]
+                    .steps
+                    .push(ArtifactSurfaceCoverageStep::NestedSurface(*surface)),
+                SurfaceDagTargetId::Surface(parent) => nodes[parent.index()]
+                    .steps
+                    .push(ArtifactSurfaceCoverageStep::NestedSurface(*surface)),
+            }
+            nested_inserted[surface.index()] = true;
+        }
+
+        let direct_local_clips = logical_chain
+            .last()
+            .and_then(|surface| {
+                walk.local_clips
+                    .iter()
+                    .find(|(kind, _)| node_by_kind.get(kind) == Some(surface))
+                    .map(|(_, clips)| clips.as_slice())
+            })
+            .unwrap_or(&[]);
+        if let Some(surface) = logical_chain.last().copied() {
+            append_coverage_span(
+                &mut nodes[surface.index()].steps,
+                chunk_index,
+                chunk.op_range.clone(),
+                walk.localized_state,
+                direct_local_clips,
+            );
+        } else {
+            append_coverage_span(
+                &mut roots[scene_root.index()].steps,
+                chunk_index,
+                chunk.op_range.clone(),
+                walk.localized_state,
+                &[],
+            );
+        }
+    }
+
+    Ok(ArtifactSurfaceCoverageForest { roots, nodes })
 }
 
 /// Artifact-local attachment invariant between one classified endpoint pair

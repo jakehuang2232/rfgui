@@ -23,7 +23,7 @@ fn owner_depth(arena: &NodeArena, mut owner: NodeKey) -> usize {
     depth
 }
 
-fn reorder_artifact_leaf_first(arena: &NodeArena, artifact: &mut PaintArtifact) {
+pub(super) fn reorder_artifact_leaf_first(arena: &NodeArena, artifact: &mut PaintArtifact) {
     artifact
         .owner_nodes
         .sort_by_key(|snapshot| Reverse(owner_depth(arena, snapshot.owner)));
@@ -354,6 +354,9 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
                 "artifact-transition-terminal-mismatch"
             }
             SurfaceDagError::MissingArtifactTransition { .. } => "missing-artifact-transition",
+            SurfaceDagError::NonReceiverClosedChunkSurfaceChain { .. } => {
+                "non-receiver-closed-chunk-surface-chain"
+            }
             SurfaceDagError::ClipRebaseScroll { .. } => "clip-rebase-scroll",
             SurfaceDagError::ClipRebaseOutsideBoundary { .. } => "clip-rebase-outside-boundary",
             SurfaceDagError::SurfaceNodeOrdinalOverflow(_) => "surface-node-ordinal-overflow",
