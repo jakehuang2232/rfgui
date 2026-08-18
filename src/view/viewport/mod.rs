@@ -716,6 +716,12 @@ enum PendingRetainedSurfaceTransaction {
             crate::view::paint::RetainedSurfaceRasterStamp,
         >,
     },
+    /// Exact artifact Surface DAG resident authority. Keys were sealed beside
+    /// their stamps by the compiler and must never be re-derived from the
+    /// legacy `RetainedSurfaceRasterIdentity::resident_key` mapping.
+    CommitArtifactSurfaceSet {
+        residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
+    },
     CommitScrollTileActiveSet {
         manifest: crate::view::paint::ScrollContentTileSetTransactionStamp,
         active_set: FxHashMap<

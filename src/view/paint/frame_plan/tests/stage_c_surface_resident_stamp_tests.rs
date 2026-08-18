@@ -1,5 +1,6 @@
 use super::stage_c_surface_raster_plan_tests::{
-    depth_four_effect_artifact, raster_context, scroll_surface_artifact,
+    depth_four_effect_artifact, depth_three_effect_artifact, raster_context,
+    scroll_surface_artifact,
 };
 use super::*;
 use crate::view::compositor::property_tree::{
@@ -7,13 +8,41 @@ use crate::view::compositor::property_tree::{
 };
 use crate::view::paint::{
     RetainedSurfaceCompileAction, RetainedSurfaceRasterRole, RetainedSurfaceResidentKey,
-    prepare_artifact_surface_raster_plan, seal_artifact_surface_resident_set,
+    prepare_artifact_surface_raster_plan, seal_prepared_artifact_surface_frame,
 };
 
-fn sealed_depth_four() -> crate::view::paint::SealedArtifactSurfaceResidentSet {
+fn prepared_depth_four() -> crate::view::paint::PreparedArtifactSurfaceFrame {
     let plan = prepare_artifact_surface_raster_plan(depth_four_effect_artifact(), raster_context())
         .expect("depth-four raster plan");
-    seal_artifact_surface_resident_set(plan).expect("depth-four resident seal")
+    seal_prepared_artifact_surface_frame(plan).expect("depth-four resident seal")
+}
+
+fn sealed_depth_four() -> crate::view::paint::SealedArtifactSurfaceResidentSet {
+    prepared_depth_four().residents().clone()
+}
+
+fn prepared_co_located() -> crate::view::paint::PreparedArtifactSurfaceFrame {
+    let plan =
+        prepare_artifact_surface_raster_plan(co_located_surface_artifact(), raster_context())
+            .expect("co-located role raster plan");
+    seal_prepared_artifact_surface_frame(plan).expect("co-located role resident seal")
+}
+
+fn prepared_depth_three(
+    artifact: PaintArtifact,
+) -> crate::view::paint::PreparedArtifactSurfaceFrame {
+    let plan = prepare_artifact_surface_raster_plan(artifact, raster_context())
+        .expect("depth-three raster plan");
+    seal_prepared_artifact_surface_frame(plan).expect("depth-three resident seal")
+}
+
+fn sealed_stamps(
+    sealed: &crate::view::paint::SealedArtifactSurfaceResidentSet,
+) -> impl Iterator<Item = &crate::view::paint::RetainedSurfaceRasterStamp> {
+    sealed
+        .ordered_entries()
+        .iter()
+        .map(crate::view::paint::SealedArtifactSurfaceResidentEntry::stamp)
 }
 
 fn scroll_artifact_with_a_local_clip() -> PaintArtifact {
@@ -95,28 +124,21 @@ fn co_located_surface_artifact() -> PaintArtifact {
 
 #[test]
 fn artifact_surface_resident_set_seals_the_depth_four_program() {
-    let sealed = sealed_depth_four();
+    let prepared = prepared_depth_four();
+    let sealed = prepared.residents();
+    assert!(prepared.is_canonical());
+    assert_eq!(prepared.raster_plan().nodes().len(), sealed.len());
     assert!(sealed.is_canonical());
-    assert!(sealed.stamps().len() >= 4);
-    assert!(
-        sealed
-            .stamps()
-            .iter()
-            .all(|stamp| stamp.has_artifact_surface_program_for_test())
-    );
-    assert!(
-        sealed
-            .stamps()
-            .iter()
-            .all(|stamp| stamp.ordered_steps.is_empty())
-    );
-    assert!(sealed.stamps().iter().all(|stamp| {
+    assert!(sealed.len() >= 4);
+    assert!(sealed_stamps(sealed).all(|stamp| stamp.has_artifact_surface_program_for_test()));
+    assert!(sealed_stamps(sealed).all(|stamp| stamp.ordered_steps.is_empty()));
+    assert!(sealed_stamps(sealed).all(|stamp| {
         !stamp.clip_nodes.is_empty()
             || stamp
                 .local_clip_generation_semantics_name_for_test()
                 .is_none()
     }));
-    assert!(sealed.stamps().iter().all(|stamp| {
+    assert!(sealed_stamps(sealed).all(|stamp| {
         stamp
             .artifact_surface_program_step_names_for_test()
             .is_some_and(|steps| {
@@ -132,10 +154,9 @@ fn artifact_surface_resident_set_records_live_local_clip_generation_authority() 
     let plan =
         prepare_artifact_surface_raster_plan(scroll_artifact_with_a_local_clip(), raster_context())
             .expect("local-clip scroll raster plan");
-    let sealed = seal_artifact_surface_resident_set(plan).expect("local-clip resident seal");
-    let scroll = sealed
-        .stamps()
-        .iter()
+    let prepared = seal_prepared_artifact_surface_frame(plan).expect("local-clip resident seal");
+    let sealed = prepared.residents();
+    let scroll = sealed_stamps(sealed)
         .find(|stamp| stamp.identity.role == RetainedSurfaceRasterRole::ScrollContent)
         .expect("scroll-content resident");
     assert_eq!(
@@ -149,12 +170,9 @@ fn artifact_surface_resident_set_records_live_local_clip_generation_authority() 
 
 #[test]
 fn co_located_surface_roles_seal_to_three_distinct_generic_resident_keys() {
-    let plan =
-        prepare_artifact_surface_raster_plan(co_located_surface_artifact(), raster_context())
-            .expect("co-located role raster plan");
-    assert_eq!(plan.nodes().len(), 3);
-
-    let sealed = seal_artifact_surface_resident_set(plan).expect("co-located role resident seal");
+    let prepared = prepared_co_located();
+    assert_eq!(prepared.raster_plan().nodes().len(), 3);
+    let sealed = prepared.residents();
     let keys = sealed.resident_keys_for_test();
     assert_eq!(keys.len(), 3);
     assert_eq!(keys.iter().copied().collect::<FxHashSet<_>>().len(), 3);
@@ -217,15 +235,14 @@ fn artifact_program_change_keeps_the_resident_key_but_forces_reraster() {
             .checked_add(1)
             .expect("fixture revision increment");
     }
-    let changed = seal_artifact_surface_resident_set(
+    let changed = seal_prepared_artifact_surface_frame(
         prepare_artifact_surface_raster_plan(changed_artifact, raster_context())
             .expect("changed raster plan"),
     )
     .expect("changed resident seal");
-    let (resident, candidate) = baseline
-        .stamps()
-        .iter()
-        .zip(changed.stamps())
+    let changed = changed.residents();
+    let (resident, candidate) = sealed_stamps(&baseline)
+        .zip(sealed_stamps(changed))
         .find(|(resident, candidate)| resident != candidate)
         .expect("revision change must alter one resident stamp");
 
@@ -249,5 +266,149 @@ fn artifact_program_change_keeps_the_resident_key_but_forces_reraster() {
             resident,
         ),
         RetainedSurfaceCompileAction::Reuse,
+    );
+}
+
+#[test]
+fn artifact_pool_preserves_three_co_located_sealed_keys_cold_and_warm() {
+    let prepared = prepared_co_located();
+    let residents = prepared.residents();
+    let sealed_keys = residents.resident_keys_for_test();
+    assert_eq!(sealed_keys.len(), 3);
+
+    let mut viewport = crate::view::viewport::Viewport::new();
+    let production_cold = viewport
+        .artifact_surface_compile_actions_from_pool(residents)
+        .expect("canonical production cold artifact actions");
+    assert_eq!(
+        production_cold
+            .iter()
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>(),
+        sealed_keys,
+    );
+    assert!(
+        production_cold
+            .iter()
+            .all(|(_, action)| *action == RetainedSurfaceCompileAction::Reraster)
+    );
+    let cold = viewport
+        .artifact_surface_compile_actions_for_forced_test(residents)
+        .expect("canonical cold artifact actions");
+    assert_eq!(
+        cold.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+        sealed_keys,
+    );
+    assert!(
+        cold.iter()
+            .all(|(_, action)| *action == RetainedSurfaceCompileAction::Reraster)
+    );
+
+    let owner = viewport
+        .begin_retained_surface_frame_stage()
+        .expect("artifact frame owner");
+    assert!(viewport.stage_artifact_surface_resident_set(owner, residents.clone()));
+    assert_eq!(
+        viewport.pending_artifact_surface_resident_keys_for_test(),
+        Some(sealed_keys.clone()),
+    );
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
+    assert_eq!(
+        viewport.committed_retained_surface_resident_keys_for_test(),
+        sealed_keys.iter().copied().collect(),
+    );
+
+    let warm = viewport
+        .artifact_surface_compile_actions_for_forced_test(residents)
+        .expect("canonical warm artifact actions");
+    assert_eq!(
+        warm.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+        sealed_keys,
+    );
+    assert!(
+        warm.iter()
+            .all(|(_, action)| *action == RetainedSurfaceCompileAction::Reuse)
+    );
+}
+
+#[test]
+fn one_depth_three_revision_change_rerasterizes_only_its_surface() {
+    let baseline = prepared_depth_three(depth_three_effect_artifact());
+    assert_eq!(baseline.residents().len(), 3);
+    let baseline_keys = baseline.residents().resident_keys_for_test();
+    let mut viewport = crate::view::viewport::Viewport::new();
+    let owner = viewport
+        .begin_retained_surface_frame_stage()
+        .expect("baseline frame owner");
+    assert!(viewport.stage_artifact_surface_resident_set(owner, baseline.residents().clone(),));
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
+
+    let mut changed_artifact = depth_three_effect_artifact();
+    changed_artifact.chunks[1]
+        .content_revision
+        .topology_revision = changed_artifact.chunks[1]
+        .content_revision
+        .topology_revision
+        .checked_add(1)
+        .expect("fixture revision increment");
+    let changed = prepared_depth_three(changed_artifact);
+    assert_eq!(changed.residents().resident_keys_for_test(), baseline_keys);
+    let actions = viewport
+        .artifact_surface_compile_actions_for_forced_test(changed.residents())
+        .expect("changed artifact actions");
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|(_, action)| *action == RetainedSurfaceCompileAction::Reraster)
+            .count(),
+        1,
+    );
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|(_, action)| *action == RetainedSurfaceCompileAction::Reuse)
+            .count(),
+        2,
+    );
+}
+
+#[test]
+fn artifact_pool_rejections_preserve_committed_and_pending_exact_keys() {
+    let prepared = prepared_co_located();
+    let residents = prepared.residents().clone();
+    let sealed_keys = residents.resident_keys_for_test();
+    let mut viewport = crate::view::viewport::Viewport::new();
+    let committed_owner = viewport
+        .begin_retained_surface_frame_stage()
+        .expect("committed frame owner");
+    assert!(viewport.stage_artifact_surface_resident_set(committed_owner, residents.clone(),));
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(committed_owner), true,));
+
+    assert!(!viewport.stage_artifact_surface_resident_set(committed_owner, residents.clone(),));
+    assert_eq!(
+        viewport.committed_retained_surface_resident_keys_for_test(),
+        sealed_keys.iter().copied().collect(),
+    );
+
+    let pending_owner = viewport
+        .begin_retained_surface_frame_stage()
+        .expect("pending frame owner");
+    let mut invalid = residents.clone();
+    assert!(invalid.remove_first_span_boundary_owner_for_test());
+    assert!(!viewport.stage_artifact_surface_resident_set(pending_owner, invalid.clone(),));
+    assert_eq!(
+        viewport.pending_artifact_surface_resident_keys_for_test(),
+        None
+    );
+    assert_eq!(
+        viewport.committed_retained_surface_resident_keys_for_test(),
+        sealed_keys.iter().copied().collect(),
+    );
+
+    assert!(viewport.stage_artifact_surface_resident_set(pending_owner, residents,));
+    assert!(!viewport.stage_artifact_surface_resident_set(pending_owner, invalid));
+    assert_eq!(
+        viewport.pending_artifact_surface_resident_keys_for_test(),
+        Some(sealed_keys),
     );
 }

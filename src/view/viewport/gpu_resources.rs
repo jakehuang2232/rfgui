@@ -44,6 +44,26 @@ fn canonical_retained_surface_pair_bytes(
     color.bytes.checked_add(depth.bytes)
 }
 
+fn artifact_surface_resident_set_is_pool_canonical(
+    residents: &crate::view::paint::SealedArtifactSurfaceResidentSet,
+) -> bool {
+    if residents.is_empty() || !residents.is_canonical() {
+        return false;
+    }
+    let mut resident_keys = FxHashSet::default();
+    let mut persistent_keys = FxHashSet::default();
+    residents.ordered_entries().iter().all(|entry| {
+        let stamp = entry.stamp();
+        let Some(depth_key) = stamp.identity.color_key.depth_stencil() else {
+            return false;
+        };
+        canonical_retained_surface_pair_bytes(stamp).is_some()
+            && resident_keys.insert(entry.resident_key())
+            && persistent_keys.insert(stamp.identity.color_key)
+            && persistent_keys.insert(depth_key)
+    })
+}
+
 fn property_scroll_scene_transaction_is_pool_canonical(
     transaction: &crate::view::paint::RetainedPropertyScrollSceneTransaction,
 ) -> bool {
@@ -293,6 +313,9 @@ impl Viewport {
                 .map(|pending| match pending {
                     PendingRetainedSurfaceTransaction::Clear => 0,
                     PendingRetainedSurfaceTransaction::Commit { full_set } => full_set.len(),
+                    PendingRetainedSurfaceTransaction::CommitArtifactSurfaceSet { residents } => {
+                        residents.len()
+                    }
                     PendingRetainedSurfaceTransaction::CommitScrollTileActiveSet {
                         active_set,
                         ..
@@ -320,6 +343,36 @@ impl Viewport {
                     .sum::<usize>(),
             pending,
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_artifact_surface_resident_keys_for_test(
+        &self,
+    ) -> Option<Vec<crate::view::paint::RetainedSurfaceResidentKey>> {
+        let PendingRetainedSurfaceTransaction::CommitArtifactSurfaceSet { residents } =
+            self.compositor.pending_retained_surfaces.as_ref()?
+        else {
+            return None;
+        };
+        Some(
+            residents
+                .ordered_entries()
+                .iter()
+                .map(crate::view::paint::SealedArtifactSurfaceResidentEntry::resident_key)
+                .collect(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn committed_retained_surface_resident_keys_for_test(
+        &self,
+    ) -> FxHashSet<crate::view::paint::RetainedSurfaceResidentKey> {
+        self.compositor
+            .retained_surfaces
+            .entries
+            .keys()
+            .copied()
+            .collect()
     }
 
     #[cfg(test)]
@@ -492,6 +545,67 @@ impl Viewport {
         self.retained_surface_compile_actions_from_pool([stamp])
             .remove(&stamp.identity.resident_key())
             .expect("one retained surface action")
+    }
+
+    #[allow(dead_code)] // C3b2 pool contract precedes the C3b3 executor caller.
+    fn artifact_surface_compile_actions(
+        &self,
+        residents: &crate::view::paint::SealedArtifactSurfaceResidentSet,
+        allow_forced_pair_witness: bool,
+    ) -> Option<
+        Vec<(
+            crate::view::paint::RetainedSurfaceResidentKey,
+            crate::view::paint::RetainedSurfaceCompileAction,
+        )>,
+    > {
+        if !artifact_surface_resident_set_is_pool_canonical(residents) {
+            return None;
+        }
+        residents
+            .ordered_entries()
+            .iter()
+            .map(|entry| {
+                let key = entry.resident_key();
+                let stamp = entry.stamp();
+                Some((
+                    key,
+                    self.retained_surface_compile_action_against_resident(
+                        stamp,
+                        self.compositor.retained_surfaces.entries.get(&key),
+                        allow_forced_pair_witness,
+                    ),
+                ))
+            })
+            .collect()
+    }
+
+    /// Freezes pool actions against the compiler-sealed artifact resident
+    /// keys. The pool never receives a stamp without its matching key, so it
+    /// has no opportunity to invoke the legacy identity mapping.
+    #[allow(dead_code)] // C3b2 pool contract precedes the C3b3 executor caller.
+    pub(crate) fn artifact_surface_compile_actions_from_pool(
+        &self,
+        residents: &crate::view::paint::SealedArtifactSurfaceResidentSet,
+    ) -> Option<
+        Vec<(
+            crate::view::paint::RetainedSurfaceResidentKey,
+            crate::view::paint::RetainedSurfaceCompileAction,
+        )>,
+    > {
+        self.artifact_surface_compile_actions(residents, false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn artifact_surface_compile_actions_for_forced_test(
+        &self,
+        residents: &crate::view::paint::SealedArtifactSurfaceResidentSet,
+    ) -> Option<
+        Vec<(
+            crate::view::paint::RetainedSurfaceResidentKey,
+            crate::view::paint::RetainedSurfaceCompileAction,
+        )>,
+    > {
+        self.artifact_surface_compile_actions(residents, true)
     }
 
     fn retained_surface_compile_action_against_resident(
@@ -1042,6 +1156,27 @@ impl Viewport {
         })
     }
 
+    /// Stages only compiler-sealed artifact `(resident key, stamp)` pairs for
+    /// this exact frame owner. Unlike legacy staging, this entry point has no
+    /// stamp-only form and therefore cannot re-derive a different key.
+    #[allow(dead_code)] // C3b2 pool contract precedes the C3b3 executor caller.
+    pub(crate) fn stage_artifact_surface_resident_set(
+        &mut self,
+        owner: RetainedSurfaceFrameStageOwner,
+        residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
+    ) -> bool {
+        if !self.retained_surface_frame_stage_owner_is_active(owner)
+            || !artifact_surface_resident_set_is_pool_canonical(&residents)
+        {
+            return false;
+        }
+        debug_assert!(self.compositor.pending_retained_surfaces.is_none());
+        self.compositor.pending_retained_surfaces =
+            Some(PendingRetainedSurfaceTransaction::CommitArtifactSurfaceSet { residents });
+        self.compositor.pending_retained_surface_owner = Some(owner.generation);
+        true
+    }
+
     /// Stages an exact active-only scroll tile set. The manifest is sealed by
     /// the tile planner and the input vector must preserve its row-major order.
     pub(crate) fn stage_retained_scroll_tile_active_set(
@@ -1240,6 +1375,42 @@ impl Viewport {
                     }
                 }
                 self.compositor.retained_surfaces.entries = full_set;
+                #[cfg(test)]
+                self.compositor
+                    .retained_surface_pair_witnesses
+                    .extend(next_color_keys);
+            }
+            Some(PendingRetainedSurfaceTransaction::CommitArtifactSurfaceSet { residents }) => {
+                if !artifact_surface_resident_set_is_pool_canonical(&residents) {
+                    self.compositor.pending_retained_surfaces = Some(
+                        PendingRetainedSurfaceTransaction::CommitArtifactSurfaceSet { residents },
+                    );
+                    self.invalidate_retained_surfaces();
+                    return;
+                }
+                let mut next = FxHashMap::default();
+                let mut next_color_keys = FxHashSet::default();
+                for entry in residents.into_ordered_entries() {
+                    let (resident_key, stamp) = entry.into_parts();
+                    next_color_keys.insert(stamp.identity.color_key);
+                    if next.insert(resident_key, stamp).is_some() {
+                        self.invalidate_retained_surfaces();
+                        return;
+                    }
+                }
+                self.clear_scroll_tile_resident_cache();
+                self.clear_property_scroll_resident_cache_preserving_pairs(&next_color_keys);
+                let previous = std::mem::take(&mut self.compositor.retained_surfaces.entries);
+                for color_key in previous
+                    .values()
+                    .map(|stamp| stamp.identity.color_key)
+                    .collect::<FxHashSet<_>>()
+                {
+                    if !next_color_keys.contains(&color_key) {
+                        self.release_retained_surface_pair(color_key);
+                    }
+                }
+                self.compositor.retained_surfaces.entries = next;
                 #[cfg(test)]
                 self.compositor
                     .retained_surface_pair_witnesses
@@ -1558,7 +1729,11 @@ impl Viewport {
                 let no_protected_colors = FxHashSet::default();
                 self.clear_scroll_tile_resident_cache_preserving_pairs(&no_protected_colors);
                 self.clear_generic_retained_surface_residents();
-                self.compositor.retained_surfaces.property_scroll.active.clear();
+                self.compositor
+                    .retained_surfaces
+                    .property_scroll
+                    .active
+                    .clear();
                 self.evict_inactive_property_scroll_residents();
             }
             Some(PendingRetainedSurfaceTransaction::Clear) | None => {
@@ -1622,6 +1797,16 @@ impl Viewport {
             self.compositor.pending_retained_surfaces.as_ref()
         {
             color_keys.extend(full_set.values().map(|stamp| stamp.identity.color_key));
+        }
+        if let Some(PendingRetainedSurfaceTransaction::CommitArtifactSurfaceSet { residents }) =
+            self.compositor.pending_retained_surfaces.as_ref()
+        {
+            color_keys.extend(
+                residents
+                    .ordered_entries()
+                    .iter()
+                    .map(|entry| entry.stamp().identity.color_key),
+            );
         }
         if let Some(PendingRetainedSurfaceTransaction::CommitScrollTileActiveSet {
             active_set,

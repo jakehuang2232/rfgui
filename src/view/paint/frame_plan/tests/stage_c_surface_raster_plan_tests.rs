@@ -157,8 +157,10 @@ pub(super) fn scroll_surface_artifact() -> PaintArtifact {
     artifact
 }
 
-pub(super) fn depth_four_effect_artifact() -> PaintArtifact {
+fn effect_depth_artifact(effect_depth: usize) -> PaintArtifact {
     use crate::view::compositor::property_tree::{EffectNodeId, EffectNodeSnapshot};
+
+    assert!(effect_depth > 0);
 
     let mut arena = new_test_arena();
     let element = |stable_id| {
@@ -170,12 +172,12 @@ pub(super) fn depth_four_effect_artifact() -> PaintArtifact {
     };
     let root = commit_element(&mut arena, Box::new(element(0xc3_b100)));
     let mut owners = vec![root];
-    for stable_id in 0xc3_b101..=0xc3_b105 {
+    for offset in 1..=effect_depth + 1 {
         let parent = *owners.last().expect("depth chain parent");
         owners.push(commit_child(
             &mut arena,
             parent,
-            Box::new(element(stable_id)),
+            Box::new(element(0xc3_b100 + offset as u64)),
         ));
     }
     let leaf = *owners.last().expect("depth chain leaf");
@@ -225,7 +227,7 @@ pub(super) fn depth_four_effect_artifact() -> PaintArtifact {
     assert_eq!(artifact.owner_nodes.len(), owners.len());
 
     for (index, owner) in owners.iter().copied().enumerate() {
-        if (1..=4).contains(&index) {
+        if (1..=effect_depth).contains(&index) {
             artifact.effect_nodes.push(EffectNodeSnapshot {
                 id: EffectNodeId(owner),
                 owner,
@@ -237,10 +239,10 @@ pub(super) fn depth_four_effect_artifact() -> PaintArtifact {
             });
         }
         let state = PropertyTreeState {
-            effect: (index > 0).then(|| EffectNodeId(owners[index.min(4)])),
+            effect: (index > 0).then(|| EffectNodeId(owners[index.min(effect_depth)])),
             ..Default::default()
         };
-        let paint = if index <= 4 {
+        let paint = if index <= effect_depth {
             PropertyTreeState {
                 effect: index
                     .checked_sub(2)
@@ -263,9 +265,18 @@ pub(super) fn depth_four_effect_artifact() -> PaintArtifact {
             .iter()
             .position(|owner| *owner == chunk.owner)
             .expect("recorded chunk owner belongs to depth chain");
-        chunk.properties.effect = (index > 0).then(|| EffectNodeId(owners[index.min(4)]));
+        chunk.properties.effect =
+            (index > 0).then(|| EffectNodeId(owners[index.min(effect_depth)]));
     }
     artifact
+}
+
+pub(super) fn depth_three_effect_artifact() -> PaintArtifact {
+    effect_depth_artifact(3)
+}
+
+pub(super) fn depth_four_effect_artifact() -> PaintArtifact {
+    effect_depth_artifact(4)
 }
 
 pub(super) fn raster_context() -> ArtifactSurfaceRasterContext {

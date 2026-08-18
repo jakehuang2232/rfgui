@@ -5659,30 +5659,63 @@ pub(crate) enum ArtifactSurfaceResidentSealError {
 /// generic role-tagged `Surface` variant; the legacy property-effect variant
 /// remains confined to the retained planner until cutover.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SealedArtifactSurfaceResidentEntry {
+    resident_key: RetainedSurfaceResidentKey,
+    stamp: RetainedSurfaceRasterStamp,
+}
+
+impl SealedArtifactSurfaceResidentEntry {
+    pub(crate) fn resident_key(&self) -> RetainedSurfaceResidentKey {
+        self.resident_key
+    }
+
+    pub(crate) fn stamp(&self) -> &RetainedSurfaceRasterStamp {
+        &self.stamp
+    }
+
+    pub(crate) fn into_parts(self) -> (RetainedSurfaceResidentKey, RetainedSurfaceRasterStamp) {
+        (self.resident_key, self.stamp)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SealedArtifactSurfaceResidentSet {
-    stamps: Vec<RetainedSurfaceRasterStamp>,
+    ordered_entries: Vec<SealedArtifactSurfaceResidentEntry>,
 }
 
 impl SealedArtifactSurfaceResidentSet {
-    pub(crate) fn stamps(&self) -> &[RetainedSurfaceRasterStamp] {
-        &self.stamps
+    pub(crate) fn ordered_entries(&self) -> &[SealedArtifactSurfaceResidentEntry] {
+        &self.ordered_entries
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.ordered_entries.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.ordered_entries.is_empty()
+    }
+
+    pub(crate) fn into_ordered_entries(self) -> Vec<SealedArtifactSurfaceResidentEntry> {
+        self.ordered_entries
     }
 
     pub(crate) fn is_canonical(&self) -> bool {
-        artifact_surface_resident_set_is_canonical(&self.stamps)
+        artifact_surface_resident_set_is_canonical(&self.ordered_entries)
     }
 
     #[cfg(test)]
     pub(crate) fn resident_keys_for_test(&self) -> Vec<RetainedSurfaceResidentKey> {
-        self.stamps
+        self.ordered_entries
             .iter()
-            .map(|stamp| stamp.identity.artifact_surface_resident_key())
+            .map(SealedArtifactSurfaceResidentEntry::resident_key)
             .collect()
     }
 
     #[cfg(test)]
     pub(crate) fn inject_legacy_step_into_first_artifact_program_for_test(&mut self) -> bool {
-        for stamp in &mut self.stamps {
+        for entry in &mut self.ordered_entries {
+            let stamp = &mut entry.stamp;
             let Some(program) = stamp.artifact_surface_program.as_ref() else {
                 continue;
             };
@@ -5711,7 +5744,8 @@ impl SealedArtifactSurfaceResidentSet {
 
     #[cfg(test)]
     pub(crate) fn remove_first_span_boundary_owner_for_test(&mut self) -> bool {
-        for stamp in &mut self.stamps {
+        for entry in &mut self.ordered_entries {
+            let stamp = &mut entry.stamp;
             let Some(program) = stamp.artifact_surface_program.as_mut() else {
                 continue;
             };
@@ -5731,7 +5765,8 @@ impl SealedArtifactSurfaceResidentSet {
 
     #[cfg(test)]
     pub(crate) fn zero_first_span_topology_revision_for_test(&mut self) -> bool {
-        for stamp in &mut self.stamps {
+        for entry in &mut self.ordered_entries {
+            let stamp = &mut entry.stamp;
             let Some(program) = stamp.artifact_surface_program.as_mut() else {
                 continue;
             };
@@ -5751,7 +5786,8 @@ impl SealedArtifactSurfaceResidentSet {
 
     #[cfg(test)]
     pub(crate) fn redirect_first_nested_surface_to_parent_for_test(&mut self) -> bool {
-        for stamp in &mut self.stamps {
+        for entry in &mut self.ordered_entries {
+            let stamp = &mut entry.stamp;
             let Some(program) = stamp.artifact_surface_program.as_mut() else {
                 continue;
             };
@@ -5920,10 +5956,13 @@ fn artifact_surface_program_span_is_canonical(
         })
 }
 
-fn artifact_surface_resident_set_is_canonical(stamps: &[RetainedSurfaceRasterStamp]) -> bool {
+fn artifact_surface_resident_set_is_canonical(
+    entries: &[SealedArtifactSurfaceResidentEntry],
+) -> bool {
     let mut resident_keys = FxHashSet::default();
-    let mut references = vec![0_usize; stamps.len()];
-    for (ordinal, stamp) in stamps.iter().enumerate() {
+    let mut references = vec![0_usize; entries.len()];
+    for (ordinal, entry) in entries.iter().enumerate() {
+        let stamp = &entry.stamp;
         let Some(program) = stamp.artifact_surface_program.as_ref() else {
             return false;
         };
@@ -5932,7 +5971,8 @@ fn artifact_surface_resident_set_is_canonical(stamps: &[RetainedSurfaceRasterSta
             || stamp.scroll_host.is_some()
             || stamp.property_effect.is_some()
             || !stamp.native_scroll_children.is_empty()
-            || !resident_keys.insert(stamp.identity.artifact_surface_resident_key())
+            || entry.resident_key != stamp.identity.artifact_surface_resident_key()
+            || !resident_keys.insert(entry.resident_key)
             || !artifact_surface_program_geometry_matches(
                 stamp.identity,
                 &stamp.target,
@@ -5986,7 +6026,7 @@ fn artifact_surface_resident_set_is_canonical(stamps: &[RetainedSurfaceRasterSta
                 }
                 ArtifactSurfaceRasterProgramStepStamp::NestedSurface(dependency) => {
                     let child_index = dependency.child_execution_id.index();
-                    let Some(child) = stamps.get(child_index) else {
+                    let Some(child) = entries.get(child_index).map(|entry| &entry.stamp) else {
                         return false;
                     };
                     let Some(child_program) = child.artifact_surface_program.as_ref() else {
@@ -6025,7 +6065,8 @@ fn artifact_surface_resident_set_is_canonical(stamps: &[RetainedSurfaceRasterSta
             return false;
         }
     }
-    stamps.iter().enumerate().all(|(ordinal, stamp)| {
+    entries.iter().enumerate().all(|(ordinal, entry)| {
+        let stamp = &entry.stamp;
         let program = stamp
             .artifact_surface_program
             .as_ref()
@@ -6083,13 +6124,13 @@ fn seal_artifact_surface_program_span(
         })
 }
 
-/// Consumes a graph-inert raster plan and seals one resident stamp per
-/// execution node. This remains a zero-production-consumer contract seam; the
-/// pool transaction and executor adopt it together in the wiring batch.
-pub(crate) fn seal_artifact_surface_resident_set(
-    plan: PreparedArtifactSurfaceRasterPlan,
+/// Borrows a graph-inert raster plan and seals one ordered `(resident key,
+/// stamp)` pair per execution node. The plan retains the localized paint ops;
+/// the identity-only resident set cannot replace it as raster input.
+fn seal_artifact_surface_resident_set(
+    plan: &PreparedArtifactSurfaceRasterPlan,
 ) -> Result<SealedArtifactSurfaceResidentSet, ArtifactSurfaceResidentSealError> {
-    let mut sealed: Vec<Option<RetainedSurfaceRasterStamp>> = vec![None; plan.nodes.len()];
+    let mut sealed: Vec<Option<SealedArtifactSurfaceResidentEntry>> = vec![None; plan.nodes.len()];
     let mut resident_keys = FxHashSet::default();
     for node in plan.nodes.iter().rev() {
         let mut cursor = 0_u32;
@@ -6126,7 +6167,8 @@ pub(crate) fn seal_artifact_surface_resident_set(
                             parent: node.source,
                             child: *child_execution_id,
                         })?;
-                    let child_program = child.artifact_surface_program.as_ref().ok_or(
+                    let child_stamp = &child.stamp;
+                    let child_program = child_stamp.artifact_surface_program.as_ref().ok_or(
                         ArtifactSurfaceResidentSealError::InvalidNestedSurface {
                             parent: node.source,
                             child: *child_execution_id,
@@ -6141,16 +6183,16 @@ pub(crate) fn seal_artifact_surface_resident_set(
                         });
                     }
                     let parent_after =
-                        if child.identity.role == RetainedSurfaceRasterRole::PropertyEffect {
+                        if child_stamp.identity.role == RetainedSurfaceRasterRole::PropertyEffect {
                             cursor
                         } else {
-                            cursor.max(child.opaque_order_span.end)
+                            cursor.max(child_stamp.opaque_order_span.end)
                         };
                     program_steps.push(ArtifactSurfaceRasterProgramStepStamp::NestedSurface(
                         ArtifactSurfaceNestedRasterDependency {
                             step_index,
                             child_execution_id: *child_execution_id,
-                            child_stamp: Box::new(child.clone()),
+                            child_stamp: Box::new(child_stamp.clone()),
                             parent_opaque_order_before: cursor,
                             parent_opaque_order_after: parent_after,
                         },
@@ -6208,18 +6250,93 @@ pub(crate) fn seal_artifact_surface_resident_set(
         let slot = sealed.get_mut(node.execution_id.index()).ok_or(
             ArtifactSurfaceResidentSealError::MissingPreparedNode(node.execution_id),
         )?;
-        if slot.replace(stamp).is_some() {
+        if slot
+            .replace(SealedArtifactSurfaceResidentEntry {
+                resident_key,
+                stamp,
+            })
+            .is_some()
+        {
             return Err(ArtifactSurfaceResidentSealError::MissingPreparedNode(
                 node.execution_id,
             ));
         }
     }
-    let stamps = sealed
+    let ordered_entries = sealed
         .into_iter()
         .collect::<Option<Vec<_>>>()
         .ok_or(ArtifactSurfaceResidentSealError::NonCanonicalSet)?;
-    artifact_surface_resident_set_is_canonical(&stamps)
-        .then_some(SealedArtifactSurfaceResidentSet { stamps })
+    artifact_surface_resident_set_is_canonical(&ordered_entries)
+        .then_some(SealedArtifactSurfaceResidentSet { ordered_entries })
+        .ok_or(ArtifactSurfaceResidentSealError::NonCanonicalSet)
+}
+
+fn artifact_surface_frame_is_canonical(
+    plan: &PreparedArtifactSurfaceRasterPlan,
+    residents: &SealedArtifactSurfaceResidentSet,
+) -> bool {
+    residents.is_canonical()
+        && plan.nodes.len() == residents.len()
+        && plan
+            .nodes
+            .iter()
+            .zip(residents.ordered_entries())
+            .all(|(node, resident)| {
+                let stamp = resident.stamp();
+                let Some(program) = stamp.artifact_surface_program.as_ref() else {
+                    return false;
+                };
+                node.execution_id == program.execution_id
+                    && node.source == program.source
+                    && node.receiver == program.receiver
+                    && node.identity == stamp.identity
+                    && node.target == stamp.target
+                    && node.geometry == program.geometry
+            })
+}
+
+/// Single-owner preparation capability for the future artifact Surface DAG
+/// executor. It preserves localized paint ops and the exact ordered resident
+/// pairs together; neither half can be independently substituted after seal.
+#[derive(Debug)]
+pub(crate) struct PreparedArtifactSurfaceFrame {
+    raster_plan: PreparedArtifactSurfaceRasterPlan,
+    residents: SealedArtifactSurfaceResidentSet,
+}
+
+impl PreparedArtifactSurfaceFrame {
+    pub(crate) fn raster_plan(&self) -> &PreparedArtifactSurfaceRasterPlan {
+        &self.raster_plan
+    }
+
+    pub(crate) fn residents(&self) -> &SealedArtifactSurfaceResidentSet {
+        &self.residents
+    }
+
+    pub(crate) fn is_canonical(&self) -> bool {
+        artifact_surface_frame_is_canonical(&self.raster_plan, &self.residents)
+    }
+
+    #[allow(dead_code)] // C3b3 executor consumes both halves together.
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        PreparedArtifactSurfaceRasterPlan,
+        SealedArtifactSurfaceResidentSet,
+    ) {
+        (self.raster_plan, self.residents)
+    }
+}
+
+pub(crate) fn seal_prepared_artifact_surface_frame(
+    raster_plan: PreparedArtifactSurfaceRasterPlan,
+) -> Result<PreparedArtifactSurfaceFrame, ArtifactSurfaceResidentSealError> {
+    let residents = seal_artifact_surface_resident_set(&raster_plan)?;
+    artifact_surface_frame_is_canonical(&raster_plan, &residents)
+        .then_some(PreparedArtifactSurfaceFrame {
+            raster_plan,
+            residents,
+        })
         .ok_or(ArtifactSurfaceResidentSealError::NonCanonicalSet)
 }
 
