@@ -40,8 +40,9 @@ use super::surface_dag::{
 };
 use super::{
     EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactTarget, PaintChunkRole,
-    PaintOp, PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope, PreparedImageIdentity,
-    PreparedShadowOp, PreparedSvgIdentity, PreparedTextOp, classify_artifact_transition_sequence,
+    PaintContentRevision, PaintOp, PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope,
+    PreparedImageIdentity, PreparedShadowOp, PreparedSvgIdentity, PreparedTextOp,
+    classify_artifact_transition_sequence,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2246,10 +2247,13 @@ pub(crate) enum RetainedSurfaceResidentKey {
     Surface {
         boundary_root: crate::view::node_arena::NodeKey,
         stable_id: u64,
+        role: RetainedSurfaceRasterRole,
     },
-    /// Inner half of a property-effect boundary. This role-tagged identity is
-    /// intentionally distinct from `Surface`, allowing a sealed same-owner
-    /// Transform -> Effect pair without aliasing either resident allocation.
+    /// Legacy exact-shape ancestor of the generic `Surface { role }` key.
+    ///
+    /// It remains distinct for the retained planner until cutover, but must
+    /// gain no new users. Artifact Surface DAG residents always use
+    /// `Surface { role: PropertyEffect, .. }` instead.
     PropertyEffectSurface {
         boundary_root: crate::view::node_arena::NodeKey,
         stable_id: u64,
@@ -2261,7 +2265,7 @@ pub(crate) enum RetainedSurfaceResidentKey {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum RetainedSurfaceRasterRole {
     Transform,
     RootIsolation,
@@ -2290,6 +2294,10 @@ pub(crate) struct RetainedSurfaceRasterIdentity {
 }
 
 impl RetainedSurfaceRasterIdentity {
+    /// Legacy retained-planner key mapping. The property-effect special case
+    /// preserves its exact-shape resident authority until that planner is
+    /// deleted; artifact Surface DAG residents use
+    /// [`Self::artifact_surface_resident_key`] instead.
     pub(crate) fn resident_key(self) -> RetainedSurfaceResidentKey {
         match self.scroll_content_tile {
             Some(tile) => RetainedSurfaceResidentKey::ScrollContentTile {
@@ -2306,6 +2314,25 @@ impl RetainedSurfaceRasterIdentity {
             None => RetainedSurfaceResidentKey::Surface {
                 boundary_root: self.boundary_root,
                 stable_id: self.stable_id,
+                role: self.role,
+            },
+        }
+    }
+
+    /// Generic artifact Surface DAG resident identity. Role replaces the
+    /// legacy planner's exact-shape property-effect key and prevents
+    /// co-located surface roles on one stable owner from aliasing.
+    fn artifact_surface_resident_key(self) -> RetainedSurfaceResidentKey {
+        match self.scroll_content_tile {
+            Some(tile) => RetainedSurfaceResidentKey::ScrollContentTile {
+                boundary_root: self.boundary_root,
+                stable_id: self.stable_id,
+                index: tile.index,
+            },
+            None => RetainedSurfaceResidentKey::Surface {
+                boundary_root: self.boundary_root,
+                stable_id: self.stable_id,
+                role: self.role,
             },
         }
     }
@@ -2461,6 +2488,21 @@ pub(crate) struct RetainedSurfaceRasterStamp {
     pub(crate) native_scroll_children:
         Vec<super::frame_plan::NativeScrollForestChildRasterDependency>,
     local_clip_generation_semantics: Option<LocalClipGenerationSemantics>,
+    /// Geometry is a pure value, so the artifact path may use a parallel
+    /// geometry type without splitting authority. This stamp is different: it
+    /// participates in resident-pool equality and `resident_key()` reuse, so a
+    /// parallel artifact stamp would create two pools. The private program
+    /// keeps one resident identity while preventing callers from forging an
+    /// artifact-derived raster program.
+    ///
+    /// `Some` and non-empty legacy `ordered_steps` are mutually exclusive at
+    /// canonical validation: legacy constructors always write `None`, while
+    /// the sole artifact sealer constructs this field together with empty
+    /// legacy steps. The program stays off
+    /// [`RetainedSurfaceRasterIdentity`], so changing authority or program
+    /// inputs preserves the resident key and requests a reraster instead of
+    /// reallocating the resident.
+    artifact_surface_program: Option<ArtifactSurfaceRasterProgramStamp>,
 }
 
 impl RetainedSurfaceRasterStamp {
@@ -2516,6 +2558,7 @@ impl RetainedSurfaceRasterStamp {
             property_effect: parts.property_effect,
             native_scroll_children: parts.native_scroll_children,
             local_clip_generation_semantics,
+            artifact_surface_program: None,
         }
     }
 
@@ -2537,6 +2580,70 @@ impl RetainedSurfaceRasterStamp {
         self.local_clip_generation_semantics = semantics;
         self
     }
+
+    #[cfg(test)]
+    pub(crate) fn has_artifact_surface_program_for_test(&self) -> bool {
+        self.artifact_surface_program.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn artifact_surface_program_step_names_for_test(&self) -> Option<Vec<&'static str>> {
+        self.artifact_surface_program.as_ref().map(|program| {
+            program
+                .steps
+                .iter()
+                .map(|step| match step {
+                    ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(_) => "artifact-span",
+                    ArtifactSurfaceRasterProgramStepStamp::NestedSurface(_) => "nested-surface",
+                })
+                .collect()
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn local_clip_generation_semantics_name_for_test(&self) -> Option<&'static str> {
+        self.local_clip_generation_semantics
+            .map(|semantics| match semantics {
+                LocalClipGenerationSemantics::LegacyDetached => "legacy-detached",
+                LocalClipGenerationSemantics::ArtifactLive => "artifact-live",
+            })
+    }
+}
+
+/// Private two-step artifact program stored inside the one retained resident
+/// stamp type. Exact-shape legacy dependencies cannot be represented here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ArtifactSurfaceRasterProgramStamp {
+    execution_id: SurfaceDagExecutionNodeId,
+    source: SurfaceDagNodeId,
+    receiver: SurfaceDagExecutionTargetId,
+    geometry: ArtifactSurfaceCompositeGeometryStamp,
+    steps: Vec<ArtifactSurfaceRasterProgramStepStamp>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ArtifactSurfaceRasterProgramStepStamp {
+    ArtifactSpan(ArtifactSurfaceRasterProgramSpanStamp),
+    NestedSurface(ArtifactSurfaceNestedRasterDependency),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ArtifactSurfaceRasterProgramSpanStamp {
+    step_index: usize,
+    owner_topology: Vec<PaintOwnerSnapshot>,
+    clip_nodes: Vec<ClipNodeSnapshot>,
+    chunks: Vec<RetainedSurfaceChunkStamp>,
+    op_count: usize,
+    opaque_order_span: Range<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ArtifactSurfaceNestedRasterDependency {
+    step_index: usize,
+    child_execution_id: SurfaceDagExecutionNodeId,
+    child_stamp: Box<RetainedSurfaceRasterStamp>,
+    parent_opaque_order_before: u32,
+    parent_opaque_order_after: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4522,6 +4629,10 @@ pub(crate) enum ArtifactSurfaceRasterPlanError {
     InvalidDescriptor(SurfaceDagNodeId),
     TextureBudgetExceeded(SurfaceDagNodeId),
     InvalidCoverageSpan(ArtifactSurfaceRasterTargetId),
+    InvalidOwnerTopology {
+        target: ArtifactSurfaceRasterTargetId,
+        owner: NodeKey,
+    },
     InvalidChunkBounds {
         target: ArtifactSurfaceRasterTargetId,
         chunk_index: usize,
@@ -4562,6 +4673,9 @@ struct ValidatedArtifactSurfaceDagProgram {
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedArtifactSurfaceRasterChunk {
     source: PaintChunkRasterIdentity,
+    /// Copied from `PaintChunk::content_revision` before the artifact is
+    /// consumed. These are artifact facts, not new host inputs.
+    content_revision: PaintContentRevision,
     localized_bounds_bits: [u32; 4],
     localized_state: PropertyTreeState,
     localized_payload: PaintPayloadIdentity,
@@ -4571,6 +4685,10 @@ pub(crate) struct PreparedArtifactSurfaceRasterChunk {
 impl PreparedArtifactSurfaceRasterChunk {
     pub(crate) fn source(&self) -> &PaintChunkRasterIdentity {
         &self.source
+    }
+
+    pub(crate) fn content_revision(&self) -> PaintContentRevision {
+        self.content_revision
     }
 
     pub(crate) fn localized_bounds_bits(&self) -> [u32; 4] {
@@ -4594,6 +4712,8 @@ impl PreparedArtifactSurfaceRasterChunk {
 pub(crate) struct PreparedArtifactSurfaceRasterSpan {
     chunk_range: Range<usize>,
     op_range: Range<usize>,
+    owner_topology: Vec<PaintOwnerSnapshot>,
+    opaque_order_count: u32,
     local_clips: Vec<ClipNodeSnapshot>,
     chunks: Vec<PreparedArtifactSurfaceRasterChunk>,
 }
@@ -4605,6 +4725,14 @@ impl PreparedArtifactSurfaceRasterSpan {
 
     pub(crate) fn op_range(&self) -> Range<usize> {
         self.op_range.clone()
+    }
+
+    pub(crate) fn owner_topology(&self) -> &[PaintOwnerSnapshot] {
+        &self.owner_topology
+    }
+
+    pub(crate) fn opaque_order_count(&self) -> u32 {
+        self.opaque_order_count
     }
 
     pub(crate) fn local_clips(&self) -> &[ClipNodeSnapshot] {
@@ -4893,9 +5021,82 @@ fn append_bounds(accumulated: &mut Option<[u32; 4]>, next: [u32; 4]) -> Option<(
     Some(())
 }
 
+fn artifact_surface_span_owner_topology(
+    artifact: &PaintArtifact,
+    target: ArtifactSurfaceRasterTargetId,
+    boundary_root: Option<NodeKey>,
+    chunk_owners: impl IntoIterator<Item = NodeKey>,
+) -> Result<Vec<PaintOwnerSnapshot>, ArtifactSurfaceRasterPlanError> {
+    let Some(boundary_root) = boundary_root else {
+        return Ok(Vec::new());
+    };
+    let owners = artifact
+        .owner_nodes
+        .iter()
+        .copied()
+        .map(|snapshot| (snapshot.owner, snapshot))
+        .collect::<FxHashMap<_, _>>();
+    let mut required = FxHashSet::default();
+    for chunk_owner in chunk_owners {
+        let mut cursor = chunk_owner;
+        let mut reached_boundary = false;
+        for _ in 0..=artifact.owner_nodes.len() {
+            let snapshot = owners.get(&cursor).copied().ok_or(
+                ArtifactSurfaceRasterPlanError::InvalidOwnerTopology {
+                    target,
+                    owner: cursor,
+                },
+            )?;
+            required.insert(cursor);
+            if cursor == boundary_root {
+                reached_boundary = true;
+                break;
+            }
+            cursor =
+                snapshot
+                    .parent
+                    .ok_or(ArtifactSurfaceRasterPlanError::InvalidOwnerTopology {
+                        target,
+                        owner: chunk_owner,
+                    })?;
+        }
+        if !reached_boundary {
+            return Err(ArtifactSurfaceRasterPlanError::InvalidOwnerTopology {
+                target,
+                owner: chunk_owner,
+            });
+        }
+    }
+    let topology = artifact
+        .owner_nodes
+        .iter()
+        .copied()
+        .filter(|snapshot| required.contains(&snapshot.owner))
+        .map(|snapshot| PaintOwnerSnapshot {
+            parent: (snapshot.owner != boundary_root)
+                .then_some(snapshot.parent)
+                .flatten(),
+            ..snapshot
+        })
+        .collect::<Vec<_>>();
+    if topology.len() != required.len()
+        || topology
+            .iter()
+            .find(|snapshot| snapshot.owner == boundary_root)
+            .is_none_or(|snapshot| snapshot.parent.is_some())
+    {
+        return Err(ArtifactSurfaceRasterPlanError::InvalidOwnerTopology {
+            target,
+            owner: boundary_root,
+        });
+    }
+    Ok(topology)
+}
+
 fn prepare_artifact_surface_span(
     artifact: &PaintArtifact,
     target: ArtifactSurfaceRasterTargetId,
+    boundary_root: Option<NodeKey>,
     span: &ArtifactSurfaceCoverageSpan,
     delta: [f32; 2],
 ) -> Result<PreparedArtifactSurfaceRasterSpan, ArtifactSurfaceRasterPlanError> {
@@ -4911,8 +5112,15 @@ fn prepare_artifact_surface_span(
     {
         return Err(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target));
     }
+    let owner_topology = artifact_surface_span_owner_topology(
+        artifact,
+        target,
+        boundary_root,
+        chunks.iter().map(|chunk| chunk.owner),
+    )?;
 
     let mut prepared = Vec::with_capacity(chunks.len());
+    let mut opaque_order_count = 0_u32;
     for (local_index, (chunk, localized_state)) in
         chunks.iter().zip(span.localized_states()).enumerate()
     {
@@ -4935,6 +5143,12 @@ fn prepare_artifact_surface_span(
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        opaque_order_count = localized_ops
+            .iter()
+            .try_fold(opaque_order_count, |count, op| {
+                count.checked_add(retained_surface_op_opaque_order_count(op))
+            })
+            .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?;
         let localized_payload = chunk
             .payload_identity
             .rebuild_from_localized_ops(&localized_ops)
@@ -4960,6 +5174,7 @@ fn prepare_artifact_surface_span(
                 ],
                 payload_identity: chunk.payload_identity.clone(),
             },
+            content_revision: chunk.content_revision,
             localized_bounds_bits,
             localized_state: *localized_state,
             localized_payload,
@@ -4969,6 +5184,8 @@ fn prepare_artifact_surface_span(
     Ok(PreparedArtifactSurfaceRasterSpan {
         chunk_range,
         op_range,
+        owner_topology,
+        opaque_order_count,
         local_clips: span.local_clips().to_vec(),
         chunks: prepared,
     })
@@ -5204,6 +5421,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                     let prepared = prepare_artifact_surface_span(
                         &program.artifact,
                         ArtifactSurfaceRasterTargetId::Surface(source),
+                        Some(node.target()),
                         span,
                         delta,
                     )?;
@@ -5361,11 +5579,15 @@ fn prepare_artifact_surface_raster_plan_from_program(
         let mut steps = Vec::with_capacity(root.steps().len());
         for step in root.steps() {
             match step {
-                ArtifactSurfaceCoverageStep::ArtifactSpan(span) => {
-                    steps.push(PreparedArtifactSurfaceRasterStep::ArtifactSpan(
-                        prepare_artifact_surface_span(&program.artifact, target, span, [0.0, 0.0])?,
-                    ))
-                }
+                ArtifactSurfaceCoverageStep::ArtifactSpan(span) => steps.push(
+                    PreparedArtifactSurfaceRasterStep::ArtifactSpan(prepare_artifact_surface_span(
+                        &program.artifact,
+                        target,
+                        None,
+                        span,
+                        [0.0, 0.0],
+                    )?),
+                ),
                 ArtifactSurfaceCoverageStep::NestedSurface(child_source) => {
                     let child_execution = program
                         .execution_order
@@ -5412,6 +5634,593 @@ pub(crate) fn prepare_artifact_surface_raster_plan(
     let program = validate_artifact_surface_dag_program(artifact)
         .map_err(ArtifactSurfaceRasterPlanError::ArtifactProgram)?;
     prepare_artifact_surface_raster_plan_from_program(program, context)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtifactSurfaceResidentSealError {
+    MissingPreparedNode(SurfaceDagExecutionNodeId),
+    DuplicateResidentKey(RetainedSurfaceResidentKey),
+    InvalidArtifactSpan {
+        surface: SurfaceDagNodeId,
+        step_index: usize,
+    },
+    InvalidNestedSurface {
+        parent: SurfaceDagNodeId,
+        child: SurfaceDagExecutionNodeId,
+    },
+    InvalidClipClosure(SurfaceDagNodeId),
+    NonCanonicalSet,
+}
+
+/// Graph-inert full-set identity for every resident in one artifact Surface
+/// DAG. It deliberately reuses [`RetainedSurfaceRasterStamp`], because the
+/// resident pool and [`RetainedSurfaceResidentKey`] type must remain a single
+/// authority across legacy and artifact producers. Artifact residents use the
+/// generic role-tagged `Surface` variant; the legacy property-effect variant
+/// remains confined to the retained planner until cutover.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SealedArtifactSurfaceResidentSet {
+    stamps: Vec<RetainedSurfaceRasterStamp>,
+}
+
+impl SealedArtifactSurfaceResidentSet {
+    pub(crate) fn stamps(&self) -> &[RetainedSurfaceRasterStamp] {
+        &self.stamps
+    }
+
+    pub(crate) fn is_canonical(&self) -> bool {
+        artifact_surface_resident_set_is_canonical(&self.stamps)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resident_keys_for_test(&self) -> Vec<RetainedSurfaceResidentKey> {
+        self.stamps
+            .iter()
+            .map(|stamp| stamp.identity.artifact_surface_resident_key())
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_legacy_step_into_first_artifact_program_for_test(&mut self) -> bool {
+        for stamp in &mut self.stamps {
+            let Some(program) = stamp.artifact_surface_program.as_ref() else {
+                continue;
+            };
+            let Some(ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(span)) =
+                program.steps.first()
+            else {
+                continue;
+            };
+            stamp
+                .ordered_steps
+                .push(RetainedSurfaceRasterStepStamp::ArtifactSpan(
+                    RetainedSurfaceArtifactSpanStamp {
+                        step_index: span.step_index,
+                        owner_topology: span.owner_topology.clone(),
+                        clip_nodes: span.clip_nodes.clone(),
+                        chunks: span.chunks.clone(),
+                        op_count: span.op_count,
+                        opaque_order_span: span.opaque_order_span.clone(),
+                        scroll_placement_normalized_owners: Vec::new(),
+                    },
+                ));
+            return true;
+        }
+        false
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_first_span_boundary_owner_for_test(&mut self) -> bool {
+        for stamp in &mut self.stamps {
+            let Some(program) = stamp.artifact_surface_program.as_mut() else {
+                continue;
+            };
+            for step in &mut program.steps {
+                let ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(span) = step else {
+                    continue;
+                };
+                let boundary = stamp.identity.boundary_root;
+                let before = span.owner_topology.len();
+                span.owner_topology
+                    .retain(|snapshot| snapshot.owner != boundary);
+                return span.owner_topology.len() != before;
+            }
+        }
+        false
+    }
+
+    #[cfg(test)]
+    pub(crate) fn zero_first_span_topology_revision_for_test(&mut self) -> bool {
+        for stamp in &mut self.stamps {
+            let Some(program) = stamp.artifact_surface_program.as_mut() else {
+                continue;
+            };
+            for step in &mut program.steps {
+                let ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(span) = step else {
+                    continue;
+                };
+                let Some(chunk) = span.chunks.first_mut() else {
+                    continue;
+                };
+                chunk.topology_revision = 0;
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(test)]
+    pub(crate) fn redirect_first_nested_surface_to_parent_for_test(&mut self) -> bool {
+        for stamp in &mut self.stamps {
+            let Some(program) = stamp.artifact_surface_program.as_mut() else {
+                continue;
+            };
+            for step in &mut program.steps {
+                let ArtifactSurfaceRasterProgramStepStamp::NestedSurface(dependency) = step else {
+                    continue;
+                };
+                dependency.child_execution_id = program.execution_id;
+                return true;
+            }
+        }
+        false
+    }
+}
+
+fn artifact_surface_program_geometry_matches(
+    identity: RetainedSurfaceRasterIdentity,
+    target: &RetainedSurfaceRasterInputs,
+    geometry: ArtifactSurfaceCompositeGeometryStamp,
+) -> bool {
+    let source_bounds_bits = match (identity.role, geometry) {
+        (
+            RetainedSurfaceRasterRole::Transform,
+            ArtifactSurfaceCompositeGeometryStamp::Transform {
+                source_bounds_bits, ..
+            },
+        )
+        | (
+            RetainedSurfaceRasterRole::PropertyEffect,
+            ArtifactSurfaceCompositeGeometryStamp::Effect {
+                source_bounds_bits, ..
+            },
+        )
+        | (
+            RetainedSurfaceRasterRole::ScrollContent,
+            ArtifactSurfaceCompositeGeometryStamp::ScrollContent {
+                source_bounds_bits, ..
+            },
+        ) => source_bounds_bits,
+        _ => return false,
+    };
+    identity.scroll_content_tile.is_none()
+        && source_bounds_bits == target.source_bounds_bits
+        && target.has_canonical_descriptor_pair_for(identity)
+}
+
+fn artifact_surface_program_geometry_receiver_clip(
+    geometry: ArtifactSurfaceCompositeGeometryStamp,
+) -> Option<ClipNodeId> {
+    match geometry {
+        ArtifactSurfaceCompositeGeometryStamp::Transform { receiver_clip, .. }
+        | ArtifactSurfaceCompositeGeometryStamp::Effect { receiver_clip, .. }
+        | ArtifactSurfaceCompositeGeometryStamp::ScrollContent { receiver_clip, .. } => {
+            receiver_clip
+        }
+    }
+}
+
+fn artifact_surface_owner_topology_is_canonical(
+    topology: &[PaintOwnerSnapshot],
+    boundary_root: NodeKey,
+    chunks: &[RetainedSurfaceChunkStamp],
+) -> bool {
+    if topology.is_empty() || chunks.is_empty() {
+        return false;
+    }
+    let mut owners = FxHashMap::default();
+    let mut ordinals = FxHashMap::default();
+    for (ordinal, snapshot) in topology.iter().copied().enumerate() {
+        if snapshot.owner.is_null()
+            || owners.insert(snapshot.owner, snapshot.parent).is_some()
+            || ordinals.insert(snapshot.owner, ordinal).is_some()
+            || snapshot.owner == boundary_root && snapshot.parent.is_some()
+        {
+            return false;
+        }
+    }
+    if owners.get(&boundary_root) != Some(&None)
+        || owners.values().filter(|parent| parent.is_none()).count() != 1
+    {
+        return false;
+    }
+    for snapshot in topology {
+        if snapshot.owner == boundary_root {
+            continue;
+        }
+        let Some(parent) = snapshot.parent else {
+            return false;
+        };
+        if ordinals
+            .get(&parent)
+            .is_none_or(|parent_ordinal| *parent_ordinal >= ordinals[&snapshot.owner])
+        {
+            return false;
+        }
+    }
+    let mut referenced = FxHashSet::default();
+    for chunk in chunks {
+        let mut cursor = chunk.owner;
+        let mut reached_boundary = false;
+        for _ in 0..=topology.len() {
+            referenced.insert(cursor);
+            if cursor == boundary_root {
+                reached_boundary = true;
+                break;
+            }
+            let Some(parent) = owners.get(&cursor).copied().flatten() else {
+                return false;
+            };
+            cursor = parent;
+        }
+        if !reached_boundary {
+            return false;
+        }
+    }
+    referenced.len() == owners.len()
+}
+
+fn artifact_surface_program_span_is_canonical(
+    span: &ArtifactSurfaceRasterProgramSpanStamp,
+    boundary_root: NodeKey,
+    expected_step_index: usize,
+    expected_start: u32,
+) -> bool {
+    if span.step_index != expected_step_index
+        || span.opaque_order_span.start != expected_start
+        || span.opaque_order_span.end < expected_start
+        || span.op_count
+            != span
+                .chunks
+                .iter()
+                .map(|chunk| chunk.op_count)
+                .sum::<usize>()
+        || !artifact_surface_owner_topology_is_canonical(
+            &span.owner_topology,
+            boundary_root,
+            &span.chunks,
+        )
+    {
+        return false;
+    }
+    let mut ids = FxHashSet::default();
+    let mut clips = FxHashSet::default();
+    span.clip_nodes
+        .iter()
+        .all(|clip| clip.id.owner == clip.owner && clip.generation != 0 && clips.insert(clip.id))
+        && span.chunks.iter().all(|chunk| {
+            let bounds = chunk.bounds_bits.map(f32::from_bits);
+            chunk.id.owner == chunk.owner
+                && ids.insert(chunk.id)
+                && bounds.into_iter().all(f32::is_finite)
+                && bounds[2] >= 0.0
+                && bounds[3] >= 0.0
+                && chunk.topology_revision != 0
+                && if chunk.owner == boundary_root {
+                    chunk.non_boundary_self_paint_revision.is_none()
+                        && chunk.non_boundary_composite_revision.is_none()
+                } else {
+                    chunk
+                        .non_boundary_self_paint_revision
+                        .is_some_and(|revision| revision != 0)
+                        && chunk
+                            .non_boundary_composite_revision
+                            .is_some_and(|revision| revision != 0)
+                }
+        })
+}
+
+fn artifact_surface_resident_set_is_canonical(stamps: &[RetainedSurfaceRasterStamp]) -> bool {
+    let mut resident_keys = FxHashSet::default();
+    let mut references = vec![0_usize; stamps.len()];
+    for (ordinal, stamp) in stamps.iter().enumerate() {
+        let Some(program) = stamp.artifact_surface_program.as_ref() else {
+            return false;
+        };
+        if program.execution_id.index() != ordinal
+            || !stamp.ordered_steps.is_empty()
+            || stamp.scroll_host.is_some()
+            || stamp.property_effect.is_some()
+            || !stamp.native_scroll_children.is_empty()
+            || !resident_keys.insert(stamp.identity.artifact_surface_resident_key())
+            || !artifact_surface_program_geometry_matches(
+                stamp.identity,
+                &stamp.target,
+                program.geometry,
+            )
+            || stamp.clip_nodes.iter().any(|clip| clip.generation == 0)
+            || match stamp.local_clip_generation_semantics {
+                Some(LocalClipGenerationSemantics::ArtifactLive) => {
+                    stamp.identity.role != RetainedSurfaceRasterRole::ScrollContent
+                        || stamp.clip_nodes.is_empty()
+                }
+                None => {
+                    stamp.identity.role == RetainedSurfaceRasterRole::ScrollContent
+                        && !stamp.clip_nodes.is_empty()
+                }
+                Some(LocalClipGenerationSemantics::LegacyDetached) => true,
+            }
+        {
+            return false;
+        }
+
+        let mut cursor = 0_u32;
+        let mut owner_topology = Vec::new();
+        let mut span_clips = Vec::new();
+        let mut seen_span_clips = FxHashSet::default();
+        let mut chunks = Vec::new();
+        let mut op_count = 0_usize;
+        for (step_index, step) in program.steps.iter().enumerate() {
+            match step {
+                ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(span) => {
+                    if !artifact_surface_program_span_is_canonical(
+                        span,
+                        stamp.identity.boundary_root,
+                        step_index,
+                        cursor,
+                    ) {
+                        return false;
+                    }
+                    cursor = span.opaque_order_span.end;
+                    owner_topology.extend(span.owner_topology.iter().copied());
+                    for clip in &span.clip_nodes {
+                        if seen_span_clips.insert(clip.id) {
+                            span_clips.push(*clip);
+                        }
+                    }
+                    chunks.extend(span.chunks.iter().cloned());
+                    op_count = match op_count.checked_add(span.op_count) {
+                        Some(count) => count,
+                        None => return false,
+                    };
+                }
+                ArtifactSurfaceRasterProgramStepStamp::NestedSurface(dependency) => {
+                    let child_index = dependency.child_execution_id.index();
+                    let Some(child) = stamps.get(child_index) else {
+                        return false;
+                    };
+                    let Some(child_program) = child.artifact_surface_program.as_ref() else {
+                        return false;
+                    };
+                    let expected_after =
+                        if child.identity.role == RetainedSurfaceRasterRole::PropertyEffect {
+                            cursor
+                        } else {
+                            cursor.max(child.opaque_order_span.end)
+                        };
+                    if dependency.step_index != step_index
+                        || child_index <= ordinal
+                        || dependency.parent_opaque_order_before != cursor
+                        || dependency.parent_opaque_order_after != expected_after
+                        || dependency.child_stamp.as_ref() != child
+                        || child_program.receiver
+                            != SurfaceDagExecutionTargetId::Surface(program.execution_id)
+                    {
+                        return false;
+                    }
+                    references[child_index] = match references[child_index].checked_add(1) {
+                        Some(count) => count,
+                        None => return false,
+                    };
+                    cursor = expected_after;
+                }
+            }
+        }
+        if stamp.opaque_order_span != (0..cursor)
+            || stamp.owner_topology != owner_topology
+            || stamp.clip_nodes != span_clips
+            || stamp.chunks != chunks
+            || stamp.op_count != op_count
+        {
+            return false;
+        }
+    }
+    stamps.iter().enumerate().all(|(ordinal, stamp)| {
+        let program = stamp
+            .artifact_surface_program
+            .as_ref()
+            .expect("checked above");
+        match program.receiver {
+            SurfaceDagExecutionTargetId::SceneRoot(_) => references[ordinal] == 0,
+            SurfaceDagExecutionTargetId::Surface(_) => references[ordinal] == 1,
+        }
+    })
+}
+
+fn seal_artifact_surface_program_span(
+    surface: SurfaceDagNodeId,
+    boundary_root: NodeKey,
+    step_index: usize,
+    start: u32,
+    span: &PreparedArtifactSurfaceRasterSpan,
+) -> Result<ArtifactSurfaceRasterProgramSpanStamp, ArtifactSurfaceResidentSealError> {
+    let end = start.checked_add(span.opaque_order_count).ok_or(
+        ArtifactSurfaceResidentSealError::InvalidArtifactSpan {
+            surface,
+            step_index,
+        },
+    )?;
+    let chunks = span
+        .chunks
+        .iter()
+        .map(|chunk| RetainedSurfaceChunkStamp {
+            id: chunk.source.id,
+            owner: chunk.source.owner,
+            bounds_bits: chunk.localized_bounds_bits,
+            clip: chunk.localized_state.clip,
+            non_boundary_self_paint_revision: (chunk.source.owner != boundary_root)
+                .then_some(chunk.content_revision.self_paint_revision),
+            topology_revision: chunk.content_revision.topology_revision,
+            non_boundary_composite_revision: (chunk.source.owner != boundary_root)
+                .then_some(chunk.content_revision.composite_revision),
+            payload_identity: chunk.localized_payload.clone(),
+            op_count: chunk.localized_ops.len(),
+        })
+        .collect::<Vec<_>>();
+    let sealed = ArtifactSurfaceRasterProgramSpanStamp {
+        step_index,
+        owner_topology: span.owner_topology.clone(),
+        clip_nodes: span.local_clips.clone(),
+        op_count: chunks.iter().map(|chunk| chunk.op_count).sum(),
+        chunks,
+        opaque_order_span: start..end,
+    };
+    artifact_surface_program_span_is_canonical(&sealed, boundary_root, step_index, start)
+        .then_some(sealed)
+        .ok_or(ArtifactSurfaceResidentSealError::InvalidArtifactSpan {
+            surface,
+            step_index,
+        })
+}
+
+/// Consumes a graph-inert raster plan and seals one resident stamp per
+/// execution node. This remains a zero-production-consumer contract seam; the
+/// pool transaction and executor adopt it together in the wiring batch.
+pub(crate) fn seal_artifact_surface_resident_set(
+    plan: PreparedArtifactSurfaceRasterPlan,
+) -> Result<SealedArtifactSurfaceResidentSet, ArtifactSurfaceResidentSealError> {
+    let mut sealed: Vec<Option<RetainedSurfaceRasterStamp>> = vec![None; plan.nodes.len()];
+    let mut resident_keys = FxHashSet::default();
+    for node in plan.nodes.iter().rev() {
+        let mut cursor = 0_u32;
+        let mut program_steps = Vec::with_capacity(node.steps.len());
+        let mut owner_topology = Vec::new();
+        let mut chunks = Vec::new();
+        let mut op_count = 0_usize;
+        for (step_index, step) in node.steps.iter().enumerate() {
+            match step {
+                PreparedArtifactSurfaceRasterStep::ArtifactSpan(span) => {
+                    let stamp = seal_artifact_surface_program_span(
+                        node.source,
+                        node.identity.boundary_root,
+                        step_index,
+                        cursor,
+                        span,
+                    )?;
+                    cursor = stamp.opaque_order_span.end;
+                    owner_topology.extend(stamp.owner_topology.iter().copied());
+                    chunks.extend(stamp.chunks.iter().cloned());
+                    op_count = op_count.checked_add(stamp.op_count).ok_or(
+                        ArtifactSurfaceResidentSealError::InvalidArtifactSpan {
+                            surface: node.source,
+                            step_index,
+                        },
+                    )?;
+                    program_steps.push(ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(stamp));
+                }
+                PreparedArtifactSurfaceRasterStep::NestedSurface(child_execution_id) => {
+                    let child = sealed
+                        .get(child_execution_id.index())
+                        .and_then(Option::as_ref)
+                        .ok_or(ArtifactSurfaceResidentSealError::InvalidNestedSurface {
+                            parent: node.source,
+                            child: *child_execution_id,
+                        })?;
+                    let child_program = child.artifact_surface_program.as_ref().ok_or(
+                        ArtifactSurfaceResidentSealError::InvalidNestedSurface {
+                            parent: node.source,
+                            child: *child_execution_id,
+                        },
+                    )?;
+                    if child_program.receiver
+                        != SurfaceDagExecutionTargetId::Surface(node.execution_id)
+                    {
+                        return Err(ArtifactSurfaceResidentSealError::InvalidNestedSurface {
+                            parent: node.source,
+                            child: *child_execution_id,
+                        });
+                    }
+                    let parent_after =
+                        if child.identity.role == RetainedSurfaceRasterRole::PropertyEffect {
+                            cursor
+                        } else {
+                            cursor.max(child.opaque_order_span.end)
+                        };
+                    program_steps.push(ArtifactSurfaceRasterProgramStepStamp::NestedSurface(
+                        ArtifactSurfaceNestedRasterDependency {
+                            step_index,
+                            child_execution_id: *child_execution_id,
+                            child_stamp: Box::new(child.clone()),
+                            parent_opaque_order_before: cursor,
+                            parent_opaque_order_after: parent_after,
+                        },
+                    ));
+                    cursor = parent_after;
+                }
+            }
+        }
+        let clip_nodes = node
+            .clip_closure
+            .as_ref()
+            .map(|closure| closure.local_clips().to_vec())
+            .unwrap_or_default();
+        if clip_nodes.iter().any(|clip| clip.generation == 0)
+            || node.clip_closure.as_ref().is_some_and(|closure| {
+                artifact_surface_program_geometry_receiver_clip(node.geometry)
+                    != closure.receiver_clip()
+            })
+        {
+            return Err(ArtifactSurfaceResidentSealError::InvalidClipClosure(
+                node.source,
+            ));
+        }
+        let local_clip_generation_semantics = (node.identity.role
+            == RetainedSurfaceRasterRole::ScrollContent
+            && !clip_nodes.is_empty())
+        .then_some(LocalClipGenerationSemantics::ArtifactLive);
+        let stamp = RetainedSurfaceRasterStamp {
+            identity: node.identity,
+            target: node.target.clone(),
+            owner_topology,
+            clip_nodes,
+            chunks,
+            op_count,
+            opaque_order_span: 0..cursor,
+            ordered_steps: Vec::new(),
+            scroll_host: None,
+            property_effect: None,
+            native_scroll_children: Vec::new(),
+            local_clip_generation_semantics,
+            artifact_surface_program: Some(ArtifactSurfaceRasterProgramStamp {
+                execution_id: node.execution_id,
+                source: node.source,
+                receiver: node.receiver,
+                geometry: node.geometry,
+                steps: program_steps,
+            }),
+        };
+        let resident_key = stamp.identity.artifact_surface_resident_key();
+        if !resident_keys.insert(resident_key) {
+            return Err(ArtifactSurfaceResidentSealError::DuplicateResidentKey(
+                resident_key,
+            ));
+        }
+        let slot = sealed.get_mut(node.execution_id.index()).ok_or(
+            ArtifactSurfaceResidentSealError::MissingPreparedNode(node.execution_id),
+        )?;
+        if slot.replace(stamp).is_some() {
+            return Err(ArtifactSurfaceResidentSealError::MissingPreparedNode(
+                node.execution_id,
+            ));
+        }
+    }
+    let stamps = sealed
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or(ArtifactSurfaceResidentSealError::NonCanonicalSet)?;
+    artifact_surface_resident_set_is_canonical(&stamps)
+        .then_some(SealedArtifactSurfaceResidentSet { stamps })
+        .ok_or(ArtifactSurfaceResidentSealError::NonCanonicalSet)
 }
 
 impl ValidatedSingleTargetSurfaceDagFrame {
@@ -8484,31 +9293,33 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
     validate(stamp, initial_depth)
 }
 
+fn retained_surface_op_opaque_order_count(op: &PaintOp) -> u32 {
+    match op {
+        PaintOp::DrawRect(op) => u32::from(retained_surface_rect_is_opaque(&op.params, op.mode)),
+        PaintOp::PreparedInlineIfcDecoration(op) => {
+            u32::from(retained_surface_rect_is_opaque(
+                &op.fill,
+                crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
+            )) + op.border.as_ref().map_or(0, |border| {
+                u32::from(retained_surface_rect_is_opaque(
+                    border,
+                    crate::view::render_pass::draw_rect_pass::RectRenderMode::BorderOnly,
+                ))
+            })
+        }
+        PaintOp::PreparedShadow(_)
+        | PaintOp::PreparedScrollbarOverlay(_)
+        | PaintOp::PreparedText(_)
+        | PaintOp::PreparedImage(_)
+        | PaintOp::PreparedSvg(_) => 0,
+    }
+}
+
 fn retained_surface_opaque_order_count(artifact: &PaintArtifact) -> u32 {
     artifact
         .ops
         .iter()
-        .map(|op| match op {
-            PaintOp::DrawRect(op) => {
-                u32::from(retained_surface_rect_is_opaque(&op.params, op.mode))
-            }
-            PaintOp::PreparedInlineIfcDecoration(op) => {
-                u32::from(retained_surface_rect_is_opaque(
-                    &op.fill,
-                    crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
-                )) + op.border.as_ref().map_or(0, |border| {
-                    u32::from(retained_surface_rect_is_opaque(
-                        border,
-                        crate::view::render_pass::draw_rect_pass::RectRenderMode::BorderOnly,
-                    ))
-                })
-            }
-            PaintOp::PreparedShadow(_)
-            | PaintOp::PreparedScrollbarOverlay(_)
-            | PaintOp::PreparedText(_)
-            | PaintOp::PreparedImage(_)
-            | PaintOp::PreparedSvg(_) => 0,
-        })
+        .map(retained_surface_op_opaque_order_count)
         .fold(0, u32::saturating_add)
 }
 

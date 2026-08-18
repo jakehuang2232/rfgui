@@ -9,7 +9,7 @@ use crate::view::paint::{
     record_closed_single_target_frame_artifact,
 };
 
-fn scroll_surface_artifact() -> PaintArtifact {
+pub(super) fn scroll_surface_artifact() -> PaintArtifact {
     use crate::view::base_component::{
         ScrollAxisSnapshot, ScrollContentsClipWitness, ScrollbarInteractionWitness,
         ScrollbarOverlayWitness, ScrollbarPaintStateWitness,
@@ -157,7 +157,7 @@ fn scroll_surface_artifact() -> PaintArtifact {
     artifact
 }
 
-fn depth_four_effect_artifact() -> PaintArtifact {
+pub(super) fn depth_four_effect_artifact() -> PaintArtifact {
     use crate::view::compositor::property_tree::{EffectNodeId, EffectNodeSnapshot};
 
     let mut arena = new_test_arena();
@@ -268,7 +268,7 @@ fn depth_four_effect_artifact() -> PaintArtifact {
     artifact
 }
 
-fn raster_context() -> ArtifactSurfaceRasterContext {
+pub(super) fn raster_context() -> ArtifactSurfaceRasterContext {
     ArtifactSurfaceRasterContext::new(
         2.0,
         wgpu::TextureFormat::Bgra8Unorm,
@@ -633,6 +633,7 @@ fn artifact_surface_raster_plan_error_taxonomy_is_exhaustive() {
             ArtifactSurfaceRasterPlanError::InvalidDescriptor(_) => "invalid-descriptor",
             ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_) => "texture-budget",
             ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(_) => "coverage-span",
+            ArtifactSurfaceRasterPlanError::InvalidOwnerTopology { .. } => "owner-topology",
             ArtifactSurfaceRasterPlanError::InvalidChunkBounds { .. } => "chunk-bounds",
             ArtifactSurfaceRasterPlanError::Localization { .. } => "localization",
             ArtifactSurfaceRasterPlanError::LocalizedPayload { .. } => "payload",
