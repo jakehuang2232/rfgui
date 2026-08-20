@@ -37,10 +37,8 @@ fn strict_structural_parity_covers_asymmetric_border_radius_and_colors() {
 
 #[test]
 fn strict_structural_parity_covers_background_and_border_gradients() {
-    let snapshots = assert_whole_frame_structural_parity(
-        prepared_gradient_tree,
-        PaintParityConfig::default(),
-    );
+    let snapshots =
+        assert_whole_frame_structural_parity(prepared_gradient_tree, PaintParityConfig::default());
     assert_eq!(snapshots.len(), 2);
     assert!(snapshots[0].gradient.is_some());
     assert!(snapshots[1].border_gradient.is_some());
@@ -84,8 +82,7 @@ fn strict_structural_parity_covers_target_size_format_and_scale() {
     ] {
         let snapshots = assert_whole_frame_structural_parity(
             || {
-                let (arena, root, _, _) =
-                    prepared_leaf(106, Color::rgb(20, 40, 60), 1.0, false);
+                let (arena, root, _, _) = prepared_leaf(106, Color::rgb(20, 40, 60), 1.0, false);
                 (arena, vec![root])
             },
             config,

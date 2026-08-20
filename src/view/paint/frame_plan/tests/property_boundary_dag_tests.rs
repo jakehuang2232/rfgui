@@ -553,8 +553,7 @@ fn property_boundary_dag_rejects_unprepared_inline_neutral_wrapper_with_typed_bl
         .find_by_stable_id(0xb4_0021)
         .expect("outer neutral wrapper");
     {
-        let mut element =
-            crate::view::test_support::get_element_mut::<Element>(&arena, wrapper);
+        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, wrapper);
         element.replace_style(Style::new());
         element.set_background_color_value(Color::rgb(12, 24, 36));
         element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));

@@ -137,8 +137,7 @@ fn image_and_svg_inherited_transform_are_authorized_only_by_surface_recording() 
     assert!(graph.pass_descriptors().is_empty());
 
     let mut legacy_graph = FrameGraph::new();
-    let (legacy_ctx, legacy_parent) =
-        parent_context_with_clear(&mut legacy_graph, 160, 120, 1.0);
+    let (legacy_ctx, legacy_parent) = parent_context_with_clear(&mut legacy_graph, 160, 120, 1.0);
     arena
         .with_element_taken(root, |element, arena| {
             element.build(&mut legacy_graph, arena, legacy_ctx)
@@ -152,8 +151,7 @@ fn image_and_svg_inherited_transform_are_authorized_only_by_surface_recording() 
         .expect("legacy Image/SVG sink");
 
     let mut forced_graph = FrameGraph::new();
-    let (forced_ctx, forced_parent) =
-        parent_context_with_clear(&mut forced_graph, 160, 120, 1.0);
+    let (forced_ctx, forced_parent) = parent_context_with_clear(&mut forced_graph, 160, 120, 1.0);
     let mut viewport = Viewport::new();
     super::super::super::execute_forced_transform_surface_for_test(
         &mut viewport,

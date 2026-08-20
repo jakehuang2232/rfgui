@@ -58,8 +58,7 @@ fn deferred_image_and_svg_effects_record_once_late_and_compile() {
                 );
                 if state == "ready" {
                     let media_draws = graph
-                        .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>(
-                        )
+                        .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
                         .iter()
                         .filter(|pass| pass.test_snapshot().sampled_source.is_some())
                         .count();
@@ -284,10 +283,7 @@ fn nested_text_image_and_svg_effect_owners_seal_prepare_and_emit() {
                     .expect("native nested effect transaction witness");
                 assert!(witness.surfaces.iter().any(|surface| {
                     surface.boundary_root == child
-                        && matches!(
-                            surface.kind,
-                            PropertySceneTransactionSurfaceKind::Effect(_)
-                        )
+                        && matches!(surface.kind, PropertySceneTransactionSurfaceKind::Effect(_))
                 }));
 
                 let mut viewport = Viewport::new();
@@ -400,8 +396,7 @@ fn native_nested_effect_geometry_identity_resource_and_topology_drift_fail_close
     }
 
     let mut geometry_drift = plan.clone();
-    let SurfaceKind::NestedIsolation(effect) = &mut first_effect(&mut geometry_drift).kind
-    else {
+    let SurfaceKind::NestedIsolation(effect) = &mut first_effect(&mut geometry_drift).kind else {
         panic!("nested isolation")
     };
     effect.geometry.source_bounds.width += 1.0;
@@ -418,8 +413,7 @@ fn native_nested_effect_geometry_identity_resource_and_topology_drift_fail_close
     );
 
     let mut generation_drift = plan.clone();
-    let SurfaceKind::NestedIsolation(effect) = &mut first_effect(&mut generation_drift).kind
-    else {
+    let SurfaceKind::NestedIsolation(effect) = &mut first_effect(&mut generation_drift).kind else {
         panic!("nested isolation")
     };
     effect
@@ -482,8 +476,9 @@ fn native_nested_effect_geometry_identity_resource_and_topology_drift_fail_close
         error.reasons.iter().any(|reason| matches!(
             reason,
             FramePaintPlanRejection::TopologyMismatch(owner) if *owner == child
-        )) || error.reasons.iter().any(|reason| {
-            matches!(reason, FramePaintPlanRejection::InvalidPropertyScene(_))
-        })
+        )) || error
+            .reasons
+            .iter()
+            .any(|reason| { matches!(reason, FramePaintPlanRejection::InvalidPropertyScene(_)) })
     );
 }

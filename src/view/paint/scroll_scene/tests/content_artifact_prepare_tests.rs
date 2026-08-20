@@ -199,8 +199,7 @@ fn single_texture_dimension_and_color_depth_pair_budget_are_strict_boundaries() 
     let graph = FrameGraph::new();
     let ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let baseline = prepare_scroll_scene(plan.clone(), &graph, &ctx, generous_budget()).unwrap();
-    let exact =
-        ScrollSceneSingleTextureBudget::new(300, baseline.content_pair_bytes()).unwrap();
+    let exact = ScrollSceneSingleTextureBudget::new(300, baseline.content_pair_bytes()).unwrap();
     assert!(prepare_scroll_scene(plan.clone(), &graph, &ctx, exact).is_ok());
     let one_byte_short =
         ScrollSceneSingleTextureBudget::new(300, baseline.content_pair_bytes() - 1).unwrap();
@@ -297,8 +296,7 @@ fn declared_content_key_foreign_parent_and_frozen_witness_reject_without_new_gra
     );
 
     let mut source_graph = FrameGraph::new();
-    let mut foreign_ctx =
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+    let mut foreign_ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let foreign_target = foreign_ctx.allocate_target(&mut source_graph);
     foreign_ctx.set_current_target(foreign_target);
     let untouched_graph = FrameGraph::new();
@@ -334,8 +332,7 @@ fn declared_content_key_foreign_parent_and_frozen_witness_reject_without_new_gra
 
 #[test]
 fn scene_plan_cannot_bypass_the_a1_direct_element_leaf_gate() {
-    let (mut arena, root, child, mut properties, mut generations) =
-        fixture_at_offset([0.0, 20.0]);
+    let (mut arena, root, child, mut properties, mut generations) = fixture_at_offset([0.0, 20.0]);
     let grandchild = arena.insert(Node::new(Box::new(Element::new_with_id(
         82_003, 0.0, 0.0, 10.0, 10.0,
     ))));

@@ -25,9 +25,8 @@ fn planner_rejects_negative_origin_known_legacy_crop_before_execution() {
             expected_source.map(f32::to_bits)
         );
 
-        let error =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err("known legacy crop must not reach C2 target declaration");
+        let error = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect_err("known legacy crop must not reach C2 target declaration");
         assert_eq!(
             error.reasons,
             vec![FramePaintPlanRejection::NegativeSurfaceOrigin(root)]
@@ -67,7 +66,7 @@ fn exact_single_root_transform_builds_one_planning_only_surface_step() {
 
 #[test]
 fn transform_child_isolation_recording_projects_only_inherited_transform_and_partitions_ownership()
- {
+{
     let (arena, root, before, child, descendant, after, properties, generations) =
         exact_transform_child_isolation_fixture();
     let effect = crate::view::compositor::property_tree::EffectNodeId(child);
@@ -77,18 +76,21 @@ fn transform_child_isolation_recording_projects_only_inherited_transform_and_par
         kind: super::super::super::PlannedBoundaryKind::Isolation(effect),
     };
     let cutouts = super::super::super::PlannedBoundaryCutoutSet::from_iter([(child, boundary)]);
-    let parent_steps = super::super::super::frame_recorder::record_transform_surface_steps_for_plan(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        PaintTransformSurfaceWitness::canonical_root(root),
-        [0.0, 0.0],
-        &cutouts,
-    )
-    .expect("typed isolation cutout keeps parent transform stream recordable");
+    let parent_steps =
+        super::super::super::frame_recorder::record_transform_surface_steps_for_plan(
+            &arena,
+            &[root],
+            &properties,
+            &generations,
+            PaintTransformSurfaceWitness::canonical_root(root),
+            [0.0, 0.0],
+            &cutouts,
+        )
+        .expect("typed isolation cutout keeps parent transform stream recordable");
     let [
-        super::super::super::frame_recorder::RecordedTransformSurfaceStep::Artifact(before_artifact),
+        super::super::super::frame_recorder::RecordedTransformSurfaceStep::Artifact(
+            before_artifact,
+        ),
         super::super::super::frame_recorder::RecordedTransformSurfaceStep::Boundary(actual),
         super::super::super::frame_recorder::RecordedTransformSurfaceStep::Artifact(after_artifact),
     ] = parent_steps.as_slice()
@@ -233,9 +235,7 @@ fn transform_child_isolation_recording_rejects_wrong_boundary_and_live_projectio
         .expect_err("deferred descendants must fail before either artifact recording pass");
     assert_eq!(
         error,
-        vec![super::super::super::FrameArtifactFallbackReason::DeferredBoundary(
-            descendant
-        )]
+        vec![super::super::super::FrameArtifactFallbackReason::DeferredBoundary(descendant)]
     );
     assert_eq!(
         super::super::super::take_full_artifact_record_count(),
@@ -434,9 +434,7 @@ fn transform_child_isolation_planner_hard_gates_shape_and_extra_properties() {
         &properties,
         &generations,
     )
-    .expect_err(
-        "a live descendant transform added after property sync must not produce a plan",
-    );
+    .expect_err("a live descendant transform added after property sync must not produce a plan");
     assert_eq!(
         error.reasons,
         vec![FramePaintPlanRejection::InvalidSurfaceGeometry(child)],

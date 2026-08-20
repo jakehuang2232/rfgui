@@ -67,7 +67,10 @@ impl PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness {
     ) -> Option<Self> {
         Some(Self {
             property: PaintScrollDetachedProjectionSubtreeWitness::new(
-                outer, text_area_root, live_contents_clip, local_logical_scissor,
+                outer,
+                text_area_root,
+                live_contents_clip,
+                local_logical_scissor,
             )?,
         })
     }
@@ -93,9 +96,7 @@ impl PaintScrollAtomicProjectionTextAreaRecorderWitness {
         self.property().is_canonical_for(owner)
             && match self {
                 Self::ExistingAtomicGlyph(_) => true,
-                Self::AtomicProjectionSelection(witness) => {
-                    witness.selection.is_canonical()
-                }
+                Self::AtomicProjectionSelection(witness) => witness.selection.is_canonical(),
                 Self::FocusedAtomicProjectionGlyph(_) => true,
             }
     }
@@ -238,7 +239,11 @@ impl PaintScrollTextAreaSubtreeWitness {
             && self.paint_source.is_canonical()
     }
 
-    pub(super) fn project_for(self, owner: NodeKey, live: PropertyTreeState) -> Option<PropertyTreeState> {
+    pub(super) fn project_for(
+        self,
+        owner: NodeKey,
+        live: PropertyTreeState,
+    ) -> Option<PropertyTreeState> {
         if !self.is_canonical_for(owner)
             || live.transform.is_some()
             || live.effect.is_some()
@@ -362,7 +367,11 @@ impl PaintScrollInteractiveTextAreaSubtreeWitness {
             && self.paint_source.is_canonical()
     }
 
-    pub(super) fn project_for(self, owner: NodeKey, live: PropertyTreeState) -> Option<PropertyTreeState> {
+    pub(super) fn project_for(
+        self,
+        owner: NodeKey,
+        live: PropertyTreeState,
+    ) -> Option<PropertyTreeState> {
         if !self.is_canonical_for(owner)
             || live.transform.is_some()
             || live.effect.is_some()
@@ -414,21 +423,18 @@ impl RetainedInteractiveTextAreaResidentRasterSeal {
     pub(crate) fn paint_source(&self) -> PaintTextContentSource {
         match self {
             Self::FocusedGlyphs => PaintTextContentSource::Glyphs,
-            Self::FocusedSelectionGlyphs(seal) => PaintTextContentSource::Selection(
-                PaintTextSelectionSource {
+            Self::FocusedSelectionGlyphs(seal) => {
+                PaintTextContentSource::Selection(PaintTextSelectionSource {
                     start_char: seal.start_char,
                     end_char: seal.end_char,
                     color_rgba_bits: seal.color_rgba_bits,
-                },
-            ),
+                })
+            }
             Self::FocusedPreeditGlyphs(_) => PaintTextContentSource::Preedit,
         }
     }
 
-    pub(crate) fn is_canonical_for(
-        &self,
-        source: PaintTextContentSource,
-    ) -> bool {
+    pub(crate) fn is_canonical_for(&self, source: PaintTextContentSource) -> bool {
         match (self, source) {
             (Self::FocusedGlyphs, PaintTextContentSource::Glyphs) => true,
             (Self::FocusedSelectionGlyphs(seal), PaintTextContentSource::Selection(source)) => {
@@ -441,7 +447,6 @@ impl RetainedInteractiveTextAreaResidentRasterSeal {
         }
     }
 }
-
 
 // ---- legacy exact-shape projection tokens (moved from artifact.rs) ----
 
@@ -480,13 +485,13 @@ impl PaintScrollDetachedProjectionSubtreeWitness {
             && live_contents_clip.parent == Some(outer_clip.id)
             && live_contents_clip.behavior == ClipBehavior::Intersect
             && live_contents_clip.generation != 0)
-        .then_some(Self {
-            outer,
-            projection_root,
-            live_contents_clip,
-            local_contents_clip,
-            target_owner: outer.content_root(),
-        })
+            .then_some(Self {
+                outer,
+                projection_root,
+                live_contents_clip,
+                local_contents_clip,
+                target_owner: outer.content_root(),
+            })
     }
 
     pub(crate) fn outer(self) -> PaintScrollContentWitness {
@@ -523,7 +528,11 @@ impl PaintScrollDetachedProjectionSubtreeWitness {
             && self.local_contents_clip.generation == DETACHED_LOCAL_CLIP_GENERATION
     }
 
-    pub(super) fn project_for(self, owner: NodeKey, live: PropertyTreeState) -> Option<PropertyTreeState> {
+    pub(super) fn project_for(
+        self,
+        owner: NodeKey,
+        live: PropertyTreeState,
+    ) -> Option<PropertyTreeState> {
         if !self.is_canonical_for(owner)
             || live.transform.is_some()
             || live.effect.is_some()
@@ -716,15 +725,12 @@ impl PaintLegacyTextAreaCoverageAuthority {
     /// the recording must not paint a second, blinking one.
     pub(crate) fn suppresses_resident_caret(self, owner: NodeKey) -> bool {
         match self {
-            Self::AtomicProjectionLocal(witness) | Self::AtomicProjectionBakedHost(witness) => {
-                matches!(
-                    witness,
-                    PaintScrollAtomicProjectionTextAreaRecorderWitness::FocusedAtomicProjectionGlyph(
-                        _
-                    )
-                ) && witness.property().projection_root() == owner
-                    && witness.is_canonical_for(owner)
-            }
+            Self::AtomicProjectionLocal(witness) | Self::AtomicProjectionBakedHost(witness) => matches!(
+                witness,
+                PaintScrollAtomicProjectionTextAreaRecorderWitness::FocusedAtomicProjectionGlyph(_)
+            )
+                && witness.property().projection_root() == owner
+                && witness.is_canonical_for(owner),
             Self::InteractiveLocal(witness) | Self::InteractiveBakedHost(witness) => {
                 witness.text_area_root() == owner && witness.is_canonical_for(owner)
             }
@@ -741,17 +747,17 @@ impl PaintLegacyTextAreaCoverageAuthority {
 // selection source, composite edges and property snapshots that these tokens
 // hand on, never the tokens themselves.
 
+use crate::view::base_component::ElementTrait;
 use crate::view::base_component::text_area::{
     FocusedAtomicCaretSourceSeal, FocusedAtomicPreeditSourceSeal,
     RetainedAtomicProjectionSelectionTextAreaPaintGrammar,
-    RetainedAtomicProjectionTextAreaPaintGrammar, RetainedFocusedAtomicProjectionTextAreaPaintGrammar,
-    RetainedTextAreaPaintGrammar,
+    RetainedAtomicProjectionTextAreaPaintGrammar,
+    RetainedFocusedAtomicProjectionTextAreaPaintGrammar, RetainedTextAreaPaintGrammar,
 };
 use crate::view::base_component::{
-    Element, RetainedSurfaceBounds, Rect, ScrollGeometrySnapshot, ScrollbarOverlayWitness, TextArea,
+    Element, Rect, RetainedSurfaceBounds, ScrollGeometrySnapshot, ScrollbarOverlayWitness, TextArea,
 };
 use crate::view::node_arena::NodeArena;
-use crate::view::base_component::ElementTrait;
 
 // Short-lived duplicates of the `element/mod.rs` bitwise oracles. Copying them
 // keeps the durable `Element` API from widening for a layer that is deleted
@@ -958,7 +964,6 @@ impl RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
         &self.paint_grammar
     }
 
-
     pub(crate) fn matches_live_source(
         &self,
         text_area: &TextArea,
@@ -994,8 +999,7 @@ pub(crate) struct RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissio
     pub(crate) content_wrapper_stable_id: u64,
     pub(crate) text_area_root: NodeKey,
     pub(crate) text_area_stable_id: u64,
-    paint_grammar:
-        RetainedAtomicProjectionSelectionTextAreaPaintGrammar,
+    paint_grammar: RetainedAtomicProjectionSelectionTextAreaPaintGrammar,
     pub(crate) artifact_source: PaintAtomicProjectionArtifactSource,
     pub(crate) selection_source: PaintTextSelectionSource,
     pub(crate) artifact_space_transition: PaintArtifactSpaceTransition,
@@ -1061,10 +1065,11 @@ impl RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot {
     /// Read-only grammar access for the frozen-replay tests. Production reads
     /// the generic source, transition and selection facts instead.
     #[cfg(test)]
-    pub(crate) fn paint_grammar_for_test(&self) -> &RetainedAtomicProjectionSelectionTextAreaPaintGrammar {
+    pub(crate) fn paint_grammar_for_test(
+        &self,
+    ) -> &RetainedAtomicProjectionSelectionTextAreaPaintGrammar {
         &self.paint_grammar
     }
-
 
     pub(crate) fn matches_live_source(
         &self,
@@ -1165,19 +1170,17 @@ impl RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot {
     /// Read-only grammar access for the frozen-replay tests. Production reads
     /// the generic source, transition and selection facts instead.
     #[cfg(test)]
-    pub(crate) fn paint_grammar_for_test(&self) -> &RetainedFocusedAtomicProjectionTextAreaPaintGrammar {
+    pub(crate) fn paint_grammar_for_test(
+        &self,
+    ) -> &RetainedFocusedAtomicProjectionTextAreaPaintGrammar {
         &self.paint_grammar
     }
 
-    pub(crate) fn caret_source(
-        &self,
-    ) -> &FocusedAtomicCaretSourceSeal {
+    pub(crate) fn caret_source(&self) -> &FocusedAtomicCaretSourceSeal {
         &self.paint_grammar.caret
     }
 
-    pub(crate) fn preedit_source(
-        &self,
-    ) -> Option<&FocusedAtomicPreeditSourceSeal> {
+    pub(crate) fn preedit_source(&self) -> Option<&FocusedAtomicPreeditSourceSeal> {
         self.paint_grammar.preedit.as_ref()
     }
 }
@@ -1261,10 +1264,7 @@ pub(crate) fn exact_retained_scroll_text_area_subtree_admission(
         .legacy_retained_scroll_single_child_content_shell(owner, arena, scale_factor)?
         .into_parts();
     let text_area_node = arena.get(text_area_root)?;
-    let text_area = text_area_node
-        .element
-        .as_any()
-        .downcast_ref::<TextArea>()?;
+    let text_area = text_area_node.element.as_any().downcast_ref::<TextArea>()?;
     let paint_grammar = if text_area.exact_retained_property_scroll_glyph_subtree(
         text_area_root,
         arena,
@@ -1313,10 +1313,7 @@ pub(crate) fn exact_retained_scroll_atomic_projection_text_area_subtree_admissio
         .legacy_retained_scroll_single_child_content_shell(owner, arena, scale_factor)?
         .into_parts();
     let text_area_node = arena.get(text_area_root)?;
-    let text_area = text_area_node
-        .element
-        .as_any()
-        .downcast_ref::<TextArea>()?;
+    let text_area = text_area_node.element.as_any().downcast_ref::<TextArea>()?;
     let paint_grammar = text_area.exact_retained_property_scroll_atomic_projection_subtree(
         text_area_root,
         arena,
@@ -1361,10 +1358,7 @@ pub(crate) fn exact_retained_scroll_atomic_projection_selection_text_area_subtre
         .legacy_retained_scroll_single_child_content_shell(owner, arena, scale_factor)?
         .into_parts();
     let text_area_node = arena.get(text_area_root)?;
-    let text_area = text_area_node
-        .element
-        .as_any()
-        .downcast_ref::<TextArea>()?;
+    let text_area = text_area_node.element.as_any().downcast_ref::<TextArea>()?;
     let paint_grammar = text_area
         .exact_retained_property_scroll_atomic_projection_selection_subtree(
             text_area_root,
@@ -1412,10 +1406,7 @@ pub(crate) fn exact_retained_scroll_focused_atomic_projection_text_area_subtree_
         .legacy_retained_scroll_single_child_content_shell(owner, arena, scale_factor)?
         .into_parts();
     let text_area_node = arena.get(text_area_root)?;
-    let text_area = text_area_node
-        .element
-        .as_any()
-        .downcast_ref::<TextArea>()?;
+    let text_area = text_area_node.element.as_any().downcast_ref::<TextArea>()?;
     let paint_grammar = text_area
         .exact_retained_property_scroll_focused_atomic_projection_glyph_subtree(
             text_area_root,
@@ -1459,10 +1450,7 @@ pub(crate) fn exact_retained_scroll_interactive_text_area_subtree_admission(
         .legacy_retained_scroll_single_child_content_shell(owner, arena, scale_factor)?
         .into_parts();
     let text_area_node = arena.get(text_area_root)?;
-    let text_area = text_area_node
-        .element
-        .as_any()
-        .downcast_ref::<TextArea>()?;
+    let text_area = text_area_node.element.as_any().downcast_ref::<TextArea>()?;
     let paint_grammar = text_area.exact_retained_property_scroll_interactive_subtree(
         text_area_root,
         arena,

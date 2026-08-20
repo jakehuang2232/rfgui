@@ -2063,11 +2063,9 @@ fn property_boundary_forest_scene_transaction_is_canonical(
             (Role::Transform, SurfaceKind::Transform(transform)) => {
                 transform.0 == node.owner
                     && surface.effect_composite.is_none()
-                    && surface
-                        .surface_composite_matrix_bits
-                        .is_some_and(|matrix| {
-                            matrix.into_iter().map(f32::from_bits).all(f32::is_finite)
-                        })
+                    && surface.surface_composite_matrix_bits.is_some_and(|matrix| {
+                        matrix.into_iter().map(f32::from_bits).all(f32::is_finite)
+                    })
                     && stamp.identity.role == RetainedSurfaceRasterRole::Transform
             }
             (Role::Effect, SurfaceKind::Effect(effect)) => {
@@ -2343,11 +2341,9 @@ fn property_effect_scene_transaction_is_canonical(
                 id.0 == surface.boundary_root
                     && stamp.identity.role == RetainedSurfaceRasterRole::Transform
                     && surface.effect_composite.is_none()
-                    && surface
-                        .surface_composite_matrix_bits
-                        .is_some_and(|matrix| {
-                            matrix.into_iter().map(f32::from_bits).all(f32::is_finite)
-                        })
+                    && surface.surface_composite_matrix_bits.is_some_and(|matrix| {
+                        matrix.into_iter().map(f32::from_bits).all(f32::is_finite)
+                    })
                     && surface.persistent_color_key
                         == transformed_layer_stable_key(surface.stable_id)
             }

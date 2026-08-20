@@ -22,8 +22,7 @@ fn custom_legacy_subtree_builds_exactly_once_and_recording_does_not_touch_deferr
     assert_eq!(legacy.reason, LegacyPaintReason::UnknownHost);
 
     let mut graph = FrameGraph::new();
-    let _ =
-        arena.with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx));
+    let _ = arena.with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx));
     assert_eq!(builds.load(Ordering::Relaxed), 1);
 }
 
@@ -33,8 +32,7 @@ fn custom_leaf_typed_adapter_records_canonical_fill_and_compiles() {
     let expected = host.bounds;
     let (arena, root, properties, generations) = custom_leaf_fixture(host);
     let _ = take_full_artifact_record_count();
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &[root], &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &[root], &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(take_full_artifact_record_count(), 1);
     assert_eq!(artifact.chunks.len(), 1);
@@ -167,9 +165,9 @@ fn custom_leaf_structural_and_property_boundaries_fail_closed_before_full_record
         Box::new(leaf_element(0x8f23, Color::rgb(4, 5, 6), 1.0, false)),
     );
     assert!(
-        arena_only.get(arena_only_root).is_some_and(
-            |node| !node.children().is_empty() && node.element.children().is_empty()
-        )
+        arena_only
+            .get(arena_only_root)
+            .is_some_and(|node| !node.children().is_empty() && node.element.children().is_empty())
     );
     let (arena_only_properties, arena_only_generations) =
         sync_identity(&arena_only, &[arena_only_root]);

@@ -67,9 +67,7 @@ fn effect_geometry(
         effect_generation: 73,
         basis: PropertyEffectCompositeBasisStamp::ParentTransform {
             transform,
-            surface_composite_matrix_bits: Mat4::IDENTITY
-                .to_cols_array()
-                .map(f32::to_bits),
+            surface_composite_matrix_bits: Mat4::IDENTITY.to_cols_array().map(f32::to_bits),
         },
         resolved_scissor: None,
         ancestor_composite_clips: Vec::new(),

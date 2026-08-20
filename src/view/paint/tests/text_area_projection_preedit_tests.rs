@@ -30,16 +30,14 @@ fn text_area_projection_baked_scroll_translates_root_and_absolute_child_once() {
 
     let (arena, roots, root, projected_text) = fixture(0.0);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (unscrolled, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (unscrolled, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     let root_before = first_glyph_position(&unscrolled, root);
     let projected_before = first_glyph_position(&unscrolled, projected_text);
 
     let (arena, roots, root, projected_text) = fixture(4.0);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (scrolled, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (scrolled, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     let root_after = first_glyph_position(&scrolled, root);
     let projected_after = first_glyph_position(&scrolled, projected_text);
@@ -97,8 +95,7 @@ fn text_area_projection_preedit_direct_text_is_path_scoped_ordered_and_matches_l
     }
 
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(
         artifact
@@ -197,15 +194,16 @@ fn mixed_projection_with_plain_transient_preedit_remains_eligible() {
         })
     }));
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert!(artifact.chunks.iter().any(|chunk| {
         chunk.owner == projected_text && chunk.id.role == PaintChunkRole::TextGlyphs
     }));
-    assert!(artifact.chunks.iter().any(|chunk| {
-        chunk.owner == root && chunk.id.role == PaintChunkRole::TextDecoration
-    }));
+    assert!(
+        artifact.chunks.iter().any(|chunk| {
+            chunk.owner == root && chunk.id.role == PaintChunkRole::TextDecoration
+        })
+    );
 }
 
 #[test]
@@ -276,10 +274,7 @@ fn text_area_projection_atomic_witness_tamper_fails_before_full_hooks() {
                     .as_any()
                     .downcast_ref::<TextArea>()
                     .unwrap()
-                    .tamper_cached_unified_segment_backing_range_for_test(
-                        projection_index,
-                        0..1,
-                    );
+                    .tamper_cached_unified_segment_backing_range_for_test(projection_index, 0..1);
             }
             "atomic_missing" | "atomic_duplicate" => {
                 arena

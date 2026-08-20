@@ -4,8 +4,7 @@ use super::*;
 fn root_group_element_records_neutral_content_and_composites_effect_once() {
     let (arena, root, properties, generations) =
         prepared_leaf(0x6c10, Color::rgb(220, 40, 30), 0.5, true);
-    let (artifact, eligibility) =
-        root_group_artifact(&arena, &[root], &properties, &generations);
+    let (artifact, eligibility) = root_group_artifact(&arena, &[root], &properties, &generations);
     assert!(eligibility.eligible);
     assert!(matches!(
         artifact.target,
@@ -45,8 +44,7 @@ fn root_group_element_records_neutral_content_and_composites_effect_once() {
 #[test]
 fn root_opacity_group_records_contents_clip_neutrally_and_metadata_matches_full() {
     const SCISSOR: [u32; 4] = [7, 11, 23, 19];
-    let (arena, root, child, properties, generations) =
-        root_opacity_contents_clip_fixture(SCISSOR);
+    let (arena, root, child, properties, generations) = root_opacity_contents_clip_fixture(SCISSOR);
     let expected_clip = ClipNodeId {
         owner: root,
         role: ClipNodeRole::ContentsClip,
@@ -95,9 +93,7 @@ fn root_opacity_group_records_contents_clip_neutrally_and_metadata_matches_full(
         .items
         .iter_mut()
         .find_map(|item| match item {
-            PaintCoverageItem::ArtifactChunk { clip_snapshot, .. }
-                if !clip_snapshot.is_empty() =>
-            {
+            PaintCoverageItem::ArtifactChunk { clip_snapshot, .. } if !clip_snapshot.is_empty() => {
                 Some(clip_snapshot)
             }
             _ => None,
@@ -109,8 +105,7 @@ fn root_opacity_group_records_contents_clip_neutrally_and_metadata_matches_full(
         "clip snapshot drift must fail metadata/full parity"
     );
 
-    let (artifact, eligibility) =
-        root_group_artifact(&arena, &[root], &properties, &generations);
+    let (artifact, eligibility) = root_group_artifact(&arena, &[root], &properties, &generations);
     assert!(eligibility.eligible, "{eligibility:?}");
     assert_eq!(artifact.chunks.len(), 1);
     assert_eq!(artifact.chunks[0].owner, child);
@@ -127,9 +122,8 @@ fn root_opacity_group_records_contents_clip_neutrally_and_metadata_matches_full(
     ));
     artifact.ops.iter().for_each(assert_neutral_opacity);
 
-    let baseline_stamp =
-        validated_root_effect_raster_stamp(&artifact, root_effect_raster_inputs())
-            .expect("clipped root group has a valid raster stamp");
+    let baseline_stamp = validated_root_effect_raster_stamp(&artifact, root_effect_raster_inputs())
+        .expect("clipped root group has a valid raster stamp");
     let mut clip_changed = artifact.clone();
     clip_changed.clip_nodes[0].logical_scissor[2] += 1;
     assert_ne!(
@@ -164,8 +158,7 @@ fn root_opacity_group_records_contents_clip_neutrally_and_metadata_matches_full(
 fn root_opacity_group_explicit_empty_contents_clip_culls_only_contents() {
     let (arena, root, child, properties, generations) =
         root_opacity_contents_clip_fixture([13, 17, 0, 0]);
-    let (artifact, eligibility) =
-        root_group_artifact(&arena, &[root], &properties, &generations);
+    let (artifact, eligibility) = root_group_artifact(&arena, &[root], &properties, &generations);
     assert!(eligibility.eligible, "{eligibility:?}");
     assert_eq!(artifact.chunks.len(), 1);
     assert_eq!(artifact.chunks[0].owner, child);
@@ -241,8 +234,7 @@ fn root_effect_stamp_tracks_nested_exact_self_clip_snapshot() {
         .unwrap()
         .set_opacity(0.5);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        root_group_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = root_group_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible, "{eligibility:?}");
     let own = ClipNodeId {
         owner: anchor,
@@ -324,8 +316,7 @@ fn root_effect_stamp_tracks_descendant_composite_owner_topology_and_payload() {
         .content_revision
         .composite_revision += 1;
     assert_ne!(
-        validated_root_effect_raster_stamp(&child_composite, root_effect_raster_inputs())
-            .unwrap(),
+        validated_root_effect_raster_stamp(&child_composite, root_effect_raster_inputs()).unwrap(),
         baseline
     );
 
@@ -378,8 +369,7 @@ fn root_effect_stamp_tracks_descendant_composite_owner_topology_and_payload() {
         .expect("image chunk")
         .payload_identity = PaintPayloadIdentity::Image(identity, decoration);
     assert_ne!(
-        validated_root_effect_raster_stamp(&payload_changed, root_effect_raster_inputs())
-            .unwrap(),
+        validated_root_effect_raster_stamp(&payload_changed, root_effect_raster_inputs()).unwrap(),
         image_baseline
     );
 }

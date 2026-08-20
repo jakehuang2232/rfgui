@@ -2,13 +2,11 @@ use super::*;
 
 #[test]
 fn plain_text_area_records_one_contents_glyph_chunk_and_transparent_runs() {
-    let (arena, roots, root) = prepared_plain_text_area_tree(
-        "plain TextArea wraps across a deliberately narrow viewport",
-    );
+    let (arena, roots, root) =
+        prepared_plain_text_area_tree("plain TextArea wraps across a deliberately narrow viewport");
     let (properties, generations) = sync_identity(&arena, &roots);
     take_full_artifact_record_count();
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(artifact.chunks.len(), 1);
     assert_eq!(artifact.chunks[0].owner, root);
@@ -28,8 +26,8 @@ fn plain_text_area_records_one_contents_glyph_chunk_and_transparent_runs() {
     assert_eq!(artifact.chunks[0].properties, state.descendants);
     assert_ne!(state.paint.clip, state.descendants.clip);
     let graph = compiled_whole_frame_graph(&artifact);
-    let passes = graph
-        .test_graphics_passes::<crate::view::render_pass::text_pass::TextPreparedInputPass>();
+    let passes =
+        graph.test_graphics_passes::<crate::view::render_pass::text_pass::TextPreparedInputPass>();
     assert_eq!(passes.len(), 1);
     assert!(
         passes[0]
@@ -218,8 +216,7 @@ fn empty_focused_plain_text_area_is_caret_only_and_contents_clip_can_cull_it() {
 
     let (arena, roots, root) = make(false);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(artifact.chunks.len(), 1);
     assert_eq!(artifact.chunks[0].id.role, PaintChunkRole::Caret);
@@ -235,8 +232,7 @@ fn empty_focused_plain_text_area_is_caret_only_and_contents_clip_can_cull_it() {
 
     let (arena, roots, _) = make(true);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(artifact.chunks.len(), 1);
     assert!(
@@ -387,9 +383,7 @@ fn plain_caret_artifact_honours_soft_wrap_affinity_and_matches_legacy() {
                 .downcast_mut::<TextArea>()
                 .unwrap();
             text_area.cursor_char = boundary;
-            crate::view::base_component::text_area::set_caret_affinity_probe(
-                text_area, upstream,
-            );
+            crate::view::base_component::text_area::set_caret_affinity_probe(text_area, upstream);
             text_area.is_focused = true;
             text_area.caret_visible = true;
             text_area.caret_blink_epoch = None;
@@ -470,12 +464,8 @@ fn plain_text_area_selection_multiline_wrapped_and_clamped_cases_match_legacy() 
     }
 
     for (anchor, focus) in [(3, 3), (usize::MAX, usize::MAX)] {
-        let (arena, roots, _) = prepared_plain_text_area_selection_tree(
-            "collapsed selection",
-            108.0,
-            anchor,
-            focus,
-        );
+        let (arena, roots, _) =
+            prepared_plain_text_area_selection_tree("collapsed selection", 108.0, anchor, focus);
         let (properties, generations) = sync_identity(&arena, &roots);
         let (artifact, eligibility) =
             whole_frame_artifact(&arena, &roots, &properties, &generations);
@@ -500,8 +490,7 @@ fn plain_text_area_selection_contents_clip_handles_explicit_empty_viewport() {
         .viewport_size
         .height = 0.0;
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(artifact.chunks.len(), 2);
     assert!(
@@ -516,8 +505,7 @@ fn plain_text_area_selection_contents_clip_handles_explicit_empty_viewport() {
     assert!(graph.test_rect_pass_snapshots().is_empty());
     assert!(
         graph
-            .test_graphics_passes::<crate::view::render_pass::text_pass::TextPreparedInputPass>(
-            )
+            .test_graphics_passes::<crate::view::render_pass::text_pass::TextPreparedInputPass>()
             .is_empty()
     );
 }

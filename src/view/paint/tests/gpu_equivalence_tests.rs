@@ -99,7 +99,6 @@ impl NativeGpu {
     }
 }
 
-
 fn fixture(with_border: bool) -> (NodeArena, Vec<NodeKey>) {
     let mut element =
         Element::new_with_id(if with_border { 202 } else { 201 }, 8.0, 8.0, 32.0, 24.0);
@@ -1843,7 +1842,6 @@ fn root_group_anchor_oracle(opacity: f32) -> [[u8; 4]; 3] {
     ]
 }
 
-
 fn root_group_overlap_artifact(opacity: f32) -> PaintArtifact {
     let mut arena = new_test_arena();
     let root = commit_element(
@@ -2285,7 +2283,6 @@ fn remove_row_padding(
     }
     Ok(pixels)
 }
-
 
 fn render(graph: FrameGraph, gpu: &NativeGpu) -> Result<Vec<u8>, String> {
     render_with_config(graph, gpu, 1.0, FORMAT)
@@ -2868,23 +2865,6 @@ fn run_native_scroll_scene_case(
     Ok(())
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #[derive(Clone, Copy, Debug)]
 struct DirectScrollTransformGpuCase {
     label: &'static str,
@@ -3284,8 +3264,6 @@ fn validate_direct_scroll_transform_gradient_coverage(
     Ok(coverage)
 }
 
-
-
 #[derive(Clone, Copy, Debug)]
 enum DirectPropertyScrollGpuGrammar {
     Transform { translation: [f32; 2] },
@@ -3578,8 +3556,6 @@ fn warm_direct_property_scroll_receiver_matches_cold(
     warm.len() == 1 && cold.iter().any(|candidate| candidate == &warm[0])
 }
 
-
-
 #[derive(Clone, Copy, Debug)]
 struct TransformEffectScrollGpuFrame {
     translation: [f32; 2],
@@ -3850,23 +3826,15 @@ fn validate_transform_effect_scroll_nonblank_anchor(
     Ok(())
 }
 
-
-
-
-
-
-
-
-
+mod native_pixel_oracle_tests;
 mod oracle_tests;
 mod scroll_graph_build_tests;
-mod native_pixel_oracle_tests;
 
-mod native_scroll_scene_pixel_tests;
-mod native_scroll_forest_tests;
-mod native_transform_surface_tests;
-mod native_nested_scroll_tests;
 mod native_nested_scroll_segment_tests;
-mod native_scroll_boundary_tests;
+mod native_nested_scroll_tests;
 mod native_root_effect_tests;
+mod native_scroll_boundary_tests;
+mod native_scroll_forest_tests;
+mod native_scroll_scene_pixel_tests;
 mod native_svg_pixel_tests;
+mod native_transform_surface_tests;

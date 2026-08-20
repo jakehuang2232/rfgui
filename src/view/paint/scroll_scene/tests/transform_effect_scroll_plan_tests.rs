@@ -65,16 +65,13 @@ fn effect_transform_scroll_joint_prepare_is_atomic_for_every_preflight_failure()
     );
     assert!(context_viewport.retained_property_scroll_scene_stage_is_available());
     assert!(
-        context_viewport
-            .finish_retained_surface_transaction_for_frame(Some(context_owner), false)
+        context_viewport.finish_retained_surface_transaction_for_frame(Some(context_owner), false)
     );
 
     let stale_scene = make_scene(generous_budget()).unwrap();
     let mut stale_viewport = Viewport::new();
     let stale_owner = stale_viewport.begin_retained_surface_frame_stage().unwrap();
-    assert!(
-        stale_viewport.finish_retained_surface_transaction_for_frame(Some(stale_owner), false)
-    );
+    assert!(stale_viewport.finish_retained_surface_transaction_for_frame(Some(stale_owner), false));
     let mut stale_graph = FrameGraph::new();
     let stale_topology = stale_graph.build_state_snapshot_for_test();
     let stale_pool = stale_viewport.retained_surface_transaction_shape_for_test();
@@ -98,8 +95,7 @@ fn effect_transform_scroll_joint_prepare_is_atomic_for_every_preflight_failure()
     assert!(stale_viewport.retained_property_scroll_scene_stage_is_available());
 
     let collision_scene = make_scene(generous_budget()).unwrap();
-    let ValidatedPropertyBoundaryDagScene::EffectTransformScroll(scene) = &collision_scene
-    else {
+    let ValidatedPropertyBoundaryDagScene::EffectTransformScroll(scene) = &collision_scene else {
         panic!("fixture remains exact E->T->S")
     };
     let outer_key = crate::view::base_component::isolation_layer_stable_key(
@@ -191,9 +187,7 @@ fn effect_transform_scroll_joint_prepare_is_atomic_for_every_preflight_failure()
         exact_pool
     );
     assert!(exact_viewport.retained_property_scroll_scene_stage_is_available());
-    assert!(
-        exact_viewport.finish_retained_surface_transaction_for_frame(Some(exact_owner), false)
-    );
+    assert!(exact_viewport.finish_retained_surface_transaction_for_frame(Some(exact_owner), false));
 }
 
 #[test]
@@ -244,9 +238,8 @@ fn transform_effect_scroll_validated_scene_seals_joint_graph_inert_authority() {
         .effect_cutout
         .stable_id += 1;
     for step in &mut effect_cutout_drift.roots[0].outer_steps {
-        if let crate::view::paint::frame_recorder::RecordedTransformSurfaceStep::Boundary(
-            marker,
-        ) = step
+        if let crate::view::paint::frame_recorder::RecordedTransformSurfaceStep::Boundary(marker) =
+            step
         {
             marker.stable_id += 1;
         }
@@ -260,9 +253,8 @@ fn transform_effect_scroll_validated_scene_seals_joint_graph_inert_authority() {
         .scroll_cutout
         .stable_id += 1;
     for step in &mut scroll_cutout_drift.roots[0].inner_steps {
-        if let crate::view::paint::frame_recorder::RecordedTransformSurfaceStep::Boundary(
-            marker,
-        ) = step
+        if let crate::view::paint::frame_recorder::RecordedTransformSurfaceStep::Boundary(marker) =
+            step
         {
             marker.stable_id += 1;
         }
@@ -393,9 +385,9 @@ fn transform_effect_scroll_planner_rejects_adjacent_topologies_and_context_drift
         let effect = arena.children_of(root)[0];
         let scroll = arena.children_of(effect)[0];
         crate::view::test_support::get_element_mut::<Element>(arena, scroll)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                glam::Vec3::new(3.0, 0.0, 0.0),
-            )));
+            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
+                3.0, 0.0, 0.0,
+            ))));
     });
     assert_rejected("scroll owns effect", |arena, root| {
         let effect = arena.children_of(root)[0];
@@ -412,9 +404,9 @@ fn transform_effect_scroll_planner_rejects_adjacent_topologies_and_context_drift
         arena.set_parent(descendant, Some(content));
         arena.set_children(content, vec![descendant]);
         crate::view::test_support::get_element_mut::<Element>(arena, descendant)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                glam::Vec3::new(2.0, 0.0, 0.0),
-            )));
+            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
+                2.0, 0.0, 0.0,
+            ))));
     });
     assert_rejected("scroll content descendant owns effect", |arena, root| {
         let effect = arena.children_of(root)[0];
@@ -425,8 +417,7 @@ fn transform_effect_scroll_planner_rejects_adjacent_topologies_and_context_drift
         ))));
         arena.set_parent(descendant, Some(content));
         arena.set_children(content, vec![descendant]);
-        crate::view::test_support::get_element_mut::<Element>(arena, descendant)
-            .set_opacity(0.5);
+        crate::view::test_support::get_element_mut::<Element>(arena, descendant).set_opacity(0.5);
     });
     assert_rejected("active layout transition", |arena, root| {
         let effect = arena.children_of(root)[0];
@@ -446,8 +437,7 @@ fn transform_effect_scroll_planner_rejects_adjacent_topologies_and_context_drift
                     .clip(crate::style::ClipMode::Viewport),
             ),
         );
-        crate::view::test_support::get_element_mut::<Element>(arena, content)
-            .apply_style(style);
+        crate::view::test_support::get_element_mut::<Element>(arena, content).apply_style(style);
     });
 
     let (arena, root, properties, generations) = transform_effect_scroll_fixture();

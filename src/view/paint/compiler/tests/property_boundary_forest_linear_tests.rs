@@ -65,9 +65,7 @@ fn effect_geometry(
         PropertyBoundaryForestRole::Transform => {
             PropertyEffectCompositeBasisStamp::ParentTransform {
                 transform: TransformNodeId(parent.owner),
-                surface_composite_matrix_bits: Mat4::IDENTITY
-                    .to_cols_array()
-                    .map(f32::to_bits),
+                surface_composite_matrix_bits: Mat4::IDENTITY.to_cols_array().map(f32::to_bits),
             }
         }
         PropertyBoundaryForestRole::Effect => {

@@ -11,8 +11,7 @@ fn property_scroll_admission_sidecar_correspondence_rejects_synchronized_hybrid(
         crate::time::Instant::now(),
         generous_budget(),
     );
-    let PropertyScrollHostAdmissionKind::DirectLeaf(direct) =
-        boundary.planner.seal.admission.kind
+    let PropertyScrollHostAdmissionKind::DirectLeaf(direct) = boundary.planner.seal.admission.kind
     else {
         panic!("fixture must begin as the direct-leaf corpus")
     };
@@ -69,13 +68,8 @@ fn property_scroll_admission_sidecar_correspondence_rejects_synchronized_hybrid(
     let pool_before = viewport.retained_surface_transaction_shape_for_test();
     let ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     assert_eq!(
-        prepare_retained_property_scroll_scene_from_pool(
-            &mut viewport,
-            boundary,
-            &mut graph,
-            ctx,
-        )
-        .err(),
+        prepare_retained_property_scroll_scene_from_pool(&mut viewport, boundary, &mut graph, ctx,)
+            .err(),
         Some(RetainedPropertyScrollScenePrepareError::BoundaryDrift)
     );
     assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
@@ -198,8 +192,7 @@ fn property_scroll_b1_phase_artifact_injection_and_seal_tamper_fail_closed() {
     assert!(!reordered.is_canonical());
 
     let mut bad_store = boundary.clone();
-    let PropertyScrollCompiledStep::OverlayAfter { artifact, .. } = &mut bad_store.steps[2]
-    else {
+    let PropertyScrollCompiledStep::OverlayAfter { artifact, .. } = &mut bad_store.steps[2] else {
         unreachable!();
     };
     artifact.chunks[0].op_range.end += 1;
@@ -226,8 +219,7 @@ fn property_scroll_b1_single_and_tiled_stamps_are_owning_and_tamper_evident() {
         generous_budget(),
     );
     let (_, single_stamp, _, _, _, _) = compiled_content_step(&single);
-    let PropertyScrollContentBackingCompileStamp::Single(single_backing) =
-        &single_stamp.backing
+    let PropertyScrollContentBackingCompileStamp::Single(single_backing) = &single_stamp.backing
     else {
         panic!("small B1 content must use single backing");
     };
@@ -252,13 +244,11 @@ fn property_scroll_b1_single_and_tiled_stamps_are_owning_and_tamper_evident() {
         |backing| backing.budget.max_active_pair_bytes = 1,
     ] {
         let mut bad_single = single.clone();
-        let PropertyScrollCompiledStep::DetachedContent { stamp, .. } =
-            &mut bad_single.steps[1]
+        let PropertyScrollCompiledStep::DetachedContent { stamp, .. } = &mut bad_single.steps[1]
         else {
             unreachable!();
         };
-        let PropertyScrollContentBackingCompileStamp::Single(backing) = &mut stamp.backing
-        else {
+        let PropertyScrollContentBackingCompileStamp::Single(backing) = &mut stamp.backing else {
             unreachable!();
         };
         tamper(backing);
@@ -320,12 +310,10 @@ fn property_scroll_b1_single_and_tiled_stamps_are_owning_and_tamper_evident() {
         |backing| backing.budget.max_active_pair_bytes = 1,
     ] {
         let mut bad = tiled.clone();
-        let PropertyScrollCompiledStep::DetachedContent { stamp, .. } = &mut bad.steps[1]
-        else {
+        let PropertyScrollCompiledStep::DetachedContent { stamp, .. } = &mut bad.steps[1] else {
             unreachable!();
         };
-        let PropertyScrollContentBackingCompileStamp::Tiled(backing) = &mut stamp.backing
-        else {
+        let PropertyScrollContentBackingCompileStamp::Tiled(backing) = &mut stamp.backing else {
             unreachable!();
         };
         tamper(backing);
@@ -481,8 +469,7 @@ fn property_scroll_b1_clip_detach_and_target_local_cursor_are_sealed() {
 
     for tamper in [
         (|boundary: &mut ValidatedPropertyScrollBoundary| {
-            let PropertyScrollCompiledStep::DetachedContent { stamp, .. } =
-                &mut boundary.steps[1]
+            let PropertyScrollCompiledStep::DetachedContent { stamp, .. } = &mut boundary.steps[1]
             else {
                 unreachable!();
             };
@@ -507,8 +494,7 @@ fn property_scroll_b1_clip_detach_and_target_local_cursor_are_sealed() {
             *parent_after += 1;
         },
         |boundary| {
-            let PropertyScrollCompiledStep::HostBefore { parent_span, .. } =
-                &mut boundary.steps[0]
+            let PropertyScrollCompiledStep::HostBefore { parent_span, .. } = &mut boundary.steps[0]
             else {
                 unreachable!();
             };

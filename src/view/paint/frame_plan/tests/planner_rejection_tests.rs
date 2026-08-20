@@ -11,9 +11,8 @@ fn planner_rejects_nested_subroot_and_arena_trait_topology_drift() {
         .first()
         .copied()
         .expect("child");
-    let nested =
-        plan_single_root_transform_surface(&arena, &[child], &properties, &generations)
-            .expect_err("an arena child cannot masquerade as a frame root");
+    let nested = plan_single_root_transform_surface(&arena, &[child], &properties, &generations)
+        .expect_err("an arena child cannot masquerade as a frame root");
     assert!(
         nested
             .reasons
@@ -62,11 +61,9 @@ fn planner_rejects_nested_subroot_and_arena_trait_topology_drift() {
 #[test]
 fn planner_rejects_zero_stable_id_for_root_or_descendant() {
     let (arena, root, properties, generations) = exact_transform_fixture();
-    crate::view::test_support::get_element_mut::<Element>(&arena, root)
-        .set_stable_id_for_test(0);
-    let root_error =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect_err("stable id zero cannot own a persistent transform surface");
+    crate::view::test_support::get_element_mut::<Element>(&arena, root).set_stable_id_for_test(0);
+    let root_error = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect_err("stable id zero cannot own a persistent transform surface");
     assert!(
         root_error
             .reasons
@@ -75,8 +72,7 @@ fn planner_rejects_zero_stable_id_for_root_or_descendant() {
 
     let (arena, root, properties, generations) = exact_transform_fixture();
     let child = arena.get(root).expect("root").element.children()[0];
-    crate::view::test_support::get_element_mut::<Element>(&arena, child)
-        .set_stable_id_for_test(0);
+    crate::view::test_support::get_element_mut::<Element>(&arena, child).set_stable_id_for_test(0);
     let child_error =
         plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
             .expect_err("every reachable owner requires a nonzero paint identity");
@@ -100,9 +96,8 @@ fn planner_accepts_retained_baseline_baseline_and_rejects_property_identity_or_r
         vec![FramePaintPlanRejection::RootCount(2)]
     );
 
-    let baseline =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("retained-compatible retained transform baseline");
+    let baseline = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect("retained-compatible retained transform baseline");
     let _ = only_surface(&baseline);
 
     let (arena, root, properties, generations) = exact_transform_fixture();
@@ -110,9 +105,8 @@ fn planner_accepts_retained_baseline_baseline_and_rejects_property_identity_or_r
     let root_id = arena.get(root).expect("root").element.stable_id();
     crate::view::test_support::get_element_mut::<Element>(&arena, child)
         .set_stable_id_for_test(root_id);
-    let duplicate =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect_err("duplicate nonzero stable ids cannot prove owning identity");
+    let duplicate = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect_err("duplicate nonzero stable ids cannot prove owning identity");
     assert!(
         duplicate
             .reasons
@@ -140,9 +134,8 @@ fn planner_accepts_retained_baseline_baseline_and_rejects_property_identity_or_r
             }
             _ => unreachable!(),
         }
-        let error =
-            plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-                .expect_err("non-transform property authority must stay out of M10C1");
+        let error = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+            .expect_err("non-transform property authority must stay out of M10C1");
         assert!(error.reasons.iter().any(|reason| match (property, reason) {
             ("clip", FramePaintPlanRejection::ClipBoundary(owner))
             | ("effect", FramePaintPlanRejection::EffectBoundary(owner))
@@ -220,9 +213,8 @@ fn planner_rejects_nonfinite_parented_and_wrong_transform_boundaries() {
         0.0,
         1.0,
     ]);
-    let nonfinite =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect_err("nonfinite transform evidence must fail before recording");
+    let nonfinite = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect_err("nonfinite transform evidence must fail before recording");
     assert!(
         nonfinite
             .reasons
@@ -236,9 +228,8 @@ fn planner_rejects_nonfinite_parented_and_wrong_transform_boundaries() {
         .get_mut(&TransformNodeId(root))
         .expect("root transform")
         .parent = Some(TransformNodeId(child));
-    let parented =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect_err("frame-root transform must be parentless");
+    let parented = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect_err("frame-root transform must be parentless");
     assert!(
         parented
             .reasons
@@ -291,9 +282,8 @@ fn planner_rejects_deferred_unknown_missing_and_cyclic_inputs() {
     );
     crate::view::test_support::get_element_mut::<Element>(&arena, child)
         .apply_style(deferred_style);
-    let deferred =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect_err("deferred subtree changes frame ordering");
+    let deferred = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect_err("deferred subtree changes frame ordering");
     assert!(
         deferred
             .reasons

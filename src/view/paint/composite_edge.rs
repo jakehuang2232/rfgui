@@ -95,8 +95,8 @@ impl PaintCompositeEdge {
             });
         }
         if [x, y, width, height]
-                .into_iter()
-                .any(|value| !value.is_finite())
+            .into_iter()
+            .any(|value| !value.is_finite())
             || width <= 0.0
             || height <= 0.0
             || !(x + width).is_finite()
@@ -110,8 +110,7 @@ impl PaintCompositeEdge {
                 violation: PaintArtifactContractViolation::CompositeBounds,
             });
         }
-        if PaintPayloadIdentity::prepared_rects([&self.op]).as_ref()
-            != Some(&self.payload_identity)
+        if PaintPayloadIdentity::prepared_rects([&self.op]).as_ref() != Some(&self.payload_identity)
         {
             return Err(PaintArtifactContractRejection {
                 owner: self.owner,

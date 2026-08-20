@@ -121,11 +121,7 @@ fn property_effect_stamp_is_arbitrary_depth_and_never_uses_generic_gate() {
         .expect("parent effect stamp");
     }
     assert!(
-        property_effect_surface_raster_stamp_validates_contract_at_depth(
-            &child,
-            &contracts[0],
-            0,
-        )
+        property_effect_surface_raster_stamp_validates_contract_at_depth(&child, &contracts[0], 0,)
     );
     assert!(!retained_surface_raster_stamp_is_canonical_at_depth(
         &child, 0

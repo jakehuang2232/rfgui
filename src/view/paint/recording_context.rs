@@ -309,14 +309,12 @@ impl PaintRecordingContext {
             return false;
         }
         matches!(
-                self.consumed_ancestor_property,
-                Some(ConsumedAncestorProperty::ScrollContents(witness))
-                    if witness.is_canonical_for(owner)
-            )
-            || self.consumed_ancestor_property_stack.is_some_and(|stack| {
-                stack.authorizes_scroll_content_local_owner(owner, self.opacity_authority)
-            })
-            || self.scroll_content_local_owner
+            self.consumed_ancestor_property,
+            Some(ConsumedAncestorProperty::ScrollContents(witness))
+                if witness.is_canonical_for(owner)
+        ) || self.consumed_ancestor_property_stack.is_some_and(|stack| {
+            stack.authorizes_scroll_content_local_owner(owner, self.opacity_authority)
+        }) || self.scroll_content_local_owner
     }
 
     /// One node inside a recording may keep a descendant contents clip. The

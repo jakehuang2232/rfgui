@@ -26,8 +26,7 @@ fn text_area_projection_atomic_wrapper_is_transparent_and_matches_legacy() {
     drop(projection_node);
 
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(
         artifact
@@ -99,9 +98,10 @@ fn atomic_projection_reraster_emission_consumes_host_content_overlay_in_order() 
             plan, &stamp,
         )
         .unwrap();
-    let content = super::super::compiler::emit_validated_scroll_scene_atomic_projection_text_area_host(
-        host, &mut graph, &mut ctx,
-    );
+    let content =
+        super::super::compiler::emit_validated_scroll_scene_atomic_projection_text_area_host(
+            host, &mut graph, &mut ctx,
+        );
     let overlay =
         super::super::compiler::emit_validated_scroll_scene_atomic_projection_text_area_content(
             content, &mut graph, &mut ctx,
@@ -128,9 +128,10 @@ fn atomic_projection_reuse_emission_skips_only_detached_content_compile() {
             plan, &stamp,
         )
         .unwrap();
-    let content = super::super::compiler::emit_validated_scroll_scene_atomic_projection_text_area_host(
-        host, &mut graph, &mut ctx,
-    );
+    let content =
+        super::super::compiler::emit_validated_scroll_scene_atomic_projection_text_area_host(
+            host, &mut graph, &mut ctx,
+        );
     let overlay =
         super::super::compiler::reuse_validated_scroll_scene_atomic_projection_text_area_content(
             content,
@@ -174,10 +175,16 @@ fn focused_atomic_projection_element_admission_is_graph_inert_and_exact() {
         assert!(admission.paint_grammar_for_test().is_canonical());
         assert_eq!(
             admission.artifact_space_transition,
-            admission.paint_grammar_for_test().artifact_space_transition().unwrap(),
+            admission
+                .paint_grammar_for_test()
+                .artifact_space_transition()
+                .unwrap(),
         );
         assert!(admission.bitwise_eq(&admission.clone()));
-        assert_eq!(admission.paint_grammar_for_test().caret.caret_visible, caret_visible);
+        assert_eq!(
+            admission.paint_grammar_for_test().caret.caret_visible,
+            caret_visible
+        );
         assert!(matches!(
             (&admission.paint_grammar_for_test().caret.paint, caret_visible),
             (
@@ -196,10 +203,13 @@ fn focused_atomic_projection_element_admission_is_graph_inert_and_exact() {
             "existing non-focused atomic admission must remain closed",
         );
         assert!(
-            crate::view::paint::exact_retained_scroll_interactive_text_area_subtree_admission(root_element,
-                    root, &arena, 1.0,
-                )
-                .is_none(),
+            crate::view::paint::exact_retained_scroll_interactive_text_area_subtree_admission(
+                root_element,
+                root,
+                &arena,
+                1.0,
+            )
+            .is_none(),
             "generated-run interactive admission must remain projection-free",
         );
         drop(root_node);
@@ -383,9 +393,11 @@ fn focused_atomic_projection_scroll_scene_plan_is_canonical_and_live_exact() {
             text_area.cursor_char = cursor_char;
         }
         let (properties, generations) = sync_identity(&arena, &[root]);
-        let budget =
-            super::super::scroll_scene::ScrollSceneSingleTextureBudget::new(8192, 128 * 1024 * 1024)
-                .unwrap();
+        let budget = super::super::scroll_scene::ScrollSceneSingleTextureBudget::new(
+            8192,
+            128 * 1024 * 1024,
+        )
+        .unwrap();
         let sampled_at = crate::time::Instant::now();
         let plan = super::super::scroll_scene::plan_property_scroll_scene_scaffold(
             &arena,
@@ -402,12 +414,6 @@ fn focused_atomic_projection_scroll_scene_plan_is_canonical_and_live_exact() {
         .expect("focused atomic projection shell must plan as a property-scroll scene");
 
         assert!(plan.is_canonical());
-        assert!(plan.matches_live_inputs(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            sampled_at,
-        ));
+        assert!(plan.matches_live_inputs(&arena, &[root], &properties, &generations, sampled_at,));
     }
 }

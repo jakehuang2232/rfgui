@@ -18,6 +18,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
+use super::coverage_manifest::record_legacy_text_area_coverage_manifest;
 use super::frame_recorder::{
     ForcedFrameArtifactError, FrameArtifactDebugBoundary, FrameArtifactDebugBoundaryKind,
     FrameArtifactEligibility, FrameArtifactFallbackReason, FrameArtifactRecordOutcome,
@@ -25,24 +26,22 @@ use super::frame_recorder::{
 };
 use super::legacy_admission::{
     PaintLegacyTextAreaCoverageAuthority,
-    RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
-    RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
-    RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
-    RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
-    RetainedScrollTextAreaSubtreeAdmissionSnapshot,
     PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
     PaintScrollAtomicProjectionTextAreaRecorderWitness as AtomicProjectionRecorderWitness,
     PaintScrollDetachedProjectionSubtreeWitness,
     PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
     PaintScrollInteractiveTextAreaSubtreeWitness, PaintScrollTextAreaSubtreeWitness,
+    RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
+    RetainedScrollTextAreaSubtreeAdmissionSnapshot,
 };
-use super::coverage_manifest::record_legacy_text_area_coverage_manifest;
 use super::{
-    CoverageRecordingMode, PaintCoverageItem,
-    PaintArtifactTarget, PaintBakedScrollHostWitness, PaintCompositeEdge,
-    PaintOpacityAuthority, RendererMode, TextPreeditPayloadIdentity,
-    PaintArtifact, PaintChunk, PaintCoverageValidationError, PaintRecordingContext,
-    PaintScrollContentWitness,
+    CoverageRecordingMode, PaintArtifact, PaintArtifactTarget, PaintBakedScrollHostWitness,
+    PaintChunk, PaintCompositeEdge, PaintCoverageItem, PaintCoverageValidationError,
+    PaintOpacityAuthority, PaintRecordingContext, PaintScrollContentWitness, RendererMode,
+    TextPreeditPayloadIdentity,
 };
 
 fn replace_owner_topology_with_property_endpoints(
@@ -113,9 +112,6 @@ impl RetainedAtomicProjectionChunkLiveRasterOracle {
     }
 }
 
-
-
-
 pub(super) fn normalize_atomic_projection_selection_chunk(
     artifact: &mut PaintArtifact,
     oracle: &mut RetainedAtomicProjectionSelectionTextAreaLiveRasterOracle,
@@ -147,14 +143,11 @@ pub(super) fn normalize_atomic_projection_selection_chunk(
         return None;
     }
     let seal = sealed.text_selection_identity()?;
-    source
-        .validate_payload_for_owner(chunk.owner, &seal)
-        .ok()?;
+    source.validate_payload_for_owner(chunk.owner, &seal).ok()?;
     chunk.payload_identity = sealed.clone();
     oracle_chunk.payload_identity = sealed;
     Some(seal)
 }
-
 
 fn artifact_without_chunk(mut artifact: PaintArtifact, index: usize) -> Option<PaintArtifact> {
     let chunk = artifact.chunks.get(index)?.clone();
@@ -352,7 +345,9 @@ impl RecordedRetainedAtomicProjectionSelectionTextAreaHost {
     }
 
     pub(crate) fn tamper_source_line_for_test(mut self) -> Self {
-        self.raster_oracle.artifact_source.projection_text_bounds_bits[0] ^= 1;
+        self.raster_oracle
+            .artifact_source
+            .projection_text_bounds_bits[0] ^= 1;
         self
     }
 }
@@ -406,7 +401,9 @@ impl RecordedRetainedAtomicProjectionSelectionTextAreaSubtree {
     }
 
     pub(crate) fn tamper_source_line_for_test(mut self) -> Self {
-        self.raster_oracle.artifact_source.projection_text_bounds_bits[0] ^= 1;
+        self.raster_oracle
+            .artifact_source
+            .projection_text_bounds_bits[0] ^= 1;
         self
     }
 }
@@ -608,7 +605,6 @@ impl RecordedRetainedFocusedAtomicProjectionTextAreaSubtree {
     ) -> &crate::view::base_component::text_area::FocusedAtomicCaretSourceSeal {
         &self.caret
     }
-
 }
 
 #[cfg(test)]
@@ -825,12 +821,8 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
     else {
         return None;
     };
-    let selection = local_selection
-        .payload_identity
-        .text_selection_identity()?;
-    host_selection
-        .payload_identity
-        .text_selection_identity()?;
+    let selection = local_selection.payload_identity.text_selection_identity()?;
+    host_selection.payload_identity.text_selection_identity()?;
     if !host_selection
         .payload_identity
         .matches_text_selection_source(
@@ -964,8 +956,12 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
         .map(f32::to_bits)
             != host.source_bounds_bits
         || !host_wrapper.properties.legacy_boundary_eq(outer_state)
-        || !host_selection.properties.legacy_boundary_eq(host_local_state)
-        || !host_root_glyph.properties.legacy_boundary_eq(host_local_state)
+        || !host_selection
+            .properties
+            .legacy_boundary_eq(host_local_state)
+        || !host_root_glyph
+            .properties
+            .legacy_boundary_eq(host_local_state)
         || !host_projection_glyph
             .properties
             .legacy_boundary_eq(host_local_state)
@@ -986,8 +982,7 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_authority(
         || host_selection.id.role != super::PaintChunkRole::SelectionUnderlay
         || host_selection.id.slot != 0
         || host_root_glyph.owner != text_area_root
-        || host_projection_glyph.owner
-            != local.raster_oracle.artifact_source.projection_text_owner
+        || host_projection_glyph.owner != local.raster_oracle.artifact_source.projection_text_owner
         || [
             host_projection_glyph.bounds.x,
             host_projection_glyph.bounds.y,
@@ -1217,11 +1212,7 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
     let preedit_before = if admission.paint_source.has_preedit() {
         Some(
             text_area
-                .text_preedit_payload_identity(
-                    text_area_root,
-                    arena,
-                    detached_paint_offset,
-                )
+                .text_preedit_payload_identity(text_area_root, arena, detached_paint_offset)
                 .ok_or_else(|| invalid(text_area_root))?,
         )
     } else {
@@ -1259,18 +1250,13 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
     let preedit_after = if admission.paint_source.has_preedit() {
         Some(
             text_area
-                .text_preedit_payload_identity(
-                    text_area_root,
-                    arena,
-                    detached_paint_offset,
-                )
+                .text_preedit_payload_identity(text_area_root, arena, detached_paint_offset)
                 .ok_or_else(|| invalid(text_area_root))?,
         )
     } else {
         None
     };
-    if caret_before != caret_after || preedit_before != preedit_after
-    {
+    if caret_before != caret_after || preedit_before != preedit_after {
         return Err(vec![FrameArtifactFallbackReason::Validation(
             PaintCoverageValidationError::RecordingPassMismatch,
         )]);
@@ -1393,12 +1379,11 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
                 return Err(invalid(content_root));
             };
             if !rect_chunk_matches(
-                    selection,
-                    super::PaintNodePhase::BeforeChildren,
-                    0,
-                    super::PaintChunkRole::SelectionUnderlay,
-                )
-                || !glyph_matches(glyph)
+                selection,
+                super::PaintNodePhase::BeforeChildren,
+                0,
+                super::PaintChunkRole::SelectionUnderlay,
+            ) || !glyph_matches(glyph)
             {
                 return Err(invalid(content_root));
             }
@@ -1410,11 +1395,11 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
             };
             if !glyph_matches(glyph)
                 || !rect_chunk_matches(
-                        underline,
-                        super::PaintNodePhase::AfterChildren,
-                        0,
-                        super::PaintChunkRole::TextDecoration,
-                    )
+                    underline,
+                    super::PaintNodePhase::AfterChildren,
+                    0,
+                    super::PaintChunkRole::TextDecoration,
+                )
             {
                 return Err(invalid(content_root));
             }
@@ -1428,15 +1413,16 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
         }
     };
     if let Some(selection_source) = admission.paint_source.selection() {
-        let mut selection_indices = artifact
-            .chunks
-            .iter()
-            .enumerate()
-            .filter_map(|(index, chunk)| {
-                (chunk.owner == text_area_root
-                    && chunk.id.role == super::PaintChunkRole::SelectionUnderlay)
-                    .then_some(index)
-            });
+        let mut selection_indices =
+            artifact
+                .chunks
+                .iter()
+                .enumerate()
+                .filter_map(|(index, chunk)| {
+                    (chunk.owner == text_area_root
+                        && chunk.id.role == super::PaintChunkRole::SelectionUnderlay)
+                        .then_some(index)
+                });
         let selection_index = selection_indices
             .next()
             .filter(|_| selection_indices.next().is_none())
@@ -1627,7 +1613,6 @@ impl RetainedAtomicProjectionTextAreaLiveRasterOracle {
     }
 }
 
-
 // ---- legacy record/validate bridge (moved from frame_recorder.rs) ----
 
 pub(super) fn validate_recorded_atomic_projection_selection_text_area_plan_parts(
@@ -1668,8 +1653,6 @@ pub(super) fn validate_recorded_atomic_projection_selection_text_area_plan_parts
         selection,
     )
 }
-
-
 
 pub(super) fn record_baked_scroll_atomic_projection_text_area_subtree_host_artifact_for_plan(
     arena: &NodeArena,
@@ -2433,7 +2416,6 @@ pub(super) fn record_baked_scroll_atomic_projection_selection_text_area_subtree_
     })
 }
 
-
 fn record_atomic_projection_live_raster_oracle(
     arena: &NodeArena,
     roots: &[NodeKey],
@@ -2602,7 +2584,6 @@ fn record_atomic_projection_selection_live_raster_oracle(
     })
 }
 
-
 pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
     arena: &NodeArena,
     property_trees: &PropertyTrees,
@@ -2729,8 +2710,7 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
             .copied(),
     );
 
-    let authority =
-        PaintLegacyTextAreaCoverageAuthority::AtomicProjectionLocal(recorder_authority);
+    let authority = PaintLegacyTextAreaCoverageAuthority::AtomicProjectionLocal(recorder_authority);
     let oracle_context = PaintRecordingContext {
         paint_offset: recorder_authority.outer().normalization_paint_offset(),
         required_scroll_content_paint_offset_bits: Some(required_paint_offset.map(f32::to_bits)),
@@ -2849,7 +2829,6 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         raster_oracle: raster_before,
     })
 }
-
 
 pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_artifact_for_plan(
     arena: &NodeArena,
@@ -2978,8 +2957,7 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
             .copied(),
     );
 
-    let authority =
-        PaintLegacyTextAreaCoverageAuthority::AtomicProjectionLocal(recorder_authority);
+    let authority = PaintLegacyTextAreaCoverageAuthority::AtomicProjectionLocal(recorder_authority);
     let oracle_context = PaintRecordingContext {
         paint_offset: recorder_authority.outer().normalization_paint_offset(),
         required_scroll_content_paint_offset_bits: Some(required_paint_offset.map(f32::to_bits)),
@@ -3144,7 +3122,6 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
     })
 }
 
-
 pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
     arena: &NodeArena,
     property_trees: &PropertyTrees,
@@ -3273,8 +3250,7 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
             .iter()
             .copied(),
     );
-    let authority =
-        PaintLegacyTextAreaCoverageAuthority::AtomicProjectionLocal(recorder_authority);
+    let authority = PaintLegacyTextAreaCoverageAuthority::AtomicProjectionLocal(recorder_authority);
     let oracle_context = PaintRecordingContext {
         paint_offset: recorder_authority.outer().normalization_paint_offset(),
         required_scroll_content_paint_offset_bits: Some(required_paint_offset.map(f32::to_bits)),
@@ -3441,7 +3417,6 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         raster_oracle: raster_before,
     })
 }
-
 
 pub(super) fn record_baked_scroll_interactive_text_area_subtree_host_artifact_for_plan(
     arena: &NodeArena,
@@ -4387,16 +4362,17 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
     ) else {
         return Err(invalid(content_root));
     };
-    let chunks_match_grammar = wrapper_matches(wrapper) && match admission.paint_source {
-        super::PaintTextContentSource::Glyphs => {
-            matches!(semantic, [glyph] if glyph_matches(glyph))
-        }
-        super::PaintTextContentSource::Selection(_) => {
-            matches!(semantic, [selection, glyph]
+    let chunks_match_grammar = wrapper_matches(wrapper)
+        && match admission.paint_source {
+            super::PaintTextContentSource::Glyphs => {
+                matches!(semantic, [glyph] if glyph_matches(glyph))
+            }
+            super::PaintTextContentSource::Selection(_) => {
+                matches!(semantic, [selection, glyph]
                 if selection_matches(selection) && glyph_matches(glyph))
-        }
-        super::PaintTextContentSource::Preedit => false,
-    };
+            }
+            super::PaintTextContentSource::Preedit => false,
+        };
     if !matches!(artifact.target, PaintArtifactTarget::CurrentTarget)
         || artifact.effect_nodes.len() != 0
         || artifact.clip_nodes.as_slice() != [witness.local_contents_clip()]
@@ -4417,7 +4393,6 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
     }
     Ok(artifact)
 }
-
 
 // ---- recorder internals relocated out of the durable frame recorder ----
 //
@@ -4928,7 +4903,6 @@ fn record_legacy_text_area_frame_artifact(
         eligibility,
     )
 }
-
 
 /// Descendant-scroll content recorder for the one content subtree that still
 /// carries an exact detached TextArea clip. The generic sibling in

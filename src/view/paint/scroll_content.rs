@@ -50,12 +50,16 @@ impl PreparedScrollTransformContentCompositeGeometry {
             || transform.id.0 != transform.owner
             || transform.parent.is_some()
             || transform.generation == 0
-            || transform.owner_viewport_transform.to_cols_array().map(f32::to_bits)
+            || transform
+                .owner_viewport_transform
+                .to_cols_array()
+                .map(f32::to_bits)
                 != transform_geometry
                     .viewport_transform
                     .to_cols_array()
                     .map(f32::to_bits)
-            || super::compiler::direct_translation_bits(transform.owner_viewport_transform).is_none()
+            || super::compiler::direct_translation_bits(transform.owner_viewport_transform)
+                .is_none()
             || transform_geometry.outer_scissor_rect.is_some()
             || !scroll.has_canonical_vertical_geometry_with_contents_clip(contents_clip)
             || scroll.owner != scroll.id.0
@@ -201,12 +205,8 @@ impl PreparedScrollContentCompositeGeometry {
         }
         let mut composite_scissor = outer_scissor;
         for (index, (scroll, clip)) in boundaries.iter().copied().enumerate() {
-            let parent_scroll = index
-                .checked_sub(1)
-                .map(|parent| boundaries[parent].0.id);
-            let parent_clip = index
-                .checked_sub(1)
-                .map(|parent| boundaries[parent].1.id);
+            let parent_scroll = index.checked_sub(1).map(|parent| boundaries[parent].0.id);
+            let parent_clip = index.checked_sub(1).map(|parent| boundaries[parent].1.id);
             if !scroll.has_canonical_geometry_with_contents_clip_parent_ids(
                 clip,
                 parent_scroll,
@@ -228,7 +228,10 @@ impl PreparedScrollContentCompositeGeometry {
             leaf_scroll.layout_content_bounds_at_zero.width,
             leaf_scroll.layout_content_bounds_at_zero.height,
         ];
-        if source.into_iter().chain(world).any(|value| !value.is_finite())
+        if source
+            .into_iter()
+            .chain(world)
+            .any(|value| !value.is_finite())
             || source[0] < 0.0
             || source[1] < 0.0
             || source[2] <= 0.0
@@ -241,7 +244,9 @@ impl PreparedScrollContentCompositeGeometry {
             || !(world[1] + world[3]).is_finite()
             || source[2].to_bits() != world[2].to_bits()
             || source[3].to_bits() != world[3].to_bits()
-            || incoming_paint_offset.into_iter().any(|value| !value.is_finite())
+            || incoming_paint_offset
+                .into_iter()
+                .any(|value| !value.is_finite())
             || !leaf_scroll.offset.x.is_finite()
             || !leaf_scroll.offset.y.is_finite()
         {

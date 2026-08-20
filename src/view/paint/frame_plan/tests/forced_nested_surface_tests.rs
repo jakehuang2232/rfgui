@@ -67,9 +67,8 @@ fn forced_nested_outer_scissor_applies_only_to_parent_final_composite() {
 fn forced_nested_child_transform_only_freezes_parent_reraster_child_reuse() {
     let (arena, root, _before, child, _descendant, _after, mut properties, mut generations) =
         nested_exact_transform_fixture();
-    let baseline =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("baseline nested plan");
+    let baseline = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect("baseline nested plan");
     let mut viewport = Viewport::new();
     let mut first_graph = FrameGraph::new();
     let mut first_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -163,9 +162,8 @@ fn forced_nested_child_transform_only_freezes_parent_reraster_child_reuse() {
 fn forced_nested_parent_transform_only_reuses_whole_tree_without_child_composite() {
     let (arena, root, _before, _child, _descendant, _after, mut properties, mut generations) =
         nested_exact_transform_fixture();
-    let baseline =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("baseline nested plan");
+    let baseline = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect("baseline nested plan");
     let mut viewport = Viewport::new();
     commit_forced_nested_plan(&mut viewport, &baseline);
 
@@ -373,9 +371,8 @@ fn forced_nested_child_pool_miss_reraster_materializes_without_touching_cached_p
 fn forced_nested_parent_and_child_paint_changes_freeze_r_u_and_r_r() {
     let (arena, root, _before, _child, _descendant, _after, mut properties, mut generations) =
         nested_exact_transform_fixture();
-    let baseline =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("parent-paint baseline");
+    let baseline = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect("parent-paint baseline");
     let mut viewport = Viewport::new();
     commit_forced_nested_plan(&mut viewport, &baseline);
     crate::view::test_support::get_element_mut::<Element>(&arena, root)
@@ -415,9 +412,8 @@ fn forced_nested_parent_and_child_paint_changes_freeze_r_u_and_r_r() {
 
     let (arena, root, _before, child, _descendant, _after, mut properties, mut generations) =
         nested_exact_transform_fixture();
-    let baseline =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("child-paint baseline");
+    let baseline = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect("child-paint baseline");
     let mut viewport = Viewport::new();
     commit_forced_nested_plan(&mut viewport, &baseline);
     crate::view::test_support::get_element_mut::<Element>(&arena, child)
@@ -458,8 +454,7 @@ fn forced_nested_parent_and_child_paint_changes_freeze_r_u_and_r_r() {
 
 #[test]
 fn nested_transform_shape_and_affine_rejections_fail_closed() {
-    let (arena, root, before, _child, _descendant, _after, _, _) =
-        nested_exact_transform_fixture();
+    let (arena, root, before, _child, _descendant, _after, _, _) = nested_exact_transform_fixture();
     crate::view::test_support::get_element_mut::<Element>(&arena, before)
         .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
             5.0, 0.0, 0.0,
@@ -468,17 +463,15 @@ fn nested_transform_shape_and_affine_rejections_fail_closed() {
     properties.sync(&arena, &[root]);
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &[root], &properties);
-    let multiple =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect_err("two direct transformed children exceed the C5A1 exact shape");
+    let multiple = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect_err("two direct transformed children exceed the C5A1 exact shape");
     assert!(
         multiple
             .reasons
             .contains(&FramePaintPlanRejection::TransformNodeCount(3))
     );
 
-    let (arena, root, _before, child, descendant, _after, _, _) =
-        nested_exact_transform_fixture();
+    let (arena, root, _before, child, descendant, _after, _, _) = nested_exact_transform_fixture();
     crate::view::test_support::get_element_mut::<Element>(&arena, child)
         .set_resolved_transform_for_test(None);
     crate::view::test_support::get_element_mut::<Element>(&arena, descendant)
@@ -515,9 +508,8 @@ fn nested_transform_shape_and_affine_rejections_fail_closed() {
         .as_mut()
         .expect("derived child transform")
         .owner_viewport_transform = glam::Mat4::from_cols_array(&perspective);
-    let non_affine =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect_err("perspective child matrix is outside C5A1");
+    let non_affine = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect_err("perspective child matrix is outside C5A1");
     assert!(
         non_affine
             .reasons
@@ -533,13 +525,9 @@ fn nested_transform_shape_and_affine_rejections_fail_closed() {
         .derived_projection
         .as_mut()
         .expect("derived child transform")
-        .owner_viewport_transform =
-        glam::Mat4::from_translation(glam::Vec3::new(31.0, 0.0, 0.0));
-    let mismatched =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect_err(
-                "planned C must match the Element canonical geometry matrix bit-for-bit",
-            );
+        .owner_viewport_transform = glam::Mat4::from_translation(glam::Vec3::new(31.0, 0.0, 0.0));
+    let mismatched = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect_err("planned C must match the Element canonical geometry matrix bit-for-bit");
     assert_eq!(
         mismatched.reasons,
         vec![FramePaintPlanRejection::InvalidRootTransform(child)]
@@ -634,12 +622,13 @@ fn nested_stamp_tracks_child_raster_and_composite_geometry_but_not_parent_transf
     let parent_transform_plan =
         plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
             .expect("parent transform-only nested plan");
-    let parent_transform_stamp = super::super::super::prepare_forced_retained_surface_stamp_for_test(
-        &parent_transform_plan,
-        &FrameGraph::new(),
-        &ctx,
-    )
-    .expect("parent transform-only stamp");
+    let parent_transform_stamp =
+        super::super::super::prepare_forced_retained_surface_stamp_for_test(
+            &parent_transform_plan,
+            &FrameGraph::new(),
+            &ctx,
+        )
+        .expect("parent transform-only stamp");
     assert_eq!(
         parent_transform_stamp, baseline,
         "parent final composite transform stays outside its own raster stamp"
@@ -655,12 +644,13 @@ fn nested_stamp_tracks_child_raster_and_composite_geometry_but_not_parent_transf
     let child_transform_plan =
         plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
             .expect("child transform-only nested plan");
-    let child_transform_stamp = super::super::super::prepare_forced_retained_surface_stamp_for_test(
-        &child_transform_plan,
-        &FrameGraph::new(),
-        &ctx,
-    )
-    .expect("child transform-only stamp");
+    let child_transform_stamp =
+        super::super::super::prepare_forced_retained_surface_stamp_for_test(
+            &child_transform_plan,
+            &FrameGraph::new(),
+            &ctx,
+        )
+        .expect("child transform-only stamp");
     assert_eq!(
         child_stamp(&child_transform_stamp),
         child_stamp(&baseline),

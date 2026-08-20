@@ -122,8 +122,8 @@ fn forbidden_symbol_counts(source: &str) -> (usize, usize, usize) {
         .iter()
         .map(|name| source.matches(name).count())
         .sum();
-    let imports = source.matches("legacy_admission").count()
-        + source.matches("legacy_recording").count();
+    let imports =
+        source.matches("legacy_admission").count() + source.matches("legacy_recording").count();
     (legacy_exports, variants, imports)
 }
 
@@ -162,7 +162,10 @@ fn producers_are_component_independent() {
     for (name, source) in [
         ("artifact.rs", include_str!("../artifact.rs")),
         ("frame_recorder.rs", include_str!("../frame_recorder.rs")),
-        ("recording_context.rs", include_str!("../recording_context.rs")),
+        (
+            "recording_context.rs",
+            include_str!("../recording_context.rs"),
+        ),
     ] {
         assert_eq!(
             declared_text_area_types(source),
@@ -249,17 +252,27 @@ fn recording_context_capabilities_are_behavior_named() {
             if !name.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
                 return None;
             }
-            ["text_area", "atomic_projection", "interactive", "baked_scroll"]
-                .iter()
-                .any(|shape| name.contains(shape))
-                .then(|| name.to_string())
+            [
+                "text_area",
+                "atomic_projection",
+                "interactive",
+                "baked_scroll",
+            ]
+            .iter()
+            .any(|shape| name.contains(shape))
+            .then(|| name.to_string())
         })
         .collect();
     assert_eq!(
         shape_named,
-        ["inside_text_area", "text_area_selection", "text_area_preedit", "baked_scroll_host"]
-            .map(str::to_string)
-            .to_vec(),
+        [
+            "inside_text_area",
+            "text_area_selection",
+            "text_area_preedit",
+            "baked_scroll_host"
+        ]
+        .map(str::to_string)
+        .to_vec(),
         "a new capability field must be named for the behavior it authorizes, not the grammar it serves",
     );
 }
@@ -352,37 +365,38 @@ fn scroll_scene_planner_constructs_no_component_grammar() {
 /// survive, so the deletion cannot be partial.
 #[test]
 fn stage_c_deletion_inventory_keeps_legacy_modules_compile_time_linked() {
-    let linked_admission_types: std::collections::BTreeSet<String> = [
-        register_stage_c_deletion_type::<PaintScrollTextAreaSubtreeWitness>(),
-        register_stage_c_deletion_type::<PaintScrollInteractiveTextAreaSubtreeWitness>(),
-        register_stage_c_deletion_type::<PaintScrollAtomicProjectionTextAreaRecorderWitness>(),
-        register_stage_c_deletion_type::<
-            PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
-        >(),
-        register_stage_c_deletion_type::<
-            PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
-        >(),
-        register_stage_c_deletion_type::<PaintScrollDetachedProjectionSubtreeWitness>(),
-        register_stage_c_deletion_type::<RetainedInteractiveTextAreaResidentRasterSeal>(),
-        register_stage_c_deletion_type::<PaintLegacyTextAreaCoverageAuthority>(),
-        register_stage_c_deletion_type::<LegacyTextAreaProjection>(),
-        register_stage_c_deletion_type::<RetainedScrollTextAreaSubtreeAdmissionSnapshot>(),
-        register_stage_c_deletion_type::<
-            RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
-        >(),
-        register_stage_c_deletion_type::<
-            RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
-        >(),
-        register_stage_c_deletion_type::<
-            RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
-        >(),
-        register_stage_c_deletion_type::<
-            RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
-        >(),
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
+    let linked_admission_types: std::collections::BTreeSet<String> =
+        [
+            register_stage_c_deletion_type::<PaintScrollTextAreaSubtreeWitness>(),
+            register_stage_c_deletion_type::<PaintScrollInteractiveTextAreaSubtreeWitness>(),
+            register_stage_c_deletion_type::<PaintScrollAtomicProjectionTextAreaRecorderWitness>(),
+            register_stage_c_deletion_type::<
+                PaintScrollAtomicProjectionSelectionTextAreaSubtreeWitness,
+            >(),
+            register_stage_c_deletion_type::<
+                PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
+            >(),
+            register_stage_c_deletion_type::<PaintScrollDetachedProjectionSubtreeWitness>(),
+            register_stage_c_deletion_type::<RetainedInteractiveTextAreaResidentRasterSeal>(),
+            register_stage_c_deletion_type::<PaintLegacyTextAreaCoverageAuthority>(),
+            register_stage_c_deletion_type::<LegacyTextAreaProjection>(),
+            register_stage_c_deletion_type::<RetainedScrollTextAreaSubtreeAdmissionSnapshot>(),
+            register_stage_c_deletion_type::<
+                RetainedScrollInteractiveTextAreaSubtreeAdmissionSnapshot,
+            >(),
+            register_stage_c_deletion_type::<
+                RetainedScrollAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+            >(),
+            register_stage_c_deletion_type::<
+                RetainedScrollAtomicProjectionSelectionTextAreaSubtreeAdmissionSnapshot,
+            >(),
+            register_stage_c_deletion_type::<
+                RetainedScrollFocusedAtomicProjectionTextAreaSubtreeAdmissionSnapshot,
+            >(),
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     assert_eq!(
         linked_admission_types,
         super::module_visible_top_level_type_names(include_str!("../legacy_admission.rs")),
@@ -460,9 +474,7 @@ fn legacy_oracle_data_fields_stay_private() {
     let offenders: Vec<&str> = include_str!("../legacy_recording.rs")
         .lines()
         .map(str::trim_end)
-        .filter(|line| {
-            line.starts_with("    pub(super) ") || line.starts_with("    pub(crate) ")
-        })
+        .filter(|line| line.starts_with("    pub(super) ") || line.starts_with("    pub(crate) "))
         .filter(|line| !line.contains("fn "))
         .collect();
     assert_eq!(

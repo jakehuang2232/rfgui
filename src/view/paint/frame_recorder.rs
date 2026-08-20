@@ -23,8 +23,8 @@ use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::coverage_manifest::{
-    NativeScrollContentReceiverCutout,
-    exact_deferred_viewport_self_clip_witness, record_retained_coverage_manifest_with_context,
+    NativeScrollContentReceiverCutout, exact_deferred_viewport_self_clip_witness,
+    record_retained_coverage_manifest_with_context,
     record_retained_coverage_manifest_with_native_scroll_receiver,
     record_retained_coverage_manifest_with_property_authorities,
 };
@@ -61,7 +61,6 @@ pub(crate) enum FrameArtifactFallbackReason {
     DeferredBoundary(NodeKey),
     Validation(PaintCoverageValidationError),
 }
-
 
 /// B1 typed compiler bridge. The validated pair is consumed in one step and
 /// only an opaque fixed H/content/O plan authority can escape.
@@ -257,8 +256,6 @@ pub(super) fn record_baked_scroll_host_artifact_for_plan(
         Err(error) => Err(error.reasons),
     }
 }
-
-
 
 /// C3a full host grammar.  It is deliberately graph-inert: callers may test
 /// and validate this artifact, but no scroll-scene selector consumes it.
@@ -686,7 +683,6 @@ pub(super) fn record_generalized_scroll_content_artifact_for_plan(
         .then_some(artifact)
         .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(content_root)])
 }
-
 
 pub(super) fn record_scroll_content_local_artifact_with_stack_for_plan(
     arena: &NodeArena,
@@ -1819,9 +1815,7 @@ pub(super) fn record_same_owner_transform_effect_scroll_outer_steps_for_plan(
     {
         return Err(invalid());
     }
-    Ok(vec![RecordedTransformSurfaceStep::Boundary(
-        effect_cutout,
-    )])
+    Ok(vec![RecordedTransformSurfaceStep::Boundary(effect_cutout)])
 }
 
 /// Inner marker-only E receiver paired with the outer same-owner T receiver.
@@ -1877,9 +1871,7 @@ pub(super) fn record_same_owner_transform_effect_scroll_effect_steps_for_plan(
     {
         return Err(invalid());
     }
-    Ok(vec![RecordedTransformSurfaceStep::Boundary(
-        scroll_cutout,
-    )])
+    Ok(vec![RecordedTransformSurfaceStep::Boundary(scroll_cutout)])
 }
 
 /// Records one canonical effect surface at any property-forest depth. Direct
@@ -2680,30 +2672,29 @@ fn record_frame_artifact_with_policy_and_stack(
             },
         ));
     }
-    let initial_recording_context =
-        PaintRecordingContext {
-            paint_offset: match policy {
-                FrameArtifactAuthorityPolicy::ScrollContentLocal(witness)
-                | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(witness, _) => {
-                    witness.normalization_paint_offset()
-                }
-                _ => [0.0, 0.0],
-            },
-            consumed_ancestor_property: match policy {
-                FrameArtifactAuthorityPolicy::ScrollContentLocal(witness)
-                | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(witness, _) => {
-                    consumed_ancestor_property_stack
-                        .is_none()
-                        .then(|| witness.consumed_property())
-                }
-                _ => consumed_ancestor_property,
-            },
-            consumed_ancestor_property_stack,
-            required_scroll_content_paint_offset_bits,
-            opacity_authority: if let Some(effect) = neutral_effect_authority {
-                PaintOpacityAuthority::NeutralRootEffect(effect)
-            } else {
-                match policy {
+    let initial_recording_context = PaintRecordingContext {
+        paint_offset: match policy {
+            FrameArtifactAuthorityPolicy::ScrollContentLocal(witness)
+            | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(witness, _) => {
+                witness.normalization_paint_offset()
+            }
+            _ => [0.0, 0.0],
+        },
+        consumed_ancestor_property: match policy {
+            FrameArtifactAuthorityPolicy::ScrollContentLocal(witness)
+            | FrameArtifactAuthorityPolicy::ScrollContentEffectReceiver(witness, _) => {
+                consumed_ancestor_property_stack
+                    .is_none()
+                    .then(|| witness.consumed_property())
+            }
+            _ => consumed_ancestor_property,
+        },
+        consumed_ancestor_property_stack,
+        required_scroll_content_paint_offset_bits,
+        opacity_authority: if let Some(effect) = neutral_effect_authority {
+            PaintOpacityAuthority::NeutralRootEffect(effect)
+        } else {
+            match policy {
                 FrameArtifactAuthorityPolicy::RootOpacityGroup(plan) => {
                     PaintOpacityAuthority::NeutralRootEffect(plan.effect)
                 }
@@ -2724,10 +2715,10 @@ fn record_frame_artifact_with_policy_and_stack(
                     PaintOpacityAuthority::Baked
                 }
             }
-            },
-            baked_scroll_host: baked_scroll_host_witness(policy),
-            ..PaintRecordingContext::default()
-        };
+        },
+        baked_scroll_host: baked_scroll_host_witness(policy),
+        ..PaintRecordingContext::default()
+    };
     let planned_boundary_cutouts = super::PlannedBoundaryCutoutSet::default();
     let preflight = record_retained_coverage_manifest_with_context(
         arena,

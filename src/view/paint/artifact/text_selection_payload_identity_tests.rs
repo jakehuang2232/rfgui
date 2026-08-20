@@ -90,9 +90,11 @@ fn selection_payload_synchronized_public_fields_still_require_live_source_parity
         ..expected_source
     };
 
-    assert!(synchronized
-        .validate_exact_ops_for_owner(owner, &[op])
-        .is_ok());
+    assert!(
+        synchronized
+            .validate_exact_ops_for_owner(owner, &[op])
+            .is_ok()
+    );
     assert!(synchronized_source.matches_payload(&synchronized));
     assert_eq!(
         expected_source.validate_payload_for_owner(owner, &synchronized),

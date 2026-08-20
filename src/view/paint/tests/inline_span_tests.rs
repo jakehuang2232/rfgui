@@ -2,12 +2,10 @@ use super::*;
 
 #[test]
 fn wrapping_inline_span_owns_typed_decoration_before_text_and_matches_legacy() {
-    let (arena, roots, span_key, text_key, fragment_count) =
-        prepared_wrapping_inline_span_tree();
+    let (arena, roots, span_key, text_key, fragment_count) = prepared_wrapping_inline_span_tree();
     let (properties, generations) = sync_identity(&arena, &roots);
     take_full_artifact_record_count();
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(artifact.chunks.len(), 2);
     assert_eq!(artifact.chunks[0].owner, span_key);
@@ -28,8 +26,7 @@ fn wrapping_inline_span_owns_typed_decoration_before_text_and_matches_legacy() {
 
     let artifact_rects = compiled_whole_frame_graph(&artifact).test_rect_pass_snapshots();
     let (legacy_arena, legacy_roots, _, _, _) = prepared_wrapping_inline_span_tree();
-    let legacy_rects =
-        legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
+    let legacy_rects = legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
     assert_eq!(artifact_rects, legacy_rects);
 }
 
@@ -97,8 +94,7 @@ fn wrapping_inline_span_shadows_preserve_fragment_order_and_match_legacy() {
                 && decoration_ids.len() == fragment_count
     ));
 
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(artifact.chunks[0].owner, span_key);
     assert_eq!(artifact.chunks[1].owner, text_key);
@@ -221,15 +217,13 @@ fn sampled_inline_span_layout_transition_keeps_metadata_full_and_legacy_parity()
     );
     assert!(canonical_manifest_matches_for_test(&metadata, &full));
 
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     let artifact_rects = compiled_whole_frame_graph(&artifact).test_rect_pass_snapshots();
 
     let (legacy_arena, legacy_roots, legacy_span, _, _) = prepared_wrapping_inline_span_tree();
     sample_transition(&legacy_arena, legacy_span);
-    let legacy_rects =
-        legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
+    let legacy_rects = legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
     assert_eq!(artifact_rects, legacy_rects);
 }
 
@@ -237,8 +231,7 @@ fn sampled_inline_span_layout_transition_keeps_metadata_full_and_legacy_parity()
 fn nested_inline_spans_preserve_source_owner_dfs_and_legacy_rect_order() {
     let (arena, roots, expected_owners) = prepared_nested_inline_span_tree();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(
         artifact
@@ -258,8 +251,7 @@ fn nested_inline_spans_preserve_source_owner_dfs_and_legacy_rect_order() {
     ));
     let artifact_rects = compiled_whole_frame_graph(&artifact).test_rect_pass_snapshots();
     let (legacy_arena, legacy_roots, _) = prepared_nested_inline_span_tree();
-    let legacy_rects =
-        legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
+    let legacy_rects = legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
     assert_eq!(artifact_rects, legacy_rects);
 }
 
@@ -403,8 +395,7 @@ fn inline_span_paint_mutation_refreshes_same_constraints_frame_for_typed_and_leg
         "paint-only damage must rebuild the installed package in this frame"
     );
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     let PaintOp::PreparedInlineIfcDecoration(first) = &artifact.ops[0] else {
         panic!("refreshed span must record inline decoration")
@@ -443,8 +434,7 @@ fn inline_span_paint_mutation_refreshes_same_constraints_frame_for_typed_and_leg
             Color::rgb(126, 34, 206).to_rgba_f32().map(f32::to_bits)
         );
     }
-    let legacy_rects =
-        legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
+    let legacy_rects = legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
     assert_eq!(artifact_rects, legacy_rects);
 }
 
@@ -660,8 +650,7 @@ fn inline_decoration_constructor_and_compiler_reject_link_or_identity_drift() {
 fn root_opacity_group_neutralizes_inline_span_and_text_once() {
     let (arena, roots, span_key, _, _) = prepared_wrapping_inline_span_tree_with_opacity(0.5);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        root_group_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = root_group_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert!(matches!(
         artifact.target,

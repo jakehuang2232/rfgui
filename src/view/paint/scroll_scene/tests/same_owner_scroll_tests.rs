@@ -199,9 +199,7 @@ fn same_owner_transform_scroll_production_prepares_emits_and_reuses_at_dpr1_and_
             2,
             "C composites into H/O before the whole same-owner target receives T"
         );
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true));
 
         let second_owner = viewport.begin_retained_surface_frame_stage().unwrap();
         let mut second_graph = FrameGraph::new();
@@ -231,9 +229,7 @@ fn same_owner_transform_scroll_production_prepares_emits_and_reuses_at_dpr1_and_
             1,
             "warm frame emits only the final transform composite"
         );
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true));
     }
 }
 
@@ -305,9 +301,7 @@ fn same_owner_effect_scroll_production_prepares_emits_and_reuses_at_dpr1_and_dpr
             0.625_f32.to_bits(),
             "owning opacity is applied exactly once after H/C/O assembly"
         );
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true));
 
         let second_owner = viewport.begin_retained_surface_frame_stage().unwrap();
         let mut second_graph = FrameGraph::new();
@@ -343,9 +337,7 @@ fn same_owner_effect_scroll_production_prepares_emits_and_reuses_at_dpr1_and_dpr
             1,
             "warm frame emits only final E composite"
         );
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true));
     }
 }
 
@@ -441,9 +433,7 @@ fn same_owner_effect_scroll_offset_opacity_and_paint_dependencies_are_role_local
         )
         .unwrap();
         let _ = emit_prepared_retained_effect_scroll_scene(first);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true));
 
         mutate(&arena, root, content);
         properties.sync(&arena, &[root]);
@@ -478,9 +468,7 @@ fn same_owner_effect_scroll_offset_opacity_and_paint_dependencies_are_role_local
             assert_eq!(second.roots[0].composite.opacity_bits, 0.875_f32.to_bits());
         }
         let _ = emit_prepared_retained_effect_scroll_scene(second);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true));
     }
 }
 
@@ -641,9 +629,7 @@ fn same_owner_transform_scroll_offset_and_paint_dependencies_are_role_local() {
         )
         .unwrap();
         let _ = emit_prepared_retained_transform_scroll_scene(first);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true));
 
         mutate(&arena, root, content);
         properties.sync(&arena, &[root]);
@@ -674,9 +660,7 @@ fn same_owner_transform_scroll_offset_and_paint_dependencies_are_role_local() {
             "{name}"
         );
         let _ = emit_prepared_retained_transform_scroll_scene(second);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true));
     }
 }
 

@@ -154,23 +154,23 @@ fn atomic_projection_selection_property_scroll_cold_warm_and_collision_are_close
         pool_before
     );
     assert!(viewport.retained_surface_frame_stage_owner_is_active(collision_owner));
-    assert!(
-        viewport.finish_retained_surface_transaction_for_frame(Some(collision_owner), false)
-    );
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(collision_owner), false));
 
     let recovery_owner = viewport.begin_retained_surface_frame_stage().unwrap();
     let mut recovery_graph = FrameGraph::new();
-    let mut recovery = super::super::scroll_scene::prepare_retained_property_scroll_forest_from_pool(
-        &mut viewport,
-        validated_atomic_projection_selection_scroll_scene_at(6),
-        &mut recovery_graph,
-        ctx(),
-        clear,
-        recovery_owner,
-    )
-    .expect("collision cannot disturb committed selection resident");
+    let mut recovery =
+        super::super::scroll_scene::prepare_retained_property_scroll_forest_from_pool(
+            &mut viewport,
+            validated_atomic_projection_selection_scroll_scene_at(6),
+            &mut recovery_graph,
+            ctx(),
+            clear,
+            recovery_owner,
+        )
+        .expect("collision cannot disturb committed selection resident");
     recovery.refresh_actions_from_committed_test_pool();
-    let recovery = super::super::scroll_scene::emit_prepared_retained_property_scroll_forest(recovery);
+    let recovery =
+        super::super::scroll_scene::emit_prepared_retained_property_scroll_forest(recovery);
     let (_, recovery_trace) = recovery.into_parts();
     assert_eq!(
         (recovery_trace.reraster_count, recovery_trace.reuse_count),
@@ -232,10 +232,7 @@ fn atomic_projection_selection_property_scroll_local_output_change_matrix_rerast
         let mut changed =
             super::super::scroll_scene::prepare_retained_property_scroll_forest_from_pool(
                 &mut viewport,
-                validated_atomic_projection_selection_scroll_scene_fixture(
-                    fixture,
-                    selection_end,
-                ),
+                validated_atomic_projection_selection_scroll_scene_fixture(fixture, selection_end),
                 &mut changed_graph,
                 ctx(),
                 [0.0; 4],
@@ -278,9 +275,7 @@ fn atomic_projection_selection_property_scroll_local_output_change_matrix_rerast
             2,
             "{name}: root and content clear"
         );
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(changed_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(changed_owner), true));
     }
 }
 
@@ -442,23 +437,23 @@ fn atomic_projection_property_scroll_cold_warm_reuse_and_collision_are_closed_lo
         pool_before
     );
     assert!(viewport.retained_surface_frame_stage_owner_is_active(collision_owner));
-    assert!(
-        viewport.finish_retained_surface_transaction_for_frame(Some(collision_owner), false)
-    );
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(collision_owner), false));
 
     let recovery_owner = viewport.begin_retained_surface_frame_stage().unwrap();
     let mut recovery_graph = FrameGraph::new();
-    let mut recovery = super::super::scroll_scene::prepare_retained_property_scroll_forest_from_pool(
-        &mut viewport,
-        validated_atomic_projection_scroll_scene_at("projected", 44.0),
-        &mut recovery_graph,
-        ctx(),
-        clear,
-        recovery_owner,
-    )
-    .expect("collision cannot disturb the committed resident");
+    let mut recovery =
+        super::super::scroll_scene::prepare_retained_property_scroll_forest_from_pool(
+            &mut viewport,
+            validated_atomic_projection_scroll_scene_at("projected", 44.0),
+            &mut recovery_graph,
+            ctx(),
+            clear,
+            recovery_owner,
+        )
+        .expect("collision cannot disturb the committed resident");
     recovery.refresh_actions_from_committed_test_pool();
-    let recovery = super::super::scroll_scene::emit_prepared_retained_property_scroll_forest(recovery);
+    let recovery =
+        super::super::scroll_scene::emit_prepared_retained_property_scroll_forest(recovery);
     let (_, recovery_trace) = recovery.into_parts();
     assert_eq!(
         (recovery_trace.reraster_count, recovery_trace.reuse_count),
@@ -558,8 +553,6 @@ fn atomic_projection_property_scroll_local_output_change_matrix_rerasterizes_sam
             2,
             "{name}: root and content clear"
         );
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(changed_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(changed_owner), true));
     }
 }

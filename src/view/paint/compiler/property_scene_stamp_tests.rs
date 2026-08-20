@@ -110,8 +110,7 @@ fn property_scene_canonicalizer_rejects_non_transform_nested_geometry_and_key_dr
     let other_child_key = keys.insert(());
     let child = empty_stamp(other_child_key, 0xa212, 1, vec![]);
     let mut root = empty_stamp(other_root_key, 0xa211, 0, vec![dependency(0, child)]);
-    let RetainedSurfaceRasterStepStamp::NestedSurface(nested) = &mut root.ordered_steps[0]
-    else {
+    let RetainedSurfaceRasterStepStamp::NestedSurface(nested) = &mut root.ordered_steps[0] else {
         unreachable!()
     };
     nested.child_composite_geometry = RetainedSurfaceCompositeGeometryStamp::NestedIsolation {

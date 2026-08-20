@@ -40,14 +40,9 @@ fn forced_rect_executor_emits_clear_raster_composite_to_distinct_targets() {
         >())
     );
     assert!(pass_names[1..pass_names.len() - 1].iter().all(|name| {
-        *name
-            == std::any::type_name::<
-                crate::view::render_pass::draw_rect_pass::OpaqueRectPass,
-            >()
+        *name == std::any::type_name::<crate::view::render_pass::draw_rect_pass::OpaqueRectPass>()
             || *name
-                == std::any::type_name::<
-                    crate::view::render_pass::draw_rect_pass::DrawRectPass,
-                >()
+                == std::any::type_name::<crate::view::render_pass::draw_rect_pass::DrawRectPass>()
     }));
 
     let clears = graph.test_graphics_passes::<crate::view::render_pass::ClearPass>();
@@ -59,8 +54,7 @@ fn forced_rect_executor_emits_clear_raster_composite_to_distinct_targets() {
     assert!(clear.clear_depth_stencil);
     assert_ne!(clear.output_target, Some(parent_handle));
 
-    let composites =
-        graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
+    let composites = graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
     let [composite] = composites.as_slice() else {
         panic!("forced surface emits one final composite")
     };
@@ -81,9 +75,8 @@ fn forced_rect_executor_emits_clear_raster_composite_to_distinct_targets() {
 #[test]
 fn retained_surface_stamp_excludes_transform_only_drift_and_tracks_raster_drift() {
     let (arena, root, mut properties, mut generations) = exact_transform_fixture();
-    let first_plan =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("exact retained surface plan");
+    let first_plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect("exact retained surface plan");
     let [PaintPlanStep::RetainedSurface(first_surface)] = first_plan.steps.as_slice() else {
         panic!("one retained surface")
     };
@@ -194,8 +187,7 @@ fn retained_surface_stamp_excludes_transform_only_drift_and_tracks_raster_drift(
     let repaint_plan =
         plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
             .expect("root-fill retained surface replan");
-    let [PaintPlanStep::RetainedSurface(repaint_surface)] = repaint_plan.steps.as_slice()
-    else {
+    let [PaintPlanStep::RetainedSurface(repaint_surface)] = repaint_plan.steps.as_slice() else {
         panic!("one retained surface")
     };
     assert_ne!(
@@ -212,9 +204,8 @@ fn retained_surface_stamp_excludes_transform_only_drift_and_tracks_raster_drift(
 #[test]
 fn forced_retained_surface_reuses_only_after_success_and_composites_latest_transform() {
     let (arena, root, mut properties, mut generations) = exact_transform_fixture();
-    let first_plan =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("first retained surface plan");
+    let first_plan = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect("first retained surface plan");
     let mut viewport = Viewport::new();
     let mut first_graph = FrameGraph::new();
     let first_ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -237,8 +228,7 @@ fn forced_retained_surface_reuses_only_after_success_and_composites_latest_trans
             .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::OpaqueRectPass>()
             .len()
             + first_graph
-                .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::DrawRectPass>(
-                )
+                .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::DrawRectPass>()
                 .len(),
         2
     );
@@ -505,8 +495,7 @@ fn forced_rect_executor_locks_nonzero_context_descriptor_pair_and_opaque_span() 
         snapshot.input_target == clear.output_target
             && snapshot.output_target == clear.output_target
     }));
-    let composites =
-        graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
+    let composites = graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
     let [composite] = composites.as_slice() else {
         panic!("one final composite")
     };

@@ -243,15 +243,13 @@ fn property_scroll_b0_tiled_plan_seals_order_gutter_and_budget() {
     );
     assert!(tiled.total_pair_bytes <= tiled.budget.max_active_pair_bytes);
 
-    let with_tiled =
-        |plan: &mut PropertyScrollScenePlan,
-         tamper: fn(&mut PropertyScrollTiledBackingPlan)| {
-            let PropertyScrollBackingPlan::Tiled(tiled) = property_scroll_backing_mut(plan)
-            else {
-                unreachable!();
-            };
-            tamper(tiled);
+    let with_tiled = |plan: &mut PropertyScrollScenePlan,
+                      tamper: fn(&mut PropertyScrollTiledBackingPlan)| {
+        let PropertyScrollBackingPlan::Tiled(tiled) = property_scroll_backing_mut(plan) else {
+            unreachable!();
         };
+        tamper(tiled);
+    };
     for tamper in [
         (|tiled: &mut PropertyScrollTiledBackingPlan| tiled.tiles.swap(0, 1))
             as fn(&mut PropertyScrollTiledBackingPlan),
@@ -355,8 +353,7 @@ fn property_scroll_b0_rejects_clip_cursor_and_semantic_time_tampering() {
     assert!(!bad_clip.is_canonical());
 
     let mut bad_cursor = plan.clone();
-    let ScrollBoundaryStep::ContentComposite { parent_after, .. } = &mut bad_cursor.steps[1]
-    else {
+    let ScrollBoundaryStep::ContentComposite { parent_after, .. } = &mut bad_cursor.steps[1] else {
         unreachable!();
     };
     *parent_after += 1;
@@ -364,22 +361,19 @@ fn property_scroll_b0_rejects_clip_cursor_and_semantic_time_tampering() {
 
     for tamper in [
         (|plan: &mut PropertyScrollScenePlan| {
-            let ScrollBoundaryStep::ContentComposite { clip_split, .. } = &mut plan.steps[1]
-            else {
+            let ScrollBoundaryStep::ContentComposite { clip_split, .. } = &mut plan.steps[1] else {
                 unreachable!();
             };
             clip_split.own_contents_clip.generation += 1;
         }) as fn(&mut PropertyScrollScenePlan),
         |plan| {
-            let ScrollBoundaryStep::ContentComposite { clip_split, .. } = &mut plan.steps[1]
-            else {
+            let ScrollBoundaryStep::ContentComposite { clip_split, .. } = &mut plan.steps[1] else {
                 unreachable!();
             };
             clip_split.own_contents_clip.logical_scissor[0] += 1;
         },
         |plan| {
-            let ScrollBoundaryStep::ContentComposite { clip_split, .. } = &mut plan.steps[1]
-            else {
+            let ScrollBoundaryStep::ContentComposite { clip_split, .. } = &mut plan.steps[1] else {
                 unreachable!();
             };
             clip_split
@@ -400,8 +394,7 @@ fn property_scroll_b0_rejects_clip_cursor_and_semantic_time_tampering() {
             parent_span.end += 1;
         },
         |plan| {
-            let ScrollBoundaryStep::OverlayAfter { parent_span, .. } = &mut plan.steps[2]
-            else {
+            let ScrollBoundaryStep::OverlayAfter { parent_span, .. } = &mut plan.steps[2] else {
                 unreachable!();
             };
             parent_span.start += 1;
@@ -526,8 +519,7 @@ fn property_scroll_b0_rejects_transform_effect_nested_scroll_and_colocation() {
     };
 
     for transform_owner_is_root in [true, false] {
-        let (arena, root, child, mut properties, mut generations) =
-            fixture_at_offset([0.0, 20.0]);
+        let (arena, root, child, mut properties, mut generations) = fixture_at_offset([0.0, 20.0]);
         let owner = if transform_owner_is_root { root } else { child };
         arena
             .get_mut(owner)
@@ -536,9 +528,9 @@ fn property_scroll_b0_rejects_transform_effect_nested_scroll_and_colocation() {
             .as_any_mut()
             .downcast_mut::<Element>()
             .unwrap()
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                glam::Vec3::new(3.0, 4.0, 0.0),
-            )));
+            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
+                3.0, 4.0, 0.0,
+            ))));
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
         assert!(properties.transforms.contains_key(
@@ -555,8 +547,7 @@ fn property_scroll_b0_rejects_transform_effect_nested_scroll_and_colocation() {
     }
 
     for effect_owner_is_root in [true, false] {
-        let (arena, root, child, mut properties, mut generations) =
-            fixture_at_offset([0.0, 20.0]);
+        let (arena, root, child, mut properties, mut generations) = fixture_at_offset([0.0, 20.0]);
         let owner = if effect_owner_is_root { root } else { child };
         arena
             .get_mut(owner)
@@ -583,8 +574,7 @@ fn property_scroll_b0_rejects_transform_effect_nested_scroll_and_colocation() {
         reject(&arena, root, &properties, &generations);
     }
 
-    let (mut arena, root, child, mut properties, mut generations) =
-        fixture_at_offset([0.0, 20.0]);
+    let (mut arena, root, child, mut properties, mut generations) = fixture_at_offset([0.0, 20.0]);
     let grandchild = arena.insert(Node::new(Box::new(Element::new_with_id(
         82_003, 0.0, 0.0, 300.0, 600.0,
     ))));
@@ -607,8 +597,7 @@ fn property_scroll_b0_rejects_transform_effect_nested_scroll_and_colocation() {
         width: 300.0,
         height: 600.0,
     };
-    child_element
-        .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+    child_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
     drop(child_node);
     arena
         .get_mut(grandchild)

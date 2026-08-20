@@ -64,13 +64,13 @@ pub(super) fn same_owner_transform_effect_scroll_role_fixture() -> (
     (transform, contract, inner, outer)
 }
 
-mod property_boundary_forest_branching_tests;
 mod artifact_space_translation_tests;
 mod artifact_surface_resident_stamp_tests;
 mod local_clip_generation_semantics_tests;
+mod property_boundary_forest_branching_tests;
+mod property_boundary_forest_linear_tests;
 mod property_boundary_forest_multi_root_tests;
 mod property_boundary_forest_plain_root_tests;
 mod property_boundary_forest_tests;
-mod property_boundary_forest_linear_tests;
 mod same_owner_transform_effect_scroll_tests;
 mod stage_c_deletion_inventory_tests;

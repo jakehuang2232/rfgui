@@ -6,8 +6,7 @@ fn mutate_stamp_chunks(
 ) {
     mutate(&mut stamp.chunks);
     stamp.op_count = stamp.chunks.iter().map(|chunk| chunk.op_count).sum();
-    let [RetainedSurfaceRasterStepStamp::ArtifactSpan(span)] =
-        stamp.ordered_steps.as_mut_slice()
+    let [RetainedSurfaceRasterStepStamp::ArtifactSpan(span)] = stamp.ordered_steps.as_mut_slice()
     else {
         panic!("TextArea content stamp must contain one artifact span")
     };
@@ -140,8 +139,7 @@ fn atomic_projection_text_area_content_raster_stamp_is_generic_and_closed() {
         &wrong_mask_slot
     ));
 
-    let RetainedSurfaceRasterStepStamp::ArtifactSpan(atomic_span) = &stamp.ordered_steps[0]
-    else {
+    let RetainedSurfaceRasterStepStamp::ArtifactSpan(atomic_span) = &stamp.ordered_steps[0] else {
         panic!("atomic content stamp must have one artifact span")
     };
     let mut legacy_span = atomic_span.clone();

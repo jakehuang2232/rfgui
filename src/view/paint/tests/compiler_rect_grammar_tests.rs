@@ -39,14 +39,13 @@ fn generic_rect_phase_roles_compile_in_frozen_chunk_and_op_order() {
         chunk.id.phase = phase;
         chunk.id.slot = slot;
         chunk.op_range = range.clone();
-        chunk.payload_identity =
-            PaintPayloadIdentity::prepared_rects(artifact.ops[range].iter().filter_map(|op| {
-                match op {
-                    PaintOp::DrawRect(rect) => Some(rect),
-                    _ => None,
-                }
-            }))
-            .unwrap();
+        chunk.payload_identity = PaintPayloadIdentity::prepared_rects(
+            artifact.ops[range].iter().filter_map(|op| match op {
+                PaintOp::DrawRect(rect) => Some(rect),
+                _ => None,
+            }),
+        )
+        .unwrap();
         chunk
     })
     .collect();
@@ -258,8 +257,7 @@ fn compiler_rejects_standard_draw_rect_composite_identity_drift_before_emit() {
             _ => None,
         })
         .unwrap();
-    border.params.border_widths[0] =
-        f32::from_bits(border.params.border_widths[0].to_bits() ^ 1);
+    border.params.border_widths[0] = f32::from_bits(border.params.border_widths[0].to_bits() ^ 1);
     assert_compiler_rejects_before_emit(&border_drift, "Element border params drift");
 
     let image = compiler_image_test_artifact(true);

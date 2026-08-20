@@ -84,8 +84,7 @@ fn direct_scroll_transform_transaction_is_one_generic_t_and_no_scroll_group() {
         let mut root_element =
             crate::view::test_support::get_element_mut::<Element>(&moved_arena, moved_root);
         root_element.set_scroll_offset((0.0, 40.0));
-        root_element
-            .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+        root_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
     }
     {
         let mut child_element =
@@ -122,8 +121,10 @@ fn direct_scroll_transform_transaction_is_one_generic_t_and_no_scroll_group() {
     )
     .expect("moved direct S->T geometry");
     let moved_transaction =
-        super::super::super::scroll_scene::compile_direct_scroll_transform_transaction(moved_geometry)
-            .expect("moved direct S->T transaction");
+        super::super::super::scroll_scene::compile_direct_scroll_transform_transaction(
+            moved_geometry,
+        )
+        .expect("moved direct S->T transaction");
     assert_eq!(
         moved_transaction.stamp_for_test(),
         &base_stamp,
@@ -137,14 +138,15 @@ fn direct_scroll_transform_prepare_freezes_action_before_graph_mutation() {
     let mut viewport = Viewport::new();
     let frame_owner = viewport.begin_retained_surface_frame_stage().unwrap();
     let mut invalid_graph = FrameGraph::new();
-    let invalid = super::super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
-        &mut viewport,
-        transaction.clone(),
-        &mut invalid_graph,
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Rgba8Unorm, 1.0),
-        [0.0; 4],
-        frame_owner,
-    );
+    let invalid =
+        super::super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
+            &mut viewport,
+            transaction.clone(),
+            &mut invalid_graph,
+            UiBuildContext::new(640, 480, wgpu::TextureFormat::Rgba8Unorm, 1.0),
+            [0.0; 4],
+            frame_owner,
+        );
     assert!(matches!(
         invalid,
         Err(
@@ -155,15 +157,16 @@ fn direct_scroll_transform_prepare_freezes_action_before_graph_mutation() {
     assert!(viewport.retained_property_scroll_scene_stage_is_available());
 
     let mut graph = FrameGraph::new();
-    let prepared = super::super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
-        &mut viewport,
-        transaction,
-        &mut graph,
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
-        [0.125, 0.25, 0.5, 1.0],
-        frame_owner,
-    )
-    .expect("direct S->T preflight");
+    let prepared =
+        super::super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
+            &mut viewport,
+            transaction,
+            &mut graph,
+            UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
+            [0.125, 0.25, 0.5, 1.0],
+            frame_owner,
+        )
+        .expect("direct S->T preflight");
     assert_eq!(
         prepared.action_for_test(),
         crate::view::paint::RetainedSurfaceCompileAction::Reraster
@@ -225,8 +228,7 @@ fn direct_scroll_transform_prepare_rejections_are_graph_pool_and_owner_atomic() 
         }};
     }
 
-    let default_ctx =
-        || UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+    let default_ctx = || UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let base = exact_direct_scroll_transform_transaction_for_test();
 
     let mut descriptor = base.clone();
@@ -311,9 +313,7 @@ fn direct_scroll_transform_prepare_rejections_are_graph_pool_and_owner_atomic() 
 
     let mut stale_viewport = Viewport::new();
     let stale_owner = stale_viewport.begin_retained_surface_frame_stage().unwrap();
-    assert!(
-        stale_viewport.finish_retained_surface_transaction_for_frame(Some(stale_owner), false)
-    );
+    assert!(stale_viewport.finish_retained_surface_transaction_for_frame(Some(stale_owner), false));
     let mut stale_graph = FrameGraph::new();
     let graph_before = stale_graph.build_state_snapshot_for_test();
     let pool_before = stale_viewport.retained_surface_transaction_shape_for_test();
@@ -378,8 +378,7 @@ fn direct_scroll_transform_prepare_rejections_are_graph_pool_and_owner_atomic() 
         owner_active_before
     );
     assert!(
-        occupied_viewport
-            .finish_retained_surface_transaction_for_frame(Some(occupied_owner), true)
+        occupied_viewport.finish_retained_surface_transaction_for_frame(Some(occupied_owner), true)
     );
 }
 
@@ -522,11 +521,9 @@ fn direct_scroll_transform_action_matrix_keeps_composite_inputs_dynamic() {
     );
 
     {
-        let mut root_element =
-            crate::view::test_support::get_element_mut::<Element>(&arena, root);
+        let mut root_element = crate::view::test_support::get_element_mut::<Element>(&arena, root);
         root_element.set_scroll_offset((0.0, 37.0));
-        root_element
-            .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+        root_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
     }
     {
         let mut child_element =
@@ -585,12 +582,10 @@ fn direct_scroll_transform_action_matrix_keeps_composite_inputs_dynamic() {
     );
 
     {
-        let mut root_element =
-            crate::view::test_support::get_element_mut::<Element>(&arena, root);
+        let mut root_element = crate::view::test_support::get_element_mut::<Element>(&arena, root);
         root_element.layout_state.layout_size.height = 72.0;
         root_element.layout_state.layout_inner_size.height = 72.0;
-        root_element
-            .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+        root_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
     }
     arena.refresh_subtree_dirty_cache(root);
     properties.sync(&arena, &[root]);
@@ -626,20 +621,21 @@ fn direct_scroll_transform_action_matrix_keeps_composite_inputs_dynamic() {
     viewport.forget_retained_surface_pair_witness_for_test(color_key);
     let pair_owner = viewport.begin_retained_surface_frame_stage().unwrap();
     let mut pair_graph = FrameGraph::new();
-    let mut pair = super::super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
-        &mut viewport,
-        direct_scroll_transform_transaction_from_fixture_for_test(
-            &arena,
-            root,
-            &properties,
-            &generations,
-        ),
-        &mut pair_graph,
-        ctx(),
-        [0.0; 4],
-        pair_owner,
-    )
-    .unwrap();
+    let mut pair =
+        super::super::super::scroll_scene::prepare_direct_scroll_transform_scene_from_pool(
+            &mut viewport,
+            direct_scroll_transform_transaction_from_fixture_for_test(
+                &arena,
+                root,
+                &properties,
+                &generations,
+            ),
+            &mut pair_graph,
+            ctx(),
+            [0.0; 4],
+            pair_owner,
+        )
+        .unwrap();
     pair.refresh_action_from_committed_test_pool();
     assert_eq!(pair.action_for_test(), reraster);
     let composite = pair.composite_params_for_test();

@@ -26,7 +26,13 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
         "source oracle must remain exact after shell placement",
     );
     drop(text_node);
-    let admission = crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element, root, &arena, 1.0)
+    let admission =
+        crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(
+            root_element,
+            root,
+            &arena,
+            1.0,
+        )
         .expect("atomic projection shell must admit");
     drop(root_node);
     assert_eq!(
@@ -35,7 +41,10 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
     );
     assert_eq!(
         admission.artifact_space_transition,
-        admission.paint_grammar_for_test().artifact_space_transition().unwrap(),
+        admission
+            .paint_grammar_for_test()
+            .artifact_space_transition()
+            .unwrap(),
         "component admission must freeze the generic transition before recording",
     );
     let (properties, generations) = sync_identity(&arena, &[root]);
@@ -80,17 +89,23 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
     assert_eq!(plan_parts.identity(), plan_parts.clone().identity());
     assert_eq!(plan_parts.local_clip_snapshots().unwrap().len(), 1);
     let content_terminal = plan_parts.content_opaque_order_count().unwrap();
-    assert!(plan_parts
-        .content_artifact_span_stamp(0, 0..content_terminal)
-        .is_some());
-    assert!(!plan_parts
-        .clone()
-        .tamper_content_bounds_for_test()
-        .is_canonical());
-    assert!(!plan_parts
-        .clone()
-        .tamper_content_resolved_clips_for_test()
-        .is_canonical());
+    assert!(
+        plan_parts
+            .content_artifact_span_stamp(0, 0..content_terminal)
+            .is_some()
+    );
+    assert!(
+        !plan_parts
+            .clone()
+            .tamper_content_bounds_for_test()
+            .is_canonical()
+    );
+    assert!(
+        !plan_parts
+            .clone()
+            .tamper_content_resolved_clips_for_test()
+            .is_canonical()
+    );
     assert!(!plan_parts.clone().tamper_resident_for_test().is_canonical());
     for tampered_host in [
         host.clone().tamper_cross_parity_bounds_for_test(0),
@@ -146,9 +161,7 @@ fn atomic_projection_text_area_graph_inert_record_and_validator_are_fail_closed(
         "source/admission drift must fail before recording",
     );
     let validate = |recorded| {
-        super::legacy_recording::validate_recorded_atomic_projection_text_area_subtree(
-            recorded,
-        )
+        super::legacy_recording::validate_recorded_atomic_projection_text_area_subtree(recorded)
     };
     let validated = validate(local.clone()).expect("dedicated compiler validator");
     assert!(validated.resident_for_test().is_canonical());
@@ -328,17 +341,30 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
     assert!(admission.paint_grammar_for_test().is_canonical());
     assert_eq!(
         admission.artifact_space_transition,
-        admission.paint_grammar_for_test().artifact_space_transition().unwrap(),
+        admission
+            .paint_grammar_for_test()
+            .artifact_space_transition()
+            .unwrap(),
     );
     assert!(admission.bitwise_eq(&admission.clone()));
     assert!(
-        crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element, root, &arena, 1.0,)
-            .is_none(),
+        crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(
+            root_element,
+            root,
+            &arena,
+            1.0,
+        )
+        .is_none(),
         "existing atomic glyph selector must remain selection-free",
     );
     assert!(
-        crate::view::paint::exact_retained_scroll_text_area_subtree_admission(root_element, root, &arena, 1.0)
-            .is_none(),
+        crate::view::paint::exact_retained_scroll_text_area_subtree_admission(
+            root_element,
+            root,
+            &arena,
+            1.0
+        )
+        .is_none(),
         "C1/C2 selector must remain projection-free",
     );
     drop(root_node);
@@ -377,11 +403,12 @@ fn atomic_projection_selection_record_consume_is_typed_and_fail_closed() {
     assert_eq!(local.chunk_count_for_test(), 6);
     assert!(host.is_canonical_for_test());
     assert!(local.is_canonical_for_test());
-    let authority = super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_authority(
-        host.clone(),
-        local.clone(),
-    )
-    .expect("normalized typed pair must consume");
+    let authority =
+        super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_authority(
+            host.clone(),
+            local.clone(),
+        )
+        .expect("normalized typed pair must consume");
     assert!(authority.is_canonical_for_test());
     assert_eq!(authority.chunk_counts_for_test(), (8, 6));
     assert!(

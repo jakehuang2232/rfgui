@@ -54,8 +54,7 @@ fn contents_clip_intersects_ancestor_replace_and_explicit_empty_culls() {
 
     let mut graph = compiled_whole_frame_graph(&artifact);
     let _ = strict_paint_snapshot(&mut graph, PaintParityConfig::default());
-    let passes =
-        graph.test_graphics_passes_mut::<crate::view::render_pass::TextureCompositePass>();
+    let passes = graph.test_graphics_passes_mut::<crate::view::render_pass::TextureCompositePass>();
     assert_eq!(passes.len(), 1);
     assert_eq!(
         passes[0].test_snapshot().effective_scissor_rect,
@@ -123,8 +122,7 @@ fn nested_self_replace_escapes_ancestor_contents_intersection() {
 
     let mut graph = compiled_whole_frame_graph(&artifact);
     let _ = strict_paint_snapshot(&mut graph, PaintParityConfig::default());
-    let passes =
-        graph.test_graphics_passes_mut::<crate::view::render_pass::TextureCompositePass>();
+    let passes = graph.test_graphics_passes_mut::<crate::view::render_pass::TextureCompositePass>();
     assert_eq!(passes.len(), 1);
     assert_eq!(
         passes[0].test_snapshot().effective_scissor_rect,

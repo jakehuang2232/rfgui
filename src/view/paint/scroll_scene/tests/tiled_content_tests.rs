@@ -33,27 +33,22 @@ fn coverage_matrix_keeps_scrollbar_and_offset_out_of_single_and_tiled_content_re
             &baseline_generations,
         );
         let baseline_graph = FrameGraph::new();
-        let baseline_ctx =
-            UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+        let baseline_ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
         let baseline =
-            prepare_scroll_scene(baseline_plan, &baseline_graph, &baseline_ctx, budget)
-                .unwrap();
+            prepare_scroll_scene(baseline_plan, &baseline_graph, &baseline_ctx, budget).unwrap();
         let baseline_stamps = prepared_content_stamps(&baseline);
 
         for scrollbar in ScrollbarCase::ALL {
             for offset in offsets {
-                let (arena, root, _, properties, generations) =
-                    fixture_with_geometry_and_scrollbar(
-                        offset,
-                        viewport_size,
-                        content_size,
-                        scrollbar,
-                        0.0,
-                    );
+                let (arena, root, _, properties, generations) = fixture_with_geometry_and_scrollbar(
+                    offset,
+                    viewport_size,
+                    content_size,
+                    scrollbar,
+                    0.0,
+                );
                 let scroll = properties
-                    .scroll_snapshot_for(crate::view::compositor::property_tree::ScrollNodeId(
-                        root,
-                    ))
+                    .scroll_snapshot_for(crate::view::compositor::property_tree::ScrollNodeId(root))
                     .unwrap();
                 assert_eq!(
                     scroll.scrollbar_overlay.paint_state,
@@ -81,8 +76,7 @@ fn coverage_matrix_keeps_scrollbar_and_offset_out_of_single_and_tiled_content_re
                 assert_eq!(drift_graph.build_state_snapshot_for_test(), drift_before);
 
                 let graph = FrameGraph::new();
-                let ctx =
-                    UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+                let ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
                 let prepared =
                     prepare_scroll_scene(plan, &graph, &ctx, budget).expect("matrix scene");
                 match (&prepared.content_backing, expected_backing) {
@@ -90,10 +84,8 @@ fn coverage_matrix_keeps_scrollbar_and_offset_out_of_single_and_tiled_content_re
                         PreparedScrollContentBacking::Single { .. },
                         ScrollSceneBackingKind::Single,
                     )
-                    | (
-                        PreparedScrollContentBacking::Tiled { .. },
-                        ScrollSceneBackingKind::Tiled,
-                    ) => {}
+                    | (PreparedScrollContentBacking::Tiled { .. }, ScrollSceneBackingKind::Tiled) =>
+                        {}
                     _ => panic!(
                         "wrong backing for {scrollbar:?}/{offset:?}: expected={expected_backing:?}"
                     ),
@@ -370,12 +362,10 @@ fn typed_single_rejection_selects_exact_row_major_tiled_backing_without_graph_mu
         tiles
             .iter()
             .map(|tile| {
-                let color = crate::view::raster_cost::texture_desc_payload_bytes(
-                    &tile.stamp.target.color,
-                );
-                let depth = crate::view::raster_cost::texture_desc_payload_bytes(
-                    &tile.stamp.target.depth,
-                );
+                let color =
+                    crate::view::raster_cost::texture_desc_payload_bytes(&tile.stamp.target.color);
+                let depth =
+                    crate::view::raster_cost::texture_desc_payload_bytes(&tile.stamp.target.depth);
                 color.bytes.checked_add(depth.bytes).unwrap()
             })
             .sum::<u64>(),
@@ -441,8 +431,8 @@ fn tiled_executor_rerasterizes_row_major_global_zero_space_tiles_and_composites_
             .collect::<Vec<_>>(),
         raster_bounds
     );
-    let draws = graph
-        .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::OpaqueRectPass>();
+    let draws =
+        graph.test_graphics_passes::<crate::view::render_pass::draw_rect_pass::OpaqueRectPass>();
     assert_eq!(draws.len(), 2);
     assert_eq!(
         draws
@@ -454,8 +444,7 @@ fn tiled_executor_rerasterizes_row_major_global_zero_space_tiles_and_composites_
     assert!(draws.iter().all(|pass| {
         pass.test_snapshot().position_bits == [0.0_f32.to_bits(), 0.0_f32.to_bits()]
     }));
-    let composites =
-        graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
+    let composites = graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
     assert_eq!(composites.len(), 2);
     assert_eq!(
         composites
@@ -515,8 +504,7 @@ fn production_boundary_crossing_stages_new_active_set_and_retains_departed_tile(
     let (first_arena, first_root, _child, first_properties, first_generations) =
         fixture_with_geometry([0.0, 900.0], [100.0, 80.0], [300.0, 9000.0]);
     let mut viewport = Viewport::new();
-    viewport
-        .install_scroll_scene_live_authorities_for_test(first_properties, first_generations);
+    viewport.install_scroll_scene_live_authorities_for_test(first_properties, first_generations);
     let mut first_graph = FrameGraph::new();
     let mut first_ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let first_parent = first_ctx.allocate_target(&mut first_graph);
@@ -542,11 +530,9 @@ fn production_boundary_crossing_stages_new_active_set_and_retains_departed_tile(
 
     let (second_arena, second_root, _child, second_properties, second_generations) =
         fixture_with_geometry([0.0, 1400.0], [100.0, 80.0], [300.0, 9000.0]);
-    viewport
-        .install_scroll_scene_live_authorities_for_test(second_properties, second_generations);
+    viewport.install_scroll_scene_live_authorities_for_test(second_properties, second_generations);
     let mut second_graph = FrameGraph::new();
-    let mut second_ctx =
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+    let mut second_ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let second_parent = second_ctx.allocate_target(&mut second_graph);
     second_ctx.set_current_target(second_parent);
     let second = build_scroll_scene_from_pool(

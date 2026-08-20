@@ -45,14 +45,11 @@ fn direct_image_and_svg_transform_roots_build_sealed_property_surfaces_and_emit(
                         width: 2,
                         height: 2,
                         pixels: Arc::from([
-                            255_u8, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255,
-                            255,
+                            255_u8, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
                         ]),
                     }
                 } else {
-                    ImageSource::Path(
-                        format!("direct-transform-{state}-{stable_id}.png").into(),
-                    )
+                    ImageSource::Path(format!("direct-transform-{state}-{stable_id}.png").into())
                 };
                 let mut image = Image::new_with_id(stable_id, source);
                 image.apply_style(style);
@@ -161,8 +158,7 @@ fn direct_image_and_svg_transform_roots_build_sealed_property_surfaces_and_emit(
             let narrow =
                 plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
                     .expect("direct native media root must satisfy narrow transform authority");
-            let [PaintPlanStep::RetainedSurface(narrow_surface)] = narrow.steps.as_slice()
-            else {
+            let [PaintPlanStep::RetainedSurface(narrow_surface)] = narrow.steps.as_slice() else {
                 panic!("narrow direct media plan must own one transform surface")
             };
             assert_eq!(narrow_surface.boundary_root, root);
@@ -515,8 +511,7 @@ fn nested_direct_image_and_svg_transform_boundaries_stay_native_retained() {
     const SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='12'><rect width='16' height='12' fill='#38bdf8'/></svg>";
 
     for (index, is_svg) in [false, true].into_iter().enumerate() {
-        let mut parent =
-            Element::new_with_id(0xc1_0f40 + index as u64 * 2, 0.0, 0.0, 48.0, 32.0);
+        let mut parent = Element::new_with_id(0xc1_0f40 + index as u64 * 2, 0.0, 0.0, 48.0, 32.0);
         let mut parent_style = Style::new();
         parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
         parent_style.insert(

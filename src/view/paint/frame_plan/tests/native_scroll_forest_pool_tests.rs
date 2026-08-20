@@ -2,9 +2,7 @@ use super::*;
 
 #[test]
 fn native_scroll_forest_raster_identity_invalidates_only_the_ancestor_chain() {
-    fn identities(
-        plan: &FramePaintPlan,
-    ) -> Vec<NativeScrollForestContentRasterProgramIdentity> {
+    fn identities(plan: &FramePaintPlan) -> Vec<NativeScrollForestContentRasterProgramIdentity> {
         let forest = plan.native_scroll_forest_planning_scaffold().unwrap();
         forest
             .programs
@@ -72,8 +70,7 @@ fn native_scroll_forest_raster_identity_invalidates_only_the_ancestor_chain() {
     assert_eq!(child_content, baseline[2], "child C remains reusable");
     assert_ne!(parent_content, baseline[1], "parent C sees child composite");
     let mut ancestor_content = baseline[0].clone();
-    ancestor_content.child_dependencies[0].child_raster_identity =
-        Box::new(parent_content.clone());
+    ancestor_content.child_dependencies[0].child_raster_identity = Box::new(parent_content.clone());
     assert_ne!(ancestor_content, baseline[0], "ancestor chain propagates");
     assert_eq!(
         baseline[3],
@@ -95,12 +92,13 @@ fn native_scroll_forest_joint_pool_transaction_is_cold_warm_and_postorder_atomic
     )
     .unwrap();
     let mut viewport = Viewport::new();
-    let cold = super::super::super::scroll_scene::prepare_native_scroll_forest_transaction_from_pool(
-        &viewport,
-        &plan,
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-    )
-    .expect("cold native forest transaction");
+    let cold =
+        super::super::super::scroll_scene::prepare_native_scroll_forest_transaction_from_pool(
+            &viewport,
+            &plan,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+        )
+        .expect("cold native forest transaction");
     assert!(cold.transaction_is_canonical_for_test());
     assert_eq!(cold.stamps_for_test().len(), 6);
     assert_eq!(cold.actions_for_test().len(), 6);
@@ -160,12 +158,13 @@ fn native_scroll_forest_joint_pool_transaction_is_cold_warm_and_postorder_atomic
         .iter()
         .map(|stamp| stamp.identity.color_key)
         .collect::<Vec<_>>();
-    let cold_state = super::super::super::scroll_scene::emit_prepared_native_scroll_forest_transaction(
-        &mut viewport,
-        &mut cold_graph,
-        cold_ctx,
-        cold,
-    );
+    let cold_state =
+        super::super::super::scroll_scene::emit_prepared_native_scroll_forest_transaction(
+            &mut viewport,
+            &mut cold_graph,
+            cold_ctx,
+            cold,
+        );
     assert_ne!(cold_graph.build_state_snapshot_for_test(), empty_graph);
     assert_eq!(
         cold_graph.declared_persistent_texture_keys().count(),
@@ -177,9 +176,7 @@ fn native_scroll_forest_joint_pool_transaction_is_cold_warm_and_postorder_atomic
     assert_eq!(
         clears
             .iter()
-            .filter(|clear| {
-                clear.test_snapshot().output_target != caller_root_target.handle()
-            })
+            .filter(|clear| { clear.test_snapshot().output_target != caller_root_target.handle() })
             .count(),
         6,
         "cold forest clears every boundary C exactly once; caller owns the frame clear"

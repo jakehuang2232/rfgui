@@ -203,9 +203,11 @@ fn property_scroll_b2_offset_and_alpha_only_changes_reuse_content_residents() {
             .unwrap();
     offset_b.refresh_actions_from_committed_test_pool();
     let offset_actions = offset_b.actions.clone();
-    assert!(offset_actions
-        .values()
-        .all(|action| *action == RetainedSurfaceCompileAction::Reuse));
+    assert!(
+        offset_actions
+            .values()
+            .all(|action| *action == RetainedSurfaceCompileAction::Reuse)
+    );
     drop(offset_b);
 
     let (early_arena, early_root, early_properties, early_generations, early_time) =
@@ -241,9 +243,11 @@ fn property_scroll_b2_offset_and_alpha_only_changes_reuse_content_residents() {
     .unwrap();
     late.refresh_actions_from_committed_test_pool();
     let alpha_actions = late.actions.clone();
-    assert!(alpha_actions
-        .values()
-        .all(|action| *action == RetainedSurfaceCompileAction::Reuse));
+    assert!(
+        alpha_actions
+            .values()
+            .all(|action| *action == RetainedSurfaceCompileAction::Reuse)
+    );
 }
 
 #[test]

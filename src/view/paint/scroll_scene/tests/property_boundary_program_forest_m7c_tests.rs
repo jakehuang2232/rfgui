@@ -443,10 +443,12 @@ fn property_neutral_descendant_outside_strict_native_corpus_rejects_at_owner() {
     );
     let child = arena.children_of(root)[0];
     let mut style = Style::new();
-    style.set_box_shadow(vec![crate::style::BoxShadow::new()
-        .offset_x(2.0)
-        .offset_y(3.0)
-        .blur(4.0)]);
+    style.set_box_shadow(vec![
+        crate::style::BoxShadow::new()
+            .offset_x(2.0)
+            .offset_y(3.0)
+            .blur(4.0),
+    ]);
     crate::view::test_support::get_element_mut::<Element>(&arena, child).apply_style(style);
     arena.refresh_subtree_dirty_cache(root);
     properties.sync(&arena, &[root]);

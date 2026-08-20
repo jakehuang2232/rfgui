@@ -26,8 +26,7 @@ fn plain_text_area_placeholder_newline_fractional_and_empty_cases_match_legacy()
     let (arena, roots, root) = prepared_plain_text_area_tree("");
     let (properties, generations) = sync_identity(&arena, &roots);
     take_full_artifact_record_count();
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert!(artifact.chunks.is_empty());
     assert!(artifact.ops.is_empty());
@@ -90,9 +89,11 @@ fn plain_text_area_paint_neutral_transient_states_remain_recordable() {
         let (artifact, eligibility) =
             whole_frame_artifact(&arena, &roots, &properties, &generations);
         assert!(eligibility.eligible, "{case}: {eligibility:?}");
-        assert!(artifact.chunks.iter().any(|chunk| {
-            chunk.owner == root && chunk.id.role == PaintChunkRole::TextGlyphs
-        }));
+        assert!(
+            artifact.chunks.iter().any(|chunk| {
+                chunk.owner == root && chunk.id.role == PaintChunkRole::TextGlyphs
+            })
+        );
     }
 }
 
@@ -205,8 +206,7 @@ fn plain_text_area_live_empty_ignores_stale_package_and_apply_authority() {
 
     let (properties, generations) = sync_identity(&arena, &roots);
     take_full_artifact_record_count();
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert!(artifact.chunks.is_empty());
     assert!(artifact.ops.is_empty());
@@ -223,11 +223,8 @@ fn text_area_leaf_deferred_or_wrong_context_never_turns_transparent() {
         .downcast_ref::<TextArea>()
         .unwrap();
     assert_eq!(
-        text_area.shadow_paint_recording_capability(
-            &arena,
-            true,
-            PaintRecordingContext::default(),
-        ),
+        text_area
+            .shadow_paint_recording_capability(&arena, true, PaintRecordingContext::default(),),
         ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::Deferred)
     );
     drop(root_node);

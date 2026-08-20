@@ -113,8 +113,7 @@ fn property_scene_seal_rejects_topology_identity_reference_and_witness_drift() {
         .find(|contract| contract.id.owner == fixture.inner_a)
         .unwrap()
         .transform
-        .owner_viewport_transform =
-        glam::Mat4::from_translation(glam::Vec3::new(99.0, 1.0, 0.0));
+        .owner_viewport_transform = glam::Mat4::from_translation(glam::Vec3::new(99.0, 1.0, 0.0));
     assert!(!property_scene_plan_is_sealed(&matrix));
 
     let mut generation = base.clone();
@@ -634,9 +633,10 @@ fn property_scene_executor_emits_arbitrary_depth_forest_and_stages_one_transacti
     let mut graph = FrameGraph::new();
     let (ctx, _) = parent_context_with_clear(&mut graph, 220, 140, 1.0);
     let mut viewport = Viewport::new();
-    let prepared =
-        super::super::super::prepare_retained_property_scene_from_pool(&viewport, &plan, &graph, &ctx)
-            .expect("multi-root arbitrary-depth property-scene preflight");
+    let prepared = super::super::super::prepare_retained_property_scene_from_pool(
+        &viewport, &plan, &graph, &ctx,
+    )
+    .expect("multi-root arbitrary-depth property-scene preflight");
     let outcome = super::super::super::emit_prepared_retained_property_scene(
         &mut viewport,
         prepared,

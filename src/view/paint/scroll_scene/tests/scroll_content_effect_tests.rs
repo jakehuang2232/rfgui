@@ -129,10 +129,8 @@ fn property_boundary_dag_compiler_validates_scroll_content_effect_graph_inert_to
                 content_root: root.insertion.content_root,
                 content_stable_id: root.insertion.content_stable_id,
                 signature: RetainedPropertyScrollGroupSignature {
-                    content_bounds: exact_u32_bounds_from_bits(
-                        content.target.source_bounds_bits,
-                    )
-                    .unwrap(),
+                    content_bounds: exact_u32_bounds_from_bits(content.target.source_bounds_bits)
+                        .unwrap(),
                     tile_edge: SCROLL_CONTENT_TILE_EDGE,
                     gutter: SCROLL_CONTENT_TILE_GUTTER,
                     overscan: 0,
@@ -279,9 +277,7 @@ fn scroll_content_effect_prepare_freezes_atomic_cold_and_warm_actions() {
                 .test_graphics_passes::<CompositeLayerPass>()
                 .is_empty()
         );
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(warm_owner), false,)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(warm_owner), false,));
     }
 }
 
@@ -366,14 +362,13 @@ fn scroll_content_effect_transaction_action_and_prepare_tamper_fail_closed() {
             .ordered_steps
             .iter_mut()
             .find_map(|step| match step {
-                crate::view::paint::RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(child) => {
-                    Some(child)
-                }
+                crate::view::paint::RetainedSurfaceRasterStepStamp::ScrollContentEffectChild(
+                    child,
+                ) => Some(child),
                 _ => None,
             })
             .unwrap();
-        dependency.child_effect_generation =
-            dependency.child_effect_generation.saturating_add(1);
+        dependency.child_effect_generation = dependency.child_effect_generation.saturating_add(1);
         assert!(!child.is_canonical());
 
         let effect_index = usize::from(outer_transform);
@@ -607,13 +602,9 @@ fn scroll_content_effect_program_preserves_host_mask_content_mask_overlay_order(
         let root = &scene.roots[0];
         let [
             crate::view::paint::frame_recorder::RecordedTransformSurfaceStep::Artifact(host),
-            crate::view::paint::frame_recorder::RecordedTransformSurfaceStep::Artifact(
-                mask_begin,
-            ),
+            crate::view::paint::frame_recorder::RecordedTransformSurfaceStep::Artifact(mask_begin),
             crate::view::paint::frame_recorder::RecordedTransformSurfaceStep::Boundary(content),
-            crate::view::paint::frame_recorder::RecordedTransformSurfaceStep::Artifact(
-                mask_end,
-            ),
+            crate::view::paint::frame_recorder::RecordedTransformSurfaceStep::Artifact(mask_end),
             crate::view::paint::frame_recorder::RecordedTransformSurfaceStep::Artifact(overlay),
         ] = root.scroll_host_steps.as_slice()
         else {

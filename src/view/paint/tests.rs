@@ -2492,8 +2492,8 @@ fn validated_atomic_projection_selection_scroll_scene_at(
     )
 }
 
-fn viewport_with_committed_atomic_projection_selection_resident(
-) -> crate::view::viewport::Viewport {
+fn viewport_with_committed_atomic_projection_selection_resident() -> crate::view::viewport::Viewport
+{
     let mut viewport = crate::view::viewport::Viewport::new();
     let frame_owner = viewport.begin_retained_surface_frame_stage().unwrap();
     let mut graph = FrameGraph::new();
@@ -2563,7 +2563,13 @@ fn atomic_projection_emission_fixture_for_test(
     let (arena, root, wrapper, _) = prepared_atomic_projection_scroll_shell_with(projected_content);
     let root_node = arena.get(root)?;
     let root_element = root_node.element.as_any().downcast_ref::<Element>()?;
-    let admission = crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element, root, &arena, 1.0)?;
+    let admission =
+        crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(
+            root_element,
+            root,
+            &arena,
+            1.0,
+        )?;
     drop(root_node);
     let (properties, generations) = sync_identity(&arena, &[root]);
     let scroll = properties
@@ -4037,10 +4043,10 @@ mod property_boundary_forest_linear_executor_tests;
 mod property_boundary_forest_multi_root_executor_tests;
 mod property_boundary_forest_plain_root_executor_tests;
 mod root_effect_tests;
-mod structural_parity_tests;
 mod stage_a_artifact_contract_tests;
 mod stage_a_producer_independence_tests;
 mod stage_c_retained_baseline_tests;
+mod structural_parity_tests;
 mod text_area_projection_preedit_tests;
 mod text_area_projection_selection_tests;
 mod text_area_state_tests;

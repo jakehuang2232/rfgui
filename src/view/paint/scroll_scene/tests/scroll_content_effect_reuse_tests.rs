@@ -57,8 +57,7 @@ fn scroll_content_effect_scroll_only_keeps_all_resident_stamps() {
         let mut pending = vec![content_root];
         while let Some(owner) = pending.pop() {
             pending.extend(arena.children_of(owner));
-            let mut element =
-                crate::view::test_support::get_element_mut::<Element>(&arena, owner);
+            let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, owner);
             element.layout_state.layout_position.y -= 7.0;
             element.layout_state.layout_inner_position.y -= 7.0;
             element.clear_local_dirty_flags(DirtyPassMask::PLACEMENT);
@@ -84,8 +83,7 @@ fn scroll_content_effect_scroll_only_keeps_all_resident_stamps() {
             | ValidatedPropertyBoundaryDagScene::TransformScrollEffect(scene) => scene,
             _ => unreachable!(),
         };
-        let (_, candidate_frozen) =
-            freeze_scroll_content_effect_transaction(&candidate).unwrap();
+        let (_, candidate_frozen) = freeze_scroll_content_effect_transaction(&candidate).unwrap();
         assert_ne!(
             candidate.roots[0].boundary.scroll.offset, baseline_offset,
             "live scroll composite snapshot must advance"
@@ -151,8 +149,7 @@ fn scroll_content_effect_scroll_only_keeps_all_resident_stamps() {
                 .is_empty()
         );
         assert!(
-            viewport
-                .finish_retained_surface_transaction_for_frame(Some(candidate_owner), true,)
+            viewport.finish_retained_surface_transaction_for_frame(Some(candidate_owner), true,)
         );
     }
 }
@@ -236,8 +233,7 @@ fn scroll_content_effect_invalidation_matrix_is_dependency_exact() {
             ValidatedPropertyBoundaryDagScene::TransformScrollEffect(scene) => scene,
             _ => unreachable!(),
         };
-        let (_, candidate_frozen) =
-            freeze_scroll_content_effect_transaction(&candidate).unwrap();
+        let (_, candidate_frozen) = freeze_scroll_content_effect_transaction(&candidate).unwrap();
         let effect_reraster = mutation == "effect-paint";
         assert_eq!(
             candidate_frozen[0].effect_stamp != baseline_frozen[0].effect_stamp,
@@ -330,10 +326,9 @@ fn scroll_content_effect_native_text_image_svg_cover_dpr_and_wrapper_shapes() {
                     });
                     let scene = match (scene, outer_transform) {
                         (ValidatedPropertyBoundaryDagScene::ScrollEffect(scene), false)
-                        | (
-                            ValidatedPropertyBoundaryDagScene::TransformScrollEffect(scene),
-                            true,
-                        ) => scene,
+                        | (ValidatedPropertyBoundaryDagScene::TransformScrollEffect(scene), true) => {
+                            scene
+                        }
                         _ => panic!("wrong Phase3 grammar"),
                     };
                     let (transaction, frozen) =

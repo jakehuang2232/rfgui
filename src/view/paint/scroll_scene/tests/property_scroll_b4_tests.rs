@@ -126,8 +126,7 @@ fn property_scroll_b4_closure_tamper_and_aggregate_budget_are_rejected() {
     assert!(!schedule_tamper.is_canonical());
 
     let mut semantic_tamper = make_scene();
-    semantic_tamper.seal.semantic_frame_time =
-        sampled_at + crate::time::Duration::from_millis(1);
+    semantic_tamper.seal.semantic_frame_time = sampled_at + crate::time::Duration::from_millis(1);
     assert!(!semantic_tamper.is_canonical());
 }
 
@@ -316,8 +315,7 @@ fn property_scroll_b4_offset_change_is_compositor_only_and_group_local() {
             .downcast_mut::<Element>()
             .unwrap();
         root_element.set_scroll_offset((0.0, 72.0));
-        root_element
-            .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+        root_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
     }
     {
         let mut child_node = arena.get_mut(changed_child).unwrap();
@@ -425,9 +423,7 @@ fn property_scroll_b4_second_group_key_collision_is_zero_mutation() {
         unreachable!()
     };
     let (collision_key, collision_desc) = match backing {
-        PropertyScrollBackingPlan::Single(single) => {
-            (single.color_key, single.color_desc.clone())
-        }
+        PropertyScrollBackingPlan::Single(single) => (single.color_key, single.color_desc.clone()),
         PropertyScrollBackingPlan::Tiled(tiled) => {
             (tiled.tiles[0].color_key, tiled.tiles[0].color_desc.clone())
         }
@@ -435,8 +431,7 @@ fn property_scroll_b4_second_group_key_collision_is_zero_mutation() {
     let mut viewport = Viewport::new();
     let frame_owner = viewport.begin_retained_surface_frame_stage().unwrap();
     let mut graph = FrameGraph::new();
-    let mut declaring_ctx =
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+    let mut declaring_ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let _ = declaring_ctx.allocate_persistent_target_with_desc(
         &mut graph,
         collision_desc,
@@ -454,11 +449,7 @@ fn property_scroll_b4_second_group_key_collision_is_zero_mutation() {
     );
     assert_eq!(
         result.err(),
-        Some(
-            RetainedPropertyScrollScenePrepareError::PersistentKeyAlreadyDeclared(
-                collision_key
-            )
-        )
+        Some(RetainedPropertyScrollScenePrepareError::PersistentKeyAlreadyDeclared(collision_key))
     );
     assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
     assert_eq!(

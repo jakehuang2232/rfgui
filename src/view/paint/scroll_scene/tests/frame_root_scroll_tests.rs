@@ -68,8 +68,7 @@ fn frame_root_rounded_scrollbar_overlay_freezes_vertical_horizontal_and_both_axe
         let root = roots[0];
         let scroll = arena.children_of(root)[0];
         {
-            let mut host =
-                crate::view::test_support::get_element_mut::<Element>(&arena, scroll);
+            let mut host = crate::view::test_support::get_element_mut::<Element>(&arena, scroll);
             host.set_scroll_direction_for_retained_test(direction);
             host.set_sampled_scrollbar_alpha_for_test(0.75);
         }
@@ -174,9 +173,7 @@ fn frame_root_rounded_scrollbar_overlay_freezes_vertical_horizontal_and_both_axe
             .flat_map(|(track, thumb)| [(track, track_color), (thumb, thumb_color)])
             .collect::<Vec<_>>();
         assert_eq!(painted, expected_painted, "{direction:?}");
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true,)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true,));
     }
 }
 
@@ -204,9 +201,7 @@ fn sampled_layout_transition_frame_root_scroll_is_retained_for_all_axes_and_dpr(
                 properties.validation_errors
             );
             let scroll_snapshot = properties
-                .scroll_snapshot_for(crate::view::compositor::property_tree::ScrollNodeId(
-                    scroll,
-                ))
+                .scroll_snapshot_for(crate::view::compositor::property_tree::ScrollNodeId(scroll))
                 .expect("sampled scroll property snapshot");
             assert_eq!(
                 scroll_snapshot.viewport.width.to_bits(),
@@ -231,9 +226,7 @@ fn sampled_layout_transition_frame_root_scroll_is_retained_for_all_axes_and_dpr(
                 None,
                 wgpu::TextureFormat::Bgra8Unorm,
             )
-            .unwrap_or_else(|error| {
-                panic!("sampled {direction:?} DPR{scale_factor}: {error:?}")
-            });
+            .unwrap_or_else(|error| panic!("sampled {direction:?} DPR{scale_factor}: {error:?}"));
             assert!(scene.is_canonical());
             assert!(scene.scroll_host_phase_order_and_store_tampering_are_sealed_for_test());
             assert_eq!(
@@ -263,8 +256,7 @@ fn sampled_layout_transition_frame_root_scroll_is_retained_for_all_axes_and_dpr(
             assert!(!graph.pass_descriptors().is_empty());
             assert!(!graph.test_rect_pass_snapshots().is_empty());
             assert!(
-                viewport
-                    .finish_retained_surface_transaction_for_frame(Some(frame_owner), true,)
+                viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true,)
             );
         }
     }
@@ -357,8 +349,7 @@ fn sampled_frame_root_scroll_stale_uninstalled_nonfinite_and_revision_drift_fail
         let (constraints, placement) = window_layout_inputs();
         measure_and_place(&mut arena, roots[0], constraints, placement);
         {
-            let mut host =
-                crate::view::test_support::get_element_mut::<Element>(&arena, scroll);
+            let mut host = crate::view::test_support::get_element_mut::<Element>(&arena, scroll);
             host.layout_state.content_size = Size {
                 width: 760.0,
                 height: 520.0,
@@ -403,8 +394,7 @@ fn sampled_frame_root_scroll_stale_uninstalled_nonfinite_and_revision_drift_fail
 
     // Scroll offset belongs to the same exact property/revision snapshot.
     {
-        let (arena, roots, scroll) =
-            sampled_window_scroll_fixture(ScrollDirection::Both, 400.0);
+        let (arena, roots, scroll) = sampled_window_scroll_fixture(ScrollDirection::Both, 400.0);
         let mut properties = PropertyTrees::default();
         properties.sync(&arena, &roots);
         let mut generations = PaintGenerationTracker::default();

@@ -7,8 +7,7 @@ fn effect_scroll_checkpoint_seals_neutral_hco_and_stays_graph_inert() {
         transform_scroll_fixture(glam::Mat4::IDENTITY);
     let mut build = |opacity: f32| {
         {
-            let mut effect =
-                crate::view::test_support::get_element_mut::<Element>(&arena, root);
+            let mut effect = crate::view::test_support::get_element_mut::<Element>(&arena, root);
             effect.set_resolved_transform_for_test(None);
             effect.set_opacity(opacity);
         }
@@ -165,7 +164,8 @@ fn effect_scroll_prepare_emit_seals_joint_actions_and_final_opacity() {
     assert_eq!(outcome.trace.root_count, 1);
     assert_eq!(outcome.trace.reraster_count, 2);
     let composites = graph
-        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>();
+        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
+        );
     assert_eq!(composites.len(), 1);
     let snapshot = composites[0].test_snapshot();
     assert_eq!(snapshot.rect_pos_bits, [0.0_f32, 0.0].map(f32::to_bits));
@@ -224,7 +224,8 @@ fn effect_scroll_prepare_emit_seals_joint_actions_and_final_opacity() {
             .is_empty()
     );
     let second_composites = second_graph
-        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>();
+        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
+    );
     assert_eq!(second_composites.len(), 1);
     assert_eq!(
         second_composites[0].test_snapshot().opacity_bits,
@@ -352,9 +353,7 @@ fn effect_scroll_prepare_failure_is_graph_pool_and_pending_inert() {
     );
     assert!(viewport.retained_property_scroll_scene_stage_is_available());
     assert!(viewport.retained_surface_frame_stage_owner_is_active(mismatch_owner));
-    assert!(
-        viewport.finish_retained_surface_transaction_for_frame(Some(mismatch_owner), false)
-    );
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(mismatch_owner), false));
 }
 
 #[test]
@@ -386,8 +385,7 @@ fn effect_scroll_live_action_matrix_separates_effect_host_and_content_dependenci
         let (arena, root, scroll, _, mut properties, mut generations) =
             transform_scroll_fixture(glam::Mat4::IDENTITY);
         {
-            let mut effect =
-                crate::view::test_support::get_element_mut::<Element>(&arena, root);
+            let mut effect = crate::view::test_support::get_element_mut::<Element>(&arena, root);
             effect.set_resolved_transform_for_test(None);
             effect.set_opacity(0.5);
         }
@@ -410,9 +408,7 @@ fn effect_scroll_live_action_matrix_separates_effect_host_and_content_dependenci
         )
         .unwrap();
         let _ = emit_prepared_retained_effect_scroll_scene(first);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true));
 
         crate::view::test_support::get_element_mut::<Element>(&arena, scroll)
             .set_sampled_scrollbar_alpha_for_test(0.5);
@@ -442,9 +438,7 @@ fn effect_scroll_live_action_matrix_separates_effect_host_and_content_dependenci
             Some(&RetainedSurfaceCompileAction::Reuse)
         );
         let _ = emit_prepared_retained_effect_scroll_scene(second);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true));
     }
 
     // Scroll offset changes the baked H/O dependency but preserves content raster identity.
@@ -480,17 +474,13 @@ fn effect_scroll_live_action_matrix_separates_effect_host_and_content_dependenci
         )
         .unwrap();
         let _ = emit_prepared_retained_effect_scroll_scene(first);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true));
 
         let (second_arena, second_root, _, _, mut second_properties, mut second_generations) =
             transform_scroll_fixture_at_offset(glam::Mat4::IDENTITY, 40.0);
         {
-            let mut effect = crate::view::test_support::get_element_mut::<Element>(
-                &second_arena,
-                second_root,
-            );
+            let mut effect =
+                crate::view::test_support::get_element_mut::<Element>(&second_arena, second_root);
             effect.set_resolved_transform_for_test(None);
             effect.set_opacity(0.5);
         }
@@ -526,9 +516,7 @@ fn effect_scroll_live_action_matrix_separates_effect_host_and_content_dependenci
             Some(&RetainedSurfaceCompileAction::Reuse)
         );
         let _ = emit_prepared_retained_effect_scroll_scene(second);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true));
     }
 
     // Content revision invalidates both detached content and the receiver that samples it.
@@ -536,8 +524,7 @@ fn effect_scroll_live_action_matrix_separates_effect_host_and_content_dependenci
         let (arena, root, _, content, mut properties, mut generations) =
             transform_scroll_fixture(glam::Mat4::IDENTITY);
         {
-            let mut effect =
-                crate::view::test_support::get_element_mut::<Element>(&arena, root);
+            let mut effect = crate::view::test_support::get_element_mut::<Element>(&arena, root);
             effect.set_resolved_transform_for_test(None);
             effect.set_opacity(0.5);
         }
@@ -558,9 +545,7 @@ fn effect_scroll_live_action_matrix_separates_effect_host_and_content_dependenci
         )
         .unwrap();
         let _ = emit_prepared_retained_effect_scroll_scene(first);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true));
         crate::view::test_support::get_element_mut::<Element>(&arena, content)
             .set_background_color_value(Color::rgb(72, 48, 24));
         arena.refresh_subtree_dirty_cache(root);
@@ -585,8 +570,6 @@ fn effect_scroll_live_action_matrix_separates_effect_host_and_content_dependenci
                 .all(|action| *action == RetainedSurfaceCompileAction::Reraster)
         );
         let _ = emit_prepared_retained_effect_scroll_scene(second);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true));
     }
 }

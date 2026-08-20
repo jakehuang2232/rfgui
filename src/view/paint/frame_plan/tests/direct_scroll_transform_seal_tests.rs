@@ -73,18 +73,19 @@ fn direct_scroll_transform_recorders_seal_host_marker_overlay_and_offset_zero_co
         stable_id: admission.transform_content_stable_id,
         kind: PlannedBoundaryKind::Transform(TransformNodeId(child)),
     };
-    let host_witness = PaintBakedScrollHostWitness::new(root, child, scroll, clip_id)
-        .expect("baked host witness");
-    let host_steps = super::super::super::frame_recorder::record_scroll_transform_host_steps_for_plan(
-        &arena,
-        root,
-        &properties,
-        &generations,
-        host_witness,
-        [0.0, 0.0],
-        marker,
-    )
-    .expect("exact H-marker-O host recording");
+    let host_witness =
+        PaintBakedScrollHostWitness::new(root, child, scroll, clip_id).expect("baked host witness");
+    let host_steps =
+        super::super::super::frame_recorder::record_scroll_transform_host_steps_for_plan(
+            &arena,
+            root,
+            &properties,
+            &generations,
+            host_witness,
+            [0.0, 0.0],
+            marker,
+        )
+        .expect("exact H-marker-O host recording");
     assert!(matches!(
         host_steps.as_slice(),
         [
@@ -94,8 +95,8 @@ fn direct_scroll_transform_recorders_seal_host_marker_overlay_and_offset_zero_co
         ] if *found == marker
     ));
 
-    let content_witness = PaintScrollContentWitness::new(root, child, scroll, clip)
-        .expect("scroll-content witness");
+    let content_witness =
+        PaintScrollContentWitness::new(root, child, scroll, clip).expect("scroll-content witness");
     let content_steps =
         super::super::super::frame_recorder::record_scroll_transform_content_steps_for_plan(
             &arena,
@@ -168,14 +169,12 @@ fn direct_scroll_transform_geometry_freezes_offset_zero_raster_and_one_xy_projec
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::ScrollTransform);
     let child = arena.children_of(root)[0];
     {
-        let mut root_element =
-            crate::view::test_support::get_element_mut::<Element>(&arena, root);
+        let mut root_element = crate::view::test_support::get_element_mut::<Element>(&arena, root);
         root_element.layout_state.layout_position.x = 10.0;
         root_element.layout_state.layout_position.y = 20.0;
         root_element.layout_state.content_size.width = 240.0;
         root_element.set_scroll_offset((3.5, 47.25));
-        root_element
-            .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+        root_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
     }
     {
         let mut child_element =
@@ -191,8 +190,7 @@ fn direct_scroll_transform_geometry_freezes_offset_zero_raster_and_one_xy_projec
         let node = arena.get(root).unwrap();
         node.element.scroll_geometry_observation(root, &arena)
     };
-    let crate::view::base_component::ScrollGeometryObservation::Exact(observation) =
-        observation
+    let crate::view::base_component::ScrollGeometryObservation::Exact(observation) = observation
     else {
         panic!("{observation:?}")
     };
@@ -341,17 +339,19 @@ fn direct_scroll_transform_frozen_artifact_geometry_and_backing_tamper_fail_clos
     let mut artifact_tamper = scaffold.clone();
     artifact_tamper.tamper_content_artifact_bounds_for_test();
     assert!(!artifact_tamper.is_canonical());
-    assert!(super::super::super::scroll_scene::plan_direct_scroll_transform_geometry(
-        &arena,
-        artifact_tamper,
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-        super::super::super::scroll_scene::ScrollSceneSingleTextureBudget::new(
-            u32::MAX,
-            u64::MAX,
+    assert!(
+        super::super::super::scroll_scene::plan_direct_scroll_transform_geometry(
+            &arena,
+            artifact_tamper,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            super::super::super::scroll_scene::ScrollSceneSingleTextureBudget::new(
+                u32::MAX,
+                u64::MAX,
+            )
+            .unwrap(),
         )
-        .unwrap(),
-    )
-    .is_err());
+        .is_err()
+    );
     let mut host_tamper = scaffold.clone();
     host_tamper.tamper_host_artifact_bounds_for_test();
     assert!(!host_tamper.is_canonical());

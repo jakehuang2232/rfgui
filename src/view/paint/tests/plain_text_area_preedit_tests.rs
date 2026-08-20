@@ -124,8 +124,7 @@ fn plain_text_area_preedit_selection_glyph_underline_caret_order_and_clip_are_ex
 
     let (arena, roots, root) = make(false);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(
         artifact
@@ -182,16 +181,14 @@ fn plain_text_area_preedit_selection_glyph_underline_caret_order_and_clip_are_ex
 
     let (arena, roots, _) = make(true);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(artifact.chunks.len(), 4);
     let graph = compiled_whole_frame_graph(&artifact);
     assert!(graph.test_rect_pass_snapshots().is_empty());
     assert!(
         graph
-            .test_graphics_passes::<crate::view::render_pass::text_pass::TextPreparedInputPass>(
-            )
+            .test_graphics_passes::<crate::view::render_pass::text_pass::TextPreparedInputPass>()
             .is_empty()
     );
 }
@@ -268,8 +265,7 @@ fn plain_text_area_bounded_baked_scroll_is_canonical_and_matches_legacy() {
         &metadata, &full
     ));
 
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(
         artifact
@@ -599,11 +595,8 @@ fn plain_text_area_preedit_metadata_full_drift_and_boundaries_fail_closed() {
     let node = arena.get(root).unwrap();
     let text_area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
     assert_eq!(
-        text_area.shadow_paint_recording_capability(
-            &arena,
-            true,
-            PaintRecordingContext::default(),
-        ),
+        text_area
+            .shadow_paint_recording_capability(&arena, true, PaintRecordingContext::default(),),
         ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::Deferred)
     );
     drop(node);

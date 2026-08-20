@@ -20,8 +20,7 @@ fn target(
     bounds: RetainedSurfaceBounds,
     color_key: crate::view::frame_graph::PersistentTextureKey,
 ) -> RetainedSurfaceRasterInputs {
-    let color =
-        texture_desc_for_logical_bounds(bounds, 1.0, None, wgpu::TextureFormat::Bgra8Unorm);
+    let color = texture_desc_for_logical_bounds(bounds, 1.0, None, wgpu::TextureFormat::Bgra8Unorm);
     let (color, depth) = persistent_target_texture_descriptors(color, color_key);
     RetainedSurfaceRasterInputs {
         color,
@@ -313,9 +312,7 @@ fn transform_effect_scroll_outer_fixture() -> (
 fn transform_effect_scroll_outer_stamp_is_dedicated_and_matrix_neutral() {
     let (outer, transform, contract) = transform_effect_scroll_outer_fixture();
     assert!(
-        transform_effect_scroll_outer_raster_stamp_validates_contract(
-            &outer, transform, &contract
-        )
+        transform_effect_scroll_outer_raster_stamp_validates_contract(&outer, transform, &contract)
     );
     let [RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(dependency)] =
         outer.ordered_steps.as_slice()
@@ -348,9 +345,7 @@ fn transform_effect_scroll_outer_stamp_is_dedicated_and_matrix_neutral() {
 fn transform_effect_scroll_outer_stamp_rejects_typed_dependency_drift() {
     let (outer, transform, contract) = transform_effect_scroll_outer_fixture();
     let rejects = |stamp: &RetainedSurfaceRasterStamp| {
-        !transform_effect_scroll_outer_raster_stamp_validates_contract(
-            stamp, transform, &contract,
-        )
+        !transform_effect_scroll_outer_raster_stamp_validates_contract(stamp, transform, &contract)
     };
 
     let mut source = outer.clone();
@@ -462,8 +457,7 @@ fn transform_effect_scroll_child_is_rejected_by_every_legacy_gate() {
         .is_none()
     );
 
-    let RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(dependency) = &typed_step
-    else {
+    let RetainedSurfaceRasterStepStamp::TransformEffectScrollChild(dependency) = &typed_step else {
         unreachable!()
     };
     let mut effect_like = dependency.child_stamp.as_ref().clone();
@@ -695,9 +689,7 @@ fn generic_retained_surface_canonicalizers_reject_scroll_boundary_steps() {
     );
 
     let effect = EffectNodeSnapshot {
-        id: crate::view::compositor::property_tree::EffectNodeId(
-            effect_dependency.receiver_owner,
-        ),
+        id: crate::view::compositor::property_tree::EffectNodeId(effect_dependency.receiver_owner),
         owner: effect_dependency.receiver_owner,
         parent: None,
         opacity: 0.5,
@@ -720,8 +712,7 @@ fn generic_retained_surface_canonicalizers_reject_scroll_boundary_steps() {
         }],
     )
     .expect("canonical effect authority for isolation regression");
-    let effect_key =
-        crate::view::base_component::isolation_layer_stable_key(contract.stable_id());
+    let effect_key = crate::view::base_component::isolation_layer_stable_key(contract.stable_id());
     assert!(
         validated_property_effect_surface_raster_stamp(
             &contract,

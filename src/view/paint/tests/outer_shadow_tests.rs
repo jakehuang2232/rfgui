@@ -4,8 +4,7 @@ use super::*;
 fn outer_shadow_artifact_owns_ordered_fractional_payload_and_strict_pass_sequence() {
     let (arena, root, properties, generations) =
         prepared_shadow_leaf(0x6d10, 1.0, two_outer_shadows(), true);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &[root], &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &[root], &properties, &generations);
     assert!(eligibility.eligible);
     let shadows = artifact
         .ops
@@ -156,8 +155,7 @@ fn outer_shadow_owner_with_two_children_records_before_children_and_matches_lega
             if shadows.len() == 2 && decoration.len() == 2
     ));
 
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &[root], &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &[root], &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(
         artifact
@@ -340,9 +338,7 @@ fn outer_shadow_owner_native_child_boundaries_record_retained_artifact() {
                     panic!("standalone TextArea internals must fail closed")
                 };
                 assert!(eligibility.reasons.contains(
-                    &FrameArtifactFallbackReason::LegacyBoundary(
-                        LegacyPaintReason::UnknownHost,
-                    ),
+                    &FrameArtifactFallbackReason::LegacyBoundary(LegacyPaintReason::UnknownHost,),
                 ));
                 assert_eq!(take_full_artifact_record_count(), 0);
             }
@@ -436,8 +432,7 @@ fn nonzero_blur_outer_shadow_is_auto_recordable_and_matches_legacy_graph() {
         drop(arena);
 
         let artifact_graph = compiled_whole_frame_graph(&artifact);
-        let (legacy_arena, legacy_root, _, _) =
-            prepared_shadow_leaf(id, 1.0, vec![shadow()], true);
+        let (legacy_arena, legacy_root, _, _) = prepared_shadow_leaf(id, 1.0, vec![shadow()], true);
         let legacy_graph = legacy_roots_graph(legacy_arena, &[legacy_root]);
         assert_eq!(
             artifact_graph.pass_descriptors(),
@@ -516,8 +511,7 @@ fn inset_blur_shadow_is_auto_recordable_and_matches_legacy_mask_graph() {
     drop(arena);
 
     let artifact_graph = compiled_whole_frame_graph(&artifact);
-    let (legacy_arena, legacy_root, _, _) =
-        prepared_shadow_leaf(0x6d21, 1.0, vec![shadow()], true);
+    let (legacy_arena, legacy_root, _, _) = prepared_shadow_leaf(0x6d21, 1.0, vec![shadow()], true);
     let legacy_graph = legacy_roots_graph(legacy_arena, &[legacy_root]);
     assert_eq!(
         artifact_graph.pass_descriptors(),

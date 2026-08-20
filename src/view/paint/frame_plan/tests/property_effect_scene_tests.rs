@@ -36,8 +36,7 @@ fn property_effect_scaffold_freezes_nested_chain_and_opacity_zero_structure() {
     assert_eq!(child_surface.effect_chain.isolated_leaf.parent, None);
     assert!(!child_surface.raster_identity.content.is_empty());
     assert_eq!(child_surface.parent_opaque_cursor_delta, 0);
-    let PropertyEffectSurfaceKind::Isolation(parent_surface) = &scaffold.surfaces[0].kind
-    else {
+    let PropertyEffectSurfaceKind::Isolation(parent_surface) = &scaffold.surfaces[0].kind else {
         panic!("parent effect surface")
     };
     assert_eq!(parent_surface.nested_dependencies.len(), 1);
@@ -74,10 +73,10 @@ fn property_effect_scene_materializes_pure_nested_opacity_forest() {
         vec![(root, None), (child, Some(root)), (grandchild, Some(child))]
     );
     assert!(
-        witness.surfaces.iter().all(|surface| matches!(
-            surface.kind,
-            PropertySceneTransactionSurfaceKind::Effect(_)
-        ))
+        witness
+            .surfaces
+            .iter()
+            .all(|surface| matches!(surface.kind, PropertySceneTransactionSurfaceKind::Effect(_)))
     );
     assert_eq!(plan.steps.len(), 1);
     let PaintPlanStep::RetainedSurface(root_surface) = &plan.steps[0] else {
@@ -131,9 +130,9 @@ fn property_effect_scene_materializes_pure_nested_opacity_forest() {
     );
     assert_eq!(
         *basis,
-        super::super::super::compiler::PropertyEffectCompositeBasisStamp::ParentEffect(EffectNodeId(
-            root
-        ))
+        super::super::super::compiler::PropertyEffectCompositeBasisStamp::ParentEffect(
+            EffectNodeId(root)
+        )
     );
     assert_eq!(*resolved_scissor, None);
     assert!(ancestor_composite_clips.is_empty());
@@ -155,7 +154,8 @@ fn property_effect_scene_materializes_pure_nested_opacity_forest() {
         "nested opacity composites must not leak their raster-local opaque cursors"
     );
     let composites = graph
-        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>();
+        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
+        );
     assert_eq!(composites.len(), 3);
     assert_eq!(
         composites
@@ -281,8 +281,9 @@ fn property_effect_transaction_rejects_forged_terminal_shape_basis_and_scissor()
             | super::super::super::RetainedSurfaceRasterStepStamp::EffectScrollBoundary(_) => None,
         })
         .expect("root effect embeds its child");
-    let super::super::super::RetainedSurfaceCompositeGeometryStamp::PropertyEffect { basis, .. } =
-        &mut dependency.child_composite_geometry
+    let super::super::super::RetainedSurfaceCompositeGeometryStamp::PropertyEffect {
+        basis, ..
+    } = &mut dependency.child_composite_geometry
     else {
         panic!("effect dependency geometry")
     };
@@ -651,7 +652,8 @@ fn property_effect_scene_executes_only_proven_mixed_transform_effect_shape() {
             .end
     );
     let composites = graph
-        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>();
+        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
+        );
     assert_eq!(composites.len(), 1);
     assert_eq!(
         composites[0].test_snapshot().opacity_bits,

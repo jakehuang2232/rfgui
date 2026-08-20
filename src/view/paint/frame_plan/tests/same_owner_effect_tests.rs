@@ -54,7 +54,8 @@ fn same_owner_transform_effect_seals_prepares_emits_and_compiles() {
         1
     );
     let effects = graph
-        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>();
+        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
+        );
     assert_eq!(effects.len(), 1);
     assert_eq!(effects[0].test_snapshot().opacity_bits, 0.5_f32.to_bits());
 }
@@ -81,9 +82,11 @@ fn same_owner_image_and_svg_transform_effect_matrix_stays_retained() {
                     .property_scene_transaction_witness()
                     .expect("same-owner native transaction");
                 assert_eq!(witness.surfaces.len(), 2, "{host}/{state}");
-                assert!(witness.surfaces.iter().all(|surface| {
-                    surface.boundary_root == child && surface.stable_id != 0
-                }));
+                assert!(
+                    witness.surfaces.iter().all(|surface| {
+                        surface.boundary_root == child && surface.stable_id != 0
+                    })
+                );
                 assert!(matches!(
                     witness.surfaces[0].kind,
                     PropertySceneTransactionSurfaceKind::Transform(_)
@@ -116,8 +119,7 @@ fn same_owner_image_and_svg_transform_effect_matrix_stays_retained() {
                 assert!(compile.is_ok(), "{host}/{state}: {compile:?}");
                 assert_eq!(
                     graph
-                        .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>(
-                        )
+                        .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
                         .iter()
                         .filter(|pass| pass.test_snapshot().sampled_source.is_none())
                         .count(),
@@ -140,7 +142,7 @@ fn same_owner_image_and_svg_transform_effect_matrix_stays_retained() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn same_owner_transform_effect_tamper_matrix_generation_bounds_resource_role_and_order_fail_closed()
- {
+{
     let (arena, root, _child, properties, generations) =
         native_nested_effect_fixture("image", "ready", 0.5, true, false);
     let build = || {

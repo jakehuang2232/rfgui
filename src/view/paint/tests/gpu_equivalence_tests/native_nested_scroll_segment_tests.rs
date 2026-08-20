@@ -492,8 +492,8 @@ fn nested_text_pixel_diagnostics(pixels: &[u8]) -> Result<String, String> {
 #[ignore = "requires native GPU adapter: nested-segment Rect DPR1/DPR2 whole-frame per-channel <=1 LSB gate"]
 // Run explicitly with:
 // cargo test -q native_direct_nested_scroll_segment_rect_matches_legacy_within_one_lsb_at_dpr1_dpr2 -- --ignored --nocapture
-fn native_direct_nested_scroll_segment_rect_matches_legacy_within_one_lsb_at_dpr1_dpr2(
-) -> Result<(), String> {
+fn native_direct_nested_scroll_segment_rect_matches_legacy_within_one_lsb_at_dpr1_dpr2()
+-> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU initialized");
     let adapter = gpu.label();
@@ -656,8 +656,8 @@ fn run_rgba8_text_dpr2_gate(
 
 #[test]
 #[ignore = "known red gate: RGBA8 physical-integer/logical-fractional Text DPR2 must remain exact"]
-fn native_direct_nested_scroll_segment_rgba8_physical_integer_logical_fractional_text_dpr2_exact_gate(
-) -> Result<(), String> {
+fn native_direct_nested_scroll_segment_rgba8_physical_integer_logical_fractional_text_dpr2_exact_gate()
+-> Result<(), String> {
     run_rgba8_text_dpr2_gate(
         0.5,
         0.0,
@@ -668,8 +668,8 @@ fn native_direct_nested_scroll_segment_rgba8_physical_integer_logical_fractional
 
 #[test]
 #[ignore = "known red gate: RGBA8 fractional-phase Text DPR2 must remain exact"]
-fn native_direct_nested_scroll_segment_rgba8_fractional_phase_text_dpr2_exact_gate(
-) -> Result<(), String> {
+fn native_direct_nested_scroll_segment_rgba8_fractional_phase_text_dpr2_exact_gate()
+-> Result<(), String> {
     run_rgba8_text_dpr2_gate(
         0.5,
         0.25,
@@ -680,8 +680,8 @@ fn native_direct_nested_scroll_segment_rgba8_fractional_phase_text_dpr2_exact_ga
 
 #[test]
 #[ignore = "requires native GPU adapter: RGBA8 zero-offset Text DPR2 whole-frame per-channel <=1 LSB gate"]
-fn native_direct_nested_scroll_segment_rgba8_zero_offset_text_dpr2_one_lsb_gate(
-) -> Result<(), String> {
+fn native_direct_nested_scroll_segment_rgba8_zero_offset_text_dpr2_one_lsb_gate()
+-> Result<(), String> {
     run_rgba8_text_dpr2_gate(
         0.0,
         0.0,
@@ -692,8 +692,8 @@ fn native_direct_nested_scroll_segment_rgba8_zero_offset_text_dpr2_one_lsb_gate(
 
 #[test]
 #[ignore = "requires native GPU adapter: RGBA8 logical-integer Text DPR2 whole-frame per-channel <=1 LSB gate"]
-fn native_direct_nested_scroll_segment_rgba8_logical_integer_text_dpr2_one_lsb_gate(
-) -> Result<(), String> {
+fn native_direct_nested_scroll_segment_rgba8_logical_integer_text_dpr2_one_lsb_gate()
+-> Result<(), String> {
     run_rgba8_text_dpr2_gate(
         1.0,
         0.0,

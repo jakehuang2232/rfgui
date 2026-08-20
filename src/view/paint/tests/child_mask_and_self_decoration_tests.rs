@@ -101,8 +101,7 @@ fn retained_child_mask_keeps_window_like_overflow_handles_outside_mask_scope() {
         } if chunk.owner == handles[0] && ops.is_empty()
     )));
 
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &[root], &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &[root], &properties, &generations);
     assert!(eligibility.eligible);
     let artifact_mask_end = artifact
         .chunks
@@ -266,15 +265,13 @@ fn self_decoration_grammar_accepts_empty_but_rejects_shadow_only_and_border_only
     let mut empty = valid.clone();
     empty.ops.clear();
     empty.chunks[0].op_range = 0..0;
-    empty.chunks[0].payload_identity =
-        PaintPayloadIdentity::prepared_shadows(std::iter::empty());
+    empty.chunks[0].payload_identity = PaintPayloadIdentity::prepared_shadows(std::iter::empty());
     let _ = take_artifact_compile_count();
     let _ = compiled_whole_frame_graph(&empty);
     assert_eq!(take_artifact_compile_count(), 1);
 
     let mut empty_with_stale_identity = empty.clone();
-    empty_with_stale_identity.chunks[0].payload_identity =
-        valid.chunks[0].payload_identity.clone();
+    empty_with_stale_identity.chunks[0].payload_identity = valid.chunks[0].payload_identity.clone();
     let _ = take_artifact_compile_count();
     let _ = compiled_whole_frame_graph(&empty_with_stale_identity);
     assert_eq!(take_artifact_compile_count(), 0);
@@ -373,8 +370,7 @@ fn css_opacity_zero_records_canonical_empty_self_decoration_and_shadow_identity(
     let (measure, place) = constraints();
     measure_and_place(&mut arena, root, measure, place);
     let (properties, generations) = sync_identity(&arena, &[root]);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &[root], &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &[root], &properties, &generations);
     assert!(eligibility.eligible);
     assert!(artifact.ops.is_empty());
     assert!(matches!(

@@ -4,8 +4,7 @@ use super::*;
 fn forced_rect_graph_is_strictly_identical_to_legacy_graph() {
     let (mut legacy_arena, legacy_root, _, _) = exact_transform_fixture();
     let mut legacy_graph = FrameGraph::new();
-    let (legacy_ctx, legacy_parent) =
-        parent_context_with_clear(&mut legacy_graph, 160, 120, 1.0);
+    let (legacy_ctx, legacy_parent) = parent_context_with_clear(&mut legacy_graph, 160, 120, 1.0);
     legacy_arena
         .with_element_taken(legacy_root, |element, arena| {
             element.build(&mut legacy_graph, arena, legacy_ctx)
@@ -27,8 +26,7 @@ fn forced_rect_graph_is_strictly_identical_to_legacy_graph() {
     )
     .expect("forced transformed rect plan");
     let mut forced_graph = FrameGraph::new();
-    let (forced_ctx, forced_parent) =
-        parent_context_with_clear(&mut forced_graph, 160, 120, 1.0);
+    let (forced_ctx, forced_parent) = parent_context_with_clear(&mut forced_graph, 160, 120, 1.0);
     let mut viewport = Viewport::new();
     super::super::super::execute_forced_transform_surface_for_test(
         &mut viewport,
@@ -171,8 +169,7 @@ fn forced_zero_blur_shadow_graph_is_strictly_identical_to_legacy_graph() {
     );
 
     let mut legacy_graph = FrameGraph::new();
-    let (legacy_ctx, legacy_parent) =
-        parent_context_with_clear(&mut legacy_graph, 160, 120, 1.0);
+    let (legacy_ctx, legacy_parent) = parent_context_with_clear(&mut legacy_graph, 160, 120, 1.0);
     arena
         .with_element_taken(root, |element, arena| {
             element.build(&mut legacy_graph, arena, legacy_ctx)
@@ -186,8 +183,7 @@ fn forced_zero_blur_shadow_graph_is_strictly_identical_to_legacy_graph() {
         .expect("legacy shadow sink");
 
     let mut forced_graph = FrameGraph::new();
-    let (forced_ctx, forced_parent) =
-        parent_context_with_clear(&mut forced_graph, 160, 120, 1.0);
+    let (forced_ctx, forced_parent) = parent_context_with_clear(&mut forced_graph, 160, 120, 1.0);
     let mut viewport = Viewport::new();
     super::super::super::execute_forced_transform_surface_for_test(
         &mut viewport,

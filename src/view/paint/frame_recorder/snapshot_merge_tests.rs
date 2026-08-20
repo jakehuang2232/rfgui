@@ -164,9 +164,7 @@ fn artifact_snapshots_complete_spatial_ancestor_graphs_without_arena_queries() {
     );
     assert!(
         trees
-            .layout_position_snapshot_chain_for(
-                artifact.chunks[0].properties.layout_position,
-            )
+            .layout_position_snapshot_chain_for(artifact.chunks[0].properties.layout_position,)
             .is_some(),
         "layout-position snapshot chain"
     );

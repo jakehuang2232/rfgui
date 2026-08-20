@@ -104,9 +104,7 @@ fn effect_transform_scroll_action_matrix_keeps_opacity_final_and_translation_par
         )
     );
     let [
-        crate::view::paint::RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(
-            dependency,
-        ),
+        crate::view::paint::RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(dependency),
     ] = first.roots[0]
         .outer_stamp
         .ordered_steps
@@ -114,9 +112,7 @@ fn effect_transform_scroll_action_matrix_keeps_opacity_final_and_translation_par
         .filter(|step| {
             matches!(
                 step,
-                crate::view::paint::RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(
-                    _
-                )
+                crate::view::paint::RetainedSurfaceRasterStepStamp::EffectTransformScrollChild(_)
             )
         })
         .collect::<Vec<_>>()
@@ -217,9 +213,7 @@ fn effect_transform_scroll_action_matrix_keeps_opacity_final_and_translation_par
     translation.refresh_actions_from_committed_test_pool();
     assert_eq!(actions(&translation), [reraster, reuse, reuse]);
     let _ = emit_prepared_retained_effect_transform_scroll_scene(translation);
-    assert!(
-        viewport.finish_retained_surface_transaction_for_frame(Some(translation_owner), true)
-    );
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(translation_owner), true));
 }
 
 #[test]
@@ -350,9 +344,7 @@ fn transform_effect_scroll_action_matrix_separates_outer_effect_and_content() {
     assert_eq!(actions(&unchanged), [reuse, reuse, reuse]);
     let _ = emit_prepared_retained_transform_effect_scroll_scene(unchanged);
     assert_clear_delta(&unchanged_graph, 0);
-    assert!(
-        viewport.finish_retained_surface_transaction_for_frame(Some(unchanged_owner), true)
-    );
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(unchanged_owner), true));
 
     // Translation is final-composite geometry, not an outer raster dependency.
     crate::view::test_support::get_element_mut::<Element>(&arena, root)
@@ -401,9 +393,7 @@ fn transform_effect_scroll_action_matrix_separates_outer_effect_and_content() {
             .quad_positions
             .map(|positions| positions.map(|point| point.map(f32::to_bits)))
     );
-    assert!(
-        viewport.finish_retained_surface_transaction_for_frame(Some(translation_owner), true)
-    );
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(translation_owner), true));
 
     // Effect opacity is consumed while rastering T, leaving E/content reusable.
     crate::view::test_support::get_element_mut::<Element>(&arena, effect).set_opacity(0.375);

@@ -75,10 +75,12 @@ fn property_transform_effect_scroll_insertion_freezes_nested_receivers_and_stack
     let [insertion] = scaffold.transform_effect_receiver_insertions.as_slice() else {
         panic!("exact T->E->S owns one nested insertion")
     };
-    assert!(crate::view::paint::compiler::direct_translation_bits(
-        insertion.outer_geometry.viewport_transform
-    )
-    .is_some());
+    assert!(
+        crate::view::paint::compiler::direct_translation_bits(
+            insertion.outer_geometry.viewport_transform
+        )
+        .is_some()
+    );
     assert!(
         insertion.outer_geometry.source_bounds.width
             > f32::from_bits(insertion.inner.raster_bounds_bits[2])
@@ -325,12 +327,15 @@ fn property_scroll_receiver_insertion_seal_rejects_drop_duplicate_reorder_and_re
             .scroll_schedule_scaffold
             .as_mut()
             .unwrap();
-        let [PropertySceneScheduledStep::RetainedSurface {
-            boundary: PropertyScheduledSurfaceBoundary::Transform(receiver),
-            ..
-        }, PropertySceneScheduledStep::ScrollBoundary {
-            boundary_ordinal, ..
-        }] = scaffold.schedule.steps.as_slice()
+        let [
+            PropertySceneScheduledStep::RetainedSurface {
+                boundary: PropertyScheduledSurfaceBoundary::Transform(receiver),
+                ..
+            },
+            PropertySceneScheduledStep::ScrollBoundary {
+                boundary_ordinal, ..
+            },
+        ] = scaffold.schedule.steps.as_slice()
         else {
             panic!("T->S schedule")
         };

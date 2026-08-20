@@ -1,7 +1,7 @@
-use super::*;
 use super::super::recording_context::PaintRecordingContext;
-use crate::view::compositor::property_tree::{LayoutPositionNodeId, VisualOffsetNodeId};
+use super::*;
 use crate::view::base_component::Element;
+use crate::view::compositor::property_tree::{LayoutPositionNodeId, VisualOffsetNodeId};
 use crate::view::test_support::{commit_child, commit_element, new_test_arena};
 use slotmap::SlotMap;
 

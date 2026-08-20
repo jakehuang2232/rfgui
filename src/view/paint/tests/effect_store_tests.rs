@@ -343,8 +343,7 @@ fn compiler_checks_baked_opacity_for_text_image_svg_and_decorations() {
         0.5,
     );
     let (svg_properties, svg_generations) = sync_identity(&svg_arena, &svg_roots);
-    let mut svg =
-        whole_frame_artifact(&svg_arena, &svg_roots, &svg_properties, &svg_generations).0;
+    let mut svg = whole_frame_artifact(&svg_arena, &svg_roots, &svg_properties, &svg_generations).0;
     svg.chunks[0].id.role = PaintChunkRole::SvgContent;
     let PaintOp::PreparedImage(image_op) = svg.ops.last_mut().unwrap() else {
         panic!("source fixture must record PreparedImage")

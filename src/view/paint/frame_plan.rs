@@ -491,10 +491,8 @@ fn property_boundary_program_checked_identity(
     value: usize,
     kind: PropertyBoundaryProgramIdentityKind,
 ) -> Result<u32, PropertyBoundaryProgramRejection> {
-    u32::try_from(value).map_err(|_| PropertyBoundaryProgramRejection::IdentityOverflow {
-        kind,
-        value,
-    })
+    u32::try_from(value)
+        .map_err(|_| PropertyBoundaryProgramRejection::IdentityOverflow { kind, value })
 }
 
 /// Collect the M7a `Empty | FrameRootScroll` forest directly from live state.
@@ -511,11 +509,11 @@ pub(super) fn plan_property_boundary_program_forest(
         reasons.push(PropertyBoundaryProgramRejection::EmptyForest);
     }
     for &error in &property_trees.validation_errors {
-        reasons.push(PropertyBoundaryProgramRejection::PropertyTreeValidation(error));
+        reasons.push(PropertyBoundaryProgramRejection::PropertyTreeValidation(
+            error,
+        ));
     }
-    if let Some(mismatch) =
-        paint_generations.live_snapshot_mismatch(arena, roots, property_trees)
-    {
+    if let Some(mismatch) = paint_generations.live_snapshot_mismatch(arena, roots, property_trees) {
         reasons.push(PropertyBoundaryProgramRejection::LiveSnapshotMismatch {
             owner: mismatch.owner,
             field: mismatch.field.code(),
@@ -529,11 +527,10 @@ pub(super) fn plan_property_boundary_program_forest(
     let mut root_ordinals = Vec::with_capacity(roots.len());
     let mut owner_to_root = FxHashMap::default();
     for (ordinal, &root) in roots.iter().enumerate() {
-        let root_ordinal =
-            property_boundary_program_checked_identity(
-                ordinal,
-                PropertyBoundaryProgramIdentityKind::RootOrdinal,
-            );
+        let root_ordinal = property_boundary_program_checked_identity(
+            ordinal,
+            PropertyBoundaryProgramIdentityKind::RootOrdinal,
+        );
         let root_ordinal = match root_ordinal {
             Ok(root_ordinal) => {
                 root_ordinals.push(Some(root_ordinal));
@@ -591,7 +588,9 @@ pub(super) fn plan_property_boundary_program_forest(
                 });
             }
             if !property_trees.states.contains_key(&owner) {
-                reasons.push(PropertyBoundaryProgramRejection::MissingPropertyState(owner));
+                reasons.push(PropertyBoundaryProgramRejection::MissingPropertyState(
+                    owner,
+                ));
             }
             owner_to_root.insert(owner, root_ordinal);
             root_nodes.push(owner);
@@ -684,10 +683,7 @@ pub(super) fn plan_property_boundary_program_forest(
     let mut planned_operations = Vec::new();
     let mut planned_boundaries = Vec::new();
     let mut planned_residents = Vec::new();
-    for ((&root, root_nodes), root_ordinal) in roots
-        .iter()
-        .zip(&nodes_by_root)
-        .zip(&root_ordinals)
+    for ((&root, root_nodes), root_ordinal) in roots.iter().zip(&nodes_by_root).zip(&root_ordinals)
     {
         let Some(root_ordinal) = *root_ordinal else {
             continue;
@@ -699,7 +695,11 @@ pub(super) fn plan_property_boundary_program_forest(
         let transforms = root_nodes
             .iter()
             .copied()
-            .filter(|owner| property_trees.transforms.contains_key(&TransformNodeId(*owner)))
+            .filter(|owner| {
+                property_trees
+                    .transforms
+                    .contains_key(&TransformNodeId(*owner))
+            })
             .map(TransformNodeId)
             .collect::<Vec<_>>();
         let effects = root_nodes
@@ -741,16 +741,16 @@ pub(super) fn plan_property_boundary_program_forest(
             scrolls.is_empty(),
         ) {
             (false, true, true) => None,
-            (true, false, true) => Some((effects[0].0, PropertyBoundaryProgramUnsupportedKind::Effect)),
-            (false, _, _) | (_, false, false) => Some((mixed_owner, PropertyBoundaryProgramUnsupportedKind::Mixed)),
+            (true, false, true) => {
+                Some((effects[0].0, PropertyBoundaryProgramUnsupportedKind::Effect))
+            }
+            (false, _, _) | (_, false, false) => {
+                Some((mixed_owner, PropertyBoundaryProgramUnsupportedKind::Mixed))
+            }
             _ => None,
         };
         if let Some((owner, kind)) = unsupported {
-            reasons.push(PropertyBoundaryProgramRejection::UnsupportedRoot {
-                root,
-                owner,
-                kind,
-            });
+            reasons.push(PropertyBoundaryProgramRejection::UnsupportedRoot { root, owner, kind });
             continue;
         }
 
@@ -808,10 +808,7 @@ pub(super) fn plan_property_boundary_program_forest(
                 && snapshot.generation != 0
                 && matrix_is_finite_affine(snapshot.owner_viewport_transform)
                 && root_node.element.has_retained_transform_surface()
-                && element_local_transform_matches_snapshot(
-                    root_node.element.as_ref(),
-                    snapshot,
-                );
+                && element_local_transform_matches_snapshot(root_node.element.as_ref(), snapshot);
             if !exact_root_transform || invalid_content_owner.is_some() {
                 reasons.push(PropertyBoundaryProgramRejection::UnsupportedRoot {
                     root,
@@ -821,7 +818,10 @@ pub(super) fn plan_property_boundary_program_forest(
                 continue;
             }
             let identities = [
-                (planned_nodes.len(), PropertyBoundaryProgramIdentityKind::Node),
+                (
+                    planned_nodes.len(),
+                    PropertyBoundaryProgramIdentityKind::Node,
+                ),
                 (
                     planned_operations.len(),
                     PropertyBoundaryProgramIdentityKind::Operation,
@@ -836,8 +836,12 @@ pub(super) fn plan_property_boundary_program_forest(
                 ),
             ]
             .map(|(value, kind)| property_boundary_program_checked_identity(value, kind));
-            let [Ok(node_identity), Ok(operation_identity), Ok(boundary_identity), Ok(resident_identity)] =
-                identities
+            let [
+                Ok(node_identity),
+                Ok(operation_identity),
+                Ok(boundary_identity),
+                Ok(resident_identity),
+            ] = identities
             else {
                 reasons.extend(identities.into_iter().filter_map(Result::err));
                 continue;
@@ -904,15 +908,11 @@ pub(super) fn plan_property_boundary_program_forest(
                 });
             }
             for &owner in root_nodes {
-                if property_trees
-                    .node_state_for(owner)
-                    .is_some_and(|state| {
-                        state.paint.legacy_boundary_dimensions()
+                if property_trees.node_state_for(owner).is_some_and(|state| {
+                    state.paint.legacy_boundary_dimensions() != PropertyTreeState::default()
+                        || state.descendants.legacy_boundary_dimensions()
                             != PropertyTreeState::default()
-                            || state.descendants.legacy_boundary_dimensions()
-                                != PropertyTreeState::default()
-                    })
-                {
+                }) {
                     reasons.push(PropertyBoundaryProgramRejection::UnsupportedRoot {
                         root,
                         owner,
@@ -1007,8 +1007,12 @@ pub(super) fn plan_property_boundary_program_forest(
             ),
         ]
         .map(|(value, kind)| property_boundary_program_checked_identity(value, kind));
-        let [Ok(node_identity), Ok(operation_identity), Ok(boundary_identity), Ok(resident_identity)] =
-            identities
+        let [
+            Ok(node_identity),
+            Ok(operation_identity),
+            Ok(boundary_identity),
+            Ok(resident_identity),
+        ] = identities
         else {
             reasons.extend(identities.into_iter().filter_map(Result::err));
             continue;
@@ -1143,12 +1147,9 @@ pub(super) fn property_boundary_program_forest_is_canonical(
         let Some(root_residents) = plan.residents.get(root.resident_span.clone()) else {
             return false;
         };
-        if let ([node], [operation], [boundary], [resident]) = (
-            root_nodes,
-            root_operations,
-            root_boundaries,
-            root_residents,
-        ) {
+        if let ([node], [operation], [boundary], [resident]) =
+            (root_nodes, root_operations, root_boundaries, root_residents)
+        {
             let receiver = PropertyBoundaryProgramReceiver::FrameRoot {
                 scene_root_ordinal: root.ordinal,
             };
@@ -1222,13 +1223,12 @@ pub(super) fn property_boundary_program_forest_is_canonical(
             root.resident_span.end,
         );
     }
-    next
-        == (
-            plan.nodes.len(),
-            plan.operations.len(),
-            plan.boundaries.len(),
-            plan.residents.len(),
-        )
+    next == (
+        plan.nodes.len(),
+        plan.operations.len(),
+        plan.boundaries.len(),
+        plan.residents.len(),
+    )
 }
 
 /// Typed projection of the already-admitted property/scroll path grammar.
@@ -1273,9 +1273,7 @@ impl PropertyBoundaryDag {
                         let receiver_matches = match (index, node.receiver, previous) {
                             (
                                 0,
-                                PropertyBoundaryReceiverScope::FrameRoot {
-                                    scene_root_ordinal,
-                                },
+                                PropertyBoundaryReceiverScope::FrameRoot { scene_root_ordinal },
                                 None,
                             ) => scene_root_ordinal == root.scene_root_ordinal,
                             (
@@ -1297,119 +1295,119 @@ impl PropertyBoundaryDag {
                 PropertyBoundaryDagGrammar::NestedScrollChain
             } else {
                 match nodes {
-                [] => {
-                    saw_empty_root = true;
-                    continue;
-                }
-                [
-                    PropertyBoundaryDagNode {
-                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
-                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
-                        ..
-                    },
-                ] => PropertyBoundaryDagGrammar::FrameRootScroll,
-                [
-                    PropertyBoundaryDagNode {
-                        id: outer_id,
-                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
-                        kind: PropertyBoundaryDagNodeKind::Transform(_),
-                        ..
-                    },
-                    PropertyBoundaryDagNode {
-                        receiver: PropertyBoundaryReceiverScope::Surface(receiver),
-                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
-                        ..
-                    },
-                ] if receiver == outer_id => PropertyBoundaryDagGrammar::TransformScroll,
-                [
-                    PropertyBoundaryDagNode {
-                        id: outer_id,
-                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
-                        kind: PropertyBoundaryDagNodeKind::Effect(_),
-                        ..
-                    },
-                    PropertyBoundaryDagNode {
-                        receiver: PropertyBoundaryReceiverScope::Surface(receiver),
-                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
-                        ..
-                    },
-                ] if receiver == outer_id => PropertyBoundaryDagGrammar::EffectScroll,
-                [
-                    PropertyBoundaryDagNode {
-                        id: transform_id,
-                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
-                        kind: PropertyBoundaryDagNodeKind::Transform(_),
-                        ..
-                    },
-                    PropertyBoundaryDagNode {
-                        id: effect_id,
-                        receiver: PropertyBoundaryReceiverScope::Surface(effect_receiver),
-                        kind: PropertyBoundaryDagNodeKind::Effect(_),
-                        ..
-                    },
-                    PropertyBoundaryDagNode {
-                        receiver: PropertyBoundaryReceiverScope::Surface(scroll_receiver),
-                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
-                        ..
-                    },
-                ] if effect_receiver == transform_id && scroll_receiver == effect_id => {
-                    PropertyBoundaryDagGrammar::TransformEffectScroll
-                }
-                [
-                    PropertyBoundaryDagNode {
-                        id: effect_id,
-                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
-                        kind: PropertyBoundaryDagNodeKind::Effect(_),
-                        ..
-                    },
-                    PropertyBoundaryDagNode {
-                        id: transform_id,
-                        receiver: PropertyBoundaryReceiverScope::Surface(transform_receiver),
-                        kind: PropertyBoundaryDagNodeKind::Transform(_),
-                        ..
-                    },
-                    PropertyBoundaryDagNode {
-                        receiver: PropertyBoundaryReceiverScope::Surface(scroll_receiver),
-                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
-                        ..
-                    },
-                ] if transform_receiver == effect_id && scroll_receiver == transform_id => {
-                    PropertyBoundaryDagGrammar::EffectTransformScroll
-                }
-                [
-                    PropertyBoundaryDagNode {
-                        id: scroll_id,
-                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
-                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
-                        ..
-                    },
-                    PropertyBoundaryDagNode {
-                        receiver: PropertyBoundaryReceiverScope::ScrollContent(receiver),
-                        kind: PropertyBoundaryDagNodeKind::Effect(_),
-                        ..
-                    },
-                ] if receiver == scroll_id => PropertyBoundaryDagGrammar::ScrollEffect,
-                [
-                    PropertyBoundaryDagNode {
-                        id: transform_id,
-                        receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
-                        kind: PropertyBoundaryDagNodeKind::Transform(_),
-                        ..
-                    },
-                    PropertyBoundaryDagNode {
-                        id: scroll_id,
-                        receiver: PropertyBoundaryReceiverScope::Surface(receiver),
-                        kind: PropertyBoundaryDagNodeKind::Scroll(_),
-                        ..
-                    },
-                    PropertyBoundaryDagNode {
-                        receiver: PropertyBoundaryReceiverScope::ScrollContent(content_receiver),
-                        kind: PropertyBoundaryDagNodeKind::Effect(_),
-                        ..
-                    },
-                ] if receiver == transform_id && content_receiver == scroll_id => {
-                    PropertyBoundaryDagGrammar::TransformScrollEffect
-                }
+                    [] => {
+                        saw_empty_root = true;
+                        continue;
+                    }
+                    [
+                        PropertyBoundaryDagNode {
+                            receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                            kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                            ..
+                        },
+                    ] => PropertyBoundaryDagGrammar::FrameRootScroll,
+                    [
+                        PropertyBoundaryDagNode {
+                            id: outer_id,
+                            receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                            kind: PropertyBoundaryDagNodeKind::Transform(_),
+                            ..
+                        },
+                        PropertyBoundaryDagNode {
+                            receiver: PropertyBoundaryReceiverScope::Surface(receiver),
+                            kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                            ..
+                        },
+                    ] if receiver == outer_id => PropertyBoundaryDagGrammar::TransformScroll,
+                    [
+                        PropertyBoundaryDagNode {
+                            id: outer_id,
+                            receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                            kind: PropertyBoundaryDagNodeKind::Effect(_),
+                            ..
+                        },
+                        PropertyBoundaryDagNode {
+                            receiver: PropertyBoundaryReceiverScope::Surface(receiver),
+                            kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                            ..
+                        },
+                    ] if receiver == outer_id => PropertyBoundaryDagGrammar::EffectScroll,
+                    [
+                        PropertyBoundaryDagNode {
+                            id: transform_id,
+                            receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                            kind: PropertyBoundaryDagNodeKind::Transform(_),
+                            ..
+                        },
+                        PropertyBoundaryDagNode {
+                            id: effect_id,
+                            receiver: PropertyBoundaryReceiverScope::Surface(effect_receiver),
+                            kind: PropertyBoundaryDagNodeKind::Effect(_),
+                            ..
+                        },
+                        PropertyBoundaryDagNode {
+                            receiver: PropertyBoundaryReceiverScope::Surface(scroll_receiver),
+                            kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                            ..
+                        },
+                    ] if effect_receiver == transform_id && scroll_receiver == effect_id => {
+                        PropertyBoundaryDagGrammar::TransformEffectScroll
+                    }
+                    [
+                        PropertyBoundaryDagNode {
+                            id: effect_id,
+                            receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                            kind: PropertyBoundaryDagNodeKind::Effect(_),
+                            ..
+                        },
+                        PropertyBoundaryDagNode {
+                            id: transform_id,
+                            receiver: PropertyBoundaryReceiverScope::Surface(transform_receiver),
+                            kind: PropertyBoundaryDagNodeKind::Transform(_),
+                            ..
+                        },
+                        PropertyBoundaryDagNode {
+                            receiver: PropertyBoundaryReceiverScope::Surface(scroll_receiver),
+                            kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                            ..
+                        },
+                    ] if transform_receiver == effect_id && scroll_receiver == transform_id => {
+                        PropertyBoundaryDagGrammar::EffectTransformScroll
+                    }
+                    [
+                        PropertyBoundaryDagNode {
+                            id: scroll_id,
+                            receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                            kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                            ..
+                        },
+                        PropertyBoundaryDagNode {
+                            receiver: PropertyBoundaryReceiverScope::ScrollContent(receiver),
+                            kind: PropertyBoundaryDagNodeKind::Effect(_),
+                            ..
+                        },
+                    ] if receiver == scroll_id => PropertyBoundaryDagGrammar::ScrollEffect,
+                    [
+                        PropertyBoundaryDagNode {
+                            id: transform_id,
+                            receiver: PropertyBoundaryReceiverScope::FrameRoot { .. },
+                            kind: PropertyBoundaryDagNodeKind::Transform(_),
+                            ..
+                        },
+                        PropertyBoundaryDagNode {
+                            id: scroll_id,
+                            receiver: PropertyBoundaryReceiverScope::Surface(receiver),
+                            kind: PropertyBoundaryDagNodeKind::Scroll(_),
+                            ..
+                        },
+                        PropertyBoundaryDagNode {
+                            receiver: PropertyBoundaryReceiverScope::ScrollContent(content_receiver),
+                            kind: PropertyBoundaryDagNodeKind::Effect(_),
+                            ..
+                        },
+                    ] if receiver == transform_id && content_receiver == scroll_id => {
+                        PropertyBoundaryDagGrammar::TransformScrollEffect
+                    }
                     _ => return None,
                 }
             };
@@ -2127,11 +2125,13 @@ impl PropertyScrollBoundaryContract {
             || self.contents_clip.owner != self.scroll.owner
             || self.contents_clip.behavior != ClipBehavior::Intersect
             || self.contents_clip.generation == 0
-            || !self.scroll.has_canonical_geometry_with_contents_clip_parent_ids(
-                self.contents_clip,
-                expected_scroll_parent,
-                self.contents_clip.parent,
-            )
+            || !self
+                .scroll
+                .has_canonical_geometry_with_contents_clip_parent_ids(
+                    self.contents_clip,
+                    expected_scroll_parent,
+                    self.contents_clip.parent,
+                )
         {
             return false;
         }
@@ -2159,18 +2159,11 @@ impl PropertyScrollBoundaryContract {
         // appeared first. That latter ordering would accidentally cap a
         // nested scroll chain at two boundaries.
         for clip in &self.ancestor_composite_clips {
-            if !clip_ids.insert(clip.id)
-                || clip.owner != clip.id.owner
-                || clip.generation == 0
-            {
+            if !clip_ids.insert(clip.id) || clip.owner != clip.id.owner || clip.generation == 0 {
                 return false;
             }
         }
-        for clip in self
-            .local_content_clips
-            .iter()
-            .chain(&self.receiver_clips)
-        {
+        for clip in self.local_content_clips.iter().chain(&self.receiver_clips) {
             if !clip_ids.insert(clip.id)
                 || clip.owner != clip.id.owner
                 || clip.generation == 0
@@ -2740,7 +2733,9 @@ fn freeze_property_boundary_forest(
                 if parent.boundary.owner() != surface.boundary.owner() {
                     let mut cursor = surface.boundary.owner();
                     loop {
-                        let node = arena.get(cursor).ok_or_else(|| property_scene_error("property-boundary-forest"))?;
+                        let node = arena
+                            .get(cursor)
+                            .ok_or_else(|| property_scene_error("property-boundary-forest"))?;
                         reverse_path.push(PropertyBoundaryForestPathOwnerWitness {
                             owner: cursor,
                             stable_id: node.element.stable_id(),
@@ -3135,9 +3130,7 @@ impl FramePaintPlan {
             return None;
         }
         let seal = self.property_scene_seal.as_ref()?;
-        if seal.scroll_schedule_scaffold.is_some()
-            || seal.native_scroll_forest_scaffold.is_some()
-        {
+        if seal.scroll_schedule_scaffold.is_some() || seal.native_scroll_forest_scaffold.is_some() {
             return None;
         }
         let roots = if let Some(scaffold) = &seal.effect_scaffold {
@@ -3184,9 +3177,12 @@ impl FramePaintPlan {
                                 contract.stable_id,
                             ),
                             match &contract.kind {
-                                PropertyEffectSurfaceKind::Transform { snapshot, .. } => {
-                                    Some(snapshot.owner_viewport_transform.to_cols_array().map(f32::to_bits))
-                                }
+                                PropertyEffectSurfaceKind::Transform { snapshot, .. } => Some(
+                                    snapshot
+                                        .owner_viewport_transform
+                                        .to_cols_array()
+                                        .map(f32::to_bits),
+                                ),
                                 PropertyEffectSurfaceKind::Isolation(_) => return None,
                             },
                             None,
@@ -3888,7 +3884,8 @@ pub(crate) fn plan_transform_property_scene_with_context(
             .element
             .stable_id();
         root_witnesses.push(PropertySceneRootWitness {
-            ordinal: u32::try_from(root_ordinal).map_err(|_| property_scene_error("transform-property-scene"))?,
+            ordinal: u32::try_from(root_ordinal)
+                .map_err(|_| property_scene_error("transform-property-scene"))?,
             root,
             stable_id,
             owner: PaintOwnerSnapshot {
@@ -4055,7 +4052,12 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
         let effect = property_trees.effects.get(&EffectNodeId(key));
         let mut push_boundary = |boundary, parent_boundary_ordinal, seeds: &mut Vec<Seed>| {
             let Ok(ordinal) = u32::try_from(seeds.len()) else {
-                push_unique(reasons, FramePaintPlanRejection::InvalidPropertyScene("property-boundary-seed-ordinal-overflow"));
+                push_unique(
+                    reasons,
+                    FramePaintPlanRejection::InvalidPropertyScene(
+                        "property-boundary-seed-ordinal-overflow",
+                    ),
+                );
                 return None;
             };
             seeds.push(Seed {
@@ -4338,7 +4340,10 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
                 .map_or(roots[0], |seed| seed.boundary.owner());
             push_unique(
                 &mut reasons,
-                FramePaintPlanRejection::UnsupportedPropertyInterleave(owner, "effect-scene-scaffold-boundary"),
+                FramePaintPlanRejection::UnsupportedPropertyInterleave(
+                    owner,
+                    "effect-scene-scaffold-boundary",
+                ),
             );
         }
     }
@@ -4361,7 +4366,9 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
     let mut surfaces = Vec::with_capacity(seeds.len());
     for (ordinal, seed) in seeds.iter().copied().enumerate() {
         let owner = seed.boundary.owner();
-        let node = arena.get(owner).ok_or_else(|| property_scene_error("property-effect-scene-scaffold"))?;
+        let node = arena
+            .get(owner)
+            .ok_or_else(|| property_scene_error("property-effect-scene-scaffold"))?;
         let stable_id = node.element.stable_id();
         let kind = match seed.boundary {
             PropertyBoundaryId::Transform(id) => {
@@ -4469,26 +4476,28 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
                     .into_iter()
                     .take_while(|clip| !ancestor_ids.contains(&clip.id))
                     .collect::<Vec<_>>();
-                let basis = match seed.parent_boundary_ordinal {
-                    None => PropertyIsolationCompositeBasis::FrameRoot,
-                    Some(parent_ordinal) => match seeds[parent_ordinal as usize].boundary {
-                        PropertyBoundaryId::Effect(parent) => {
-                            PropertyIsolationCompositeBasis::ParentEffect(parent)
-                        }
-                        PropertyBoundaryId::Transform(parent) => {
-                            let parent = property_trees
-                                .transform_snapshot_for(parent)
-                                .ok_or_else(|| property_scene_error("property-effect-scene-scaffold"))?;
-                            PropertyIsolationCompositeBasis::ParentTransform {
-                                transform: parent.id,
-                                surface_composite_matrix_bits: parent
-                                    .owner_viewport_transform
-                                    .to_cols_array()
-                                    .map(f32::to_bits),
+                let basis =
+                    match seed.parent_boundary_ordinal {
+                        None => PropertyIsolationCompositeBasis::FrameRoot,
+                        Some(parent_ordinal) => match seeds[parent_ordinal as usize].boundary {
+                            PropertyBoundaryId::Effect(parent) => {
+                                PropertyIsolationCompositeBasis::ParentEffect(parent)
                             }
-                        }
-                    },
-                };
+                            PropertyBoundaryId::Transform(parent) => {
+                                let parent =
+                                    property_trees.transform_snapshot_for(parent).ok_or_else(
+                                        || property_scene_error("property-effect-scene-scaffold"),
+                                    )?;
+                                PropertyIsolationCompositeBasis::ParentTransform {
+                                    transform: parent.id,
+                                    surface_composite_matrix_bits: parent
+                                        .owner_viewport_transform
+                                        .to_cols_array()
+                                        .map(f32::to_bits),
+                                }
+                            }
+                        },
+                    };
                 let mut content = Vec::new();
                 let mut stack = vec![owner];
                 let mut content_seen = FxHashSet::default();
@@ -4513,7 +4522,9 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
                         self_paint_revision: generations.self_paint_revision,
                         topology_revision: generations.topology_revision,
                     });
-                    let current = arena.get(key).ok_or_else(|| property_scene_error("property-effect-scene-scaffold"))?;
+                    let current = arena
+                        .get(key)
+                        .ok_or_else(|| property_scene_error("property-effect-scene-scaffold"))?;
                     stack.extend(current.element.children().iter().rev().copied());
                 }
                 PropertyEffectSurfaceKind::Isolation(PropertyIsolationBoundaryContract {
@@ -4552,7 +4563,8 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
             }
         };
         surfaces.push(PropertyEffectSurfaceContract {
-            ordinal: u32::try_from(ordinal).map_err(|_| property_scene_error("property-effect-scene-scaffold"))?,
+            ordinal: u32::try_from(ordinal)
+                .map_err(|_| property_scene_error("property-effect-scene-scaffold"))?,
             boundary: seed.boundary,
             stable_id,
             parent_boundary_ordinal: seed.parent_boundary_ordinal,
@@ -4600,14 +4612,18 @@ pub(crate) fn plan_property_effect_scene_scaffold_with_context(
             .element
             .stable_id();
         effect_roots.push(PropertyEffectRootWitness {
-            ordinal: u32::try_from(ordinal).map_err(|_| property_scene_error("property-effect-scene-scaffold"))?,
+            ordinal: u32::try_from(ordinal)
+                .map_err(|_| property_scene_error("property-effect-scene-scaffold"))?,
             root,
             stable_id,
-            boundary_ordinal_span: u32::try_from(range.start).map_err(|_| property_scene_error("property-effect-scene-scaffold"))?
-                ..u32::try_from(range.end).map_err(|_| property_scene_error("property-effect-scene-scaffold"))?,
+            boundary_ordinal_span: u32::try_from(range.start)
+                .map_err(|_| property_scene_error("property-effect-scene-scaffold"))?
+                ..u32::try_from(range.end)
+                    .map_err(|_| property_scene_error("property-effect-scene-scaffold"))?,
         });
         plan_roots.push(PropertySceneRootWitness {
-            ordinal: u32::try_from(ordinal).map_err(|_| property_scene_error("property-effect-scene-scaffold"))?,
+            ordinal: u32::try_from(ordinal)
+                .map_err(|_| property_scene_error("property-effect-scene-scaffold"))?,
             root,
             stable_id,
             owner: PaintOwnerSnapshot {
@@ -4797,7 +4813,8 @@ fn collect_native_scroll_forest_node(
         .and_then(|id| boundaries.get(id.0 as usize))
         .map(|boundary| boundary.projection.live_input)
         .unwrap_or_default();
-    if !state.paint.legacy_boundary_eq(expected) || !state.descendants.legacy_boundary_eq(expected) {
+    if !state.paint.legacy_boundary_eq(expected) || !state.descendants.legacy_boundary_eq(expected)
+    {
         return Err(invalid());
     }
     if node.children().is_empty() {
@@ -4869,11 +4886,13 @@ pub(crate) fn plan_native_scroll_forest_scaffold_with_context(
         if !seen_roots.insert(root) || arena.parent_of(root).is_some() {
             return Err(property_scene_error("native-scroll-forest-scaffold"));
         }
-        let start = u32::try_from(boundaries.len()).map_err(|_| property_scene_error("native-scroll-forest-scaffold"))?;
+        let start = u32::try_from(boundaries.len())
+            .map_err(|_| property_scene_error("native-scroll-forest-scaffold"))?;
         collect_native_scroll_forest_node(
             arena,
             root,
-            u32::try_from(ordinal).map_err(|_| property_scene_error("native-scroll-forest-scaffold"))?,
+            u32::try_from(ordinal)
+                .map_err(|_| property_scene_error("native-scroll-forest-scaffold"))?,
             None,
             property_trees,
             scale_factor,
@@ -4882,7 +4901,8 @@ pub(crate) fn plan_native_scroll_forest_scaffold_with_context(
             &mut boundaries,
             &mut steps,
         )?;
-        let end = u32::try_from(boundaries.len()).map_err(|_| property_scene_error("native-scroll-forest-scaffold"))?;
+        let end = u32::try_from(boundaries.len())
+            .map_err(|_| property_scene_error("native-scroll-forest-scaffold"))?;
         if start == end {
             return Err(property_scene_error("native-scroll-forest-scaffold"));
         }
@@ -5280,7 +5300,10 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 if transform.is_some() && effect.is_some() {
                     FramePaintPlanRejection::CoLocatedTransformEffect(key)
                 } else {
-                    FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "multi-property-not-co-located")
+                    FramePaintPlanRejection::UnsupportedPropertyInterleave(
+                        key,
+                        "multi-property-not-co-located",
+                    )
                 },
             );
         }
@@ -5296,7 +5319,10 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
             {
                 push_unique(
                     reasons,
-                    FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "co-located-scroll-under-scroll-ancestor"),
+                    FramePaintPlanRejection::UnsupportedPropertyInterleave(
+                        key,
+                        "co-located-scroll-under-scroll-ancestor",
+                    ),
                 );
             }
             let mut parent = path.iter().rev().find_map(|entry| match entry {
@@ -5364,7 +5390,10 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 if path_has_scroll {
                     push_unique(
                         reasons,
-                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "transform-effect-under-scroll-ancestor"),
+                        FramePaintPlanRejection::UnsupportedPropertyInterleave(
+                            key,
+                            "transform-effect-under-scroll-ancestor",
+                        ),
                     );
                 }
                 let Some(transform) = property_trees.transform_snapshot_for(TransformNodeId(key))
@@ -5390,7 +5419,10 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 {
                     push_unique(
                         reasons,
-                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "transform-effect-boundary-identity"),
+                        FramePaintPlanRejection::UnsupportedPropertyInterleave(
+                            key,
+                            "transform-effect-boundary-identity",
+                        ),
                     );
                 }
                 let parent = path.iter().rev().find_map(|entry| match entry {
@@ -5418,7 +5450,10 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 if path_has_scroll {
                     push_unique(
                         reasons,
-                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "transform-only-under-scroll-ancestor"),
+                        FramePaintPlanRejection::UnsupportedPropertyInterleave(
+                            key,
+                            "transform-only-under-scroll-ancestor",
+                        ),
                     );
                 }
                 let Some(snapshot) = property_trees.transform_snapshot_for(TransformNodeId(key))
@@ -5460,7 +5495,10 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 {
                     push_unique(
                         reasons,
-                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "effect-under-non-scroll-between-scroll"),
+                        FramePaintPlanRejection::UnsupportedPropertyInterleave(
+                            key,
+                            "effect-under-non-scroll-between-scroll",
+                        ),
                     );
                 }
                 let snapshots = property_trees.effect_snapshot_for(Some(EffectNodeId(key)));
@@ -5542,8 +5580,7 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                     contents_clip,
                     parent_scroll,
                     expected_parent_clip,
-                )
-                    || state.descendants.scroll != Some(scroll.id)
+                ) || state.descendants.scroll != Some(scroll.id)
                     || state.descendants.clip != Some(contents_clip.id)
                 {
                     push_unique(reasons, FramePaintPlanRejection::InvalidScrollHost(key));
@@ -5588,7 +5625,10 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                         _ => {
                             push_unique(
                                 reasons,
-                                FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "ancestor-boundary-not-consumed"),
+                                FramePaintPlanRejection::UnsupportedPropertyInterleave(
+                                    key,
+                                    "ancestor-boundary-not-consumed",
+                                ),
                             );
                             continue;
                         }
@@ -5624,16 +5664,17 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                         PathBoundary::Effect(id) if expected_receiver_state.effect == Some(id) => {
                             expected_receiver_state.effect = None;
                         }
-                        PathBoundary::Scroll(id)
-                            if expected_receiver_state.scroll == Some(id) =>
-                        {
+                        PathBoundary::Scroll(id) if expected_receiver_state.scroll == Some(id) => {
                             expected_receiver_state.scroll = None;
                         }
                         PathBoundary::Scroll(_) => {}
                         _ => {
                             push_unique(
                                 reasons,
-                                FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "receiver-ancestor-boundary-not-consumed"),
+                                FramePaintPlanRejection::UnsupportedPropertyInterleave(
+                                    key,
+                                    "receiver-ancestor-boundary-not-consumed",
+                                ),
                             );
                         }
                     }
@@ -5641,7 +5682,10 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                 if cursor != expected_receiver_state {
                     push_unique(
                         reasons,
-                        FramePaintPlanRejection::UnsupportedPropertyInterleave(key, "receiver-state-cursor-mismatch"),
+                        FramePaintPlanRejection::UnsupportedPropertyInterleave(
+                            key,
+                            "receiver-state-cursor-mismatch",
+                        ),
                     );
                 }
                 let consumed_properties = ConsumedPropertyStack {
@@ -5669,7 +5713,12 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                     },
                 };
                 let Ok(ordinal) = u32::try_from(boundaries.len()) else {
-                    push_unique(reasons, FramePaintPlanRejection::InvalidPropertyScene("scroll-boundary-ordinal-overflow"));
+                    push_unique(
+                        reasons,
+                        FramePaintPlanRejection::InvalidPropertyScene(
+                            "scroll-boundary-ordinal-overflow",
+                        ),
+                    );
                     return;
                 };
                 let mut content_owners = FxHashSet::default();
@@ -5703,7 +5752,12 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
                         continue;
                     }
                     let ClipGeometry::LogicalScissor(logical_scissor) = clip.geometry else {
-                        push_unique(reasons, FramePaintPlanRejection::InvalidPropertyScene("non-scissor-clip-geometry"));
+                        push_unique(
+                            reasons,
+                            FramePaintPlanRejection::InvalidPropertyScene(
+                                "non-scissor-clip-geometry",
+                            ),
+                        );
                         continue;
                     };
                     let snapshot = ClipNodeSnapshot {
@@ -5873,7 +5927,10 @@ pub(crate) fn plan_property_scroll_interleave_scaffold_with_context(
             })
         })
     {
-        push_unique(&mut reasons, FramePaintPlanRejection::InvalidPropertyScene("unreferenced-clip-coverage"));
+        push_unique(
+            &mut reasons,
+            FramePaintPlanRejection::InvalidPropertyScene("unreferenced-clip-coverage"),
+        );
     }
     if !reasons.is_empty() {
         return Err(FramePaintPlanError { reasons });
@@ -6228,8 +6285,10 @@ fn push_property_boundary_dag_node(
         .map(|node| node.element.stable_id())
         .filter(|stable_id| *stable_id != 0)
         .ok_or_else(|| property_scene_error("property-boundary-dag-node"))?;
-    let id =
-        PropertyBoundaryDagNodeId(u32::try_from(nodes.len()).map_err(|_| property_scene_error("property-boundary-dag-node"))?);
+    let id = PropertyBoundaryDagNodeId(
+        u32::try_from(nodes.len())
+            .map_err(|_| property_scene_error("property-boundary-dag-node"))?,
+    );
     nodes.push(PropertyBoundaryDagNode {
         id,
         scene_root_ordinal,
@@ -7144,10 +7203,9 @@ fn plan_same_owner_transform_scroll_receiver_insertions(
 ) -> Result<Vec<PropertySameOwnerTransformScrollReceiverInsertionContract>, FramePaintPlanError> {
     let mut insertions = Vec::new();
     for root in roots {
-        let root_steps = schedule
-            .steps
-            .get(root.step_span.clone())
-            .ok_or_else(|| property_scene_error("same-owner-transform-scroll-receiver-insertions"))?;
+        let root_steps = schedule.steps.get(root.step_span.clone()).ok_or_else(|| {
+            property_scene_error("same-owner-transform-scroll-receiver-insertions")
+        })?;
         let [
             PropertySceneScheduledStep::RetainedSurface {
                 boundary: PropertyScheduledSurfaceBoundary::Transform(receiver),
@@ -7163,9 +7221,9 @@ fn plan_same_owner_transform_scroll_receiver_insertions(
         else {
             continue;
         };
-        let boundary = boundaries
-            .get(*boundary_ordinal as usize)
-            .ok_or_else(|| property_scene_error("same-owner-transform-scroll-receiver-insertions"))?;
+        let boundary = boundaries.get(*boundary_ordinal as usize).ok_or_else(|| {
+            property_scene_error("same-owner-transform-scroll-receiver-insertions")
+        })?;
         if receiver != basis
             || receiver.owner != root.root
             || receiver.owner != boundary.scroll.owner
@@ -7174,11 +7232,17 @@ fn plan_same_owner_transform_scroll_receiver_insertions(
         {
             continue;
         }
-        let receiver_node = arena.get(receiver.owner).ok_or_else(|| property_scene_error("same-owner-transform-scroll-receiver-insertions"))?;
+        let receiver_node = arena.get(receiver.owner).ok_or_else(|| {
+            property_scene_error("same-owner-transform-scroll-receiver-insertions")
+        })?;
         let [content_root] = receiver_node.element.children() else {
-            return Err(property_scene_error("same-owner-transform-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-transform-scroll-receiver-insertions",
+            ));
         };
-        let content_node = arena.get(*content_root).ok_or_else(|| property_scene_error("same-owner-transform-scroll-receiver-insertions"))?;
+        let content_node = arena.get(*content_root).ok_or_else(|| {
+            property_scene_error("same-owner-transform-scroll-receiver-insertions")
+        })?;
         let scroll_cutout = super::PlannedBoundary {
             root: receiver.owner,
             stable_id: root.stable_id,
@@ -7204,10 +7268,14 @@ fn plan_same_owner_transform_scroll_receiver_insertions(
         let [super::frame_recorder::RecordedTransformSurfaceStep::Boundary(marker)] =
             recorded.as_slice()
         else {
-            return Err(property_scene_error("same-owner-transform-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-transform-scroll-receiver-insertions",
+            ));
         };
         if *marker != scroll_cutout {
-            return Err(property_scene_error("same-owner-transform-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-transform-scroll-receiver-insertions",
+            ));
         }
         let receiver_contract = PropertyScrollReceiverInsertionContract {
             scene_root_ordinal: root.ordinal,
@@ -7235,7 +7303,9 @@ fn plan_same_owner_transform_scroll_receiver_insertions(
             content_stable_id: content_node.element.stable_id(),
         };
         if !contract.is_canonical() {
-            return Err(property_scene_error("same-owner-transform-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-transform-scroll-receiver-insertions",
+            ));
         }
         insertions.push(contract);
     }
@@ -7275,7 +7345,9 @@ fn plan_property_frame_scroll_receiver_insertions(
             || context.paint_offset_bits != [0.0_f32.to_bits(); 2]
             || context.outer_scissor_rect().is_some()
         {
-            return Err(property_scene_error("property-frame-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "property-frame-scroll-receiver-insertions",
+            ));
         }
         let scroll_cutout = super::PlannedBoundary {
             root: boundary.scroll.owner,
@@ -7324,7 +7396,9 @@ fn plan_property_frame_scroll_receiver_insertions(
             })
             .collect::<Vec<_>>();
         let [insertion_index] = markers.as_slice() else {
-            return Err(property_scene_error("property-frame-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "property-frame-scroll-receiver-insertions",
+            ));
         };
         let receiver_opaque_before = recorded_steps[..*insertion_index]
             .iter()
@@ -7477,7 +7551,9 @@ fn plan_property_effect_scroll_receiver_insertions(
             || context.paint_offset_bits != [0.0_f32.to_bits(); 2]
             || context.outer_scissor_rect().is_some()
         {
-            return Err(property_scene_error("property-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "property-effect-scroll-receiver-insertions",
+            ));
         }
         // The first executable checkpoint admits no receiver-local clip. The
         // scroll host's own exact contents clip remains owned by the detached
@@ -7490,7 +7566,9 @@ fn plan_property_effect_scroll_receiver_insertions(
             || receiver_state.paint.scroll.is_some()
             || receiver_state.paint.effect != Some(receiver.id)
         {
-            return Err(property_scene_error("property-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "property-effect-scroll-receiver-insertions",
+            ));
         }
         let generations = paint_generations
             .local_generations_for(receiver.owner)
@@ -7542,8 +7620,9 @@ fn plan_property_effect_scroll_receiver_insertions(
             continue;
         };
         let raster_bounds_bits =
-            effect_scroll_receiver_raster_bounds(&recorded, boundary.scroll.viewport)
-                .ok_or_else(|| property_scene_error("property-effect-scroll-receiver-insertions"))?;
+            effect_scroll_receiver_raster_bounds(&recorded, boundary.scroll.viewport).ok_or_else(
+                || property_scene_error("property-effect-scroll-receiver-insertions"),
+            )?;
         let recorded_steps = recorded
             .iter()
             .map(|step| match step {
@@ -7566,7 +7645,9 @@ fn plan_property_effect_scroll_receiver_insertions(
             })
             .collect::<Vec<_>>();
         let [insertion_index] = markers.as_slice() else {
-            return Err(property_scene_error("property-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "property-effect-scroll-receiver-insertions",
+            ));
         };
         let opaque_before = recorded_steps[..*insertion_index]
             .iter()
@@ -7678,7 +7759,9 @@ fn plan_same_owner_effect_scroll_receiver_insertions(
         }
         let children = arena.children_of(receiver.owner);
         let [content_root] = children.as_slice() else {
-            return Err(property_scene_error("same-owner-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-effect-scroll-receiver-insertions",
+            ));
         };
         let content_stable_id = arena
             .get(*content_root)
@@ -7731,10 +7814,14 @@ fn plan_same_owner_effect_scroll_receiver_insertions(
         let [super::frame_recorder::RecordedTransformSurfaceStep::Boundary(marker)] =
             recorded.as_slice()
         else {
-            return Err(property_scene_error("same-owner-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-effect-scroll-receiver-insertions",
+            ));
         };
         if *marker != scroll_cutout {
-            return Err(property_scene_error("same-owner-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-effect-scroll-receiver-insertions",
+            ));
         }
         let raster_bounds_bits = [
             boundary.scroll.viewport.x.to_bits(),
@@ -7779,7 +7866,9 @@ fn plan_same_owner_effect_scroll_receiver_insertions(
             content_stable_id,
         };
         if !insertion.is_canonical() {
-            return Err(property_scene_error("same-owner-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-effect-scroll-receiver-insertions",
+            ));
         }
         insertions.push(insertion);
     }
@@ -7799,10 +7888,9 @@ fn plan_same_owner_transform_effect_scroll_receiver_insertions(
 {
     let mut insertions = Vec::new();
     for root in roots {
-        let root_steps = schedule
-            .steps
-            .get(root.step_span.clone())
-            .ok_or_else(|| property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"))?;
+        let root_steps = schedule.steps.get(root.step_span.clone()).ok_or_else(|| {
+            property_scene_error("same-owner-transform-effect-scroll-receiver-insertions")
+        })?;
         let [
             PropertySceneScheduledStep::RetainedSurface {
                 boundary: PropertyScheduledSurfaceBoundary::Transform(transform),
@@ -7822,9 +7910,9 @@ fn plan_same_owner_transform_effect_scroll_receiver_insertions(
         else {
             continue;
         };
-        let boundary = boundaries
-            .get(*boundary_ordinal as usize)
-            .ok_or_else(|| property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"))?;
+        let boundary = boundaries.get(*boundary_ordinal as usize).ok_or_else(|| {
+            property_scene_error("same-owner-transform-effect-scroll-receiver-insertions")
+        })?;
         if transform.id != *parent
             || effect != basis
             || transform.owner != root.root
@@ -7849,28 +7937,42 @@ fn plan_same_owner_transform_effect_scroll_receiver_insertions(
             || context.paint_offset_bits != [0.0_f32.to_bits(); 2]
             || context.outer_scissor_rect().is_some()
         {
-            return Err(property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-transform-effect-scroll-receiver-insertions",
+            ));
         }
-        let owner_node = arena.get(root.root).ok_or_else(|| property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"))?;
+        let owner_node = arena.get(root.root).ok_or_else(|| {
+            property_scene_error("same-owner-transform-effect-scroll-receiver-insertions")
+        })?;
         let owner_element = owner_node
             .element
             .as_any()
             .downcast_ref::<Element>()
-            .ok_or_else(|| property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"))?;
+            .ok_or_else(|| {
+                property_scene_error("same-owner-transform-effect-scroll-receiver-insertions")
+            })?;
         let [content_root] = owner_node.element.children() else {
-            return Err(property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-transform-effect-scroll-receiver-insertions",
+            ));
         };
         let content_stable_id = arena
             .get(*content_root)
             .map(|node| node.element.stable_id())
             .filter(|stable_id| *stable_id != 0)
-            .ok_or_else(|| property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"))?;
+            .ok_or_else(|| {
+                property_scene_error("same-owner-transform-effect-scroll-receiver-insertions")
+            })?;
         if arena.parent_of(*content_root) != Some(root.root) {
-            return Err(property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-transform-effect-scroll-receiver-insertions",
+            ));
         }
         let generations = paint_generations
             .local_generations_for(root.root)
-            .ok_or_else(|| property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"))?;
+            .ok_or_else(|| {
+                property_scene_error("same-owner-transform-effect-scroll-receiver-insertions")
+            })?;
         let artifact_contract = EffectPropertySurfaceArtifactContract::new(
             root.root,
             root.stable_id,
@@ -7892,7 +7994,9 @@ fn plan_same_owner_transform_effect_scroll_receiver_insertions(
                 topology_revision: generations.topology_revision,
             }],
         )
-        .ok_or_else(|| property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"))?;
+        .ok_or_else(|| {
+            property_scene_error("same-owner-transform-effect-scroll-receiver-insertions")
+        })?;
         let effect_cutout = super::PlannedBoundary {
             root: root.root,
             stable_id: root.stable_id,
@@ -7938,15 +8042,21 @@ fn plan_same_owner_transform_effect_scroll_receiver_insertions(
         let [super::frame_recorder::RecordedTransformSurfaceStep::Boundary(recorded_effect_cutout)] =
             outer_recorded.as_slice()
         else {
-            return Err(property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-transform-effect-scroll-receiver-insertions",
+            ));
         };
         let [super::frame_recorder::RecordedTransformSurfaceStep::Boundary(recorded_scroll_cutout)] =
             inner_recorded.as_slice()
         else {
-            return Err(property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-transform-effect-scroll-receiver-insertions",
+            ));
         };
         if *recorded_effect_cutout != effect_cutout || *recorded_scroll_cutout != scroll_cutout {
-            return Err(property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-transform-effect-scroll-receiver-insertions",
+            ));
         }
         let raster_bounds_bits = [
             boundary.scroll.viewport.x.to_bits(),
@@ -7967,16 +8077,23 @@ fn plan_same_owner_transform_effect_scroll_receiver_insertions(
                 context.paint_offset(),
                 None,
             )
-            .ok_or_else(|| property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"))?;
+            .ok_or_else(|| {
+                property_scene_error("same-owner-transform-effect-scroll-receiver-insertions")
+            })?;
         if outer_geometry
             .viewport_transform
             .to_cols_array()
             .map(f32::to_bits)
-            != transform.owner_viewport_transform.to_cols_array().map(f32::to_bits)
+            != transform
+                .owner_viewport_transform
+                .to_cols_array()
+                .map(f32::to_bits)
             || super::compiler::direct_translation_bits(outer_geometry.viewport_transform).is_none()
             || outer_geometry.outer_scissor_rect.is_some()
         {
-            return Err(property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-transform-effect-scroll-receiver-insertions",
+            ));
         }
         let inner_steps = vec![PropertyScrollReceiverRecordedStepIdentity::ScrollCutout(
             scroll_cutout,
@@ -8043,7 +8160,9 @@ fn plan_same_owner_transform_effect_scroll_receiver_insertions(
             content_stable_id,
         };
         if !insertion.is_canonical() {
-            return Err(property_scene_error("same-owner-transform-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "same-owner-transform-effect-scroll-receiver-insertions",
+            ));
         }
         insertions.push(insertion);
     }
@@ -8107,7 +8226,9 @@ fn plan_property_scroll_content_effect_insertions(
             .get(boundary.scroll.owner)
             .ok_or_else(|| property_scene_error("property-scroll-content-effect-insertions"))?;
         let [content_root] = scroll_host.element.children() else {
-            return Err(property_scene_error("property-scroll-content-effect-insertions"));
+            return Err(property_scene_error(
+                "property-scroll-content-effect-insertions",
+            ));
         };
         let content_root = *content_root;
         let content_stable_id = arena
@@ -8123,7 +8244,9 @@ fn plan_property_scroll_content_effect_insertions(
             || effect.owner == content_root
             || property_boundary_neutral_path(arena, content_root, effect.owner).is_none()
         {
-            return Err(property_scene_error("property-scroll-content-effect-insertions"));
+            return Err(property_scene_error(
+                "property-scroll-content-effect-insertions",
+            ));
         }
         let effect_stable_id = arena
             .get(effect.owner)
@@ -8141,7 +8264,9 @@ fn plan_property_scroll_content_effect_insertions(
             || effect_state.descendants.scroll != Some(boundary.scroll.id)
             || effect_state.descendants.clip != Some(boundary.contents_clip.id)
         {
-            return Err(property_scene_error("property-scroll-content-effect-insertions"));
+            return Err(property_scene_error(
+                "property-scroll-content-effect-insertions",
+            ));
         }
         let live_clips = property_trees
             .clip_snapshot_for(effect_state.descendants.clip)
@@ -8153,7 +8278,9 @@ fn plan_property_scroll_content_effect_insertions(
         let local_raster_clips = live_clips[..contents_index].to_vec();
         let detached_ancestor_clips = live_clips[contents_index..].to_vec();
         if detached_ancestor_clips.first() != Some(&boundary.contents_clip) {
-            return Err(property_scene_error("property-scroll-content-effect-insertions"));
+            return Err(property_scene_error(
+                "property-scroll-content-effect-insertions",
+            ));
         }
 
         let mut content = Vec::new();
@@ -8161,9 +8288,13 @@ fn plan_property_scroll_content_effect_insertions(
         let mut seen = FxHashSet::default();
         while let Some((owner, parent)) = pending.pop() {
             if !seen.insert(owner) {
-                return Err(property_scene_error("property-scroll-content-effect-insertions"));
+                return Err(property_scene_error(
+                    "property-scroll-content-effect-insertions",
+                ));
             }
-            let node = arena.get(owner).ok_or_else(|| property_scene_error("property-scroll-content-effect-insertions"))?;
+            let node = arena
+                .get(owner)
+                .ok_or_else(|| property_scene_error("property-scroll-content-effect-insertions"))?;
             let stable_id = node.element.stable_id();
             let generations = paint_generations
                 .local_generations_for(owner)
@@ -8177,7 +8308,9 @@ fn plan_property_scroll_content_effect_insertions(
                         || property_trees.effects.contains_key(&EffectNodeId(owner))
                         || property_trees.scrolls.contains_key(&ScrollNodeId(owner))))
             {
-                return Err(property_scene_error("property-scroll-content-effect-insertions"));
+                return Err(property_scene_error(
+                    "property-scroll-content-effect-insertions",
+                ));
             }
             content.push(EffectPropertyContentWitness {
                 owner,
@@ -8259,7 +8392,9 @@ fn plan_property_scroll_content_effect_insertions(
                 super::frame_recorder::RecordedTransformSurfaceStep::Boundary(_)
             )
         }) {
-            return Err(property_scene_error("property-scroll-content-effect-insertions"));
+            return Err(property_scene_error(
+                "property-scroll-content-effect-insertions",
+            ));
         }
         let receiver_recorded_steps = receiver_recorded
             .iter()
@@ -8301,7 +8436,9 @@ fn plan_property_scroll_content_effect_insertions(
             })
             .collect::<Vec<_>>();
         let [insertion_index] = markers.as_slice() else {
-            return Err(property_scene_error("property-scroll-content-effect-insertions"));
+            return Err(property_scene_error(
+                "property-scroll-content-effect-insertions",
+            ));
         };
         let opaque_before = receiver_recorded_steps[..*insertion_index]
             .iter()
@@ -8514,10 +8651,9 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
 ) -> Result<Vec<PropertyTransformEffectScrollReceiverInsertionContract>, FramePaintPlanError> {
     let mut insertions = Vec::new();
     for root in roots {
-        let root_steps = schedule
-            .steps
-            .get(root.step_span.clone())
-            .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+        let root_steps = schedule.steps.get(root.step_span.clone()).ok_or_else(|| {
+            property_scene_error("property-transform-effect-scroll-receiver-insertions")
+        })?;
         let [
             PropertySceneScheduledStep::RetainedSurface {
                 boundary: PropertyScheduledSurfaceBoundary::Transform(outer),
@@ -8537,9 +8673,9 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
         else {
             continue;
         };
-        let boundary = boundaries
-            .get(*boundary_ordinal as usize)
-            .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+        let boundary = boundaries.get(*boundary_ordinal as usize).ok_or_else(|| {
+            property_scene_error("property-transform-effect-scroll-receiver-insertions")
+        })?;
         let same_owner = outer.owner == inner.owner;
         if same_owner && boundary.scroll.owner == inner.owner {
             continue;
@@ -8562,14 +8698,16 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
             || context.paint_offset_bits != [0.0_f32.to_bits(); 2]
             || context.outer_scissor_rect().is_some()
         {
-            return Err(property_scene_error("property-transform-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "property-transform-effect-scroll-receiver-insertions",
+            ));
         }
-        let outer_state = property_trees
-            .node_state_for(outer.owner)
-            .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
-        let inner_state = property_trees
-            .node_state_for(inner.owner)
-            .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+        let outer_state = property_trees.node_state_for(outer.owner).ok_or_else(|| {
+            property_scene_error("property-transform-effect-scroll-receiver-insertions")
+        })?;
+        let inner_state = property_trees.node_state_for(inner.owner).ok_or_else(|| {
+            property_scene_error("property-transform-effect-scroll-receiver-insertions")
+        })?;
         let expected_outer_state = PropertyTreeState {
             transform: Some(outer.id),
             effect: same_owner.then_some(inner.id),
@@ -8577,32 +8715,44 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
         };
         if !outer_state.paint.legacy_boundary_eq(expected_outer_state)
             || !inner_state.paint.legacy_boundary_eq(PropertyTreeState {
-                    transform: Some(outer.id),
-                    effect: Some(inner.id),
-                    ..Default::default()
-                })
+                transform: Some(outer.id),
+                effect: Some(inner.id),
+                ..Default::default()
+            })
         {
-            return Err(property_scene_error("property-transform-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "property-transform-effect-scroll-receiver-insertions",
+            ));
         }
-        let outer_node = arena.get(outer.owner).ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+        let outer_node = arena.get(outer.owner).ok_or_else(|| {
+            property_scene_error("property-transform-effect-scroll-receiver-insertions")
+        })?;
         let outer_element = outer_node
             .element
             .as_any()
             .downcast_ref::<Element>()
-            .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+            .ok_or_else(|| {
+                property_scene_error("property-transform-effect-scroll-receiver-insertions")
+            })?;
         let outer_stable_id = arena
             .get(outer.owner)
-            .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?
+            .ok_or_else(|| {
+                property_scene_error("property-transform-effect-scroll-receiver-insertions")
+            })?
             .element
             .stable_id();
         let inner_stable_id = arena
             .get(inner.owner)
-            .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?
+            .ok_or_else(|| {
+                property_scene_error("property-transform-effect-scroll-receiver-insertions")
+            })?
             .element
             .stable_id();
         let inner_generations = paint_generations
             .local_generations_for(inner.owner)
-            .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+            .ok_or_else(|| {
+                property_scene_error("property-transform-effect-scroll-receiver-insertions")
+            })?;
         let artifact_contract = EffectPropertySurfaceArtifactContract::new(
             inner.owner,
             inner_stable_id,
@@ -8619,7 +8769,9 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
                 topology_revision: inner_generations.topology_revision,
             }],
         )
-        .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+        .ok_or_else(|| {
+            property_scene_error("property-transform-effect-scroll-receiver-insertions")
+        })?;
         let effect_cutout = super::PlannedBoundary {
             root: inner.owner,
             stable_id: inner_stable_id,
@@ -8629,7 +8781,9 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
             root: boundary.scroll.owner,
             stable_id: arena
                 .get(boundary.scroll.owner)
-                .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?
+                .ok_or_else(|| {
+                    property_scene_error("property-transform-effect-scroll-receiver-insertions")
+                })?
                 .element
                 .stable_id(),
             kind: super::PlannedBoundaryKind::Scroll(boundary.scroll.id),
@@ -8656,7 +8810,9 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
         let inner_recorded = if same_owner {
             let consumed_transform =
                 super::ConsumedSameOwnerTransformBoundaryWitness::new(outer.owner, outer.id)
-                    .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+                    .ok_or_else(|| {
+                        property_scene_error("property-transform-effect-scroll-receiver-insertions")
+                    })?;
             super::frame_recorder::record_same_owner_transform_effect_surface_steps_for_plan(
                 arena,
                 property_trees,
@@ -8670,7 +8826,9 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
         } else {
             let consumed_transform =
                 ConsumedAncestorTransformWitness::new(outer.owner, inner.owner, outer.id)
-                    .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+                    .ok_or_else(|| {
+                        property_scene_error("property-transform-effect-scroll-receiver-insertions")
+                    })?;
             super::frame_recorder::record_property_effect_scroll_receiver_steps_for_plan(
                 arena,
                 inner.owner,
@@ -8737,12 +8895,18 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
             Some((identities, *insertion, before, after))
         };
         let (outer_recorded_steps, outer_insertion_index, outer_opaque_before, outer_opaque_after) =
-            seal_steps(&outer_recorded, effect_cutout).ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+            seal_steps(&outer_recorded, effect_cutout).ok_or_else(|| {
+                property_scene_error("property-transform-effect-scroll-receiver-insertions")
+            })?;
         let (inner_recorded_steps, inner_insertion_index, inner_opaque_before, inner_opaque_after) =
-            seal_steps(&inner_recorded, scroll_cutout).ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+            seal_steps(&inner_recorded, scroll_cutout).ok_or_else(|| {
+                property_scene_error("property-transform-effect-scroll-receiver-insertions")
+            })?;
         let raster_bounds_bits =
             effect_scroll_receiver_raster_bounds(&inner_recorded, boundary.scroll.viewport)
-                .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+                .ok_or_else(|| {
+                    property_scene_error("property-transform-effect-scroll-receiver-insertions")
+                })?;
         // The outer transform composites the detached effect target, not the
         // effect subtree's live descendant geometry.  Build its source bounds
         // from the already cutout-aware E raster union so a negative scroll
@@ -8757,7 +8921,9 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
             }),
             raster_bounds,
         )
-        .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+        .ok_or_else(|| {
+            property_scene_error("property-transform-effect-scroll-receiver-insertions")
+        })?;
         let outer_raster_bounds = outer_raster_bounds_bits.map(f32::from_bits);
         let outer_geometry = outer_element
             .exact_transform_receiver_geometry_snapshot_for_raster_bounds(
@@ -8771,16 +8937,23 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
                 context.paint_offset(),
                 None,
             )
-            .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+            .ok_or_else(|| {
+                property_scene_error("property-transform-effect-scroll-receiver-insertions")
+            })?;
         if outer_geometry
             .viewport_transform
             .to_cols_array()
             .map(f32::to_bits)
-            != outer.owner_viewport_transform.to_cols_array().map(f32::to_bits)
+            != outer
+                .owner_viewport_transform
+                .to_cols_array()
+                .map(f32::to_bits)
             || super::compiler::direct_translation_bits(outer_geometry.viewport_transform).is_none()
             || outer_geometry.outer_scissor_rect.is_some()
         {
-            return Err(property_scene_error("property-transform-effect-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "property-transform-effect-scroll-receiver-insertions",
+            ));
         }
         let raster_recorded_steps = inner_recorded
             .iter()
@@ -8794,7 +8967,9 @@ fn plan_property_transform_effect_scroll_receiver_insertions(
                 ),
             })
             .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| property_scene_error("property-transform-effect-scroll-receiver-insertions"))?;
+            .ok_or_else(|| {
+                property_scene_error("property-transform-effect-scroll-receiver-insertions")
+            })?;
         let inner_insertion = PropertyEffectScrollReceiverInsertionContract {
             scene_root_ordinal: root.ordinal,
             receiver: *inner,
@@ -8848,10 +9023,9 @@ fn plan_property_effect_transform_scroll_receiver_insertions(
 ) -> Result<Vec<PropertyEffectTransformScrollReceiverInsertionContract>, FramePaintPlanError> {
     let mut insertions = Vec::new();
     for root in roots {
-        let root_steps = schedule
-            .steps
-            .get(root.step_span.clone())
-            .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+        let root_steps = schedule.steps.get(root.step_span.clone()).ok_or_else(|| {
+            property_scene_error("property-effect-transform-scroll-receiver-insertions")
+        })?;
         let [
             PropertySceneScheduledStep::RetainedSurface {
                 boundary: PropertyScheduledSurfaceBoundary::Effect(outer),
@@ -8871,9 +9045,9 @@ fn plan_property_effect_transform_scroll_receiver_insertions(
         else {
             continue;
         };
-        let boundary = boundaries
-            .get(*boundary_ordinal as usize)
-            .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+        let boundary = boundaries.get(*boundary_ordinal as usize).ok_or_else(|| {
+            property_scene_error("property-effect-transform-scroll-receiver-insertions")
+        })?;
         if outer.id != *parent
             || inner != basis
             || outer.owner != root.root
@@ -8890,14 +9064,16 @@ fn plan_property_effect_transform_scroll_receiver_insertions(
             || context.paint_offset_bits != [0.0_f32.to_bits(); 2]
             || context.outer_scissor_rect().is_some()
         {
-            return Err(property_scene_error("property-effect-transform-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "property-effect-transform-scroll-receiver-insertions",
+            ));
         }
-        let outer_state = property_trees
-            .node_state_for(outer.owner)
-            .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
-        let inner_state = property_trees
-            .node_state_for(inner.owner)
-            .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+        let outer_state = property_trees.node_state_for(outer.owner).ok_or_else(|| {
+            property_scene_error("property-effect-transform-scroll-receiver-insertions")
+        })?;
+        let inner_state = property_trees.node_state_for(inner.owner).ok_or_else(|| {
+            property_scene_error("property-effect-transform-scroll-receiver-insertions")
+        })?;
         if outer_state.paint.transform.is_some()
             || outer_state.paint.scroll.is_some()
             || outer_state.paint.effect != Some(outer.id)
@@ -8905,19 +9081,25 @@ fn plan_property_effect_transform_scroll_receiver_insertions(
             || inner_state.paint.effect != Some(outer.id)
             || inner_state.paint.scroll.is_some()
         {
-            return Err(property_scene_error("property-effect-transform-scroll-receiver-insertions"));
+            return Err(property_scene_error(
+                "property-effect-transform-scroll-receiver-insertions",
+            ));
         }
 
         let outer_stable_id = arena
             .get(outer.owner)
             .map(|node| node.element.stable_id())
             .filter(|stable_id| *stable_id != 0)
-            .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+            .ok_or_else(|| {
+                property_scene_error("property-effect-transform-scroll-receiver-insertions")
+            })?;
         let inner_stable_id = arena
             .get(inner.owner)
             .map(|node| node.element.stable_id())
             .filter(|stable_id| *stable_id != 0)
-            .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+            .ok_or_else(|| {
+                property_scene_error("property-effect-transform-scroll-receiver-insertions")
+            })?;
         let mut content = Vec::new();
         let mut pending = vec![outer.owner];
         let mut content_seen = FxHashSet::default();
@@ -8926,12 +9108,18 @@ fn plan_property_effect_transform_scroll_receiver_insertions(
                 continue;
             }
             if !content_seen.insert(owner) {
-                return Err(property_scene_error("property-effect-transform-scroll-receiver-insertions"));
+                return Err(property_scene_error(
+                    "property-effect-transform-scroll-receiver-insertions",
+                ));
             }
-            let node = arena.get(owner).ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+            let node = arena.get(owner).ok_or_else(|| {
+                property_scene_error("property-effect-transform-scroll-receiver-insertions")
+            })?;
             let generations = paint_generations
                 .local_generations_for(owner)
-                .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+                .ok_or_else(|| {
+                    property_scene_error("property-effect-transform-scroll-receiver-insertions")
+                })?;
             content.push(EffectPropertyContentWitness {
                 owner,
                 stable_id: node.element.stable_id(),
@@ -8945,7 +9133,9 @@ fn plan_property_effect_transform_scroll_receiver_insertions(
         }
         let live_effect_chain = property_trees
             .effect_snapshot_for(Some(outer.id))
-            .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+            .ok_or_else(|| {
+                property_scene_error("property-effect-transform-scroll-receiver-insertions")
+            })?;
         let isolated_outer = EffectNodeSnapshot {
             parent: None,
             ..*outer
@@ -8963,7 +9153,9 @@ fn plan_property_effect_transform_scroll_receiver_insertions(
             Vec::new(),
             content,
         )
-        .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+        .ok_or_else(|| {
+            property_scene_error("property-effect-transform-scroll-receiver-insertions")
+        })?;
 
         let transform_cutout = super::PlannedBoundary {
             root: inner.owner,
@@ -8976,7 +9168,9 @@ fn plan_property_effect_transform_scroll_receiver_insertions(
                 .get(boundary.scroll.owner)
                 .map(|node| node.element.stable_id())
                 .filter(|stable_id| *stable_id != 0)
-                .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?,
+                .ok_or_else(|| {
+                    property_scene_error("property-effect-transform-scroll-receiver-insertions")
+                })?,
             kind: super::PlannedBoundaryKind::Scroll(boundary.scroll.id),
         };
         let record_error = |fallbacks: Vec<FrameArtifactFallbackReason>| FramePaintPlanError {
@@ -9006,7 +9200,9 @@ fn plan_property_effect_transform_scroll_receiver_insertions(
             Some(outer.id),
             outer.parent,
         )
-        .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+        .ok_or_else(|| {
+            property_scene_error("property-effect-transform-scroll-receiver-insertions")
+        })?;
         let inner_recorded =
             super::frame_recorder::record_effect_transform_property_surface_steps_for_plan(
                 arena,
@@ -9073,20 +9269,30 @@ fn plan_property_effect_transform_scroll_receiver_insertions(
             Some((identities, *insertion, before, after))
         };
         let (outer_steps, outer_index, outer_before, outer_after) =
-            seal_steps(&outer_recorded, transform_cutout).ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+            seal_steps(&outer_recorded, transform_cutout).ok_or_else(|| {
+                property_scene_error("property-effect-transform-scroll-receiver-insertions")
+            })?;
         let (inner_steps, inner_index, inner_before, inner_after) =
-            seal_steps(&inner_recorded, scroll_cutout).ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+            seal_steps(&inner_recorded, scroll_cutout).ok_or_else(|| {
+                property_scene_error("property-effect-transform-scroll-receiver-insertions")
+            })?;
 
         let inner_raster_bounds_bits =
             effect_scroll_receiver_raster_bounds(&inner_recorded, boundary.scroll.viewport)
-                .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+                .ok_or_else(|| {
+                    property_scene_error("property-effect-transform-scroll-receiver-insertions")
+                })?;
         let inner_bounds = inner_raster_bounds_bits.map(f32::from_bits);
-        let inner_node = arena.get(inner.owner).ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+        let inner_node = arena.get(inner.owner).ok_or_else(|| {
+            property_scene_error("property-effect-transform-scroll-receiver-insertions")
+        })?;
         let inner_element = inner_node
             .element
             .as_any()
             .downcast_ref::<Element>()
-            .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+            .ok_or_else(|| {
+                property_scene_error("property-effect-transform-scroll-receiver-insertions")
+            })?;
         let inner_geometry = inner_element
             .exact_transform_receiver_geometry_snapshot_for_raster_bounds(
                 crate::view::base_component::RetainedSurfaceBounds {
@@ -9099,7 +9305,9 @@ fn plan_property_effect_transform_scroll_receiver_insertions(
                 context.paint_offset(),
                 None,
             )
-            .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+            .ok_or_else(|| {
+                property_scene_error("property-effect-transform-scroll-receiver-insertions")
+            })?;
         let min_x = inner_geometry
             .quad_positions
             .iter()
@@ -9129,7 +9337,9 @@ fn plan_property_effect_transform_scroll_receiver_insertions(
             }),
             [min_x, min_y, max_x - min_x, max_y - min_y],
         )
-        .ok_or_else(|| property_scene_error("property-effect-transform-scroll-receiver-insertions"))?;
+        .ok_or_else(|| {
+            property_scene_error("property-effect-transform-scroll-receiver-insertions")
+        })?;
 
         let inner_insertion = PropertyScrollReceiverInsertionContract {
             scene_root_ordinal: root.ordinal,
@@ -9405,7 +9615,9 @@ fn materialize_property_effect_surface(
         .get(ordinal as usize)
         .ok_or_else(|| property_scene_error("property-effect-surface"))?;
     let owner = surface.boundary.owner();
-    let node = arena.get(owner).ok_or_else(|| property_scene_error("property-effect-surface"))?;
+    let node = arena
+        .get(owner)
+        .ok_or_else(|| property_scene_error("property-effect-surface"))?;
     let parent_owner = surface
         .parent_boundary_ordinal
         .map(|parent| scaffold.surfaces[parent as usize].boundary.owner());
@@ -9861,10 +10073,7 @@ fn validate_transform_property_scene_inputs(
             && matrix_is_finite_affine(snapshot.owner_viewport_transform)
             && arena.get(key).is_some_and(|node| {
                 node.element.has_retained_transform_surface()
-                    && element_local_transform_matches_snapshot(
-                        node.element.as_ref(),
-                        snapshot,
-                    )
+                    && element_local_transform_matches_snapshot(node.element.as_ref(), snapshot)
             });
         if !valid {
             push_unique(
@@ -9883,7 +10092,10 @@ fn validate_transform_property_scene_inputs(
         next_ordinal = match next_ordinal.checked_add(1) {
             Some(next) => next,
             None => {
-                push_unique(&mut reasons, FramePaintPlanRejection::InvalidPropertyScene("surface-ordinal-overflow"));
+                push_unique(
+                    &mut reasons,
+                    FramePaintPlanRejection::InvalidPropertyScene("surface-ordinal-overflow"),
+                );
                 continue;
             }
         };
@@ -10168,7 +10380,9 @@ fn freeze_property_effect_clip_forest(
     let mut nodes = Vec::new();
     let mut frozen_nodes = FxHashMap::default();
     for &owner in reachable {
-        let node = arena.get(owner).ok_or_else(|| property_scene_error("property-effect-clip-forest"))?;
+        let node = arena
+            .get(owner)
+            .ok_or_else(|| property_scene_error("property-effect-clip-forest"))?;
         let state = property_trees
             .node_state_for(owner)
             .ok_or_else(|| property_scene_error("property-effect-clip-forest"))?;
@@ -11558,9 +11772,10 @@ fn property_scroll_schedule_scaffold_is_canonical(
         {
             return false;
         }
-        let Some(root_boundaries) = scaffold.boundaries.get(
-            root.boundary_span.start as usize..root.boundary_span.end as usize,
-        ) else {
+        let Some(root_boundaries) = scaffold
+            .boundaries
+            .get(root.boundary_span.start as usize..root.boundary_span.end as usize)
+        else {
             return false;
         };
         if root.step_span.is_empty() {
@@ -11574,9 +11789,7 @@ fn property_scroll_schedule_scaffold_is_canonical(
         if root_boundaries.is_empty()
             || scaffold.schedule.steps[root.step_span.clone()]
                 .iter()
-                .filter(|step| {
-                    matches!(step, PropertySceneScheduledStep::ScrollBoundary { .. })
-                })
+                .filter(|step| matches!(step, PropertySceneScheduledStep::ScrollBoundary { .. }))
                 .count()
                 != root_boundaries.len()
         {
@@ -11595,17 +11808,18 @@ fn property_scroll_schedule_scaffold_is_canonical(
             {
                 return false;
             }
-            let Some(scroll_step) = scaffold.schedule.steps[root.step_span.clone()]
-                .iter()
-                .find(|step| {
-                    matches!(
-                        step,
-                        PropertySceneScheduledStep::ScrollBoundary {
-                            boundary_ordinal,
-                            ..
-                        } if *boundary_ordinal == boundary.ordinal
-                    )
-                })
+            let Some(scroll_step) =
+                scaffold.schedule.steps[root.step_span.clone()]
+                    .iter()
+                    .find(|step| {
+                        matches!(
+                            step,
+                            PropertySceneScheduledStep::ScrollBoundary {
+                                boundary_ordinal,
+                                ..
+                            } if *boundary_ordinal == boundary.ordinal
+                        )
+                    })
             else {
                 return false;
             };
@@ -11618,9 +11832,7 @@ fn property_scroll_schedule_scaffold_is_canonical(
             else {
                 return false;
             };
-            if *scroll != boundary.scroll.id
-                || basis != &boundary.basis
-                || phase != &boundary.phase
+            if *scroll != boundary.scroll.id || basis != &boundary.basis || phase != &boundary.phase
             {
                 return false;
             }
@@ -13039,7 +13251,10 @@ fn property_scroll_content_outer_transform_insertion_is_canonical(
             .viewport_transform
             .to_cols_array()
             .map(f32::to_bits)
-            != expected.owner_viewport_transform.to_cols_array().map(f32::to_bits)
+            != expected
+                .owner_viewport_transform
+                .to_cols_array()
+                .map(f32::to_bits)
         || insertion.geometry.outer_scissor_rect != context.outer_scissor_rect
     {
         return false;
@@ -13837,7 +14052,11 @@ pub(crate) fn plan_single_root_transform_surface_with_context(
     }
     let nested_transform = property_trees.transforms.keys().find_map(|&id| {
         (id != transform)
-            .then(|| property_trees.transform_snapshot_for(id).map(|snapshot| (id, snapshot)))
+            .then(|| {
+                property_trees
+                    .transform_snapshot_for(id)
+                    .map(|snapshot| (id, snapshot))
+            })
             .flatten()
     });
     let nested_root = nested_transform.map(|(_, snapshot)| snapshot.owner);
@@ -14895,11 +15114,10 @@ pub(super) fn exact_surface_geometry_for_plan(
         .ok_or_else(|| FramePaintPlanError {
             reasons: vec![FramePaintPlanRejection::InvalidSurfaceGeometry(root)],
         })?;
-    let viewport_transform = expected_owner_viewport_transform.ok_or_else(|| {
-        FramePaintPlanError {
+    let viewport_transform =
+        expected_owner_viewport_transform.ok_or_else(|| FramePaintPlanError {
             reasons: vec![FramePaintPlanRejection::InvalidRootTransform(root)],
-        }
-    })?;
+        })?;
     let visual_bounds = crate::view::viewport::scene_helpers::paint_snapped_retained_surface_bounds(
         element,
         source_bounds,

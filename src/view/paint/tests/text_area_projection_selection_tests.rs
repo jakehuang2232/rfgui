@@ -3,8 +3,7 @@ use super::*;
 #[test]
 fn text_area_projection_selection_is_path_scoped_ordered_and_matches_legacy() {
     let selected_fixture = || {
-        let (arena, roots, root, projection, projected_text) =
-            prepared_projection_text_area_tree();
+        let (arena, roots, root, projection, projected_text) = prepared_projection_text_area_tree();
         {
             let mut node = arena.get_mut(root).unwrap();
             let text_area = node
@@ -113,9 +112,7 @@ fn text_area_projection_selection_is_path_scoped_ordered_and_matches_legacy() {
     let selected_glyph_id = artifact
         .chunks
         .iter()
-        .find(|chunk| {
-            chunk.owner == projected_text && chunk.id.role == PaintChunkRole::TextGlyphs
-        })
+        .find(|chunk| chunk.owner == projected_text && chunk.id.role == PaintChunkRole::TextGlyphs)
         .unwrap()
         .id;
     {
@@ -129,8 +126,7 @@ fn text_area_projection_selection_is_path_scoped_ordered_and_matches_legacy() {
         text_area.selection_focus_char = None;
     }
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(
         artifact
@@ -149,8 +145,7 @@ fn text_area_projection_selection_is_path_scoped_ordered_and_matches_legacy() {
 #[test]
 fn text_area_atomic_projection_disjoint_root_selection_is_ordered_and_matches_legacy() {
     let fixture = || {
-        let (arena, roots, root, projection, projected_text) =
-            prepared_projection_text_area_tree();
+        let (arena, roots, root, projection, projected_text) = prepared_projection_text_area_tree();
         {
             let mut node = arena.get_mut(root).unwrap();
             let text_area = node
@@ -173,8 +168,7 @@ fn text_area_atomic_projection_disjoint_root_selection_is_ordered_and_matches_le
 
     let (arena, roots, root, projection, projected_text) = fixture();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible, "{eligibility:?}");
     assert_eq!(
         artifact
@@ -208,8 +202,7 @@ fn text_area_atomic_projection_disjoint_root_selection_is_ordered_and_matches_le
 #[test]
 fn text_area_selection_crossing_projection_is_split_between_root_and_child() {
     let fixture = || {
-        let (arena, roots, root, projection, projected_text) =
-            prepared_projection_text_area_tree();
+        let (arena, roots, root, projection, projected_text) = prepared_projection_text_area_tree();
         {
             let mut node = arena.get_mut(root).unwrap();
             let text_area = node
@@ -232,8 +225,7 @@ fn text_area_selection_crossing_projection_is_split_between_root_and_child() {
 
     let (arena, roots, root, projection, projected_text) = fixture();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible, "{eligibility:?}");
     assert!(artifact.chunks.iter().any(|chunk| {
         chunk.owner == root && chunk.id.role == PaintChunkRole::SelectionUnderlay
@@ -372,8 +364,7 @@ fn text_area_projection_selection_ambiguous_owner_and_witness_tamper_fail_closed
     arena.refresh_subtree_dirty_cache(root);
     assert_text_area_fallback_before_full(&arena, &roots);
 
-    let (arena, _roots, root, projection, projected_text) =
-        prepared_projection_text_area_tree();
+    let (arena, _roots, root, projection, projected_text) = prepared_projection_text_area_tree();
     {
         let mut node = arena.get_mut(root).unwrap();
         let text_area = node
@@ -476,8 +467,7 @@ fn text_area_projection_selection_visibility_gate_prevents_artifact_only_underla
         assert!(eligibility.eligible, "{case}");
         assert!(
             artifact.chunks.iter().all(|chunk| {
-                chunk.owner != projected_text
-                    && chunk.id.role != PaintChunkRole::SelectionUnderlay
+                chunk.owner != projected_text && chunk.id.role != PaintChunkRole::SelectionUnderlay
             }),
             "{case} must not emit a projected Text glyph or selection underlay"
         );
@@ -497,17 +487,12 @@ fn text_area_projection_selection_visibility_gate_prevents_artifact_only_underla
             .get(standalone_text)
             .unwrap()
             .element
-            .shadow_paint_recording_capability(
-                &arena,
-                false,
-                PaintRecordingContext::default(),
-            ),
+            .shadow_paint_recording_capability(&arena, false, PaintRecordingContext::default(),),
         ShadowPaintRecordingCapability::Transparent,
         "standalone invisible Text must close as transparent coverage"
     );
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert!(
         artifact.chunks.is_empty(),

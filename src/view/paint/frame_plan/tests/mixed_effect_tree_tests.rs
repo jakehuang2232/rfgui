@@ -12,8 +12,7 @@ fn production_mixed_effect_tree_emits_frozen_child_geometry_and_atomic_stamps() 
     )
     .expect("exact mixed plan");
     let root_surface = only_surface(&plan);
-    let [_, PaintPlanStep::RetainedSurface(child_surface), _] = root_surface.raster_steps()
-    else {
+    let [_, PaintPlanStep::RetainedSurface(child_surface), _] = root_surface.raster_steps() else {
         panic!("mixed fixture keeps one typed child boundary")
     };
     let SurfaceKind::NestedIsolation(nested) = child_surface.kind() else {
@@ -36,11 +35,9 @@ fn production_mixed_effect_tree_emits_frozen_child_geometry_and_atomic_stamps() 
     assert_eq!(traces.len(), 2);
     assert_eq!(traces[0].boundary_root, root);
     assert_eq!(traces[1].boundary_root, child);
-    assert!(
-        traces.iter().all(|trace| {
-            trace.action == super::super::super::RetainedSurfaceCompileAction::Reraster
-        })
-    );
+    assert!(traces.iter().all(|trace| {
+        trace.action == super::super::super::RetainedSurfaceCompileAction::Reraster
+    }));
 
     let child_key =
         crate::view::base_component::isolation_layer_stable_key(child_surface.stable_id());
@@ -70,9 +67,9 @@ fn production_mixed_effect_tree_emits_frozen_child_geometry_and_atomic_stamps() 
         [expected_child_desc.width(), expected_child_desc.height()]
     );
 
-    let composites = graph.test_graphics_passes::<
-        crate::view::render_pass::composite_layer_pass::CompositeLayerPass,
-    >();
+    let composites = graph
+        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
+        );
     let [composite] = composites.as_slice() else {
         panic!("one child-local CompositeLayer")
     };
@@ -149,8 +146,7 @@ fn mixed_effect_tree_cpu_oracle_applies_group_opacity_once_after_source_over() {
         &generations,
     )
     .unwrap();
-    let [_, PaintPlanStep::RetainedSurface(child), _] = only_surface(&plan).raster_steps()
-    else {
+    let [_, PaintPlanStep::RetainedSurface(child), _] = only_surface(&plan).raster_steps() else {
         panic!("mixed child")
     };
     let SurfaceKind::NestedIsolation(isolation) = child.kind() else {
@@ -168,11 +164,9 @@ fn mixed_effect_tree_cpu_oracle_applies_group_opacity_once_after_source_over() {
     let [bottom, top] = rects.as_slice() else {
         panic!("fixture child artifact owns two overlapping rects")
     };
-    let overlap_width = (bottom.position[0] + bottom.size[0])
-        .min(top.position[0] + top.size[0])
+    let overlap_width = (bottom.position[0] + bottom.size[0]).min(top.position[0] + top.size[0])
         - bottom.position[0].max(top.position[0]);
-    let overlap_height = (bottom.position[1] + bottom.size[1])
-        .min(top.position[1] + top.size[1])
+    let overlap_height = (bottom.position[1] + bottom.size[1]).min(top.position[1] + top.size[1])
         - bottom.position[1].max(top.position[1]);
     assert!(overlap_width > 0.0 && overlap_height > 0.0);
     assert_eq!(bottom.opacity.to_bits(), 1.0_f32.to_bits());
@@ -290,12 +284,8 @@ fn mixed_effect_tree_stamp_excludes_child_opacity_but_parent_dependency_tracks_i
     tampered_dependency.child_stamp.identity.role =
         super::super::super::RetainedSurfaceRasterRole::RootIsolation;
     let tampered_child = tampered_dependency.child_stamp.as_ref().clone();
-    assert!(!super::super::super::retained_surface_raster_stamp_is_canonical(
-        &tampered_child
-    ));
-    assert!(!super::super::super::retained_surface_raster_stamp_is_canonical(
-        &tampered_parent
-    ));
+    assert!(!super::super::super::retained_surface_raster_stamp_is_canonical(&tampered_child));
+    assert!(!super::super::super::retained_surface_raster_stamp_is_canonical(&tampered_parent));
     let mut viewport = Viewport::new();
     assert!(!viewport.stage_retained_surface_full_set([tampered_parent, tampered_child,]));
     assert_eq!(
@@ -321,10 +311,8 @@ fn mixed_effect_tree_stamp_excludes_child_opacity_but_parent_dependency_tracks_i
     let tampered_geometry_child = tampered_geometry_dependency.child_stamp.as_ref().clone();
     let mut viewport = Viewport::new();
     assert!(
-        !viewport.stage_retained_surface_full_set([
-            tampered_geometry_parent,
-            tampered_geometry_child,
-        ])
+        !viewport
+            .stage_retained_surface_full_set([tampered_geometry_parent, tampered_geometry_child,])
     );
     assert_eq!(
         viewport.retained_surface_transaction_shape_for_test(),
@@ -428,9 +416,9 @@ fn mixed_effect_tree_forced_reuse_matrix_keeps_opacity_composite_only() {
             .test_snapshot();
         viewport.finish_retained_surface_transaction(true);
         crate::view::test_support::get_element_mut::<Element>(&arena, root)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                glam::Vec3::new(101.0, 0.0, 0.0),
-            )));
+            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
+                101.0, 0.0, 0.0,
+            ))));
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
         let changed = plan_single_root_transform_child_isolation_surface(
@@ -452,8 +440,7 @@ fn mixed_effect_tree_forced_reuse_matrix_keeps_opacity_composite_only() {
                 .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>()
                 .is_empty()
         );
-        let finals =
-            graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
+        let finals = graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
         assert_eq!(finals.len(), 1);
         assert_ne!(finals[0].test_snapshot(), baseline_final);
         viewport.finish_retained_surface_transaction(false);
@@ -551,13 +538,9 @@ fn mixed_root_isolation_and_transform_tree_executors_reject_cross_shape_atomical
     .unwrap();
     let (arena, transform_root, _, _, _, _, properties, generations) =
         nested_exact_transform_fixture();
-    let transform_tree = plan_single_root_transform_surface(
-        &arena,
-        &[transform_root],
-        &properties,
-        &generations,
-    )
-    .unwrap();
+    let transform_tree =
+        plan_single_root_transform_surface(&arena, &[transform_root], &properties, &generations)
+            .unwrap();
     let (arena, isolation_root, properties, generations) = exact_isolation_fixture(0.5);
     let root_isolation = plan_single_root_isolation_surface(
         &arena,
@@ -585,7 +568,10 @@ fn mixed_root_isolation_and_transform_tree_executors_reject_cross_shape_atomical
         Ok(_) => panic!("T->T executor cannot accept mixed effect tree"),
         Err(error) => error,
     };
-    assert_eq!(error, super::super::super::ForcedTransformSurfaceError::PlanShape);
+    assert_eq!(
+        error,
+        super::super::super::ForcedTransformSurfaceError::PlanShape
+    );
     assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
     assert_eq!(
         viewport.retained_surface_transaction_shape_for_test(),
@@ -604,7 +590,10 @@ fn mixed_root_isolation_and_transform_tree_executors_reject_cross_shape_atomical
         Ok(_) => panic!("root isolation executor cannot accept mixed effect tree"),
         Err(error) => error,
     };
-    assert_eq!(error, super::super::super::ForcedTransformSurfaceError::PlanShape);
+    assert_eq!(
+        error,
+        super::super::super::ForcedTransformSurfaceError::PlanShape
+    );
     assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
     assert_eq!(
         viewport.retained_surface_transaction_shape_for_test(),
@@ -627,7 +616,10 @@ fn mixed_root_isolation_and_transform_tree_executors_reject_cross_shape_atomical
             Ok(_) => panic!("mixed executor cannot accept {label}"),
             Err(error) => error,
         };
-        assert_eq!(error, super::super::super::ForcedTransformSurfaceError::PlanShape);
+        assert_eq!(
+            error,
+            super::super::super::ForcedTransformSurfaceError::PlanShape
+        );
         assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
         assert_eq!(
             viewport.retained_surface_transaction_shape_for_test(),

@@ -122,15 +122,7 @@ fn hidden_empty_and_zero_opacity_text_are_transparent_without_chunks() {
         let roots = [root];
         let (properties, generations) = sync_identity(&arena, &roots);
         let manifest = |mode| {
-            record_coverage_manifest(
-                &arena,
-                &roots,
-                false,
-                true,
-                mode,
-                &properties,
-                &generations,
-            )
+            record_coverage_manifest(&arena, &roots, false, true, mode, &properties, &generations)
         };
         let metadata = manifest(CoverageRecordingMode::MetadataOnly);
         let full = manifest(CoverageRecordingMode::FullArtifact);
@@ -155,8 +147,7 @@ fn inline_owned_text_records_source_owned_glyphs_and_matches_legacy_pass() {
     let (arena, roots, text_key) = prepared_inline_owned_text_tree(InlineOwnedTextDamage::None);
     let (properties, generations) = sync_identity(&arena, &roots);
     take_full_artifact_record_count();
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(artifact.chunks.len(), 1);
     assert_eq!(artifact.chunks[0].owner, text_key);
@@ -174,8 +165,7 @@ fn inline_owned_text_records_source_owned_glyphs_and_matches_legacy_pass() {
         prepared_inline_owned_text_tree(InlineOwnedTextDamage::None);
     let legacy_graph = legacy_roots_graph(legacy_arena, &legacy_roots);
     let artifact_passes = artifact_graph
-        .test_graphics_passes::<crate::view::render_pass::text_pass::TextPreparedInputPass>(
-    );
+        .test_graphics_passes::<crate::view::render_pass::text_pass::TextPreparedInputPass>();
     let legacy_passes = legacy_graph
         .test_graphics_passes::<crate::view::render_pass::text_pass::TextPreparedInputPass>();
     assert_eq!(artifact_passes.len(), 1);
@@ -240,13 +230,12 @@ fn compiler_rejects_empty_or_tampered_prepared_text_before_emit() {
         PreparedTextOp::new(params).expect("non-empty op scissor remains canonical payload"),
     );
     let range = op_scissor.chunks[0].op_range.clone();
-    op_scissor.chunks[0].payload_identity =
-        PaintPayloadIdentity::prepared_texts(op_scissor.ops[range].iter().filter_map(|op| {
-            match op {
-                PaintOp::PreparedText(prepared) => Some(prepared),
-                _ => None,
-            }
-        }));
+    op_scissor.chunks[0].payload_identity = PaintPayloadIdentity::prepared_texts(
+        op_scissor.ops[range].iter().filter_map(|op| match op {
+            PaintOp::PreparedText(prepared) => Some(prepared),
+            _ => None,
+        }),
+    );
     assert_compiler_rejects_before_emit(&op_scissor, "prepared text op scissor");
 
     let mut tampered = artifact;
@@ -279,8 +268,7 @@ fn empty_text_records_canonical_transparent_node_without_payload() {
     ));
     assert!(canonical_manifest_matches_for_test(&metadata, &full));
 
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(eligibility.chunk_count, 0);
     assert_eq!(eligibility.op_count, 0);

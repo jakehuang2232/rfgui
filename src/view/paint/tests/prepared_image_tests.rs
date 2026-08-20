@@ -61,16 +61,14 @@ fn malformed_inline_image_falls_back_in_metadata_without_full_recording() {
     measure_and_place(&mut arena, root, measure, place);
     let (properties, generations) = sync_identity(&arena, &[root]);
     let _ = take_full_artifact_record_count();
-    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) =
-        record_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .expect("auto renderer falls back")
-    else {
+    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) = record_frame_artifact(
+        &arena,
+        &[root],
+        &properties,
+        &generations,
+        RendererMode::Auto,
+    )
+    .expect("auto renderer falls back") else {
         panic!("malformed image must not record")
     };
     assert!(
@@ -129,8 +127,7 @@ fn undecorated_prepared_image_fit_sampling_opacity_scale_and_format_match_strict
             bare_image_fixture(pixels.clone(), fit, sampling, opacity);
         drop(artifact_arena);
         let mut artifact_graph = compiled_whole_frame_graph_with_config(&artifact, config);
-        let mut legacy_graph =
-            legacy_roots_graph_with_config(legacy_arena, &legacy_roots, config);
+        let mut legacy_graph = legacy_roots_graph_with_config(legacy_arena, &legacy_roots, config);
         assert_eq!(
             strict_paint_snapshot(&mut artifact_graph, config),
             strict_paint_snapshot(&mut legacy_graph, config),
@@ -455,13 +452,11 @@ fn recorder_compiles_real_image_and_svg_descendants_with_parent_contents_clip() 
 
     let mut graph = compiled_whole_frame_graph(&artifact);
     let _ = strict_paint_snapshot(&mut graph, PaintParityConfig::default());
-    let passes =
-        graph.test_graphics_passes_mut::<crate::view::render_pass::TextureCompositePass>();
+    let passes = graph.test_graphics_passes_mut::<crate::view::render_pass::TextureCompositePass>();
     assert_eq!(passes.len(), 2);
     assert!(passes.iter().all(|pass| {
         let snapshot = pass.test_snapshot();
-        snapshot.explicit_scissor_rect.is_none()
-            && snapshot.effective_scissor_rect == Some(SCISSOR)
+        snapshot.explicit_scissor_rect.is_none() && snapshot.effective_scissor_rect == Some(SCISSOR)
     }));
 }
 

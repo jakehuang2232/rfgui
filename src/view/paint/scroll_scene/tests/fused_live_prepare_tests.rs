@@ -14,15 +14,10 @@ fn validated_content_artifact_can_emit_repeatedly_to_distinct_targets() {
     first_ctx.set_current_target(first);
     emit_validated_scroll_scene_content_artifact(&prepared.content, &mut graph, &mut first_ctx);
 
-    let mut second_ctx =
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+    let mut second_ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let second = second_ctx.allocate_target(&mut graph);
     second_ctx.set_current_target(second);
-    emit_validated_scroll_scene_content_artifact(
-        &prepared.content,
-        &mut graph,
-        &mut second_ctx,
-    );
+    emit_validated_scroll_scene_content_artifact(&prepared.content, &mut graph, &mut second_ctx);
 
     let mut outputs = graph
         .test_graphics_passes::<crate::view::render_pass::draw_rect_pass::DrawRectPass>()
@@ -124,8 +119,7 @@ fn reuse_skips_content_clear_and_artifact_but_keeps_host_composite_overlay() {
             .test_graphics_passes::<crate::view::render_pass::ClearPass>()
             .is_empty()
     );
-    let composites =
-        graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
+    let composites = graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
     assert_eq!(composites.len(), 1);
     assert!(composites[0].test_snapshot().source_handle.is_some());
     assert!(

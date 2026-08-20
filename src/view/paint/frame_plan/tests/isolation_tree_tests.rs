@@ -337,9 +337,10 @@ fn isolation_opacity_is_composite_only_but_future_parent_dependency_tracks_it() 
     .expect("baseline isolation");
     let graph = FrameGraph::new();
     let ctx = UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let baseline_stamp =
-        super::super::super::prepare_forced_retained_surface_stamp_for_test(&baseline, &graph, &ctx)
-            .expect("baseline stamp");
+    let baseline_stamp = super::super::super::prepare_forced_retained_surface_stamp_for_test(
+        &baseline, &graph, &ctx,
+    )
+    .expect("baseline stamp");
     let SurfaceKind::Isolation(baseline_isolation) = only_surface(&baseline).kind() else {
         panic!("isolation");
     };
@@ -415,9 +416,9 @@ fn isolation_opacity_is_composite_only_but_future_parent_dependency_tracks_it() 
         "only the legal outer producer remains on isolation reuse"
     );
     assert!(changed_graph.test_rect_pass_snapshots().is_empty());
-    let composites = changed_graph.test_graphics_passes::<
-        crate::view::render_pass::composite_layer_pass::CompositeLayerPass,
-    >();
+    let composites = changed_graph
+        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
+    );
     assert_eq!(composites.len(), 1);
     assert_eq!(
         composites[0].test_params().opacity.to_bits(),
@@ -511,8 +512,7 @@ fn production_tree_canary_first_frame_matches_legacy_and_uses_pool_only_actions(
     .expect("exact depth-two production plan");
 
     let mut production_graph = FrameGraph::new();
-    let (mut production_ctx, _) =
-        parent_context_with_clear(&mut production_graph, 160, 120, 1.0);
+    let (mut production_ctx, _) = parent_context_with_clear(&mut production_graph, 160, 120, 1.0);
     production_ctx.push_scissor_rect(outer_scissor);
     let mut viewport = Viewport::new();
     let outcome = super::super::super::build_retained_surface_tree_from_pool(
@@ -634,9 +634,8 @@ fn production_singleton_and_tree_executors_reject_each_others_shape_before_mutat
     );
 
     let (arena, root, properties, generations) = exact_transform_fixture();
-    let singleton =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("singleton plan");
+    let singleton = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect("singleton plan");
     let mut graph = FrameGraph::new();
     let (ctx, _) = parent_context_with_clear(&mut graph, 160, 120, 1.0);
     let graph_before = graph.build_state_snapshot_for_test();
@@ -649,7 +648,10 @@ fn production_singleton_and_tree_executors_reject_each_others_shape_before_mutat
         Ok(_) => panic!("tree production executor requires exact depth two"),
         Err(error) => error,
     };
-    assert_eq!(error, super::super::super::ForcedTransformSurfaceError::PlanShape);
+    assert_eq!(
+        error,
+        super::super::super::ForcedTransformSurfaceError::PlanShape
+    );
     assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
     assert_eq!(
         viewport.retained_surface_transaction_shape_for_test(),

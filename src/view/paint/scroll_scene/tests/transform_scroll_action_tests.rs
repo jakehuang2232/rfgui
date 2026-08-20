@@ -11,9 +11,7 @@ fn transform_scroll_action_matrix_separates_composite_host_and_content_dependenc
 
     {
         let (arena, root, scroll, _content, mut properties, mut generations) =
-            transform_scroll_fixture(glam::Mat4::from_translation(glam::Vec3::new(
-                7.0, 5.0, 0.0,
-            )));
+            transform_scroll_fixture(glam::Mat4::from_translation(glam::Vec3::new(7.0, 5.0, 0.0)));
         crate::view::test_support::get_element_mut::<Element>(&arena, scroll)
             .set_sampled_scrollbar_alpha_for_test(0.75);
         arena.refresh_subtree_dirty_cache(root);
@@ -75,9 +73,7 @@ fn transform_scroll_action_matrix_separates_composite_host_and_content_dependenc
             Some(&RetainedSurfaceCompileAction::Reuse)
         );
         let _ = emit_prepared_retained_transform_scroll_scene(alpha);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(alpha_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(alpha_owner), true));
 
         let (
             offset_arena,
@@ -131,9 +127,7 @@ fn transform_scroll_action_matrix_separates_composite_host_and_content_dependenc
             Some(&RetainedSurfaceCompileAction::Reuse)
         );
         let _ = emit_prepared_retained_transform_scroll_scene(offset);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(offset_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(offset_owner), true));
     }
 
     for (name, mutate, expected_receiver, expected_content) in [(
@@ -143,9 +137,7 @@ fn transform_scroll_action_matrix_separates_composite_host_and_content_dependenc
         RetainedSurfaceCompileAction::Reraster,
     )] {
         let (arena, root, scroll, content, mut properties, mut generations) =
-            transform_scroll_fixture(glam::Mat4::from_translation(glam::Vec3::new(
-                7.0, 5.0, 0.0,
-            )));
+            transform_scroll_fixture(glam::Mat4::from_translation(glam::Vec3::new(7.0, 5.0, 0.0)));
         let sampled_at = crate::time::Instant::now();
         let mut viewport = Viewport::new();
         let first_owner = viewport.begin_retained_surface_frame_stage().unwrap();
@@ -166,9 +158,7 @@ fn transform_scroll_action_matrix_separates_composite_host_and_content_dependenc
         )
         .unwrap();
         let _ = emit_prepared_retained_transform_scroll_scene(first);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(first_owner), true));
 
         mutate(&arena, root, scroll, content);
         properties.sync(&arena, &[root]);
@@ -212,9 +202,7 @@ fn transform_scroll_action_matrix_separates_composite_host_and_content_dependenc
             "{name}"
         );
         let _ = emit_prepared_retained_transform_scroll_scene(second);
-        assert!(
-            viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true)
-        );
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(second_owner), true));
     }
 }
 

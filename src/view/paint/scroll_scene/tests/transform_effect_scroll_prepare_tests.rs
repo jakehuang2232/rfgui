@@ -89,12 +89,11 @@ fn transform_effect_scroll_transaction_cross_binds_each_outer_to_its_inner_bound
     let mut grid = Style::new();
     grid.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
     {
-        let mut outer =
-            crate::view::test_support::get_element_mut::<Element>(&arena, second_root);
+        let mut outer = crate::view::test_support::get_element_mut::<Element>(&arena, second_root);
         outer.apply_style(grid.clone());
-        outer.set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-            glam::Vec3::new(17.0, 13.0, 0.0),
-        )));
+        outer.set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
+            17.0, 13.0, 0.0,
+        ))));
     }
     {
         let mut effect =
@@ -215,8 +214,7 @@ fn transform_effect_scroll_prepare_failures_are_graph_pool_and_stage_inert() {
         None,
         wgpu::TextureFormat::Bgra8UnormSrgb,
     );
-    let (inner_color, inner_depth) =
-        persistent_target_texture_descriptors(inner_color, inner_key);
+    let (inner_color, inner_depth) = persistent_target_texture_descriptors(inner_color, inner_key);
     let outer_key = crate::view::base_component::transformed_layer_stable_key(
         baseline.roots[0].outer_stable_id,
     );
@@ -226,8 +224,7 @@ fn transform_effect_scroll_prepare_failures_are_graph_pool_and_stage_inert() {
         None,
         wgpu::TextureFormat::Bgra8UnormSrgb,
     );
-    let (outer_color, outer_depth) =
-        persistent_target_texture_descriptors(outer_color, outer_key);
+    let (outer_color, outer_depth) = persistent_target_texture_descriptors(outer_color, outer_key);
     let aggregate = content_bytes
         .checked_add(canonical_pair_bytes(&inner_color, &inner_depth).unwrap())
         .and_then(|bytes| {
@@ -237,10 +234,8 @@ fn transform_effect_scroll_prepare_failures_are_graph_pool_and_stage_inert() {
 
     let (dimension_arena, dimension_root, _, _) = transform_effect_scroll_fixture();
     {
-        let mut outer = crate::view::test_support::get_element_mut::<Element>(
-            &dimension_arena,
-            dimension_root,
-        );
+        let mut outer =
+            crate::view::test_support::get_element_mut::<Element>(&dimension_arena, dimension_root);
         outer.set_background_color_value(Color::rgb(12, 24, 36));
         outer.layout_state.layout_size = Size {
             width: 300.0,
@@ -291,8 +286,7 @@ fn transform_effect_scroll_prepare_failures_are_graph_pool_and_stage_inert() {
         .unwrap();
     let mut dimension_graph = FrameGraph::new();
     let dimension_graph_before = dimension_graph.build_state_snapshot_for_test();
-    let dimension_pool_before =
-        dimension_viewport.retained_surface_transaction_shape_for_test();
+    let dimension_pool_before = dimension_viewport.retained_surface_transaction_shape_for_test();
     assert_eq!(
         prepare_retained_transform_effect_scroll_scene_from_pool(
             &mut dimension_viewport,
@@ -350,8 +344,7 @@ fn transform_effect_scroll_prepare_failures_are_graph_pool_and_stage_inert() {
     let collision_scene = make_scene(generous_budget());
     let collision_owner = viewport.begin_retained_surface_frame_stage().unwrap();
     let mut collision_graph = FrameGraph::new();
-    let mut declaring_ctx =
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
+    let mut declaring_ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let _ = declaring_ctx.allocate_persistent_target_with_desc(
         &mut collision_graph,
         outer_color.clone(),
@@ -379,9 +372,7 @@ fn transform_effect_scroll_prepare_failures_are_graph_pool_and_stage_inert() {
         viewport.retained_surface_transaction_shape_for_test(),
         pool_before
     );
-    assert!(
-        viewport.finish_retained_surface_transaction_for_frame(Some(collision_owner), false)
-    );
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(collision_owner), false));
 
     let context_scene = make_scene(generous_budget());
     let context_owner = viewport.begin_retained_surface_frame_stage().unwrap();

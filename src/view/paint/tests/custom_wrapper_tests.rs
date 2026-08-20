@@ -9,8 +9,7 @@ fn custom_wrapper_public_typed_phases_preserve_order_slots_and_compile() {
     );
 
     let _ = take_full_artifact_record_count();
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &[root], &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &[root], &properties, &generations);
     assert!(eligibility.eligible);
     let order = artifact
         .chunks

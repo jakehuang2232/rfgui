@@ -5,9 +5,8 @@ fn forced_executor_rejections_are_table_driven_and_graph_bit_identical() {
     use super::super::super::ForcedTransformSurfaceError as Error;
 
     let (arena, root, properties, generations) = exact_transform_fixture();
-    let baseline =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("baseline forced plan");
+    let baseline = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect("baseline forced plan");
     let default_ctx = || UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
 
     let mut plan = baseline.clone();
@@ -246,9 +245,8 @@ fn forced_nested_prepare_rejections_are_deep_and_transactionally_inert() {
 
     let (arena, root, _before, child, _descendant, _after, properties, generations) =
         nested_exact_transform_fixture();
-    let baseline =
-        plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
-            .expect("baseline nested plan");
+    let baseline = plan_single_root_transform_surface(&arena, &[root], &properties, &generations)
+        .expect("baseline nested plan");
     let default_ctx = || UiBuildContext::new(160, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
 
     let mut plan = baseline.clone();
@@ -324,11 +322,8 @@ fn forced_nested_prepare_rejections_are_deep_and_transactionally_inert() {
         .source_bounds;
     let mut graph = FrameGraph::new();
     let mut declaration_ctx = default_ctx();
-    let _ = declaration_ctx.allocate_persistent_target_with_key(
-        &mut graph,
-        child_key,
-        child_bounds,
-    );
+    let _ =
+        declaration_ctx.allocate_persistent_target_with_key(&mut graph, child_key, child_bounds);
     assert_forced_rejection_has_zero_graph_mutation(
         &baseline,
         &mut graph,

@@ -4,8 +4,7 @@ use super::*;
 fn fixed_inline_root_with_atomic_records_standard_chunks_and_matches_legacy() {
     let (arena, roots, root, before, atomic, after) = prepared_owning_inline_root_with_atomic();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(
         artifact
@@ -36,8 +35,7 @@ fn owning_inline_root_atomic_move_and_paint_refresh_preserve_authority_and_order
         roots: &[NodeKey],
     ) -> (PaintArtifact, Vec<(NodeKey, PaintChunkRole)>) {
         let (properties, generations) = sync_identity(arena, roots);
-        let (artifact, eligibility) =
-            whole_frame_artifact(arena, roots, &properties, &generations);
+        let (artifact, eligibility) = whole_frame_artifact(arena, roots, &properties, &generations);
         assert!(eligibility.eligible, "{eligibility:?}");
         let order = artifact
             .chunks
@@ -110,8 +108,7 @@ fn mixed_wrapping_inline_root_uses_live_dom_dfs_and_matches_legacy() {
         "fixture must allocate the atomic before its earlier DOM sibling"
     );
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(
         artifact
@@ -142,8 +139,7 @@ fn owning_inline_root_with_image_atomic_keeps_image_chunk_and_matches_legacy() {
     let (arena, roots, root, before, image, after) =
         prepared_owning_inline_root_with_image_atomic();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(
         artifact
@@ -168,11 +164,9 @@ fn owning_inline_root_with_image_atomic_keeps_image_chunk_and_matches_legacy() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn owning_inline_root_with_svg_atomic_keeps_svg_chunk_and_matches_legacy() {
-    let (arena, roots, root, before, svg, after) =
-        prepared_owning_inline_root_with_svg_atomic();
+    let (arena, roots, root, before, svg, after) = prepared_owning_inline_root_with_svg_atomic();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(
         artifact
@@ -210,16 +204,17 @@ fn owning_inline_root_atomic_child_participates_in_root_opacity_group_once() {
     let (arena, roots, root, _, atomic, _) = prepared_owning_inline_root_with_atomic();
     set_root_opacity(&arena, root);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        root_group_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = root_group_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert!(matches!(
         artifact.target,
         PaintArtifactTarget::RootOpacityGroup { root: owner, .. } if owner == root
     ));
-    assert!(artifact.chunks.iter().any(|chunk| {
-        chunk.owner == atomic && chunk.id.role == PaintChunkRole::SelfDecoration
-    }));
+    assert!(
+        artifact.chunks.iter().any(|chunk| {
+            chunk.owner == atomic && chunk.id.role == PaintChunkRole::SelfDecoration
+        })
+    );
     artifact.ops.iter().for_each(assert_neutral_opacity);
 
     assert_eq!(
@@ -277,8 +272,7 @@ fn owning_inline_root_with_text_area_atomic_fails_closed_before_full_hooks() {
 
 #[test]
 fn owning_inline_root_package_drift_falls_back_before_full_hooks() {
-    let (arena, roots, _, span, _, _) =
-        prepared_owning_wrapping_inline_span_tree_with_opacity(1.0);
+    let (arena, roots, _, span, _, _) = prepared_owning_wrapping_inline_span_tree_with_opacity(1.0);
     let mut node = arena.get_mut(span).unwrap();
     node.element
         .as_any_mut()
@@ -315,8 +309,7 @@ fn owning_inline_root_package_drift_falls_back_before_full_hooks() {
 
 #[test]
 fn owning_inline_root_span_live_shift_drift_falls_back_before_full_hooks() {
-    let (arena, roots, _, span, _, _) =
-        prepared_owning_wrapping_inline_span_tree_with_opacity(1.0);
+    let (arena, roots, _, span, _, _) = prepared_owning_wrapping_inline_span_tree_with_opacity(1.0);
     arena
         .get_mut(span)
         .unwrap()
@@ -416,8 +409,7 @@ fn owning_inline_root_paint_refresh_preserves_auto_wrap_geometry() {
         "paint-only same-constraints refresh must preserve root size and build authority"
     );
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     let refreshed = artifact
         .ops
@@ -488,8 +480,7 @@ fn owning_inline_root_move_and_paint_preserve_dual_width_authority() {
             .collect::<Vec<_>>()
     );
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     let refreshed = artifact
         .ops
@@ -569,8 +560,7 @@ fn owning_inline_root_opacity_group_neutralizes_root_span_and_text_once() {
     let (arena, roots, root, span, text, _) =
         prepared_owning_wrapping_inline_span_tree_with_opacity(0.5);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        root_group_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = root_group_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert!(matches!(
         artifact.target,

@@ -46,8 +46,7 @@ fn paint_artifact_chunk_identity_stays_stable_and_revision_tracks_paint() {
         .set_background_color_value(Color::rgb(40, 50, 60));
     properties.sync(&arena, &[root]);
     generations.sync(&arena, &[root], &properties);
-    let PaintRecordOutcome::Artifact(second) =
-        record_root(&arena, root, &properties, &generations)
+    let PaintRecordOutcome::Artifact(second) = record_root(&arena, root, &properties, &generations)
     else {
         panic!("safe leaf should still record");
     };
@@ -68,8 +67,7 @@ fn paint_artifact_chunk_identity_stays_stable_and_revision_tracks_paint() {
 fn opacity_change_keeps_chunk_id_but_changes_baked_content_revision() {
     let (arena, root, mut properties, mut generations) =
         prepared_leaf(12, Color::rgb(10, 20, 30), 1.0, false);
-    let PaintRecordOutcome::Artifact(first) =
-        record_root(&arena, root, &properties, &generations)
+    let PaintRecordOutcome::Artifact(first) = record_root(&arena, root, &properties, &generations)
     else {
         panic!("safe leaf should record");
     };
@@ -84,8 +82,7 @@ fn opacity_change_keeps_chunk_id_but_changes_baked_content_revision() {
         .set_opacity(0.4);
     properties.sync(&arena, &[root]);
     generations.sync(&arena, &[root], &properties);
-    let PaintRecordOutcome::Artifact(second) =
-        record_root(&arena, root, &properties, &generations)
+    let PaintRecordOutcome::Artifact(second) = record_root(&arena, root, &properties, &generations)
     else {
         panic!("safe leaf should still record");
     };
@@ -115,8 +112,7 @@ fn resolved_gradient_changes_advance_self_and_content_revision() {
     let (measure, place) = constraints();
     measure_and_place(&mut arena, root, measure, place);
     let (mut properties, mut generations) = sync_identity(&arena, &[root]);
-    let PaintRecordOutcome::Artifact(first) =
-        record_root(&arena, root, &properties, &generations)
+    let PaintRecordOutcome::Artifact(first) = record_root(&arena, root, &properties, &generations)
     else {
         panic!("gradient leaf should record");
     };

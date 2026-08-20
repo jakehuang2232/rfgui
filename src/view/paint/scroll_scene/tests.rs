@@ -6,8 +6,8 @@ use crate::style::{
 };
 use crate::view::base_component::{
     DirtyFlags, DirtyPassMask, Element, ElementTrait, EventTarget, Image, LayoutConstraints,
-    LayoutPlacement, PaintResourcePreparationContext, ScrollbarPaintStateWitness, Size, Svg,
-    Text, TextArea,
+    LayoutPlacement, PaintResourcePreparationContext, ScrollbarPaintStateWitness, Size, Svg, Text,
+    TextArea,
 };
 use crate::view::frame_graph::{FramePassTestPayload, RetainedTextureRole};
 use crate::view::node_arena::Node;
@@ -105,10 +105,6 @@ fn sampled_window_scroll_fixture(
     (arena, roots, scroll)
 }
 
-
-
-
-
 fn compile_nested_scroll_segment_fixture_parts(
     arena: &NodeArena,
     outer: NodeKey,
@@ -196,8 +192,8 @@ fn nested_scroll_media_fixture(
         NestedMediaLeafKind::Image => {
             static NEXT_NESTED_MEDIA_IMAGE_FIXTURE: std::sync::atomic::AtomicU64 =
                 std::sync::atomic::AtomicU64::new(1);
-            let fixture_id = NEXT_NESTED_MEDIA_IMAGE_FIXTURE
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let fixture_id =
+                NEXT_NESTED_MEDIA_IMAGE_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let marker = u8::try_from(fixture_id % 251 + 1).unwrap();
             let pixels: std::sync::Arc<[u8]> = std::sync::Arc::from([
                 marker, 0, 0, 255, 0, marker, 0, 255, 0, 0, marker, 255, marker, marker, 0, 255,
@@ -214,14 +210,13 @@ fn nested_scroll_media_fixture(
         NestedMediaLeafKind::Svg => {
             static NEXT_NESTED_MEDIA_SVG_FIXTURE: std::sync::atomic::AtomicU64 =
                 std::sync::atomic::AtomicU64::new(1);
-            let fixture_id = NEXT_NESTED_MEDIA_SVG_FIXTURE
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let fixture_id =
+                NEXT_NESTED_MEDIA_SVG_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let source = crate::view::SvgSource::Content(format!(
                 r##"<svg width="100" height="600" xmlns="http://www.w3.org/2000/svg"><rect width="100" height="600" fill="#3366cc"/><desc>nested-r1-svg-slice-a-{fixture_id}</desc></svg>"##
             ));
-            let document_key = crate::view::svg_resource::prime_svg_document_ready_for_test(
-                &source, 100.0, 600.0,
-            );
+            let document_key =
+                crate::view::svg_resource::prime_svg_document_ready_for_test(&source, 100.0, 600.0);
             let (width, height) = crate::view::svg_resource::quantize_svg_raster_size(100, 600);
             let request = crate::view::svg_resource::SvgRasterRequest::new(
                 width,
@@ -400,18 +395,19 @@ pub(crate) fn nested_scroll_unready_media_fixture_for_test(
                 .program
                 .iter()
                 .find_map(|step| match step {
-                    NestedScrollSegmentProgramStep::LeafRaster { artifact, .. } => artifact
-                        .ops
-                        .iter()
-                        .find_map(|op| match op {
+                    NestedScrollSegmentProgramStep::LeafRaster { artifact, .. } => {
+                        artifact.ops.iter().find_map(|op| match op {
                             super::super::PaintOp::PreparedImage(op) => match op.upload.id {
                                 crate::view::sampled_texture::SampledTextureId::Image(id) => {
                                     Some(id)
                                 }
-                                crate::view::sampled_texture::SampledTextureId::SvgRaster(_) => None,
+                                crate::view::sampled_texture::SampledTextureId::SvgRaster(_) => {
+                                    None
+                                }
                             },
                             _ => None,
-                        }),
+                        })
+                    }
                     _ => None,
                 })
                 .expect("ready Image fixture owns one frozen upload");
@@ -456,12 +452,7 @@ fn set_nested_scroll_position(element: &mut Element, x: f32, y: f32) {
     element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
 }
 
-fn move_nested_scroll_fixture(
-    arena: &NodeArena,
-    outer: NodeKey,
-    inner: NodeKey,
-    leaf: NodeKey,
-) {
+fn move_nested_scroll_fixture(arena: &NodeArena, outer: NodeKey, inner: NodeKey, leaf: NodeKey) {
     let host_origin = [35.0, 51.0];
     let outer_offset_y = 37.0;
     let inner_offset_y = 53.0;
@@ -487,25 +478,6 @@ fn move_nested_scroll_fixture(
         host_origin[1] - outer_offset_y - inner_offset_y,
     );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 fn fixture_at_offset(
     offset: [f32; 2],
@@ -808,8 +780,8 @@ fn same_owner_effect_scroll_fixture() -> (
     (arena, root, *content, properties, generations)
 }
 
-fn transform_effect_scroll_fixture()
--> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
+fn transform_effect_scroll_fixture() -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker)
+{
     let (mut arena, root, scroll, _content, _, _) =
         transform_scroll_fixture(glam::Mat4::from_translation(glam::Vec3::new(7.0, 3.0, 0.0)));
     let effect = arena.insert(Node::new(Box::new(Element::new_with_id(
@@ -865,8 +837,8 @@ fn fully_same_owner_transform_effect_scroll_fixture()
     super::super::frame_plan::tests::same_owner_transform_effect_scroll_roles_fixture()
 }
 
-fn effect_transform_scroll_fixture()
--> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
+fn effect_transform_scroll_fixture() -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker)
+{
     let (mut arena, transform, _scroll, _content, _, _) =
         transform_scroll_fixture(glam::Mat4::from_translation(glam::Vec3::new(7.0, 3.0, 0.0)));
     let effect = arena.insert(Node::new(Box::new(Element::new_with_id(
@@ -905,8 +877,7 @@ fn effect_transform_scroll_neutral_fixture()
     for wrapper in [outer_wrapper, inner_wrapper] {
         let mut style = Style::new();
         style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        let mut element =
-            crate::view::test_support::get_element_mut::<Element>(&arena, wrapper);
+        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, wrapper);
         element.apply_style(style);
         element.set_background_color_value(Color::rgb(12, 24, 36));
     }
@@ -926,14 +897,6 @@ fn effect_transform_scroll_neutral_fixture()
     generations.sync(&arena, &[effect], &properties);
     (arena, effect, properties, generations)
 }
-
-
-
-
-
-
-
-
 
 fn scroll_content_effect_native_leaf_fixture(
     kind: &str,
@@ -1112,8 +1075,6 @@ fn scroll_content_effect_native_leaf_fixture(
     (arena, root, properties, generations)
 }
 
-
-
 fn validated_transform_effect_scroll_fixture_scene(
     arena: &NodeArena,
     root: NodeKey,
@@ -1135,8 +1096,6 @@ fn validated_transform_effect_scroll_fixture_scene(
     )
     .expect("exact T -> E -> Scroll fixture")
 }
-
-
 
 fn validated_effect_transform_scroll_fixture_scene(
     arena: &NodeArena,
@@ -1204,22 +1163,6 @@ fn prepare_and_emit_boundary_dag_fixture(
     let pass_count = graph.pass_descriptors().len();
     (trace, pass_count)
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScrollbarCase {
@@ -1349,8 +1292,7 @@ fn fixture_with_geometry_and_scrollbar_elapsed(
                 );
             }
         }
-        root_element
-            .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+        root_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
     }
     arena
         .get_mut(child)
@@ -1628,7 +1570,6 @@ fn fake_text_area_sidecar_from_direct(
     }
 }
 
-
 fn compiled_content_step(
     boundary: &ValidatedPropertyScrollBoundary,
 ) -> (
@@ -1661,21 +1602,6 @@ fn compiled_content_step(
     )
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 fn prepared_content_stamps(prepared: &PreparedScrollScene) -> Vec<RetainedSurfaceRasterStamp> {
     match &prepared.content_backing {
         PreparedScrollContentBacking::Single { stamp, .. } => vec![stamp.clone()],
@@ -1684,8 +1610,6 @@ fn prepared_content_stamps(prepared: &PreparedScrollScene) -> Vec<RetainedSurfac
         }
     }
 }
-
-
 
 #[derive(Clone, Copy, Debug)]
 struct PoolMatrixCase {
@@ -1830,8 +1754,7 @@ fn assert_pool_matrix_pass_order(
                 "masked-shadow"
             }
             FramePassTestPayload::DrawRect(rect)
-                if rect.output_target == parent
-                    && rect.fill_color_bits[3] != 1.0_f32.to_bits() =>
+                if rect.output_target == parent && rect.fill_color_bits[3] != 1.0_f32.to_bits() =>
             {
                 "overlay-fill"
             }
@@ -1866,13 +1789,6 @@ fn assert_pool_matrix_pass_order(
     }
 }
 
-
-
-
-
-
-
-
 fn prepare(
     plan: &ScrollScenePlan,
     graph: &FrameGraph,
@@ -1901,7 +1817,6 @@ fn prepare_live(
     )
 }
 
-
 fn prepared_scene_for_emit(
     graph: &mut FrameGraph,
 ) -> (PreparedScrollScene, UiBuildContext, RenderTargetOut) {
@@ -1909,53 +1824,9 @@ fn prepared_scene_for_emit(
     let mut ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let parent = ctx.allocate_target(graph);
     ctx.set_current_target(parent);
-    let prepared =
-        prepare_scroll_scene(plan, graph, &ctx, generous_budget()).expect("exact scene");
+    let prepared = prepare_scroll_scene(plan, graph, &ctx, generous_budget()).expect("exact scene");
     (prepared, ctx, parent)
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 fn direct_scroll_transform_dpr_fixture()
 -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
@@ -1985,8 +1856,7 @@ fn direct_scroll_transform_dpr_fixture()
         element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
     }
     {
-        let mut element =
-            crate::view::test_support::get_element_mut::<Element>(&arena, content);
+        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, content);
         element.set_background_color_value(Color::rgb(24, 48, 72));
         element.set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
             glam::Vec3::new(3.0, 0.0, 0.0),
@@ -2010,28 +1880,28 @@ fn assert_dpr2_target(stamp: &RetainedSurfaceRasterStamp, logical_size: [u32; 2]
     assert_eq!(stamp.target.depth.height(), logical_size[1] * 2);
 }
 
+mod content_artifact_prepare_tests;
+mod dpr2_device_target_tests;
+mod effect_scroll_tests;
 mod frame_root_scroll_tests;
-mod scroll_content_effect_tests;
-mod scroll_content_effect_reuse_tests;
-mod property_boundary_dag_tests;
-mod property_boundary_program_forest_m7b_tests;
-mod property_boundary_program_forest_m7c_tests;
+mod fused_live_prepare_tests;
 mod nested_scroll_segment_m4_tests;
 mod nested_scroll_segment_m5a_tests;
 mod nested_scroll_segment_m5b_tests;
-mod transform_effect_scroll_plan_tests;
-mod transform_effect_scroll_prepare_tests;
-mod transform_effect_scroll_action_tests;
-mod same_owner_transform_effect_scroll_tests;
-mod effect_scroll_tests;
-mod property_scroll_b1_tests;
+mod property_boundary_dag_tests;
+mod property_boundary_program_forest_m7b_tests;
+mod property_boundary_program_forest_m7c_tests;
 mod property_scroll_b0_tests;
-mod tiled_content_tests;
-mod fused_live_prepare_tests;
-mod content_artifact_prepare_tests;
+mod property_scroll_b1_tests;
 mod property_scroll_b2_tests;
 mod property_scroll_b4_tests;
 mod same_owner_scroll_tests;
-mod transform_scroll_action_tests;
-mod dpr2_device_target_tests;
+mod same_owner_transform_effect_scroll_tests;
+mod scroll_content_effect_reuse_tests;
+mod scroll_content_effect_tests;
 mod stage_c_deletion_inventory_tests;
+mod tiled_content_tests;
+mod transform_effect_scroll_action_tests;
+mod transform_effect_scroll_plan_tests;
+mod transform_effect_scroll_prepare_tests;
+mod transform_scroll_action_tests;

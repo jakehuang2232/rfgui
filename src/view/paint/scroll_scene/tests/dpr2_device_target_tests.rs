@@ -33,8 +33,7 @@ fn direct_scroll_transform_dpr2_prepares_emits_and_rejects_device_contract_drift
             generous_budget(),
         )
         .expect("DPR2 direct S->T geometry");
-        compile_direct_scroll_transform_transaction(geometry)
-            .expect("DPR2 direct S->T transaction")
+        compile_direct_scroll_transform_transaction(geometry).expect("DPR2 direct S->T transaction")
     };
     let transaction = make();
     assert!(transaction.is_canonical());
@@ -52,8 +51,7 @@ fn direct_scroll_transform_dpr2_prepares_emits_and_rejects_device_contract_drift
 
     let mut viewport = Viewport::new();
     let owner = viewport.begin_retained_surface_frame_stage().unwrap();
-    let mut paint_origin =
-        UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 2.0);
+    let mut paint_origin = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 2.0);
     paint_origin.set_paint_offset([0.5, 0.0]);
     let mut scissor = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 2.0);
     scissor.replace_scissor_rect(Some([0, 0, 240, 180]));

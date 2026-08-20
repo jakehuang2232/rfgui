@@ -36,8 +36,7 @@ fn anchor_parent_leaf_self_clip_replaces_then_restores_ancestor_scissor_strictly
 fn exact_single_owner_self_clip_keeps_outer_shadow_outside_owner_clip() {
     let (arena, roots) = anchor_parent_self_clip_shadow_root();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
     assert_eq!(artifact.chunks.len(), 1);
     assert!(matches!(

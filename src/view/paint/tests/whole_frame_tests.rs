@@ -5,8 +5,7 @@ fn whole_frame_artifact_matches_legacy_for_nested_multi_root_order() {
     let (arena, roots, child) = prepared_plain_tree();
     let (properties, generations) = sync_identity(&arena, &roots);
     take_full_artifact_record_count();
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(
         take_full_artifact_record_count(),
         3,
@@ -53,8 +52,7 @@ fn whole_frame_zero_opacity_keeps_empty_chunk_and_matches_legacy() {
     measure_and_place(&mut arena, empty, measure, place);
     measure_and_place(&mut arena, visible, measure, place);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(eligibility.chunk_count, 2);
     assert_eq!(eligibility.op_count, 1);
     assert_eq!(artifact.chunks[0].op_range, 0..0);

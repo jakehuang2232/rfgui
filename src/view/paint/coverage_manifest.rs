@@ -4,8 +4,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::view::base_component::{ShadowPaintBlocker, ShadowPaintRecordingCapability};
 use crate::view::compositor::property_tree::{
-    ClipNodeId, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot, PropertyTreeState, ScrollNodeId,
-    TransformNodeId,
+    ClipNodeId, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot, PropertyTreeState,
+    ScrollNodeId, TransformNodeId,
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
@@ -337,7 +337,9 @@ pub(super) fn exact_deferred_viewport_self_clip_witness(
         && state.descendants.legacy_boundary_eq(exact_clip_state))
         || (exact_root_effect
             && state.paint.legacy_boundary_eq(exact_clip_effect_state)
-            && state.descendants.legacy_boundary_eq(exact_clip_effect_state));
+            && state
+                .descendants
+                .legacy_boundary_eq(exact_clip_effect_state));
     if !state_is_exact {
         return None;
     }
@@ -944,11 +946,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
             let legacy_text_area_authority = self
                 .legacy_text_area_authority
                 .map(|authority| authority.for_target(key));
-            rebind_legacy_behavior_flags(
-                &mut recording_context,
-                legacy_text_area_authority,
-                key,
-            );
+            rebind_legacy_behavior_flags(&mut recording_context, legacy_text_area_authority, key);
             // Opacity authority is a recorder policy, not ambient component
             // state. Rebind it after every node/child hook so a component
             // cannot bake a root-group opacity that the compositor will apply
