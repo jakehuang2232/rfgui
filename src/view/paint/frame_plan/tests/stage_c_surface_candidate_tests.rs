@@ -145,69 +145,14 @@ fn stage_c_nested_scroll_candidates_preserve_outer_and_local_clip_ids() {
                 .expect("artifact owns scroll contents clip")
                 .parent,
         );
-        let projection = rebase
-            .project_clip_space(
-                &artifact,
-                PropertyTreeState {
-                    clip: Some(contents_clip),
-                    scroll: Some(scroll),
-                    ..PropertyTreeState::default()
-                },
-            )
-            .expect("boundary clip splits into receiver space");
-        assert_eq!(projection.receiver_clip(), rebase.receiver_clip());
-        assert_eq!(projection.local_state(), PropertyTreeState::default());
-        assert!(projection.local_clips().is_empty());
     }
 
     let left = scrolls[2];
     let right = scrolls[3];
-    let SurfaceDagNodeKind::ScrollContent {
-        scroll: left_scroll,
-        contents_clip: left_clip,
-    } = left.kind()
-    else {
-        unreachable!("filtered to scroll-content candidates")
-    };
-    let SurfaceDagNodeKind::ScrollContent {
-        scroll: right_scroll,
-        contents_clip: right_clip,
-    } = right.kind()
-    else {
-        unreachable!("filtered to scroll-content candidates")
-    };
     let left_rebase = left.clip_rebase().expect("branch clip rebase");
     assert_eq!(
         left_rebase.receiver_clip(),
         right.clip_rebase().unwrap().receiver_clip()
-    );
-    assert_eq!(
-        left_rebase.project_clip_space(
-            &artifact,
-            PropertyTreeState {
-                clip: Some(left_clip),
-                scroll: Some(right_scroll),
-                ..PropertyTreeState::default()
-            },
-        ),
-        Err(SurfaceDagError::ClipRebaseScroll {
-            expected: left_scroll,
-            actual: Some(right_scroll),
-        }),
-    );
-    assert_eq!(
-        left_rebase.project_clip_space(
-            &artifact,
-            PropertyTreeState {
-                clip: Some(right_clip),
-                scroll: Some(left_scroll),
-                ..PropertyTreeState::default()
-            },
-        ),
-        Err(SurfaceDagError::ClipRebaseOutsideBoundary {
-            live: Some(right_clip),
-            boundary: left_clip,
-        }),
     );
     assert!(
         candidates.iter().all(|candidate| !matches!(

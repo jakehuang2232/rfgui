@@ -2701,6 +2701,7 @@ mod stage_c_surface_candidate_tests;
 mod stage_c_surface_coverage_tests;
 mod stage_c_surface_dag_tests;
 mod stage_c_surface_raster_plan_tests;
+mod stage_c_surface_raster_rebase_tests;
 mod stage_c_surface_resident_stamp_tests;
 mod stage_c_surface_transition_derivation_tests;
 mod stage_c_transition_capability_tests;

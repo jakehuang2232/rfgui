@@ -18,9 +18,12 @@ use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, PropertyTreeState, ScrollNodeId,
     ScrollNodeSnapshot,
 };
-use glam::Vec2;
 use crate::view::node_arena::NodeKey;
+use glam::Vec2;
 
+use super::super::coverage_manifest::{
+    project_recorded_node_properties, rebind_legacy_behavior_flags,
+};
 use super::super::legacy_admission::{
     LegacyTextAreaProjection, PaintLegacyTextAreaCoverageAuthority,
     PaintScrollAtomicProjectionTextAreaRecorderWitness,
@@ -28,12 +31,9 @@ use super::super::legacy_admission::{
     PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness,
     PaintScrollInteractiveTextAreaSubtreeWitness, PaintScrollTextAreaSubtreeWitness,
 };
-use super::super::coverage_manifest::{
-    project_recorded_node_properties, rebind_legacy_behavior_flags,
-};
 use super::super::{
-    ConsumedAncestorProperty, PaintArtifact, PaintRecordingContext, PaintScrollContentWitness,
-    PaintTextContentSource, PaintTextSelectionSource, SurfaceDagClipRebase,
+    ConsumedAncestorProperty, PaintRecordingContext, PaintScrollContentWitness,
+    PaintTextContentSource, PaintTextSelectionSource,
 };
 
 const LOCAL_SCISSOR: [u32; 4] = [4, 4, 40, 40];
@@ -174,13 +174,6 @@ impl Scene {
     }
 }
 
-fn projected(projection: LegacyTextAreaProjection) -> PropertyTreeState {
-    match projection {
-        LegacyTextAreaProjection::Projected(state) => state,
-        other => panic!("expected a projection, got {other:?}"),
-    }
-}
-
 /// The projection dispatch coverage actually performs, exercised through the
 /// production seam.
 ///
@@ -297,87 +290,6 @@ fn projection_dispatch_runs_the_legacy_authority_instead_of_the_generic_one() {
     }
 }
 
-/// Paint state and contents state are projected independently, and each has to
-/// cover both clip positions the recorded subtree can be in.
-#[test]
-fn projection_covers_the_outer_clip_and_the_rebased_local_clip() {
-    let scene = scene();
-    let witness = scene.stable_witness();
-    let authority =
-        PaintLegacyTextAreaCoverageAuthority::Local(witness).for_target(scene.content_root);
-
-    let artifact = PaintArtifact {
-        clip_nodes: vec![
-            scene.live_contents_clip,
-            scene.outer.contents_clip_snapshot(),
-        ],
-        scroll_nodes: vec![scene.outer.scroll_snapshot()],
-        ..PaintArtifact::default()
-    };
-    let rebase =
-        SurfaceDagClipRebase::try_from_artifact(&artifact, scene.outer.contents_clip_snapshot().id)
-            .expect("artifact-only C2 clip boundary");
-
-    let legacy_outer =
-        projected(authority.project_for(scene.content_root, scene.live_under_outer_clip()));
-    let artifact_outer = rebase
-        .project_clip_space(&artifact, scene.live_under_outer_clip())
-        .expect("artifact-only outer clip projection");
-    assert_eq!(
-        legacy_outer,
-        PropertyTreeState::default(),
-        "the outer scroll/clip pair is consumed whole",
-    );
-    assert_eq!(
-        artifact_outer.local_state(),
-        legacy_outer,
-        "artifact and C0a agree when the boundary clip has no local prefix",
-    );
-    assert_eq!(artifact_outer.receiver_clip(), None);
-    assert!(artifact_outer.local_clips().is_empty());
-
-    let legacy_local =
-        projected(authority.project_for(scene.content_root, scene.live_under_local_clip()));
-    let artifact_local = rebase
-        .project_clip_space(&artifact, scene.live_under_local_clip())
-        .expect("artifact-only descendant clip projection");
-    assert_eq!(
-        legacy_local,
-        PropertyTreeState {
-            clip: Some(witness.local_contents_clip().id),
-            ..Default::default()
-        },
-        "the descendant contents clip is rebased onto the detached surface, not dropped",
-    );
-    assert_eq!(artifact_local.local_state(), legacy_local);
-    assert_eq!(artifact_local.receiver_clip(), None);
-    let [localized] = artifact_local.local_clips() else {
-        panic!("the descendant clip must remain as one localized snapshot")
-    };
-    assert_eq!(
-        localized.parent, None,
-        "the rebased clip is a detached root"
-    );
-    assert_eq!(
-        localized.logical_scissor, LOCAL_SCISSOR,
-        "the rebased clip keeps the planner-verified local scissor",
-    );
-    assert_eq!(localized.id, witness.local_contents_clip().id);
-    assert_eq!(localized.owner, witness.local_contents_clip().owner);
-    assert_eq!(localized.behavior, witness.local_contents_clip().behavior);
-    assert_eq!(localized.generation, scene.live_contents_clip.generation);
-    assert_eq!(
-        witness.local_contents_clip().generation,
-        super::super::artifact::DETACHED_LOCAL_CLIP_GENERATION,
-        "the specialized legacy admission generation remains a named C3b reconciliation",
-    );
-    assert_ne!(
-        localized.generation,
-        witness.local_contents_clip().generation,
-        "this spatial differential deliberately excludes the legacy admission generation",
-    );
-}
-
 /// Each of these admission inputs is load-bearing, and failing one is a
 /// rejection, not an absence of authority.
 ///
@@ -491,9 +403,8 @@ fn tampering_live_clip_or_paint_source_admission_inputs_rejects_without_falling_
     );
 
     // Same for live state the exact shape does not admit.
-    let authority =
-        PaintLegacyTextAreaCoverageAuthority::Local(scene.stable_witness())
-            .for_target(scene.content_root);
+    let authority = PaintLegacyTextAreaCoverageAuthority::Local(scene.stable_witness())
+        .for_target(scene.content_root);
     for (field, live) in [
         (
             "transform",
@@ -544,9 +455,8 @@ fn tampering_live_clip_or_paint_source_admission_inputs_rejects_without_falling_
 #[test]
 fn simultaneous_tamper_rejects_and_rejection_mutates_nothing() {
     let scene = scene();
-    let authority =
-        PaintLegacyTextAreaCoverageAuthority::Local(scene.stable_witness())
-            .for_target(scene.content_root);
+    let authority = PaintLegacyTextAreaCoverageAuthority::Local(scene.stable_witness())
+        .for_target(scene.content_root);
     let live = PropertyTreeState {
         transform: Some(crate::view::compositor::property_tree::TransformNodeId(
             scene.content_root,
@@ -566,7 +476,10 @@ fn simultaneous_tamper_rejects_and_rejection_mutates_nothing() {
     assert_eq!(authority, authority_before);
     assert_eq!(live, live_before);
 
-    let chain = [scene.live_contents_clip, scene.outer.contents_clip_snapshot()];
+    let chain = [
+        scene.live_contents_clip,
+        scene.outer.contents_clip_snapshot(),
+    ];
     let mut wrong_chain = chain;
     wrong_chain.swap(0, 1);
     assert_eq!(
@@ -574,7 +487,11 @@ fn simultaneous_tamper_rejects_and_rejection_mutates_nothing() {
         None,
         "a clip chain the witness did not freeze must not rebase",
     );
-    assert_eq!(wrong_chain, [chain[1], chain[0]], "rejection is not a mutation");
+    assert_eq!(
+        wrong_chain,
+        [chain[1], chain[0]],
+        "rejection is not a mutation"
+    );
     assert_eq!(
         authority.detach_clip_snapshot(&chain),
         Some(vec![scene.stable_witness().local_contents_clip()]),
@@ -602,9 +519,8 @@ fn baked_host_authority_leaves_the_generic_projection_in_charge() {
 fn behavior_flags_are_derived_for_exactly_one_node_each() {
     let scene = scene();
     let stable = PaintLegacyTextAreaCoverageAuthority::Local(scene.stable_witness());
-    let interactive = PaintLegacyTextAreaCoverageAuthority::InteractiveLocal(
-        scene.interactive_witness(),
-    );
+    let interactive =
+        PaintLegacyTextAreaCoverageAuthority::InteractiveLocal(scene.interactive_witness());
     let focused = PaintLegacyTextAreaCoverageAuthority::AtomicProjectionLocal(
         PaintScrollAtomicProjectionTextAreaRecorderWitness::FocusedAtomicProjectionGlyph(
             PaintScrollFocusedAtomicProjectionTextAreaSubtreeWitness::new(
@@ -622,7 +538,12 @@ fn behavior_flags_are_derived_for_exactly_one_node_each() {
         ),
     );
 
-    for node in [scene.boundary_root, scene.content_root, scene.text_area_root, scene.sibling] {
+    for node in [
+        scene.boundary_root,
+        scene.content_root,
+        scene.text_area_root,
+        scene.sibling,
+    ] {
         let bound = stable.for_target(node);
         assert!(
             bound.authorizes_scroll_content_local_owner(node),
@@ -639,9 +560,7 @@ fn behavior_flags_are_derived_for_exactly_one_node_each() {
         );
 
         assert_eq!(
-            interactive
-                .for_target(node)
-                .suppresses_resident_caret(node),
+            interactive.for_target(node).suppresses_resident_caret(node),
             node == scene.text_area_root,
             "caret suppression belongs to the TextArea root, not the wrapper",
         );
@@ -651,7 +570,9 @@ fn behavior_flags_are_derived_for_exactly_one_node_each() {
             "the focused projection root owns the resident caret",
         );
         assert!(
-            !existing_glyph.for_target(node).suppresses_resident_caret(node),
+            !existing_glyph
+                .for_target(node)
+                .suppresses_resident_caret(node),
             "a non-focused atomic projection has no resident caret to defer to",
         );
     }

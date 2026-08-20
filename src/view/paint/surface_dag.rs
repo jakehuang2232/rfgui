@@ -274,109 +274,12 @@ impl SurfaceDagClipRebase {
     pub(crate) fn local_clip(self) -> ClipNodeId {
         self.local_clip
     }
-
-    /// Splits one live clip chain at this scroll contents boundary.
-    ///
-    /// The boundary and its ancestor suffix stay in receiver space. The
-    /// descendant prefix remains raster-local, with its nearest-boundary node
-    /// detached into a local root. Spatial payload comes only from the
-    /// artifact snapshots; neither PropertyTrees nor a legacy witness is
-    /// available here.
-    ///
-    /// Local snapshot generations deliberately remain live generations. The
-    /// specialized legacy TextArea path instead requires
-    /// `DETACHED_LOCAL_CLIP_GENERATION`; reconciling or retiring those compiler
-    /// admission predicates belongs to the C3b pre-reuse admission
-    /// reconciliation batch and must precede any C3b reuse claim.
-    pub(crate) fn project_clip_space(
-        self,
-        artifact: &PaintArtifact,
-        live: PropertyTreeState,
-    ) -> Result<SurfaceDagClipProjection, SurfaceDagError> {
-        let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
-        snapshots.validate_state(live)?;
-        let scroll = ScrollNodeId(self.local_clip.owner);
-        if live.scroll != Some(scroll) {
-            return Err(SurfaceDagError::ClipRebaseScroll {
-                expected: scroll,
-                actual: live.scroll,
-            });
-        }
-        if snapshots.clip_parent(self.local_clip)? != self.receiver_clip {
-            return Err(SurfaceDagError::ClipRebaseOutsideBoundary {
-                live: live.clip,
-                boundary: self.local_clip,
-            });
-        }
-
-        let clips = artifact
-            .clip_nodes
-            .iter()
-            .map(|snapshot| (snapshot.id, *snapshot))
-            .collect::<FxHashMap<_, _>>();
-        let mut local_clips = Vec::new();
-        let mut cursor = live.clip;
-        while cursor != Some(self.local_clip) {
-            let Some(id) = cursor else {
-                return Err(SurfaceDagError::ClipRebaseOutsideBoundary {
-                    live: live.clip,
-                    boundary: self.local_clip,
-                });
-            };
-            let snapshot = clips
-                .get(&id)
-                .copied()
-                .ok_or(TransitionError::UnknownClipReference(id))?;
-            local_clips.push(snapshot);
-            cursor = snapshot.parent;
-        }
-        if let Some(root) = local_clips.last_mut() {
-            root.parent = None;
-        }
-        let local_clip = local_clips.first().map(|snapshot| snapshot.id);
-        Ok(SurfaceDagClipProjection {
-            receiver_clip: self.receiver_clip,
-            local_state: PropertyTreeState {
-                clip: local_clip,
-                scroll: None,
-                ..live
-            },
-            local_clips,
-        })
-    }
-}
-
-/// Artifact-derived split between receiver and detached raster clip spaces.
-///
-/// This is the transitional single-chain C2 proof type. The later production
-/// wiring batch must migrate its proof tests and delete this type together with
-/// `project_clip_space` and the raster-stamp constructor that consumes it; it
-/// must not survive as an alternative to the surface-wide closure below.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SurfaceDagClipProjection {
-    receiver_clip: Option<ClipNodeId>,
-    local_state: PropertyTreeState,
-    local_clips: Vec<ClipNodeSnapshot>,
-}
-
-impl SurfaceDagClipProjection {
-    pub(crate) fn receiver_clip(&self) -> Option<ClipNodeId> {
-        self.receiver_clip
-    }
-
-    pub(crate) fn local_state(&self) -> PropertyTreeState {
-        self.local_state
-    }
-
-    pub(crate) fn local_clips(&self) -> &[ClipNodeSnapshot] {
-        &self.local_clips
-    }
 }
 
 /// Surface-wide clip closure derived from every logically covered artifact
-/// chunk in painter order. Unlike [`SurfaceDagClipProjection`], this is not a
-/// mergeable single-chain value: only the shared artifact surface walk can
-/// construct the complete deterministic union. An empty `local_clips` union
+/// chunk in painter order. This is not a mergeable single-chain value: only
+/// the shared artifact surface walk can construct the complete deterministic
+/// union. An empty `local_clips` union
 /// retains `receiver_clip`, but carries no local generation authority: the
 /// eventual raster-generation semantics is not applicable (`None`), rather
 /// than either `ArtifactLive` or `LegacyDetached`.

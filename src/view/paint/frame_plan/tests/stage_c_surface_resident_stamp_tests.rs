@@ -45,7 +45,7 @@ fn sealed_stamps(
         .map(crate::view::paint::SealedArtifactSurfaceResidentEntry::stamp)
 }
 
-fn scroll_artifact_with_a_local_clip() -> PaintArtifact {
+pub(super) fn scroll_artifact_with_a_local_clip() -> PaintArtifact {
     let mut artifact = scroll_surface_artifact();
     let scroll_owner = artifact
         .scroll_nodes
@@ -370,6 +370,20 @@ fn one_depth_three_revision_change_rerasterizes_only_its_surface() {
             .count(),
         2,
     );
+}
+
+#[test]
+fn empty_clip_cannot_retain_a_nonzero_opaque_cursor_advance() {
+    let plan =
+        prepare_artifact_surface_raster_plan(scroll_artifact_with_a_local_clip(), raster_context())
+            .expect("nonempty scroll clip plan");
+    let mut sealed = seal_prepared_artifact_surface_frame(plan)
+        .expect("nonempty scroll clip seal")
+        .residents()
+        .clone();
+    assert!(sealed.is_canonical());
+    assert!(sealed.force_first_resolved_clip_empty_without_cursor_for_test());
+    assert!(!sealed.is_canonical());
 }
 
 #[test]

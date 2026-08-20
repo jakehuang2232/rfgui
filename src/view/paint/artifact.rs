@@ -2479,6 +2479,48 @@ impl PreparedScrollbarOverlayOp {
             })
     }
 
+    /// Rebuilds the frozen overlay identity after the surface raster planner
+    /// removes the owner-local opacity that will be applied by the composite
+    /// edge. Every primitive participates; a partially neutralized overlay is
+    /// not representable.
+    pub(crate) fn with_baked_opacity(&self, opacity: f32) -> Option<Self> {
+        if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+            return None;
+        }
+        let mut rebuilt = self.clone();
+        let set_axis = |track_shadow: &mut PreparedScrollbarShadowOp,
+                        track: &mut DrawRectOp,
+                        thumb_shadow: &mut PreparedScrollbarShadowOp,
+                        thumb: &mut DrawRectOp| {
+            track_shadow.params.opacity = opacity;
+            track.params.opacity = opacity;
+            thumb_shadow.params.opacity = opacity;
+            thumb.params.opacity = opacity;
+        };
+        set_axis(
+            &mut rebuilt.track_shadow,
+            &mut rebuilt.track,
+            &mut rebuilt.thumb_shadow,
+            &mut rebuilt.thumb,
+        );
+        if let Some(axis) = rebuilt.secondary.as_deref_mut() {
+            set_axis(
+                &mut axis.track_shadow,
+                &mut axis.track,
+                &mut axis.thumb_shadow,
+                &mut axis.thumb,
+            );
+        }
+        rebuilt.identity = PreparedScrollbarOverlayIdentity::from_parts(
+            &rebuilt.track_shadow,
+            &rebuilt.track,
+            &rebuilt.thumb_shadow,
+            &rebuilt.thumb,
+            rebuilt.secondary.as_deref(),
+        )?;
+        Some(rebuilt)
+    }
+
     #[cfg(test)]
     pub(crate) fn axis_geometry_bits_for_test(&self) -> Vec<([u32; 4], [u32; 4])> {
         let rect_bits = |op: &DrawRectOp| {
