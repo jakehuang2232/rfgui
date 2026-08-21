@@ -2584,9 +2584,11 @@ impl RetainedSurfaceRasterStamp {
                 .steps
                 .iter()
                 .flat_map(|step| match step {
-                    ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(span) => {
-                        span.resolved_clips.clone()
-                    }
+                    ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(span) => span
+                        .chunks
+                        .iter()
+                        .map(|chunk| chunk.clip_schedule.terminal_clip())
+                        .collect(),
                     ArtifactSurfaceRasterProgramStepStamp::NestedSurface(_) => Vec::new(),
                 })
                 .collect()
@@ -2627,15 +2629,19 @@ struct ArtifactSurfaceRasterProgramSpanStamp {
     step_index: usize,
     owner_topology: Vec<PaintOwnerSnapshot>,
     clip_nodes: Vec<ClipNodeSnapshot>,
-    /// Aligned one-for-one with `chunks`. `Empty` remains part of raster
-    /// identity even though it contributes no emitted opaque-order entries.
-    resolved_clips: Vec<ResolvedClip>,
-    /// Actual per-chunk opaque cursor advance. This is zero for `Empty`, while
-    /// `op_count` below continues to describe the full planned program.
-    opaque_order_counts: Vec<u32>,
-    chunks: Vec<RetainedSurfaceChunkStamp>,
+    /// Each chunk structurally owns its clip schedule and actual opaque cursor
+    /// advance. This supersedes C3b3a's index-aligned `resolved_clips` and
+    /// `opaque_order_counts` vectors: alignment can no longer drift.
+    chunks: Vec<ArtifactSurfaceRasterProgramChunkStamp>,
     op_count: usize,
     opaque_order_span: Range<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ArtifactSurfaceRasterProgramChunkStamp {
+    raster: RetainedSurfaceChunkStamp,
+    clip_schedule: ArtifactSurfaceChunkClipSchedule,
+    opaque_order_count: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4685,6 +4691,44 @@ struct ValidatedArtifactSurfaceDagProgram {
     coverage: ArtifactSurfaceCoverageForest,
 }
 
+/// Sealed per-chunk scissor program for the future artifact executor.
+///
+/// A child-mask chunk remains a stencil program and is deliberately not
+/// represented here: stencil increment/decrement cannot be reduced to the
+/// `Unclipped` / `Scissor` / `Empty` scissor taxonomy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArtifactSurfaceChunkClipSchedule {
+    WholeChunk(ResolvedClip),
+    /// The exact admitted self-clip shadow grammar paints its outer-shadow
+    /// prefix against the incoming scissor, then applies the owner's Replace
+    /// clip to decoration/media. Sealing the split prevents the executor from
+    /// re-consulting `exact_self_clip_shadow_prefix_len` during emission.
+    AfterShadowPrefix {
+        prefix_op_count: usize,
+        suffix_clip: ResolvedClip,
+    },
+}
+
+impl ArtifactSurfaceChunkClipSchedule {
+    fn terminal_clip(self) -> ResolvedClip {
+        match self {
+            Self::WholeChunk(clip) => clip,
+            Self::AfterShadowPrefix { suffix_clip, .. } => suffix_clip,
+        }
+    }
+
+    #[cfg(test)]
+    fn parts_for_test(self) -> (Option<usize>, ResolvedClip) {
+        match self {
+            Self::WholeChunk(clip) => (None, clip),
+            Self::AfterShadowPrefix {
+                prefix_op_count,
+                suffix_clip,
+            } => (Some(prefix_op_count), suffix_clip),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedArtifactSurfaceRasterChunk {
     source: PaintChunkRasterIdentity,
@@ -4695,6 +4739,9 @@ pub(crate) struct PreparedArtifactSurfaceRasterChunk {
     localized_state: PropertyTreeState,
     localized_payload: PaintPayloadIdentity,
     localized_ops: Vec<PaintOp>,
+    /// Embedded rather than index-aligned beside the chunk, so preparation
+    /// cannot seal a clip schedule for a different chunk.
+    clip_schedule: ArtifactSurfaceChunkClipSchedule,
 }
 
 impl PreparedArtifactSurfaceRasterChunk {
@@ -4721,6 +4768,11 @@ impl PreparedArtifactSurfaceRasterChunk {
     pub(crate) fn localized_ops(&self) -> &[PaintOp] {
         &self.localized_ops
     }
+
+    #[cfg(test)]
+    pub(crate) fn clip_schedule_for_test(&self) -> (Option<usize>, ResolvedClip) {
+        self.clip_schedule.parts_for_test()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -4732,9 +4784,6 @@ pub(crate) struct PreparedArtifactSurfaceRasterSpan {
     /// The single-construction closure emitted by the shared Surface DAG walk;
     /// preparation may resolve through it but never recomputes or merges it.
     local_clips: Vec<ClipNodeSnapshot>,
-    /// Aligned one-for-one with `chunks`, including `Empty` chunks that remain
-    /// in planned identity but do not advance `opaque_order_count`.
-    resolved_clips: Vec<ResolvedClip>,
     chunks: Vec<PreparedArtifactSurfaceRasterChunk>,
 }
 
@@ -4757,10 +4806,6 @@ impl PreparedArtifactSurfaceRasterSpan {
 
     pub(crate) fn local_clips(&self) -> &[ClipNodeSnapshot] {
         &self.local_clips
-    }
-
-    pub(crate) fn resolved_clips(&self) -> &[ResolvedClip] {
-        &self.resolved_clips
     }
 
     pub(crate) fn chunks(&self) -> &[PreparedArtifactSurfaceRasterChunk] {
@@ -5183,6 +5228,65 @@ fn intersect_optional_scissor(
         .unwrap_or(resolved)
 }
 
+fn artifact_surface_terminal_clip(
+    resolved: ResolvedClip,
+    chain: &[ClipNodeSnapshot],
+    incoming_scissor: Option<[u32; 4]>,
+) -> ResolvedClip {
+    // `resolve_artifact_surface_clip` has already evaluated the complete
+    // artifact chain correctly. Only an all-Intersect chain inherits the
+    // frame scissor; any Replace severs that external input exactly as it
+    // severs the upstream portion of the artifact chain.
+    if chain
+        .iter()
+        .any(|snapshot| snapshot.behavior == ClipBehavior::Replace)
+    {
+        resolved
+    } else {
+        intersect_optional_scissor(resolved, incoming_scissor)
+    }
+}
+
+fn artifact_surface_chunk_clip_schedule(
+    artifact: &PaintArtifact,
+    chunk: &super::PaintChunk,
+    resolved: ResolvedClip,
+    chain: &[ClipNodeSnapshot],
+    incoming_scissor: Option<[u32; 4]>,
+) -> ArtifactSurfaceChunkClipSchedule {
+    let terminal_clip = artifact_surface_terminal_clip(resolved, chain, incoming_scissor);
+    match exact_self_clip_shadow_prefix_len(artifact, chunk) {
+        Some(prefix_op_count) => ArtifactSurfaceChunkClipSchedule::AfterShadowPrefix {
+            prefix_op_count,
+            suffix_clip: terminal_clip,
+        },
+        None => ArtifactSurfaceChunkClipSchedule::WholeChunk(terminal_clip),
+    }
+}
+
+fn artifact_surface_chunk_opaque_order_count(
+    schedule: ArtifactSurfaceChunkClipSchedule,
+    ops: &[PaintOp],
+) -> Option<u32> {
+    let visible_ops = match schedule {
+        ArtifactSurfaceChunkClipSchedule::WholeChunk(ResolvedClip::Empty) => &ops[..0],
+        ArtifactSurfaceChunkClipSchedule::AfterShadowPrefix {
+            prefix_op_count,
+            suffix_clip: ResolvedClip::Empty,
+        } => ops.get(..prefix_op_count)?,
+        ArtifactSurfaceChunkClipSchedule::WholeChunk(
+            ResolvedClip::Unclipped | ResolvedClip::Scissor(_),
+        )
+        | ArtifactSurfaceChunkClipSchedule::AfterShadowPrefix {
+            suffix_clip: ResolvedClip::Unclipped | ResolvedClip::Scissor(_),
+            ..
+        } => ops,
+    };
+    visible_ops.iter().try_fold(0_u32, |count, op| {
+        count.checked_add(retained_surface_op_opaque_order_count(op))
+    })
+}
+
 #[cfg(test)]
 pub(crate) fn resolve_artifact_surface_clip_for_test(
     leaf: Option<ClipNodeId>,
@@ -5195,7 +5299,7 @@ pub(crate) fn resolve_artifact_surface_clip_for_test(
         .map(|snapshot| (snapshot.id, snapshot))
         .collect::<FxHashMap<_, _>>();
     resolve_artifact_surface_clip(leaf, &clips)
-        .map(|(resolved, _)| intersect_optional_scissor(resolved, incoming_scissor))
+        .map(|(resolved, chain)| artifact_surface_terminal_clip(resolved, &chain, incoming_scissor))
 }
 
 fn artifact_surface_span_owner_topology(
@@ -5308,7 +5412,6 @@ fn prepare_artifact_surface_span(
         clip_map.insert(snapshot.id, *snapshot);
     }
     let mut prepared = Vec::with_capacity(chunks.len());
-    let mut resolved_clips = Vec::with_capacity(chunks.len());
     let mut opaque_order_count = 0_u32;
     for (local_index, (chunk, localized_state)) in
         chunks.iter().zip(span.localized_states()).enumerate()
@@ -5365,21 +5468,26 @@ fn prepare_artifact_surface_span(
                 Ok(raster)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let (resolved_clip, _) = resolve_artifact_surface_clip(localized_state.clip, &clip_map)
-            .ok_or(ArtifactSurfaceRasterPlanError::InvalidResolvedClip {
-                target,
-                chunk_index,
-            })?;
-        let resolved_clip = intersect_optional_scissor(resolved_clip, incoming_scissor);
-        if resolved_clip != ResolvedClip::Empty {
-            opaque_order_count = localized_ops
-                .iter()
-                .try_fold(opaque_order_count, |count, op| {
-                    count.checked_add(retained_surface_op_opaque_order_count(op))
-                })
-                .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?;
-        }
-        resolved_clips.push(resolved_clip);
+        let (resolved_clip, clip_chain) =
+            resolve_artifact_surface_clip(localized_state.clip, &clip_map).ok_or(
+                ArtifactSurfaceRasterPlanError::InvalidResolvedClip {
+                    target,
+                    chunk_index,
+                },
+            )?;
+        let clip_schedule = artifact_surface_chunk_clip_schedule(
+            artifact,
+            chunk,
+            resolved_clip,
+            &clip_chain,
+            incoming_scissor,
+        );
+        opaque_order_count = opaque_order_count
+            .checked_add(
+                artifact_surface_chunk_opaque_order_count(clip_schedule, &localized_ops)
+                    .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?,
+            )
+            .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?;
         let localized_payload = chunk
             .payload_identity
             .rebuild_from_localized_ops(&localized_ops)
@@ -5410,6 +5518,7 @@ fn prepare_artifact_surface_span(
             localized_state: *localized_state,
             localized_payload,
             localized_ops,
+            clip_schedule,
         });
     }
     Ok(PreparedArtifactSurfaceRasterSpan {
@@ -5418,7 +5527,6 @@ fn prepare_artifact_surface_span(
         owner_topology,
         opaque_order_count,
         local_clips: span.local_clips().to_vec(),
-        resolved_clips,
         chunks: prepared,
     })
 }
@@ -5518,12 +5626,20 @@ fn surface_composite_geometry(
     let receiver_clip = closure
         .map(SurfaceDagClipClosureProjection::receiver_clip)
         .unwrap_or(node.transition().clip.to);
-    let (resolved_receiver_clip, _) = resolve_artifact_surface_clip(receiver_clip, clips).ok_or(
-        ArtifactSurfaceRasterPlanError::InvalidReceiverClip(node.id()),
-    )?;
+    let (resolved_receiver_clip, receiver_clip_chain) =
+        resolve_artifact_surface_clip(receiver_clip, clips).ok_or(
+            ArtifactSurfaceRasterPlanError::InvalidReceiverClip(node.id()),
+        )?;
     let resolved_receiver_clip = if matches!(receiver, SurfaceDagExecutionTargetId::SceneRoot(_)) {
-        intersect_optional_scissor(resolved_receiver_clip, context.incoming_scissor)
+        artifact_surface_terminal_clip(
+            resolved_receiver_clip,
+            &receiver_clip_chain,
+            context.incoming_scissor,
+        )
     } else {
+        // A surface receiver never mixes in the frame scissor. The resolver
+        // has already applied every intra-chain Replace/Intersect operation,
+        // so no chain fact remains for the executor to re-derive.
         resolved_receiver_clip
     };
     match node.kind() {
@@ -6022,7 +6138,11 @@ impl SealedArtifactSurfaceResidentSet {
                         step_index: span.step_index,
                         owner_topology: span.owner_topology.clone(),
                         clip_nodes: span.clip_nodes.clone(),
-                        chunks: span.chunks.clone(),
+                        chunks: span
+                            .chunks
+                            .iter()
+                            .map(|chunk| chunk.raster.clone())
+                            .collect(),
                         op_count: span.op_count,
                         opaque_order_span: span.opaque_order_span.clone(),
                         scroll_placement_normalized_owners: Vec::new(),
@@ -6068,7 +6188,7 @@ impl SealedArtifactSurfaceResidentSet {
                 let Some(chunk) = span.chunks.first_mut() else {
                     continue;
                 };
-                chunk.topology_revision = 0;
+                chunk.raster.topology_revision = 0;
                 return true;
             }
         }
@@ -6103,15 +6223,39 @@ impl SealedArtifactSurfaceResidentSet {
                 let ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(span) = step else {
                     continue;
                 };
-                let Some((clip, _count)) = span
-                    .resolved_clips
-                    .iter_mut()
-                    .zip(&span.opaque_order_counts)
-                    .find(|(clip, count)| **clip != ResolvedClip::Empty && **count != 0)
-                else {
+                let Some(chunk) = span.chunks.iter_mut().find(|chunk| {
+                    chunk.clip_schedule.terminal_clip() != ResolvedClip::Empty
+                        && chunk.opaque_order_count != 0
+                }) else {
                     continue;
                 };
-                *clip = ResolvedClip::Empty;
+                chunk.clip_schedule =
+                    ArtifactSurfaceChunkClipSchedule::WholeChunk(ResolvedClip::Empty);
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_first_clip_prefix_out_of_range_for_test(&mut self) -> bool {
+        for entry in &mut self.ordered_entries {
+            let Some(program) = entry.stamp.artifact_surface_program.as_mut() else {
+                continue;
+            };
+            for step in &mut program.steps {
+                let ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(span) = step else {
+                    continue;
+                };
+                let Some(chunk) = span.chunks.first_mut() else {
+                    continue;
+                };
+                chunk.clip_schedule = ArtifactSurfaceChunkClipSchedule::AfterShadowPrefix {
+                    // Zero is outside the admitted non-empty shadow prefix
+                    // range and fails before payload-shape validation.
+                    prefix_op_count: 0,
+                    suffix_clip: ResolvedClip::Scissor([0, 0, 1, 1]),
+                };
                 return true;
             }
         }
@@ -6179,7 +6323,7 @@ fn artifact_surface_program_geometry_receiver_clip(
 fn artifact_surface_owner_topology_is_canonical(
     topology: &[PaintOwnerSnapshot],
     boundary_root: NodeKey,
-    chunks: &[RetainedSurfaceChunkStamp],
+    chunks: &[ArtifactSurfaceRasterProgramChunkStamp],
 ) -> bool {
     if topology.is_empty() || chunks.is_empty() {
         return false;
@@ -6216,7 +6360,7 @@ fn artifact_surface_owner_topology_is_canonical(
     }
     let mut referenced = FxHashSet::default();
     for chunk in chunks {
-        let mut cursor = chunk.owner;
+        let mut cursor = chunk.raster.owner;
         let mut reached_boundary = false;
         for _ in 0..=topology.len() {
             referenced.insert(cursor);
@@ -6236,6 +6380,38 @@ fn artifact_surface_owner_topology_is_canonical(
     referenced.len() == owners.len()
 }
 
+fn artifact_surface_clip_schedule_is_canonical(
+    schedule: ArtifactSurfaceChunkClipSchedule,
+    chunk: &RetainedSurfaceChunkStamp,
+) -> bool {
+    match schedule {
+        ArtifactSurfaceChunkClipSchedule::WholeChunk(_) => true,
+        ArtifactSurfaceChunkClipSchedule::AfterShadowPrefix {
+            prefix_op_count,
+            suffix_clip,
+        } => {
+            prefix_op_count != 0
+                && prefix_op_count <= chunk.op_count
+                && suffix_clip != ResolvedClip::Unclipped
+                && match &chunk.payload_identity {
+                    PaintPayloadIdentity::PreparedShadows(shadows, _)
+                    | PaintPayloadIdentity::ImageWithShadows(_, shadows, _)
+                    | PaintPayloadIdentity::SvgWithShadows(_, shadows, _) => {
+                        shadows.len() == prefix_op_count
+                    }
+                    PaintPayloadIdentity::None
+                    | PaintPayloadIdentity::Image(_, _)
+                    | PaintPayloadIdentity::Svg(_, _)
+                    | PaintPayloadIdentity::PreparedTexts(_)
+                    | PaintPayloadIdentity::PreparedRects(_)
+                    | PaintPayloadIdentity::TextSelection(_)
+                    | PaintPayloadIdentity::PreparedScrollbarOverlay(_)
+                    | PaintPayloadIdentity::InlineIfcDecorations(_, _) => false,
+                }
+        }
+    }
+}
+
 fn artifact_surface_program_span_is_canonical(
     span: &ArtifactSurfaceRasterProgramSpanStamp,
     boundary_root: NodeKey,
@@ -6249,23 +6425,20 @@ fn artifact_surface_program_span_is_canonical(
             != span
                 .chunks
                 .iter()
-                .map(|chunk| chunk.op_count)
+                .map(|chunk| chunk.raster.op_count)
                 .sum::<usize>()
-        || span.resolved_clips.len() != span.chunks.len()
-        || span.opaque_order_counts.len() != span.chunks.len()
         || span
             .opaque_order_span
             .end
             .checked_sub(span.opaque_order_span.start)
-            != span
-                .opaque_order_counts
-                .iter()
-                .try_fold(0_u32, |sum, count| sum.checked_add(*count))
-        || span
-            .resolved_clips
-            .iter()
-            .zip(&span.opaque_order_counts)
-            .any(|(clip, count)| *clip == ResolvedClip::Empty && *count != 0)
+            != span.chunks.iter().try_fold(0_u32, |sum, chunk| {
+                sum.checked_add(chunk.opaque_order_count)
+            })
+        || span.chunks.iter().any(|chunk| {
+            !artifact_surface_clip_schedule_is_canonical(chunk.clip_schedule, &chunk.raster)
+                || chunk.clip_schedule.terminal_clip() == ResolvedClip::Empty
+                    && chunk.opaque_order_count != 0
+        })
         || !artifact_surface_owner_topology_is_canonical(
             &span.owner_topology,
             boundary_root,
@@ -6280,6 +6453,7 @@ fn artifact_surface_program_span_is_canonical(
         .iter()
         .all(|clip| clip.id.owner == clip.owner && clip.generation != 0 && clips.insert(clip.id))
         && span.chunks.iter().all(|chunk| {
+            let chunk = &chunk.raster;
             let bounds = chunk.bounds_bits.map(f32::from_bits);
             chunk.id.owner == chunk.owner
                 && ids.insert(chunk.id)
@@ -6358,7 +6532,7 @@ fn artifact_surface_resident_set_is_canonical(
                             span_clips.push(*clip);
                         }
                     }
-                    chunks.extend(span.chunks.iter().cloned());
+                    chunks.extend(span.chunks.iter().map(|chunk| chunk.raster.clone()));
                     op_count = match op_count.checked_add(span.op_count) {
                         Some(count) => count,
                         None => return false,
@@ -6438,32 +6612,28 @@ fn seal_artifact_surface_program_span(
     let chunks = span
         .chunks
         .iter()
-        .map(|chunk| RetainedSurfaceChunkStamp {
-            id: chunk.source.id,
-            owner: chunk.source.owner,
-            bounds_bits: chunk.localized_bounds_bits,
-            clip: chunk.localized_state.clip,
-            non_boundary_self_paint_revision: (chunk.source.owner != boundary_root)
-                .then_some(chunk.content_revision.self_paint_revision),
-            topology_revision: chunk.content_revision.topology_revision,
-            non_boundary_composite_revision: (chunk.source.owner != boundary_root)
-                .then_some(chunk.content_revision.composite_revision),
-            payload_identity: chunk.localized_payload.clone(),
-            op_count: chunk.localized_ops.len(),
-        })
-        .collect::<Vec<_>>();
-    let opaque_order_counts = span
-        .chunks
-        .iter()
-        .zip(&span.resolved_clips)
-        .map(|(chunk, clip)| {
-            if *clip == ResolvedClip::Empty {
-                Some(0)
-            } else {
-                chunk.localized_ops.iter().try_fold(0_u32, |count, op| {
-                    count.checked_add(retained_surface_op_opaque_order_count(op))
-                })
-            }
+        .map(|chunk| {
+            let opaque_order_count = artifact_surface_chunk_opaque_order_count(
+                chunk.clip_schedule,
+                &chunk.localized_ops,
+            )?;
+            Some(ArtifactSurfaceRasterProgramChunkStamp {
+                raster: RetainedSurfaceChunkStamp {
+                    id: chunk.source.id,
+                    owner: chunk.source.owner,
+                    bounds_bits: chunk.localized_bounds_bits,
+                    clip: chunk.localized_state.clip,
+                    non_boundary_self_paint_revision: (chunk.source.owner != boundary_root)
+                        .then_some(chunk.content_revision.self_paint_revision),
+                    topology_revision: chunk.content_revision.topology_revision,
+                    non_boundary_composite_revision: (chunk.source.owner != boundary_root)
+                        .then_some(chunk.content_revision.composite_revision),
+                    payload_identity: chunk.localized_payload.clone(),
+                    op_count: chunk.localized_ops.len(),
+                },
+                clip_schedule: chunk.clip_schedule,
+                opaque_order_count,
+            })
         })
         .collect::<Option<Vec<_>>>()
         .ok_or(ArtifactSurfaceResidentSealError::InvalidArtifactSpan {
@@ -6474,9 +6644,7 @@ fn seal_artifact_surface_program_span(
         step_index,
         owner_topology: span.owner_topology.clone(),
         clip_nodes: span.local_clips.clone(),
-        resolved_clips: span.resolved_clips.clone(),
-        opaque_order_counts,
-        op_count: chunks.iter().map(|chunk| chunk.op_count).sum(),
+        op_count: chunks.iter().map(|chunk| chunk.raster.op_count).sum(),
         chunks,
         opaque_order_span: start..end,
     };
@@ -6514,7 +6682,7 @@ fn seal_artifact_surface_resident_set(
                     )?;
                     cursor = stamp.opaque_order_span.end;
                     owner_topology.extend(stamp.owner_topology.iter().copied());
-                    chunks.extend(stamp.chunks.iter().cloned());
+                    chunks.extend(stamp.chunks.iter().map(|chunk| chunk.raster.clone()));
                     op_count = op_count.checked_add(stamp.op_count).ok_or(
                         ArtifactSurfaceResidentSealError::InvalidArtifactSpan {
                             surface: node.source,
@@ -9805,6 +9973,9 @@ pub(crate) fn retained_surface_raster_stamp_is_canonical_at_depth(
 }
 
 fn retained_surface_op_opaque_order_count(op: &PaintOp) -> u32 {
+    // The artifact clip schedule relies on this exhaustive match: a retained
+    // outer-shadow prefix is structurally non-opaque and advances no opaque
+    // order before its clipped suffix begins.
     match op {
         PaintOp::DrawRect(op) => u32::from(retained_surface_rect_is_opaque(&op.params, op.mode)),
         PaintOp::PreparedInlineIfcDecoration(op) => {

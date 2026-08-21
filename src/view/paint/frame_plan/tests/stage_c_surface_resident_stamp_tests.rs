@@ -578,6 +578,14 @@ fn empty_clip_cannot_retain_a_nonzero_opaque_cursor_advance() {
 }
 
 #[test]
+fn artifact_program_rejects_an_out_of_range_shadow_prefix() {
+    let mut sealed = sealed_depth_four();
+    assert!(sealed.is_canonical());
+    assert!(sealed.force_first_clip_prefix_out_of_range_for_test());
+    assert!(!sealed.is_canonical());
+}
+
+#[test]
 fn artifact_pool_rejections_preserve_committed_and_pending_exact_keys() {
     let prepared = prepared_co_located();
     let residents = prepared.residents().clone();

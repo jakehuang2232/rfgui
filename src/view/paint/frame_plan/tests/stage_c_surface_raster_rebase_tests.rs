@@ -344,6 +344,10 @@ fn artifact_clip_resolver_seals_unclipped_replace_intersect_and_empty_results() 
         owner: child,
         role: ClipNodeRole::ContentsClip,
     };
+    let inherited_intersect = ClipNodeId {
+        owner: root,
+        role: ClipNodeRole::ContentsClip,
+    };
     let clips = [
         ClipNodeSnapshot {
             id: replace,
@@ -361,6 +365,14 @@ fn artifact_clip_resolver_seals_unclipped_replace_intersect_and_empty_results() 
             behavior: ClipBehavior::Intersect,
             generation: 73,
         },
+        ClipNodeSnapshot {
+            id: inherited_intersect,
+            owner: root,
+            parent: None,
+            logical_scissor: [15, 15, 20, 20],
+            behavior: ClipBehavior::Intersect,
+            generation: 75,
+        },
     ];
     assert_eq!(
         resolve_artifact_surface_clip_for_test(None, &clips, None),
@@ -371,11 +383,29 @@ fn artifact_clip_resolver_seals_unclipped_replace_intersect_and_empty_results() 
         Some(ResolvedClip::Scissor([10, 10, 20, 20])),
     );
     assert_eq!(
-        resolve_artifact_surface_clip_for_test(Some(intersect), &clips, Some([20, 20, 20, 20]),),
-        Some(ResolvedClip::Scissor([20, 20, 10, 10])),
+        resolve_artifact_surface_clip_for_test(Some(replace), &clips, Some([4, 6, 24, 18]),),
+        Some(ResolvedClip::Scissor([10, 10, 20, 20])),
+        "Replace severs the incoming frame scissor",
     );
     assert_eq!(
-        resolve_artifact_surface_clip_for_test(Some(intersect), &clips, Some([40, 40, 5, 5]),),
+        resolve_artifact_surface_clip_for_test(Some(intersect), &clips, Some([20, 20, 20, 20]),),
+        Some(ResolvedClip::Scissor([15, 15, 15, 15])),
+        "a parent Replace severs the incoming scissor before its child Intersect",
+    );
+    assert_eq!(
+        resolve_artifact_surface_clip_for_test(
+            Some(inherited_intersect),
+            &clips,
+            Some([20, 20, 20, 20]),
+        ),
+        Some(ResolvedClip::Scissor([20, 20, 15, 15])),
+    );
+    assert_eq!(
+        resolve_artifact_surface_clip_for_test(
+            Some(inherited_intersect),
+            &clips,
+            Some([40, 40, 5, 5]),
+        ),
         Some(ResolvedClip::Empty),
     );
 }
@@ -424,7 +454,9 @@ fn receiver_clip_is_sealed_and_nested_receivers_exclude_frame_scissor() {
     root_endpoints.paint.clip = Some(receiver_clip);
     let top_level = prepare_artifact_surface_raster_plan(
         top_level_artifact,
-        super::stage_c_surface_raster_plan_tests::raster_context(),
+        super::stage_c_surface_raster_plan_tests::raster_context_with_incoming_scissor([
+            20, 20, 20, 20,
+        ]),
     )
     .expect("top-level scroll raster plan");
     let top_level = top_level
@@ -435,7 +467,7 @@ fn receiver_clip_is_sealed_and_nested_receivers_exclude_frame_scissor() {
     assert_eq!(
         top_level.geometry().resolved_receiver_clip(),
         ResolvedClip::Scissor([10, 12, 80, 70]),
-        "the receiver clip and frame incoming scissor intersect before sealing",
+        "a top-level receiver Replace severs the frame incoming scissor before sealing",
     );
 
     let plan = prepare_artifact_surface_raster_plan(

@@ -4,7 +4,7 @@ use crate::view::paint::{
     ArtifactSurfacePaintOpKind, ArtifactSurfaceRasterContext, ArtifactSurfaceRasterPlanError,
     FrameArtifactRecordOutcome, PreparedArtifactSurfaceRasterStep,
     PreparedInlineIfcDecorationDescriptor, PreparedInlineIfcDecorationOp,
-    PreparedScrollbarOverlayOp, RendererMode, SurfaceDagExecutionTargetId,
+    PreparedScrollbarOverlayOp, RendererMode, ResolvedClip, SurfaceDagExecutionTargetId,
     localize_artifact_surface_op, prepare_artifact_surface_raster_plan,
     record_closed_single_target_frame_artifact,
 };
@@ -291,6 +291,46 @@ pub(super) fn raster_context() -> ArtifactSurfaceRasterContext {
     .expect("canonical raster context")
 }
 
+fn exact_self_clip_shadow_artifact() -> PaintArtifact {
+    let (arena, roots) = crate::view::paint::tests::anchor_parent_self_clip_shadow_root();
+    let mut properties = PropertyTrees::default();
+    properties.sync(&arena, &roots);
+    let mut generations = PaintGenerationTracker::default();
+    generations.sync(&arena, &roots, &properties);
+    let FrameArtifactRecordOutcome::Artifact { artifact, .. } =
+        record_closed_single_target_frame_artifact(
+            &arena,
+            &roots,
+            &properties,
+            &generations,
+            RendererMode::ForcedForTests,
+        )
+        .expect("exact self-clip shadow fixture must be recordable")
+    else {
+        panic!("forced self-clip shadow fixture cannot silently fall back")
+    };
+    assert_eq!(artifact.chunks.len(), 1);
+    assert!(matches!(
+        artifact.ops.first(),
+        Some(PaintOp::PreparedShadow(_))
+    ));
+    artifact
+}
+
+pub(super) fn raster_context_with_incoming_scissor(
+    scissor: [u32; 4],
+) -> ArtifactSurfaceRasterContext {
+    ArtifactSurfaceRasterContext::new(
+        1.0,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [0.0, 0.0],
+        Some(scissor),
+        4096,
+        256 * 1024 * 1024,
+    )
+    .expect("canonical raster context with incoming scissor")
+}
+
 #[test]
 fn artifact_surface_raster_context_rejects_each_invalid_value_family() {
     assert!(
@@ -348,6 +388,64 @@ fn artifact_surface_raster_context_rejects_each_invalid_value_family() {
         )
         .is_none()
     );
+}
+
+#[test]
+fn self_replace_clip_seals_an_incoming_shadow_prefix_and_unintersected_suffix() {
+    let plan = prepare_artifact_surface_raster_plan(
+        exact_self_clip_shadow_artifact(),
+        raster_context_with_incoming_scissor([4, 6, 24, 18]),
+    )
+    .expect("exact self-clip shadow raster plan");
+    assert!(
+        plan.nodes().is_empty(),
+        "a self clip does not mint a surface"
+    );
+    let span = plan
+        .roots()
+        .iter()
+        .flat_map(|root| root.steps())
+        .find_map(|step| match step {
+            PreparedArtifactSurfaceRasterStep::ArtifactSpan(span) => Some(span),
+            PreparedArtifactSurfaceRasterStep::NestedSurface(_) => None,
+        })
+        .expect("scene root owns the exact self-clip shadow span");
+    let chunk = span.chunks().first().expect("one prepared shadow chunk");
+    assert_eq!(
+        chunk.clip_schedule_for_test(),
+        (Some(1), ResolvedClip::Scissor([0, 0, 320, 240])),
+        "the shadow prefix retains the incoming scissor while Replace severs it for the suffix",
+    );
+}
+
+#[test]
+fn empty_self_replace_suffix_keeps_the_shadow_prefix_out_of_opaque_order() {
+    let mut artifact = exact_self_clip_shadow_artifact();
+    let self_clip = artifact
+        .clip_nodes
+        .iter_mut()
+        .find(|clip| clip.behavior == ClipBehavior::Replace)
+        .expect("self Replace clip");
+    self_clip.logical_scissor = [0, 0, 0, 0];
+    let plan = prepare_artifact_surface_raster_plan(
+        artifact,
+        raster_context_with_incoming_scissor([4, 6, 24, 18]),
+    )
+    .expect("empty self-clip suffix raster plan");
+    let span = plan
+        .roots()
+        .iter()
+        .flat_map(|root| root.steps())
+        .find_map(|step| match step {
+            PreparedArtifactSurfaceRasterStep::ArtifactSpan(span) => Some(span),
+            PreparedArtifactSurfaceRasterStep::NestedSurface(_) => None,
+        })
+        .expect("scene root owns the empty self-clip span");
+    assert_eq!(
+        span.chunks()[0].clip_schedule_for_test(),
+        (Some(1), ResolvedClip::Empty),
+    );
+    assert_eq!(span.opaque_order_count(), 0);
 }
 
 #[test]

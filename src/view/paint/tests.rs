@@ -371,7 +371,7 @@ fn anchor_parent_self_clip_roots(opacity: f32, border: bool) -> (NodeArena, Vec<
     (arena, vec![clipped, sibling])
 }
 
-fn anchor_parent_self_clip_shadow_root() -> (NodeArena, Vec<NodeKey>) {
+pub(super) fn anchor_parent_self_clip_shadow_root() -> (NodeArena, Vec<NodeKey>) {
     let mut arena = new_test_arena();
     let mut clipped = leaf_element(212, Color::rgb(220, 40, 30), 1.0, true);
     let mut style = Style::new();
