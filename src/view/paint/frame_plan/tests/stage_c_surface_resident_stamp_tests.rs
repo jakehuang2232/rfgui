@@ -7,7 +7,8 @@ use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot,
 };
 use crate::view::paint::{
-    RetainedSurfaceCompileAction, RetainedSurfaceRasterRole, RetainedSurfaceResidentKey,
+    ArtifactSurfaceCompositeGeometryStamp, ResolvedClip, RetainedSurfaceCompileAction,
+    RetainedSurfaceRasterRole, RetainedSurfaceResidentKey, SurfaceDagExecutionTargetId,
     prepare_artifact_surface_raster_plan, seal_prepared_artifact_surface_frame,
 };
 
@@ -266,6 +267,196 @@ fn artifact_program_change_keeps_the_resident_key_but_forces_reraster() {
             resident,
         ),
         RetainedSurfaceCompileAction::Reuse,
+    );
+}
+
+/// Proves that composite geometry does not pollute V2 raster equality when
+/// localized raster inputs are identical. Natural artifact-path scroll-offset
+/// invariance still requires a real detached-scroll fixture.
+#[test]
+fn root_scroll_offset_changes_plan_geometry_but_reuses_every_raster_stamp() {
+    let baseline_artifact = scroll_surface_artifact();
+    let baseline = seal_prepared_artifact_surface_frame(
+        prepare_artifact_surface_raster_plan(baseline_artifact, raster_context())
+            .expect("baseline V2 scroll raster plan"),
+    )
+    .expect("baseline V2 scroll resident seal");
+    let baseline_geometry = baseline
+        .raster_plan()
+        .nodes()
+        .iter()
+        .map(|node| node.geometry())
+        .collect::<Vec<_>>();
+
+    let mut moved_artifact = scroll_surface_artifact();
+    let scroll_owner = moved_artifact
+        .scroll_nodes
+        .first()
+        .expect("moved V2 scroll snapshot")
+        .owner;
+    let moved_chunk_indices = moved_artifact
+        .chunks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, chunk)| (chunk.owner != scroll_owner).then_some(index))
+        .collect::<Vec<_>>();
+    for chunk_index in moved_chunk_indices {
+        let op_range = moved_artifact.chunks[chunk_index].op_range.clone();
+        for op in &mut moved_artifact.ops[op_range.clone()] {
+            let PaintOp::DrawRect(rect) = op else {
+                panic!("V2 scroll placement fixture owns only one draw-rect payload")
+            };
+            rect.params.position[1] -= 7.0;
+        }
+        moved_artifact.chunks[chunk_index].bounds.y -= 7.0;
+        moved_artifact.chunks[chunk_index].payload_identity = moved_artifact.chunks[chunk_index]
+            .payload_identity
+            .rebuild_from_localized_ops(&moved_artifact.ops[op_range])
+            .expect("moved authored payload identity");
+    }
+    let moved_scroll = moved_artifact
+        .scroll_nodes
+        .first_mut()
+        .expect("moved V2 scroll snapshot");
+    moved_scroll.offset.y += 7.0;
+    let moved = seal_prepared_artifact_surface_frame(
+        prepare_artifact_surface_raster_plan(moved_artifact, raster_context())
+            .expect("moved V2 scroll raster plan"),
+    )
+    .expect("moved V2 scroll resident seal");
+    let moved_geometry = moved
+        .raster_plan()
+        .nodes()
+        .iter()
+        .map(|node| node.geometry())
+        .collect::<Vec<_>>();
+
+    assert_ne!(baseline_geometry, moved_geometry);
+    assert_eq!(baseline.residents(), moved.residents());
+
+    let mut viewport = crate::view::viewport::Viewport::new();
+    let owner = viewport
+        .begin_retained_surface_frame_stage()
+        .expect("baseline V2 resident owner");
+    assert!(viewport.stage_artifact_surface_resident_set(owner, baseline.residents().clone()));
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
+    let actions = viewport
+        .artifact_surface_compile_actions_for_forced_test(moved.residents())
+        .expect("moved V2 pool actions");
+    assert!(
+        actions
+            .iter()
+            .all(|(_, action)| *action == RetainedSurfaceCompileAction::Reuse)
+    );
+}
+
+#[test]
+fn nested_geometry_invalidates_the_receiver_but_not_the_child_raster() {
+    let baseline = prepared_depth_three(depth_three_effect_artifact());
+    let (parent, child, generation) = baseline
+        .raster_plan()
+        .nodes()
+        .iter()
+        .find_map(|node| {
+            let SurfaceDagExecutionTargetId::Surface(parent) = node.receiver() else {
+                return None;
+            };
+            if !baseline
+                .raster_plan()
+                .nodes()
+                .get(parent.index())
+                .is_some_and(|parent| {
+                    matches!(parent.receiver(), SurfaceDagExecutionTargetId::SceneRoot(_))
+                })
+            {
+                return None;
+            }
+            let ArtifactSurfaceCompositeGeometryStamp::Effect { generation, .. } = node.geometry()
+            else {
+                return None;
+            };
+            Some((parent, node.execution_id(), generation))
+        })
+        .expect("depth-three fixture owns a nested effect below a scene-root surface");
+
+    let mut changed_artifact = depth_three_effect_artifact();
+    let changed_effect = changed_artifact
+        .effect_nodes
+        .iter_mut()
+        .find(|effect| effect.generation == generation)
+        .expect("nested effect snapshot");
+    changed_effect.generation = changed_effect
+        .generation
+        .checked_add(100)
+        .expect("nested effect generation increment");
+    let changed = prepared_depth_three(changed_artifact);
+
+    assert_ne!(
+        baseline.raster_plan().nodes()[child.index()].geometry(),
+        changed.raster_plan().nodes()[child.index()].geometry(),
+    );
+    assert_eq!(
+        baseline.residents().ordered_entries()[child.index()].stamp(),
+        changed.residents().ordered_entries()[child.index()].stamp(),
+        "a surface's own placement is not its raster identity",
+    );
+    assert_ne!(
+        baseline.residents().ordered_entries()[parent.index()].stamp(),
+        changed.residents().ordered_entries()[parent.index()].stamp(),
+        "nested placement is the receiver's raster dependency",
+    );
+    assert_eq!(
+        sealed_stamps(baseline.residents())
+            .zip(sealed_stamps(changed.residents()))
+            .filter(|(left, right)| left != right)
+            .count(),
+        1,
+    );
+}
+
+#[test]
+fn empty_nested_receiver_keeps_cold_raster_authority_without_advancing_parent_order() {
+    let visible = prepared_co_located();
+    let mut empty_plan =
+        prepare_artifact_surface_raster_plan(co_located_surface_artifact(), raster_context())
+            .expect("co-located empty-receiver raster plan");
+    let (parent, child) = empty_plan
+        .force_first_nested_receiver_clip_empty_for_test()
+        .expect("co-located fixture owns a non-effect nested receiver");
+    let empty =
+        seal_prepared_artifact_surface_frame(empty_plan).expect("empty receiver resident seal");
+    assert!(empty.is_canonical());
+
+    let visible_dependency = visible
+        .residents()
+        .nested_dependencies_for_test()
+        .into_iter()
+        .find(|(actual_parent, actual_child, ..)| {
+            *actual_parent == parent && *actual_child == child
+        })
+        .expect("visible nested dependency");
+    assert_ne!(visible_dependency.2, ResolvedClip::Empty);
+    assert!(visible_dependency.4 > visible_dependency.3);
+
+    let empty_dependency = empty
+        .residents()
+        .nested_dependencies_for_test()
+        .into_iter()
+        .find(|(actual_parent, actual_child, ..)| {
+            *actual_parent == parent && *actual_child == child
+        })
+        .expect("empty nested dependency");
+    assert_eq!(empty_dependency.2, ResolvedClip::Empty);
+    assert_eq!(empty_dependency.4, empty_dependency.3);
+
+    let viewport = crate::view::viewport::Viewport::new();
+    let actions = viewport
+        .artifact_surface_compile_actions_from_pool(empty.residents())
+        .expect("canonical cold empty-receiver actions");
+    assert_eq!(
+        actions[child.index()].1,
+        RetainedSurfaceCompileAction::Reraster,
+        "an invisible cold child still needs valid raster content for a later visible frame",
     );
 }
 

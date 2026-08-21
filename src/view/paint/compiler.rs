@@ -2603,14 +2603,16 @@ impl RetainedSurfaceRasterStamp {
     }
 }
 
-/// Private two-step artifact program stored inside the one retained resident
-/// stamp type. Exact-shape legacy dependencies cannot be represented here.
+/// Private two-step artifact raster program stored inside the one retained
+/// resident stamp type. A surface's own composite geometry is deliberately
+/// absent: top-level placement is a sealed plan fact, while surface-receiver
+/// placement belongs to the parent's nested dependency. Exact-shape legacy
+/// dependencies cannot be represented here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ArtifactSurfaceRasterProgramStamp {
     execution_id: SurfaceDagExecutionNodeId,
     source: SurfaceDagNodeId,
     receiver: SurfaceDagExecutionTargetId,
-    geometry: ArtifactSurfaceCompositeGeometryStamp,
     steps: Vec<ArtifactSurfaceRasterProgramStepStamp>,
 }
 
@@ -2641,6 +2643,10 @@ struct ArtifactSurfaceNestedRasterDependency {
     step_index: usize,
     child_execution_id: SurfaceDagExecutionNodeId,
     child_stamp: Box<RetainedSurfaceRasterStamp>,
+    /// Composite placement is an edge property. Keeping it on the receiver's
+    /// dependency invalidates that receiver when a nested child moves without
+    /// invalidating the child's unchanged raster content.
+    child_composite_geometry: ArtifactSurfaceCompositeGeometryStamp,
     parent_opaque_order_before: u32,
     parent_opaque_order_after: u32,
 }
@@ -4826,6 +4832,55 @@ impl ArtifactSurfaceCompositeGeometryStamp {
             } => resolved_receiver_clip,
         }
     }
+
+    #[cfg(test)]
+    fn with_resolved_receiver_clip_for_test(self, resolved_receiver_clip: ResolvedClip) -> Self {
+        match self {
+            Self::Transform {
+                source_bounds_bits,
+                destination_bounds_bits,
+                receiver_transform_bits,
+                receiver_clip,
+                ..
+            } => Self::Transform {
+                source_bounds_bits,
+                destination_bounds_bits,
+                receiver_transform_bits,
+                receiver_clip,
+                resolved_receiver_clip,
+            },
+            Self::Effect {
+                source_bounds_bits,
+                destination_bounds_bits,
+                opacity_bits,
+                generation,
+                receiver_clip,
+                ..
+            } => Self::Effect {
+                source_bounds_bits,
+                destination_bounds_bits,
+                opacity_bits,
+                generation,
+                receiver_clip,
+                resolved_receiver_clip,
+            },
+            Self::ScrollContent {
+                source_bounds_bits,
+                destination_bounds_bits,
+                offset_bits,
+                generation,
+                receiver_clip,
+                ..
+            } => Self::ScrollContent {
+                source_bounds_bits,
+                destination_bounds_bits,
+                offset_bits,
+                generation,
+                receiver_clip,
+                resolved_receiver_clip,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -4916,6 +4971,33 @@ impl PreparedArtifactSurfaceRasterPlan {
 
     pub(crate) fn nodes(&self) -> &[PreparedArtifactSurfaceRasterNode] {
         &self.nodes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_first_nested_receiver_clip_empty_for_test(
+        &mut self,
+    ) -> Option<(SurfaceDagExecutionNodeId, SurfaceDagExecutionNodeId)> {
+        let pair = self.nodes.iter().find_map(|parent| {
+            parent.steps.iter().find_map(|step| match step {
+                PreparedArtifactSurfaceRasterStep::NestedSurface(child)
+                    if self.nodes.get(child.index()).is_some_and(|node| {
+                        node.identity.role != RetainedSurfaceRasterRole::PropertyEffect
+                    }) =>
+                {
+                    Some((parent.execution_id, *child))
+                }
+                PreparedArtifactSurfaceRasterStep::ArtifactSpan(_)
+                | PreparedArtifactSurfaceRasterStep::NestedSurface(_) => None,
+            })
+        });
+        if let Some((parent, child)) = pair {
+            let child_node = self.nodes.get_mut(child.index())?;
+            child_node.geometry = child_node
+                .geometry
+                .with_resolved_receiver_clip_for_test(ResolvedClip::Empty);
+            return Some((parent, child));
+        }
+        None
     }
 }
 
@@ -5890,6 +5972,38 @@ impl SealedArtifactSurfaceResidentSet {
     }
 
     #[cfg(test)]
+    pub(crate) fn nested_dependencies_for_test(
+        &self,
+    ) -> Vec<(
+        SurfaceDagExecutionNodeId,
+        SurfaceDagExecutionNodeId,
+        ResolvedClip,
+        u32,
+        u32,
+    )> {
+        self.ordered_entries
+            .iter()
+            .flat_map(|entry| {
+                let program = entry
+                    .stamp
+                    .artifact_surface_program
+                    .as_ref()
+                    .expect("artifact resident owns an artifact program");
+                program.steps.iter().filter_map(move |step| match step {
+                    ArtifactSurfaceRasterProgramStepStamp::NestedSurface(dependency) => Some((
+                        program.execution_id,
+                        dependency.child_execution_id,
+                        dependency.child_composite_geometry.resolved_receiver_clip(),
+                        dependency.parent_opaque_order_before,
+                        dependency.parent_opaque_order_after,
+                    )),
+                    ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(_) => None,
+                })
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
     pub(crate) fn inject_legacy_step_into_first_artifact_program_for_test(&mut self) -> bool {
         for entry in &mut self.ordered_entries {
             let stamp = &mut entry.stamp;
@@ -6005,7 +6119,7 @@ impl SealedArtifactSurfaceResidentSet {
     }
 }
 
-fn artifact_surface_program_geometry_matches(
+fn artifact_surface_geometry_matches(
     identity: RetainedSurfaceRasterIdentity,
     target: &RetainedSurfaceRasterInputs,
     geometry: ArtifactSurfaceCompositeGeometryStamp,
@@ -6034,6 +6148,20 @@ fn artifact_surface_program_geometry_matches(
     identity.scroll_content_tile.is_none()
         && source_bounds_bits == target.source_bounds_bits
         && target.has_canonical_descriptor_pair_for(identity)
+}
+
+fn artifact_surface_nested_parent_opaque_after(
+    before: u32,
+    child: &RetainedSurfaceRasterStamp,
+    child_geometry: ArtifactSurfaceCompositeGeometryStamp,
+) -> u32 {
+    if child.identity.role == RetainedSurfaceRasterRole::PropertyEffect
+        || child_geometry.resolved_receiver_clip() == ResolvedClip::Empty
+    {
+        before
+    } else {
+        before.max(child.opaque_order_span.end)
+    }
 }
 
 fn artifact_surface_program_geometry_receiver_clip(
@@ -6190,11 +6318,6 @@ fn artifact_surface_resident_set_is_canonical(
             || !stamp.native_scroll_children.is_empty()
             || entry.resident_key != stamp.identity.artifact_surface_resident_key()
             || !resident_keys.insert(entry.resident_key)
-            || !artifact_surface_program_geometry_matches(
-                stamp.identity,
-                &stamp.target,
-                program.geometry,
-            )
             || stamp.clip_nodes.iter().any(|clip| clip.generation == 0)
             || match stamp.local_clip_generation_semantics {
                 Some(LocalClipGenerationSemantics::ArtifactLive) => {
@@ -6249,17 +6372,21 @@ fn artifact_surface_resident_set_is_canonical(
                     let Some(child_program) = child.artifact_surface_program.as_ref() else {
                         return false;
                     };
-                    let expected_after =
-                        if child.identity.role == RetainedSurfaceRasterRole::PropertyEffect {
-                            cursor
-                        } else {
-                            cursor.max(child.opaque_order_span.end)
-                        };
+                    let expected_after = artifact_surface_nested_parent_opaque_after(
+                        cursor,
+                        child,
+                        dependency.child_composite_geometry,
+                    );
                     if dependency.step_index != step_index
                         || child_index <= ordinal
                         || dependency.parent_opaque_order_before != cursor
                         || dependency.parent_opaque_order_after != expected_after
                         || dependency.child_stamp.as_ref() != child
+                        || !artifact_surface_geometry_matches(
+                            child.identity,
+                            &child.target,
+                            dependency.child_composite_geometry,
+                        )
                         || child_program.receiver
                             != SurfaceDagExecutionTargetId::Surface(program.execution_id)
                     {
@@ -6397,6 +6524,14 @@ fn seal_artifact_surface_resident_set(
                     program_steps.push(ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(stamp));
                 }
                 PreparedArtifactSurfaceRasterStep::NestedSurface(child_execution_id) => {
+                    let child_node = plan
+                        .nodes
+                        .get(child_execution_id.index())
+                        .filter(|child| child.execution_id == *child_execution_id)
+                        .ok_or(ArtifactSurfaceResidentSealError::InvalidNestedSurface {
+                            parent: node.source,
+                            child: *child_execution_id,
+                        })?;
                     let child = sealed
                         .get(child_execution_id.index())
                         .and_then(Option::as_ref)
@@ -6419,17 +6554,17 @@ fn seal_artifact_surface_resident_set(
                             child: *child_execution_id,
                         });
                     }
-                    let parent_after =
-                        if child_stamp.identity.role == RetainedSurfaceRasterRole::PropertyEffect {
-                            cursor
-                        } else {
-                            cursor.max(child_stamp.opaque_order_span.end)
-                        };
+                    let parent_after = artifact_surface_nested_parent_opaque_after(
+                        cursor,
+                        child_stamp,
+                        child_node.geometry,
+                    );
                     program_steps.push(ArtifactSurfaceRasterProgramStepStamp::NestedSurface(
                         ArtifactSurfaceNestedRasterDependency {
                             step_index,
                             child_execution_id: *child_execution_id,
                             child_stamp: Box::new(child_stamp.clone()),
+                            child_composite_geometry: child_node.geometry,
                             parent_opaque_order_before: cursor,
                             parent_opaque_order_after: parent_after,
                         },
@@ -6474,7 +6609,6 @@ fn seal_artifact_surface_resident_set(
                 execution_id: node.execution_id,
                 source: node.source,
                 receiver: node.receiver,
-                geometry: node.geometry,
                 steps: program_steps,
             }),
         };
@@ -6528,7 +6662,30 @@ fn artifact_surface_frame_is_canonical(
                     && node.receiver == program.receiver
                     && node.identity == stamp.identity
                     && node.target == stamp.target
-                    && node.geometry == program.geometry
+                    && artifact_surface_geometry_matches(node.identity, &node.target, node.geometry)
+                    && match node.receiver {
+                        SurfaceDagExecutionTargetId::SceneRoot(_) => true,
+                        SurfaceDagExecutionTargetId::Surface(parent) => {
+                            residents
+                                .ordered_entries()
+                                .get(parent.index())
+                                .and_then(|parent| parent.stamp().artifact_surface_program.as_ref())
+                                .and_then(|parent| {
+                                    parent.steps.iter().find_map(|step| match step {
+                                    ArtifactSurfaceRasterProgramStepStamp::NestedSurface(
+                                        dependency,
+                                    ) if dependency.child_execution_id == node.execution_id => {
+                                        Some(dependency.child_composite_geometry)
+                                    }
+                                    ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(_)
+                                    | ArtifactSurfaceRasterProgramStepStamp::NestedSurface(_) => {
+                                        None
+                                    }
+                                })
+                                })
+                                == Some(node.geometry)
+                        }
+                    }
             })
 }
 
