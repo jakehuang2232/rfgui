@@ -2413,15 +2413,17 @@ fn try_compile_recorded_artifact_frame(
         crate::view::base_component::UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
     match payload {
         RecordedArtifactPayload::SingleTargetSurfaceDag(prepared) => {
-            let state = crate::view::paint::emit_single_target_surface_dag_frame(
+            match crate::view::paint::emit_single_target_surface_dag_frame(
                 prepared,
                 graph,
                 artifact_ctx,
-            );
-            PropertyNeutralArtifactAttempt::Compiled {
-                state,
-                eligibility,
-                root_effect_transaction: None,
+            ) {
+                Ok(state) => PropertyNeutralArtifactAttempt::Compiled {
+                    state,
+                    eligibility,
+                    root_effect_transaction: None,
+                },
+                Err(kind) => PropertyNeutralArtifactAttempt::CompileRejected(kind),
             }
         }
         RecordedArtifactPayload::ExistingArtifact(artifact) => {

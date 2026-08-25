@@ -53,6 +53,7 @@ pub(crate) enum ResolvedClip {
     Empty,
 }
 
+mod artifact_surface_executor;
 #[cfg(test)]
 mod tests;
 
@@ -4563,6 +4564,10 @@ pub(crate) enum RetainedSurfaceCompileAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ArtifactCompileErrorKind {
     InvalidStore,
+    ChildMaskDepthOverflow {
+        incoming_depth: u8,
+        max_mask_depth: usize,
+    },
 }
 
 /// Minimal host facts required to seal detached raster descriptors and final
@@ -6926,7 +6931,18 @@ pub(crate) fn emit_single_target_surface_dag_frame(
     prepared: ValidatedSingleTargetSurfaceDagFrame,
     graph: &mut FrameGraph,
     mut ctx: UiBuildContext,
-) -> BuildState {
+) -> Result<BuildState, ArtifactCompileErrorKind> {
+    let incoming_depth = ctx.current_clip_id();
+    let max_mask_depth = artifact_surface_executor::artifact_child_mask_max_depth(
+        prepared.artifact.chunks.iter().map(|chunk| chunk.id),
+        0,
+    );
+    if usize::from(incoming_depth) + max_mask_depth > usize::from(u8::MAX) {
+        return Err(ArtifactCompileErrorKind::ChildMaskDepthOverflow {
+            incoming_depth,
+            max_mask_depth,
+        });
+    }
     let ValidatedSingleTargetSurfaceDagFrame {
         artifact,
         resolved_clips,
@@ -6936,7 +6952,7 @@ pub(crate) fn emit_single_target_surface_dag_frame(
     #[cfg(test)]
     ARTIFACT_COMPILE_COUNT.with(|count| count.set(count.get().saturating_add(1)));
     compile_validated_artifact(&artifact, resolved_clips, graph, &mut ctx);
-    ctx.into_state()
+    Ok(ctx.into_state())
 }
 
 pub(crate) struct ArtifactCompileError {
@@ -10119,20 +10135,10 @@ fn compile_validated_artifact_segment(
     ctx: &mut UiBuildContext,
     child_mask_scopes: &mut Vec<(crate::view::node_arena::NodeKey, u8, Option<[u32; 4]>)>,
 ) {
-    let mut mask_depth = child_mask_scopes.len();
-    let mut max_mask_depth = 0usize;
-    for chunk in &artifact.chunks {
-        if chunk.id.slot != super::RETAINED_CHILD_MASK_SLOT {
-            continue;
-        }
-        match chunk.id.phase {
-            super::PaintNodePhase::BeforeChildren => {
-                mask_depth = mask_depth.saturating_add(1);
-                max_mask_depth = max_mask_depth.max(mask_depth);
-            }
-            super::PaintNodePhase::AfterChildren => mask_depth = mask_depth.saturating_sub(1),
-        }
-    }
+    let max_mask_depth = artifact_surface_executor::artifact_child_mask_max_depth(
+        artifact.chunks.iter().map(|chunk| chunk.id),
+        child_mask_scopes.len(),
+    );
     if ctx.current_clip_id() as usize + max_mask_depth > u8::MAX as usize {
         return;
     }

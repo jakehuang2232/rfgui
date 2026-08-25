@@ -273,7 +273,8 @@ fn zero_surface_v2_graph(with_border: bool) -> Result<FrameGraph, String> {
     let prepared = prepare_single_target_surface_dag_frame(artifact)
         .map_err(|error| format!("zero-surface V2 preparation failed: {error:?}"))?;
     let (mut graph, ctx, target) = graph_prelude();
-    let _ = emit_single_target_surface_dag_frame(prepared, &mut graph, ctx);
+    let _ = emit_single_target_surface_dag_frame(prepared, &mut graph, ctx)
+        .expect("zero-surface artifact emission");
     add_present(&mut graph, &target)?;
     Ok(graph)
 }
@@ -2230,7 +2231,8 @@ fn zero_surface_v2_self_clip_graph() -> Result<FrameGraph, String> {
     let prepared = prepare_single_target_surface_dag_frame(artifact)
         .map_err(|error| format!("self-clip zero-surface V2 preparation failed: {error:?}"))?;
     let (mut graph, ctx, target) = self_clip_graph_prelude();
-    let _ = emit_single_target_surface_dag_frame(prepared, &mut graph, ctx);
+    let _ = emit_single_target_surface_dag_frame(prepared, &mut graph, ctx)
+        .expect("zero-surface artifact emission");
     add_present(&mut graph, &target)?;
     Ok(graph)
 }

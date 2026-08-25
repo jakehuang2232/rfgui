@@ -85,6 +85,44 @@ fn recorded_single_effect_surface_artifact() -> crate::view::paint::PaintArtifac
     artifact
 }
 
+fn recorded_zero_surface_child_mask_candidate() -> RecordedArtifactCandidate {
+    use crate::style::BorderRadius;
+
+    let mut root_element = zero_surface_element(0xc3_a010, 0.0, Color::rgb(40, 80, 160));
+    let mut rounded = Style::new();
+    rounded.set_border_radius(BorderRadius::uniform(Length::px(12.0)));
+    root_element.apply_style(rounded);
+
+    let mut arena = new_test_arena();
+    let root = commit_element(&mut arena, Box::new(root_element));
+    commit_child(
+        &mut arena,
+        root,
+        Box::new(zero_surface_element(
+            0xc3_a011,
+            12.0,
+            Color::rgb(20, 180, 40),
+        )),
+    );
+    let (measure, place) = constraints();
+    measure_and_place(&mut arena, root, measure, place);
+    let (artifact, eligibility) = recorded_zero_surface_artifact(&arena, &[root]);
+    assert_eq!(
+        artifact
+            .chunks
+            .iter()
+            .filter(|chunk| chunk.id.slot == crate::view::paint::RETAINED_CHILD_MASK_SLOT)
+            .count(),
+        2,
+    );
+    let prepared = crate::view::paint::prepare_single_target_surface_dag_frame(artifact)
+        .expect("zero-surface child-mask artifact must prepare");
+    RecordedArtifactCandidate {
+        payload: RecordedArtifactPayload::SingleTargetSurfaceDag(prepared),
+        eligibility,
+    }
+}
+
 fn prepare_error_label(
     error: crate::view::paint::SingleTargetSurfaceDagPrepareError,
 ) -> &'static str {
@@ -223,6 +261,56 @@ fn stage_c_zero_surface_prepare_rejects_invalid_store_without_graph_mutation() {
         crate::view::paint::SingleTargetSurfaceDagPrepareError::InvalidArtifactStore,
     );
     assert_eq!(graph.build_state_snapshot_for_test(), before);
+}
+
+#[test]
+fn stage_c_zero_surface_child_mask_depth_seam_accepts_254_and_rejects_255_before_graph_mutation() {
+    let mut accepted_graph = FrameGraph::new();
+    let mut accepted_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let accepted_target = accepted_ctx.allocate_target(&mut accepted_graph);
+    accepted_ctx.set_current_target(accepted_target);
+    for expected in 1..=254_u8 {
+        assert_eq!(accepted_ctx.push_clip_id(), Some(expected));
+    }
+    crate::view::paint::take_artifact_compile_count();
+    assert!(matches!(
+        try_compile_recorded_artifact_frame(
+            &mut accepted_graph,
+            recorded_zero_surface_child_mask_candidate(),
+            &accepted_ctx,
+            None,
+        ),
+        PropertyNeutralArtifactAttempt::Compiled { .. }
+    ));
+    assert_eq!(crate::view::paint::take_artifact_compile_count(), 1);
+
+    let mut rejected_graph = FrameGraph::new();
+    let mut rejected_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let rejected_target = rejected_ctx.allocate_target(&mut rejected_graph);
+    rejected_ctx.set_current_target(rejected_target);
+    for expected in 1..=u8::MAX {
+        assert_eq!(rejected_ctx.push_clip_id(), Some(expected));
+    }
+    assert_eq!(rejected_ctx.push_clip_id(), None);
+    let before = rejected_graph.build_state_snapshot_for_test();
+    crate::view::paint::take_artifact_compile_count();
+    let rejection = try_compile_recorded_artifact_frame(
+        &mut rejected_graph,
+        recorded_zero_surface_child_mask_candidate(),
+        &rejected_ctx,
+        None,
+    );
+    assert!(matches!(
+        rejection,
+        PropertyNeutralArtifactAttempt::CompileRejected(
+            crate::view::paint::ArtifactCompileErrorKind::ChildMaskDepthOverflow {
+                incoming_depth: u8::MAX,
+                max_mask_depth: 1,
+            }
+        )
+    ));
+    assert_eq!(rejected_graph.build_state_snapshot_for_test(), before);
+    assert_eq!(crate::view::paint::take_artifact_compile_count(), 0);
 }
 
 #[test]
