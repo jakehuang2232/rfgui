@@ -121,6 +121,20 @@ fn prepared_co_located_surface_frame() -> PreparedArtifactSurfaceFrame {
     crate::view::paint::frame_plan::tests::prepared_co_located_surface_frame()
 }
 
+fn prepared_zero_surface_frame() -> PreparedArtifactSurfaceFrame {
+    let artifact = crate::view::paint::frame_plan::tests::exact_self_clip_shadow_artifact();
+    let plan = prepare_artifact_surface_raster_plan(artifact, raster_context())
+        .expect("zero-surface artifact raster plan");
+    assert!(
+        plan.nodes().is_empty(),
+        "self-clip shadow fixture must not mint a surface resident"
+    );
+    let frame =
+        seal_prepared_artifact_surface_frame(plan).expect("zero-surface artifact resident seal");
+    assert!(frame.residents().is_empty());
+    frame
+}
+
 fn prepared_self_clip_shadow_surface_frame(empty_suffix: bool) -> PreparedArtifactSurfaceFrame {
     let mut artifact = crate::view::paint::frame_plan::tests::exact_self_clip_shadow_artifact();
     if empty_suffix {

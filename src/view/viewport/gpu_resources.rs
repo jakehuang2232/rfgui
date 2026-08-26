@@ -97,9 +97,11 @@ fn canonical_retained_surface_pair_bytes(
 fn artifact_surface_resident_set_is_pool_canonical(
     residents: &crate::view::paint::SealedArtifactSurfaceResidentSet,
 ) -> bool {
-    if residents.is_empty() || !residents.is_canonical() {
+    if !residents.is_canonical() {
         return false;
     }
+    // An empty set intentionally passes the empty validation below: it owns
+    // no resident or persistent keys and represents an exact empty replacement.
     let mut resident_keys = FxHashSet::default();
     let mut persistent_keys = FxHashSet::default();
     residents.ordered_entries().iter().all(|entry| {

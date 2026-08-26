@@ -127,6 +127,96 @@ fn co_located_roles_keep_three_keys_and_cold_warm_actions_through_staging() {
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(warm_owner), true));
 }
 
+#[test]
+fn empty_artifact_resident_set_replaces_committed_surface_residents() {
+    let populated = prepared_co_located_surface_frame();
+    let expected_released_colors = populated
+        .residents()
+        .ordered_entries()
+        .iter()
+        .map(|entry| entry.stamp().identity.color_key)
+        .collect::<Vec<_>>();
+    assert_eq!(expected_released_colors.len(), 3);
+    for (index, color_key) in expected_released_colors.iter().enumerate() {
+        assert!(
+            expected_released_colors[..index]
+                .iter()
+                .all(|previous| previous != color_key),
+            "the populated fixture must own three distinct color targets"
+        );
+    }
+
+    let mut viewport = Viewport::new();
+    let populated_owner = viewport
+        .begin_retained_surface_frame_stage()
+        .expect("populated owner");
+    let mut populated_graph = FrameGraph::new();
+    emit_prepared_artifact_surface_frame_for_forced_test(
+        &mut viewport,
+        populated_owner,
+        populated,
+        &mut populated_graph,
+        execution_context(),
+    )
+    .expect("populated artifact emission");
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(populated_owner), true));
+    assert_eq!(
+        viewport
+            .committed_retained_surface_resident_keys_for_test()
+            .len(),
+        3
+    );
+    assert_eq!(
+        viewport.pending_artifact_surface_resident_keys_for_test(),
+        None,
+        "the first finish must clear pending before the empty replacement stages"
+    );
+    assert!(viewport.retained_surface_release_log_for_test().is_empty());
+
+    let empty_owner = viewport
+        .begin_retained_surface_frame_stage()
+        .expect("empty replacement owner");
+    let mut empty_graph = FrameGraph::new();
+    let (_, actions) = emit_prepared_artifact_surface_frame_for_forced_test(
+        &mut viewport,
+        empty_owner,
+        prepared_zero_surface_frame(),
+        &mut empty_graph,
+        execution_context(),
+    )
+    .expect("empty artifact emission");
+
+    assert!(actions.is_empty());
+    assert_eq!(empty_graph.declared_persistent_texture_keys().count(), 0);
+    assert_eq!(
+        viewport.pending_artifact_surface_resident_keys_for_test(),
+        Some(Vec::new()),
+        "an empty replacement remains distinct from no pending transaction"
+    );
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(empty_owner), true));
+    assert!(
+        viewport
+            .committed_retained_surface_resident_keys_for_test()
+            .is_empty()
+    );
+    assert_eq!(
+        viewport.pending_artifact_surface_resident_keys_for_test(),
+        None
+    );
+    assert_eq!(viewport.retained_surface_release_log_for_test().len(), 3);
+    for color_key in expected_released_colors {
+        assert_eq!(
+            viewport
+                .retained_surface_release_log_for_test()
+                .iter()
+                .filter(|released| **released == color_key)
+                .count(),
+            1,
+            "each displaced artifact surface pair must be released exactly once"
+        );
+    }
+}
+
 // This test proves the residency-loss half: a reused parent still visits and
 // materializes its evicted child. Content changes enter parent equality by
 // construction through `ArtifactSurfaceNestedRasterDependency::child_stamp`.
