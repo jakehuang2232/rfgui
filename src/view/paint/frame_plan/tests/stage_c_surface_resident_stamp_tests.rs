@@ -12,7 +12,7 @@ use crate::view::paint::{
     prepare_artifact_surface_raster_plan, seal_prepared_artifact_surface_frame,
 };
 
-fn prepared_depth_four() -> crate::view::paint::PreparedArtifactSurfaceFrame {
+pub(crate) fn prepared_depth_four() -> crate::view::paint::PreparedArtifactSurfaceFrame {
     let plan = prepare_artifact_surface_raster_plan(depth_four_effect_artifact(), raster_context())
         .expect("depth-four raster plan");
     seal_prepared_artifact_surface_frame(plan).expect("depth-four resident seal")
@@ -22,7 +22,7 @@ fn sealed_depth_four() -> crate::view::paint::SealedArtifactSurfaceResidentSet {
     prepared_depth_four().residents().clone()
 }
 
-fn prepared_co_located() -> crate::view::paint::PreparedArtifactSurfaceFrame {
+pub(crate) fn prepared_co_located() -> crate::view::paint::PreparedArtifactSurfaceFrame {
     let plan =
         prepare_artifact_surface_raster_plan(co_located_surface_artifact(), raster_context())
             .expect("co-located role raster plan");

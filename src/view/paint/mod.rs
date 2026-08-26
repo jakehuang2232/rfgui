@@ -48,7 +48,7 @@ pub(crate) use artifact::{
 #[allow(unused_imports)]
 // C3 state/lifecycle landed before the C4 producer consumes every stamp type.
 pub(crate) use compiler::{
-    ArtifactCompileErrorKind, ArtifactSurfaceCompositeGeometryStamp,
+    ArtifactCompileErrorKind, ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceExecutionError,
     ArtifactSurfaceLocalizationError, ArtifactSurfacePaintOpKind, ArtifactSurfaceRasterContext,
     ArtifactSurfaceRasterPlanError, ArtifactSurfaceRasterTargetId,
     ArtifactSurfaceResidentSealError, NestedSurfaceRasterDependency, PreparedArtifactSurfaceFrame,
@@ -64,10 +64,10 @@ pub(crate) use compiler::{
     RetainedSurfaceResidentKey, RootEffectCompileAction, RootEffectRasterInputs,
     RootEffectRasterStamp, SealedArtifactSurfaceResidentEntry, SealedArtifactSurfaceResidentSet,
     SingleTargetSurfaceDagPrepareError, ValidatedEffectPropertySurfaceArtifact,
-    ValidatedSingleTargetSurfaceDagFrame, emit_single_target_surface_dag_frame,
-    emit_validated_effect_property_surface_artifact, localize_artifact_surface_op,
-    prepare_artifact_surface_raster_plan, prepare_single_target_surface_dag_frame,
-    property_effect_composite_geometry_stamp_is_canonical,
+    ValidatedSingleTargetSurfaceDagFrame, emit_prepared_artifact_surface_frame_from_pool,
+    emit_single_target_surface_dag_frame, emit_validated_effect_property_surface_artifact,
+    localize_artifact_surface_op, prepare_artifact_surface_raster_plan,
+    prepare_single_target_surface_dag_frame, property_effect_composite_geometry_stamp_is_canonical,
     property_effect_surface_raster_stamp_is_canonical_at_depth,
     property_effect_surface_raster_stamp_validates_contract_at_depth,
     retained_isolation_composite_geometry_stamp,

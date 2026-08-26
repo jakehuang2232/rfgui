@@ -291,7 +291,7 @@ pub(super) fn raster_context() -> ArtifactSurfaceRasterContext {
     .expect("canonical raster context")
 }
 
-fn exact_self_clip_shadow_artifact() -> PaintArtifact {
+pub(crate) fn exact_self_clip_shadow_artifact() -> PaintArtifact {
     let (arena, roots) = crate::view::paint::tests::anchor_parent_self_clip_shadow_root();
     let mut properties = PropertyTrees::default();
     properties.sync(&arena, &roots);

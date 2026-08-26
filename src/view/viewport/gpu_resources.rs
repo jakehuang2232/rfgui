@@ -547,7 +547,6 @@ impl Viewport {
             .expect("one retained surface action")
     }
 
-    #[allow(dead_code)] // C3b2 pool contract precedes the C3b3 executor caller.
     fn artifact_surface_compile_actions(
         &self,
         residents: &crate::view::paint::SealedArtifactSurfaceResidentSet,
@@ -582,7 +581,6 @@ impl Viewport {
     /// Freezes pool actions against the compiler-sealed artifact resident
     /// keys. The pool never receives a stamp without its matching key, so it
     /// has no opportunity to invoke the legacy identity mapping.
-    #[allow(dead_code)] // C3b2 pool contract precedes the C3b3 executor caller.
     pub(crate) fn artifact_surface_compile_actions_from_pool(
         &self,
         residents: &crate::view::paint::SealedArtifactSurfaceResidentSet,
@@ -1159,7 +1157,6 @@ impl Viewport {
     /// Stages only compiler-sealed artifact `(resident key, stamp)` pairs for
     /// this exact frame owner. Unlike legacy staging, this entry point has no
     /// stamp-only form and therefore cannot re-derive a different key.
-    #[allow(dead_code)] // C3b2 pool contract precedes the C3b3 executor caller.
     pub(crate) fn stage_artifact_surface_resident_set(
         &mut self,
         owner: RetainedSurfaceFrameStageOwner,

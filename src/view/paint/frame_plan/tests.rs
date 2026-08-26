@@ -2701,8 +2701,13 @@ mod stage_c_surface_candidate_tests;
 mod stage_c_surface_coverage_tests;
 mod stage_c_surface_dag_tests;
 mod stage_c_surface_raster_plan_tests;
+pub(crate) use stage_c_surface_raster_plan_tests::exact_self_clip_shadow_artifact;
 mod stage_c_surface_raster_rebase_tests;
 mod stage_c_surface_resident_stamp_tests;
+pub(crate) use stage_c_surface_resident_stamp_tests::{
+    prepared_co_located as prepared_co_located_surface_frame,
+    prepared_depth_four as prepared_depth_four_surface_frame,
+};
 mod stage_c_surface_transition_derivation_tests;
 mod stage_c_transition_capability_tests;
 mod transform_isolation_tests;

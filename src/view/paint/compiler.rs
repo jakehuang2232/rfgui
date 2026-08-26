@@ -54,6 +54,9 @@ pub(crate) enum ResolvedClip {
 }
 
 mod artifact_surface_executor;
+pub(crate) use artifact_surface_executor::{
+    ArtifactSurfaceExecutionError, emit_prepared_artifact_surface_frame_from_pool,
+};
 #[cfg(test)]
 mod tests;
 
@@ -6884,7 +6887,6 @@ impl PreparedArtifactSurfaceFrame {
         artifact_surface_frame_is_canonical(&self.raster_plan, &self.residents)
     }
 
-    #[allow(dead_code)] // C3b3 executor consumes both halves together.
     pub(crate) fn into_parts(
         self,
     ) -> (
@@ -10212,151 +10214,159 @@ fn compile_validated_artifact_segment(
                     ResolvedClip::Empty => break,
                 }
             }
-            match op {
-                PaintOp::DrawRect(op) => {
-                    let mut pass = DrawRectPass::new(
-                        op.params.clone(),
-                        DrawRectInput::default(),
-                        DrawRectOutput::default(),
-                    );
-                    pass.set_render_mode(op.mode);
-                    ctx.emit_draw_rect_pass(graph, pass);
-                }
-                PaintOp::PreparedInlineIfcDecoration(op) => {
-                    let mut fill = DrawRectPass::new(
-                        op.fill.clone(),
-                        DrawRectInput::default(),
-                        DrawRectOutput::default(),
-                    );
-                    fill.set_render_mode(
-                        crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
-                    );
-                    ctx.emit_draw_rect_pass(graph, fill);
-                    if let Some(params) = &op.border {
-                        let mut border = DrawRectPass::new(
-                            params.clone(),
-                            DrawRectInput::default(),
-                            DrawRectOutput::default(),
-                        );
-                        border.set_render_mode(
-                            crate::view::render_pass::draw_rect_pass::RectRenderMode::BorderOnly,
-                        );
-                        ctx.emit_draw_rect_pass(graph, border);
-                    }
-                }
-                PaintOp::PreparedShadow(op) => {
-                    let output = ctx.current_target().unwrap_or_else(|| {
-                        let target = ctx.allocate_target(graph);
-                        ctx.set_current_target(target);
-                        target
-                    });
-                    let viewport = ctx.viewport();
-                    if build_shadow_module(
-                        graph,
-                        ShadowModuleSpec {
-                            mesh: op.mesh.clone(),
-                            params: op.params,
-                            viewport_width: viewport.target_width(),
-                            viewport_height: viewport.target_height(),
-                            scale_factor: viewport.scale_factor(),
-                            pass_context: ctx.graphics_pass_context(),
-                            output,
-                        },
-                    ) {
-                        ctx.set_current_target(output);
-                    }
-                }
-                PaintOp::PreparedScrollbarOverlay(op) => {
-                    emit_prepared_scrollbar_shadow(&op.track_shadow, graph, ctx);
-                    let mut track = DrawRectPass::new(
-                        op.track.params.clone(),
-                        DrawRectInput::default(),
-                        DrawRectOutput::default(),
-                    );
-                    track.set_render_mode(op.track.mode);
-                    ctx.emit_draw_rect_pass(graph, track);
-                    emit_prepared_scrollbar_shadow(&op.thumb_shadow, graph, ctx);
-                    let mut thumb = DrawRectPass::new(
-                        op.thumb.params.clone(),
-                        DrawRectInput::default(),
-                        DrawRectOutput::default(),
-                    );
-                    thumb.set_render_mode(op.thumb.mode);
-                    ctx.emit_draw_rect_pass(graph, thumb);
-                    if let Some((track_shadow, track, thumb_shadow, thumb)) = op.secondary_axis() {
-                        emit_prepared_scrollbar_shadow(track_shadow, graph, ctx);
-                        let track_mode = track.mode;
-                        let mut track = DrawRectPass::new(
-                            track.params.clone(),
-                            DrawRectInput::default(),
-                            DrawRectOutput::default(),
-                        );
-                        track.set_render_mode(track_mode);
-                        ctx.emit_draw_rect_pass(graph, track);
-                        emit_prepared_scrollbar_shadow(thumb_shadow, graph, ctx);
-                        let thumb_mode = thumb.mode;
-                        let mut thumb = DrawRectPass::new(
-                            thumb.params.clone(),
-                            DrawRectInput::default(),
-                            DrawRectOutput::default(),
-                        );
-                        thumb.set_render_mode(thumb_mode);
-                        ctx.emit_draw_rect_pass(graph, thumb);
-                    }
-                }
-                PaintOp::PreparedText(op) => {
-                    let Some(input_target) = ctx.current_target() else {
-                        continue;
-                    };
-                    graph.add_graphics_pass(TextPreparedInputPass::new(
-                        op.params.clone(),
-                        TextInput {
-                            pass_context: ctx.graphics_pass_context(),
-                        },
-                        TextOutput {
-                            render_target: input_target,
-                        },
-                    ));
-                    ctx.set_current_target(input_target);
-                }
-                PaintOp::PreparedImage(op) => {
-                    let Some(input_target) = ctx.current_target() else {
-                        continue;
-                    };
-                    graph.add_graphics_pass(TextureCompositePass::new(
-                        op.params,
-                        TextureCompositeInput::from_sampled_texture(
-                            op.upload.clone(),
-                            Default::default(),
-                            ctx.graphics_pass_context(),
-                        ),
-                        TextureCompositeOutput {
-                            render_target: input_target,
-                        },
-                    ));
-                    ctx.set_current_target(input_target);
-                }
-                PaintOp::PreparedSvg(op) => {
-                    let Some(input_target) = ctx.current_target() else {
-                        continue;
-                    };
-                    graph.add_graphics_pass(TextureCompositePass::new(
-                        op.params,
-                        TextureCompositeInput::from_sampled_texture(
-                            op.upload.clone(),
-                            Default::default(),
-                            ctx.graphics_pass_context(),
-                        ),
-                        TextureCompositeOutput {
-                            render_target: input_target,
-                        },
-                    ));
-                    ctx.set_current_target(input_target);
-                }
-            }
+            emit_artifact_surface_paint_op(op, graph, ctx);
         }
         if let Some(previous) = split_previous_scissor.or(previous_scissor) {
             ctx.restore_scissor_rect(previous);
+        }
+    }
+}
+
+/// Emits one already-prepared paint operation without deriving clip, mask, or
+/// surface ownership. The legacy artifact compiler and the Surface DAG
+/// executor share this exhaustive seven-variant primitive so their payload
+/// behavior cannot drift while their sealed scheduling remains independent.
+fn emit_artifact_surface_paint_op(op: &PaintOp, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
+    match op {
+        PaintOp::DrawRect(op) => {
+            let mut pass = DrawRectPass::new(
+                op.params.clone(),
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
+            );
+            pass.set_render_mode(op.mode);
+            ctx.emit_draw_rect_pass(graph, pass);
+        }
+        PaintOp::PreparedInlineIfcDecoration(op) => {
+            let mut fill = DrawRectPass::new(
+                op.fill.clone(),
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
+            );
+            fill.set_render_mode(
+                crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
+            );
+            ctx.emit_draw_rect_pass(graph, fill);
+            if let Some(params) = &op.border {
+                let mut border = DrawRectPass::new(
+                    params.clone(),
+                    DrawRectInput::default(),
+                    DrawRectOutput::default(),
+                );
+                border.set_render_mode(
+                    crate::view::render_pass::draw_rect_pass::RectRenderMode::BorderOnly,
+                );
+                ctx.emit_draw_rect_pass(graph, border);
+            }
+        }
+        PaintOp::PreparedShadow(op) => {
+            let output = ctx.current_target().unwrap_or_else(|| {
+                let target = ctx.allocate_target(graph);
+                ctx.set_current_target(target);
+                target
+            });
+            let viewport = ctx.viewport();
+            if build_shadow_module(
+                graph,
+                ShadowModuleSpec {
+                    mesh: op.mesh.clone(),
+                    params: op.params,
+                    viewport_width: viewport.target_width(),
+                    viewport_height: viewport.target_height(),
+                    scale_factor: viewport.scale_factor(),
+                    pass_context: ctx.graphics_pass_context(),
+                    output,
+                },
+            ) {
+                ctx.set_current_target(output);
+            }
+        }
+        PaintOp::PreparedScrollbarOverlay(op) => {
+            emit_prepared_scrollbar_shadow(&op.track_shadow, graph, ctx);
+            let mut track = DrawRectPass::new(
+                op.track.params.clone(),
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
+            );
+            track.set_render_mode(op.track.mode);
+            ctx.emit_draw_rect_pass(graph, track);
+            emit_prepared_scrollbar_shadow(&op.thumb_shadow, graph, ctx);
+            let mut thumb = DrawRectPass::new(
+                op.thumb.params.clone(),
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
+            );
+            thumb.set_render_mode(op.thumb.mode);
+            ctx.emit_draw_rect_pass(graph, thumb);
+            if let Some((track_shadow, track, thumb_shadow, thumb)) = op.secondary_axis() {
+                emit_prepared_scrollbar_shadow(track_shadow, graph, ctx);
+                let track_mode = track.mode;
+                let mut track = DrawRectPass::new(
+                    track.params.clone(),
+                    DrawRectInput::default(),
+                    DrawRectOutput::default(),
+                );
+                track.set_render_mode(track_mode);
+                ctx.emit_draw_rect_pass(graph, track);
+                emit_prepared_scrollbar_shadow(thumb_shadow, graph, ctx);
+                let thumb_mode = thumb.mode;
+                let mut thumb = DrawRectPass::new(
+                    thumb.params.clone(),
+                    DrawRectInput::default(),
+                    DrawRectOutput::default(),
+                );
+                thumb.set_render_mode(thumb_mode);
+                ctx.emit_draw_rect_pass(graph, thumb);
+            }
+        }
+        PaintOp::PreparedText(op) => {
+            let Some(input_target) = ctx.current_target() else {
+                return;
+            };
+            graph.add_graphics_pass(TextPreparedInputPass::new(
+                op.params.clone(),
+                TextInput {
+                    pass_context: ctx.graphics_pass_context(),
+                },
+                TextOutput {
+                    render_target: input_target,
+                },
+            ));
+            ctx.set_current_target(input_target);
+        }
+        PaintOp::PreparedImage(op) => {
+            let Some(input_target) = ctx.current_target() else {
+                return;
+            };
+            graph.add_graphics_pass(TextureCompositePass::new(
+                op.params,
+                TextureCompositeInput::from_sampled_texture(
+                    op.upload.clone(),
+                    Default::default(),
+                    ctx.graphics_pass_context(),
+                ),
+                TextureCompositeOutput {
+                    render_target: input_target,
+                },
+            ));
+            ctx.set_current_target(input_target);
+        }
+        PaintOp::PreparedSvg(op) => {
+            let Some(input_target) = ctx.current_target() else {
+                return;
+            };
+            graph.add_graphics_pass(TextureCompositePass::new(
+                op.params,
+                TextureCompositeInput::from_sampled_texture(
+                    op.upload.clone(),
+                    Default::default(),
+                    ctx.graphics_pass_context(),
+                ),
+                TextureCompositeOutput {
+                    render_target: input_target,
+                },
+            ));
+            ctx.set_current_target(input_target);
         }
     }
 }
