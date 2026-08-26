@@ -208,7 +208,11 @@ fn retained_auto_occupied_pending_falls_back_without_finishing_foreign_owner() {
 
     let mut viewport = Viewport::new();
     assert!(viewport.stage_retained_surface_clear());
-    let foreign_pending = viewport.compositor.pending_retained_surfaces.clone();
+    let foreign_pending = viewport
+        .compositor
+        .pending_retained_surfaces
+        .as_ref()
+        .map(|pending| pending.clone_non_artifact_for_test());
     let foreign_owner = viewport.compositor.pending_retained_surface_owner;
     let resident_before = viewport.compositor.retained_surfaces.clone();
     let frame_owner = viewport.begin_retained_surface_frame_stage();

@@ -46,6 +46,36 @@ fn sealed_stamps(
         .map(crate::view::paint::SealedArtifactSurfaceResidentEntry::stamp)
 }
 
+fn artifact_pool_actions(
+    viewport: &crate::view::viewport::Viewport,
+    residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
+    allow_forced_pair_witness: bool,
+) -> Option<
+    Vec<(
+        RetainedSurfaceResidentKey,
+        crate::view::paint::RetainedSurfaceCompileAction,
+    )>,
+> {
+    let emission = if allow_forced_pair_witness {
+        viewport.prepare_artifact_surface_pool_emission_for_forced_test(residents)?
+    } else {
+        viewport.prepare_artifact_surface_pool_emission_from_pool(residents)?
+    };
+    Some(emission.ordered_actions().to_vec())
+}
+
+fn stage_artifact_residents(
+    viewport: &mut crate::view::viewport::Viewport,
+    owner: crate::view::viewport::RetainedSurfaceFrameStageOwner,
+    residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
+) -> bool {
+    let Some(emission) = viewport.prepare_artifact_surface_pool_emission_from_pool(residents)
+    else {
+        return false;
+    };
+    viewport.stage_artifact_surface_resident_set(owner, emission.into_canonical_residents())
+}
+
 pub(super) fn scroll_artifact_with_a_local_clip() -> PaintArtifact {
     let mut artifact = scroll_surface_artifact();
     let scroll_owner = artifact
@@ -338,10 +368,13 @@ fn root_scroll_offset_changes_plan_geometry_but_reuses_every_raster_stamp() {
     let owner = viewport
         .begin_retained_surface_frame_stage()
         .expect("baseline V2 resident owner");
-    assert!(viewport.stage_artifact_surface_resident_set(owner, baseline.residents().clone()));
+    assert!(stage_artifact_residents(
+        &mut viewport,
+        owner,
+        baseline.residents().clone(),
+    ));
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
-    let actions = viewport
-        .artifact_surface_compile_actions_for_forced_test(moved.residents())
+    let actions = artifact_pool_actions(&viewport, moved.residents().clone(), true)
         .expect("moved V2 pool actions");
     assert!(
         actions
@@ -450,8 +483,7 @@ fn empty_nested_receiver_keeps_cold_raster_authority_without_advancing_parent_or
     assert_eq!(empty_dependency.4, empty_dependency.3);
 
     let viewport = crate::view::viewport::Viewport::new();
-    let actions = viewport
-        .artifact_surface_compile_actions_from_pool(empty.residents())
+    let actions = artifact_pool_actions(&viewport, empty.residents().clone(), false)
         .expect("canonical cold empty-receiver actions");
     assert_eq!(
         actions[child.index()].1,
@@ -468,8 +500,7 @@ fn artifact_pool_preserves_three_co_located_sealed_keys_cold_and_warm() {
     assert_eq!(sealed_keys.len(), 3);
 
     let mut viewport = crate::view::viewport::Viewport::new();
-    let production_cold = viewport
-        .artifact_surface_compile_actions_from_pool(residents)
+    let production_cold = artifact_pool_actions(&viewport, residents.clone(), false)
         .expect("canonical production cold artifact actions");
     assert_eq!(
         production_cold
@@ -483,8 +514,7 @@ fn artifact_pool_preserves_three_co_located_sealed_keys_cold_and_warm() {
             .iter()
             .all(|(_, action)| *action == RetainedSurfaceCompileAction::Reraster)
     );
-    let cold = viewport
-        .artifact_surface_compile_actions_for_forced_test(residents)
+    let cold = artifact_pool_actions(&viewport, residents.clone(), true)
         .expect("canonical cold artifact actions");
     assert_eq!(
         cold.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
@@ -498,7 +528,11 @@ fn artifact_pool_preserves_three_co_located_sealed_keys_cold_and_warm() {
     let owner = viewport
         .begin_retained_surface_frame_stage()
         .expect("artifact frame owner");
-    assert!(viewport.stage_artifact_surface_resident_set(owner, residents.clone()));
+    assert!(stage_artifact_residents(
+        &mut viewport,
+        owner,
+        residents.clone(),
+    ));
     assert_eq!(
         viewport.pending_artifact_surface_resident_keys_for_test(),
         Some(sealed_keys.clone()),
@@ -509,8 +543,7 @@ fn artifact_pool_preserves_three_co_located_sealed_keys_cold_and_warm() {
         sealed_keys.iter().copied().collect(),
     );
 
-    let warm = viewport
-        .artifact_surface_compile_actions_for_forced_test(residents)
+    let warm = artifact_pool_actions(&viewport, residents.clone(), true)
         .expect("canonical warm artifact actions");
     assert_eq!(
         warm.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
@@ -531,7 +564,11 @@ fn one_depth_three_revision_change_rerasterizes_only_its_surface() {
     let owner = viewport
         .begin_retained_surface_frame_stage()
         .expect("baseline frame owner");
-    assert!(viewport.stage_artifact_surface_resident_set(owner, baseline.residents().clone(),));
+    assert!(stage_artifact_residents(
+        &mut viewport,
+        owner,
+        baseline.residents().clone(),
+    ));
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
 
     let mut changed_artifact = depth_three_effect_artifact();
@@ -544,8 +581,7 @@ fn one_depth_three_revision_change_rerasterizes_only_its_surface() {
         .expect("fixture revision increment");
     let changed = prepared_depth_three(changed_artifact);
     assert_eq!(changed.residents().resident_keys_for_test(), baseline_keys);
-    let actions = viewport
-        .artifact_surface_compile_actions_for_forced_test(changed.residents())
+    let actions = artifact_pool_actions(&viewport, changed.residents().clone(), true)
         .expect("changed artifact actions");
     assert_eq!(
         actions
@@ -594,10 +630,18 @@ fn artifact_pool_rejections_preserve_committed_and_pending_exact_keys() {
     let committed_owner = viewport
         .begin_retained_surface_frame_stage()
         .expect("committed frame owner");
-    assert!(viewport.stage_artifact_surface_resident_set(committed_owner, residents.clone(),));
+    assert!(stage_artifact_residents(
+        &mut viewport,
+        committed_owner,
+        residents.clone(),
+    ));
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(committed_owner), true,));
 
-    assert!(!viewport.stage_artifact_surface_resident_set(committed_owner, residents.clone(),));
+    assert!(!stage_artifact_residents(
+        &mut viewport,
+        committed_owner,
+        residents.clone(),
+    ));
     assert_eq!(
         viewport.committed_retained_surface_resident_keys_for_test(),
         sealed_keys.iter().copied().collect(),
@@ -608,7 +652,11 @@ fn artifact_pool_rejections_preserve_committed_and_pending_exact_keys() {
         .expect("pending frame owner");
     let mut invalid = residents.clone();
     assert!(invalid.remove_first_span_boundary_owner_for_test());
-    assert!(!viewport.stage_artifact_surface_resident_set(pending_owner, invalid.clone(),));
+    assert!(!stage_artifact_residents(
+        &mut viewport,
+        pending_owner,
+        invalid.clone(),
+    ));
     assert_eq!(
         viewport.pending_artifact_surface_resident_keys_for_test(),
         None
@@ -618,8 +666,16 @@ fn artifact_pool_rejections_preserve_committed_and_pending_exact_keys() {
         sealed_keys.iter().copied().collect(),
     );
 
-    assert!(viewport.stage_artifact_surface_resident_set(pending_owner, residents,));
-    assert!(!viewport.stage_artifact_surface_resident_set(pending_owner, invalid));
+    assert!(stage_artifact_residents(
+        &mut viewport,
+        pending_owner,
+        residents,
+    ));
+    assert!(!stage_artifact_residents(
+        &mut viewport,
+        pending_owner,
+        invalid,
+    ));
     assert_eq!(
         viewport.pending_artifact_surface_resident_keys_for_test(),
         Some(sealed_keys),

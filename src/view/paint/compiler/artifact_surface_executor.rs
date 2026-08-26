@@ -716,22 +716,24 @@ fn emit_prepared_artifact_surface_frame(
     // This canonicalizer validates every color key's depth role before the
     // infallible allocator reaches its depth-key `expect`.
     #[cfg(test)]
-    let ordered_actions = if allow_forced_pair_witness {
+    let pool_emission = if allow_forced_pair_witness {
         viewport
-            .artifact_surface_compile_actions_for_forced_test(&residents)
+            .prepare_artifact_surface_pool_emission_for_forced_test(residents)
             .expect("compiler-sealed artifact residents are pool canonical")
     } else {
         viewport
-            .artifact_surface_compile_actions_from_pool(&residents)
+            .prepare_artifact_surface_pool_emission_from_pool(residents)
             .expect("compiler-sealed artifact residents are pool canonical")
     };
     #[cfg(not(test))]
-    let ordered_actions = {
+    let pool_emission = {
         let _ = allow_forced_pair_witness;
         viewport
-            .artifact_surface_compile_actions_from_pool(&residents)
+            .prepare_artifact_surface_pool_emission_from_pool(residents)
             .expect("compiler-sealed artifact residents are pool canonical")
     };
+    let residents = pool_emission.residents();
+    let ordered_actions = pool_emission.ordered_actions();
     assert_eq!(ordered_actions.len(), residents.len());
     let actions = ordered_actions
         .iter()
@@ -813,9 +815,10 @@ fn emit_prepared_artifact_surface_frame(
     }
 
     // `UiBuildContext` owns only a by-value `ViewportContext`; borrow checking
-    // does not protect the staging slot across emission. This assertion is the
-    // load-bearing invariant that the active owner and pending slot remained
-    // unchanged between preflight and this exact sealed transaction.
+    // does not protect the staging slot across emission. Pool canonicality is
+    // already carried by the linear capability, so this assertion now guards
+    // only that the owner stayed active and the pending slot stayed empty.
+    let residents = pool_emission.into_canonical_residents();
     assert!(
         viewport.stage_artifact_surface_resident_set(owner, residents),
         "preflighted artifact resident transaction must stage after emission"

@@ -8,6 +8,7 @@ mod debug;
 pub(crate) mod dispatch;
 mod frame;
 mod gpu_resources;
+pub(crate) use self::gpu_resources::PoolCanonicalArtifactSurfaceResidents;
 #[cfg(test)]
 mod incremental_tests;
 mod input;
@@ -708,7 +709,7 @@ pub(crate) fn retained_surface_compile_action_against_resident_for_test(
 }
 
 #[allow(dead_code)] // C3 transaction consumer lands before the C4 full-frame producer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum PendingRetainedSurfaceTransaction {
     Commit {
         full_set: FxHashMap<
@@ -720,7 +721,7 @@ enum PendingRetainedSurfaceTransaction {
     /// their stamps by the compiler and must never be re-derived from the
     /// legacy `RetainedSurfaceRasterIdentity::resident_key` mapping.
     CommitArtifactSurfaceSet {
-        residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
+        residents: PoolCanonicalArtifactSurfaceResidents,
     },
     CommitScrollTileActiveSet {
         manifest: crate::view::paint::ScrollContentTileSetTransactionStamp,
@@ -750,6 +751,45 @@ enum PendingRetainedSurfaceTransaction {
         replacement: crate::view::paint::RetainedPropertyScrollSceneEmptyReplacement,
     },
     Clear,
+}
+
+#[cfg(test)]
+impl PendingRetainedSurfaceTransaction {
+    /// Preserves the pre-existing exact pending-state assertions without
+    /// making the artifact capability cloneable, even in test builds.
+    fn clone_non_artifact_for_test(&self) -> Self {
+        match self {
+            Self::Commit { full_set } => Self::Commit {
+                full_set: full_set.clone(),
+            },
+            Self::CommitArtifactSurfaceSet { .. } => {
+                panic!("artifact resident capabilities are intentionally non-Clone")
+            }
+            Self::CommitScrollTileActiveSet {
+                manifest,
+                active_set,
+            } => Self::CommitScrollTileActiveSet {
+                manifest: manifest.clone(),
+                active_set: active_set.clone(),
+            },
+            Self::CommitPropertyScene {
+                transaction,
+                full_set,
+            } => Self::CommitPropertyScene {
+                transaction: transaction.clone(),
+                full_set: full_set.clone(),
+            },
+            Self::CommitPropertyScrollScene { transaction } => Self::CommitPropertyScrollScene {
+                transaction: transaction.clone(),
+            },
+            Self::CommitPropertyScrollSceneEmpty { replacement } => {
+                Self::CommitPropertyScrollSceneEmpty {
+                    replacement: *replacement,
+                }
+            }
+            Self::Clear => Self::Clear,
+        }
+    }
 }
 
 /// Opaque per-frame ownership proof for the shared retained staging slot.
@@ -1469,7 +1509,11 @@ mod retained_surface_state_tests {
             .insert(first_key, first.clone());
 
         assert!(viewport.stage_retained_surface_full_set([second.clone()]));
-        let pending_before_invalid = viewport.compositor.pending_retained_surfaces.clone();
+        let pending_before_invalid = viewport
+            .compositor
+            .pending_retained_surfaces
+            .as_ref()
+            .map(PendingRetainedSurfaceTransaction::clone_non_artifact_for_test);
         let resident_before_invalid = viewport.compositor.retained_surfaces.entries.clone();
         let mut invalid = second.clone();
         invalid.target.depth = invalid
@@ -1600,7 +1644,11 @@ mod retained_surface_state_tests {
         duplicate[1] = duplicate[0].clone();
         let mut staging = Viewport::new();
         assert!(staging.stage_retained_scroll_tile_active_set(manifest.clone(), tiles.clone()));
-        let pending_before_invalid = staging.compositor.pending_retained_surfaces.clone();
+        let pending_before_invalid = staging
+            .compositor
+            .pending_retained_surfaces
+            .as_ref()
+            .map(PendingRetainedSurfaceTransaction::clone_non_artifact_for_test);
         let resident_before_invalid = staging.compositor.retained_surfaces.entries.clone();
         assert!(!staging.stage_retained_scroll_tile_active_set(manifest.clone(), duplicate,));
         assert_eq!(
@@ -2413,7 +2461,11 @@ mod retained_surface_state_tests {
             viewport.retained_surface_transaction_shape_for_test(),
             (0, Some(expected_len))
         );
-        let pending_before_valid_restage = viewport.compositor.pending_retained_surfaces.clone();
+        let pending_before_valid_restage = viewport
+            .compositor
+            .pending_retained_surfaces
+            .as_ref()
+            .map(PendingRetainedSurfaceTransaction::clone_non_artifact_for_test);
         let resident_before_valid_restage = viewport.compositor.retained_surfaces.clone();
         assert!(
             !viewport.stage_retained_property_scroll_scene(transaction.clone()),
@@ -2427,7 +2479,11 @@ mod retained_surface_state_tests {
             viewport.compositor.retained_surfaces, resident_before_valid_restage,
             "valid double-stage cannot mutate committed residents"
         );
-        let pending_before_invalid = viewport.compositor.pending_retained_surfaces.clone();
+        let pending_before_invalid = viewport
+            .compositor
+            .pending_retained_surfaces
+            .as_ref()
+            .map(PendingRetainedSurfaceTransaction::clone_non_artifact_for_test);
         let resident_before_invalid = viewport.compositor.retained_surfaces.clone();
         assert!(
             !viewport.stage_retained_property_scroll_scene(transaction.invalid_for_pool_test())
@@ -2540,7 +2596,11 @@ mod retained_surface_state_tests {
                     first.stage(&mut viewport),
                     "{label}/{first_label}: first stage"
                 );
-                let pending_before = viewport.compositor.pending_retained_surfaces.clone();
+                let pending_before = viewport
+                    .compositor
+                    .pending_retained_surfaces
+                    .as_ref()
+                    .map(PendingRetainedSurfaceTransaction::clone_non_artifact_for_test);
                 let resident_before = viewport.compositor.retained_surfaces.clone();
                 assert!(
                     !second.stage(&mut viewport),
@@ -2596,7 +2656,11 @@ mod retained_surface_state_tests {
         );
 
         assert!(viewport.stage_retained_surface_full_set([incoming.clone()]));
-        let foreign_pending = viewport.compositor.pending_retained_surfaces.clone();
+        let foreign_pending = viewport
+            .compositor
+            .pending_retained_surfaces
+            .as_ref()
+            .map(PendingRetainedSurfaceTransaction::clone_non_artifact_for_test);
         let foreign_owner = viewport.compositor.pending_retained_surface_owner;
         let resident_before = viewport.compositor.retained_surfaces.clone();
 
@@ -2649,7 +2713,11 @@ mod retained_surface_state_tests {
             .expect("finished frame grants a new owner generation");
         assert_ne!(first_owner, second_owner);
         assert!(viewport.stage_retained_surface_full_set([second.clone()]));
-        let pending_before = viewport.compositor.pending_retained_surfaces.clone();
+        let pending_before = viewport
+            .compositor
+            .pending_retained_surfaces
+            .as_ref()
+            .map(PendingRetainedSurfaceTransaction::clone_non_artifact_for_test);
         let owner_before = viewport.compositor.pending_retained_surface_owner;
         let resident_before = viewport.compositor.retained_surfaces.clone();
 
