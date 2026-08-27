@@ -115,10 +115,17 @@ fn recorded_zero_surface_child_mask_candidate() -> RecordedArtifactCandidate {
             .count(),
         2,
     );
-    let prepared = crate::view::paint::prepare_single_target_surface_dag_frame(artifact)
-        .expect("zero-surface child-mask artifact must prepare");
+    let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let plan = crate::view::paint::prepare_artifact_surface_raster_plan(
+        artifact,
+        artifact_surface_raster_context(&ctx, wgpu::Limits::default().max_texture_dimension_2d),
+    )
+    .expect("zero-surface child-mask artifact must prepare");
+    assert!(plan.nodes().is_empty());
+    let frame = crate::view::paint::seal_prepared_artifact_surface_frame(plan)
+        .expect("zero-surface child-mask resident set must seal");
     RecordedArtifactCandidate {
-        payload: RecordedArtifactPayload::SingleTargetSurfaceDag(prepared),
+        payload: RecordedArtifactPayload::ArtifactSurface(frame),
         eligibility,
     }
 }
@@ -134,6 +141,15 @@ fn prepare_error_label(
         SingleTargetSurfaceDagPrepareError::DetachedSurfacesUnsupported { .. } => {
             "detached-surfaces-unsupported"
         }
+    }
+}
+
+fn compile_error_label(error: crate::view::paint::ArtifactCompileErrorKind) -> &'static str {
+    use crate::view::paint::ArtifactCompileErrorKind;
+    match error {
+        ArtifactCompileErrorKind::InvalidStore => "invalid-store",
+        ArtifactCompileErrorKind::ChildMaskDepthOverflow { .. } => "child-mask-depth-overflow",
+        ArtifactCompileErrorKind::SurfaceExecution(_) => "surface-execution",
     }
 }
 
@@ -212,11 +228,27 @@ fn stage_c_zero_surface_prepare_rejects_a_purpose_named_detached_surface() {
 
     let trace = AutoAuthorityTrace {
         capture_rejections: true,
-        rejections: vec![AutoAuthorityRejection::ArtifactPrepare { error }],
+        rejections: vec![AutoAuthorityRejection::ArtifactPrepare {
+            error: RecordedArtifactSurfacePrepareError::DetachedSurfacesUnsupported {
+                candidates: 1,
+            },
+        }],
     };
     assert_eq!(
         auto_artifact_legacy_fallback_stage(&trace),
         PaintAuthorityFallbackStage::Prepare,
+    );
+}
+
+#[test]
+fn stage_c_retained_auto_zero_resident_gate_rejects_a_detached_surface_plan() {
+    let frame = crate::view::paint::prepared_depth_four_surface_frame_for_test();
+    let plan = frame.raster_plan().clone();
+    assert_eq!(plan.nodes().len(), 4);
+    assert_eq!(
+        require_zero_resident_artifact_surface_plan(plan)
+            .expect_err("RetainedAuto must not expand detached authority in C3b3c0"),
+        RecordedArtifactSurfacePrepareError::DetachedSurfacesUnsupported { candidates: 4 },
     );
 }
 
@@ -272,9 +304,15 @@ fn stage_c_zero_surface_child_mask_depth_seam_accepts_254_and_rejects_255_before
     for expected in 1..=254_u8 {
         assert_eq!(accepted_ctx.push_clip_id(), Some(expected));
     }
+    let mut accepted_viewport = Viewport::new();
+    let accepted_owner = accepted_viewport
+        .begin_retained_surface_frame_stage()
+        .expect("accepted frame owns one resident transaction");
     crate::view::paint::take_artifact_compile_count();
     assert!(matches!(
-        try_compile_recorded_artifact_frame(
+        try_compile_auto_artifact_frame(
+            &mut accepted_viewport,
+            accepted_owner,
             &mut accepted_graph,
             recorded_zero_surface_child_mask_candidate(),
             &accepted_ctx,
@@ -282,7 +320,20 @@ fn stage_c_zero_surface_child_mask_depth_seam_accepts_254_and_rejects_255_before
         ),
         PropertyNeutralArtifactAttempt::Compiled { .. }
     ));
-    assert_eq!(crate::view::paint::take_artifact_compile_count(), 1);
+    assert_eq!(crate::view::paint::take_artifact_compile_count(), 0);
+    assert_eq!(
+        accepted_viewport.pending_artifact_surface_resident_keys_for_test(),
+        Some(Vec::new())
+    );
+    assert!(
+        accepted_viewport
+            .finish_retained_surface_transaction_for_frame(Some(accepted_owner), true,)
+    );
+    assert!(
+        accepted_viewport
+            .pending_artifact_surface_resident_keys_for_test()
+            .is_none()
+    );
 
     let mut rejected_graph = FrameGraph::new();
     let mut rejected_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -293,24 +344,53 @@ fn stage_c_zero_surface_child_mask_depth_seam_accepts_254_and_rejects_255_before
     }
     assert_eq!(rejected_ctx.push_clip_id(), None);
     let before = rejected_graph.build_state_snapshot_for_test();
+    let mut rejected_viewport = Viewport::new();
+    let rejected_owner = rejected_viewport
+        .begin_retained_surface_frame_stage()
+        .expect("rejected frame owns one resident transaction");
     crate::view::paint::take_artifact_compile_count();
-    let rejection = try_compile_recorded_artifact_frame(
+    let rejection = try_compile_auto_artifact_frame(
+        &mut rejected_viewport,
+        rejected_owner,
         &mut rejected_graph,
         recorded_zero_surface_child_mask_candidate(),
         &rejected_ctx,
         None,
     );
     assert!(matches!(
-        rejection,
+        &rejection,
         PropertyNeutralArtifactAttempt::CompileRejected(
-            crate::view::paint::ArtifactCompileErrorKind::ChildMaskDepthOverflow {
-                incoming_depth: u8::MAX,
-                max_mask_depth: 1,
-            }
+            crate::view::paint::ArtifactCompileErrorKind::SurfaceExecution(
+                crate::view::paint::ArtifactSurfaceExecutionError::ChildMaskDepthOverflow {
+                    incoming_depth: u8::MAX,
+                    max_mask_depth: 1,
+                    ..
+                }
+            )
         )
     ));
+    let PropertyNeutralArtifactAttempt::CompileRejected(kind) = rejection else {
+        unreachable!()
+    };
+    assert_eq!(compile_error_label(kind), "surface-execution");
     assert_eq!(rejected_graph.build_state_snapshot_for_test(), before);
     assert_eq!(crate::view::paint::take_artifact_compile_count(), 0);
+    assert!(
+        rejected_viewport
+            .compositor
+            .pending_retained_surfaces
+            .is_some()
+    );
+    assert!(
+        rejected_viewport
+            .pending_artifact_surface_resident_keys_for_test()
+            .is_none(),
+        "typed rejection stages Clear rather than an empty artifact set"
+    );
+    assert!(
+        rejected_viewport
+            .finish_retained_surface_transaction_for_frame(Some(rejected_owner), true,)
+    );
 }
 
 #[test]
@@ -336,25 +416,46 @@ fn stage_c_zero_surface_retained_auto_emits_once_and_matches_legacy() {
         ),
         (1, 1),
     );
-    let RecordedArtifactPayload::SingleTargetSurfaceDag(prepared) = &candidate.payload else {
-        panic!("RetainedAuto current target must carry the C3a seal")
+    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
+        panic!("RetainedAuto current target must carry the generic artifact surface seal")
     };
-    assert!(prepared.surface_dag().nodes().is_empty());
-    assert!(prepared.execution_order().nodes().is_empty());
+    assert!(frame.raster_plan().nodes().is_empty());
+    assert!(frame.residents().is_empty());
 
     crate::view::paint::take_artifact_compile_count();
+    let mut viewport = Viewport::new();
+    let owner = viewport
+        .begin_retained_surface_frame_stage()
+        .expect("safe leaf owns one resident transaction");
     let mut graph = FrameGraph::new();
     let mut compile_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let target = compile_ctx.allocate_target(&mut graph);
     compile_ctx.set_current_target(target);
     assert!(matches!(
-        try_compile_recorded_artifact_frame(&mut graph, candidate, &compile_ctx, None),
+        try_compile_auto_artifact_frame(
+            &mut viewport,
+            owner,
+            &mut graph,
+            candidate,
+            &compile_ctx,
+            None,
+        ),
         PropertyNeutralArtifactAttempt::Compiled {
             root_effect_transaction: None,
             ..
         }
     ));
-    assert_eq!(crate::view::paint::take_artifact_compile_count(), 1);
+    assert_eq!(crate::view::paint::take_artifact_compile_count(), 0);
+    assert_eq!(
+        viewport.pending_artifact_surface_resident_keys_for_test(),
+        Some(Vec::new())
+    );
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
+    assert!(
+        viewport
+            .pending_artifact_surface_resident_keys_for_test()
+            .is_none()
+    );
 
     let (legacy_arena, legacy_roots) = prepared_safe_leaf();
     let legacy = build_roots_graph(legacy_arena, &legacy_roots, false);

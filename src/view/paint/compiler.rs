@@ -4571,6 +4571,7 @@ pub(crate) enum ArtifactCompileErrorKind {
         incoming_depth: u8,
         max_mask_depth: usize,
     },
+    SurfaceExecution(ArtifactSurfaceExecutionError),
 }
 
 /// Minimal host facts required to seal detached raster descriptors and final
@@ -5131,6 +5132,7 @@ fn validate_artifact_surface_dag_program(
 /// receiving a frame graph, arena, viewport, resident pool, component, or
 /// mutable renderer state. A rejection is therefore necessarily earlier than
 /// graph, pool, or component mutation.
+#[allow(dead_code)] // Retained as the C3b3c0 equivalence oracle until C3a deletion.
 pub(crate) fn prepare_single_target_surface_dag_frame(
     artifact: PaintArtifact,
 ) -> Result<ValidatedSingleTargetSurfaceDagFrame, SingleTargetSurfaceDagPrepareError> {
@@ -6929,6 +6931,7 @@ impl ValidatedSingleTargetSurfaceDagFrame {
 /// Consumes a preparation-only capability. With zero detached surfaces there
 /// are no execution nodes to visit; artifact chunk/op order is the complete
 /// execution stream and was sealed together with its terminal cursor.
+#[allow(dead_code)] // Retained as the C3b3c0 equivalence oracle until C3a deletion.
 pub(crate) fn emit_single_target_surface_dag_frame(
     prepared: ValidatedSingleTargetSurfaceDagFrame,
     graph: &mut FrameGraph,

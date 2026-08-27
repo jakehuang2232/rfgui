@@ -114,7 +114,7 @@ enum AutoAuthorityRejection {
         eligibility: crate::view::paint::FrameArtifactEligibility,
     },
     ArtifactPrepare {
-        error: crate::view::paint::SingleTargetSurfaceDagPrepareError,
+        error: RecordedArtifactSurfacePrepareError,
     },
 }
 
@@ -1393,8 +1393,9 @@ fn take_paint_authority_test_snapshot() -> Option<PaintAuthorityTelemetrySnapsho
 }
 
 enum RecordedArtifactPayload {
-    /// C3a current-target path, fully prepared before the common clear.
-    SingleTargetSurfaceDag(crate::view::paint::ValidatedSingleTargetSurfaceDagFrame),
+    /// Generic current-target artifact authority, fully prepared and resident
+    /// sealed before payload-dependent resident staging.
+    ArtifactSurface(crate::view::paint::PreparedArtifactSurfaceFrame),
     /// Existing root-effect and ArtifactCanary compiler path. These are not
     /// part of the C3a zero-surface acceptance claim.
     ExistingArtifact(crate::view::paint::PaintArtifact),
@@ -1405,14 +1406,22 @@ struct RecordedArtifactCandidate {
     eligibility: crate::view::paint::FrameArtifactEligibility,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecordedArtifactSurfacePrepareError {
+    RasterPlan(crate::view::paint::ArtifactSurfaceRasterPlanError),
+    ResidentSeal(crate::view::paint::ArtifactSurfaceResidentSealError),
+    DetachedSurfacesUnsupported { candidates: usize },
+}
+
 enum RecordedArtifactCandidateRejection {
     Eligibility(crate::view::paint::FrameArtifactEligibility),
-    Prepare(crate::view::paint::SingleTargetSurfaceDagPrepareError),
+    Prepare(RecordedArtifactSurfacePrepareError),
 }
 
 /// One owning M11A decision. Selection records or plans only; it has no
 /// frame-graph handle and cannot mutate the viewport runtime. The decision is
-/// consumed exactly once by the post-clear dispatch.
+/// consumed exactly once by dispatch, where each payload stages its own
+/// retained transaction.
 enum AutoAuthorityDecision {
     NativeScrollForest {
         plan: crate::view::paint::FramePaintPlan,
@@ -1740,11 +1749,50 @@ fn transform_effect_scroll_prepare_rejection_fallback_stage() -> PaintAuthorityF
     PaintAuthorityFallbackStage::Prepare
 }
 
+// This value is provisional: the current RetainedAuto producer reaches only
+// zero-resident Surface DAGs, so aggregate accounting never executes. The
+// first detached-surface admission batch must replace it with a measured
+// policy. It deliberately does not borrow the scroll-tile budget's meaning.
+const PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
+
+fn artifact_surface_raster_context(
+    ctx: &crate::view::base_component::UiBuildContext,
+    max_texture_dimension_2d: u32,
+) -> crate::view::paint::ArtifactSurfaceRasterContext {
+    let viewport = ctx.viewport();
+    crate::view::paint::ArtifactSurfaceRasterContext::new(
+        viewport.scale_factor(),
+        viewport.target_format(),
+        ctx.paint_offset(),
+        ctx.graphics_pass_context().scissor_rect,
+        max_texture_dimension_2d,
+        PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+    )
+    .expect("production artifact surface raster context is canonical")
+}
+
+fn require_zero_resident_artifact_surface_plan(
+    plan: crate::view::paint::PreparedArtifactSurfaceRasterPlan,
+) -> Result<
+    crate::view::paint::PreparedArtifactSurfaceRasterPlan,
+    RecordedArtifactSurfacePrepareError,
+> {
+    if !plan.nodes().is_empty() {
+        return Err(
+            RecordedArtifactSurfacePrepareError::DetachedSurfacesUnsupported {
+                candidates: plan.nodes().len(),
+            },
+        );
+    }
+    Ok(plan)
+}
+
 fn record_auto_artifact_candidate(
     arena: &crate::view::node_arena::NodeArena,
     roots: &[crate::view::node_arena::NodeKey],
     property_trees: &crate::view::compositor::PropertyTrees,
     paint_generations: &crate::view::compositor::PaintGenerationTracker,
+    raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
 ) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
     // RetainedAuto owns and records the complete frame.
     let has_single_root_effect = roots.first().is_some_and(|root| {
@@ -1778,8 +1826,17 @@ fn record_auto_artifact_candidate(
         } => {
             let payload = match artifact.target {
                 crate::view::paint::PaintArtifactTarget::CurrentTarget => {
-                    RecordedArtifactPayload::SingleTargetSurfaceDag(
-                        crate::view::paint::prepare_single_target_surface_dag_frame(artifact)
+                    let plan = crate::view::paint::prepare_artifact_surface_raster_plan(
+                        artifact,
+                        raster_context,
+                    )
+                    .map_err(RecordedArtifactSurfacePrepareError::RasterPlan)
+                    .map_err(RecordedArtifactCandidateRejection::Prepare)?;
+                    let plan = require_zero_resident_artifact_surface_plan(plan)
+                        .map_err(RecordedArtifactCandidateRejection::Prepare)?;
+                    RecordedArtifactPayload::ArtifactSurface(
+                        crate::view::paint::seal_prepared_artifact_surface_frame(plan)
+                            .map_err(RecordedArtifactSurfacePrepareError::ResidentSeal)
                             .map_err(RecordedArtifactCandidateRejection::Prepare)?,
                     )
                 }
@@ -1871,6 +1928,7 @@ fn select_retained_auto_authority_with_semantics(
     ctx: &crate::view::base_component::UiBuildContext,
     semantic_frame_time: crate::time::Instant,
     scroll_budget: crate::view::paint::ScrollSceneSingleTextureBudget,
+    artifact_surface_max_texture_dimension_2d: u32,
     capture_trace: bool,
 ) -> AutoAuthorityDecision {
     let transforms = property_trees.transforms.len();
@@ -2043,7 +2101,13 @@ fn select_retained_auto_authority_with_semantics(
         // resource, topology, property, or generation drift still fails
         // closed before emission.
         if is_exact_native_root_opacity_artifact(arena, roots, property_trees) {
-            match record_auto_artifact_candidate(arena, roots, property_trees, paint_generations) {
+            match record_auto_artifact_candidate(
+                arena,
+                roots,
+                property_trees,
+                paint_generations,
+                artifact_surface_raster_context(ctx, artifact_surface_max_texture_dimension_2d),
+            ) {
                 Ok(candidate) => return AutoAuthorityDecision::Artifact { candidate, trace },
                 Err(RecordedArtifactCandidateRejection::Eligibility(eligibility)) => {
                     trace.capture(|| AutoAuthorityRejection::Artifact { eligibility });
@@ -2098,7 +2162,13 @@ fn select_retained_auto_authority_with_semantics(
         };
     }
 
-    match record_auto_artifact_candidate(arena, roots, property_trees, paint_generations) {
+    match record_auto_artifact_candidate(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        artifact_surface_raster_context(ctx, artifact_surface_max_texture_dimension_2d),
+    ) {
         Ok(candidate) => AutoAuthorityDecision::Artifact { candidate, trace },
         Err(RecordedArtifactCandidateRejection::Eligibility(eligibility)) => {
             trace.capture(|| AutoAuthorityRejection::Artifact { eligibility });
@@ -2133,6 +2203,7 @@ fn select_retained_auto_authority(
         ctx,
         crate::time::Instant::now(),
         scroll_budget,
+        wgpu::Limits::default().max_texture_dimension_2d,
         capture_trace,
     )
 }
@@ -2160,6 +2231,7 @@ fn select_retained_transform_canary(
         ctx,
         crate::time::Instant::now(),
         scroll_budget,
+        wgpu::Limits::default().max_texture_dimension_2d,
         false,
     )
 }
@@ -2173,6 +2245,7 @@ fn select_retained_transform_canary_with_trace_capture(
     ctx: &crate::view::base_component::UiBuildContext,
     semantic_frame_time: crate::time::Instant,
     scroll_budget: crate::view::paint::ScrollSceneSingleTextureBudget,
+    artifact_surface_max_texture_dimension_2d: u32,
     capture_auto_trace: bool,
 ) -> RetainedTransformCanarySelection {
     // Named retained canaries, like RetainedAuto, own their whole frame.
@@ -2309,6 +2382,7 @@ fn select_retained_transform_canary_with_trace_capture(
                 ctx,
                 semantic_frame_time,
                 scroll_budget,
+                artifact_surface_max_texture_dimension_2d,
                 capture_auto_trace,
             ))
         }
@@ -2384,37 +2458,49 @@ fn try_build_property_neutral_artifact_frame(
         crate::view::paint::FrameArtifactRecordOutcome::Artifact {
             artifact,
             eligibility,
-        } => try_compile_recorded_artifact_frame(
-            graph,
-            RecordedArtifactCandidate {
-                payload: RecordedArtifactPayload::ExistingArtifact(artifact),
-                eligibility,
-            },
-            ctx,
-            root_effect_plan,
-        ),
+        } => {
+            try_compile_existing_artifact_frame(graph, artifact, eligibility, ctx, root_effect_plan)
+        }
         crate::view::paint::FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) => {
             PropertyNeutralArtifactAttempt::WholeFrameLegacy { eligibility }
         }
     }
 }
 
-fn try_compile_recorded_artifact_frame(
+fn try_compile_auto_artifact_frame(
+    viewport: &mut Viewport,
+    owner: crate::view::viewport::RetainedSurfaceFrameStageOwner,
     graph: &mut FrameGraph,
     candidate: RecordedArtifactCandidate,
     ctx: &crate::view::base_component::UiBuildContext,
     root_effect_plan: Option<&RootEffectBuildPlan>,
 ) -> PropertyNeutralArtifactAttempt {
+    let stage_is_active = viewport.retained_surface_frame_stage_owner_is_active(owner);
+    debug_assert!(
+        stage_is_active,
+        "artifact dispatch requires an active owner and an empty pending slot"
+    );
+    if !stage_is_active {
+        return PropertyNeutralArtifactAttempt::CompileRejected(
+            crate::view::paint::ArtifactCompileErrorKind::SurfaceExecution(
+                crate::view::paint::ArtifactSurfaceExecutionError::InactiveFrameStageOwner,
+            ),
+        );
+    }
     let RecordedArtifactCandidate {
         payload,
         eligibility,
     } = candidate;
-    let artifact_ctx =
-        crate::view::base_component::UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
     match payload {
-        RecordedArtifactPayload::SingleTargetSurfaceDag(prepared) => {
-            match crate::view::paint::emit_single_target_surface_dag_frame(
-                prepared,
+        RecordedArtifactPayload::ArtifactSurface(frame) => {
+            let artifact_ctx = crate::view::base_component::UiBuildContext::from_parts(
+                ctx.viewport(),
+                ctx.state_clone(),
+            );
+            match crate::view::paint::emit_prepared_artifact_surface_frame_from_pool(
+                viewport,
+                owner,
+                frame,
                 graph,
                 artifact_ctx,
             ) {
@@ -2423,59 +2509,86 @@ fn try_compile_recorded_artifact_frame(
                     eligibility,
                     root_effect_transaction: None,
                 },
-                Err(kind) => PropertyNeutralArtifactAttempt::CompileRejected(kind),
+                Err(error) => {
+                    if error
+                        != crate::view::paint::ArtifactSurfaceExecutionError::InactiveFrameStageOwner
+                    {
+                        assert!(
+                            viewport.stage_retained_surface_clear(),
+                            "active artifact surface rejection must stage exactly one clear transaction"
+                        );
+                    }
+                    PropertyNeutralArtifactAttempt::CompileRejected(
+                        crate::view::paint::ArtifactCompileErrorKind::SurfaceExecution(error),
+                    )
+                }
             }
         }
         RecordedArtifactPayload::ExistingArtifact(artifact) => {
-            let root_effect = match artifact.target {
-                crate::view::paint::PaintArtifactTarget::RootOpacityGroup { root, .. } => {
-                    let Some(plan) = root_effect_plan.filter(|plan| {
-                        plan.key == crate::view::base_component::root_effect_stable_key(root)
-                    }) else {
-                        return PropertyNeutralArtifactAttempt::CompileRejected(
-                            crate::view::paint::ArtifactCompileErrorKind::InvalidStore,
-                        );
-                    };
-                    let Some(stamp) = crate::view::paint::validated_root_effect_raster_stamp(
-                        &artifact,
-                        plan.target,
-                    ) else {
-                        return PropertyNeutralArtifactAttempt::CompileRejected(
-                            crate::view::paint::ArtifactCompileErrorKind::InvalidStore,
-                        );
-                    };
-                    let action = plan
-                        .committed
-                        .compile_action(&stamp, plan.key, plan.pair_resident);
-                    Some((
-                        action,
-                        PendingRootEffectTransaction::Commit {
-                            stamp,
-                            key: plan.key,
-                            action,
-                        },
-                    ))
-                }
-                crate::view::paint::PaintArtifactTarget::CurrentTarget => None,
-            };
-            let compiled = match &root_effect {
-                Some((action, _)) => crate::view::paint::try_compile_root_effect_artifact(
-                    &artifact,
-                    *action,
-                    graph,
-                    artifact_ctx,
-                ),
-                None => crate::view::paint::try_compile_artifact(&artifact, graph, artifact_ctx),
-            };
-            match compiled {
-                Ok(state) => PropertyNeutralArtifactAttempt::Compiled {
-                    state,
-                    eligibility,
-                    root_effect_transaction: root_effect.map(|(_, transaction)| transaction),
-                },
-                Err(error) => PropertyNeutralArtifactAttempt::CompileRejected(error.kind()),
-            }
+            assert!(
+                viewport.stage_retained_surface_clear(),
+                "existing artifact authority must stage exactly one clear transaction"
+            );
+            try_compile_existing_artifact_frame(graph, artifact, eligibility, ctx, root_effect_plan)
         }
+    }
+}
+
+fn try_compile_existing_artifact_frame(
+    graph: &mut FrameGraph,
+    artifact: crate::view::paint::PaintArtifact,
+    eligibility: crate::view::paint::FrameArtifactEligibility,
+    ctx: &crate::view::base_component::UiBuildContext,
+    root_effect_plan: Option<&RootEffectBuildPlan>,
+) -> PropertyNeutralArtifactAttempt {
+    let artifact_ctx =
+        crate::view::base_component::UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+    let root_effect = match artifact.target {
+        crate::view::paint::PaintArtifactTarget::RootOpacityGroup { root, .. } => {
+            let Some(plan) = root_effect_plan.filter(|plan| {
+                plan.key == crate::view::base_component::root_effect_stable_key(root)
+            }) else {
+                return PropertyNeutralArtifactAttempt::CompileRejected(
+                    crate::view::paint::ArtifactCompileErrorKind::InvalidStore,
+                );
+            };
+            let Some(stamp) =
+                crate::view::paint::validated_root_effect_raster_stamp(&artifact, plan.target)
+            else {
+                return PropertyNeutralArtifactAttempt::CompileRejected(
+                    crate::view::paint::ArtifactCompileErrorKind::InvalidStore,
+                );
+            };
+            let action = plan
+                .committed
+                .compile_action(&stamp, plan.key, plan.pair_resident);
+            Some((
+                action,
+                PendingRootEffectTransaction::Commit {
+                    stamp,
+                    key: plan.key,
+                    action,
+                },
+            ))
+        }
+        crate::view::paint::PaintArtifactTarget::CurrentTarget => None,
+    };
+    let compiled = match &root_effect {
+        Some((action, _)) => crate::view::paint::try_compile_root_effect_artifact(
+            &artifact,
+            *action,
+            graph,
+            artifact_ctx,
+        ),
+        None => crate::view::paint::try_compile_artifact(&artifact, graph, artifact_ctx),
+    };
+    match compiled {
+        Ok(state) => PropertyNeutralArtifactAttempt::Compiled {
+            state,
+            eligibility,
+            root_effect_transaction: root_effect.map(|(_, transaction)| transaction),
+        },
+        Err(error) => PropertyNeutralArtifactAttempt::CompileRejected(error.kind()),
     }
 }
 
@@ -3474,6 +3587,10 @@ impl Viewport {
             || self.debug_options.retained_auto_overlay
             || self.debug_options.retained_auto_census
             || paint_authority_test_capture_enabled();
+        let artifact_surface_max_texture_dimension_2d = self
+            .device()
+            .map(|device| device.limits().max_texture_dimension_2d)
+            .unwrap_or_else(|| wgpu::Limits::default().max_texture_dimension_2d);
         let property_scroll_budget = crate::view::paint::production_single_texture_budget(self);
         let retained_auto_terminal_failure = self.retained_auto_terminal_failure;
         let retained_transform_selection = retained_auto_circuit_breaker_selection(
@@ -3490,6 +3607,7 @@ impl Viewport {
                 &ctx,
                 semantic_now,
                 property_scroll_budget,
+                artifact_surface_max_texture_dimension_2d,
                 capture_paint_authority_telemetry,
             )
         });
@@ -4929,13 +5047,28 @@ impl Viewport {
                     )
                 }
                 RetainedTransformCanarySelection::AutoArtifact(candidate) => {
-                    self.stage_retained_surface_clear();
-                    match try_compile_recorded_artifact_frame(
-                        &mut graph,
-                        candidate,
-                        &ctx,
-                        root_effect_plan.as_ref(),
-                    ) {
+                    let artifact_attempt = retained_surface_frame_owner.map_or_else(
+                        || {
+                            // A missing owner means another transaction owns
+                            // the slot. Preserve it rather than staging Clear.
+                            PropertyNeutralArtifactAttempt::CompileRejected(
+                                crate::view::paint::ArtifactCompileErrorKind::SurfaceExecution(
+                                    crate::view::paint::ArtifactSurfaceExecutionError::InactiveFrameStageOwner,
+                                ),
+                            )
+                        },
+                        |owner| {
+                            try_compile_auto_artifact_frame(
+                                self,
+                                owner,
+                                &mut graph,
+                                candidate,
+                                &ctx,
+                                root_effect_plan.as_ref(),
+                            )
+                        },
+                    );
+                    match artifact_attempt {
                         PropertyNeutralArtifactAttempt::Compiled {
                             state,
                             eligibility,
@@ -4955,20 +5088,8 @@ impl Viewport {
                                 ),
                             )
                         }
-                        PropertyNeutralArtifactAttempt::WholeFrameLegacy { eligibility } => {
-                            if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                                telemetry.note_artifact_rejection(eligibility.clone());
-                                dispatch_legacy_fallback_stage =
-                                    Some(PaintAuthorityFallbackStage::Selection);
-                            }
-                            self.stage_root_effect_clear();
-                            (
-                                true,
-                                format!(
-                                    "retained-auto authority=legacy fallback={:?}",
-                                    eligibility.reasons
-                                ),
-                            )
+                        PropertyNeutralArtifactAttempt::WholeFrameLegacy { .. } => {
+                            unreachable!("auto artifact dispatch never yields whole-frame legacy")
                         }
                         PropertyNeutralArtifactAttempt::CompileRejected(kind) => {
                             if paint_authority_telemetry.is_some() {

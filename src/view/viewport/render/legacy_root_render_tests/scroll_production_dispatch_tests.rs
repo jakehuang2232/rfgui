@@ -185,14 +185,26 @@ fn retained_auto_transform_effect_scroll_production_preflight_and_rejection_disp
 #[test]
 fn retained_auto_authority_accepts_deferred_viewport_root() {
     fn assert_compiles(candidate: RecordedArtifactCandidate) {
+        let mut viewport = Viewport::new();
+        let owner = viewport
+            .begin_retained_surface_frame_stage()
+            .expect("artifact candidate owns one retained transaction");
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         let target = ctx.allocate_target(&mut graph);
         ctx.set_current_target(target);
         assert!(matches!(
-            try_compile_recorded_artifact_frame(&mut graph, candidate, &ctx, None),
+            try_compile_auto_artifact_frame(
+                &mut viewport,
+                owner,
+                &mut graph,
+                candidate,
+                &ctx,
+                None,
+            ),
             PropertyNeutralArtifactAttempt::Compiled { .. }
         ));
+        assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
     }
 
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);

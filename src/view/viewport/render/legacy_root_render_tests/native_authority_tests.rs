@@ -91,10 +91,18 @@ fn transparent_native_text_root_uses_host_generic_root_effect_artifact() {
         },
         pair_resident: false,
     };
+    let RecordedArtifactCandidate {
+        payload: RecordedArtifactPayload::ExistingArtifact(artifact),
+        eligibility,
+    } = candidate
+    else {
+        panic!("transparent root opacity compiles through ExistingArtifact")
+    };
     assert!(matches!(
-        try_compile_recorded_artifact_frame(
+        try_compile_existing_artifact_frame(
             &mut graph,
-            candidate,
+            artifact,
+            eligibility,
             &compile_ctx,
             Some(&root_effect_plan),
         ),
@@ -260,6 +268,13 @@ fn native_root_opacity_contract_rejects_property_resource_and_topology_drift() {
         candidate
     };
     let compile_tampered = |candidate: RecordedArtifactCandidate| {
+        let RecordedArtifactCandidate {
+            payload: RecordedArtifactPayload::ExistingArtifact(artifact),
+            eligibility,
+        } = candidate
+        else {
+            panic!("root opacity tamper compiles through ExistingArtifact")
+        };
         let mut graph = FrameGraph::new();
         let mut compile_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         let target = compile_ctx.allocate_target(&mut graph);
@@ -278,7 +293,13 @@ fn native_root_opacity_contract_rejects_property_resource_and_topology_drift() {
             },
             pair_resident: false,
         };
-        try_compile_recorded_artifact_frame(&mut graph, candidate, &compile_ctx, Some(&plan))
+        try_compile_existing_artifact_frame(
+            &mut graph,
+            artifact,
+            eligibility,
+            &compile_ctx,
+            Some(&plan),
+        )
     };
     let mut generation_tamper = candidate();
     let RecordedArtifactPayload::ExistingArtifact(generation_artifact) =

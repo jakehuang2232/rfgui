@@ -8,6 +8,10 @@ mod compiler;
 mod composite_edge;
 mod coverage_manifest;
 mod frame_plan;
+#[cfg(test)]
+pub(crate) use frame_plan::tests::{
+    prepared_depth_four_surface_frame as prepared_depth_four_surface_frame_for_test,
+};
 mod frame_recorder;
 mod legacy_admission;
 mod legacy_recording;

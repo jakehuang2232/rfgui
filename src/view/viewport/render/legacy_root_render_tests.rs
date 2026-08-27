@@ -76,20 +76,24 @@ use super::{
     AutoAuthorityDecision, AutoAuthorityKind, AutoAuthorityRejection, AutoAuthorityTrace,
     CachedCompiledGraph, FrameDisposition, PaintAuthorityFallbackStage, PaintAuthorityKind,
     PaintAuthorityTelemetry, PendingRootEffectTransaction, PropertyNeutralArtifactAttempt,
-    RecordedArtifactCandidate, RecordedArtifactPayload, RetainedAutoTerminalFailureStage,
-    RetainedTransformCanarySelection, RootEffectBuildPlan, RootEffectRetainedState, Viewport,
-    auto_artifact_legacy_fallback_stage, begin_paint_authority_telemetry_attempt,
-    build_root_legacy, debug_legacy_fallback, direct_scroll_transform_prepare_rejection_dispatch,
+    RecordedArtifactCandidate, RecordedArtifactPayload, RecordedArtifactSurfacePrepareError,
+    RetainedAutoTerminalFailureStage, RetainedTransformCanarySelection, RootEffectBuildPlan,
+    RootEffectRetainedState, Viewport,
+    artifact_surface_raster_context, auto_artifact_legacy_fallback_stage,
+    begin_paint_authority_telemetry_attempt, build_root_legacy, debug_legacy_fallback,
+    direct_scroll_transform_prepare_rejection_dispatch,
     direct_scroll_transform_prepare_rejection_fallback_stage, enable_paint_authority_test_capture,
     finish_frame_dirty_lifecycle, frame_disposition, paint_authority_test_capture_enabled,
     preflight_direct_scroll_transform_selection, preflight_transform_effect_scroll_selection,
     retained_auto_circuit_breaker_selection, retained_auto_fallback_overlay_records,
     retained_auto_overlay_label, retained_auto_terminal_fallback_stage,
+    require_zero_resident_artifact_surface_plan,
     select_retained_auto_authority, select_retained_transform_canary, should_store_compile_cache,
     store_paint_authority_test_snapshot, take_paint_authority_test_snapshot,
     terminal_failure_stage, transform_effect_scroll_prepare_rejection_dispatch,
     transform_effect_scroll_prepare_rejection_fallback_stage,
-    try_build_property_neutral_artifact_frame, try_compile_recorded_artifact_frame,
+    try_build_property_neutral_artifact_frame, try_compile_auto_artifact_frame,
+    try_compile_existing_artifact_frame,
 };
 
 fn constraints() -> (LayoutConstraints, LayoutPlacement) {
@@ -1834,13 +1838,11 @@ fn assert_native_root_opacity_artifact(
     assert!(candidate.eligibility.eligible, "{host}: eligibility");
     assert!(trace.rejections.is_empty(), "{host}: {trace:?}");
     if opacity.to_bits() == 1.0_f32.to_bits() {
-        let RecordedArtifactPayload::SingleTargetSurfaceDag(prepared) = &candidate.payload else {
-            panic!("{host}: opacity=1 current target must use the C3a zero-surface seal")
+        let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
+            panic!("{host}: opacity=1 current target must use the generic surface seal")
         };
-        assert!(matches!(
-            prepared.artifact().target,
-            crate::view::paint::PaintArtifactTarget::CurrentTarget
-        ));
+        assert!(frame.raster_plan().nodes().is_empty());
+        assert!(frame.residents().is_empty());
     } else {
         let RecordedArtifactPayload::ExistingArtifact(artifact) = &candidate.payload else {
             panic!("{host}: root opacity remains on the existing artifact path")
@@ -1861,6 +1863,10 @@ fn assert_native_root_opacity_artifact(
     }
 
     let mut graph = FrameGraph::new();
+    let mut viewport = Viewport::new();
+    let owner = viewport
+        .begin_retained_surface_frame_stage()
+        .expect("native root artifact owns one retained transaction");
     let mut compile_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let target = compile_ctx.allocate_target(&mut graph);
     compile_ctx.set_current_target(target);
@@ -1881,7 +1887,9 @@ fn assert_native_root_opacity_artifact(
         }
     });
     assert!(matches!(
-        try_compile_recorded_artifact_frame(
+        try_compile_auto_artifact_frame(
+            &mut viewport,
+            owner,
             &mut graph,
             candidate,
             &compile_ctx,
@@ -1889,6 +1897,20 @@ fn assert_native_root_opacity_artifact(
         ),
         PropertyNeutralArtifactAttempt::Compiled { .. }
     ));
+    if opacity.to_bits() == 1.0_f32.to_bits() {
+        assert_eq!(
+            viewport.pending_artifact_surface_resident_keys_for_test(),
+            Some(Vec::new())
+        );
+    } else {
+        assert!(
+            viewport
+                .pending_artifact_surface_resident_keys_for_test()
+                .is_none(),
+            "root opacity stages Clear rather than artifact residents"
+        );
+    }
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
     let composites = graph
         .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
         );
