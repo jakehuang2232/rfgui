@@ -94,41 +94,30 @@ fn selection_context(dpr: f32) -> UiBuildContext {
     UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, dpr)
 }
 
-fn selected_property_scene(
+fn selected_artifact(
     fixture: &RetainedAutoPropertyForestFixture,
     dpr: f32,
-) -> (crate::view::paint::FramePaintPlan, AutoAuthorityTrace) {
-    let AutoAuthorityDecision::PropertyScene { plan, trace } = select_retained_auto_authority(
+) -> (RecordedArtifactCandidate, AutoAuthorityTrace, usize) {
+    selected_artifact_surface(
+        "E -> T forest",
         &fixture.arena,
         &fixture.roots,
         &fixture.properties,
         &fixture.generations,
         &selection_context(dpr),
-        true,
-    ) else {
-        panic!("E -> T forest must select PropertyScene")
-    };
-    (plan, trace)
+    )
 }
 
 fn build_selected(
     viewport: &mut Viewport,
-    plan: &crate::view::paint::FramePaintPlan,
+    candidate: RecordedArtifactCandidate,
     dpr: f32,
-) -> crate::view::paint::RetainedPropertySceneBuildTrace {
-    let mut graph = FrameGraph::new();
-    let mut ctx = selection_context(dpr);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    let outcome = crate::view::paint::build_retained_property_scene_with_forced_pool_for_test(
-        viewport, plan, &mut graph, ctx,
-    )
-    .expect("selected property forest executes");
-    outcome.into_parts().1
+) -> usize {
+    emit_selected_artifact_surface("E -> T forest", viewport, candidate, selection_context(dpr))
 }
 
 #[test]
-fn retained_auto_direct_and_neutral_effect_transform_select_property_scene() {
+fn retained_auto_direct_and_neutral_effect_transform_select_artifact() {
     for neutral_wrapper in [false, true] {
         let stable_id_base = if neutral_wrapper {
             0xf4_2110
@@ -136,14 +125,11 @@ fn retained_auto_direct_and_neutral_effect_transform_select_property_scene() {
             0xf4_2100
         };
         let fixture = effect_transform_fixture(stable_id_base, neutral_wrapper);
-        let (_, trace) = selected_property_scene(&fixture, 1.0);
+        let (_, trace, _) = selected_artifact(&fixture, 1.0);
         assert!(
             !trace.rejections.iter().any(|rejection| matches!(
                 rejection,
-                AutoAuthorityRejection::Plan {
-                    authority: AutoAuthorityKind::PropertyScene,
-                    ..
-                }
+                AutoAuthorityRejection::ArtifactPrepare { .. }
             )),
             "selected authority cannot reject itself: {trace:?}",
         );
@@ -151,7 +137,7 @@ fn retained_auto_direct_and_neutral_effect_transform_select_property_scene() {
 }
 
 #[test]
-fn retained_auto_dpr1_and_dpr2_cold_warm_are_retained_and_never_red() {
+fn retained_auto_dpr1_and_dpr2_stage_stable_artifact_residents_and_never_red() {
     for (dpr, neutral_wrapper) in [(1.0, false), (2.0, true)] {
         let stable_id_base = if neutral_wrapper {
             0xf4_2210
@@ -159,32 +145,27 @@ fn retained_auto_dpr1_and_dpr2_cold_warm_are_retained_and_never_red() {
             0xf4_2200
         };
         let fixture = effect_transform_fixture(stable_id_base, neutral_wrapper);
-        let (plan, trace) = selected_property_scene(&fixture, dpr);
-        let telemetry = telemetry_for_auto_decision(AutoAuthorityDecision::PropertyScene {
-            plan: plan.clone(),
+        let (telemetry_candidate, trace, surface_count) = selected_artifact(&fixture, dpr);
+        let telemetry = telemetry_for_auto_decision(AutoAuthorityDecision::Artifact {
+            candidate: telemetry_candidate,
             trace,
         });
-        assert_eq!(
-            telemetry.final_authority(),
-            PaintAuthorityKind::PropertyScene
-        );
+        assert_eq!(telemetry.final_authority(), PaintAuthorityKind::Artifact);
         assert!(telemetry.fallback_boundary_nodes().is_empty());
         assert!(retained_auto_fallback_overlay_records(&telemetry, &fixture.roots).is_empty());
 
         let mut viewport = Viewport::new();
-        let cold = build_selected(&mut viewport, &plan, dpr);
-        assert_eq!((cold.reraster_count, cold.reuse_count), (2, 0));
-        viewport.finish_retained_surface_transaction(true);
-        let warm = build_selected(&mut viewport, &plan, dpr);
-        assert_eq!((warm.reraster_count, warm.reuse_count), (0, 2));
-        viewport.finish_retained_surface_transaction(false);
+        let (cold, _, _) = selected_artifact(&fixture, dpr);
+        assert_eq!(build_selected(&mut viewport, cold, dpr), surface_count);
+        let (warm, _, _) = selected_artifact(&fixture, dpr);
+        assert_eq!(build_selected(&mut viewport, warm, dpr), surface_count);
 
         viewport.scene.node_arena = fixture.arena;
         let capture =
             viewport.build_retained_auto_debug_capture(&telemetry, &fixture.roots, true, true);
         assert_eq!(
             capture.frame.selected_authority,
-            crate::view::debug::DebugFramePaintAuthority::PropertyScene
+            crate::view::debug::DebugFramePaintAuthority::Artifact
         );
         assert_eq!(
             capture.frame.disposition,
@@ -199,7 +180,21 @@ fn retained_auto_dpr1_and_dpr2_cold_warm_are_retained_and_never_red() {
 #[test]
 fn property_forest_prepare_rejection_cannot_report_retained_success() {
     let fixture = effect_transform_fixture(0xf4_2300, true);
-    let (plan, trace) = selected_property_scene(&fixture, 1.0);
+    // Named component-only oracle: this is the sole b2 test that bypasses the
+    // production selector to retain coverage of the legacy planner rejection.
+    let plan_context = crate::view::paint::TransformSurfacePlanContext::new([0.0; 2], None);
+    let plan = crate::view::paint::plan_property_effect_scene_with_context(
+        &fixture.arena,
+        &fixture.roots,
+        &fixture.properties,
+        &fixture.generations,
+        plan_context,
+    )
+    .expect("legacy property forest component fixture plans");
+    let trace = AutoAuthorityTrace {
+        capture_rejections: true,
+        rejections: Vec::new(),
+    };
     let viewport = Viewport::new();
     let mut graph = FrameGraph::new();
     let mut ctx = selection_context(1.0);

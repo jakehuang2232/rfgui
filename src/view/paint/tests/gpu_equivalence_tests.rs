@@ -3832,6 +3832,7 @@ mod native_pixel_oracle_tests;
 mod oracle_tests;
 mod scroll_graph_build_tests;
 
+mod native_artifact_surface_tests;
 mod native_nested_scroll_segment_tests;
 mod native_nested_scroll_tests;
 mod native_root_effect_tests;

@@ -2078,6 +2078,51 @@ fn exact_transform_child_isolation_fixture() -> (
     )
 }
 
+/// Real property-tree T -> E -> T fixture shared by the Stage C transition
+/// and coverage contracts. The artifact stores are recorded from the synced
+/// arena; no property snapshot or Surface DAG edge is injected afterward.
+fn stage_c_transform_effect_transform_artifact_fixture() -> PaintArtifact {
+    let (
+        arena,
+        root,
+        _before,
+        _effect_owner,
+        inner_transform_owner,
+        _after,
+        _properties,
+        _generations,
+    ) = exact_transform_child_isolation_fixture();
+    crate::view::test_support::get_element_mut::<Element>(&arena, inner_transform_owner)
+        .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
+            5.0, 3.0, 0.0,
+        ))));
+    arena.refresh_subtree_dirty_cache(root);
+    let mut properties = PropertyTrees::default();
+    properties.sync(&arena, &[root]);
+    let mut generations = PaintGenerationTracker::default();
+    generations.sync(&arena, &[root], &properties);
+    let artifact =
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
+            .expect("T -> E -> T artifact fixture");
+    let kinds = derive_artifact_surface_candidates(
+        &artifact,
+        LayerizationPolicy::PreservePropertyBoundaries,
+    )
+    .expect("T -> E -> T candidates")
+    .iter()
+    .map(|candidate| candidate.kind())
+    .collect::<Vec<_>>();
+    assert!(matches!(
+        kinds.as_slice(),
+        [
+            SurfaceDagNodeKind::Transform(_),
+            SurfaceDagNodeKind::Effect(_),
+            SurfaceDagNodeKind::Transform(_),
+        ]
+    ));
+    artifact
+}
+
 fn planning_only_nested_effect_fixture() -> (
     NodeArena,
     NodeKey,

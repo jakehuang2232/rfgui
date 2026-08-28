@@ -77,92 +77,76 @@ fn selection_context(dpr: f32) -> UiBuildContext {
     UiBuildContext::new(360, 260, wgpu::TextureFormat::Bgra8Unorm, dpr)
 }
 
-fn selected_property_scene(
+fn selected_artifact(
     fixture: &RetainedAutoMultiRootFixture,
     dpr: f32,
-) -> (crate::view::paint::FramePaintPlan, AutoAuthorityTrace) {
-    let AutoAuthorityDecision::PropertyScene { plan, trace } = select_retained_auto_authority(
+) -> (RecordedArtifactCandidate, AutoAuthorityTrace, usize) {
+    selected_artifact_surface(
+        "heterogeneous multi-root forest",
         &fixture.arena,
         &fixture.roots,
         &fixture.properties,
         &fixture.generations,
         &selection_context(dpr),
-        true,
-    ) else {
-        panic!("heterogeneous multi-root forest must select PropertyScene")
-    };
-    (plan, trace)
+    )
 }
 
 fn build_selected(
     viewport: &mut Viewport,
-    plan: &crate::view::paint::FramePaintPlan,
+    candidate: RecordedArtifactCandidate,
     dpr: f32,
-) -> crate::view::paint::RetainedPropertySceneBuildTrace {
-    let mut graph = FrameGraph::new();
-    let mut ctx = selection_context(dpr);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    crate::view::paint::build_retained_property_scene_with_forced_pool_for_test(
-        viewport, plan, &mut graph, ctx,
+) -> usize {
+    emit_selected_artifact_surface(
+        "heterogeneous multi-root forest",
+        viewport,
+        candidate,
+        selection_context(dpr),
     )
-    .expect("selected multi-root property forest executes")
-    .into_parts()
-    .1
 }
 
 #[test]
-fn retained_auto_selects_one_property_scene_for_heterogeneous_roots() {
+fn retained_auto_selects_one_artifact_program_for_heterogeneous_roots() {
     let fixture = multi_root_fixture();
     for dpr in [1.0, 2.0] {
-        let (plan, trace) = selected_property_scene(&fixture, dpr);
+        let (candidate, trace, surface_count) = selected_artifact(&fixture, dpr);
         assert!(
             !trace.rejections.iter().any(|rejection| matches!(
                 rejection,
-                AutoAuthorityRejection::Plan {
-                    authority: AutoAuthorityKind::PropertyScene,
-                    ..
-                }
+                AutoAuthorityRejection::ArtifactPrepare { .. }
             )),
             "selected authority cannot reject itself: {trace:?}",
         );
         let mut viewport = Viewport::new();
-        let build = build_selected(&mut viewport, &plan, dpr);
-        assert_eq!((build.root_count, build.surface_count), (2, 4));
-        viewport.finish_retained_surface_transaction(false);
+        assert_eq!(surface_count, 4);
+        assert_eq!(build_selected(&mut viewport, candidate, dpr), 4);
     }
 }
 
 #[test]
 fn multi_root_debug_is_presented_retained_and_has_no_fallback_overlay() {
     let fixture = multi_root_fixture();
-    let (plan, trace) = selected_property_scene(&fixture, 1.0);
-    let telemetry = telemetry_for_auto_decision(AutoAuthorityDecision::PropertyScene {
-        plan: plan.clone(),
+    let (telemetry_candidate, trace, surface_count) = selected_artifact(&fixture, 1.0);
+    let telemetry = telemetry_for_auto_decision(AutoAuthorityDecision::Artifact {
+        candidate: telemetry_candidate,
         trace,
     });
-    assert_eq!(
-        telemetry.final_authority(),
-        PaintAuthorityKind::PropertyScene
-    );
+    assert_eq!(telemetry.final_authority(), PaintAuthorityKind::Artifact);
     assert!(telemetry.fallback_boundary_nodes().is_empty());
     assert!(retained_auto_fallback_overlay_records(&telemetry, &fixture.roots).is_empty());
 
     let mut viewport = Viewport::new();
-    let cold = build_selected(&mut viewport, &plan, 1.0);
-    assert_eq!((cold.root_count, cold.surface_count), (2, 4));
-    assert_eq!((cold.reraster_count, cold.reuse_count), (4, 0));
-    viewport.finish_retained_surface_transaction(true);
-    let warm = build_selected(&mut viewport, &plan, 1.0);
-    assert_eq!((warm.reraster_count, warm.reuse_count), (0, 4));
-    viewport.finish_retained_surface_transaction(false);
+    assert_eq!(surface_count, 4);
+    let (cold, _, _) = selected_artifact(&fixture, 1.0);
+    assert_eq!(build_selected(&mut viewport, cold, 1.0), 4);
+    let (warm, _, _) = selected_artifact(&fixture, 1.0);
+    assert_eq!(build_selected(&mut viewport, warm, 1.0), 4);
 
     viewport.scene.node_arena = fixture.arena;
     let capture =
         viewport.build_retained_auto_debug_capture(&telemetry, &fixture.roots, true, true);
     assert_eq!(
         capture.frame.selected_authority,
-        crate::view::debug::DebugFramePaintAuthority::PropertyScene
+        crate::view::debug::DebugFramePaintAuthority::Artifact
     );
     assert_eq!(
         capture.frame.disposition,

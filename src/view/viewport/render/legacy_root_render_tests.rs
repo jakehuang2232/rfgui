@@ -74,21 +74,22 @@ impl ElementTrait for UnknownOverlayHost {
 
 use super::{
     AutoAuthorityDecision, AutoAuthorityKind, AutoAuthorityRejection, AutoAuthorityTrace,
-    CachedCompiledGraph, FrameDisposition, PaintAuthorityFallbackStage, PaintAuthorityKind,
-    PaintAuthorityTelemetry, PendingRootEffectTransaction, PropertyNeutralArtifactAttempt,
-    RecordedArtifactCandidate, RecordedArtifactPayload, RecordedArtifactSurfacePrepareError,
-    RetainedAutoTerminalFailureStage, RetainedTransformCanarySelection, RootEffectBuildPlan,
-    RootEffectRetainedState, Viewport,
+    CachedCompiledGraph, FrameDisposition, PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+    PaintAuthorityFallbackStage, PaintAuthorityKind, PaintAuthorityTelemetry,
+    PendingRootEffectTransaction, PropertyNeutralArtifactAttempt, RecordedArtifactCandidate,
+    RecordedArtifactPayload, RecordedArtifactSurfacePrepareError, RetainedAutoTerminalFailureStage,
+    RetainedTransformCanarySelection, RootEffectBuildPlan, RootEffectRetainedState, Viewport,
     artifact_surface_raster_context, auto_artifact_legacy_fallback_stage,
     begin_paint_authority_telemetry_attempt, build_root_legacy, debug_legacy_fallback,
     direct_scroll_transform_prepare_rejection_dispatch,
     direct_scroll_transform_prepare_rejection_fallback_stage, enable_paint_authority_test_capture,
     finish_frame_dirty_lifecycle, frame_disposition, paint_authority_test_capture_enabled,
     preflight_direct_scroll_transform_selection, preflight_transform_effect_scroll_selection,
+    require_no_scroll_detached_artifact_surface_plan, require_zero_resident_artifact_surface_plan,
     retained_auto_circuit_breaker_selection, retained_auto_fallback_overlay_records,
     retained_auto_overlay_label, retained_auto_terminal_fallback_stage,
-    require_zero_resident_artifact_surface_plan,
-    select_retained_auto_authority, select_retained_transform_canary, should_store_compile_cache,
+    select_retained_auto_authority, select_retained_auto_authority_with_artifact_budget_for_test,
+    select_retained_transform_canary, should_store_compile_cache,
     store_paint_authority_test_snapshot, take_paint_authority_test_snapshot,
     terminal_failure_stage, transform_effect_scroll_prepare_rejection_dispatch,
     transform_effect_scroll_prepare_rejection_fallback_stage,
@@ -1926,7 +1927,7 @@ fn assert_native_root_opacity_artifact(
     }
 }
 
-fn assert_native_property_scene_authority(
+fn assert_native_artifact_surface_authority(
     host: &str,
     arena: &NodeArena,
     roots: &[NodeKey],
@@ -1934,7 +1935,7 @@ fn assert_native_property_scene_authority(
 ) {
     let selection_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (properties, generations) = synced_paint_state(arena, roots);
-    let AutoAuthorityDecision::PropertyScene { plan, trace } = select_retained_auto_authority(
+    let AutoAuthorityDecision::Artifact { candidate, trace } = select_retained_auto_authority(
         arena,
         roots,
         &properties,
@@ -1942,18 +1943,27 @@ fn assert_native_property_scene_authority(
         &selection_ctx,
         true,
     ) else {
-        panic!("{host}: native property topology must select PropertyScene")
+        panic!("{host}: generic no-scroll topology must select Artifact")
     };
     assert!(
-        !trace.rejections.iter().any(|rejection| matches!(
-            rejection,
-            AutoAuthorityRejection::Plan {
-                authority: AutoAuthorityKind::PropertyScene,
-                ..
-            }
-        )),
-        "{host}: selected PropertyScene cannot contain its own terminal rejection: {trace:?}"
+        !trace
+            .rejections
+            .iter()
+            .any(|rejection| matches!(rejection, AutoAuthorityRejection::ArtifactPrepare { .. })),
+        "{host}: selected Artifact cannot contain its own terminal rejection: {trace:?}"
     );
+    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
+        panic!("{host}: generic no-scroll authority must carry an artifact surface frame")
+    };
+    assert!(
+        !frame.raster_plan().nodes().is_empty(),
+        "{host}: detached surfaces"
+    );
+    assert!(frame.raster_plan().nodes().iter().all(|node| matches!(
+        node.identity().role,
+        crate::view::paint::RetainedSurfaceRasterRole::Transform
+            | crate::view::paint::RetainedSurfaceRasterRole::PropertyEffect
+    )));
     if !emit_transaction {
         return;
     }
@@ -1961,44 +1971,110 @@ fn assert_native_property_scene_authority(
     let mut viewport = Viewport::new();
     let frame_owner = viewport
         .begin_retained_surface_frame_stage()
-        .expect("native property scene frame stage");
+        .expect("native artifact surface frame stage");
     let mut graph = FrameGraph::new();
     let mut execution_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let target = execution_ctx.allocate_target(&mut graph);
     execution_ctx.set_current_target(target);
-    graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
-        crate::view::render_pass::clear_pass::ClearParams::new([0.0; 4]),
-        crate::view::render_pass::clear_pass::ClearInput {
-            pass_context: execution_ctx.graphics_pass_context(),
-            clear_depth_stencil: true,
-        },
-        crate::view::render_pass::clear_pass::ClearOutput {
-            render_target: target,
-        },
-    ));
-    let prepared = crate::view::paint::prepare_retained_property_scene_from_pool(
-        &viewport,
-        &plan,
-        &graph,
-        &execution_ctx,
-    )
-    .unwrap_or_else(|error| panic!("{host}: property-scene preflight failed: {error:?}"));
-    let outcome = crate::view::paint::emit_prepared_retained_property_scene(
+    let outcome = try_compile_auto_artifact_frame(
         &mut viewport,
-        prepared,
+        frame_owner,
         &mut graph,
-        execution_ctx,
-    );
-    let (_state, build_trace) = outcome.into_parts();
-    assert!(
-        !build_trace.surfaces.is_empty(),
-        "{host}: retained surfaces"
+        candidate,
+        &execution_ctx,
+        None,
     );
     assert!(
-        graph.test_compile_snapshot().is_ok(),
-        "{host}: graph compile"
+        matches!(outcome, PropertyNeutralArtifactAttempt::Compiled { .. }),
+        "{host}: artifact surface execution"
     );
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true,));
+}
+
+fn assert_native_missing_paint_identity_falls_back_to_property_scene(
+    host: &str,
+    arena: &NodeArena,
+    roots: &[NodeKey],
+) {
+    let selection_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let (properties, generations) = synced_paint_state(arena, roots);
+    let AutoAuthorityDecision::PropertyScene { trace, .. } = select_retained_auto_authority(
+        arena,
+        roots,
+        &properties,
+        &generations,
+        &selection_ctx,
+        true,
+    ) else {
+        panic!("{host}: missing paint identity must fall back to PropertyScene")
+    };
+    assert!(
+        trace.rejections.iter().any(|rejection| matches!(
+            rejection,
+            AutoAuthorityRejection::Artifact { eligibility }
+                if eligibility.reasons.contains(
+                    &crate::view::paint::FrameArtifactFallbackReason::LegacyBoundary(
+                        crate::view::paint::LegacyPaintReason::MissingPaintIdentity,
+                    )
+                )
+        )),
+        "{host}: fallback must preserve the complete MissingPaintIdentity reason: {trace:?}"
+    );
+}
+
+fn selected_artifact_surface(
+    host: &str,
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    properties: &PropertyTrees,
+    generations: &PaintGenerationTracker,
+    ctx: &UiBuildContext,
+) -> (RecordedArtifactCandidate, AutoAuthorityTrace, usize) {
+    let decision = select_retained_auto_authority(arena, roots, properties, generations, ctx, true);
+    let AutoAuthorityDecision::Artifact { candidate, trace } = decision else {
+        panic!(
+            "{host}: production selector must choose Artifact, got {:?}: {:?}",
+            auto_authority_kind(&decision),
+            auto_authority_trace(&decision).rejections
+        )
+    };
+    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
+        panic!("{host}: production selector must carry a generic surface frame")
+    };
+    let surface_count = frame.raster_plan().nodes().len();
+    assert_ne!(surface_count, 0, "{host}: detached surface count");
+    assert!(frame.raster_plan().nodes().iter().all(|node| matches!(
+        node.identity().role,
+        crate::view::paint::RetainedSurfaceRasterRole::Transform
+            | crate::view::paint::RetainedSurfaceRasterRole::PropertyEffect
+    )));
+    (candidate, trace, surface_count)
+}
+
+fn emit_selected_artifact_surface(
+    host: &str,
+    viewport: &mut Viewport,
+    candidate: RecordedArtifactCandidate,
+    ctx: UiBuildContext,
+) -> usize {
+    let owner = viewport
+        .begin_retained_surface_frame_stage()
+        .unwrap_or_else(|| panic!("{host}: begin artifact resident transaction"));
+    let mut graph = FrameGraph::new();
+    let mut ctx = ctx;
+    let target = ctx.allocate_target(&mut graph);
+    ctx.set_current_target(target);
+    let attempt =
+        try_compile_auto_artifact_frame(viewport, owner, &mut graph, candidate, &ctx, None);
+    assert!(
+        matches!(attempt, PropertyNeutralArtifactAttempt::Compiled { .. }),
+        "{host}: production artifact executor must compile"
+    );
+    let pending = viewport
+        .pending_artifact_surface_resident_keys_for_test()
+        .unwrap_or_else(|| panic!("{host}: artifact transaction must be staged"));
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
+    pending.len()
 }
 
 struct TransparentContentsClipParent {
@@ -2339,8 +2415,8 @@ fn assert_composite_dirty_preserved(arena: &NodeArena, key: NodeKey) {
     );
 }
 
-mod canary_tests;
 mod authority_deletion_inventory_tests;
+mod canary_tests;
 mod composite_dirty_tests;
 mod mode_and_failure_tests;
 mod native_authority_tests;
@@ -2357,6 +2433,7 @@ mod same_owner_transform_effect_scroll_tests;
 mod scroll_forest_tests;
 mod scroll_production_dispatch_tests;
 mod scroll_topology_tests;
+mod stage_a_authority_selection_parity_tests;
 mod stage_a_reuse_contract_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod stage_c_surface_dag_producer_tests;
@@ -2365,6 +2442,5 @@ mod telemetry_tests;
 mod text_area_caret_reuse_tests;
 mod text_area_interaction_tests;
 mod text_area_scene_tests;
-mod stage_a_authority_selection_parity_tests;
 mod text_transform_tests;
 mod window_showcase_tests;

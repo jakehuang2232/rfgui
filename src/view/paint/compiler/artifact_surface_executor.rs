@@ -22,6 +22,17 @@ use crate::view::viewport::{RetainedSurfaceFrameStageOwner, Viewport};
 use glam::{Mat4, Vec3};
 use rustc_hash::FxHashSet;
 
+#[cfg(test)]
+thread_local! {
+    static LAST_PRODUCTION_ACTIONS: std::cell::RefCell<Vec<RetainedSurfaceCompileAction>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_last_production_actions_for_test() -> Vec<RetainedSurfaceCompileAction> {
+    LAST_PRODUCTION_ACTIONS.with(|actions| std::mem::take(&mut *actions.borrow_mut()))
+}
+
 /// One child-mask transition sealed in painter order for the artifact executor.
 ///
 /// The paired raster chunk remains the source of the mask draw payload. This
@@ -743,6 +754,8 @@ fn emit_prepared_artifact_surface_frame(
             *action
         })
         .collect::<Vec<_>>();
+    #[cfg(test)]
+    LAST_PRODUCTION_ACTIONS.with(|observed| observed.replace(actions.clone()));
     let composites = plan
         .nodes()
         .iter()

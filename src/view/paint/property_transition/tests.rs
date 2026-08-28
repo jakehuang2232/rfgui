@@ -688,6 +688,9 @@ fn transition_error_taxonomy_is_exhaustive() {
                 "unknown-layout-position-reference"
             }
             TransitionError::UnknownVisualOffsetReference(_) => "unknown-visual-offset-reference",
+            TransitionError::PropertySnapshotChainDepthOverflow(_) => {
+                "property-snapshot-chain-depth-overflow"
+            }
             TransitionError::DuplicateOwnerPropertyState(_) => "duplicate-owner-property-state",
             TransitionError::MissingOwnerPropertyState(_) => "missing-owner-property-state",
             TransitionError::UnreferencedOwnerPropertyState(_) => {
@@ -716,4 +719,62 @@ fn transition_error_taxonomy_is_exhaustive() {
         .err()
         .expect("duplicate transform must reject");
     assert_eq!(reason(error), "duplicate-transform");
+}
+
+#[test]
+fn surface_membership_parent_chain_is_bounded_and_cycle_closed() {
+    let mut arena = NodeArena::new();
+    let owners = (0..=usize::from(u8::MAX))
+        .map(|index| insert_owner(&mut arena, 0xc4_1000 + index as u64))
+        .collect::<Vec<_>>();
+    let transforms = owners
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, owner)| {
+            (
+                TransformNodeId(owner),
+                index
+                    .checked_sub(1)
+                    .map(|parent| TransformNodeId(owners[parent])),
+            )
+        })
+        .collect();
+    let graph = PropertySnapshotGraph {
+        transforms,
+        clips: FxHashMap::default(),
+        effects: FxHashMap::default(),
+        scrolls: FxHashMap::default(),
+        layout_positions: FxHashMap::default(),
+        visual_offsets: FxHashMap::default(),
+    };
+    assert_eq!(
+        graph.surface_membership(PropertyTreeState {
+            transform: owners.last().copied().map(TransformNodeId),
+            ..PropertyTreeState::default()
+        }),
+        Err(TransitionError::PropertySnapshotChainDepthOverflow(
+            PropertySnapshotChainId::Transform(TransformNodeId(owners[0])),
+        )),
+    );
+
+    let first = TransformNodeId(owners[0]);
+    let second = TransformNodeId(owners[1]);
+    let cyclic = PropertySnapshotGraph {
+        transforms: FxHashMap::from_iter([(first, Some(second)), (second, Some(first))]),
+        clips: FxHashMap::default(),
+        effects: FxHashMap::default(),
+        scrolls: FxHashMap::default(),
+        layout_positions: FxHashMap::default(),
+        visual_offsets: FxHashMap::default(),
+    };
+    assert_eq!(
+        cyclic.surface_membership(PropertyTreeState {
+            transform: Some(first),
+            ..PropertyTreeState::default()
+        }),
+        Err(TransitionError::SpatialSnapshot(
+            SpatialProjectionError::CyclicTransform(first),
+        )),
+    );
 }

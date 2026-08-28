@@ -14,10 +14,7 @@ fn retained_auto_trace_capture_does_not_change_authority_decision() {
         auto_authority_kind(&captured),
         auto_authority_kind(&uncaptured)
     );
-    assert_eq!(
-        auto_authority_kind(&captured),
-        AutoAuthorityKind::PropertyScene
-    );
+    assert_eq!(auto_authority_kind(&captured), AutoAuthorityKind::Artifact);
     assert!(auto_authority_trace(&uncaptured).rejections.is_empty());
 
     let (effect_scroll_arena, effect_scroll_roots, _, _) =
@@ -93,7 +90,7 @@ fn retained_auto_telemetry_labels_every_selected_authority_without_named_aliases
         telemetry_for_auto_decision(auto_decision(&arena, &roots, &ctx))
             .snapshot()
             .authority_label,
-        "retained-auto:property-scene"
+        "retained-auto:artifact"
     );
 
     let (arena, roots, _) = prepared_nested_transform_tree();
@@ -101,7 +98,7 @@ fn retained_auto_telemetry_labels_every_selected_authority_without_named_aliases
         telemetry_for_auto_decision(auto_decision(&arena, &roots, &ctx))
             .snapshot()
             .authority_label,
-        "retained-auto:property-scene"
+        "retained-auto:artifact"
     );
 
     let (arena, roots, _, _, _) = prepared_transform_child_isolation_tree();
@@ -109,7 +106,7 @@ fn retained_auto_telemetry_labels_every_selected_authority_without_named_aliases
         telemetry_for_auto_decision(auto_decision(&arena, &roots, &ctx))
             .snapshot()
             .authority_label,
-        "retained-auto:property-scene"
+        "retained-auto:artifact"
     );
 
     let (arena, roots) = prepared_safe_leaf();
@@ -117,10 +114,10 @@ fn retained_auto_telemetry_labels_every_selected_authority_without_named_aliases
     let isolation_telemetry = telemetry_for_auto_decision(auto_decision(&arena, &roots, &ctx));
     assert_eq!(
         isolation_telemetry.snapshot().authority_label,
-        "retained-auto:property-scene"
+        "retained-auto:artifact"
     );
     let formatted = isolation_telemetry.format_debug();
-    assert!(formatted.contains("retained-auto:property-scene"));
+    assert!(formatted.contains("retained-auto:artifact"));
     assert!(!formatted.contains("retained-isolation-canary"));
 
     let (arena, roots, properties, generations) = prepared_exact_scroll_scene();
@@ -343,7 +340,7 @@ fn paint_authority_test_capture_is_explicit_and_thread_local() {
         store_paint_authority_test_snapshot(&telemetry);
 
         let snapshot = take_paint_authority_test_snapshot().expect("captured snapshot");
-        assert_eq!(snapshot.selected, PaintAuthorityKind::PropertyScene);
+        assert_eq!(snapshot.selected, PaintAuthorityKind::Artifact);
 
         store_paint_authority_test_snapshot(&telemetry);
     }

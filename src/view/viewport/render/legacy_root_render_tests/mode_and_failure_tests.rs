@@ -20,7 +20,7 @@ fn retained_auto_is_default_and_named_modes_remain_isolated() {
             &generations,
             &ctx,
         ),
-        RetainedTransformCanarySelection::Auto(AutoAuthorityDecision::PropertyScene { .. })
+        RetainedTransformCanarySelection::Auto(AutoAuthorityDecision::Artifact { .. })
     ));
     assert!(matches!(
         select_retained_transform_canary(
@@ -150,8 +150,7 @@ fn retained_auto_terminal_failure_outcome_is_typed_and_named_modes_do_not_arm() 
         viewport.set_paint_renderer_mode(mode);
         viewport.take_redraw_request();
         assert!(
-            !viewport
-                .arm_retained_auto_terminal_failure(RetainedAutoTerminalFailureStage::Compile)
+            !viewport.arm_retained_auto_terminal_failure(RetainedAutoTerminalFailureStage::Compile)
         );
         assert_eq!(viewport.retained_auto_terminal_failure, None);
         assert!(!viewport.take_redraw_request());
@@ -244,13 +243,7 @@ fn abort_frame_discards_encoder_resets_staging_and_next_frame_submits() -> Resul
     assert_eq!(profile.submit_ms, 0.0);
     assert_eq!(profile.present_ms, 0.0);
 
-    viewport.begin_offscreen_test_frame(
-        device,
-        queue,
-        4,
-        4,
-        wgpu::TextureFormat::Rgba8Unorm,
-    )?;
+    viewport.begin_offscreen_test_frame(device, queue, 4, 4, wgpu::TextureFormat::Rgba8Unorm)?;
     assert!(
         viewport
             .upload_draw_rect_uniform(&[5, 6, 7, 8], 256, 256)
@@ -285,9 +278,7 @@ fn retained_auto_terminal_failure_latches_once_and_same_mode_setter_resets_it() 
     );
     assert!(viewport.retained_property_scroll_scene_stage_is_available());
 
-    assert!(
-        viewport.arm_retained_auto_terminal_failure(RetainedAutoTerminalFailureStage::Compile)
-    );
+    assert!(viewport.arm_retained_auto_terminal_failure(RetainedAutoTerminalFailureStage::Compile));
     assert_eq!(
         viewport.paint_renderer_mode(),
         ViewportPaintRendererMode::RetainedAuto,
@@ -334,9 +325,7 @@ fn retained_auto_terminal_failure_latches_once_and_same_mode_setter_resets_it() 
         "ordinary same-mode set stays idempotent"
     );
 
-    assert!(
-        viewport.arm_retained_auto_terminal_failure(RetainedAutoTerminalFailureStage::Execute)
-    );
+    assert!(viewport.arm_retained_auto_terminal_failure(RetainedAutoTerminalFailureStage::Execute));
     viewport.take_redraw_request();
     seed_empty_compile_cache(&mut viewport);
     assert!(viewport.frame.compile_cache.is_some());
@@ -363,16 +352,15 @@ fn retained_auto_open_breaker_forces_auto_legacy_with_capture_invariant_telemetr
             &generations,
             &ctx,
         ),
-        RetainedTransformCanarySelection::Auto(AutoAuthorityDecision::PropertyScene { .. })
+        RetainedTransformCanarySelection::Auto(AutoAuthorityDecision::Artifact { .. })
     ));
 
     for capture_trace in [false, true] {
-        let Some(RetainedTransformCanarySelection::Auto(AutoAuthorityDecision::Legacy {
-            trace,
-        })) = retained_auto_circuit_breaker_selection(
-            Some(RetainedAutoTerminalFailureStage::Execute),
-            capture_trace,
-        )
+        let Some(RetainedTransformCanarySelection::Auto(AutoAuthorityDecision::Legacy { trace })) =
+            retained_auto_circuit_breaker_selection(
+                Some(RetainedAutoTerminalFailureStage::Execute),
+                capture_trace,
+            )
         else {
             panic!("an open breaker must bypass retained planning as AutoLegacy")
         };

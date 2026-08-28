@@ -59,6 +59,7 @@ mod nested {
 fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
     let actual = [
         include_str!("gpu_equivalence_tests/native_transform_surface_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_tests.rs"),
         include_str!("gpu_equivalence_tests/native_scroll_boundary_tests.rs"),
         include_str!("gpu_equivalence_tests/native_nested_scroll_tests.rs"),
         include_str!("gpu_equivalence_tests/native_nested_scroll_segment_tests.rs"),
@@ -93,6 +94,8 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         "native_production_multi_root_scroll_forest_matches_legacy_and_reuses_real_pool",
         "native_scroll_scene_single_backing_pixels_match_and_reuse",
         "native_scroll_scene_tiled_cross_tile_pixels_match_and_reuse",
+        "native_production_artifact_transform_matches_legacy_and_reuses_real_pool",
+        "native_production_artifact_effect_matches_legacy_and_reuses_real_pool",
     ]);
     assert_eq!(actual, expected);
 }

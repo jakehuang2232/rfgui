@@ -90,6 +90,42 @@ fn production_transition_derivation_closes_the_legacy_scroll_transform_rejection
 }
 
 #[test]
+fn transform_effect_transform_boundary_transitions_ignore_coverage_ancestry() {
+    let artifact = stage_c_transform_effect_transform_artifact_fixture();
+    let requests = production_requests(&artifact).expect("T -> E -> T production requests");
+    let candidates = derive_artifact_surface_candidates(
+        &artifact,
+        LayerizationPolicy::PreservePropertyBoundaries,
+    )
+    .expect("T -> E -> T candidates");
+    let endpoints = |owner| {
+        artifact
+            .owner_property_states
+            .iter()
+            .find(|snapshot| snapshot.owner == owner)
+            .expect("candidate owner endpoints")
+    };
+    let [outer, effect, inner] = candidates.as_slice() else {
+        panic!("fixture must remain T -> E -> T")
+    };
+    let outer_from = endpoints(effect.target()).descendants;
+    let mut outer_to = outer_from;
+    outer_to.transform = None;
+    let effect_from = endpoints(inner.target()).descendants;
+    let mut effect_to = effect_from;
+    effect_to.effect = None;
+    let inner_from = effect_to;
+    let mut inner_to = inner_from;
+    inner_to.transform = None;
+    let expected = vec![
+        ArtifactTransitionRequest::new(outer.target(), outer_from, outer_to),
+        ArtifactTransitionRequest::new(effect.target(), effect_from, effect_to),
+        ArtifactTransitionRequest::new(inner.target(), inner_from, inner_to),
+    ];
+    assert_eq!(requests, expected);
+}
+
+#[test]
 fn deepest_referencing_witness_wins_across_two_surface_levels() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformEffectScroll);
@@ -276,7 +312,7 @@ fn scroll_terminal_closure_carries_a_self_clip_without_minting_a_surface() {
 }
 
 #[test]
-fn derivation_rejections_cover_stalled_terminal_conflict_and_missing_edges() {
+fn derivation_rejections_cover_stalled_terminal_and_missing_edges() {
     let (arena, root, properties, generations) = exact_transform_fixture();
     let mut stalled =
         stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
@@ -404,15 +440,130 @@ fn derivation_rejections_cover_stalled_terminal_conflict_and_missing_edges() {
         ..first_endpoints.descendants
     };
     sibling_endpoints.paint = first_endpoints.paint;
-    let conflict = production_requests(&conflicting);
+    let reordered = {
+        let mut artifact = conflicting.clone();
+        artifact.scroll_nodes.reverse();
+        artifact
+    };
+    let transform_transition = |artifact: &PaintArtifact| {
+        classify_artifact_transition_sequence(
+            artifact,
+            &production_requests(artifact).expect("branching sibling requests"),
+        )
+        .expect("branching sibling transitions")
+        .into_iter()
+        .find(|event| event.transition().transform.from == Some(TransformNodeId(root)))
+        .expect("root transform edge")
+        .transition()
+    };
+    assert_eq!(
+        transform_transition(&conflicting),
+        transform_transition(&reordered),
+        "the surface-owner anchor must be independent of sibling enumeration order",
+    );
+}
+
+#[test]
+fn incomparable_sibling_witnesses_still_reject_a_consumed_clip_disagreement() {
+    let (arena, root, properties, generations) =
+        property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformScroll);
+    let mut artifact =
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
+            .expect("branching scroll disagreement artifact");
+    let first_owner = arena.children_of(root)[0];
+    let sibling_owner = arena.children_of(first_owner)[0];
+    artifact
+        .owner_nodes
+        .iter_mut()
+        .find(|snapshot| snapshot.owner == sibling_owner)
+        .expect("sibling owner topology")
+        .parent = Some(root);
+
+    let first_scroll = artifact
+        .scroll_nodes
+        .iter()
+        .find(|snapshot| snapshot.owner == first_owner)
+        .copied()
+        .expect("first child scroll");
+    let first_clip = artifact
+        .clip_nodes
+        .iter()
+        .find(|snapshot| snapshot.owner == first_owner)
+        .copied()
+        .expect("first child contents clip");
+    let sibling_clip_id = ClipNodeId {
+        owner: sibling_owner,
+        role: ClipNodeRole::ContentsClip,
+    };
+    artifact.clip_nodes.push(ClipNodeSnapshot {
+        id: sibling_clip_id,
+        owner: sibling_owner,
+        ..first_clip
+    });
+    artifact
+        .scroll_nodes
+        .push(crate::view::compositor::property_tree::ScrollNodeSnapshot {
+            id: ScrollNodeId(sibling_owner),
+            owner: sibling_owner,
+            ..first_scroll
+        });
+
+    let root_clip_id = ClipNodeId {
+        owner: root,
+        role: ClipNodeRole::ContentsClip,
+    };
+    artifact.clip_nodes.push(ClipNodeSnapshot {
+        id: root_clip_id,
+        owner: root,
+        parent: None,
+        ..first_clip
+    });
+    artifact.scroll_nodes.insert(
+        0,
+        crate::view::compositor::property_tree::ScrollNodeSnapshot {
+            id: ScrollNodeId(root),
+            owner: root,
+            parent: None,
+            ..first_scroll
+        },
+    );
+
+    let root_endpoints = artifact
+        .owner_property_states
+        .iter_mut()
+        .find(|snapshot| snapshot.owner == root)
+        .expect("root endpoints");
+    root_endpoints.descendants.scroll = Some(ScrollNodeId(root));
+    root_endpoints.descendants.clip = Some(root_clip_id);
+    root_endpoints.paint.scroll = None;
+    root_endpoints.paint.clip = None;
+
+    for (owner, own_scroll, own_clip) in [
+        (first_owner, ScrollNodeId(first_owner), first_clip.id),
+        (sibling_owner, ScrollNodeId(sibling_owner), sibling_clip_id),
+    ] {
+        let endpoints = artifact
+            .owner_property_states
+            .iter_mut()
+            .find(|snapshot| snapshot.owner == owner)
+            .expect("sibling endpoints");
+        endpoints.descendants.scroll = Some(ScrollNodeId(root));
+        endpoints.descendants.clip = Some(root_clip_id);
+        endpoints.paint.scroll = Some(own_scroll);
+        endpoints.paint.clip = Some(own_clip);
+    }
+
+    let conflict = production_requests(&artifact);
     assert!(
         matches!(
             conflict,
             Err(SurfaceDagError::ConflictingArtifactTransition {
-                kind: SurfaceDagNodeKind::Transform(transform),
-                ..
-            }) if transform == TransformNodeId(root)
+                kind: SurfaceDagNodeKind::ScrollContent { scroll, .. },
+                first_witness,
+                conflicting_witness,
+            }) if scroll == ScrollNodeId(root)
+                && first_witness != conflicting_witness
         ),
-        "{conflict:?}"
+        "the disagreement must reach sibling reconciliation rather than an earlier store gate: {conflict:?}",
     );
 }

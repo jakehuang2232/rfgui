@@ -95,19 +95,15 @@ fn context(dpr: f32) -> UiBuildContext {
 
 fn build_selected(
     viewport: &mut Viewport,
-    plan: &crate::view::paint::FramePaintPlan,
+    candidate: RecordedArtifactCandidate,
     dpr: f32,
-) -> crate::view::paint::RetainedPropertySceneBuildTrace {
-    let mut graph = FrameGraph::new();
-    let mut ctx = context(dpr);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    crate::view::paint::build_retained_property_scene_with_forced_pool_for_test(
-        viewport, plan, &mut graph, ctx,
+) -> usize {
+    emit_selected_artifact_surface(
+        "arbitrary-depth linear forest",
+        viewport,
+        candidate,
+        context(dpr),
     )
-    .expect("selected arbitrary-depth linear forest executes")
-    .into_parts()
-    .1
 }
 
 #[test]
@@ -140,57 +136,56 @@ fn retained_auto_linear_depth_four_and_five_are_retained_and_never_red() {
         ),
     ] {
         let fixture = linear_fixture(&roles, neutral, stable_id_base);
-        let AutoAuthorityDecision::PropertyScene { plan, trace } = select_retained_auto_authority(
+        let (telemetry_candidate, trace, surface_count) = selected_artifact_surface(
+            "arbitrary-depth linear forest",
             &fixture.arena,
             &fixture.roots,
             &fixture.properties,
             &fixture.generations,
             &context(dpr),
-            true,
-        ) else {
-            panic!("arbitrary-depth linear forest must select PropertyScene")
-        };
+        );
+        assert_eq!(surface_count, fixture.surface_count);
         assert!(
             !trace.rejections.iter().any(|rejection| matches!(
                 rejection,
-                AutoAuthorityRejection::Plan {
-                    authority: AutoAuthorityKind::PropertyScene,
-                    ..
-                }
+                AutoAuthorityRejection::ArtifactPrepare { .. }
             )),
             "selected authority cannot reject itself: {trace:?}",
         );
-        let telemetry = telemetry_for_auto_decision(AutoAuthorityDecision::PropertyScene {
-            plan: plan.clone(),
+        let telemetry = telemetry_for_auto_decision(AutoAuthorityDecision::Artifact {
+            candidate: telemetry_candidate,
             trace,
         });
-        assert_eq!(
-            telemetry.final_authority(),
-            PaintAuthorityKind::PropertyScene
-        );
+        assert_eq!(telemetry.final_authority(), PaintAuthorityKind::Artifact);
         assert!(telemetry.fallback_boundary_nodes().is_empty());
         assert!(retained_auto_fallback_overlay_records(&telemetry, &fixture.roots).is_empty());
 
         let mut viewport = Viewport::new();
-        let cold = build_selected(&mut viewport, &plan, dpr);
-        assert_eq!(
-            (cold.reraster_count, cold.reuse_count),
-            (fixture.surface_count, 0)
+        let (cold, _, _) = selected_artifact_surface(
+            "arbitrary-depth linear forest",
+            &fixture.arena,
+            &fixture.roots,
+            &fixture.properties,
+            &fixture.generations,
+            &context(dpr),
         );
-        viewport.finish_retained_surface_transaction(true);
-        let warm = build_selected(&mut viewport, &plan, dpr);
-        assert_eq!(
-            (warm.reraster_count, warm.reuse_count),
-            (0, fixture.surface_count)
+        assert_eq!(build_selected(&mut viewport, cold, dpr), surface_count);
+        let (warm, _, _) = selected_artifact_surface(
+            "arbitrary-depth linear forest",
+            &fixture.arena,
+            &fixture.roots,
+            &fixture.properties,
+            &fixture.generations,
+            &context(dpr),
         );
-        viewport.finish_retained_surface_transaction(false);
+        assert_eq!(build_selected(&mut viewport, warm, dpr), surface_count);
 
         viewport.scene.node_arena = fixture.arena;
         let capture =
             viewport.build_retained_auto_debug_capture(&telemetry, &fixture.roots, true, true);
         assert_eq!(
             capture.frame.selected_authority,
-            crate::view::debug::DebugFramePaintAuthority::PropertyScene
+            crate::view::debug::DebugFramePaintAuthority::Artifact
         );
         assert_eq!(
             capture.frame.disposition,

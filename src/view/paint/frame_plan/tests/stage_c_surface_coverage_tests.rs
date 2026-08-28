@@ -341,6 +341,140 @@ fn scroll_clip_closure_keeps_empty_as_neither_and_unions_siblings_in_painter_ord
 }
 
 #[test]
+fn transform_effect_transform_ancestry_keeps_the_inner_transform_as_direct_owner() {
+    let artifact = stage_c_transform_effect_transform_artifact_fixture();
+    let dag = reconstruct(&artifact);
+    let forest = coverage(&artifact, &dag);
+    let transforms = dag
+        .nodes()
+        .iter()
+        .filter(|node| matches!(node.kind(), SurfaceDagNodeKind::Transform(_)))
+        .collect::<Vec<_>>();
+    let effect = dag
+        .nodes()
+        .iter()
+        .find(|node| matches!(node.kind(), SurfaceDagNodeKind::Effect(_)))
+        .expect("middle effect surface");
+    assert_eq!(transforms.len(), 2);
+    let outer = transforms
+        .iter()
+        .copied()
+        .find(|node| node.receiver() == SurfaceDagTargetId::SceneRoot(dag.roots()[0].id()))
+        .expect("outer transform surface");
+    let inner = transforms
+        .iter()
+        .copied()
+        .find(|node| node.receiver() == SurfaceDagTargetId::Surface(effect.id()))
+        .expect("inner transform surface");
+    assert_eq!(effect.receiver(), SurfaceDagTargetId::Surface(outer.id()));
+
+    let inner_transform = match inner.kind() {
+        SurfaceDagNodeKind::Transform(transform) => transform,
+        _ => unreachable!(),
+    };
+    let direct_chunk = artifact
+        .chunks
+        .iter()
+        .position(|chunk| chunk.properties.transform == Some(inner_transform))
+        .expect("chunk authored in the inner transform");
+    let directly_contains = |surface: SurfaceDagNodeId| {
+        forest.nodes()[surface.index()].steps().iter().any(|step| {
+            matches!(
+                step,
+                ArtifactSurfaceCoverageStep::ArtifactSpan(span)
+                    if span.chunk_range().contains(&direct_chunk)
+            )
+        })
+    };
+    assert!(directly_contains(inner.id()));
+    assert!(!directly_contains(effect.id()));
+    assert!(!directly_contains(outer.id()));
+    assert!(forest.nodes()[outer.id().index()].steps().iter().any(
+        |step| matches!(step, ArtifactSurfaceCoverageStep::NestedSurface(id) if *id == effect.id())
+    ));
+    assert!(forest.nodes()[effect.id().index()].steps().iter().any(
+        |step| matches!(step, ArtifactSurfaceCoverageStep::NestedSurface(id) if *id == inner.id())
+    ));
+}
+
+#[test]
+fn coverage_rejects_a_receiver_chain_that_terminates_at_the_wrong_scene_root() {
+    let (arena, roots, _, _, properties, generations) = stage_c_depth_four_scroll_fixture();
+    let artifact =
+        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations)
+            .expect("multi-root receiver-closure fixture");
+    let mut dag = reconstruct(&artifact);
+    let outer = dag
+        .nodes()
+        .iter()
+        .find(|node| matches!(node.receiver(), SurfaceDagTargetId::SceneRoot(_)))
+        .expect("top-level surface")
+        .id();
+    let expected_root = match dag.nodes()[outer.index()].receiver() {
+        SurfaceDagTargetId::SceneRoot(root) => root,
+        SurfaceDagTargetId::Surface(_) => unreachable!(),
+    };
+    let wrong_root = dag
+        .roots()
+        .iter()
+        .map(|root| root.id())
+        .find(|root| *root != expected_root)
+        .expect("second scene root");
+    dag.set_receiver_for_test(outer, SurfaceDagTargetId::SceneRoot(wrong_root));
+
+    assert!(matches!(
+        derive_artifact_surface_coverage_forest(
+            &artifact,
+            &dag,
+            LayerizationPolicy::PreservePropertyBoundaries,
+        ),
+        Err(SurfaceDagError::NonReceiverClosedChunkSurfaceChain {
+            expected_receiver: SurfaceDagTargetId::SceneRoot(root),
+            ..
+        }) if root == expected_root
+    ));
+}
+
+#[test]
+fn coverage_rejects_matched_ancestry_omitted_from_the_receiver_chain() {
+    let artifact = stage_c_transform_effect_transform_artifact_fixture();
+    let mut dag = reconstruct(&artifact);
+    let effect = dag
+        .nodes()
+        .iter()
+        .find(|node| matches!(node.kind(), SurfaceDagNodeKind::Effect(_)))
+        .expect("middle effect surface")
+        .id();
+    let inner = dag
+        .nodes()
+        .iter()
+        .find(|node| {
+            matches!(node.kind(), SurfaceDagNodeKind::Transform(_))
+                && node.receiver() == SurfaceDagTargetId::Surface(effect)
+        })
+        .expect("inner transform surface")
+        .id();
+    let outer = match dag.nodes()[effect.index()].receiver() {
+        SurfaceDagTargetId::Surface(outer) => outer,
+        SurfaceDagTargetId::SceneRoot(_) => unreachable!(),
+    };
+    dag.set_receiver_for_test(inner, SurfaceDagTargetId::Surface(outer));
+
+    assert!(matches!(
+        derive_artifact_surface_coverage_forest(
+            &artifact,
+            &dag,
+            LayerizationPolicy::PreservePropertyBoundaries,
+        ),
+        Err(SurfaceDagError::NonReceiverClosedChunkSurfaceChain {
+            surface,
+            expected_receiver: SurfaceDagTargetId::Surface(receiver),
+            ..
+        }) if surface == inner && receiver == outer
+    ));
+}
+
+#[test]
 fn receiver_gap_rejects_before_an_unrepresentable_chunk_is_forced_into_a_span() {
     let (arena, root, properties, generations) = same_owner_transform_effect_scroll_roles_fixture();
     let mut artifact =

@@ -15,6 +15,10 @@ mod input;
 mod lifecycle;
 mod render;
 #[cfg(test)]
+pub(crate) use render::{
+    AutoArtifactSurfaceEmissionForTest, emit_retained_auto_artifact_surface_for_test,
+};
+#[cfg(test)]
 mod retained_auto_census_tests;
 pub(crate) mod scene_helpers;
 #[cfg(any())]

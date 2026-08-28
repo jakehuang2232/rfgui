@@ -597,6 +597,15 @@ impl SurfaceDag {
         self.roots.retain(|root| root.id != id);
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_receiver_for_test(
+        &mut self,
+        id: SurfaceDagNodeId,
+        receiver: SurfaceDagTargetId,
+    ) {
+        self.nodes[id.index()].receiver = receiver;
+    }
+
     fn validate_receiver_acyclicity(&self) -> Result<(), SurfaceDagError> {
         for origin in &self.nodes {
             let mut receiver = origin.receiver;
@@ -914,6 +923,18 @@ fn walk_artifact_surface_path(
     artifact_clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
     mode: ArtifactSurfaceWalkMode,
 ) -> Result<ArtifactSurfaceWalk, SurfaceDagError> {
+    // Boundary transitions describe only dimensions actually consumed by a
+    // surface edge. Chunk coverage additionally includes ancestor membership:
+    // a leaf property state belongs to every same-family surface on its
+    // snapshot parent chain even though only the leaf emits an edge. The
+    // existing root-to-owner candidate traversal remains the sole ordering
+    // authority, so `matched` stays outer-to-inner and its last item remains
+    // the direct raster owner. Ancestor membership changes neither `edges`,
+    // `localized_state`, nor `local_clips`.
+    let membership = match mode {
+        ArtifactSurfaceWalkMode::BoundaryTransition => None,
+        ArtifactSurfaceWalkMode::ChunkCoverage => Some(snapshots.surface_membership(state)?),
+    };
     let mut receiver_state = state;
     let mut localized_state = state;
     let mut edges = Vec::new();
@@ -926,8 +947,18 @@ fn walk_artifact_surface_path(
             .copied()
             .filter(|candidate| candidate.target() == *path_owner)
         {
+            let kind = candidate.kind();
+            let is_member = membership.as_ref().is_some_and(|membership| match kind {
+                SurfaceDagNodeKind::Transform(transform) => {
+                    membership.contains_transform(transform)
+                }
+                SurfaceDagNodeKind::Effect(effect) => membership.contains_effect(effect),
+                SurfaceDagNodeKind::ScrollContent { scroll, .. } => {
+                    membership.contains_scroll(scroll)
+                }
+            });
             let from = receiver_state;
-            let consumed = match candidate.kind() {
+            let consumed = match kind {
                 SurfaceDagNodeKind::Transform(transform)
                     if receiver_state.transform == Some(transform) =>
                 {
@@ -967,8 +998,10 @@ fn walk_artifact_surface_path(
                 | SurfaceDagNodeKind::ScrollContent { .. } => false,
             };
             if consumed {
-                edges.push((candidate.kind(), from, receiver_state));
-                matched.push(candidate.kind());
+                edges.push((kind, from, receiver_state));
+            }
+            if (consumed || is_member) && !matched.contains(&kind) {
+                matched.push(kind);
             }
         }
     }
@@ -1024,8 +1057,11 @@ fn consumed_dimensions_match(
 /// Every surface-bearing owner is a witness. A witness starts in its
 /// descendants space and scans the root-to-owner candidate path. Deeper
 /// witnesses replace shallower same-branch context only after both edges agree
-/// on the property dimensions actually consumed; incomparable branches must
-/// agree on the complete edge.
+/// on the property dimensions actually consumed. When incomparable descendant
+/// branches witness one surface, their non-consumed context may legitimately
+/// differ; reconciliation uses the surface owner's own anchor edge after every
+/// branch agrees on the consumed dimensions. The anchor is derived before
+/// reconciliation and therefore does not depend on sibling enumeration order.
 ///
 /// Transform, effect, and scroll have a receiver carrier, so consuming their
 /// local surface identity clears that dimension and the receiver re-establishes
@@ -1058,7 +1094,11 @@ pub(crate) fn derive_artifact_surface_transition_requests(
         .iter()
         .map(|snapshot| (snapshot.owner, *snapshot))
         .collect::<FxHashMap<_, _>>();
-    let mut derived = FxHashMap::<SurfaceDagNodeKind, DerivedArtifactTransition>::default();
+    let candidate_targets = candidates
+        .iter()
+        .map(|candidate| (candidate.kind(), candidate.target()))
+        .collect::<FxHashMap<_, _>>();
+    let mut observed = FxHashMap::<SurfaceDagNodeKind, Vec<DerivedArtifactTransition>>::default();
 
     let mut witness_owners = Vec::new();
     for candidate in &candidates {
@@ -1144,42 +1184,65 @@ pub(crate) fn derive_artifact_surface_transition_requests(
         }
 
         for (kind, from, to) in local_edges {
-            let next = DerivedArtifactTransition { witness, from, to };
-            let Some(previous) = derived.get(&kind).copied() else {
-                derived.insert(kind, next);
-                continue;
-            };
-            if previous.witness == witness {
-                if previous.from != from || previous.to != to {
+            observed
+                .entry(kind)
+                .or_default()
+                .push(DerivedArtifactTransition { witness, from, to });
+        }
+    }
+
+    let mut derived = FxHashMap::<SurfaceDagNodeKind, DerivedArtifactTransition>::default();
+    for candidate in &candidates {
+        let kind = candidate.kind();
+        let observations = observed
+            .get(&kind)
+            .ok_or(SurfaceDagError::MissingArtifactTransition { kind })?;
+        let mut deepest = observations[0];
+        let mut incomparable = None;
+        for next in observations.iter().copied().skip(1) {
+            if deepest.witness == next.witness {
+                if deepest.from != next.from || deepest.to != next.to {
                     return Err(SurfaceDagError::ConflictingArtifactTransition {
                         kind,
-                        first_witness: previous.witness,
-                        conflicting_witness: witness,
+                        first_witness: deepest.witness,
+                        conflicting_witness: next.witness,
                     });
                 }
                 continue;
             }
-            let previous_is_ancestor = owner_is_ancestor_of(&owners, previous.witness, witness)?;
-            let next_is_ancestor = owner_is_ancestor_of(&owners, witness, previous.witness)?;
-            if previous_is_ancestor || next_is_ancestor {
-                if !consumed_dimensions_match(kind, previous, next) {
-                    return Err(SurfaceDagError::ConflictingArtifactTransition {
-                        kind,
-                        first_witness: previous.witness,
-                        conflicting_witness: witness,
-                    });
-                }
-                if previous_is_ancestor {
-                    derived.insert(kind, next);
-                }
-            } else if previous.from != from || previous.to != to {
+            if !consumed_dimensions_match(kind, deepest, next) {
                 return Err(SurfaceDagError::ConflictingArtifactTransition {
                     kind,
-                    first_witness: previous.witness,
-                    conflicting_witness: witness,
+                    first_witness: deepest.witness,
+                    conflicting_witness: next.witness,
                 });
             }
+            if owner_is_ancestor_of(&owners, deepest.witness, next.witness)? {
+                deepest = next;
+            } else if !owner_is_ancestor_of(&owners, next.witness, deepest.witness)? {
+                incomparable.get_or_insert((deepest.witness, next.witness));
+            }
         }
+        let edge = if let Some((first_witness, conflicting_witness)) = incomparable {
+            observations
+                .iter()
+                .copied()
+                .find(|edge| {
+                    edge.witness
+                        == candidate_targets
+                            .get(&kind)
+                            .copied()
+                            .expect("every candidate kind has one target")
+                })
+                .ok_or(SurfaceDagError::ConflictingArtifactTransition {
+                    kind,
+                    first_witness,
+                    conflicting_witness,
+                })?
+        } else {
+            deepest
+        };
+        derived.insert(kind, edge);
     }
 
     candidates

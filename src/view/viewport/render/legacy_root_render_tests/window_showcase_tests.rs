@@ -20,8 +20,7 @@ fn retained_auto_text_area_zero_and_bounded_scroll_select_artifact_and_invalid_s
 
     let (arena, roots, _) = prepared_auto_text_area(f32::NAN, false);
     {
-        let AutoAuthorityDecision::Legacy { trace } = auto_decision(&arena, &roots, &ctx)
-        else {
+        let AutoAuthorityDecision::Legacy { trace } = auto_decision(&arena, &roots, &ctx) else {
             panic!("invalid TextArea scroll state must select Legacy")
         };
         assert!(matches!(
@@ -36,8 +35,7 @@ fn retained_auto_text_area_zero_and_bounded_scroll_select_artifact_and_invalid_s
     }
 
     let (arena, roots, _) = prepared_auto_text_area(0.0, true);
-    let AutoAuthorityDecision::Artifact { candidate, trace } =
-        auto_decision(&arena, &roots, &ctx)
+    let AutoAuthorityDecision::Artifact { candidate, trace } = auto_decision(&arena, &roots, &ctx)
     else {
         panic!("pending caret-follow is paint-neutral and must select Artifact")
     };
@@ -46,20 +44,17 @@ fn retained_auto_text_area_zero_and_bounded_scroll_select_artifact_and_invalid_s
 }
 
 #[test]
-fn retained_auto_routes_nested_effects_and_reports_typed_plan_rejection_for_interleave() {
+fn retained_auto_routes_nested_effects_and_transform_interleave_to_artifact() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, _, child, _) = prepared_nested_opacity_tree();
     let decision = auto_decision(&arena, &roots, &ctx);
-    assert_eq!(
-        auto_authority_kind(&decision),
-        AutoAuthorityKind::PropertyScene
-    );
+    assert_eq!(auto_authority_kind(&decision), AutoAuthorityKind::Artifact);
     assert!(auto_authority_trace(&decision).rejections.is_empty());
     assert_eq!(
         telemetry_for_auto_decision(decision)
             .snapshot()
             .authority_label,
-        "retained-auto:property-scene"
+        "retained-auto:artifact"
     );
 
     crate::view::test_support::get_element_mut::<Element>(&arena, child)
@@ -67,18 +62,14 @@ fn retained_auto_routes_nested_effects_and_reports_typed_plan_rejection_for_inte
             3.0, 0.0, 0.0,
         ))));
     let rejected = auto_decision(&arena, &roots, &ctx);
-    assert_eq!(auto_authority_kind(&rejected), AutoAuthorityKind::Legacy);
-    let [AutoAuthorityRejection::Plan { authority, error }] =
-        auto_authority_trace(&rejected).rejections.as_slice()
-    else {
-        panic!("rejected effect/transform interleave has one typed plan rejection")
-    };
-    assert_eq!(*authority, AutoAuthorityKind::PropertyScene);
-    assert!(error.reasons.iter().any(|reason| matches!(
-        reason,
-        crate::view::paint::FramePaintPlanRejection::CoLocatedTransformEffect(_)
-            | crate::view::paint::FramePaintPlanRejection::UnsupportedPropertyInterleave(_, _)
-    )));
+    assert_eq!(auto_authority_kind(&rejected), AutoAuthorityKind::Artifact);
+    assert!(auto_authority_trace(&rejected).rejections.is_empty());
+    assert_eq!(
+        telemetry_for_auto_decision(rejected)
+            .snapshot()
+            .authority_label,
+        "retained-auto:artifact"
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -173,9 +164,7 @@ fn window_like_native_showcase_selects_non_legacy_retained_auto_authority() {
     };
     span.chunks.swap(1, 2);
     assert!(
-        !crate::view::paint::retained_surface_raster_stamp_is_canonical(
-            &mask_after_first_sibling
-        ),
+        !crate::view::paint::retained_surface_raster_stamp_is_canonical(&mask_after_first_sibling),
         "moving mask begin after the first sibling must fail closed"
     );
     let outcome = crate::view::paint::emit_prepared_frame_root_scroll_scene(prepared);
@@ -217,12 +206,11 @@ fn window_like_native_showcase_selects_non_legacy_retained_auto_authority() {
     let second_actions = second_prepared.actions_for_test();
     assert!(!second_actions.is_empty());
     assert!(
-        second_actions.iter().all(|action| {
-            *action == crate::view::paint::RetainedSurfaceCompileAction::Reuse
-        })
+        second_actions
+            .iter()
+            .all(|action| { *action == crate::view::paint::RetainedSurfaceCompileAction::Reuse })
     );
-    let second_outcome =
-        crate::view::paint::emit_prepared_frame_root_scroll_scene(second_prepared);
+    let second_outcome = crate::view::paint::emit_prepared_frame_root_scroll_scene(second_prepared);
     let (_second_state, second_trace) = second_outcome.into_parts();
     assert_eq!(second_trace.reraster_count, 0);
     assert_eq!(second_trace.reuse_count, second_actions.len());
@@ -234,8 +222,7 @@ fn window_like_native_showcase_selects_non_legacy_retained_auto_authority() {
     );
 
     let reversed_roots = roots.iter().copied().rev().collect::<Vec<_>>();
-    let (reversed_properties, reversed_generations) =
-        synced_paint_state(&arena, &reversed_roots);
+    let (reversed_properties, reversed_generations) = synced_paint_state(&arena, &reversed_roots);
     let reversed_ctx = UiBuildContext::new(800, 600, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let reversed_decision = select_retained_auto_authority(
         &arena,
@@ -268,9 +255,7 @@ fn window_like_native_showcase_selects_non_legacy_retained_auto_authority() {
     let (_reversed_state, reversed_trace) = reversed_outcome.into_parts();
     assert_eq!(reversed_trace.root_count, 2);
     assert_eq!(reversed_trace.scroll_group_count, 1);
-    assert!(
-        viewport.finish_retained_surface_transaction_for_frame(Some(reversed_owner), true,)
-    );
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(reversed_owner), true,));
 }
 
 #[cfg(not(target_arch = "wasm32"))]

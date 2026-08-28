@@ -54,6 +54,8 @@ pub(crate) enum ResolvedClip {
 }
 
 mod artifact_surface_executor;
+#[cfg(test)]
+pub(crate) use artifact_surface_executor::take_last_production_actions_for_test;
 pub(crate) use artifact_surface_executor::{
     ArtifactSurfaceExecutionError, emit_prepared_artifact_surface_frame_from_pool,
 };
@@ -5025,6 +5027,18 @@ impl PreparedArtifactSurfaceRasterPlan {
 
     pub(crate) fn nodes(&self) -> &[PreparedArtifactSurfaceRasterNode] {
         &self.nodes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_first_role_for_test(
+        &mut self,
+        role: RetainedSurfaceRasterRole,
+    ) -> Option<(SurfaceDagNodeId, RetainedSurfaceRasterRole)> {
+        let node = self.nodes.first_mut()?;
+        let source = node.source;
+        let previous = node.identity.role;
+        node.identity.role = role;
+        Some((source, previous))
     }
 
     #[cfg(test)]

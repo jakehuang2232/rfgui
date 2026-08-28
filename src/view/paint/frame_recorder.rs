@@ -3427,6 +3427,17 @@ fn production_property_boundary_reasons(
         let Some(node) = arena.get(key) else {
             continue;
         };
+        if policy == FrameArtifactAuthorityPolicy::SurfaceDagNoScroll
+            && (node.element.children() != node.children()
+                || node
+                    .children()
+                    .iter()
+                    .any(|child| arena.parent_of(*child) != Some(key)))
+        {
+            reasons.push(FrameArtifactFallbackReason::Validation(
+                PaintCoverageValidationError::InvalidOwnerSnapshot(key),
+            ));
+        }
         let exact_deferred_viewport_root =
             exact_deferred_viewport_self_clip_witness(arena, key, property_trees).is_some();
         if node.element.is_deferred_to_root_viewport_render() && !exact_deferred_viewport_root {

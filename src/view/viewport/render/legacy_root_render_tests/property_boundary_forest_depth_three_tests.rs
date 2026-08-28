@@ -118,41 +118,35 @@ fn selection_context(dpr: f32) -> UiBuildContext {
     UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, dpr)
 }
 
-fn selected_property_scene(
+fn selected_artifact(
     fixture: &RetainedAutoDepthThreeFixture,
     dpr: f32,
-) -> (crate::view::paint::FramePaintPlan, AutoAuthorityTrace) {
-    let AutoAuthorityDecision::PropertyScene { plan, trace } = select_retained_auto_authority(
+) -> (RecordedArtifactCandidate, AutoAuthorityTrace, usize) {
+    selected_artifact_surface(
+        "depth-three alternating forest",
         &fixture.arena,
         &fixture.roots,
         &fixture.properties,
         &fixture.generations,
         &selection_context(dpr),
-        true,
-    ) else {
-        panic!("depth-three alternating forest must select PropertyScene")
-    };
-    (plan, trace)
+    )
 }
 
 fn build_selected(
     viewport: &mut Viewport,
-    plan: &crate::view::paint::FramePaintPlan,
+    candidate: RecordedArtifactCandidate,
     dpr: f32,
-) -> crate::view::paint::RetainedPropertySceneBuildTrace {
-    let mut graph = FrameGraph::new();
-    let mut ctx = selection_context(dpr);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    let outcome = crate::view::paint::build_retained_property_scene_with_forced_pool_for_test(
-        viewport, plan, &mut graph, ctx,
+) -> usize {
+    emit_selected_artifact_surface(
+        "depth-three alternating forest",
+        viewport,
+        candidate,
+        selection_context(dpr),
     )
-    .expect("selected depth-three forest executes");
-    outcome.into_parts().1
 }
 
 #[test]
-fn retained_auto_depth_three_direct_and_neutral_both_select_property_scene() {
+fn retained_auto_depth_three_direct_and_neutral_both_select_artifact() {
     for (topology, neutral, stable_id_base) in [
         (
             DepthThreeTopology::TransformEffectTransform,
@@ -168,14 +162,11 @@ fn retained_auto_depth_three_direct_and_neutral_both_select_property_scene() {
         (DepthThreeTopology::EffectTransformEffect, true, 0xf4_5400),
     ] {
         let fixture = depth_three_fixture(topology, neutral, stable_id_base);
-        let (_, trace) = selected_property_scene(&fixture, 1.0);
+        let (_, trace, _) = selected_artifact(&fixture, 1.0);
         assert!(
             !trace.rejections.iter().any(|rejection| matches!(
                 rejection,
-                AutoAuthorityRejection::Plan {
-                    authority: AutoAuthorityKind::PropertyScene,
-                    ..
-                }
+                AutoAuthorityRejection::ArtifactPrepare { .. }
             )),
             "selected authority cannot reject itself: {trace:?}",
         );
@@ -183,7 +174,7 @@ fn retained_auto_depth_three_direct_and_neutral_both_select_property_scene() {
 }
 
 #[test]
-fn retained_auto_depth_three_dpr1_dpr2_cold_warm_debug_is_retained_and_never_red() {
+fn retained_auto_depth_three_dpr1_dpr2_stages_artifact_residents_and_never_red() {
     for (topology, neutral, dpr, stable_id_base) in [
         (
             DepthThreeTopology::TransformEffectTransform,
@@ -211,33 +202,31 @@ fn retained_auto_depth_three_dpr1_dpr2_cold_warm_debug_is_retained_and_never_red
         ),
     ] {
         let fixture = depth_three_fixture(topology, neutral, stable_id_base);
-        let (plan, trace) = selected_property_scene(&fixture, dpr);
-        let telemetry = telemetry_for_auto_decision(AutoAuthorityDecision::PropertyScene {
-            plan: plan.clone(),
+        let (telemetry_candidate, trace, surface_count) = selected_artifact(&fixture, dpr);
+        let telemetry = telemetry_for_auto_decision(AutoAuthorityDecision::Artifact {
+            candidate: telemetry_candidate,
             trace,
         });
-        assert_eq!(
-            telemetry.final_authority(),
-            PaintAuthorityKind::PropertyScene
-        );
+        assert_eq!(telemetry.final_authority(), PaintAuthorityKind::Artifact);
         assert!(telemetry.fallback_boundary_nodes().is_empty());
         assert!(retained_auto_fallback_overlay_records(&telemetry, &fixture.roots).is_empty());
 
         let mut viewport = Viewport::new();
-        let cold = build_selected(&mut viewport, &plan, dpr);
-        assert_eq!((cold.reraster_count, cold.reuse_count), (3, 0));
-        viewport.finish_retained_surface_transaction(true);
-        let warm = build_selected(&mut viewport, &plan, dpr);
-        assert_eq!((warm.reraster_count, warm.reuse_count), (0, 3));
-        assert_eq!(viewport.retained_surface_transaction_shape_for_test().0, 3);
-        viewport.finish_retained_surface_transaction(false);
+        let (cold, _, _) = selected_artifact(&fixture, dpr);
+        assert_eq!(build_selected(&mut viewport, cold, dpr), surface_count);
+        let (warm, _, _) = selected_artifact(&fixture, dpr);
+        assert_eq!(build_selected(&mut viewport, warm, dpr), surface_count);
+        assert_eq!(
+            viewport.retained_surface_transaction_shape_for_test().0,
+            surface_count
+        );
 
         viewport.scene.node_arena = fixture.arena;
         let capture =
             viewport.build_retained_auto_debug_capture(&telemetry, &fixture.roots, true, true);
         assert_eq!(
             capture.frame.selected_authority,
-            crate::view::debug::DebugFramePaintAuthority::PropertyScene
+            crate::view::debug::DebugFramePaintAuthority::Artifact
         );
         assert_eq!(
             capture.frame.disposition,

@@ -48,7 +48,7 @@ fn retained_auto_direct_text_transform_selects_seals_emits_and_compiles() {
     ];
     for (index, (label, transform)) in cases.into_iter().enumerate() {
         let (arena, roots, _) = prepared_native_text_transform(transform.clone(), false, false);
-        assert_native_property_scene_authority(
+        assert_native_artifact_surface_authority(
             &format!("root Text {label}"),
             &arena,
             &roots,
@@ -56,7 +56,7 @@ fn retained_auto_direct_text_transform_selects_seals_emits_and_compiles() {
         );
 
         let (arena, roots, _) = prepared_native_text_transform(transform, true, false);
-        assert_native_property_scene_authority(
+        assert_native_artifact_surface_authority(
             &format!("nested Text {label}"),
             &arena,
             &roots,
@@ -67,11 +67,8 @@ fn retained_auto_direct_text_transform_selects_seals_emits_and_compiles() {
 
 #[test]
 fn retained_auto_text_transform_coexists_with_sampled_layout_transition() {
-    let (arena, roots, _) = prepared_native_text_transform(
-        Transform::new([Translate::x(Length::px(6.0))]),
-        true,
-        true,
-    );
+    let (arena, roots, _) =
+        prepared_native_text_transform(Transform::new([Translate::x(Length::px(6.0))]), true, true);
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let decision = auto_decision(&arena, &roots, &ctx);
     assert!(
@@ -83,7 +80,7 @@ fn retained_auto_text_transform_coexists_with_sampled_layout_transition() {
             .map(AutoAuthorityRejection::debug_label)
             .collect::<Vec<_>>()
     );
-    assert_native_property_scene_authority(
+    assert_native_artifact_surface_authority(
         "sampled parent with direct Text transform",
         &arena,
         &roots,
@@ -114,19 +111,52 @@ fn retained_auto_text_transform_nonfinite_and_topology_drift_fail_closed() {
     ])]);
     let (arena, roots, _) = prepared_native_text_transform(nonfinite, false, false);
     let (properties, generations) = synced_paint_state(&arena, &roots);
-    assert!(matches!(
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true,),
-        AutoAuthorityDecision::Legacy { .. }
-    ));
+    let AutoAuthorityDecision::Legacy { trace } =
+        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true)
+    else {
+        panic!("non-finite generic artifact input must fail closed to Legacy")
+    };
+    assert!(
+        trace.rejections.iter().any(|rejection| matches!(
+            rejection,
+            AutoAuthorityRejection::Artifact { eligibility }
+                if eligibility.reasons
+                    == vec![crate::view::paint::FrameArtifactFallbackReason::PropertyBoundary(
+                        roots[0],
+                    )]
+        )),
+        "non-finite artifact rejection: {trace:?}"
+    );
+    assert!(trace.rejections.iter().any(|rejection| matches!(
+        rejection,
+        AutoAuthorityRejection::Plan {
+            authority: AutoAuthorityKind::PropertyScene,
+            ..
+        }
+    )));
 
     let (mut arena, roots, child) =
         prepared_native_text_transform(Transform::new([Scale::uniform(1.25)]), true, false);
     let (properties, generations) = synced_paint_state(&arena, &roots);
     arena.set_parent(child, None);
-    assert!(matches!(
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true,),
-        AutoAuthorityDecision::Legacy { .. }
-    ));
+    let AutoAuthorityDecision::Legacy { trace } =
+        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true)
+    else {
+        panic!("generic artifact owner-topology drift must fail closed to Legacy")
+    };
+    assert!(
+        trace.rejections.iter().any(|rejection| matches!(
+            rejection,
+            AutoAuthorityRejection::Artifact { eligibility }
+                if eligibility.reasons
+                    == vec![crate::view::paint::FrameArtifactFallbackReason::Validation(
+                        crate::view::paint::PaintCoverageValidationError::InvalidOwnerSnapshot(
+                            roots[0],
+                        ),
+                    )]
+        )),
+        "topology-drift artifact rejection: {trace:?}"
+    );
 }
 
 #[test]

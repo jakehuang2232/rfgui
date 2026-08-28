@@ -118,7 +118,7 @@ fn retained_auto_final_authority_covers_native_transform_effect_and_root_opacity
         for state in ["ready", "loading", "error"] {
             let (arena, roots) = prepared_native_media_transform(host, state);
             let emit = !emitted_transform && host == "Image" && state == "ready";
-            assert_native_property_scene_authority(
+            assert_native_artifact_surface_authority(
                 &format!("direct {host} transform {state}"),
                 &arena,
                 &roots,
@@ -138,12 +138,20 @@ fn retained_auto_final_authority_covers_native_transform_effect_and_root_opacity
         for state in states {
             let (arena, roots, _child) = prepared_nested_native_effect(host, state);
             let emit = !emitted_effect && host == "Text";
-            assert_native_property_scene_authority(
-                &format!("nested {host} effect {state}"),
-                &arena,
-                &roots,
-                emit,
-            );
+            if *state == "ready" {
+                assert_native_artifact_surface_authority(
+                    &format!("nested {host} effect {state}"),
+                    &arena,
+                    &roots,
+                    emit,
+                );
+            } else {
+                assert_native_missing_paint_identity_falls_back_to_property_scene(
+                    &format!("nested {host} effect {state}"),
+                    &arena,
+                    &roots,
+                );
+            }
             emitted_effect |= emit;
         }
     }
@@ -384,7 +392,7 @@ fn native_root_opacity_contract_rejects_property_resource_and_topology_drift() {
 }
 
 #[test]
-fn transparent_deferred_element_root_uses_property_scene_and_tamper_fails_closed() {
+fn transparent_deferred_element_root_uses_artifact_and_tamper_fails_closed() {
     let mut element = colored_element(0x6d2b, 10.0, Color::rgb(40, 80, 160));
     let mut style = Style::new();
     style.insert(
@@ -414,9 +422,9 @@ fn transparent_deferred_element_root_uses_property_scene_and_tamper_fails_closed
     let (mut properties, generations) = synced_paint_state(&arena, &roots);
     let decision =
         select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
-    if !matches!(decision, AutoAuthorityDecision::PropertyScene { .. }) {
+    if !matches!(decision, AutoAuthorityDecision::Artifact { .. }) {
         panic!(
-            "expected property scene, got {:?}: {:?}",
+            "expected artifact, got {:?}: {:?}",
             auto_authority_kind(&decision),
             auto_authority_trace(&decision).rejections
         );
@@ -455,18 +463,18 @@ fn retained_auto_selects_one_exact_authority_by_property_topology() {
     let (transform_arena, transform_roots) = prepared_transform_leaf();
     assert!(matches!(
         auto_decision(&transform_arena, &transform_roots, &ctx),
-        AutoAuthorityDecision::PropertyScene { .. }
+        AutoAuthorityDecision::Artifact { .. }
     ));
 
     let (tree_arena, tree_roots, _) = prepared_nested_transform_tree();
     assert!(matches!(
         auto_decision(&tree_arena, &tree_roots, &ctx),
-        AutoAuthorityDecision::PropertyScene { .. }
+        AutoAuthorityDecision::Artifact { .. }
     ));
 
     let (general_arena, general_roots) = prepared_general_transform_scene();
     match auto_decision(&general_arena, &general_roots, &ctx) {
-        AutoAuthorityDecision::PropertyScene { .. } => {}
+        AutoAuthorityDecision::Artifact { .. } => {}
         AutoAuthorityDecision::Legacy { trace } => panic!(
             "general transform scene rejected: {:?}",
             trace
@@ -478,11 +486,10 @@ fn retained_auto_selects_one_exact_authority_by_property_topology() {
         _ => panic!("general transform scene selected the wrong authority"),
     }
 
-    let (effect_tree_arena, effect_tree_roots, _, _, _) =
-        prepared_transform_child_isolation_tree();
+    let (effect_tree_arena, effect_tree_roots, _, _, _) = prepared_transform_child_isolation_tree();
     assert!(matches!(
         auto_decision(&effect_tree_arena, &effect_tree_roots, &ctx),
-        AutoAuthorityDecision::PropertyScene { .. }
+        AutoAuthorityDecision::Artifact { .. }
     ));
 
     let (isolation_arena, isolation_roots) = prepared_safe_leaf();
@@ -490,7 +497,7 @@ fn retained_auto_selects_one_exact_authority_by_property_topology() {
         .set_opacity(0.5);
     assert!(matches!(
         auto_decision(&isolation_arena, &isolation_roots, &ctx),
-        AutoAuthorityDecision::PropertyScene { .. }
+        AutoAuthorityDecision::Artifact { .. }
     ));
 
     assert_eq!(

@@ -118,7 +118,11 @@ fn recorded_zero_surface_child_mask_candidate() -> RecordedArtifactCandidate {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let plan = crate::view::paint::prepare_artifact_surface_raster_plan(
         artifact,
-        artifact_surface_raster_context(&ctx, wgpu::Limits::default().max_texture_dimension_2d),
+        artifact_surface_raster_context(
+            &ctx,
+            wgpu::Limits::default().max_texture_dimension_2d,
+            PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+        ),
     )
     .expect("zero-surface child-mask artifact must prepare");
     assert!(plan.nodes().is_empty());
@@ -250,6 +254,73 @@ fn stage_c_retained_auto_zero_resident_gate_rejects_a_detached_surface_plan() {
             .expect_err("RetainedAuto must not expand detached authority in C3b3c0"),
         RecordedArtifactSurfacePrepareError::DetachedSurfacesUnsupported { candidates: 4 },
     );
+}
+
+#[test]
+fn stage_c_no_scroll_detached_role_gate_rejects_empty_and_unsupported_plans() {
+    let (arena, roots, _) = prepared_zero_surface_three_chunk_frame();
+    let (artifact, _) = recorded_zero_surface_artifact(&arena, &roots);
+    let context = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let empty = crate::view::paint::prepare_artifact_surface_raster_plan(
+        artifact,
+        artifact_surface_raster_context(
+            &context,
+            wgpu::Limits::default().max_texture_dimension_2d,
+            PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+        ),
+    )
+    .expect("zero-surface plan");
+    assert_eq!(
+        require_no_scroll_detached_artifact_surface_plan(empty)
+            .expect_err("detached authority must not accept an empty plan"),
+        RecordedArtifactSurfacePrepareError::MissingDetachedSurface,
+    );
+
+    let frame = crate::view::paint::prepared_depth_four_surface_frame_for_test();
+    let mut unsupported = frame.raster_plan().clone();
+    let (surface, previous) = unsupported
+        .force_first_role_for_test(crate::view::paint::RetainedSurfaceRasterRole::ScrollContent)
+        .expect("depth-four plan has one surface");
+    assert_eq!(
+        previous,
+        crate::view::paint::RetainedSurfaceRasterRole::PropertyEffect
+    );
+    assert_eq!(
+        require_no_scroll_detached_artifact_surface_plan(unsupported)
+            .expect_err("no-scroll authority must reject a scroll role"),
+        RecordedArtifactSurfacePrepareError::UnsupportedDetachedSurfaceRole {
+            surface,
+            role: crate::view::paint::RetainedSurfaceRasterRole::ScrollContent,
+        },
+    );
+}
+
+#[test]
+fn stage_c_no_scroll_budget_rejection_is_typed_before_property_scene_fallback() {
+    let (arena, roots) = prepared_transform_leaf();
+    let (properties, generations) = synced_paint_state(&arena, &roots);
+    let context = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let AutoAuthorityDecision::PropertyScene { trace, .. } =
+        select_retained_auto_authority_with_artifact_budget_for_test(
+            &arena,
+            &roots,
+            &properties,
+            &generations,
+            &context,
+            1,
+            true,
+        )
+    else {
+        panic!("typed artifact budget rejection must fall back before dispatch")
+    };
+    assert!(trace.rejections.iter().any(|rejection| matches!(
+        rejection,
+        AutoAuthorityRejection::ArtifactPrepare {
+            error: RecordedArtifactSurfacePrepareError::RasterPlan(
+                crate::view::paint::ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_),
+            ),
+        }
+    )));
 }
 
 #[test]

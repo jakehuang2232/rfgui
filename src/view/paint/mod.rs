@@ -9,9 +9,7 @@ mod composite_edge;
 mod coverage_manifest;
 mod frame_plan;
 #[cfg(test)]
-pub(crate) use frame_plan::tests::{
-    prepared_depth_four_surface_frame as prepared_depth_four_surface_frame_for_test,
-};
+pub(crate) use frame_plan::tests::prepared_depth_four_surface_frame as prepared_depth_four_surface_frame_for_test;
 mod frame_recorder;
 mod legacy_admission;
 mod legacy_recording;
@@ -49,6 +47,8 @@ pub(crate) use artifact::{
     has_canonical_paint_bounds, preedit_glyph_identity_is_exact,
     preedit_underline_identity_is_exact,
 };
+#[cfg(test)]
+pub(crate) use compiler::take_last_production_actions_for_test;
 #[allow(unused_imports)]
 // C3 state/lifecycle landed before the C4 producer consumes every stamp type.
 pub(crate) use compiler::{
