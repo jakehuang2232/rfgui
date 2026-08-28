@@ -1749,10 +1749,12 @@ fn transform_effect_scroll_prepare_rejection_fallback_stage() -> PaintAuthorityF
     PaintAuthorityFallbackStage::Prepare
 }
 
-// This value is provisional: the current RetainedAuto producer reaches only
-// zero-resident Surface DAGs, so aggregate accounting never executes. The
-// first detached-surface admission batch must replace it with a measured
-// policy. It deliberately does not borrow the scroll-tile budget's meaning.
+// Provisional Artifact Surface aggregate limit. C3b3c1b-1 proves that the
+// generic producer can mint detached surfaces, but its 48x36 and 64x40 logical
+// pixel corpus reaches only 82,944 bytes. That does not exercise full-window
+// surface scale, so this value is not a measured policy and deliberately does
+// not borrow the scroll-tile budget's meaning. Revisit it when a real
+// full-window detached surface is admitted.
 const PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
 
 fn artifact_surface_raster_context(

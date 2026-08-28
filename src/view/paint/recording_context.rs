@@ -49,6 +49,15 @@ pub(crate) struct PaintRecordingContext {
     /// installs this witness; the surface recorder clears and rebinds it for
     /// every canonical traversal owner.
     pub(crate) transform_surface: Option<PaintTransformSurfaceWitness>,
+    /// Generic C3b Surface DAG policy bit. Coverage copies it from the
+    /// recorder and rebinds `surface_dag_transform` from the current owner's
+    /// property state after every component hook. Artifact validation remains
+    /// responsible for proving the resulting snapshot store.
+    pub(crate) surface_dag_no_scroll: bool,
+    /// Owner-scoped transform accepted by the generic no-scroll Surface DAG
+    /// recorder. Coverage overwrites it before every node paints, so it cannot
+    /// become ambient authority inherited from a component context hook.
+    pub(crate) surface_dag_transform: Option<TransformNodeId>,
     /// Recorder-owned authority for the one exact M10E1A root/child path.
     /// Coverage clears and rebinds this after every component hook.
     pub(crate) baked_scroll_host: Option<PaintBakedScrollHostWitness>,
@@ -160,6 +169,14 @@ impl PaintRecordingContext {
                 if witness.target_owner == owner
                     && witness.transform == transform
                     && witness.transform.0 == witness.boundary_owner
+        ) || matches!(
+            (
+                self.recording_owner,
+                self.surface_dag_no_scroll,
+                self.surface_dag_transform,
+                transform,
+            ),
+            (Some(_), true, Some(expected), Some(actual)) if expected == actual
         )
     }
 
@@ -175,6 +192,15 @@ impl PaintRecordingContext {
                     && witness.target_owner == owner
                     && witness.boundary_owner == owner
                     && witness.transform == TransformNodeId(owner)
+        ) || matches!(
+            (
+                self.recording_owner,
+                self.recording_owner_stable_id,
+                self.surface_dag_no_scroll,
+                self.surface_dag_transform,
+            ),
+            (Some(owner), Some(recording_stable_id), true, Some(transform))
+                if recording_stable_id == stable_id && transform == TransformNodeId(owner)
         )
     }
 
