@@ -93,7 +93,7 @@ fn verify_cold_warm_artifact_surface(
     case: &str,
     fixture: fn() -> (NodeArena, NodeKey),
     legacy: FrameGraph,
-) -> Result<u64, String> {
+) -> Result<(usize, u64), String> {
     let legacy_pixels = render(legacy, gpu)?;
     let mut viewport = Viewport::new();
 
@@ -150,12 +150,7 @@ fn verify_cold_warm_artifact_surface(
         adapter,
         &format!("{case}/warm-reuse"),
     )?;
-    if cold.aggregate_texture_bytes == 0 {
-        return Err(format!(
-            "{case}: detached descriptor bytes must be non-zero"
-        ));
-    }
-    Ok(cold.aggregate_texture_bytes)
+    Ok((cold.surface_count, cold.aggregate_texture_bytes))
 }
 
 #[test]
@@ -167,13 +162,18 @@ fn native_production_artifact_transform_matches_legacy_and_reuses_real_pool() ->
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU initialized");
     let adapter = gpu.label();
-    let bytes = verify_cold_warm_artifact_surface(
+    let (surface_count, bytes) = verify_cold_warm_artifact_surface(
         gpu,
         &adapter,
         "production-artifact-transform",
         transformed_rect_fixture,
         legacy_transformed_rect_graph(1.0, None)?,
     )?;
+    if surface_count == 0 || bytes == 0 {
+        return Err(format!(
+            "production artifact transform gate requires detached surfaces and descriptor bytes on {adapter}: surfaces={surface_count}, bytes={bytes}"
+        ));
+    }
     eprintln!(
         "production artifact transform parity/reuse passed on {adapter}: aggregate_color_depth_bytes={bytes}"
     );
@@ -188,13 +188,18 @@ fn native_production_artifact_effect_matches_legacy_and_reuses_real_pool() -> Re
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU initialized");
     let adapter = gpu.label();
-    let bytes = verify_cold_warm_artifact_surface(
+    let (surface_count, bytes) = verify_cold_warm_artifact_surface(
         gpu,
         &adapter,
         "production-artifact-effect",
         nested_effect_fixture,
         legacy_nested_effect_graph()?,
     )?;
+    if surface_count == 0 || bytes == 0 {
+        return Err(format!(
+            "production artifact effect gate requires detached surfaces and descriptor bytes on {adapter}: surfaces={surface_count}, bytes={bytes}"
+        ));
+    }
     eprintln!(
         "production artifact effect parity/reuse passed on {adapter}: aggregate_color_depth_bytes={bytes}"
     );

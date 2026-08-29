@@ -1392,7 +1392,7 @@ enum RecordedArtifactPayload {
     /// sealed before payload-dependent resident staging.
     ArtifactSurface(crate::view::paint::PreparedArtifactSurfaceFrame),
     /// Existing root-effect and ArtifactCanary compiler path. These are not
-    /// part of the C3a zero-surface acceptance claim.
+    /// part of the generic current-target artifact-surface executor authority.
     ExistingArtifact(crate::view::paint::PaintArtifact),
 }
 
@@ -2713,8 +2713,10 @@ pub(crate) struct AutoArtifactSurfaceEmissionForTest {
     pub(crate) actions: Vec<crate::view::paint::RetainedSurfaceCompileAction>,
 }
 
-/// Native Stage C gate seam. Selection and dispatch both use the production
-/// functions; only the compact observations are test-only.
+/// Native Stage C gate seam for both zero-resident and detached artifact
+/// surface frames. Selection and dispatch both use the production functions;
+/// each named gate owns the surface-count contract for its fixture, while only
+/// the compact observations are test-only.
 #[cfg(test)]
 pub(crate) fn emit_retained_auto_artifact_surface_for_test(
     viewport: &mut Viewport,
@@ -2738,9 +2740,6 @@ pub(crate) fn emit_retained_auto_artifact_surface_for_test(
         return Err("production selector returned the non-surface artifact payload".to_owned());
     };
     let surface_count = frame.raster_plan().nodes().len();
-    if surface_count == 0 {
-        return Err("production selector returned an empty detached-surface plan".to_owned());
-    }
     let aggregate_texture_bytes = frame
         .raster_plan()
         .nodes()

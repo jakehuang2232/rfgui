@@ -61,30 +61,6 @@ fn recorded_zero_surface_artifact(
     (artifact, eligibility)
 }
 
-fn recorded_single_effect_surface_artifact() -> crate::view::paint::PaintArtifact {
-    let (arena, roots, _) = prepared_zero_surface_three_chunk_frame();
-    let (mut artifact, _) = recorded_zero_surface_artifact(&arena, &roots);
-    let owner = roots[0];
-    let effect = crate::view::compositor::property_tree::EffectNodeId(owner);
-    artifact
-        .effect_nodes
-        .push(crate::view::compositor::property_tree::EffectNodeSnapshot {
-            id: effect,
-            owner,
-            parent: None,
-            opacity: 0.5,
-            generation: 1,
-        });
-    artifact
-        .owner_property_states
-        .iter_mut()
-        .find(|snapshot| snapshot.owner == owner)
-        .expect("root owner endpoint")
-        .descendants
-        .effect = Some(effect);
-    artifact
-}
-
 fn recorded_zero_surface_child_mask_candidate() -> RecordedArtifactCandidate {
     use crate::style::BorderRadius;
 
@@ -142,9 +118,6 @@ fn prepare_error_label(
         SingleTargetSurfaceDagPrepareError::InvalidArtifactStore => "invalid-artifact-store",
         SingleTargetSurfaceDagPrepareError::UnsupportedTarget(_) => "unsupported-target",
         SingleTargetSurfaceDagPrepareError::SurfaceDag(_) => "surface-dag",
-        SingleTargetSurfaceDagPrepareError::DetachedSurfacesUnsupported { .. } => {
-            "detached-surfaces-unsupported"
-        }
     }
 }
 
@@ -195,53 +168,18 @@ fn stage_c_zero_surface_prepare_seals_exact_multi_root_artifact_order() {
         3,
     );
 
-    let prepared = crate::view::paint::prepare_single_target_surface_dag_frame(artifact)
-        .expect("current-target zero-surface artifact must seal");
-    assert_eq!(prepared.artifact().chunks.len(), 3);
-    assert_eq!(prepared.artifact().ops.len(), 3);
-    assert_eq!(prepared.surface_dag().roots().len(), 2);
-    assert!(prepared.surface_dag().nodes().is_empty());
-    assert_eq!(prepared.execution_order().roots().len(), 2);
-    assert!(prepared.execution_order().nodes().is_empty());
-    assert!(
-        prepared
-            .execution_order()
-            .roots()
-            .iter()
-            .all(|root| root.node_span().is_empty())
-    );
-}
-
-#[test]
-fn stage_c_zero_surface_prepare_rejects_a_purpose_named_detached_surface() {
-    let artifact = recorded_single_effect_surface_artifact();
-
-    let error = crate::view::paint::prepare_single_target_surface_dag_frame(artifact)
-        .expect_err("C3a must reject rather than reinterpret a detached candidate");
-    assert_eq!(
-        prepare_error_label(error),
-        "detached-surfaces-unsupported",
-        "unexpected rejection: {error:?}",
-    );
-    assert_eq!(
-        error,
-        crate::view::paint::SingleTargetSurfaceDagPrepareError::DetachedSurfacesUnsupported {
-            candidates: 1,
-        }
-    );
-
-    let trace = AutoAuthorityTrace {
-        capture_rejections: true,
-        rejections: vec![AutoAuthorityRejection::ArtifactPrepare {
-            error: RecordedArtifactSurfacePrepareError::DetachedSurfacesUnsupported {
-                candidates: 1,
-            },
-        }],
-    };
-    assert_eq!(
-        auto_artifact_legacy_fallback_stage(&trace),
-        PaintAuthorityFallbackStage::Prepare,
-    );
+    let context = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let plan = crate::view::paint::prepare_artifact_surface_raster_plan(
+        artifact,
+        artifact_surface_raster_context(
+            &context,
+            wgpu::Limits::default().max_texture_dimension_2d,
+            PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+        ),
+    )
+    .expect("current-target zero-surface artifact must seal through the generic raster plan");
+    assert_eq!(plan.roots().len(), 2);
+    assert!(plan.nodes().is_empty());
 }
 
 #[test]
@@ -253,6 +191,18 @@ fn stage_c_retained_auto_zero_resident_gate_rejects_a_detached_surface_plan() {
         require_zero_resident_artifact_surface_plan(plan)
             .expect_err("RetainedAuto must not expand detached authority in C3b3c0"),
         RecordedArtifactSurfacePrepareError::DetachedSurfacesUnsupported { candidates: 4 },
+    );
+    let trace = AutoAuthorityTrace {
+        capture_rejections: true,
+        rejections: vec![AutoAuthorityRejection::ArtifactPrepare {
+            error: RecordedArtifactSurfacePrepareError::DetachedSurfacesUnsupported {
+                candidates: 4,
+            },
+        }],
+    };
+    assert_eq!(
+        auto_artifact_legacy_fallback_stage(&trace),
+        PaintAuthorityFallbackStage::Prepare,
     );
 }
 
@@ -324,28 +274,6 @@ fn stage_c_no_scroll_budget_rejection_is_typed_before_property_scene_fallback() 
 }
 
 #[test]
-fn stage_c_valid_detached_rejection_keeps_graph_and_compile_state_unchanged() {
-    let artifact = recorded_single_effect_surface_artifact();
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    let before = graph.build_state_snapshot_for_test();
-    crate::view::paint::take_artifact_compile_count();
-
-    let error = crate::view::paint::prepare_single_target_surface_dag_frame(artifact)
-        .expect_err("valid detached surface remains outside the C3a acceptance slice");
-    assert_eq!(
-        error,
-        crate::view::paint::SingleTargetSurfaceDagPrepareError::DetachedSurfacesUnsupported {
-            candidates: 1,
-        },
-    );
-    assert_eq!(graph.build_state_snapshot_for_test(), before);
-    assert_eq!(crate::view::paint::take_artifact_compile_count(), 0);
-}
-
-#[test]
 fn stage_c_zero_surface_prepare_rejects_invalid_store_without_graph_mutation() {
     let (arena, roots, _) = prepared_zero_surface_three_chunk_frame();
     let (mut artifact, _) = recorded_zero_surface_artifact(&arena, &roots);
@@ -356,8 +284,19 @@ fn stage_c_zero_surface_prepare_rejects_invalid_store_without_graph_mutation() {
     let target = ctx.allocate_target(&mut graph);
     ctx.set_current_target(target);
     let before = graph.build_state_snapshot_for_test();
-    let error = crate::view::paint::prepare_single_target_surface_dag_frame(artifact)
-        .expect_err("invalid store must reject before emission");
+    let context = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let error = crate::view::paint::prepare_artifact_surface_raster_plan(
+        artifact,
+        artifact_surface_raster_context(
+            &context,
+            wgpu::Limits::default().max_texture_dimension_2d,
+            PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+        ),
+    )
+    .expect_err("invalid store must reject before generic raster-plan preparation");
+    let crate::view::paint::ArtifactSurfaceRasterPlanError::ArtifactProgram(error) = error else {
+        panic!("invalid store must reject at artifact-program validation: {error:?}")
+    };
     assert_eq!(prepare_error_label(error), "invalid-artifact-store");
     assert_eq!(
         error,
@@ -546,7 +485,7 @@ fn stage_c_zero_surface_keeps_root_opacity_on_the_existing_artifact_path() {
     };
     assert!(trace.rejections.is_empty());
     let RecordedArtifactPayload::ExistingArtifact(artifact) = candidate.payload else {
-        panic!("root opacity is excluded from the C3a zero-surface claim")
+        panic!("root opacity is excluded from current-target artifact-surface authority")
     };
     assert!(matches!(
         artifact.target,

@@ -7,7 +7,7 @@ use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut};
 use crate::view::render_pass::present_surface_pass::{
     PresentSurfaceInput, PresentSurfaceOutput, PresentSurfaceParams, PresentSurfacePass,
 };
-use crate::view::viewport::Viewport;
+use crate::view::viewport::{Viewport, emit_retained_auto_artifact_surface_for_test};
 
 const WIDTH: u32 = 67;
 const HEIGHT: u32 = 64;
@@ -236,45 +236,32 @@ fn artifact_graph(with_border: bool) -> Result<FrameGraph, String> {
     Ok(graph)
 }
 
-fn closed_zero_surface_artifact(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    properties: &PropertyTrees,
-    generations: &PaintGenerationTracker,
-) -> Result<(PaintArtifact, FrameArtifactEligibility), String> {
-    let outcome = record_closed_single_target_frame_artifact(
-        arena,
-        roots,
-        properties,
-        generations,
-        RendererMode::ForcedForTests,
-    )
-    .map_err(|error| format!("zero-surface V2 recording failed: {error:?}"))?;
-    let FrameArtifactRecordOutcome::Artifact {
-        artifact,
-        eligibility,
-    } = outcome
-    else {
-        return Err("forced zero-surface V2 recording silently fell back".to_owned());
-    };
-    Ok((artifact, eligibility))
-}
-
 fn zero_surface_v2_graph(with_border: bool) -> Result<FrameGraph, String> {
     let (arena, roots) = fixture(with_border);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        closed_zero_surface_artifact(&arena, &roots, &properties, &generations)?;
-    if !eligibility.eligible {
+    let (mut graph, ctx, target) = graph_prelude();
+    let mut viewport = Viewport::new();
+    let emission = emit_retained_auto_artifact_surface_for_test(
+        &mut viewport,
+        &arena,
+        &roots,
+        &properties,
+        &generations,
+        &mut graph,
+        &ctx,
+    )?;
+    if emission.surface_count != 0
+        || emission.aggregate_texture_bytes != 0
+        || !emission.actions.is_empty()
+    {
         return Err(format!(
-            "pixel fixture is not zero-surface V2 eligible: {eligibility:?}"
+            "production zero-surface gate must stage no residents: surfaces={}, bytes={}, actions={:?}",
+            emission.surface_count, emission.aggregate_texture_bytes, emission.actions,
         ));
     }
-    let prepared = prepare_single_target_surface_dag_frame(artifact)
-        .map_err(|error| format!("zero-surface V2 preparation failed: {error:?}"))?;
-    let (mut graph, ctx, target) = graph_prelude();
-    let _ = emit_single_target_surface_dag_frame(prepared, &mut graph, ctx)
-        .expect("zero-surface artifact emission");
+    if !viewport.finish_retained_surface_transaction_for_frame(Some(emission.frame_owner), true) {
+        return Err("production zero-surface transaction owner was not current".to_owned());
+    }
     add_present(&mut graph, &target)?;
     Ok(graph)
 }
@@ -2220,19 +2207,32 @@ fn artifact_self_clip_graph() -> Result<FrameGraph, String> {
 fn zero_surface_v2_self_clip_graph() -> Result<FrameGraph, String> {
     let (arena, roots) = self_clip_fixture();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        closed_zero_surface_artifact(&arena, &roots, &properties, &generations)?;
-    if !eligibility.eligible {
+    let (mut graph, ctx, target) = self_clip_graph_prelude();
+    let mut viewport = Viewport::new();
+    let emission = emit_retained_auto_artifact_surface_for_test(
+        &mut viewport,
+        &arena,
+        &roots,
+        &properties,
+        &generations,
+        &mut graph,
+        &ctx,
+    )?;
+    if emission.surface_count != 0
+        || emission.aggregate_texture_bytes != 0
+        || !emission.actions.is_empty()
+    {
         return Err(format!(
-            "self-clip pixel fixture is not zero-surface V2 eligible: {eligibility:?}"
+            "production self-clip zero-surface gate must stage no residents: surfaces={}, bytes={}, actions={:?}",
+            emission.surface_count, emission.aggregate_texture_bytes, emission.actions,
         ));
     }
+    if !viewport.finish_retained_surface_transaction_for_frame(Some(emission.frame_owner), true) {
+        return Err(
+            "production self-clip zero-surface transaction owner was not current".to_owned(),
+        );
+    }
     drop(arena);
-    let prepared = prepare_single_target_surface_dag_frame(artifact)
-        .map_err(|error| format!("self-clip zero-surface V2 preparation failed: {error:?}"))?;
-    let (mut graph, ctx, target) = self_clip_graph_prelude();
-    let _ = emit_single_target_surface_dag_frame(prepared, &mut graph, ctx)
-        .expect("zero-surface artifact emission");
     add_present(&mut graph, &target)?;
     Ok(graph)
 }

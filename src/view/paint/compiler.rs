@@ -5069,30 +5069,14 @@ impl PreparedArtifactSurfaceRasterPlan {
     }
 }
 
-/// Typed rejection for the first C3 production slice. This preparation gate
-/// accepts only one current frame target whose artifact-derived layerization
-/// contains no detached surfaces.
+/// Typed rejection for the shared current-target artifact Surface DAG program.
+/// Detached-surface admission belongs to the caller's typed raster-plan policy,
+/// not to this artifact validation taxonomy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SingleTargetSurfaceDagPrepareError {
     InvalidArtifactStore,
     UnsupportedTarget(PaintArtifactTarget),
     SurfaceDag(SurfaceDagError),
-    DetachedSurfacesUnsupported { candidates: usize },
-}
-
-/// Compiler-owned proof for one completely validated current-target artifact
-/// whose generic Surface DAG contains zero detached surfaces.
-///
-/// `resolved_clips` is the artifact's own validated clip closure. It is not a
-/// detached-surface rebase: this C3 slice has no local backing or receiver clip
-/// space. The token is intentionally non-`Clone`; its paired emitter consumes
-/// the only prepared frame value.
-#[derive(Debug)]
-pub(crate) struct ValidatedSingleTargetSurfaceDagFrame {
-    artifact: PaintArtifact,
-    resolved_clips: Vec<ResolvedClip>,
-    surface_dag: SurfaceDag,
-    execution_order: SurfaceDagExecutionOrder,
 }
 
 fn validate_artifact_surface_dag_program(
@@ -5139,39 +5123,6 @@ fn validate_artifact_surface_dag_program(
         surface_dag,
         execution_order,
         coverage,
-    })
-}
-
-/// Completes every validation needed by the zero-surface C3 emitter without
-/// receiving a frame graph, arena, viewport, resident pool, component, or
-/// mutable renderer state. A rejection is therefore necessarily earlier than
-/// graph, pool, or component mutation.
-#[allow(dead_code)] // Retained as the C3b3c0 equivalence oracle until C3a deletion.
-pub(crate) fn prepare_single_target_surface_dag_frame(
-    artifact: PaintArtifact,
-) -> Result<ValidatedSingleTargetSurfaceDagFrame, SingleTargetSurfaceDagPrepareError> {
-    let program = validate_artifact_surface_dag_program(artifact)?;
-    if !program.surface_dag.nodes().is_empty() {
-        return Err(
-            SingleTargetSurfaceDagPrepareError::DetachedSurfacesUnsupported {
-                candidates: program.surface_dag.nodes().len(),
-            },
-        );
-    }
-
-    let ValidatedArtifactSurfaceDagProgram {
-        artifact,
-        resolved_clips,
-        surface_dag,
-        execution_order,
-        coverage: _,
-    } = program;
-
-    Ok(ValidatedSingleTargetSurfaceDagFrame {
-        artifact,
-        resolved_clips,
-        surface_dag,
-        execution_order,
     })
 }
 
@@ -6923,55 +6874,6 @@ pub(crate) fn seal_prepared_artifact_surface_frame(
             residents,
         })
         .ok_or(ArtifactSurfaceResidentSealError::NonCanonicalSet)
-}
-
-impl ValidatedSingleTargetSurfaceDagFrame {
-    #[cfg(test)]
-    pub(crate) fn artifact(&self) -> &PaintArtifact {
-        &self.artifact
-    }
-
-    #[cfg(test)]
-    pub(crate) fn surface_dag(&self) -> &SurfaceDag {
-        &self.surface_dag
-    }
-
-    #[cfg(test)]
-    pub(crate) fn execution_order(&self) -> &SurfaceDagExecutionOrder {
-        &self.execution_order
-    }
-}
-
-/// Consumes a preparation-only capability. With zero detached surfaces there
-/// are no execution nodes to visit; artifact chunk/op order is the complete
-/// execution stream and was sealed together with its terminal cursor.
-#[allow(dead_code)] // Retained as the C3b3c0 equivalence oracle until C3a deletion.
-pub(crate) fn emit_single_target_surface_dag_frame(
-    prepared: ValidatedSingleTargetSurfaceDagFrame,
-    graph: &mut FrameGraph,
-    mut ctx: UiBuildContext,
-) -> Result<BuildState, ArtifactCompileErrorKind> {
-    let incoming_depth = ctx.current_clip_id();
-    let max_mask_depth = artifact_surface_executor::artifact_child_mask_max_depth(
-        prepared.artifact.chunks.iter().map(|chunk| chunk.id),
-        0,
-    );
-    if usize::from(incoming_depth) + max_mask_depth > usize::from(u8::MAX) {
-        return Err(ArtifactCompileErrorKind::ChildMaskDepthOverflow {
-            incoming_depth,
-            max_mask_depth,
-        });
-    }
-    let ValidatedSingleTargetSurfaceDagFrame {
-        artifact,
-        resolved_clips,
-        surface_dag: _surface_dag,
-        execution_order: _execution_order,
-    } = prepared;
-    #[cfg(test)]
-    ARTIFACT_COMPILE_COUNT.with(|count| count.set(count.get().saturating_add(1)));
-    compile_validated_artifact(&artifact, resolved_clips, graph, &mut ctx);
-    Ok(ctx.into_state())
 }
 
 pub(crate) struct ArtifactCompileError {
