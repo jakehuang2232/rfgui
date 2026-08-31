@@ -7,9 +7,9 @@ use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot,
 };
 use crate::view::paint::{
-    ArtifactSurfaceCompositeGeometryStamp, ResolvedClip, RetainedSurfaceCompileAction,
-    RetainedSurfaceRasterRole, RetainedSurfaceResidentKey, SurfaceDagExecutionTargetId,
-    prepare_artifact_surface_raster_plan, seal_prepared_artifact_surface_frame,
+    ArtifactSurfaceCompositeGeometryStamp, RetainedSurfaceCompileAction, RetainedSurfaceRasterRole,
+    RetainedSurfaceResidentKey, SurfaceDagExecutionTargetId, prepare_artifact_surface_raster_plan,
+    seal_prepared_artifact_surface_frame,
 };
 
 pub(crate) fn prepared_depth_four() -> crate::view::paint::PreparedArtifactSurfaceFrame {
@@ -468,7 +468,10 @@ fn empty_nested_receiver_keeps_cold_raster_authority_without_advancing_parent_or
             *actual_parent == parent && *actual_child == child
         })
         .expect("visible nested dependency");
-    assert_ne!(visible_dependency.2, ResolvedClip::Empty);
+    assert_ne!(
+        visible_dependency.2,
+        crate::view::paint::compiler::ArtifactSurfaceResolvedClip::Empty,
+    );
     assert!(visible_dependency.4 > visible_dependency.3);
 
     let empty_dependency = empty
@@ -479,7 +482,10 @@ fn empty_nested_receiver_keeps_cold_raster_authority_without_advancing_parent_or
             *actual_parent == parent && *actual_child == child
         })
         .expect("empty nested dependency");
-    assert_eq!(empty_dependency.2, ResolvedClip::Empty);
+    assert_eq!(
+        empty_dependency.2,
+        crate::view::paint::compiler::ArtifactSurfaceResolvedClip::Empty,
+    );
     assert_eq!(empty_dependency.4, empty_dependency.3);
 
     let viewport = crate::view::viewport::Viewport::new();

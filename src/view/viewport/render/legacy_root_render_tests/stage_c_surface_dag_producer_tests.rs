@@ -2,7 +2,7 @@ use super::*;
 use crate::view::paint::{
     ArtifactSurfaceRasterContext, ArtifactSurfaceRasterPlanError, ArtifactSurfaceResidentSealError,
     FrameArtifactFallbackReason, FrameArtifactRecordOutcome, LegacyPaintReason, RendererMode,
-    RetainedSurfaceRasterRole, SingleTargetSurfaceDagPrepareError,
+    RetainedSurfaceCompileAction, RetainedSurfaceRasterRole, SingleTargetSurfaceDagPrepareError,
     prepare_artifact_surface_raster_plan, record_surface_dag_frame_artifact,
     seal_prepared_artifact_surface_frame,
 };
@@ -224,6 +224,37 @@ fn measure_recorded_scene(
     }
 }
 
+fn prepared_recorded_scene(
+    dpr: f32,
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    properties: &PropertyTrees,
+    generations: &PaintGenerationTracker,
+) -> crate::view::paint::PreparedArtifactSurfaceFrame {
+    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
+        arena,
+        roots,
+        properties,
+        generations,
+        RendererMode::ForcedForTests,
+    )
+    .expect("surface DAG scene must record") else {
+        panic!("forced surface DAG scene cannot silently fall back")
+    };
+    let context = ArtifactSurfaceRasterContext::new(
+        dpr,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [0.0, 0.0],
+        None,
+        4096,
+        MEASUREMENT_BUDGET_BYTES,
+    )
+    .expect("surface DAG test raster context");
+    let plan = prepare_artifact_surface_raster_plan(artifact, context)
+        .expect("surface DAG scene must prepare");
+    seal_prepared_artifact_surface_frame(plan).expect("surface DAG scene must seal")
+}
+
 fn prepared_row(
     label: &'static str,
     dpr: f32,
@@ -250,22 +281,6 @@ fn missing_paint_identity_row(label: &'static str, dpr: f32) -> ProducerMeasurem
             FrameArtifactFallbackReason::LegacyBoundary(LegacyPaintReason::MissingPaintIdentity),
         ]),
     }
-}
-
-fn assert_invalid_descriptor_row(
-    row: &ProducerMeasurementRow,
-    label: &'static str,
-    dpr: f32,
-    source_index: usize,
-) {
-    assert_eq!((row.label, row.dpr_bits), (label, dpr.to_bits()));
-    let ProducerMeasurementOutcome::PlanRejected(
-        ArtifactSurfaceRasterPlanError::InvalidDescriptor(source),
-    ) = row.outcome
-    else {
-        panic!("expected an invalid descriptor row, got {row:?}")
-    };
-    assert_eq!(source.index(), source_index);
 }
 
 fn assert_invalid_store_row(row: &ProducerMeasurementRow, label: &'static str, dpr: f32) {
@@ -375,6 +390,68 @@ fn surface_dag_producer_preserves_the_frozen_no_scroll_measurement_contract() {
 }
 
 #[test]
+fn co_located_raster_origin_redirects_source_bits_without_changing_pair_bytes() {
+    let (arena, roots) = ProducerCase::CoLocatedTransformEffect.build();
+    let (properties, generations) = synced_paint_state(&arena, &roots);
+    let expectations = [
+        (
+            1.0_f32,
+            [0.5, 0.5, 40.0, 24.0],
+            [0.75, 0.0, 18.0, 10.0],
+            [12_300_u64, 2_280],
+        ),
+        (
+            2.0_f32,
+            [0.0, 0.0, 40.0, 24.0],
+            [0.25, 0.0, 18.0, 10.0],
+            [46_080_u64, 8_880],
+        ),
+    ];
+    for (dpr, transform_source, effect_source, expected_pair_bytes) in expectations {
+        let frame = prepared_recorded_scene(dpr, &arena, &roots, &properties, &generations);
+        let source_for_role = |role| {
+            frame
+                .raster_plan()
+                .nodes()
+                .iter()
+                .find(|node| node.identity().role == role)
+                .expect("co-located role")
+                .target()
+                .source_bounds_bits
+                .map(f32::from_bits)
+        };
+        assert_eq!(
+            source_for_role(RetainedSurfaceRasterRole::Transform).map(f32::to_bits),
+            transform_source.map(f32::to_bits),
+        );
+        assert_eq!(
+            source_for_role(RetainedSurfaceRasterRole::PropertyEffect).map(f32::to_bits),
+            effect_source.map(f32::to_bits),
+        );
+        assert_ne!(
+            effect_source.map(f32::to_bits),
+            [4.75_f32, 2.0, 18.0, 10.0].map(f32::to_bits),
+            "the effect source must actually move into texture-local space",
+        );
+        let pair_bytes = frame
+            .raster_plan()
+            .nodes()
+            .iter()
+            .map(|node| {
+                let target = node.target();
+                crate::view::raster_cost::texture_desc_payload_bytes(&target.color)
+                    .bytes
+                    .checked_add(
+                        crate::view::raster_cost::texture_desc_payload_bytes(&target.depth).bytes,
+                    )
+                    .expect("co-located descriptor pair bytes")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(pair_bytes, expected_pair_bytes);
+    }
+}
+
+#[test]
 fn surface_dag_producer_records_five_real_scroll_property_trees_and_freezes_downstream_outcomes() {
     let cases = [
         {
@@ -423,42 +500,68 @@ fn surface_dag_producer_records_five_real_scroll_property_trees_and_freezes_down
         RetainedSurfaceRasterRole::ScrollContent,
         RetainedSurfaceRasterRole::ScrollContent,
     ];
+    let transform_scroll = [
+        RetainedSurfaceRasterRole::Transform,
+        RetainedSurfaceRasterRole::ScrollContent,
+    ];
+    let transform_effect_scroll = [
+        RetainedSurfaceRasterRole::Transform,
+        RetainedSurfaceRasterRole::PropertyEffect,
+        RetainedSurfaceRasterRole::ScrollContent,
+    ];
     assert_eq!(rows.len(), 10);
     assert_eq!(rows[0], prepared_row("scroll", 1.0, &scroll, &[360_000]));
     assert_eq!(rows[1], prepared_row("scroll", 2.0, &scroll, &[1_440_000]));
-    // Raster-origin follow-up contract and baseline redirection table:
-    //
-    // - transform-scroll DPR 1/2: InvalidDescriptor -> Prepared; replace this
-    //   rejection with the newly measured per-surface bytes before that batch
-    //   lands.
-    // - transform-effect-scroll DPR 1/2: InvalidDescriptor -> Prepared; replace
-    //   this rejection with the newly measured per-surface bytes before that
-    //   batch lands.
-    // - effect-scroll DPR 1/2: InvalidArtifactStore is a different-stage gap.
-    //   The raster-origin batch must either produce Prepared rows with measured
-    //   bytes or retain these rows while naming the later owning batch.
-    //
-    // The same batch must restore the natural two-frame differential removed
-    // here while its asserted property does not exist:
+    // Raster-origin redirection is now established for transform-scroll and
+    // transform-effect-scroll. The natural two-frame differential below is a
+    // separate required proof of the reuse consequence:
     // 1. call set_scroll_offset, real measure_and_place, resync, and record;
     //    never compensate by changing an authored position;
     // 2. never manipulate dirty flags to manufacture the second frame;
     // 3. offset-only must change composite geometry, preserve resident stamps,
     //    and produce Reuse from the real pool action;
     // 4. a content-change control must change the stamp and produce Reraster.
-    // Temporary downstream baseline, not intended rejection behavior. The
-    // raster-origin rebase batch must turn these four InvalidDescriptor rows
-    // into Prepared rows and freeze their newly measured descriptor bytes.
-    assert_invalid_descriptor_row(&rows[2], "transform-scroll", 1.0, 0);
-    assert_invalid_descriptor_row(&rows[3], "transform-scroll", 2.0, 0);
+    assert_eq!(
+        rows[2],
+        prepared_row(
+            "transform-scroll",
+            1.0,
+            &transform_scroll,
+            &[345_600, 345_600],
+        )
+    );
+    assert_eq!(
+        rows[3],
+        prepared_row(
+            "transform-scroll",
+            2.0,
+            &transform_scroll,
+            &[1_382_400, 1_382_400],
+        )
+    );
     // This is a different-stage artifact-store gap. The raster-origin batch
     // must classify it explicitly: either turn both rows into Prepared with
     // measured bytes, or retain this rejection with a named owning batch.
     assert_invalid_store_row(&rows[4], "effect-scroll", 1.0);
     assert_invalid_store_row(&rows[5], "effect-scroll", 2.0);
-    // Same temporary raster-origin baseline as transform-scroll above.
-    assert_invalid_descriptor_row(&rows[6], "transform-effect-scroll", 1.0, 1);
-    assert_invalid_descriptor_row(&rows[7], "transform-effect-scroll", 2.0, 1);
+    assert_eq!(
+        rows[6],
+        prepared_row(
+            "transform-effect-scroll",
+            1.0,
+            &transform_effect_scroll,
+            &[345_600, 345_600, 345_600],
+        )
+    );
+    assert_eq!(
+        rows[7],
+        prepared_row(
+            "transform-effect-scroll",
+            2.0,
+            &transform_effect_scroll,
+            &[1_382_400, 1_382_400, 1_382_400],
+        )
+    );
     assert_eq!(
         rows[8],
         prepared_row("nested-scroll", 1.0, &nested_scroll, &[720_000, 720_000])
@@ -471,5 +574,123 @@ fn surface_dag_producer_records_five_real_scroll_property_trees_and_freezes_down
             &nested_scroll,
             &[2_880_000, 2_880_000],
         )
+    );
+}
+
+#[test]
+fn natural_scroll_offset_changes_only_composite_geometry_until_content_changes() {
+    let (mut arena, roots, _, _) = prepared_exact_scroll_scene();
+    let content = arena.children_of(roots[0])[0];
+    let content_style = |color| {
+        let mut style = Style::new();
+        style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(color));
+        style
+    };
+    crate::view::test_support::get_element_mut::<Element>(&arena, content)
+        .apply_style(content_style(Color::rgb(24, 48, 72)));
+    let run_layout = |arena: &mut NodeArena| {
+        crate::view::test_support::measure_and_place(
+            arena,
+            roots[0],
+            LayoutConstraints {
+                max_width: 100.0,
+                max_height: 80.0,
+                viewport_width: 100.0,
+                viewport_height: 80.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(80.0),
+            },
+            LayoutPlacement {
+                parent_x: 0.0,
+                parent_y: 0.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 100.0,
+                available_height: 80.0,
+                viewport_width: 100.0,
+                viewport_height: 80.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(80.0),
+            },
+        );
+    };
+    run_layout(&mut arena);
+    let (properties, generations) = synced_paint_state(&arena, &roots);
+    let baseline = prepared_recorded_scene(1.0, &arena, &roots, &properties, &generations);
+    let baseline_geometry = baseline
+        .raster_plan()
+        .nodes()
+        .iter()
+        .map(|node| node.geometry())
+        .collect::<Vec<_>>();
+
+    crate::view::test_support::get_element_mut::<Element>(&arena, roots[0])
+        .set_scroll_offset((0.0, 37.0));
+    run_layout(&mut arena);
+    let (moved_properties, moved_generations) = synced_paint_state(&arena, &roots);
+    let moved = prepared_recorded_scene(1.0, &arena, &roots, &moved_properties, &moved_generations);
+    let moved_geometry = moved
+        .raster_plan()
+        .nodes()
+        .iter()
+        .map(|node| node.geometry())
+        .collect::<Vec<_>>();
+    assert_ne!(
+        baseline_geometry, moved_geometry,
+        "offset-only must remain a composite placement change",
+    );
+    assert_eq!(
+        baseline.residents(),
+        moved.residents(),
+        "offset-only must not alter texture-local resident stamps",
+    );
+
+    let mut viewport = crate::view::viewport::Viewport::new();
+    let owner = viewport
+        .begin_retained_surface_frame_stage()
+        .expect("baseline resident owner");
+    let baseline_emission = viewport
+        .prepare_artifact_surface_pool_emission_from_pool(baseline.residents().clone())
+        .expect("baseline resident emission");
+    assert!(
+        viewport.stage_artifact_surface_resident_set(
+            owner,
+            baseline_emission.into_canonical_residents(),
+        )
+    );
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
+    let moved_emission = viewport
+        .prepare_artifact_surface_pool_emission_for_forced_test(moved.residents().clone())
+        .expect("offset-only pool actions");
+    assert!(
+        moved_emission
+            .ordered_actions()
+            .iter()
+            .all(|(_, action)| *action == RetainedSurfaceCompileAction::Reuse)
+    );
+
+    crate::view::test_support::get_element_mut::<Element>(&arena, content)
+        .apply_style(content_style(Color::rgb(15, 90, 180)));
+    let (changed_properties, changed_generations) = synced_paint_state(&arena, &roots);
+    let changed = prepared_recorded_scene(
+        1.0,
+        &arena,
+        &roots,
+        &changed_properties,
+        &changed_generations,
+    );
+    assert_ne!(
+        moved.residents(),
+        changed.residents(),
+        "content change must alter the resident stamp",
+    );
+    let changed_emission = viewport
+        .prepare_artifact_surface_pool_emission_for_forced_test(changed.residents().clone())
+        .expect("content-change pool actions");
+    assert!(
+        changed_emission
+            .ordered_actions()
+            .iter()
+            .any(|(_, action)| *action == RetainedSurfaceCompileAction::Reraster)
     );
 }

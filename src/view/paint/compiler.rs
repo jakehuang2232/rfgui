@@ -15,6 +15,7 @@ use crate::view::render_pass::composite_layer_pass::{
     CompositeLayerInput, CompositeLayerOutput, CompositeLayerParams, CompositeLayerPass, LayerIn,
 };
 use crate::view::render_pass::draw_rect_pass::{DrawRectInput, DrawRectOutput, DrawRectPass};
+use crate::view::render_pass::render_target::GraphicsPassScissor;
 use crate::view::render_pass::text_pass::{TextInput, TextOutput, TextPreparedInputPass};
 use crate::view::render_pass::texture_composite_pass::{
     TextureCompositeInput, TextureCompositeOutput,
@@ -51,6 +52,36 @@ pub(crate) enum ResolvedClip {
     Unclipped,
     Scissor([u32; 4]),
     Empty,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtifactSurfaceResolvedClip {
+    Unclipped,
+    Scissor(GraphicsPassScissor),
+    Empty,
+}
+
+impl ArtifactSurfaceResolvedClip {
+    fn from_logical(clip: ResolvedClip) -> Self {
+        match clip {
+            ResolvedClip::Unclipped => Self::Unclipped,
+            ResolvedClip::Scissor(scissor) => Self::Scissor(GraphicsPassScissor::Logical(scissor)),
+            ResolvedClip::Empty => Self::Empty,
+        }
+    }
+
+    fn project_for_surface_receiver(
+        self,
+        projection: ArtifactSurfaceRasterOriginProjection,
+    ) -> Option<Self> {
+        match self {
+            Self::Unclipped | Self::Empty => Some(self),
+            Self::Scissor(GraphicsPassScissor::Logical(scissor)) => {
+                Some(projection.project_clip(ResolvedClip::Scissor(scissor)))
+            }
+            Self::Scissor(GraphicsPassScissor::TargetPhysical(_)) => None,
+        }
+    }
 }
 
 mod artifact_surface_executor;
@@ -2584,7 +2615,7 @@ impl RetainedSurfaceRasterStamp {
     #[cfg(test)]
     pub(crate) fn artifact_surface_program_resolved_clips_for_test(
         &self,
-    ) -> Option<Vec<ResolvedClip>> {
+    ) -> Option<Vec<ArtifactSurfaceResolvedClip>> {
         self.artifact_surface_program.as_ref().map(|program| {
             program
                 .steps
@@ -4648,6 +4679,7 @@ pub(crate) enum ArtifactSurfaceRasterPlanError {
     MissingCoverageNode(SurfaceDagNodeId),
     EmptySurfaceBounds(SurfaceDagNodeId),
     InvalidSurfaceBounds(SurfaceDagNodeId),
+    InvalidRasterOrigin(SurfaceDagNodeId),
     InvalidDescriptor(SurfaceDagNodeId),
     TextureBudgetExceeded(SurfaceDagNodeId),
     InvalidCoverageSpan(ArtifactSurfaceRasterTargetId),
@@ -4709,19 +4741,19 @@ struct ValidatedArtifactSurfaceDagProgram {
 /// `Unclipped` / `Scissor` / `Empty` scissor taxonomy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ArtifactSurfaceChunkClipSchedule {
-    WholeChunk(ResolvedClip),
+    WholeChunk(ArtifactSurfaceResolvedClip),
     /// The exact admitted self-clip shadow grammar paints its outer-shadow
     /// prefix against the incoming scissor, then applies the owner's Replace
     /// clip to decoration/media. Sealing the split prevents the executor from
     /// re-consulting `exact_self_clip_shadow_prefix_len` during emission.
     AfterShadowPrefix {
         prefix_op_count: usize,
-        suffix_clip: ResolvedClip,
+        suffix_clip: ArtifactSurfaceResolvedClip,
     },
 }
 
 impl ArtifactSurfaceChunkClipSchedule {
-    fn terminal_clip(self) -> ResolvedClip {
+    fn terminal_clip(self) -> ArtifactSurfaceResolvedClip {
         match self {
             Self::WholeChunk(clip) => clip,
             Self::AfterShadowPrefix { suffix_clip, .. } => suffix_clip,
@@ -4729,7 +4761,7 @@ impl ArtifactSurfaceChunkClipSchedule {
     }
 
     #[cfg(test)]
-    fn parts_for_test(self) -> (Option<usize>, ResolvedClip) {
+    fn parts_for_test(self) -> (Option<usize>, ArtifactSurfaceResolvedClip) {
         match self {
             Self::WholeChunk(clip) => (None, clip),
             Self::AfterShadowPrefix {
@@ -4781,7 +4813,7 @@ impl PreparedArtifactSurfaceRasterChunk {
     }
 
     #[cfg(test)]
-    pub(crate) fn clip_schedule_for_test(&self) -> (Option<usize>, ResolvedClip) {
+    pub(crate) fn clip_schedule_for_test(&self) -> (Option<usize>, ArtifactSurfaceResolvedClip) {
         self.clip_schedule.parts_for_test()
     }
 }
@@ -4832,7 +4864,7 @@ pub(crate) enum ArtifactSurfaceCompositeGeometryStamp {
         receiver_transform_bits: [u32; 16],
         receiver_clip: Option<ClipNodeId>,
         /// Sealed receiver result; the executor must not re-resolve the id.
-        resolved_receiver_clip: ResolvedClip,
+        resolved_receiver_clip: ArtifactSurfaceResolvedClip,
     },
     Effect {
         source_bounds_bits: [u32; 4],
@@ -4841,7 +4873,7 @@ pub(crate) enum ArtifactSurfaceCompositeGeometryStamp {
         generation: u64,
         receiver_clip: Option<ClipNodeId>,
         /// Sealed receiver result; the executor must not re-resolve the id.
-        resolved_receiver_clip: ResolvedClip,
+        resolved_receiver_clip: ArtifactSurfaceResolvedClip,
     },
     ScrollContent {
         source_bounds_bits: [u32; 4],
@@ -4850,7 +4882,7 @@ pub(crate) enum ArtifactSurfaceCompositeGeometryStamp {
         generation: u64,
         receiver_clip: Option<ClipNodeId>,
         /// Sealed receiver result; the executor must not re-resolve the id.
-        resolved_receiver_clip: ResolvedClip,
+        resolved_receiver_clip: ArtifactSurfaceResolvedClip,
     },
 }
 
@@ -4872,7 +4904,7 @@ impl ArtifactSurfaceCompositeGeometryStamp {
         }
     }
 
-    pub(crate) fn resolved_receiver_clip(self) -> ResolvedClip {
+    pub(crate) fn resolved_receiver_clip(self) -> ArtifactSurfaceResolvedClip {
         match self {
             Self::Transform {
                 resolved_receiver_clip,
@@ -4889,8 +4921,50 @@ impl ArtifactSurfaceCompositeGeometryStamp {
         }
     }
 
+    fn project_into_surface_receiver(
+        &mut self,
+        projection: ArtifactSurfaceRasterOriginProjection,
+    ) -> Option<()> {
+        let (destination_bounds_bits, resolved_receiver_clip) = match self {
+            Self::Transform {
+                destination_bounds_bits,
+                resolved_receiver_clip,
+                ..
+            }
+            | Self::Effect {
+                destination_bounds_bits,
+                resolved_receiver_clip,
+                ..
+            }
+            | Self::ScrollContent {
+                destination_bounds_bits,
+                resolved_receiver_clip,
+                ..
+            } => (destination_bounds_bits, resolved_receiver_clip),
+        };
+        *destination_bounds_bits = projection.project_bounds_bits(*destination_bounds_bits)?;
+        *resolved_receiver_clip =
+            resolved_receiver_clip.project_for_surface_receiver(projection)?;
+        Some(())
+    }
+
+    fn clip_space_matches_receiver(self, receiver: SurfaceDagExecutionTargetId) -> bool {
+        match self.resolved_receiver_clip() {
+            ArtifactSurfaceResolvedClip::Unclipped | ArtifactSurfaceResolvedClip::Empty => true,
+            ArtifactSurfaceResolvedClip::Scissor(GraphicsPassScissor::Logical(_)) => {
+                matches!(receiver, SurfaceDagExecutionTargetId::SceneRoot(_))
+            }
+            ArtifactSurfaceResolvedClip::Scissor(GraphicsPassScissor::TargetPhysical(_)) => {
+                matches!(receiver, SurfaceDagExecutionTargetId::Surface(_))
+            }
+        }
+    }
+
     #[cfg(test)]
-    fn with_resolved_receiver_clip_for_test(self, resolved_receiver_clip: ResolvedClip) -> Self {
+    fn with_resolved_receiver_clip_for_test(
+        self,
+        resolved_receiver_clip: ArtifactSurfaceResolvedClip,
+    ) -> Self {
         match self {
             Self::Transform {
                 source_bounds_bits,
@@ -4939,6 +5013,48 @@ impl ArtifactSurfaceCompositeGeometryStamp {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArtifactSurfaceCompositeGeometryState {
+    Pending(ArtifactSurfaceCompositeGeometryStamp),
+    Finalized(ArtifactSurfaceCompositeGeometryStamp),
+}
+
+impl ArtifactSurfaceCompositeGeometryState {
+    fn pending(self) -> Option<ArtifactSurfaceCompositeGeometryStamp> {
+        match self {
+            Self::Pending(geometry) => Some(geometry),
+            Self::Finalized(_) => None,
+        }
+    }
+
+    fn finalize_surface_receiver(
+        &mut self,
+        projection: ArtifactSurfaceRasterOriginProjection,
+    ) -> Option<()> {
+        let Self::Pending(mut geometry) = *self else {
+            return None;
+        };
+        geometry.project_into_surface_receiver(projection)?;
+        *self = Self::Finalized(geometry);
+        Some(())
+    }
+
+    fn finalize_scene_root(&mut self) -> Option<()> {
+        let Self::Pending(geometry) = *self else {
+            return None;
+        };
+        *self = Self::Finalized(geometry);
+        Some(())
+    }
+
+    fn finalized(self) -> Option<ArtifactSurfaceCompositeGeometryStamp> {
+        match self {
+            Self::Pending(_) => None,
+            Self::Finalized(geometry) => Some(geometry),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum PreparedArtifactSurfaceRasterStep {
     ArtifactSpan(PreparedArtifactSurfaceRasterSpan),
@@ -4952,7 +5068,10 @@ pub(crate) struct PreparedArtifactSurfaceRasterNode {
     receiver: SurfaceDagExecutionTargetId,
     identity: RetainedSurfaceRasterIdentity,
     target: RetainedSurfaceRasterInputs,
-    geometry: ArtifactSurfaceCompositeGeometryStamp,
+    /// Plan-only placement capability used to seal target-physical child-mask
+    /// scissors. It is deliberately absent from the resident stamp.
+    raster_origin: ArtifactSurfaceRasterOriginProjection,
+    geometry: ArtifactSurfaceCompositeGeometryState,
     clip_closure: Option<SurfaceDagClipClosureProjection>,
     steps: Vec<PreparedArtifactSurfaceRasterStep>,
 }
@@ -4980,6 +5099,8 @@ impl PreparedArtifactSurfaceRasterNode {
 
     pub(crate) fn geometry(&self) -> ArtifactSurfaceCompositeGeometryStamp {
         self.geometry
+            .finalized()
+            .expect("prepared artifact node geometry is finalized")
     }
 
     pub(crate) fn clip_closure(&self) -> Option<&SurfaceDagClipClosureProjection> {
@@ -5060,9 +5181,10 @@ impl PreparedArtifactSurfaceRasterPlan {
         });
         if let Some((parent, child)) = pair {
             let child_node = self.nodes.get_mut(child.index())?;
-            child_node.geometry = child_node
-                .geometry
-                .with_resolved_receiver_clip_for_test(ResolvedClip::Empty);
+            let geometry = child_node.geometry.finalized()?;
+            child_node.geometry = ArtifactSurfaceCompositeGeometryState::Finalized(
+                geometry.with_resolved_receiver_clip_for_test(ArtifactSurfaceResolvedClip::Empty),
+            );
             return Some((parent, child));
         }
         None
@@ -5164,6 +5286,149 @@ fn append_bounds(accumulated: &mut Option<[u32; 4]>, next: [u32; 4]) -> Option<(
     Some(())
 }
 
+/// One surface's sole receiver-space to texture-local projection.
+///
+/// The signed physical origin is a placement fact. It deliberately stays out
+/// of resident identity and raster stamps; only the normalized raster inputs
+/// produced through this value participate in equality and reuse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ArtifactSurfaceRasterOriginProjection {
+    scale_factor_bits: u32,
+    physical_origin: [i64; 2],
+    translation_bits: [u32; 2],
+    normalized_source_bounds_bits: [u32; 4],
+    target_size: [u32; 2],
+}
+
+impl ArtifactSurfaceRasterOriginProjection {
+    fn new(raw_source_bounds_bits: [u32; 4], scale_factor_bits: u32) -> Option<Self> {
+        let [x, y, width, height] = raw_source_bounds_bits.map(f32::from_bits);
+        let scale = f32::from_bits(scale_factor_bits);
+        if !scale.is_finite()
+            || scale <= 0.0
+            || ![x, y, width, height].into_iter().all(f32::is_finite)
+            || width <= 0.0
+            || height <= 0.0
+        {
+            return None;
+        }
+        let physical_left = finite_f32_to_i64((x * scale).floor())?;
+        let physical_top = finite_f32_to_i64((y * scale).floor())?;
+        let physical_right = finite_f32_to_i64(((x + width) * scale).ceil())?;
+        let physical_bottom = finite_f32_to_i64(((y + height) * scale).ceil())?;
+        let target_width = u32::try_from(physical_right.checked_sub(physical_left)?).ok()?;
+        let target_height = u32::try_from(physical_bottom.checked_sub(physical_top)?).ok()?;
+        if target_width == 0 || target_height == 0 {
+            return None;
+        }
+        let logical_origin = [physical_left as f32 / scale, physical_top as f32 / scale];
+        let translation = [-logical_origin[0], -logical_origin[1]];
+        let normalized = [x + translation[0], y + translation[1], width, height];
+        if normalized.into_iter().any(|value| !value.is_finite())
+            || normalized[0] < 0.0
+            || normalized[1] < 0.0
+            || normalized[0] >= 1.0 / scale
+            || normalized[1] >= 1.0 / scale
+        {
+            return None;
+        }
+        Some(Self {
+            scale_factor_bits,
+            physical_origin: [physical_left, physical_top],
+            translation_bits: translation.map(f32::to_bits),
+            normalized_source_bounds_bits: normalized.map(f32::to_bits),
+            target_size: [target_width, target_height],
+        })
+    }
+
+    fn translation(self) -> [f32; 2] {
+        self.translation_bits.map(f32::from_bits)
+    }
+
+    fn physical_origin_f32(self) -> [f32; 2] {
+        self.physical_origin.map(|value| value as f32)
+    }
+
+    fn combined_translation(self, base: [f32; 2]) -> Option<[f32; 2]> {
+        let projection = self.translation();
+        let combined = [base[0] + projection[0], base[1] + projection[1]];
+        combined.into_iter().all(f32::is_finite).then_some(combined)
+    }
+
+    fn project_bounds_bits(self, bounds_bits: [u32; 4]) -> Option<[u32; 4]> {
+        let mut bounds = bounds_bits.map(f32::from_bits);
+        let translation = self.translation();
+        bounds[0] += translation[0];
+        bounds[1] += translation[1];
+        (bounds.into_iter().all(f32::is_finite) && bounds[2] > 0.0 && bounds[3] > 0.0)
+            .then(|| bounds.map(f32::to_bits))
+    }
+
+    fn project_clip(self, clip: ResolvedClip) -> ArtifactSurfaceResolvedClip {
+        match clip {
+            ResolvedClip::Unclipped => ArtifactSurfaceResolvedClip::Unclipped,
+            ResolvedClip::Empty => ArtifactSurfaceResolvedClip::Empty,
+            ResolvedClip::Scissor([x, y, width, height]) => {
+                let scale = f32::from_bits(self.scale_factor_bits);
+                let left = (x as f32 * scale).floor().max(0.0) as i64 - self.physical_origin[0];
+                let top = (y as f32 * scale).floor().max(0.0) as i64 - self.physical_origin[1];
+                let right = ((x as f32 + width as f32) * scale).ceil().max(0.0) as i64
+                    - self.physical_origin[0];
+                let bottom = ((y as f32 + height as f32) * scale).ceil().max(0.0) as i64
+                    - self.physical_origin[1];
+                match clamp_signed_scissor_to_target([left, top, right, bottom], self.target_size) {
+                    Some(scissor) => {
+                        ArtifactSurfaceResolvedClip::Scissor(target_physical_scissor(scissor))
+                    }
+                    None => ArtifactSurfaceResolvedClip::Empty,
+                }
+            }
+        }
+    }
+
+    fn target_physical_scissor_for_projected_bounds(
+        self,
+        bounds_bits: [u32; 4],
+    ) -> Option<GraphicsPassScissor> {
+        let [x, y, width, height] = bounds_bits.map(f32::from_bits);
+        let scale = f32::from_bits(self.scale_factor_bits);
+        let physical = [
+            finite_f32_to_i64((x * scale).floor())?,
+            finite_f32_to_i64((y * scale).floor())?,
+            finite_f32_to_i64(((x + width) * scale).ceil())?,
+            finite_f32_to_i64(((y + height) * scale).ceil())?,
+        ];
+        clamp_signed_scissor_to_target(physical, self.target_size).map(target_physical_scissor)
+    }
+}
+
+fn finite_f32_to_i64(value: f32) -> Option<i64> {
+    (value.is_finite() && value >= i64::MIN as f32 && value <= i64::MAX as f32)
+        .then_some(value as i64)
+}
+
+fn clamp_signed_scissor_to_target(
+    [left, top, right, bottom]: [i64; 4],
+    [width, height]: [u32; 2],
+) -> Option<[u32; 4]> {
+    let width = i64::from(width);
+    let height = i64::from(height);
+    let left = left.clamp(0, width);
+    let top = top.clamp(0, height);
+    let right = right.clamp(0, width);
+    let bottom = bottom.clamp(0, height);
+    (right > left && bottom > top).then_some([
+        left as u32,
+        top as u32,
+        (right - left) as u32,
+        (bottom - top) as u32,
+    ])
+}
+
+fn target_physical_scissor(scissor: [u32; 4]) -> GraphicsPassScissor {
+    GraphicsPassScissor::TargetPhysical(scissor)
+}
+
 fn resolve_artifact_surface_clip(
     leaf: Option<ClipNodeId>,
     clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
@@ -5228,8 +5493,12 @@ fn artifact_surface_chunk_clip_schedule(
     resolved: ResolvedClip,
     chain: &[ClipNodeSnapshot],
     incoming_scissor: Option<[u32; 4]>,
+    raster_origin: Option<ArtifactSurfaceRasterOriginProjection>,
 ) -> ArtifactSurfaceChunkClipSchedule {
     let terminal_clip = artifact_surface_terminal_clip(resolved, chain, incoming_scissor);
+    let terminal_clip = raster_origin
+        .map(|projection| projection.project_clip(terminal_clip))
+        .unwrap_or_else(|| ArtifactSurfaceResolvedClip::from_logical(terminal_clip));
     match exact_self_clip_shadow_prefix_len(artifact, chunk) {
         Some(prefix_op_count) => ArtifactSurfaceChunkClipSchedule::AfterShadowPrefix {
             prefix_op_count,
@@ -5244,16 +5513,19 @@ fn artifact_surface_chunk_opaque_order_count(
     ops: &[PaintOp],
 ) -> Option<u32> {
     let visible_ops = match schedule {
-        ArtifactSurfaceChunkClipSchedule::WholeChunk(ResolvedClip::Empty) => &ops[..0],
+        ArtifactSurfaceChunkClipSchedule::WholeChunk(ArtifactSurfaceResolvedClip::Empty) => {
+            &ops[..0]
+        }
         ArtifactSurfaceChunkClipSchedule::AfterShadowPrefix {
             prefix_op_count,
-            suffix_clip: ResolvedClip::Empty,
+            suffix_clip: ArtifactSurfaceResolvedClip::Empty,
         } => ops.get(..prefix_op_count)?,
         ArtifactSurfaceChunkClipSchedule::WholeChunk(
-            ResolvedClip::Unclipped | ResolvedClip::Scissor(_),
+            ArtifactSurfaceResolvedClip::Unclipped | ArtifactSurfaceResolvedClip::Scissor(_),
         )
         | ArtifactSurfaceChunkClipSchedule::AfterShadowPrefix {
-            suffix_clip: ResolvedClip::Unclipped | ResolvedClip::Scissor(_),
+            suffix_clip:
+                ArtifactSurfaceResolvedClip::Unclipped | ArtifactSurfaceResolvedClip::Scissor(_),
             ..
         } => ops,
     };
@@ -5349,20 +5621,16 @@ fn artifact_surface_span_owner_topology(
     Ok(topology)
 }
 
-fn prepare_artifact_surface_span(
-    artifact: &PaintArtifact,
+fn artifact_surface_span_chunks<'a>(
+    artifact: &'a PaintArtifact,
     target: ArtifactSurfaceRasterTargetId,
-    boundary_root: Option<NodeKey>,
     span: &ArtifactSurfaceCoverageSpan,
-    delta: [f32; 2],
-    composite_effect: Option<EffectNodeSnapshot>,
-    incoming_scissor: Option<[u32; 4]>,
-) -> Result<PreparedArtifactSurfaceRasterSpan, ArtifactSurfaceRasterPlanError> {
+) -> Result<&'a [super::PaintChunk], ArtifactSurfaceRasterPlanError> {
     let chunk_range = span.chunk_range();
     let op_range = span.op_range();
     let chunks = artifact
         .chunks
-        .get(chunk_range.clone())
+        .get(chunk_range)
         .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?;
     if chunks.len() != span.localized_states().len()
         || chunks.first().map(|chunk| chunk.op_range.start) != Some(op_range.start)
@@ -5370,6 +5638,65 @@ fn prepare_artifact_surface_span(
     {
         return Err(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target));
     }
+    Ok(chunks)
+}
+
+/// A surface boundary owner's own stencil/clip chunks stay in receiver
+/// placement space; only descendant content consumes the surface-kind base
+/// translation. Raster-origin projection is then applied to both through the
+/// same second-stage projection.
+fn artifact_surface_chunk_base_translation(
+    boundary_root: Option<NodeKey>,
+    chunk_owner: NodeKey,
+    base_delta: [f32; 2],
+) -> [f32; 2] {
+    if boundary_root == Some(chunk_owner) {
+        [0.0, 0.0]
+    } else {
+        base_delta
+    }
+}
+
+fn artifact_surface_span_raw_bounds(
+    artifact: &PaintArtifact,
+    target: ArtifactSurfaceRasterTargetId,
+    boundary_root: Option<NodeKey>,
+    span: &ArtifactSurfaceCoverageSpan,
+    base_delta: [f32; 2],
+) -> Result<Option<[u32; 4]>, ArtifactSurfaceRasterPlanError> {
+    let chunks = artifact_surface_span_chunks(artifact, target, span)?;
+    let mut bounds = None;
+    for (local_index, chunk) in chunks.iter().enumerate() {
+        let chunk_index = span.chunk_range().start + local_index;
+        let delta = artifact_surface_chunk_base_translation(boundary_root, chunk.owner, base_delta);
+        let translated = translated_chunk_bounds_bits(chunk.bounds, delta).ok_or(
+            ArtifactSurfaceRasterPlanError::InvalidChunkBounds {
+                target,
+                chunk_index,
+            },
+        )?;
+        let [_, _, width, height] = translated.map(f32::from_bits);
+        if width > 0.0 && height > 0.0 {
+            append_bounds(&mut bounds, translated)
+                .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?;
+        }
+    }
+    Ok(bounds)
+}
+
+fn prepare_artifact_surface_span(
+    artifact: &PaintArtifact,
+    target: ArtifactSurfaceRasterTargetId,
+    boundary_root: Option<NodeKey>,
+    span: &ArtifactSurfaceCoverageSpan,
+    base_delta: [f32; 2],
+    composite_effect: Option<EffectNodeSnapshot>,
+    incoming_scissor: Option<[u32; 4]>,
+    raster_origin: Option<ArtifactSurfaceRasterOriginProjection>,
+) -> Result<PreparedArtifactSurfaceRasterSpan, ArtifactSurfaceRasterPlanError> {
+    let chunk_range = span.chunk_range();
+    let op_range = span.op_range();
+    let chunks = artifact_surface_span_chunks(artifact, target, span)?;
     let owner_topology = artifact_surface_span_owner_topology(
         artifact,
         target,
@@ -5392,6 +5719,19 @@ fn prepare_artifact_surface_span(
         chunks.iter().zip(span.localized_states()).enumerate()
     {
         let chunk_index = chunk_range.start + local_index;
+        let chunk_base_delta =
+            artifact_surface_chunk_base_translation(boundary_root, chunk.owner, base_delta);
+        let delta = match raster_origin {
+            Some(projection) => projection.combined_translation(chunk_base_delta).ok_or(
+                ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(match target {
+                    ArtifactSurfaceRasterTargetId::Surface(source) => source,
+                    ArtifactSurfaceRasterTargetId::SceneRoot(_) => {
+                        unreachable!("scene-root spans do not own a raster-origin projection")
+                    }
+                }),
+            )?,
+            None => chunk_base_delta,
+        };
         let ops = artifact
             .ops
             .get(chunk.op_range.clone())
@@ -5456,6 +5796,7 @@ fn prepare_artifact_surface_span(
             resolved_clip,
             &clip_chain,
             incoming_scissor,
+            raster_origin,
         );
         opaque_order_count = opaque_order_count
             .checked_add(
@@ -5585,7 +5926,8 @@ fn surface_identity(
 
 fn surface_composite_geometry(
     node: &super::SurfaceDagNode,
-    source_bounds_bits: [u32; 4],
+    raster_source_bounds_bits: [u32; 4],
+    receiver_source_bounds_bits: [u32; 4],
     receiver: SurfaceDagExecutionTargetId,
     receiver_transform: Option<TransformNodeId>,
     context: ArtifactSurfaceRasterContext,
@@ -5617,6 +5959,7 @@ fn surface_composite_geometry(
         // so no chain fact remains for the executor to re-derive.
         resolved_receiver_clip
     };
+    let resolved_receiver_clip = ArtifactSurfaceResolvedClip::from_logical(resolved_receiver_clip);
     match node.kind() {
         SurfaceDagNodeKind::Transform(transform) => {
             let snapshot = transforms.get(&transform).copied().ok_or(
@@ -5642,13 +5985,16 @@ fn surface_composite_geometry(
                     node.id(),
                 ));
             }
-            let destination_bounds_bits =
-                transform_destination_bounds(source_bounds_bits, receiver_transform, root_offset)
-                    .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
-                    node.id(),
-                ))?;
+            let destination_bounds_bits = transform_destination_bounds(
+                receiver_source_bounds_bits,
+                receiver_transform,
+                root_offset,
+            )
+            .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
+                node.id(),
+            ))?;
             Ok(ArtifactSurfaceCompositeGeometryStamp::Transform {
-                source_bounds_bits,
+                source_bounds_bits: raster_source_bounds_bits,
                 destination_bounds_bits,
                 receiver_transform_bits: receiver_transform.to_cols_array().map(f32::to_bits),
                 receiver_clip,
@@ -5659,7 +6005,7 @@ fn surface_composite_geometry(
             let snapshot = effects.get(&effect).copied().ok_or(
                 ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(node.id()),
             )?;
-            let mut destination = source_bounds_bits.map(f32::from_bits);
+            let mut destination = receiver_source_bounds_bits.map(f32::from_bits);
             destination[0] += root_offset[0];
             destination[1] += root_offset[1];
             if destination.into_iter().any(|value| !value.is_finite())
@@ -5672,7 +6018,7 @@ fn surface_composite_geometry(
                 ));
             }
             Ok(ArtifactSurfaceCompositeGeometryStamp::Effect {
-                source_bounds_bits,
+                source_bounds_bits: raster_source_bounds_bits,
                 destination_bounds_bits: destination.map(f32::to_bits),
                 opacity_bits: snapshot.opacity.to_bits(),
                 generation: snapshot.generation,
@@ -5685,7 +6031,7 @@ fn surface_composite_geometry(
                 ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(node.id()),
             )?;
             let offset = [snapshot.offset.x, snapshot.offset.y];
-            let mut destination = source_bounds_bits.map(f32::from_bits);
+            let mut destination = receiver_source_bounds_bits.map(f32::from_bits);
             destination[0] = destination[0] - offset[0] + root_offset[0];
             destination[1] = destination[1] - offset[1] + root_offset[1];
             if destination.into_iter().any(|value| !value.is_finite()) || snapshot.generation == 0 {
@@ -5694,7 +6040,7 @@ fn surface_composite_geometry(
                 ));
             }
             Ok(ArtifactSurfaceCompositeGeometryStamp::ScrollContent {
-                source_bounds_bits,
+                source_bounds_bits: raster_source_bounds_bits,
                 destination_bounds_bits: destination.map(f32::to_bits),
                 offset_bits: offset.map(f32::to_bits),
                 generation: snapshot.generation,
@@ -5753,34 +6099,23 @@ fn prepare_artifact_surface_raster_plan_from_program(
             .get(source.index())
             .filter(|coverage| coverage.surface() == source)
             .ok_or(ArtifactSurfaceRasterPlanError::MissingCoverageNode(source))?;
-        let delta = surface_raster_translation(source, node.kind(), &scrolls)?;
-        let mut bounds = None;
-        let mut steps = Vec::with_capacity(coverage.steps().len());
+        let base_delta = surface_raster_translation(source, node.kind(), &scrolls)?;
+        let target_id = ArtifactSurfaceRasterTargetId::Surface(source);
+        let mut raw_bounds = None;
+        let mut nested_children = Vec::new();
         for step in coverage.steps() {
             match step {
                 ArtifactSurfaceCoverageStep::ArtifactSpan(span) => {
-                    let prepared = prepare_artifact_surface_span(
+                    if let Some(span_bounds) = artifact_surface_span_raw_bounds(
                         &program.artifact,
-                        ArtifactSurfaceRasterTargetId::Surface(source),
+                        target_id,
                         Some(node.target()),
                         span,
-                        delta,
-                        match node.kind() {
-                            SurfaceDagNodeKind::Effect(effect) => effects.get(&effect).copied(),
-                            SurfaceDagNodeKind::Transform(_)
-                            | SurfaceDagNodeKind::ScrollContent { .. } => None,
-                        },
-                        None,
-                    )?;
-                    for chunk in &prepared.chunks {
-                        let [_, _, width, height] = chunk.localized_bounds_bits.map(f32::from_bits);
-                        if width > 0.0 && height > 0.0 {
-                            append_bounds(&mut bounds, chunk.localized_bounds_bits).ok_or(
-                                ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(source),
-                            )?;
-                        }
+                        base_delta,
+                    )? {
+                        append_bounds(&mut raw_bounds, span_bounds)
+                            .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(source))?;
                     }
-                    steps.push(PreparedArtifactSurfaceRasterStep::ArtifactSpan(prepared));
                 }
                 ArtifactSurfaceCoverageStep::NestedSurface(child_source) => {
                     let child_execution = program
@@ -5803,16 +6138,77 @@ fn prepare_artifact_surface_raster_plan_from_program(
                             child: *child_source,
                         });
                     }
-                    append_bounds(&mut bounds, child.geometry.destination_bounds_bits())
+                    let child_geometry = child.geometry.pending().ok_or(
+                        ArtifactSurfaceRasterPlanError::InvalidNestedSurface {
+                            parent: source,
+                            child: *child_source,
+                        },
+                    )?;
+                    append_bounds(&mut raw_bounds, child_geometry.destination_bounds_bits())
                         .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(source))?;
+                    nested_children.push(child_execution);
+                }
+            }
+        }
+        let raw_source_bounds_bits =
+            raw_bounds.ok_or(ArtifactSurfaceRasterPlanError::EmptySurfaceBounds(source))?;
+        let raster_origin = ArtifactSurfaceRasterOriginProjection::new(
+            raw_source_bounds_bits,
+            context.scale_factor_bits,
+        )
+        .ok_or(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(source))?;
+        let mut steps = Vec::with_capacity(coverage.steps().len());
+        for step in coverage.steps() {
+            match step {
+                ArtifactSurfaceCoverageStep::ArtifactSpan(span) => {
+                    steps.push(PreparedArtifactSurfaceRasterStep::ArtifactSpan(
+                        prepare_artifact_surface_span(
+                            &program.artifact,
+                            target_id,
+                            Some(node.target()),
+                            span,
+                            base_delta,
+                            match node.kind() {
+                                SurfaceDagNodeKind::Effect(effect) => effects.get(&effect).copied(),
+                                SurfaceDagNodeKind::Transform(_)
+                                | SurfaceDagNodeKind::ScrollContent { .. } => None,
+                            },
+                            None,
+                            Some(raster_origin),
+                        )?,
+                    ));
+                }
+                ArtifactSurfaceCoverageStep::NestedSurface(child_source) => {
+                    let child_execution = program
+                        .execution_order
+                        .execution_id(*child_source)
+                        .ok_or(ArtifactSurfaceRasterPlanError::InvalidNestedSurface {
+                            parent: source,
+                            child: *child_source,
+                        })?;
                     steps.push(PreparedArtifactSurfaceRasterStep::NestedSurface(
                         child_execution,
                     ));
                 }
             }
         }
-        let source_bounds_bits =
-            bounds.ok_or(ArtifactSurfaceRasterPlanError::EmptySurfaceBounds(source))?;
+        for child_execution in nested_children {
+            let child = prepared_nodes
+                .get_mut(child_execution.index())
+                .and_then(Option::as_mut)
+                .ok_or(ArtifactSurfaceRasterPlanError::InvalidNestedSurface {
+                    parent: source,
+                    child: source,
+                })?;
+            child
+                .geometry
+                .finalize_surface_receiver(raster_origin)
+                .ok_or(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(
+                    child.source,
+                ))?;
+        }
+
+        let source_bounds_bits = raster_origin.normalized_source_bounds_bits;
         let identity = surface_identity(node.kind(), node.target(), node.stable_id());
         let [x, y, width, height] = source_bounds_bits.map(f32::from_bits);
         let color = crate::view::base_component::texture_desc_for_logical_bounds(
@@ -5858,12 +6254,20 @@ fn prepare_artifact_surface_raster_plan_from_program(
             scale_factor_bits: context.scale_factor_bits,
             source_bounds_bits,
         };
-        if !target.has_canonical_descriptor_pair_for(identity) {
+        if !target.has_canonical_descriptor_pair_for(identity)
+            || target.color.origin() != (0, 0)
+            || target.depth.origin() != (0, 0)
+            || target.color.width() != raster_origin.target_size[0]
+            || target.color.height() != raster_origin.target_size[1]
+            || target.depth.width() != raster_origin.target_size[0]
+            || target.depth.height() != raster_origin.target_size[1]
+        {
             return Err(ArtifactSurfaceRasterPlanError::InvalidDescriptor(source));
         }
         let geometry = surface_composite_geometry(
             node,
             source_bounds_bits,
+            raw_source_bounds_bits,
             execution.receiver(),
             match node.receiver() {
                 super::SurfaceDagTargetId::SceneRoot(_) => None,
@@ -5905,10 +6309,27 @@ fn prepare_artifact_surface_raster_plan_from_program(
             receiver: execution.receiver(),
             identity,
             target,
-            geometry,
+            raster_origin,
+            geometry: ArtifactSurfaceCompositeGeometryState::Pending(geometry),
             clip_closure: coverage.clip_closure().cloned(),
             steps,
         });
+    }
+    for node in prepared_nodes.iter_mut().flatten() {
+        match node.receiver {
+            SurfaceDagExecutionTargetId::SceneRoot(_) => {
+                node.geometry.finalize_scene_root().ok_or(
+                    ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(node.source),
+                )?
+            }
+            SurfaceDagExecutionTargetId::Surface(_) => {
+                if node.geometry.finalized().is_none() {
+                    return Err(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(
+                        node.source,
+                    ));
+                }
+            }
+        }
     }
     let nodes = prepared_nodes
         .into_iter()
@@ -5936,6 +6357,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                         [0.0, 0.0],
                         None,
                         context.incoming_scissor,
+                        None,
                     )?),
                 ),
                 ArtifactSurfaceCoverageStep::NestedSurface(child_source) => {
@@ -5968,6 +6390,14 @@ fn prepare_artifact_surface_raster_plan_from_program(
             scene_root: root.scene_root(),
             steps,
         });
+    }
+
+    if let Some(source) = nodes
+        .iter()
+        .find(|node| !node.geometry().clip_space_matches_receiver(node.receiver))
+        .map(PreparedArtifactSurfaceRasterNode::source)
+    {
+        return Err(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(source));
     }
 
     Ok(PreparedArtifactSurfaceRasterPlan {
@@ -6068,7 +6498,7 @@ impl SealedArtifactSurfaceResidentSet {
     ) -> Vec<(
         SurfaceDagExecutionNodeId,
         SurfaceDagExecutionNodeId,
-        ResolvedClip,
+        ArtifactSurfaceResolvedClip,
         u32,
         u32,
     )> {
@@ -6199,13 +6629,14 @@ impl SealedArtifactSurfaceResidentSet {
                     continue;
                 };
                 let Some(chunk) = span.chunks.iter_mut().find(|chunk| {
-                    chunk.clip_schedule.terminal_clip() != ResolvedClip::Empty
+                    chunk.clip_schedule.terminal_clip() != ArtifactSurfaceResolvedClip::Empty
                         && chunk.opaque_order_count != 0
                 }) else {
                     continue;
                 };
-                chunk.clip_schedule =
-                    ArtifactSurfaceChunkClipSchedule::WholeChunk(ResolvedClip::Empty);
+                chunk.clip_schedule = ArtifactSurfaceChunkClipSchedule::WholeChunk(
+                    ArtifactSurfaceResolvedClip::Empty,
+                );
                 return true;
             }
         }
@@ -6229,7 +6660,9 @@ impl SealedArtifactSurfaceResidentSet {
                     // Zero is outside the admitted non-empty shadow prefix
                     // range and fails before payload-shape validation.
                     prefix_op_count: 0,
-                    suffix_clip: ResolvedClip::Scissor([0, 0, 1, 1]),
+                    suffix_clip: ArtifactSurfaceResolvedClip::Scissor(
+                        GraphicsPassScissor::Logical([0, 0, 1, 1]),
+                    ),
                 };
                 return true;
             }
@@ -6275,7 +6708,7 @@ fn artifact_surface_nested_parent_opaque_after(
     child_geometry: ArtifactSurfaceCompositeGeometryStamp,
 ) -> u32 {
     if child.identity.role == RetainedSurfaceRasterRole::PropertyEffect
-        || child_geometry.resolved_receiver_clip() == ResolvedClip::Empty
+        || child_geometry.resolved_receiver_clip() == ArtifactSurfaceResolvedClip::Empty
     {
         before
     } else {
@@ -6367,7 +6800,7 @@ fn artifact_surface_clip_schedule_is_canonical(
         } => {
             prefix_op_count != 0
                 && prefix_op_count <= chunk.op_count
-                && suffix_clip != ResolvedClip::Unclipped
+                && suffix_clip != ArtifactSurfaceResolvedClip::Unclipped
                 && match &chunk.payload_identity {
                     PaintPayloadIdentity::PreparedShadows(shadows, _)
                     | PaintPayloadIdentity::ImageWithShadows(_, shadows, _)
@@ -6411,7 +6844,7 @@ fn artifact_surface_program_span_is_canonical(
             })
         || span.chunks.iter().any(|chunk| {
             !artifact_surface_clip_schedule_is_canonical(chunk.clip_schedule, &chunk.raster)
-                || chunk.clip_schedule.terminal_clip() == ResolvedClip::Empty
+                || chunk.clip_schedule.terminal_clip() == ArtifactSurfaceResolvedClip::Empty
                     && chunk.opaque_order_count != 0
         })
         || !artifact_surface_owner_topology_is_canonical(
@@ -6700,14 +7133,14 @@ fn seal_artifact_surface_resident_set(
                     let parent_after = artifact_surface_nested_parent_opaque_after(
                         cursor,
                         child_stamp,
-                        child_node.geometry,
+                        child_node.geometry(),
                     );
                     program_steps.push(ArtifactSurfaceRasterProgramStepStamp::NestedSurface(
                         ArtifactSurfaceNestedRasterDependency {
                             step_index,
                             child_execution_id: *child_execution_id,
                             child_stamp: Box::new(child_stamp.clone()),
-                            child_composite_geometry: child_node.geometry,
+                            child_composite_geometry: child_node.geometry(),
                             parent_opaque_order_before: cursor,
                             parent_opaque_order_after: parent_after,
                         },
@@ -6723,7 +7156,7 @@ fn seal_artifact_surface_resident_set(
             .unwrap_or_default();
         if clip_nodes.iter().any(|clip| clip.generation == 0)
             || node.clip_closure.as_ref().is_some_and(|closure| {
-                artifact_surface_program_geometry_receiver_clip(node.geometry)
+                artifact_surface_program_geometry_receiver_clip(node.geometry())
                     != closure.receiver_clip()
             })
         {
@@ -6805,7 +7238,11 @@ fn artifact_surface_frame_is_canonical(
                     && node.receiver == program.receiver
                     && node.identity == stamp.identity
                     && node.target == stamp.target
-                    && artifact_surface_geometry_matches(node.identity, &node.target, node.geometry)
+                    && artifact_surface_geometry_matches(
+                        node.identity,
+                        &node.target,
+                        node.geometry(),
+                    )
                     && match node.receiver {
                         SurfaceDagExecutionTargetId::SceneRoot(_) => true,
                         SurfaceDagExecutionTargetId::Surface(parent) => {
@@ -6826,7 +7263,7 @@ fn artifact_surface_frame_is_canonical(
                                     }
                                 })
                                 })
-                                == Some(node.geometry)
+                                == Some(node.geometry())
                         }
                     }
             })
@@ -10012,6 +10449,7 @@ fn compile_root_opacity_group(
                     .expect("persistent root opacity target must have a texture handle"),
             ),
             pass_context: ctx.graphics_pass_context(),
+            source_physical_origin: None,
         },
         CompositeLayerOutput {
             render_target: parent_target,

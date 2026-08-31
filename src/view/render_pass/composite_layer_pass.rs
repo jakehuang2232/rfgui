@@ -53,6 +53,11 @@ pub type CompositeIndexBufferOut = OutSlot<BufferResource, CompositeIndexBufferT
 pub struct CompositeLayerInput {
     pub layer: LayerIn,
     pub pass_context: RenderPassContext,
+    /// Physical origin used to map the receiver-space quad back into the
+    /// sampled layer. Most retained paths inherit it from the texture
+    /// descriptor; a texture-local artifact surface supplies the sealed raw
+    /// raster origin while its descriptor intentionally stays at `(0, 0)`.
+    pub source_physical_origin: Option<[f32; 2]>,
 }
 
 #[derive(Default)]
@@ -111,6 +116,13 @@ impl CompositeLayerPass {
     #[cfg(test)]
     pub(crate) fn test_params(&self) -> &CompositeLayerParams {
         &self.params
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_source_physical_origin_bits(&self) -> Option<[u32; 2]> {
+        self.input
+            .source_physical_origin
+            .map(|origin| origin.map(f32::to_bits))
     }
 
     #[cfg(test)]
@@ -216,7 +228,10 @@ impl GraphicsPass for CompositeLayerPass {
             .handle()
             .and_then(|handle| render_target_origin(ctx, handle))
             .unwrap_or((0, 0));
-        let layer_origin = render_target_origin(ctx, layer_handle).unwrap_or((0, 0));
+        let layer_origin = self.input.source_physical_origin.unwrap_or_else(|| {
+            let (x, y) = render_target_origin(ctx, layer_handle).unwrap_or((0, 0));
+            [x as f32, y as f32]
+        });
         let scale = ctx.viewport.scale_factor();
         let scaled_rect_pos = [
             self.params.rect_pos[0] * scale - target_origin.0 as f32
@@ -239,8 +254,8 @@ impl GraphicsPass for CompositeLayerPass {
             layer_w as f32,
             layer_h as f32,
             [
-                target_origin.0 as f32 - layer_origin.0 as f32 + layer_meta.logical_origin.0 as f32,
-                target_origin.1 as f32 - layer_origin.1 as f32 + layer_meta.logical_origin.1 as f32,
+                target_origin.0 as f32 - layer_origin[0] + layer_meta.logical_origin.0 as f32,
+                target_origin.1 as f32 - layer_origin[1] + layer_meta.logical_origin.1 as f32,
             ],
         );
         self.prepared_vertices = vertices;

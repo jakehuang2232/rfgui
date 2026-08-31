@@ -149,8 +149,7 @@ fn child_clip_scope_uses_stencil_without_rounding() {
     };
     assert!(!inner_radii.has_any_rounding());
 
-    let mut parent_mut =
-        crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
+    let mut parent_mut = crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
     let scope = parent_mut.begin_child_clip_scope(&mut graph, &mut ctx, inner_radii);
     assert!(scope.is_some());
     assert!(scope.as_ref().is_some_and(|scope| scope.child_clip_id != 0));
@@ -318,11 +317,24 @@ fn child_clip_scope_is_skipped_when_inner_scissor_is_outside_ancestor_scissor() 
         ))
     };
 
-    let mut parent_mut =
-        crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
+    let mut parent_mut = crate::view::test_support::get_element_mut::<Element>(&arena, parent_key);
     let scope = parent_mut.begin_child_clip_scope(&mut graph, &mut ctx, inner_radii);
 
     assert!(scope.is_none());
     assert_eq!(ctx.current_clip_id(), 0);
     assert_eq!(ctx.scissor_rect(), Some([0, 0, 20, 20]));
+}
+
+#[test]
+#[should_panic(expected = "one render target cannot mix logical and target-physical scissors")]
+fn one_build_state_rejects_cross_space_scissor_intersection() {
+    let mut ctx = UiBuildContext::new(20, 20, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    ctx.push_graphics_pass_scissor(Some(
+        crate::view::render_pass::render_target::GraphicsPassScissor::Logical([0, 0, 10, 10]),
+    ));
+    ctx.push_graphics_pass_scissor(Some(
+        crate::view::render_pass::render_target::GraphicsPassScissor::TargetPhysical([
+            0, 0, 10, 10,
+        ]),
+    ));
 }

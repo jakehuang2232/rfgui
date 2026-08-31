@@ -21273,6 +21273,7 @@ pub(crate) fn emit_prepared_retained_scroll_content_effect_scene(
                                     .expect("prepared Phase3 E target has a handle"),
                             ),
                             pass_context: ctx.graphics_pass_context(),
+                            source_physical_origin: None,
                         },
                         CompositeLayerOutput {
                             render_target: content_target,
@@ -21894,6 +21895,7 @@ pub(crate) fn emit_prepared_retained_effect_scroll_scene(
                         .expect("prepared E->S receiver target has a handle"),
                 ),
                 pass_context: parent_ctx.graphics_pass_context(),
+                source_physical_origin: None,
             },
             CompositeLayerOutput {
                 render_target: parent_target,
@@ -22150,6 +22152,7 @@ pub(crate) fn emit_prepared_retained_transform_effect_scroll_scene(
                                         .expect("prepared inner E target has a handle"),
                                 ),
                                 pass_context: outer_ctx.graphics_pass_context(),
+                                source_physical_origin: None,
                             },
                             CompositeLayerOutput {
                                 render_target: outer_target,
@@ -22460,6 +22463,7 @@ pub(crate) fn emit_prepared_retained_effect_transform_scroll_scene(
                         .expect("prepared outer E target has a handle"),
                 ),
                 pass_context: parent_ctx.graphics_pass_context(),
+                source_physical_origin: None,
             },
             CompositeLayerOutput {
                 render_target: parent_target,

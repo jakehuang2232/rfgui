@@ -1373,10 +1373,51 @@ pub struct BuildState {
     target: Option<RenderTargetOut>,
     depth_stencil_target: Option<AttachmentTarget>,
     target_pairs: FxHashMap<u32, AttachmentTarget>,
-    scissor_rect: Option<[u32; 4]>,
+    graphics_pass_scissor: Option<GraphicsPassScissor>,
     clip_id_stack: Vec<u8>,
     dfs_opaque_rect_order: u32,
     frame_preparation: Arc<Mutex<FramePreparation>>,
+}
+
+const GRAPHICS_PASS_SCISSOR_SPACE_MISMATCH: &str =
+    "one render target cannot mix logical and target-physical scissors";
+
+fn graphics_pass_scissor_spaces_match(
+    left: Option<GraphicsPassScissor>,
+    right: Option<GraphicsPassScissor>,
+) -> bool {
+    matches!(
+        (left, right),
+        (None, _)
+            | (_, None)
+            | (
+                Some(GraphicsPassScissor::Logical(_)),
+                Some(GraphicsPassScissor::Logical(_))
+            )
+            | (
+                Some(GraphicsPassScissor::TargetPhysical(_)),
+                Some(GraphicsPassScissor::TargetPhysical(_))
+            )
+    )
+}
+
+fn intersect_graphics_pass_scissors(
+    left: Option<GraphicsPassScissor>,
+    right: Option<GraphicsPassScissor>,
+) -> Option<GraphicsPassScissor> {
+    match (left, right) {
+        (None, right) => right,
+        (left, None) => left,
+        (Some(GraphicsPassScissor::Logical(left)), Some(GraphicsPassScissor::Logical(right))) => {
+            intersect_scissor_rects(Some(left), Some(right)).map(GraphicsPassScissor::Logical)
+        }
+        (
+            Some(GraphicsPassScissor::TargetPhysical(left)),
+            Some(GraphicsPassScissor::TargetPhysical(right)),
+        ) => intersect_scissor_rects(Some(left), Some(right))
+            .map(GraphicsPassScissor::TargetPhysical),
+        _ => unreachable!("{}", GRAPHICS_PASS_SCISSOR_SPACE_MISMATCH),
+    }
 }
 
 impl BuildState {
@@ -1428,7 +1469,7 @@ impl BuildState {
             target: None,
             depth_stencil_target: None,
             target_pairs: FxHashMap::default(),
-            scissor_rect: ancestor_clip.scissor_rect,
+            graphics_pass_scissor: ancestor_clip.scissor_rect.map(GraphicsPassScissor::Logical),
             clip_id_stack: Vec::new(),
             dfs_opaque_rect_order: 0,
             frame_preparation,
@@ -1592,7 +1633,7 @@ impl UiBuildContext {
                 target: None,
                 depth_stencil_target: Some(AttachmentTarget::Surface),
                 target_pairs: FxHashMap::default(),
-                scissor_rect: None,
+                graphics_pass_scissor: None,
                 clip_id_stack: Vec::new(),
                 dfs_opaque_rect_order: 0,
                 frame_preparation: Arc::new(Mutex::new(FramePreparation::default())),
@@ -1801,7 +1842,14 @@ impl UiBuildContext {
     }
 
     fn scissor_rect(&self) -> Option<[u32; 4]> {
-        self.state.scissor_rect
+        match self.state.graphics_pass_scissor {
+            Some(GraphicsPassScissor::Logical(scissor_rect)) => Some(scissor_rect),
+            None | Some(GraphicsPassScissor::TargetPhysical(_)) => None,
+        }
+    }
+
+    fn graphics_pass_scissor(&self) -> Option<GraphicsPassScissor> {
+        self.state.graphics_pass_scissor
     }
 
     #[cfg(test)]
@@ -1834,9 +1882,15 @@ impl UiBuildContext {
     }
 
     pub(crate) fn push_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) -> Option<[u32; 4]> {
-        let previous = self.state.scissor_rect;
-        self.state.scissor_rect = intersect_scissor_rects(self.state.scissor_rect, scissor_rect);
-        previous
+        let previous =
+            self.push_graphics_pass_scissor(scissor_rect.map(GraphicsPassScissor::Logical));
+        match previous {
+            Some(GraphicsPassScissor::Logical(scissor_rect)) => Some(scissor_rect),
+            None => None,
+            Some(GraphicsPassScissor::TargetPhysical(_)) => {
+                unreachable!("logical scissor cannot replace a target-physical scissor")
+            }
+        }
     }
 
     /// Replace the active scissor rect outright, returning the previous value
@@ -1848,13 +1902,63 @@ impl UiBuildContext {
         &mut self,
         scissor_rect: Option<[u32; 4]>,
     ) -> Option<[u32; 4]> {
-        let previous = self.state.scissor_rect;
-        self.state.scissor_rect = scissor_rect;
-        previous
+        let previous =
+            self.replace_graphics_pass_scissor(scissor_rect.map(GraphicsPassScissor::Logical));
+        match previous {
+            Some(GraphicsPassScissor::Logical(scissor_rect)) => Some(scissor_rect),
+            None => None,
+            Some(GraphicsPassScissor::TargetPhysical(_)) => {
+                unreachable!("logical scissor cannot replace a target-physical scissor")
+            }
+        }
     }
 
     pub(crate) fn restore_scissor_rect(&mut self, previous: Option<[u32; 4]>) {
-        self.state.scissor_rect = previous;
+        self.restore_graphics_pass_scissor(previous.map(GraphicsPassScissor::Logical));
+    }
+
+    pub(crate) fn push_graphics_pass_scissor(
+        &mut self,
+        scissor: Option<GraphicsPassScissor>,
+    ) -> Option<GraphicsPassScissor> {
+        debug_assert!(
+            graphics_pass_scissor_spaces_match(self.state.graphics_pass_scissor, scissor,),
+            "{}",
+            GRAPHICS_PASS_SCISSOR_SPACE_MISMATCH,
+        );
+        let previous = self.state.graphics_pass_scissor;
+        self.state.graphics_pass_scissor =
+            intersect_graphics_pass_scissors(self.state.graphics_pass_scissor, scissor);
+        previous
+    }
+
+    pub(crate) fn replace_graphics_pass_scissor(
+        &mut self,
+        scissor: Option<GraphicsPassScissor>,
+    ) -> Option<GraphicsPassScissor> {
+        debug_assert!(
+            graphics_pass_scissor_spaces_match(self.state.graphics_pass_scissor, scissor,),
+            "{}",
+            GRAPHICS_PASS_SCISSOR_SPACE_MISMATCH,
+        );
+        if !graphics_pass_scissor_spaces_match(self.state.graphics_pass_scissor, scissor) {
+            unreachable!("{}", GRAPHICS_PASS_SCISSOR_SPACE_MISMATCH);
+        }
+        let previous = self.state.graphics_pass_scissor;
+        self.state.graphics_pass_scissor = scissor;
+        previous
+    }
+
+    pub(crate) fn restore_graphics_pass_scissor(&mut self, previous: Option<GraphicsPassScissor>) {
+        debug_assert!(
+            graphics_pass_scissor_spaces_match(self.state.graphics_pass_scissor, previous,),
+            "{}",
+            GRAPHICS_PASS_SCISSOR_SPACE_MISMATCH,
+        );
+        if !graphics_pass_scissor_spaces_match(self.state.graphics_pass_scissor, previous) {
+            unreachable!("{}", GRAPHICS_PASS_SCISSOR_SPACE_MISMATCH);
+        }
+        self.state.graphics_pass_scissor = previous;
     }
 
     pub(crate) fn register_deferred(
@@ -1894,7 +1998,7 @@ impl UiBuildContext {
 
     pub(crate) fn graphics_pass_context(&self) -> GraphicsPassContext {
         GraphicsPassContext {
-            scissor_rect: self.scissor_rect().map(GraphicsPassScissor::Logical),
+            scissor_rect: self.graphics_pass_scissor(),
             stencil_clip_id: self.active_clip_id(),
             uses_depth_stencil: self.depth_stencil_target().is_some(),
         }

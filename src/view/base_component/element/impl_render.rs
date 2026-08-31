@@ -1952,11 +1952,9 @@ impl Element {
         mut ctx: UiBuildContext,
         force_self_opaque: bool,
     ) -> BuildState {
-        let Some(geometry) = self.transform_surface_geometry_snapshot(
-            arena,
-            ctx.paint_offset(),
-            ctx.state.scissor_rect,
-        ) else {
+        let Some(geometry) =
+            self.transform_surface_geometry_snapshot(arena, ctx.paint_offset(), ctx.scissor_rect())
+        else {
             // Invalid transform geometry must never reach texture allocation
             // or a composite pass. Retaining the caller state is the legacy
             // fail-closed fallback for this frame.

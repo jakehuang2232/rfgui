@@ -52,7 +52,7 @@ fn execution_seal_keeps_the_frame_and_one_child_mask_program_together() {
     assert_eq!(
         actions
             .iter()
-            .filter(|action| **action == ArtifactSurfaceChildMaskAction::Push)
+            .filter(|action| matches!(action, ArtifactSurfaceChildMaskAction::Push(_)))
             .count(),
         1,
     );
@@ -66,6 +66,64 @@ fn execution_seal_keeps_the_frame_and_one_child_mask_program_together() {
     assert_eq!(
         programs.iter().map(|program| program.max_mask_depth).max(),
         Some(1),
+    );
+    let root_push_scissors = execution
+        .root_programs
+        .iter()
+        .flat_map(|program| &program.steps)
+        .flat_map(|step| match step {
+            ArtifactSurfaceChildMaskStep::ArtifactSpan { chunk_actions, .. } => {
+                chunk_actions.as_slice()
+            }
+            ArtifactSurfaceChildMaskStep::NestedSurface(_) => &[],
+        })
+        .filter_map(|action| match action {
+            ArtifactSurfaceChildMaskAction::Push(scissor) => Some(*scissor),
+            ArtifactSurfaceChildMaskAction::Unchanged | ArtifactSurfaceChildMaskAction::Pop => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        root_push_scissors
+            .iter()
+            .all(|scissor| matches!(scissor, GraphicsPassScissor::Logical(_))),
+        "scene-root child masks remain in logical space",
+    );
+    let mask_chunk = execution
+        .frame
+        .raster_plan()
+        .roots()
+        .iter()
+        .flat_map(|root| root.steps())
+        .flat_map(step_chunks)
+        .find(|chunk| {
+            chunk.source().id.slot == RETAINED_CHILD_MASK_SLOT
+                && chunk.source().id.phase == PaintNodePhase::BeforeChildren
+        })
+        .expect("child-mask push chunk");
+    let projection = ArtifactSurfaceRasterOriginProjection::new(
+        mask_chunk.localized_bounds_bits(),
+        1.0_f32.to_bits(),
+    )
+    .expect("child-mask raster-origin projection");
+    let mut projected_mask_chunk = mask_chunk.clone();
+    projected_mask_chunk.localized_bounds_bits = projection
+        .project_bounds_bits(mask_chunk.localized_bounds_bits())
+        .expect("projected child-mask bounds");
+    assert_eq!(
+        ArtifactSurfaceChildMaskAction::from_chunk(&projected_mask_chunk, Some(projection)),
+        ArtifactSurfaceChildMaskAction::Push(GraphicsPassScissor::TargetPhysical([0, 0, 120, 90,])),
+        "a detached target seals the same child mask in target-physical space",
+    );
+    let contract_projection = ArtifactSurfaceRasterOriginProjection::new(
+        [26.0_f32, 19.0, 26.0, 20.0].map(f32::to_bits),
+        1.0_f32.to_bits(),
+    )
+    .expect("child-mask contract projection");
+    assert_eq!(
+        contract_projection.target_physical_scissor_for_projected_bounds(
+            [0.0_f32, 0.0, 26.0, 20.0].map(f32::to_bits),
+        ),
+        Some(GraphicsPassScissor::TargetPhysical([0, 0, 26, 20])),
     );
 
     let parent = execution
@@ -92,9 +150,9 @@ fn execution_seal_keeps_the_frame_and_one_child_mask_program_together() {
         .steps
         .iter()
         .position(|step| match step {
-            ArtifactSurfaceChildMaskStep::ArtifactSpan { chunk_actions, .. } => {
-                chunk_actions.contains(&ArtifactSurfaceChildMaskAction::Push)
-            }
+            ArtifactSurfaceChildMaskStep::ArtifactSpan { chunk_actions, .. } => chunk_actions
+                .iter()
+                .any(|action| matches!(action, ArtifactSurfaceChildMaskAction::Push(_))),
             ArtifactSurfaceChildMaskStep::NestedSurface(_) => false,
         })
         .expect("parent mask push step");

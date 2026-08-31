@@ -1504,6 +1504,7 @@ fn emit_prepared_surface(
                                 .expect("prepared isolation target must have a handle"),
                         ),
                         pass_context: parent_ctx.graphics_pass_context(),
+                        source_physical_origin: None,
                     },
                     CompositeLayerOutput {
                         render_target: parent_target,
@@ -1532,6 +1533,7 @@ fn emit_prepared_surface(
                                 .expect("prepared nested isolation target must have a handle"),
                         ),
                         pass_context: parent_ctx.graphics_pass_context(),
+                        source_physical_origin: None,
                     },
                     CompositeLayerOutput {
                         render_target: parent_target,
@@ -1556,6 +1558,7 @@ fn emit_prepared_surface(
                                 .expect("prepared scroll-host target must have a handle"),
                         ),
                         pass_context: parent_ctx.graphics_pass_context(),
+                        source_physical_origin: None,
                     },
                     CompositeLayerOutput {
                         render_target: parent_target,

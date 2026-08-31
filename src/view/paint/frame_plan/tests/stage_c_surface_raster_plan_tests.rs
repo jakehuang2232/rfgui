@@ -1,13 +1,15 @@
 use super::*;
+use crate::view::paint::compiler::ArtifactSurfaceResolvedClip;
 use crate::view::paint::{
     ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceLocalizationError,
     ArtifactSurfacePaintOpKind, ArtifactSurfaceRasterContext, ArtifactSurfaceRasterPlanError,
     FrameArtifactRecordOutcome, PreparedArtifactSurfaceRasterStep,
     PreparedInlineIfcDecorationDescriptor, PreparedInlineIfcDecorationOp,
-    PreparedScrollbarOverlayOp, RendererMode, ResolvedClip, SurfaceDagExecutionTargetId,
+    PreparedScrollbarOverlayOp, RendererMode, SurfaceDagExecutionTargetId,
     localize_artifact_surface_op, prepare_artifact_surface_raster_plan,
     record_closed_single_target_frame_artifact,
 };
+use crate::view::render_pass::render_target::GraphicsPassScissor;
 
 pub(super) fn scroll_surface_artifact() -> PaintArtifact {
     use crate::view::base_component::{
@@ -413,7 +415,10 @@ fn self_replace_clip_seals_an_incoming_shadow_prefix_and_unintersected_suffix() 
     let chunk = span.chunks().first().expect("one prepared shadow chunk");
     assert_eq!(
         chunk.clip_schedule_for_test(),
-        (Some(1), ResolvedClip::Scissor([0, 0, 320, 240])),
+        (
+            Some(1),
+            ArtifactSurfaceResolvedClip::Scissor(GraphicsPassScissor::Logical([0, 0, 320, 240,])),
+        ),
         "the shadow prefix retains the incoming scissor while Replace severs it for the suffix",
     );
 }
@@ -443,7 +448,7 @@ fn empty_self_replace_suffix_keeps_the_shadow_prefix_out_of_opaque_order() {
         .expect("scene root owns the empty self-clip span");
     assert_eq!(
         span.chunks()[0].clip_schedule_for_test(),
-        (Some(1), ResolvedClip::Empty),
+        (Some(1), ArtifactSurfaceResolvedClip::Empty),
     );
     assert_eq!(span.opaque_order_count(), 0);
 }
@@ -490,6 +495,23 @@ fn artifact_surface_raster_plan_rejects_a_too_small_texture_budget() {
     assert!(matches!(
         prepare_artifact_surface_raster_plan(artifact, context),
         Err(ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_))
+    ));
+}
+
+#[test]
+fn artifact_surface_raster_origin_rejects_unrepresentable_physical_projection_before_descriptor() {
+    let context = ArtifactSurfaceRasterContext::new(
+        f32::MAX,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [0.0, 0.0],
+        None,
+        u32::MAX,
+        u64::MAX,
+    )
+    .expect("finite scale is value-valid before bounds projection");
+    assert!(matches!(
+        prepare_artifact_surface_raster_plan(depth_four_effect_artifact(), context),
+        Err(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(_)),
     ));
 }
 
@@ -546,9 +568,16 @@ fn scroll_content_surface_seals_typed_offset_generation_and_receiver_clip_geomet
         .expect("scroll surface owns one localized payload chunk");
     let [source_x, source_y, ..] = localized.source().bounds_bits.map(f32::from_bits);
     let [local_x, local_y, ..] = localized.localized_bounds_bits().map(f32::from_bits);
+    let raw = [source_x + expected.offset.x, source_y + expected.offset.y];
+    let scale = 2.0_f32;
+    let expected_local = [
+        raw[0] - (raw[0] * scale).floor() / scale,
+        raw[1] - (raw[1] * scale).floor() / scale,
+    ];
     assert_eq!(
         [local_x, local_y].map(f32::to_bits),
-        [source_x + expected.offset.x, source_y + expected.offset.y].map(f32::to_bits)
+        expected_local.map(f32::to_bits),
+        "scroll localization must consume the offset then normalize the surface raster origin",
     );
 }
 
@@ -750,6 +779,7 @@ fn artifact_surface_raster_plan_error_taxonomy_is_exhaustive() {
             ArtifactSurfaceRasterPlanError::Localization { .. } => "localization",
             ArtifactSurfaceRasterPlanError::LocalizedPayload { .. } => "payload",
             ArtifactSurfaceRasterPlanError::InvalidNestedSurface { .. } => "nested-surface",
+            ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(_) => "raster-origin",
         }
     }
     let _ = label as fn(ArtifactSurfaceRasterPlanError) -> &'static str;

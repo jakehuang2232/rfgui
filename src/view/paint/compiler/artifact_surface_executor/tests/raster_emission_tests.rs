@@ -70,7 +70,9 @@ fn sealed_shadow_prefix_and_empty_suffix_drive_emission_without_rederivation() {
     emit_prepared_artifact_surface_frame_for_forced_test(
         &mut scissor_viewport,
         scissor_owner,
-        prepared_whole_chunk_clip_surface_frame(ResolvedClip::Scissor(expected_scissor)),
+        prepared_whole_chunk_clip_surface_frame(ArtifactSurfaceResolvedClip::Scissor(
+            GraphicsPassScissor::Logical(expected_scissor),
+        )),
         &mut scissor_graph,
         execution_context(),
     )
@@ -96,7 +98,7 @@ fn sealed_shadow_prefix_and_empty_suffix_drive_emission_without_rederivation() {
     emit_prepared_artifact_surface_frame_for_forced_test(
         &mut whole_empty_viewport,
         whole_empty_owner,
-        prepared_whole_chunk_clip_surface_frame(ResolvedClip::Empty),
+        prepared_whole_chunk_clip_surface_frame(ArtifactSurfaceResolvedClip::Empty),
         &mut whole_empty_graph,
         execution_context(),
     )

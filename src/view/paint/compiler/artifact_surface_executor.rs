@@ -1,9 +1,10 @@
 use super::super::{PaintChunkId, PaintNodePhase, RETAINED_CHILD_MASK_SLOT};
 use super::{
-    ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceRasterTargetId,
-    PreparedArtifactSurfaceFrame, PreparedArtifactSurfaceRasterChunk,
-    PreparedArtifactSurfaceRasterPlan, PreparedArtifactSurfaceRasterStep, ResolvedClip,
-    RetainedSurfaceCompileAction, SealedArtifactSurfaceResidentSet, SurfaceDagExecutionNodeId,
+    ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceRasterOriginProjection,
+    ArtifactSurfaceRasterTargetId, ArtifactSurfaceResolvedClip, PreparedArtifactSurfaceFrame,
+    PreparedArtifactSurfaceRasterChunk, PreparedArtifactSurfaceRasterPlan,
+    PreparedArtifactSurfaceRasterStep, RetainedSurfaceCompileAction,
+    SealedArtifactSurfaceResidentSet, SurfaceDagExecutionNodeId,
 };
 use crate::view::base_component::{AncestorClipContext, BuildState, UiBuildContext};
 use crate::view::frame_graph::{FrameGraph, PersistentTextureKey};
@@ -14,6 +15,7 @@ use crate::view::render_pass::composite_layer_pass::{
 use crate::view::render_pass::draw_rect_pass::{
     DrawRectInput, DrawRectOutput, DrawRectPass, RenderTargetOut,
 };
+use crate::view::render_pass::render_target::GraphicsPassScissor;
 use crate::view::render_pass::texture_composite_pass::{
     TextureCompositeInput, TextureCompositeOutput, TextureCompositeParams, TextureCompositeSourceIn,
 };
@@ -42,17 +44,56 @@ pub(crate) fn take_last_production_actions_for_test() -> Vec<RetainedSurfaceComp
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ArtifactSurfaceChildMaskAction {
     Unchanged,
-    Push,
+    Push(GraphicsPassScissor),
     Pop,
 }
 
 impl ArtifactSurfaceChildMaskAction {
+    #[cfg(test)]
     fn from_chunk_id(id: PaintChunkId) -> Self {
         if id.slot != RETAINED_CHILD_MASK_SLOT {
             return Self::Unchanged;
         }
         match id.phase {
-            PaintNodePhase::BeforeChildren => Self::Push,
+            PaintNodePhase::BeforeChildren => {
+                Self::Push(GraphicsPassScissor::Logical([0, 0, 1, 1]))
+            }
+            PaintNodePhase::AfterChildren => Self::Pop,
+        }
+    }
+
+    fn from_chunk(
+        chunk: &PreparedArtifactSurfaceRasterChunk,
+        raster_origin: Option<ArtifactSurfaceRasterOriginProjection>,
+    ) -> Self {
+        let id = chunk.source().id;
+        if id.slot != RETAINED_CHILD_MASK_SLOT {
+            return Self::Unchanged;
+        }
+        match id.phase {
+            PaintNodePhase::BeforeChildren => {
+                let scissor = match raster_origin {
+                    Some(projection) => projection
+                        .target_physical_scissor_for_projected_bounds(chunk.localized_bounds_bits())
+                        .expect("prepared child mask has a non-empty target-physical scissor"),
+                    None => {
+                        let [x, y, width, height] =
+                            chunk.localized_bounds_bits().map(f32::from_bits);
+                        GraphicsPassScissor::Logical(
+                            crate::view::base_component::exact_logical_scissor_for_rect(
+                                crate::view::base_component::Rect {
+                                    x,
+                                    y,
+                                    width,
+                                    height,
+                                },
+                            )
+                            .expect("prepared child mask has a non-empty logical scissor"),
+                        )
+                    }
+                };
+                Self::Push(scissor)
+            }
             PaintNodePhase::AfterChildren => Self::Pop,
         }
     }
@@ -106,13 +147,14 @@ pub(crate) enum ArtifactSurfaceExecutionError {
 enum PreparedArtifactSurfaceComposite {
     Transform {
         params: TextureCompositeParams,
-        resolved_clip: ResolvedClip,
+        resolved_clip: ArtifactSurfaceResolvedClip,
     },
     Layer {
         rect_pos: [f32; 2],
         rect_size: [f32; 2],
         opacity: f32,
-        resolved_clip: ResolvedClip,
+        source_physical_origin: [f32; 2],
+        resolved_clip: ArtifactSurfaceResolvedClip,
     },
 }
 
@@ -143,6 +185,7 @@ pub(super) fn artifact_child_mask_max_depth(
 fn seal_target_program(
     target: ArtifactSurfaceRasterTargetId,
     steps: &[PreparedArtifactSurfaceRasterStep],
+    raster_origin: Option<ArtifactSurfaceRasterOriginProjection>,
 ) -> ArtifactSurfaceChildMaskTargetProgram {
     let max_mask_depth = artifact_child_mask_max_depth(
         steps
@@ -162,7 +205,7 @@ fn seal_target_program(
                         .chunks()
                         .iter()
                         .map(|chunk| {
-                            ArtifactSurfaceChildMaskAction::from_chunk_id(chunk.source().id)
+                            ArtifactSurfaceChildMaskAction::from_chunk(chunk, raster_origin)
                         })
                         .collect(),
                 }
@@ -201,6 +244,7 @@ pub(super) fn seal_prepared_artifact_surface_execution(
             seal_target_program(
                 ArtifactSurfaceRasterTargetId::SceneRoot(root.scene_root()),
                 root.steps(),
+                None,
             )
         })
         .collect();
@@ -212,6 +256,7 @@ pub(super) fn seal_prepared_artifact_surface_execution(
             seal_target_program(
                 ArtifactSurfaceRasterTargetId::Surface(node.source()),
                 node.steps(),
+                Some(node.raster_origin),
             )
         })
         .collect();
@@ -224,6 +269,7 @@ pub(super) fn seal_prepared_artifact_surface_execution(
 
 fn prepare_composite_geometry(
     geometry: ArtifactSurfaceCompositeGeometryStamp,
+    raster_origin: ArtifactSurfaceRasterOriginProjection,
 ) -> Option<PreparedArtifactSurfaceComposite> {
     match geometry {
         ArtifactSurfaceCompositeGeometryStamp::Transform {
@@ -297,10 +343,7 @@ fn prepare_composite_geometry(
                     use_mask: false,
                     source_is_premultiplied: true,
                     opacity: 1.0,
-                    scissor_rect: match resolved_receiver_clip {
-                        ResolvedClip::Scissor(scissor) => Some(scissor),
-                        ResolvedClip::Unclipped | ResolvedClip::Empty => None,
-                    },
+                    scissor_rect: None,
                 },
                 resolved_clip: resolved_receiver_clip,
             })
@@ -323,6 +366,7 @@ fn prepare_composite_geometry(
                 rect_pos: [x, y],
                 rect_size: [width, height],
                 opacity,
+                source_physical_origin: raster_origin.physical_origin_f32(),
                 resolved_clip: resolved_receiver_clip,
             })
         }
@@ -337,6 +381,7 @@ fn prepare_composite_geometry(
                     rect_pos: [x, y],
                     rect_size: [width, height],
                     opacity: 1.0,
+                    source_physical_origin: raster_origin.physical_origin_f32(),
                     resolved_clip: resolved_receiver_clip,
                 })
         }
@@ -348,28 +393,22 @@ fn emit_child_mask_chunk(
     chunk: &PreparedArtifactSurfaceRasterChunk,
     graph: &mut FrameGraph,
     ctx: &mut UiBuildContext,
-    scopes: &mut Vec<(crate::view::node_arena::NodeKey, u8, Option<[u32; 4]>)>,
+    scopes: &mut Vec<(
+        crate::view::node_arena::NodeKey,
+        u8,
+        Option<GraphicsPassScissor>,
+    )>,
 ) {
     let [super::PaintOp::DrawRect(mask)] = chunk.localized_ops() else {
         unreachable!("sealed child-mask chunk owns one localized rect")
     };
     match action {
-        ArtifactSurfaceChildMaskAction::Push => {
+        ArtifactSurfaceChildMaskAction::Push(scissor) => {
             let parent_clip_id = ctx.current_clip_id();
             let child_clip_id = ctx
                 .push_clip_id()
                 .expect("preflighted artifact target child-mask depth");
-            let [x, y, width, height] = chunk.localized_bounds_bits().map(f32::from_bits);
-            let logical_scissor = crate::view::base_component::exact_logical_scissor_for_rect(
-                crate::view::base_component::Rect {
-                    x,
-                    y,
-                    width,
-                    height,
-                },
-            )
-            .expect("sealed child-mask chunk has an exact scissor");
-            let previous_scissor = ctx.push_scissor_rect(Some(logical_scissor));
+            let previous_scissor = ctx.push_graphics_pass_scissor(Some(scissor));
             let mut pass = DrawRectPass::new(
                 mask.params.clone(),
                 DrawRectInput::default(),
@@ -396,7 +435,7 @@ fn emit_child_mask_chunk(
             pass.set_color_write_enabled(false);
             ctx.emit_draw_rect_pass(graph, pass);
             ctx.pop_clip_id();
-            ctx.restore_scissor_rect(previous_scissor);
+            ctx.restore_graphics_pass_scissor(previous_scissor);
         }
         ArtifactSurfaceChildMaskAction::Unchanged => {
             unreachable!("ordinary chunks never enter the child-mask emitter")
@@ -415,15 +454,18 @@ fn emit_chunk_ops(
         }
     };
     match chunk.clip_schedule {
-        super::ArtifactSurfaceChunkClipSchedule::WholeChunk(ResolvedClip::Unclipped) => {
-            emit(chunk.localized_ops(), graph, ctx)
-        }
-        super::ArtifactSurfaceChunkClipSchedule::WholeChunk(ResolvedClip::Scissor(scissor)) => {
-            let previous = ctx.replace_scissor_rect(Some(scissor));
+        super::ArtifactSurfaceChunkClipSchedule::WholeChunk(
+            ArtifactSurfaceResolvedClip::Unclipped,
+        ) => emit(chunk.localized_ops(), graph, ctx),
+        super::ArtifactSurfaceChunkClipSchedule::WholeChunk(
+            ArtifactSurfaceResolvedClip::Scissor(scissor),
+        ) => {
+            let previous = ctx.push_graphics_pass_scissor(Some(scissor));
             emit(chunk.localized_ops(), graph, ctx);
-            ctx.restore_scissor_rect(previous);
+            ctx.restore_graphics_pass_scissor(previous);
         }
-        super::ArtifactSurfaceChunkClipSchedule::WholeChunk(ResolvedClip::Empty) => {}
+        super::ArtifactSurfaceChunkClipSchedule::WholeChunk(ArtifactSurfaceResolvedClip::Empty) => {
+        }
         super::ArtifactSurfaceChunkClipSchedule::AfterShadowPrefix {
             prefix_op_count,
             suffix_clip,
@@ -431,13 +473,13 @@ fn emit_chunk_ops(
             let (prefix, suffix) = chunk.localized_ops().split_at(prefix_op_count);
             emit(prefix, graph, ctx);
             match suffix_clip {
-                ResolvedClip::Unclipped => emit(suffix, graph, ctx),
-                ResolvedClip::Scissor(scissor) => {
-                    let previous = ctx.replace_scissor_rect(Some(scissor));
+                ArtifactSurfaceResolvedClip::Unclipped => emit(suffix, graph, ctx),
+                ArtifactSurfaceResolvedClip::Scissor(scissor) => {
+                    let previous = ctx.push_graphics_pass_scissor(Some(scissor));
                     emit(suffix, graph, ctx);
-                    ctx.restore_scissor_rect(previous);
+                    ctx.restore_graphics_pass_scissor(previous);
                 }
-                ResolvedClip::Empty => {}
+                ArtifactSurfaceResolvedClip::Empty => {}
             }
         }
     }
@@ -448,14 +490,18 @@ fn emit_artifact_span(
     actions: &[ArtifactSurfaceChildMaskAction],
     graph: &mut FrameGraph,
     ctx: &mut UiBuildContext,
-    scopes: &mut Vec<(crate::view::node_arena::NodeKey, u8, Option<[u32; 4]>)>,
+    scopes: &mut Vec<(
+        crate::view::node_arena::NodeKey,
+        u8,
+        Option<GraphicsPassScissor>,
+    )>,
 ) {
     assert_eq!(span.chunks().len(), actions.len());
     let before = ctx.opaque_rect_order();
     for (chunk, action) in span.chunks().iter().zip(actions.iter().copied()) {
         match action {
             ArtifactSurfaceChildMaskAction::Unchanged => emit_chunk_ops(chunk, graph, ctx),
-            ArtifactSurfaceChildMaskAction::Push | ArtifactSurfaceChildMaskAction::Pop => {
+            ArtifactSurfaceChildMaskAction::Push(_) | ArtifactSurfaceChildMaskAction::Pop => {
                 emit_child_mask_chunk(action, chunk, graph, ctx, scopes)
             }
         }
@@ -479,9 +525,15 @@ fn emit_composite(
             params,
             resolved_clip,
         } => {
-            if resolved_clip == ResolvedClip::Empty {
+            if resolved_clip == ArtifactSurfaceResolvedClip::Empty {
                 return;
             }
+            let previous_scissor = match resolved_clip {
+                ArtifactSurfaceResolvedClip::Scissor(scissor) => {
+                    Some(parent_ctx.push_graphics_pass_scissor(Some(scissor)))
+                }
+                ArtifactSurfaceResolvedClip::Unclipped | ArtifactSurfaceResolvedClip::Empty => None,
+            };
             graph.add_graphics_pass(TextureCompositePass::new(
                 params,
                 TextureCompositeInput::from_render_target(
@@ -497,26 +549,33 @@ fn emit_composite(
                     render_target: parent_target,
                 },
             ));
+            if let Some(previous_scissor) = previous_scissor {
+                parent_ctx.restore_graphics_pass_scissor(previous_scissor);
+            }
         }
         PreparedArtifactSurfaceComposite::Layer {
             rect_pos,
             rect_size,
             opacity,
+            source_physical_origin,
             resolved_clip,
         } => {
-            if resolved_clip == ResolvedClip::Empty {
+            if resolved_clip == ArtifactSurfaceResolvedClip::Empty {
                 return;
             }
+            let previous_scissor = match resolved_clip {
+                ArtifactSurfaceResolvedClip::Scissor(scissor) => {
+                    Some(parent_ctx.push_graphics_pass_scissor(Some(scissor)))
+                }
+                ArtifactSurfaceResolvedClip::Unclipped | ArtifactSurfaceResolvedClip::Empty => None,
+            };
             graph.add_graphics_pass(CompositeLayerPass::new(
                 CompositeLayerParams {
                     rect_pos,
                     rect_size,
                     corner_radii: [0.0; 4],
                     opacity,
-                    scissor_rect: match resolved_clip {
-                        ResolvedClip::Scissor(scissor) => Some(scissor),
-                        ResolvedClip::Unclipped | ResolvedClip::Empty => None,
-                    },
+                    scissor_rect: None,
                     clear_target: false,
                 },
                 CompositeLayerInput {
@@ -526,11 +585,15 @@ fn emit_composite(
                             .expect("artifact surface target owns a texture handle"),
                     ),
                     pass_context: parent_ctx.graphics_pass_context(),
+                    source_physical_origin: Some(source_physical_origin),
                 },
                 CompositeLayerOutput {
                     render_target: parent_target,
                 },
             ));
+            if let Some(previous_scissor) = previous_scissor {
+                parent_ctx.restore_graphics_pass_scissor(previous_scissor);
+            }
         }
     }
     parent_ctx.set_current_target(parent_target);
@@ -625,7 +688,7 @@ impl ArtifactSurfaceEmitter<'_> {
         let child_terminal = resident.stamp().opaque_order_span.end;
         let parent_after = if node.identity().role
             == super::RetainedSurfaceRasterRole::PropertyEffect
-            || node.geometry().resolved_receiver_clip() == ResolvedClip::Empty
+            || node.geometry().resolved_receiver_clip() == ArtifactSurfaceResolvedClip::Empty
         {
             parent_before
         } else {
@@ -659,7 +722,11 @@ impl ArtifactSurfaceEmitter<'_> {
         steps: &[PreparedArtifactSurfaceRasterStep],
         graph: &mut FrameGraph,
         ctx: &mut UiBuildContext,
-        scopes: &mut Vec<(crate::view::node_arena::NodeKey, u8, Option<[u32; 4]>)>,
+        scopes: &mut Vec<(
+            crate::view::node_arena::NodeKey,
+            u8,
+            Option<GraphicsPassScissor>,
+        )>,
     ) {
         assert_eq!(program.steps.len(), steps.len());
         for program_step in &program.steps {
@@ -765,7 +832,7 @@ fn emit_prepared_artifact_surface_frame(
             // a non-positive projected AABB, while Effect and ScrollContent
             // preserve source extents already rejected when
             // `has_canonical_descriptor_pair_for` seals their target.
-            prepare_composite_geometry(node.geometry())
+            prepare_composite_geometry(node.geometry(), node.raster_origin)
                 .expect("prepared artifact geometry has a typed render-pass projection")
         })
         .collect::<Vec<_>>();

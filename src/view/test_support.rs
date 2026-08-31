@@ -14,7 +14,7 @@
 #![allow(dead_code)]
 
 use crate::style::Style;
-use crate::view::base_component::{ElementTrait, LayoutConstraints, LayoutPlacement};
+use crate::view::base_component::{DirtyFlags, ElementTrait, LayoutConstraints, LayoutPlacement};
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::renderer_adapter::{
     ElementDescriptor, commit_descriptor_tree, rsx_to_descriptors_with_context,
@@ -94,16 +94,27 @@ pub(crate) fn measure_and_place(
     constraints: LayoutConstraints,
     placement: LayoutPlacement,
 ) {
-    // Mirror the viewport's per-pass dirty refresh (render.rs): the
-    // measure/place gates read the cached subtree dirty aggregates.
-    arena.refresh_subtree_dirty_cache(root);
+    // Mirror the viewport's full per-pass dirty lifecycle (render.rs): each
+    // gate reads a refreshed aggregate, then clears that cached subtree flag
+    // only when the pass observed it dirty on entry.
+    let was_layout_dirty = arena
+        .refresh_subtree_dirty_cache(root)
+        .intersects(DirtyFlags::LAYOUT);
     arena.with_element_taken(root, |el, a| {
         el.measure(constraints, a);
     });
-    arena.refresh_subtree_dirty_cache(root);
+    if was_layout_dirty {
+        arena.clear_cached_arena_dirty_subtree(root, DirtyFlags::LAYOUT);
+    }
+    let was_place_dirty = arena
+        .refresh_subtree_dirty_cache(root)
+        .intersects(DirtyFlags::PLACE);
     arena.with_element_taken(root, |el, a| {
         el.place(placement, a);
     });
+    if was_place_dirty {
+        arena.clear_cached_arena_dirty_subtree(root, DirtyFlags::PLACE);
+    }
 }
 
 /// Walk `walk_layout`-style snapshot over an arena subtree.

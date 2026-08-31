@@ -21,9 +21,23 @@ fn three_surface_roles_emit_only_their_sealed_typed_composites() {
         1.0_f32.to_bits(),
         "fixture must distinguish Effect opacity from ScrollContent opacity"
     );
+    let mut expected_layer_source_origin_bits = prepared
+        .raster_plan()
+        .nodes()
+        .iter()
+        .filter_map(|node| match node.geometry() {
+            ArtifactSurfaceCompositeGeometryStamp::Effect { .. }
+            | ArtifactSurfaceCompositeGeometryStamp::ScrollContent { .. } => {
+                Some(node.raster_origin.physical_origin_f32().map(f32::to_bits))
+            }
+            ArtifactSurfaceCompositeGeometryStamp::Transform { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    expected_layer_source_origin_bits.sort_unstable();
     for node in prepared.raster_plan().nodes() {
         let geometry = node.geometry();
-        let typed = prepare_composite_geometry(geometry).expect("sealed typed geometry");
+        let typed = prepare_composite_geometry(geometry, node.raster_origin)
+            .expect("sealed typed geometry");
         match geometry {
             ArtifactSurfaceCompositeGeometryStamp::Transform {
                 source_bounds_bits,
@@ -58,6 +72,7 @@ fn three_surface_roles_emit_only_their_sealed_typed_composites() {
                     rect_pos,
                     rect_size,
                     opacity,
+                    source_physical_origin,
                     resolved_clip,
                 } = typed
                 else {
@@ -68,6 +83,10 @@ fn three_surface_roles_emit_only_their_sealed_typed_composites() {
                     destination_bounds_bits
                 );
                 assert_eq!(opacity.to_bits(), opacity_bits);
+                assert_eq!(
+                    source_physical_origin,
+                    node.raster_origin.physical_origin_f32()
+                );
                 assert_eq!(resolved_clip, resolved_receiver_clip);
             }
             ArtifactSurfaceCompositeGeometryStamp::ScrollContent {
@@ -79,6 +98,7 @@ fn three_surface_roles_emit_only_their_sealed_typed_composites() {
                     rect_pos,
                     rect_size,
                     opacity,
+                    source_physical_origin,
                     resolved_clip,
                 } = typed
                 else {
@@ -89,6 +109,10 @@ fn three_surface_roles_emit_only_their_sealed_typed_composites() {
                     destination_bounds_bits
                 );
                 assert_eq!(opacity.to_bits(), 1.0_f32.to_bits());
+                assert_eq!(
+                    source_physical_origin,
+                    node.raster_origin.physical_origin_f32()
+                );
                 assert_eq!(resolved_clip, resolved_receiver_clip);
             }
         }
@@ -113,6 +137,18 @@ fn three_surface_roles_emit_only_their_sealed_typed_composites() {
     );
     let layers = graph.test_graphics_passes::<CompositeLayerPass>();
     assert_eq!(layers.len(), 2);
+    let mut actual_layer_source_origin_bits = layers
+        .iter()
+        .map(|pass| {
+            pass.test_source_physical_origin_bits()
+                .expect("artifact layer composite owns one sealed source origin")
+        })
+        .collect::<Vec<_>>();
+    actual_layer_source_origin_bits.sort_unstable();
+    assert_eq!(
+        actual_layer_source_origin_bits, expected_layer_source_origin_bits,
+        "artifact Effect and ScrollContent composites must carry their sealed raster origin instead of re-deriving it from the normalized texture descriptor"
+    );
     let mut actual_opacity_bits = layers
         .iter()
         .map(|pass| pass.test_params().opacity.to_bits())

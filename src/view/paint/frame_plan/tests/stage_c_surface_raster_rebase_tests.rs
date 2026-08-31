@@ -1,4 +1,5 @@
 use super::*;
+use crate::view::paint::compiler::ArtifactSurfaceResolvedClip;
 use crate::view::paint::{
     ArtifactSurfaceLocalizationError, FrameArtifactRecordOutcome, PaintOp,
     PreparedInlineIfcDecorationDescriptor, PreparedInlineIfcDecorationOp,
@@ -8,6 +9,7 @@ use crate::view::paint::{
     prepare_artifact_surface_raster_plan, record_closed_single_target_frame_artifact,
     resolve_artifact_surface_clip_for_test, seal_prepared_artifact_surface_frame,
 };
+use crate::view::render_pass::render_target::GraphicsPassScissor;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn plain_host_op(host: &str, predicate: impl Fn(&PaintOp) -> bool) -> PaintOp {
@@ -466,7 +468,7 @@ fn receiver_clip_is_sealed_and_nested_receivers_exclude_frame_scissor() {
         .expect("scroll fixture owns a top-level surface");
     assert_eq!(
         top_level.geometry().resolved_receiver_clip(),
-        ResolvedClip::Scissor([10, 12, 80, 70]),
+        ArtifactSurfaceResolvedClip::Scissor(GraphicsPassScissor::Logical([10, 12, 80, 70,])),
         "a top-level receiver Replace severs the frame incoming scissor before sealing",
     );
 
@@ -482,7 +484,7 @@ fn receiver_clip_is_sealed_and_nested_receivers_exclude_frame_scissor() {
         .expect("depth-three fixture owns a nested receiver");
     assert_eq!(
         nested.geometry().resolved_receiver_clip(),
-        ResolvedClip::Unclipped,
+        ArtifactSurfaceResolvedClip::Unclipped,
         "frame incoming scissor applies above the nested receiver",
     );
 }
@@ -532,14 +534,16 @@ fn empty_surface_chunk_stays_in_identity_but_not_opaque_emission_order() {
         nonempty_stamp
             .artifact_surface_program_resolved_clips_for_test()
             .expect("artifact program")
-            .contains(&ResolvedClip::Scissor([4, 6, 80, 70])),
-        "the logical scissor remains unchanged by scroll-space localization",
+            .contains(&ArtifactSurfaceResolvedClip::Scissor(
+                GraphicsPassScissor::TargetPhysical([0, 0, 154, 130]),
+            )),
+        "the local clip must share the surface's target-physical raster-origin projection",
     );
     assert!(
         empty_stamp
             .artifact_surface_program_resolved_clips_for_test()
             .expect("artifact program")
-            .contains(&ResolvedClip::Empty)
+            .contains(&ArtifactSurfaceResolvedClip::Empty)
     );
     assert!(empty_stamp.opaque_order_span.end < nonempty_stamp.opaque_order_span.end);
     assert_eq!(

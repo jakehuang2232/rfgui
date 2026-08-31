@@ -165,10 +165,12 @@ fn prepared_self_clip_shadow_surface_frame(empty_suffix: bool) -> PreparedArtifa
         .expect("self-clip shadow root plus surface resident seal")
 }
 
-fn prepared_whole_chunk_clip_surface_frame(clip: ResolvedClip) -> PreparedArtifactSurfaceFrame {
+fn prepared_whole_chunk_clip_surface_frame(
+    clip: ArtifactSurfaceResolvedClip,
+) -> PreparedArtifactSurfaceFrame {
     fn rewrite_draw_rect_spans(
         steps: &mut [PreparedArtifactSurfaceRasterStep],
-        clip: ResolvedClip,
+        clip: ArtifactSurfaceResolvedClip,
     ) -> usize {
         let mut rewritten = 0;
         for step in steps {

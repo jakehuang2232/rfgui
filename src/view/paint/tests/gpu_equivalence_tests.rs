@@ -2079,6 +2079,7 @@ fn explicit_root_group_overlap_graph(opacity: f32) -> Result<FrameGraph, String>
                     .expect("explicit group layer target must have a texture handle"),
             ),
             pass_context: ctx.graphics_pass_context(),
+            source_physical_origin: None,
         },
         CompositeLayerOutput {
             render_target: parent_target,

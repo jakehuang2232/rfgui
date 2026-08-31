@@ -235,7 +235,7 @@ fn scroll_container_build_restores_scissor_and_clip_state() {
         .expect("parent build returns state");
 
     assert_eq!(
-        next_state.scissor_rect, None,
+        next_state.graphics_pass_scissor, None,
         "scroll container build should not leak scissor rect to sibling roots"
     );
     assert!(
@@ -405,8 +405,7 @@ fn flow_cross_size_stretch_aligns_using_current_then_final_cross_size() {
             .apply_style(next_parent_style);
         arena.with_element_taken(parent_key, |el, a| el.measure(constraints, a));
         {
-            let parent_ref =
-                crate::view::test_support::get_element::<Element>(&arena, parent_key);
+            let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
             assert_eq!(
                 parent_ref.computed_style.layout_axis_cross_size(),
                 CrossSize::Stretch
