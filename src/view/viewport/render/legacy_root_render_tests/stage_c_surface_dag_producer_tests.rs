@@ -1,10 +1,11 @@
 use super::*;
 use crate::view::paint::{
     ArtifactSurfaceRasterContext, ArtifactSurfaceRasterPlanError, ArtifactSurfaceResidentSealError,
-    FrameArtifactFallbackReason, FrameArtifactRecordOutcome, LegacyPaintReason, RendererMode,
-    RetainedSurfaceCompileAction, RetainedSurfaceRasterRole, SingleTargetSurfaceDagPrepareError,
-    prepare_artifact_surface_raster_plan, record_surface_dag_frame_artifact,
-    seal_prepared_artifact_surface_frame,
+    FrameArtifactFallbackReason, FrameArtifactRecordOutcome, LegacyPaintReason,
+    PreparedArtifactSurfaceRasterStep, RETAINED_CHILD_MASK_SLOT, RendererMode,
+    RetainedSurfaceCompileAction, RetainedSurfaceRasterRole,
+    artifact_surface_op_has_baked_opacity_for_test, prepare_artifact_surface_raster_plan,
+    record_surface_dag_frame_artifact, seal_prepared_artifact_surface_frame,
 };
 
 const MEASUREMENT_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
@@ -283,16 +284,6 @@ fn missing_paint_identity_row(label: &'static str, dpr: f32) -> ProducerMeasurem
     }
 }
 
-fn assert_invalid_store_row(row: &ProducerMeasurementRow, label: &'static str, dpr: f32) {
-    assert_eq!((row.label, row.dpr_bits), (label, dpr.to_bits()));
-    assert_eq!(
-        row.outcome,
-        ProducerMeasurementOutcome::PlanRejected(ArtifactSurfaceRasterPlanError::ArtifactProgram(
-            SingleTargetSurfaceDagPrepareError::InvalidArtifactStore,
-        ),),
-    );
-}
-
 #[test]
 fn surface_dag_producer_preserves_the_frozen_no_scroll_measurement_contract() {
     let rows = CASES
@@ -509,6 +500,10 @@ fn surface_dag_producer_records_five_real_scroll_property_trees_and_freezes_down
         RetainedSurfaceRasterRole::PropertyEffect,
         RetainedSurfaceRasterRole::ScrollContent,
     ];
+    let effect_scroll = [
+        RetainedSurfaceRasterRole::PropertyEffect,
+        RetainedSurfaceRasterRole::ScrollContent,
+    ];
     assert_eq!(rows.len(), 10);
     assert_eq!(rows[0], prepared_row("scroll", 1.0, &scroll, &[360_000]));
     assert_eq!(rows[1], prepared_row("scroll", 2.0, &scroll, &[1_440_000]));
@@ -539,11 +534,19 @@ fn surface_dag_producer_records_five_real_scroll_property_trees_and_freezes_down
             &[1_382_400, 1_382_400],
         )
     );
-    // This is a different-stage artifact-store gap. The raster-origin batch
-    // must classify it explicitly: either turn both rows into Prepared with
-    // measured bytes, or retain this rejection with a named owning batch.
-    assert_invalid_store_row(&rows[4], "effect-scroll", 1.0);
-    assert_invalid_store_row(&rows[5], "effect-scroll", 2.0);
+    assert_eq!(
+        rows[4],
+        prepared_row("effect-scroll", 1.0, &effect_scroll, &[345_600, 345_600],)
+    );
+    assert_eq!(
+        rows[5],
+        prepared_row(
+            "effect-scroll",
+            2.0,
+            &effect_scroll,
+            &[1_382_400, 1_382_400],
+        )
+    );
     assert_eq!(
         rows[6],
         prepared_row(
@@ -575,6 +578,107 @@ fn surface_dag_producer_records_five_real_scroll_property_trees_and_freezes_down
             &[2_880_000, 2_880_000],
         )
     );
+}
+
+#[test]
+fn effect_scroll_stencil_mask_stays_neutral_while_color_opacity_is_rebased() {
+    let (arena, roots, properties, generations) = prepared_same_owner_effect_scroll_scene();
+    // Directly exercises the unwired generic producer seam; production scroll
+    // dispatch returns from the existing selector before reaching it.
+    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
+        &arena,
+        &roots,
+        &properties,
+        &generations,
+        RendererMode::ForcedForTests,
+    )
+    .expect("effect-scroll artifact must record") else {
+        panic!("forced effect-scroll artifact cannot silently fall back")
+    };
+    let effect = artifact
+        .effect_nodes
+        .iter()
+        .copied()
+        .find(|effect| effect.opacity.to_bits() == 0.625_f32.to_bits())
+        .expect("same-owner effect snapshot");
+    let source_mask_ops = artifact
+        .chunks
+        .iter()
+        .filter(|chunk| chunk.id.slot == RETAINED_CHILD_MASK_SLOT)
+        .flat_map(|chunk| &artifact.ops[chunk.op_range.clone()])
+        .collect::<Vec<_>>();
+    assert!(!source_mask_ops.is_empty(), "source child-mask program");
+    assert!(
+        source_mask_ops
+            .iter()
+            .all(|op| { artifact_surface_op_has_baked_opacity_for_test(op, 1.0_f32.to_bits()) })
+    );
+    let source_color_ops = artifact
+        .chunks
+        .iter()
+        .filter(|chunk| {
+            chunk.id.slot != RETAINED_CHILD_MASK_SLOT
+                && chunk.owner == effect.owner
+                && chunk.properties.effect == Some(effect.id)
+        })
+        .flat_map(|chunk| &artifact.ops[chunk.op_range.clone()])
+        .collect::<Vec<_>>();
+    assert!(!source_color_ops.is_empty(), "source effect color program");
+    assert!(
+        source_color_ops
+            .iter()
+            .all(|op| { artifact_surface_op_has_baked_opacity_for_test(op, 0.625_f32.to_bits()) })
+    );
+    let context = ArtifactSurfaceRasterContext::new(
+        1.0,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [0.0, 0.0],
+        None,
+        4096,
+        MEASUREMENT_BUDGET_BYTES,
+    )
+    .expect("effect-scroll raster context");
+    let plan = prepare_artifact_surface_raster_plan(artifact, context)
+        .expect("effect-scroll plan must prepare");
+    let prepared_chunks = plan
+        .nodes()
+        .iter()
+        .flat_map(|node| node.steps())
+        .filter_map(|step| match step {
+            PreparedArtifactSurfaceRasterStep::ArtifactSpan(span) => Some(span),
+            PreparedArtifactSurfaceRasterStep::NestedSurface(_) => None,
+        })
+        .flat_map(|span| span.chunks())
+        .collect::<Vec<_>>();
+    let prepared_mask_ops = prepared_chunks
+        .iter()
+        .filter(|chunk| chunk.source().id.slot == RETAINED_CHILD_MASK_SLOT)
+        .flat_map(|chunk| chunk.localized_ops())
+        .collect::<Vec<_>>();
+    assert!(!prepared_mask_ops.is_empty(), "prepared child-mask program");
+    assert!(
+        prepared_mask_ops
+            .iter()
+            .all(|op| { artifact_surface_op_has_baked_opacity_for_test(op, 1.0_f32.to_bits()) })
+    );
+    let prepared_color_ops = prepared_chunks
+        .iter()
+        .filter(|chunk| {
+            chunk.source().id.slot != RETAINED_CHILD_MASK_SLOT
+                && chunk.source().owner == effect.owner
+        })
+        .flat_map(|chunk| chunk.localized_ops())
+        .collect::<Vec<_>>();
+    assert!(
+        !prepared_color_ops.is_empty(),
+        "prepared effect color program"
+    );
+    assert!(
+        prepared_color_ops
+            .iter()
+            .all(|op| { artifact_surface_op_has_baked_opacity_for_test(op, 1.0_f32.to_bits()) })
+    );
+    seal_prepared_artifact_surface_frame(plan).expect("effect-scroll plan must seal");
 }
 
 #[test]

@@ -5738,7 +5738,9 @@ fn prepare_artifact_surface_span(
             .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?;
         let neutralized_opacity_bits = composite_effect
             .filter(|effect| {
-                chunk.properties.effect == Some(effect.id) && chunk.owner == effect.owner
+                validated_artifact_chunk_carries_baked_color_opacity(chunk)
+                    && chunk.properties.effect == Some(effect.id)
+                    && chunk.owner == effect.owner
             })
             .map(|effect| effect.opacity.to_bits());
         let localized_ops = ops
@@ -15711,10 +15713,12 @@ fn validate_artifact_store_with_policy(
             (_, ValidatedArtifactTarget::CurrentTarget) => baked_expected_opacity,
             (_, ValidatedArtifactTarget::RootOpacityGroup { .. }) => 1.0,
         };
-        if !ops_have_baked_local_opacity(
-            &artifact.ops[chunk.op_range.clone()],
-            expected_opacity.to_bits(),
-        ) {
+        if validated_artifact_chunk_carries_baked_color_opacity(chunk)
+            && !ops_have_baked_local_opacity(
+                &artifact.ops[chunk.op_range.clone()],
+                expected_opacity.to_bits(),
+            )
+        {
             return None;
         }
     }
@@ -15905,6 +15909,17 @@ fn ops_have_baked_local_opacity(ops: &[PaintOp], expected_bits: u32) -> bool {
         PaintOp::PreparedImage(op) => op.params.opacity.to_bits() == expected_bits,
         PaintOp::PreparedSvg(op) => op.params.opacity.to_bits() == expected_bits,
     })
+}
+
+/// Whether a fully validated artifact chunk carries baked color opacity.
+///
+/// Callers must first pass the reserved child-mask slot through the complete
+/// canonical child-mask gate. That slot is a stencil program whose opacity is
+/// fixed at `1.0`; it never carries the owning Effect's color opacity. Keeping
+/// this predicate shared by store validation and raster preparation prevents
+/// those two stages from assigning conflicting semantics to the same chunk.
+fn validated_artifact_chunk_carries_baked_color_opacity(chunk: &super::PaintChunk) -> bool {
+    chunk.id.slot != super::RETAINED_CHILD_MASK_SLOT
 }
 
 fn validate_self_decoration_ops(ops: &[PaintOp], payload_identity: &PaintPayloadIdentity) -> bool {
