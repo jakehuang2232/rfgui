@@ -142,13 +142,13 @@ pub(crate) fn record_closed_single_target_frame_artifact(
     close_recorded_artifact_property_snapshots(outcome, property_trees, mode)
 }
 
-/// C3b3c1b-1 generic no-scroll Surface DAG producer seam.
+/// Generic current-target Surface DAG producer.
 ///
-/// This policy carries no exact-shape witness and has no production caller
-/// until the C3b3c1b-2 selector cutover. It admits transform/effect state,
-/// rejects scroll state, and closes the same transitive artifact snapshot
-/// store as the zero-surface C3a producer.
-#[allow(dead_code)]
+/// This policy carries no exact-shape witness, closes the same transitive
+/// artifact snapshot store as the zero-surface C3a producer, and already has
+/// a production caller for transform/effect surfaces. Scroll contracts are
+/// admitted here, but remain unwired in the production scroll selector until
+/// its pixel/reuse cutover lands.
 pub(crate) fn record_surface_dag_frame_artifact(
     arena: &NodeArena,
     roots: &[NodeKey],

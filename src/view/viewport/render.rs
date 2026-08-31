@@ -1776,7 +1776,7 @@ fn artifact_surface_raster_context(
     .expect("production artifact surface raster context is canonical")
 }
 
-fn require_no_scroll_detached_artifact_surface_plan(
+fn require_detached_artifact_surface_plan(
     plan: crate::view::paint::PreparedArtifactSurfaceRasterPlan,
 ) -> Result<
     crate::view::paint::PreparedArtifactSurfaceRasterPlan,
@@ -1785,11 +1785,16 @@ fn require_no_scroll_detached_artifact_surface_plan(
     if plan.nodes().is_empty() {
         return Err(RecordedArtifactSurfacePrepareError::MissingDetachedSurface);
     }
+    // The current exhaustive SurfaceDagNodeKind -> raster-role mapping emits
+    // exactly these three roles, so this branch rejects no production-reachable
+    // plan today. It is a forward-compatibility assertion: a future Surface DAG
+    // role must be admitted here deliberately before production can select it.
     if let Some(node) = plan.nodes().iter().find(|node| {
         !matches!(
             node.identity().role,
             crate::view::paint::RetainedSurfaceRasterRole::Transform
                 | crate::view::paint::RetainedSurfaceRasterRole::PropertyEffect
+                | crate::view::paint::RetainedSurfaceRasterRole::ScrollContent
         )
     }) {
         return Err(
@@ -1805,7 +1810,7 @@ fn require_no_scroll_detached_artifact_surface_plan(
 #[derive(Clone, Copy)]
 enum RecordedArtifactSurfaceRequirement {
     ZeroResident,
-    NoScrollDetached,
+    Detached,
 }
 
 fn prepare_recorded_artifact_candidate(
@@ -1830,8 +1835,8 @@ fn prepare_recorded_artifact_candidate(
                         RecordedArtifactSurfaceRequirement::ZeroResident => {
                             require_zero_resident_artifact_surface_plan(plan)
                         }
-                        RecordedArtifactSurfaceRequirement::NoScrollDetached => {
-                            require_no_scroll_detached_artifact_surface_plan(plan)
+                        RecordedArtifactSurfaceRequirement::Detached => {
+                            require_detached_artifact_surface_plan(plan)
                         }
                     }
                     .map_err(RecordedArtifactCandidateRejection::Prepare)?;
@@ -1911,7 +1916,7 @@ fn record_auto_artifact_candidate(
     )
 }
 
-fn record_auto_no_scroll_surface_candidate(
+fn record_auto_detached_surface_candidate(
     arena: &crate::view::node_arena::NodeArena,
     roots: &[crate::view::node_arena::NodeKey],
     property_trees: &crate::view::compositor::PropertyTrees,
@@ -1929,7 +1934,7 @@ fn record_auto_no_scroll_surface_candidate(
     prepare_recorded_artifact_candidate(
         outcome,
         raster_context,
-        RecordedArtifactSurfaceRequirement::NoScrollDetached,
+        RecordedArtifactSurfaceRequirement::Detached,
     )
 }
 
@@ -1937,7 +1942,7 @@ fn record_auto_no_scroll_surface_candidate(
 /// viewport handle; rejection may therefore continue to the retained planner.
 /// Once dispatch enters `try_compile_auto_artifact_frame`, fallback is no
 /// longer permitted because graph and pool mutation may have begun.
-fn try_select_auto_no_scroll_surface_candidate(
+fn try_select_auto_detached_surface_candidate(
     arena: &crate::view::node_arena::NodeArena,
     roots: &[crate::view::node_arena::NodeKey],
     property_trees: &crate::view::compositor::PropertyTrees,
@@ -1945,7 +1950,7 @@ fn try_select_auto_no_scroll_surface_candidate(
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
     trace: &mut AutoAuthorityTrace,
 ) -> Option<RecordedArtifactCandidate> {
-    match record_auto_no_scroll_surface_candidate(
+    match record_auto_detached_surface_candidate(
         arena,
         roots,
         property_trees,
@@ -2231,7 +2236,7 @@ fn select_retained_auto_authority_with_semantics(
                 }
             }
         }
-        if let Some(candidate) = try_select_auto_no_scroll_surface_candidate(
+        if let Some(candidate) = try_select_auto_detached_surface_candidate(
             arena,
             roots,
             property_trees,
@@ -2268,7 +2273,7 @@ fn select_retained_auto_authority_with_semantics(
     }
 
     if transforms != 0 && effects == 0 {
-        if let Some(candidate) = try_select_auto_no_scroll_surface_candidate(
+        if let Some(candidate) = try_select_auto_detached_surface_candidate(
             arena,
             roots,
             property_trees,

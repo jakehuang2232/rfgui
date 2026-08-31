@@ -85,7 +85,7 @@ use super::{
     direct_scroll_transform_prepare_rejection_fallback_stage, enable_paint_authority_test_capture,
     finish_frame_dirty_lifecycle, frame_disposition, paint_authority_test_capture_enabled,
     preflight_direct_scroll_transform_selection, preflight_transform_effect_scroll_selection,
-    require_no_scroll_detached_artifact_surface_plan, require_zero_resident_artifact_surface_plan,
+    require_detached_artifact_surface_plan, require_zero_resident_artifact_surface_plan,
     retained_auto_circuit_breaker_selection, retained_auto_fallback_overlay_records,
     retained_auto_overlay_label, retained_auto_terminal_fallback_stage,
     select_retained_auto_authority, select_retained_auto_authority_with_artifact_budget_for_test,

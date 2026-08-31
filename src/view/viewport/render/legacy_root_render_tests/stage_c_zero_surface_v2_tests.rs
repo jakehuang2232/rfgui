@@ -207,10 +207,46 @@ fn stage_c_retained_auto_zero_resident_gate_rejects_a_detached_surface_plan() {
 }
 
 #[test]
-fn stage_c_no_scroll_detached_role_gate_rejects_empty_and_unsupported_plans() {
+fn stage_c_detached_role_gate_accepts_scroll_and_rejects_empty_or_future_roles() {
+    let (scroll_arena, scroll_roots, scroll_properties, scroll_generations) =
+        prepared_exact_scroll_scene();
+    let crate::view::paint::FrameArtifactRecordOutcome::Artifact {
+        artifact: scroll_artifact,
+        ..
+    } = crate::view::paint::record_surface_dag_frame_artifact(
+        &scroll_arena,
+        &scroll_roots,
+        &scroll_properties,
+        &scroll_generations,
+        crate::view::paint::RendererMode::ForcedForTests,
+    )
+    .expect("real scroll scene must record")
+    else {
+        panic!("forced real scroll scene cannot silently fall back")
+    };
+    let context = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let scroll_plan = crate::view::paint::prepare_artifact_surface_raster_plan(
+        scroll_artifact,
+        artifact_surface_raster_context(
+            &context,
+            wgpu::Limits::default().max_texture_dimension_2d,
+            PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+        ),
+    )
+    .expect("real scroll scene must prepare");
+    assert_eq!(
+        scroll_plan
+            .nodes()
+            .iter()
+            .map(|node| node.identity().role)
+            .collect::<Vec<_>>(),
+        [crate::view::paint::RetainedSurfaceRasterRole::ScrollContent],
+    );
+    require_detached_artifact_surface_plan(scroll_plan)
+        .expect("the generic detached boundary must accept a real ScrollContent plan");
+
     let (arena, roots, _) = prepared_zero_surface_three_chunk_frame();
     let (artifact, _) = recorded_zero_surface_artifact(&arena, &roots);
-    let context = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let empty = crate::view::paint::prepare_artifact_surface_raster_plan(
         artifact,
         artifact_surface_raster_context(
@@ -221,7 +257,7 @@ fn stage_c_no_scroll_detached_role_gate_rejects_empty_and_unsupported_plans() {
     )
     .expect("zero-surface plan");
     assert_eq!(
-        require_no_scroll_detached_artifact_surface_plan(empty)
+        require_detached_artifact_surface_plan(empty)
             .expect_err("detached authority must not accept an empty plan"),
         RecordedArtifactSurfacePrepareError::MissingDetachedSurface,
     );
@@ -229,18 +265,19 @@ fn stage_c_no_scroll_detached_role_gate_rejects_empty_and_unsupported_plans() {
     let frame = crate::view::paint::prepared_depth_four_surface_frame_for_test();
     let mut unsupported = frame.raster_plan().clone();
     let (surface, previous) = unsupported
-        .force_first_role_for_test(crate::view::paint::RetainedSurfaceRasterRole::ScrollContent)
+        .force_first_role_for_test(crate::view::paint::RetainedSurfaceRasterRole::RootIsolation)
         .expect("depth-four plan has one surface");
     assert_eq!(
         previous,
         crate::view::paint::RetainedSurfaceRasterRole::PropertyEffect
     );
     assert_eq!(
-        require_no_scroll_detached_artifact_surface_plan(unsupported)
-            .expect_err("no-scroll authority must reject a scroll role"),
+        require_detached_artifact_surface_plan(unsupported).expect_err(
+            "a role the current Surface DAG cannot produce must require future admission",
+        ),
         RecordedArtifactSurfacePrepareError::UnsupportedDetachedSurfaceRole {
             surface,
-            role: crate::view::paint::RetainedSurfaceRasterRole::ScrollContent,
+            role: crate::view::paint::RetainedSurfaceRasterRole::RootIsolation,
         },
     );
 }
