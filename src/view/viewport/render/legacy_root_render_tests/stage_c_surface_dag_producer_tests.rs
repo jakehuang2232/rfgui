@@ -2,8 +2,9 @@ use super::*;
 use crate::view::paint::{
     ArtifactSurfaceRasterContext, ArtifactSurfaceRasterPlanError, ArtifactSurfaceResidentSealError,
     FrameArtifactFallbackReason, FrameArtifactRecordOutcome, LegacyPaintReason, RendererMode,
-    RetainedSurfaceRasterRole, prepare_artifact_surface_raster_plan,
-    record_surface_dag_no_scroll_frame_artifact, seal_prepared_artifact_surface_frame,
+    RetainedSurfaceRasterRole, SingleTargetSurfaceDagPrepareError,
+    prepare_artifact_surface_raster_plan, record_surface_dag_frame_artifact,
+    seal_prepared_artifact_surface_frame,
 };
 
 const MEASUREMENT_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
@@ -142,11 +143,22 @@ fn measure_case(case: ProducerCase, dpr: f32) -> ProducerMeasurementRow {
     let label = case.label();
     let (arena, roots) = case.build();
     let (properties, generations) = synced_paint_state(&arena, &roots);
-    let outcome = match record_surface_dag_no_scroll_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
+    measure_recorded_scene(label, dpr, &arena, &roots, &properties, &generations)
+}
+
+fn measure_recorded_scene(
+    label: &'static str,
+    dpr: f32,
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    properties: &PropertyTrees,
+    generations: &PaintGenerationTracker,
+) -> ProducerMeasurementRow {
+    let outcome = match record_surface_dag_frame_artifact(
+        arena,
+        roots,
+        properties,
+        generations,
         RendererMode::ForcedForTests,
     ) {
         Err(error) => ProducerMeasurementOutcome::RecordRejected(error.reasons),
@@ -240,8 +252,34 @@ fn missing_paint_identity_row(label: &'static str, dpr: f32) -> ProducerMeasurem
     }
 }
 
+fn assert_invalid_descriptor_row(
+    row: &ProducerMeasurementRow,
+    label: &'static str,
+    dpr: f32,
+    source_index: usize,
+) {
+    assert_eq!((row.label, row.dpr_bits), (label, dpr.to_bits()));
+    let ProducerMeasurementOutcome::PlanRejected(
+        ArtifactSurfaceRasterPlanError::InvalidDescriptor(source),
+    ) = row.outcome
+    else {
+        panic!("expected an invalid descriptor row, got {row:?}")
+    };
+    assert_eq!(source.index(), source_index);
+}
+
+fn assert_invalid_store_row(row: &ProducerMeasurementRow, label: &'static str, dpr: f32) {
+    assert_eq!((row.label, row.dpr_bits), (label, dpr.to_bits()));
+    assert_eq!(
+        row.outcome,
+        ProducerMeasurementOutcome::PlanRejected(ArtifactSurfaceRasterPlanError::ArtifactProgram(
+            SingleTargetSurfaceDagPrepareError::InvalidArtifactStore,
+        ),),
+    );
+}
+
 #[test]
-fn surface_dag_no_scroll_producer_frozen_measurement_contract() {
+fn surface_dag_producer_preserves_the_frozen_no_scroll_measurement_contract() {
     let rows = CASES
         .into_iter()
         .flat_map(|case| [1.0_f32, 2.0_f32].map(|dpr| measure_case(case, dpr)))
@@ -337,23 +375,101 @@ fn surface_dag_no_scroll_producer_frozen_measurement_contract() {
 }
 
 #[test]
-fn surface_dag_no_scroll_producer_rejects_a_real_scroll_property_tree() {
-    let (arena, roots, properties, generations) =
-        prepared_transform_scroll_scene(glam::Mat4::IDENTITY);
-    let error = record_surface_dag_no_scroll_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .expect_err("generic no-scroll authority must reject a real scroll tree");
+fn surface_dag_producer_records_five_real_scroll_property_trees_and_freezes_downstream_outcomes() {
+    let cases = [
+        {
+            let (arena, roots, properties, generations) = prepared_exact_scroll_scene();
+            ("scroll", arena, roots, properties, generations)
+        },
+        {
+            let (arena, roots, properties, generations) =
+                prepared_same_owner_transform_scroll_scene();
+            ("transform-scroll", arena, roots, properties, generations)
+        },
+        {
+            let (arena, roots, properties, generations) = prepared_same_owner_effect_scroll_scene();
+            ("effect-scroll", arena, roots, properties, generations)
+        },
+        {
+            let (arena, roots, properties, generations) = prepared_transform_effect_scroll_scene();
+            (
+                "transform-effect-scroll",
+                arena,
+                roots,
+                properties,
+                generations,
+            )
+        },
+        {
+            let (arena, roots, properties, generations) = prepared_exact_nested_scroll_scene();
+            ("nested-scroll", arena, roots, properties, generations)
+        },
+    ];
+    let rows = cases
+        .into_iter()
+        .flat_map(|(label, arena, roots, properties, generations)| {
+            [1.0_f32, 2.0_f32].map(move |dpr| {
+                measure_recorded_scene(label, dpr, &arena, &roots, &properties, &generations)
+            })
+        })
+        .collect::<Vec<_>>();
     assert!(
-        error
-            .reasons
-            .iter()
-            .any(|reason| matches!(reason, FrameArtifactFallbackReason::PropertyBoundary(_))),
-        "scroll rejection must retain its owning property boundary: {:?}",
-        error.reasons
+        rows.iter()
+            .all(|row| !matches!(row.outcome, ProducerMeasurementOutcome::RecordRejected(_))),
+        "all five real scroll shapes at both DPR values must pass recorder admission: {rows:#?}",
+    );
+    let scroll = [RetainedSurfaceRasterRole::ScrollContent];
+    let nested_scroll = [
+        RetainedSurfaceRasterRole::ScrollContent,
+        RetainedSurfaceRasterRole::ScrollContent,
+    ];
+    assert_eq!(rows.len(), 10);
+    assert_eq!(rows[0], prepared_row("scroll", 1.0, &scroll, &[360_000]));
+    assert_eq!(rows[1], prepared_row("scroll", 2.0, &scroll, &[1_440_000]));
+    // Raster-origin follow-up contract and baseline redirection table:
+    //
+    // - transform-scroll DPR 1/2: InvalidDescriptor -> Prepared; replace this
+    //   rejection with the newly measured per-surface bytes before that batch
+    //   lands.
+    // - transform-effect-scroll DPR 1/2: InvalidDescriptor -> Prepared; replace
+    //   this rejection with the newly measured per-surface bytes before that
+    //   batch lands.
+    // - effect-scroll DPR 1/2: InvalidArtifactStore is a different-stage gap.
+    //   The raster-origin batch must either produce Prepared rows with measured
+    //   bytes or retain these rows while naming the later owning batch.
+    //
+    // The same batch must restore the natural two-frame differential removed
+    // here while its asserted property does not exist:
+    // 1. call set_scroll_offset, real measure_and_place, resync, and record;
+    //    never compensate by changing an authored position;
+    // 2. never manipulate dirty flags to manufacture the second frame;
+    // 3. offset-only must change composite geometry, preserve resident stamps,
+    //    and produce Reuse from the real pool action;
+    // 4. a content-change control must change the stamp and produce Reraster.
+    // Temporary downstream baseline, not intended rejection behavior. The
+    // raster-origin rebase batch must turn these four InvalidDescriptor rows
+    // into Prepared rows and freeze their newly measured descriptor bytes.
+    assert_invalid_descriptor_row(&rows[2], "transform-scroll", 1.0, 0);
+    assert_invalid_descriptor_row(&rows[3], "transform-scroll", 2.0, 0);
+    // This is a different-stage artifact-store gap. The raster-origin batch
+    // must classify it explicitly: either turn both rows into Prepared with
+    // measured bytes, or retain this rejection with a named owning batch.
+    assert_invalid_store_row(&rows[4], "effect-scroll", 1.0);
+    assert_invalid_store_row(&rows[5], "effect-scroll", 2.0);
+    // Same temporary raster-origin baseline as transform-scroll above.
+    assert_invalid_descriptor_row(&rows[6], "transform-effect-scroll", 1.0, 1);
+    assert_invalid_descriptor_row(&rows[7], "transform-effect-scroll", 2.0, 1);
+    assert_eq!(
+        rows[8],
+        prepared_row("nested-scroll", 1.0, &nested_scroll, &[720_000, 720_000])
+    );
+    assert_eq!(
+        rows[9],
+        prepared_row(
+            "nested-scroll",
+            2.0,
+            &nested_scroll,
+            &[2_880_000, 2_880_000],
+        )
     );
 }

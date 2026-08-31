@@ -292,8 +292,8 @@ impl Element {
         recording_context: crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::RetainedChildMaskPlan> {
         if (self.scroll_direction != ScrollDirection::None
-            && !recording_context
-                .authorizes_frame_root_scroll_host_child_mask(self.stable_id()))
+            && !(recording_context.authorizes_frame_root_scroll_host_child_mask(self.stable_id())
+                || recording_context.authorizes_generic_scroll_host_root(self.stable_id())))
             || self.inline_ifc_owned_by_root
             || (self.is_fragmentable_inline_element() && self.inline_paint_fragments.len() > 1)
             || !self.requires_child_mask_surface(arena)
@@ -907,7 +907,8 @@ impl Element {
             return Err(LegacyPaintReason::MissingPreparedInlineRoot);
         }
         if self.scroll_direction != ScrollDirection::None
-            && !recording_context.authorizes_baked_scroll_host_root(self.stable_id())
+            && !(recording_context.authorizes_baked_scroll_host_root(self.stable_id())
+                || recording_context.authorizes_generic_scroll_host_root(self.stable_id()))
         {
             return Err(LegacyPaintReason::ScrollContainer);
         }
@@ -927,6 +928,7 @@ impl Element {
         // through the ordinary SelfClip / ChildClip authority gates.
         if arena.is_some_and(|arena| self.requires_child_mask_surface(arena))
             && !recording_context.authorizes_baked_scroll_host_root(self.stable_id())
+            && !recording_context.authorizes_generic_scroll_host_root(self.stable_id())
             && !recording_context.authorizes_descendant_contents_clip(self.stable_id())
             && arena.is_none_or(|arena| {
                 self.prepared_retained_child_mask_plan(arena, recording_context)
@@ -1060,7 +1062,8 @@ impl Element {
             return Some(ShadowPaintBlocker::MissingPreparedInlineRoot);
         }
         if self.scroll_direction != ScrollDirection::None
-            && !recording_context.authorizes_baked_scroll_host_root(self.stable_id())
+            && !(recording_context.authorizes_baked_scroll_host_root(self.stable_id())
+                || recording_context.authorizes_generic_scroll_host_root(self.stable_id()))
         {
             return Some(ShadowPaintBlocker::ScrollContainer);
         }
@@ -1085,6 +1088,7 @@ impl Element {
             let inner_radii = self.inner_clip_radii(outer_radii);
             if self.should_clip_children(&overflow_child_indices, inner_radii, arena)
                 && !recording_context.authorizes_baked_scroll_host_root(self.stable_id())
+                && !recording_context.authorizes_generic_scroll_host_root(self.stable_id())
                 && !recording_context.authorizes_descendant_contents_clip(self.stable_id())
                 && self
                     .prepared_retained_child_mask_plan(arena, recording_context)

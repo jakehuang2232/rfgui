@@ -729,7 +729,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
         generations: &'a PaintGenerationTracker,
         recording_mode: CoverageRecordingMode,
         transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
-        surface_dag_no_scroll: bool,
+        surface_dag: bool,
         effect_surface_authority: Option<&'a super::EffectPropertySurfaceArtifactContract>,
         property_forest_ancestor_chain:
             Option<&'a super::ConsumedPropertyForestAncestorChainWitness>,
@@ -957,10 +957,17 @@ fn record_coverage_manifest_with_property_authorities_impl(
             // canonical surface policy may bind a witness to the current
             // traversal owner and exact inherited transform boundary.
             recording_context.transform_surface = None;
-            recording_context.surface_dag_no_scroll = self.surface_dag_no_scroll;
+            recording_context.surface_dag = self.surface_dag;
             recording_context.surface_dag_transform = self
-                .surface_dag_no_scroll
+                .surface_dag
                 .then_some(live_properties.transform)
+                .flatten();
+            recording_context.surface_dag_scroll = self
+                .surface_dag
+                .then(|| {
+                    let scroll = ScrollNodeId(key);
+                    (live_contents_properties.scroll == Some(scroll)).then_some(scroll)
+                })
                 .flatten();
             if let Some(witness) = self.transform_surface_authority
                 && live_properties.transform == Some(witness.transform)
@@ -1649,7 +1656,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
         generations: paint_generations,
         recording_mode,
         transform_surface_authority,
-        surface_dag_no_scroll: initial_recording_context.surface_dag_no_scroll,
+        surface_dag: initial_recording_context.surface_dag,
         effect_surface_authority,
         property_forest_ancestor_chain,
         baked_scroll_host_authority: initial_recording_context.baked_scroll_host,

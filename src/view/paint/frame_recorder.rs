@@ -149,7 +149,7 @@ pub(crate) fn record_closed_single_target_frame_artifact(
 /// rejects scroll state, and closes the same transitive artifact snapshot
 /// store as the zero-surface C3a producer.
 #[allow(dead_code)]
-pub(crate) fn record_surface_dag_no_scroll_frame_artifact(
+pub(crate) fn record_surface_dag_frame_artifact(
     arena: &NodeArena,
     roots: &[NodeKey],
     property_trees: &PropertyTrees,
@@ -162,7 +162,7 @@ pub(crate) fn record_surface_dag_no_scroll_frame_artifact(
         property_trees,
         paint_generations,
         mode,
-        FrameArtifactAuthorityPolicy::SurfaceDagNoScroll,
+        FrameArtifactAuthorityPolicy::SurfaceDag,
         None,
         None,
     )?;
@@ -2325,7 +2325,7 @@ enum FrameArtifactAuthorityPolicy {
     /// Generic current-target authority. Unlike the nine witness-bearing
     /// policies below, admission is defined solely by typed property families
     /// and the later artifact Surface DAG contract.
-    SurfaceDagNoScroll,
+    SurfaceDag,
     RootOpacityGroup(RootOpacityGroupPlan),
     TransformSurface(PaintTransformSurfaceWitness),
     TransformPropertySurface(PaintTransformSurfaceWitness),
@@ -2744,7 +2744,7 @@ fn record_frame_artifact_with_policy_and_stack(
                 | FrameArtifactAuthorityPolicy::PropertyNeutral
                 | FrameArtifactAuthorityPolicy::ClipEnabled
                 | FrameArtifactAuthorityPolicy::PropertyScene
-                | FrameArtifactAuthorityPolicy::SurfaceDagNoScroll
+                | FrameArtifactAuthorityPolicy::SurfaceDag
                 | FrameArtifactAuthorityPolicy::TransformSurface(_)
                 | FrameArtifactAuthorityPolicy::TransformPropertySurface(_)
                 | FrameArtifactAuthorityPolicy::BakedScrollHost(_)
@@ -2756,7 +2756,7 @@ fn record_frame_artifact_with_policy_and_stack(
                 }
             }
         },
-        surface_dag_no_scroll: policy == FrameArtifactAuthorityPolicy::SurfaceDagNoScroll,
+        surface_dag: policy == FrameArtifactAuthorityPolicy::SurfaceDag,
         baked_scroll_host: baked_scroll_host_witness(policy),
         ..PaintRecordingContext::default()
     };
@@ -2782,7 +2782,7 @@ fn record_frame_artifact_with_policy_and_stack(
         policy,
         FrameArtifactAuthorityPolicy::PropertyNeutral
             | FrameArtifactAuthorityPolicy::ClipEnabled
-            | FrameArtifactAuthorityPolicy::SurfaceDagNoScroll
+            | FrameArtifactAuthorityPolicy::SurfaceDag
     ) {
         for reason in production_property_boundary_reasons(arena, roots, property_trees, policy) {
             if !preflight_eligibility.reasons.contains(&reason) {
@@ -2835,7 +2835,7 @@ fn record_frame_artifact_with_policy_and_stack(
         | FrameArtifactAuthorityPolicy::PropertyNeutral
         | FrameArtifactAuthorityPolicy::ClipEnabled
         | FrameArtifactAuthorityPolicy::PropertyScene
-        | FrameArtifactAuthorityPolicy::SurfaceDagNoScroll
+        | FrameArtifactAuthorityPolicy::SurfaceDag
         | FrameArtifactAuthorityPolicy::TransformSurface(_)
         | FrameArtifactAuthorityPolicy::TransformPropertySurface(_)
         | FrameArtifactAuthorityPolicy::EffectPropertySurface(_)
@@ -3041,14 +3041,6 @@ fn assess_manifest(
                         reasons.push(reason);
                     }
                 }
-                if policy == FrameArtifactAuthorityPolicy::SurfaceDagNoScroll
-                    && chunk.properties.scroll.is_some()
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
                 if let FrameArtifactAuthorityPolicy::RootOpacityGroup(plan) = policy {
                     if chunk.properties.effect != Some(plan.effect) {
                         let reason = FrameArtifactFallbackReason::NestedEffect(chunk.owner);
@@ -3135,14 +3127,6 @@ fn assess_manifest(
                         reasons.push(reason);
                     }
                 }
-                if policy == FrameArtifactAuthorityPolicy::SurfaceDagNoScroll
-                    && properties.scroll.is_some()
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
                 if let FrameArtifactAuthorityPolicy::EffectPropertySurface(effect) = policy
                     && (properties.effect != Some(effect)
                         || properties.transform.is_some()
@@ -3185,7 +3169,7 @@ fn assess_manifest(
                             || properties.effect.is_some()
                             || properties.scroll.is_some()
                     }
-                    FrameArtifactAuthorityPolicy::SurfaceDagNoScroll => properties.scroll.is_some(),
+                    FrameArtifactAuthorityPolicy::SurfaceDag => properties.scroll.is_some(),
                     FrameArtifactAuthorityPolicy::EffectPropertySurface(effect) => {
                         properties.effect != Some(effect)
                             || properties.transform.is_some()
@@ -3427,7 +3411,7 @@ fn production_property_boundary_reasons(
         let Some(node) = arena.get(key) else {
             continue;
         };
-        if policy == FrameArtifactAuthorityPolicy::SurfaceDagNoScroll
+        if policy == FrameArtifactAuthorityPolicy::SurfaceDag
             && (node.element.children() != node.children()
                 || node
                     .children()
@@ -3463,7 +3447,7 @@ fn production_property_boundary_reasons(
                             || properties.effect.is_some()
                             || properties.scroll.is_some()
                     }
-                    FrameArtifactAuthorityPolicy::SurfaceDagNoScroll => properties.scroll.is_some(),
+                    FrameArtifactAuthorityPolicy::SurfaceDag => false,
                     FrameArtifactAuthorityPolicy::ExistingBakedProperties
                     | FrameArtifactAuthorityPolicy::RootOpacityGroup(_)
                     | FrameArtifactAuthorityPolicy::TransformSurface(_)

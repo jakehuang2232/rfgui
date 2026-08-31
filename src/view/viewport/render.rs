@@ -1918,7 +1918,7 @@ fn record_auto_no_scroll_surface_candidate(
     paint_generations: &crate::view::compositor::PaintGenerationTracker,
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
 ) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
-    let outcome = crate::view::paint::record_surface_dag_no_scroll_frame_artifact(
+    let outcome = crate::view::paint::record_surface_dag_frame_artifact(
         arena,
         roots,
         property_trees,

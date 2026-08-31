@@ -133,7 +133,7 @@ pub(crate) use frame_recorder::{
     FrameArtifactEligibility, FrameArtifactFallbackReason, FrameArtifactRecordOutcome,
     RendererMode, record_clip_enabled_frame_artifact, record_closed_single_target_frame_artifact,
     record_frame_artifact, record_property_neutral_frame_artifact,
-    record_root_group_opacity_frame_artifact, record_surface_dag_no_scroll_frame_artifact,
+    record_root_group_opacity_frame_artifact, record_surface_dag_frame_artifact,
 };
 /// Legacy retained admission surface. Deleted whole in the Stage C hard
 /// cutover; see `legacy_admission`.

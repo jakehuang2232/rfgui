@@ -7,7 +7,7 @@
 //! recomputes for every node it walks.
 
 use crate::view::compositor::property_tree::{
-    ClipNodeId, ClipNodeRole, EffectNodeId, PropertyTreeState, TransformNodeId,
+    ClipNodeId, ClipNodeRole, EffectNodeId, PropertyTreeState, ScrollNodeId, TransformNodeId,
 };
 use crate::view::node_arena::NodeKey;
 
@@ -50,14 +50,19 @@ pub(crate) struct PaintRecordingContext {
     /// every canonical traversal owner.
     pub(crate) transform_surface: Option<PaintTransformSurfaceWitness>,
     /// Generic C3b Surface DAG policy bit. Coverage copies it from the
-    /// recorder and rebinds `surface_dag_transform` from the current owner's
-    /// property state after every component hook. Artifact validation remains
-    /// responsible for proving the resulting snapshot store.
-    pub(crate) surface_dag_no_scroll: bool,
-    /// Owner-scoped transform accepted by the generic no-scroll Surface DAG
+    /// recorder and rebinds its owner-scoped property authorities from the
+    /// current owner's state after every component hook. Artifact validation
+    /// remains responsible for proving the resulting snapshot store.
+    pub(crate) surface_dag: bool,
+    /// Owner-scoped transform accepted by the generic Surface DAG
     /// recorder. Coverage overwrites it before every node paints, so it cannot
     /// become ambient authority inherited from a component context hook.
     pub(crate) surface_dag_transform: Option<TransformNodeId>,
+    /// Owner-scoped scroll root accepted by the generic Surface DAG recorder.
+    /// Coverage binds it only when this owner's descendants state names the
+    /// same owner-keyed scroll node, so foreign scroll authority cannot leak
+    /// through copied component context.
+    pub(crate) surface_dag_scroll: Option<ScrollNodeId>,
     /// Recorder-owned authority for the one exact M10E1A root/child path.
     /// Coverage clears and rebinds this after every component hook.
     pub(crate) baked_scroll_host: Option<PaintBakedScrollHostWitness>,
@@ -172,7 +177,7 @@ impl PaintRecordingContext {
         ) || matches!(
             (
                 self.recording_owner,
-                self.surface_dag_no_scroll,
+                self.surface_dag,
                 self.surface_dag_transform,
                 transform,
             ),
@@ -196,7 +201,7 @@ impl PaintRecordingContext {
             (
                 self.recording_owner,
                 self.recording_owner_stable_id,
-                self.surface_dag_no_scroll,
+                self.surface_dag,
                 self.surface_dag_transform,
             ),
             (Some(owner), Some(recording_stable_id), true, Some(transform))
@@ -215,6 +220,23 @@ impl PaintRecordingContext {
                 if recording_stable_id == stable_id
                     && witness.boundary_root() == owner
                     && witness.target_owner() == owner
+        )
+    }
+
+    /// Generic owner-scoped scroll authority. This is deliberately separate
+    /// from the exact baked-scroll witness: callers may admit the generic
+    /// Surface DAG path without making the infallible exact snapshot accessor
+    /// observe an authority that carries no witness.
+    pub(crate) fn authorizes_generic_scroll_host_root(self, stable_id: u64) -> bool {
+        matches!(
+            (
+                self.recording_owner,
+                self.recording_owner_stable_id,
+                self.surface_dag,
+                self.surface_dag_scroll,
+            ),
+            (Some(owner), Some(recording_stable_id), true, Some(scroll))
+                if recording_stable_id == stable_id && scroll == ScrollNodeId(owner)
         )
     }
 
