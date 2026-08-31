@@ -9,8 +9,8 @@ use crate::view::frame_graph::{
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
-    render_target_origin, render_target_sample_count, render_target_view, resolve_texture_ref,
+    GraphicsPassContext as RenderPassContext, render_target_origin, render_target_sample_count,
+    render_target_view, resolve_graphics_pass_scissor_to_target_physical, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use rustc_hash::FxHashSet;
@@ -121,7 +121,10 @@ impl CompositeLayerPass {
             corner_radii_bits: self.params.corner_radii.map(f32::to_bits),
             opacity_bits: self.params.opacity.to_bits(),
             explicit_scissor_rect: self.explicit_scissor_rect,
-            effective_scissor_rect: self.params.scissor_rect,
+            effective_scissor_rect: intersect_scissor_rects(
+                self.input.pass_context.logical_scissor_rect(),
+                self.params.scissor_rect,
+            ),
             clear_target: self.params.clear_target,
             layer_handle: self.input.layer.handle(),
             pass_context: self.input.pass_context,
@@ -180,10 +183,6 @@ impl GraphicsPass for CompositeLayerPass {
                 GraphicsColorAttachmentOps::load()
             });
         }
-        self.params.scissor_rect = intersect_scissor_rects(
-            self.input.pass_context.scissor_rect,
-            self.params.scissor_rect,
-        );
         if self.input.pass_context.uses_depth_stencil {
             if self.params.clear_target {
                 builder.write_output_depth(
@@ -335,14 +334,13 @@ impl GraphicsPass for CompositeLayerPass {
                     },
                 ],
             });
-            let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
-                logical_scissor_to_target_physical(
-                    ctx.viewport(),
-                    scissor_rect,
-                    target_origin,
-                    (target_w, target_h),
-                )
-            });
+            let scissor_rect_physical = resolve_graphics_pass_scissor_to_target_physical(
+                ctx.viewport(),
+                self.input.pass_context.scissor_rect,
+                self.params.scissor_rect,
+                target_origin,
+                (target_w, target_h),
+            );
 
             let debug_geometry_overlay = ctx.viewport().debug_options().geometry_overlay;
             let pipeline = if self.input.pass_context.stencil_clip_id.is_some() {
@@ -689,6 +687,7 @@ pub fn clear_composite_layer_resources_cache() {
     });
 }
 
+#[cfg(test)]
 fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
     match (a, b) {
         (None, None) => None,

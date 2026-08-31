@@ -69,7 +69,10 @@ fn exact_single_owner_self_clip_keeps_outer_shadow_outside_owner_clip() {
             _ => None,
         })
         .expect("outer shadow must composite before decoration");
-    assert_eq!(shadow_composite.pass_context.scissor_rect, Some(incoming));
+    assert_eq!(
+        shadow_composite.pass_context.logical_scissor_rect(),
+        Some(incoming)
+    );
     let rects = snapshot
         .pass_payloads()
         .iter()

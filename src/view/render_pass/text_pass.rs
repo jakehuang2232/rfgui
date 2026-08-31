@@ -4,8 +4,9 @@ use crate::view::frame_graph::{
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
-    render_target_format, render_target_origin, render_target_sample_count, resolve_texture_ref,
+    GraphicsPassContext as RenderPassContext, render_target_format, render_target_origin,
+    render_target_sample_count, resolve_graphics_pass_scissor_to_target_physical,
+    resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use parley::FontData as ParleyFontData;
@@ -602,17 +603,18 @@ fn prepare_text_prepared_input_pass(
     let target_origin = target_handle
         .and_then(|handle| render_target_origin(ctx, handle))
         .unwrap_or((0, 0));
-    let scissor_rect = params
-        .scissor_rect
-        .or(input.pass_context.scissor_rect)
-        .and_then(|rect| {
-            logical_scissor_to_target_physical(
-                ctx.viewport(),
-                rect,
-                target_origin,
-                target.physical_size,
-            )
-        });
+    let (pass_scissor, explicit_logical_scissor) = if params.scissor_rect.is_some() {
+        (None, params.scissor_rect)
+    } else {
+        (input.pass_context.scissor_rect, None)
+    };
+    let scissor_rect = resolve_graphics_pass_scissor_to_target_physical(
+        ctx.viewport(),
+        pass_scissor,
+        explicit_logical_scissor,
+        target_origin,
+        target.physical_size,
+    );
     let stencil_clip_id = params
         .stencil_clip_id
         .or(input.pass_context.stencil_clip_id);

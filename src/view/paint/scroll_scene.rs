@@ -24616,7 +24616,7 @@ fn prepare_scroll_scene_from_live(
         paint_generations,
         ctx.viewport().scale_factor(),
         ctx.paint_offset(),
-        ctx.graphics_pass_context().scissor_rect,
+        ctx.graphics_pass_context().logical_scissor_rect(),
     )
     .map_err(ScrollSceneFromLiveError::Plan)?;
     if !paint_generations.matches_live_snapshot(arena, roots, property_trees) {

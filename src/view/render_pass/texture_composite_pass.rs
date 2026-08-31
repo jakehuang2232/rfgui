@@ -8,9 +8,8 @@ use crate::view::frame_graph::{
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, ResolvedTextureRef,
-    logical_scissor_to_target_physical, render_target_sample_count, render_target_view,
-    resolve_texture_ref,
+    GraphicsPassContext as RenderPassContext, ResolvedTextureRef, render_target_sample_count,
+    render_target_view, resolve_graphics_pass_scissor_to_target_physical, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use crate::view::sampled_texture::SampledTextureUpload;
@@ -184,7 +183,10 @@ impl TextureCompositePass {
             source_is_premultiplied: self.params.source_is_premultiplied,
             opacity_bits: self.params.opacity.to_bits(),
             explicit_scissor_rect: self.explicit_scissor_rect,
-            effective_scissor_rect: self.params.scissor_rect,
+            effective_scissor_rect: intersect_scissor_rects(
+                self.input.pass_context.logical_scissor_rect(),
+                self.params.scissor_rect,
+            ),
             source_handle: self.input.source.handle(),
             sampled_source: self.input.sampled_source.as_ref().map(|upload| {
                 SampledTextureUploadTestSnapshot {
@@ -264,10 +266,6 @@ impl GraphicsPass for TextureCompositePass {
         builder.read_buffer(&self.vertex_buffer, BufferReadUsage::Vertex);
         builder.read_buffer(&self.index_buffer, BufferReadUsage::Index);
 
-        self.params.scissor_rect = intersect_scissor_rects(
-            self.input.pass_context.scissor_rect,
-            self.params.scissor_rect,
-        );
         if let Some(handle) = self.input.source.handle() {
             let source: OutSlot<TextureResource, TextureCompositeSourceTag> =
                 OutSlot::with_handle(handle);
@@ -535,14 +533,13 @@ impl GraphicsPass for TextureCompositePass {
                 None,
             );
             let (target_w, target_h) = target_meta.physical_size;
-            let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
-                logical_scissor_to_target_physical(
-                    ctx.viewport(),
-                    scissor_rect,
-                    target_meta.global_origin,
-                    (target_w, target_h),
-                )
-            });
+            let scissor_rect_physical = resolve_graphics_pass_scissor_to_target_physical(
+                ctx.viewport(),
+                self.input.pass_context.scissor_rect,
+                self.params.scissor_rect,
+                target_meta.global_origin,
+                (target_w, target_h),
+            );
             let pipeline = match (
                 self.input.pass_context.uses_depth_stencil,
                 self.input.pass_context.stencil_clip_id.is_some(),
@@ -1339,6 +1336,7 @@ mod resource_scope_tests {
     }
 }
 
+#[cfg(test)]
 fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
     match (a, b) {
         (None, None) => None,
@@ -1459,7 +1457,9 @@ mod tests {
         assert_ne!(base, changed.test_snapshot());
 
         let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.input.pass_context.scissor_rect = Some([9, 8, 7, 6]);
+        changed.input.pass_context.scissor_rect = Some(
+            crate::view::render_pass::render_target::GraphicsPassScissor::Logical([9, 8, 7, 6]),
+        );
         assert_ne!(base, changed.test_snapshot());
     }
 

@@ -50,7 +50,7 @@ fn legacy_nested_effect_graph() -> Result<FrameGraph, String> {
         &generations,
         crate::view::paint::TransformSurfacePlanContext::new(
             ctx.paint_offset(),
-            ctx.graphics_pass_context().scissor_rect,
+            ctx.graphics_pass_context().logical_scissor_rect(),
         ),
     )
     .map_err(|error| format!("legacy property-effect planner rejected fixture: {error:?}"))?;

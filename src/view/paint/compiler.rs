@@ -1247,7 +1247,7 @@ impl ValidatedDirectNestedScrollTextRun {
     ) {
         assert_eq!(masks.0.len(), self.expected_mask_depth);
         assert_eq!(
-            ctx.graphics_pass_context().scissor_rect,
+            ctx.graphics_pass_context().logical_scissor_rect(),
             Some(self.resolved_scissor)
         );
         compile_validated_artifact_segment(

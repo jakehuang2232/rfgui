@@ -1945,7 +1945,7 @@ impl Renderable for TextArea {
                     },
                 );
                 sel_pass.set_render_mode(op.mode);
-                sel_pass.set_scissor_rect(ctx.graphics_pass_context().scissor_rect);
+                sel_pass.set_scissor_rect(ctx.graphics_pass_context().logical_scissor_rect());
                 sel_pass.set_input(
                     target
                         .handle()

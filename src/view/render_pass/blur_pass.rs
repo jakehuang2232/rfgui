@@ -8,8 +8,8 @@ use crate::view::frame_graph::{
 use crate::view::render_pass::composite_layer_pass::LayerIn;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    logical_scissor_to_target_physical, render_target_format, render_target_origin,
-    render_target_ref, render_target_view,
+    GraphicsPassScissor, render_target_format, render_target_origin, render_target_ref,
+    render_target_view, resolve_graphics_pass_scissor_to_target_physical,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::sync::{Mutex, OnceLock};
@@ -26,7 +26,7 @@ pub struct BlurPass {
 
 pub struct BlurPassParams {
     pub blur_radius: f32,
-    pub scissor_rect: Option<[u32; 4]>,
+    pub scissor_rect: Option<GraphicsPassScissor>,
 }
 
 impl BlurPassParams {
@@ -197,18 +197,17 @@ impl GraphicsPass for BlurPass {
                 ],
             });
 
-            let scissor_rect_physical = self.params.scissor_rect.and_then(|scissor_rect| {
-                logical_scissor_to_target_physical(
-                    ctx.viewport(),
-                    scissor_rect,
-                    self.output
-                        .render_target
-                        .handle()
-                        .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
-                        .unwrap_or((0, 0)),
-                    (target_w, target_h),
-                )
-            });
+            let scissor_rect_physical = resolve_graphics_pass_scissor_to_target_physical(
+                ctx.viewport(),
+                self.params.scissor_rect,
+                None,
+                self.output
+                    .render_target
+                    .handle()
+                    .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
+                    .unwrap_or((0, 0)),
+                (target_w, target_h),
+            );
 
             if let Some([x, y, width, height]) = scissor_rect_physical {
                 ctx.set_scissor_rect(x, y, width, height);

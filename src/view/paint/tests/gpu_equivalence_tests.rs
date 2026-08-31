@@ -1634,7 +1634,7 @@ fn production_nested_scroll_leaf_graph(
         &generations,
         1.0,
         ctx.paint_offset(),
-        ctx.graphics_pass_context().scissor_rect,
+        ctx.graphics_pass_context().logical_scissor_rect(),
         crate::time::Instant::now(),
         FORMAT,
         ScrollSceneSingleTextureBudget::new(

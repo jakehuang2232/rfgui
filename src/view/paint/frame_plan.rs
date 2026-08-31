@@ -3680,7 +3680,7 @@ impl TransformSurfacePlanContext {
         ctx: &crate::view::base_component::UiBuildContext,
     ) -> bool {
         self.paint_offset_bits == ctx.paint_offset().map(f32::to_bits)
-            && self.outer_scissor_rect == ctx.graphics_pass_context().scissor_rect
+            && self.outer_scissor_rect == ctx.graphics_pass_context().logical_scissor_rect()
     }
 
     pub(super) fn outer_scissor_rect(self) -> Option<[u32; 4]> {

@@ -173,7 +173,7 @@ fn plain_text_area_preedit_selection_glyph_underline_caret_order_and_clip_are_ex
                 && caret.mode == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
                 && selection.effective_scissor_rect == underline.effective_scissor_rect
                 && underline.effective_scissor_rect == caret.effective_scissor_rect
-                && glyphs.pass_context.scissor_rect == caret.effective_scissor_rect
+                && glyphs.pass_context.logical_scissor_rect() == caret.effective_scissor_rect
                 && glyphs.pass_context.stencil_clip_id == caret.pass_context.stencil_clip_id
         ),
         "payloads={payloads:?}"

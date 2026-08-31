@@ -94,7 +94,7 @@ fn text_area_build_restores_viewport_scissor() {
     ctx.set_state(next_state);
 
     assert_eq!(
-        ctx.graphics_pass_context().scissor_rect,
+        ctx.graphics_pass_context().logical_scissor_rect(),
         Some([5, 6, 70, 30]),
         "TextArea viewport scissor must restore the exact ancestor authority",
     );

@@ -4,9 +4,34 @@ use rustc_hash::FxHashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GraphicsPassContext {
-    pub scissor_rect: Option<[u32; 4]>,
+    pub scissor_rect: Option<GraphicsPassScissor>,
     pub stencil_clip_id: Option<u8>,
     pub uses_depth_stencil: bool,
+}
+
+/// A graphics-pass scissor with its coordinate space carried in the value.
+///
+/// Logical scissors still require viewport scaling and target-origin
+/// subtraction. Target-physical scissors have already been projected into the
+/// destination texture and must not be transformed a second time. This is a
+/// value-space distinction, not a derivation proof; the C3b raster planner owns
+/// the future production construction of `TargetPhysical` values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphicsPassScissor {
+    Logical([u32; 4]),
+    TargetPhysical([u32; 4]),
+}
+
+impl GraphicsPassContext {
+    pub fn logical_scissor_rect(self) -> Option<[u32; 4]> {
+        match self.scissor_rect {
+            None => None,
+            Some(GraphicsPassScissor::Logical(scissor_rect)) => Some(scissor_rect),
+            Some(GraphicsPassScissor::TargetPhysical(_)) => {
+                panic!("target-physical scissor cannot be consumed as a logical scissor")
+            }
+        }
+    }
 }
 
 struct RenderTargetEntry {
@@ -765,159 +790,55 @@ pub(crate) fn logical_scissor_to_target_physical(
     ])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::view::frame_graph::RetainedTextureRole;
-    use crate::view::viewport::Viewport;
-
-    fn generic(key: u64) -> PersistentTextureKey {
-        PersistentTextureKey::Generic(key)
-    }
-
-    fn compatibility_fixture() -> RenderTargetCompatibility {
-        RenderTargetCompatibility {
-            width: 37,
-            height: 19,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            dimension: wgpu::TextureDimension::D2,
-            sample_count: 4,
-            label: "Root Effect".to_string(),
+pub(crate) fn resolve_graphics_pass_scissor_to_target_physical(
+    viewport: &crate::view::viewport::Viewport,
+    pass_scissor: Option<GraphicsPassScissor>,
+    explicit_logical_scissor: Option<[u32; 4]>,
+    target_origin: (u32, u32),
+    target_size: (u32, u32),
+) -> Option<[u32; 4]> {
+    let pass_scissor = match pass_scissor {
+        None => None,
+        Some(GraphicsPassScissor::Logical(scissor_rect)) => {
+            logical_scissor_to_target_physical(viewport, scissor_rect, target_origin, target_size)
         }
-    }
-
-    #[test]
-    fn persistent_compatibility_query_is_read_only_and_rejects_missing_binding() {
-        let pool = OffscreenRenderTargetPool::new();
-        let desc = TextureDesc::new(
-            37,
-            19,
-            wgpu::TextureFormat::Rgba8Unorm,
-            wgpu::TextureDimension::D2,
-        )
-        .with_label("Root Effect");
-
-        assert!(!pool.has_compatible_persistent(generic(7), &desc, 4));
-        assert_eq!(pool.frame_epoch, 0);
-        assert!(pool.persistent_bindings.is_empty());
-    }
-
-    #[test]
-    fn persistent_compatibility_rejects_every_recreate_field_mismatch() {
-        let expected = compatibility_fixture();
-        assert!(persistent_compatibility_matches(Some(&expected), &expected));
-        assert!(!persistent_compatibility_matches(None, &expected));
-
-        let mut cases = Vec::new();
-        let mut width = expected.clone();
-        width.width += 1;
-        cases.push(width);
-        let mut height = expected.clone();
-        height.height += 1;
-        cases.push(height);
-        let mut format = expected.clone();
-        format.format = wgpu::TextureFormat::Rgba16Float;
-        cases.push(format);
-        let mut dimension = expected.clone();
-        dimension.dimension = wgpu::TextureDimension::D1;
-        cases.push(dimension);
-        let mut sample_count = expected.clone();
-        sample_count.sample_count = 1;
-        cases.push(sample_count);
-        let mut label = expected.clone();
-        label.label.push_str(" changed");
-        cases.push(label);
-
-        for actual in cases {
-            assert!(!persistent_compatibility_matches(Some(&actual), &expected));
+        Some(GraphicsPassScissor::TargetPhysical(scissor_rect)) => {
+            clamp_target_physical_scissor(scissor_rect, target_size)
         }
-    }
+    };
+    let explicit_scissor = explicit_logical_scissor.and_then(|scissor_rect| {
+        logical_scissor_to_target_physical(viewport, scissor_rect, target_origin, target_size)
+    });
+    intersect_target_physical_scissors(pass_scissor, explicit_scissor)
+}
 
-    #[test]
-    fn targeted_persistent_release_removes_color_depth_pair_only() {
-        let mut pool = OffscreenRenderTargetPool::new();
-        let color = PersistentTextureKey::retained(RetainedTextureRole::RootEffectColor, 9);
-        let depth = color.depth_stencil().expect("root depth key");
-        let unrelated = generic(99);
-        for (key, entry_id) in [(color, 10), (depth, 11), (unrelated, 12)] {
-            pool.persistent_bindings.insert(
-                key,
-                PersistentRenderTargetBinding {
-                    entry_id,
-                    last_used_epoch: 0,
-                },
-            );
+fn clamp_target_physical_scissor(
+    [x, y, width, height]: [u32; 4],
+    target_size: (u32, u32),
+) -> Option<[u32; 4]> {
+    let right = x.saturating_add(width).min(target_size.0);
+    let bottom = y.saturating_add(height).min(target_size.1);
+    let left = x.min(target_size.0);
+    let top = y.min(target_size.1);
+    (right > left && bottom > top).then_some([left, top, right - left, bottom - top])
+}
+
+fn intersect_target_physical_scissors(
+    a: Option<[u32; 4]>,
+    b: Option<[u32; 4]>,
+) -> Option<[u32; 4]> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(rect), None) | (None, Some(rect)) => Some(rect),
+        (Some([ax, ay, aw, ah]), Some([bx, by, bw, bh])) => {
+            let left = ax.max(bx);
+            let top = ay.max(by);
+            let right = ax.saturating_add(aw).min(bx.saturating_add(bw));
+            let bottom = ay.saturating_add(ah).min(by.saturating_add(bh));
+            (right > left && bottom > top).then_some([left, top, right - left, bottom - top])
         }
-
-        assert!(pool.release_persistent_pair(color));
-        assert!(!pool.persistent_bindings.contains_key(&color));
-        assert!(!pool.persistent_bindings.contains_key(&depth));
-        assert!(pool.persistent_bindings.contains_key(&unrelated));
-        assert!(!pool.release_persistent_pair(color));
-    }
-
-    #[test]
-    fn logical_scissor_to_target_physical_preserves_fractional_scaled_coverage() {
-        let mut viewport = Viewport::new();
-        viewport.set_scale_factor(1.25);
-
-        let physical =
-            logical_scissor_to_target_physical(&viewport, [10, 20, 101, 51], (3, 7), (200, 200));
-
-        assert_eq!(physical, Some([9, 18, 127, 64]));
-    }
-
-    #[test]
-    fn persistent_binding_expires_after_unused_frame_budget() {
-        let mut pool = OffscreenRenderTargetPool::new();
-        pool.persistent_bindings.insert(
-            generic(7),
-            PersistentRenderTargetBinding {
-                entry_id: 11,
-                last_used_epoch: 0,
-            },
-        );
-
-        for _ in 0..OffscreenRenderTargetPool::EVICT_UNUSED_AFTER_FRAMES - 1 {
-            pool.begin_frame();
-        }
-        assert!(pool.persistent_bindings.contains_key(&generic(7)));
-
-        pool.begin_frame();
-        assert!(!pool.persistent_bindings.contains_key(&generic(7)));
-    }
-
-    #[test]
-    fn persistent_binding_last_use_refreshes_expiration_budget() {
-        let mut pool = OffscreenRenderTargetPool::new();
-        pool.persistent_bindings.insert(
-            generic(7),
-            PersistentRenderTargetBinding {
-                entry_id: 11,
-                last_used_epoch: 0,
-            },
-        );
-
-        for _ in 0..30 {
-            pool.begin_frame();
-        }
-        pool.persistent_bindings
-            .get_mut(&generic(7))
-            .expect("binding should still be alive")
-            .last_used_epoch = pool.frame_epoch;
-        let epoch_before_observation = pool.frame_epoch;
-        let last_used_before_observation = pool.persistent_bindings[&generic(7)].last_used_epoch;
-        let _ = pool.persistent_resident_observations();
-        assert_eq!(pool.frame_epoch, epoch_before_observation);
-        assert_eq!(
-            pool.persistent_bindings[&generic(7)].last_used_epoch,
-            last_used_before_observation,
-            "readonly resident observation must not refresh persistent lifetime"
-        );
-        for _ in 0..OffscreenRenderTargetPool::EVICT_UNUSED_AFTER_FRAMES - 1 {
-            pool.begin_frame();
-        }
-
-        assert!(pool.persistent_bindings.contains_key(&generic(7)));
     }
 }
+
+#[cfg(test)]
+mod tests;

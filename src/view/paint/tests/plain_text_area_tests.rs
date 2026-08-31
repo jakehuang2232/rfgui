@@ -176,7 +176,8 @@ fn focused_plain_text_area_records_contents_caret_after_children_and_matches_leg
                 ] if selection.mode == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
                     && caret.mode == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
                     && selection.effective_scissor_rect == caret.effective_scissor_rect
-                    && glyphs.pass_context.scissor_rect == caret.effective_scissor_rect
+                    && glyphs.pass_context.logical_scissor_rect()
+                        == caret.effective_scissor_rect
                     && glyphs.pass_context.stencil_clip_id == caret.pass_context.stencil_clip_id),
                 "selection, glyphs, children boundary, and caret must compile in phased order with one Contents clip/stencil authority: {payloads:?}"
             );

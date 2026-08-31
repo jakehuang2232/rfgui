@@ -52,7 +52,7 @@ use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::render_pass::draw_rect_pass::DrawRectInput;
 use crate::view::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
-use crate::view::render_pass::render_target::GraphicsPassContext;
+use crate::view::render_pass::render_target::{GraphicsPassContext, GraphicsPassScissor};
 use crate::view::render_pass::{
     DrawRectPass, GraphicsPass, OpaqueRectPass, RectRenderMode, ShadowMesh, ShadowModuleSpec,
     ShadowParams, build_shadow_module,
@@ -1894,7 +1894,7 @@ impl UiBuildContext {
 
     pub(crate) fn graphics_pass_context(&self) -> GraphicsPassContext {
         GraphicsPassContext {
-            scissor_rect: self.scissor_rect(),
+            scissor_rect: self.scissor_rect().map(GraphicsPassScissor::Logical),
             stencil_clip_id: self.active_clip_id(),
             uses_depth_stencil: self.depth_stencil_target().is_some(),
         }

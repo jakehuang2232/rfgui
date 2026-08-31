@@ -4,8 +4,9 @@ use crate::view::frame_graph::{
     GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, logical_scissor_to_target_physical,
-    render_target_origin, render_target_sample_count, resolve_texture_ref,
+    GraphicsPassContext as RenderPassContext, GraphicsPassScissor, render_target_origin,
+    render_target_sample_count, resolve_graphics_pass_scissor_to_target_physical,
+    resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use rustc_hash::FxHashSet;
@@ -231,7 +232,7 @@ impl RectPassTestSnapshot {
             mode: pass.render_mode,
             explicit_scissor_rect: pass.scissor_rect,
             effective_scissor_rect: intersect_scissor_rects(
-                pass.input.pass_context.scissor_rect,
+                pass.input.pass_context.logical_scissor_rect(),
                 pass.scissor_rect,
             ),
             stencil_mode: pass.stencil_mode.into(),
@@ -443,10 +444,8 @@ impl DrawRectPass {
             border_radii: self.params.border_radii,
             opacity: self.params.opacity,
             depth: self.params.depth,
-            scissor_rect: intersect_scissor_rects(
-                self.input.pass_context.scissor_rect,
-                self.scissor_rect,
-            ),
+            pass_scissor: self.input.pass_context.scissor_rect,
+            explicit_scissor_rect: self.scissor_rect,
             stencil_mode: self.stencil_mode,
             color_write_enabled: self.color_write_enabled,
             color_target: self.output.render_target.handle(),
@@ -687,6 +686,7 @@ impl OpaqueRectPass {
     }
 }
 
+#[cfg(test)]
 fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
     match (a, b) {
         (None, None) => None,
@@ -745,7 +745,8 @@ pub struct DrawRectDraw {
     border_radii: [[f32; 2]; 4],
     opacity: f32,
     depth: f32,
-    scissor_rect: Option<[u32; 4]>,
+    pass_scissor: Option<GraphicsPassScissor>,
+    explicit_scissor_rect: Option<[u32; 4]>,
     stencil_mode: RectStencilMode,
     color_write_enabled: bool,
     color_target: Option<TextureHandle>,
@@ -1172,14 +1173,13 @@ fn encode_draw_rect_into_existing_pass(
             ],
         })
     };
-    let scissor_rect_physical = draw.scissor_rect.and_then(|scissor_rect| {
-        logical_scissor_to_target_physical(
-            ctx.viewport(),
-            scissor_rect,
-            target_origin,
-            (target_w, target_h),
-        )
-    });
+    let scissor_rect_physical = resolve_graphics_pass_scissor_to_target_physical(
+        ctx.viewport(),
+        draw.pass_scissor,
+        draw.explicit_scissor_rect,
+        target_origin,
+        (target_w, target_h),
+    );
     ctx.set_pipeline(&pipeline);
     ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
     ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);

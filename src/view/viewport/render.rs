@@ -1769,7 +1769,7 @@ fn artifact_surface_raster_context(
         viewport.scale_factor(),
         viewport.target_format(),
         ctx.paint_offset(),
-        ctx.graphics_pass_context().scissor_rect,
+        ctx.graphics_pass_context().logical_scissor_rect(),
         max_texture_dimension_2d,
         max_texture_bytes,
     )
@@ -2053,7 +2053,7 @@ fn select_retained_auto_authority_with_semantics(
             paint_generations,
             viewport.scale_factor(),
             ctx.paint_offset(),
-            ctx.graphics_pass_context().scissor_rect,
+            ctx.graphics_pass_context().logical_scissor_rect(),
             viewport.target_format(),
         ) {
             Ok(scene) => return AutoAuthorityDecision::FrameRootScrollScene { scene, trace },
@@ -2068,7 +2068,7 @@ fn select_retained_auto_authority_with_semantics(
             paint_generations,
             viewport.scale_factor(),
             ctx.paint_offset(),
-            ctx.graphics_pass_context().scissor_rect,
+            ctx.graphics_pass_context().logical_scissor_rect(),
             semantic_frame_time,
             viewport.target_format(),
             scroll_budget,
@@ -2085,7 +2085,7 @@ fn select_retained_auto_authority_with_semantics(
             paint_generations,
             viewport.scale_factor(),
             ctx.paint_offset(),
-            ctx.graphics_pass_context().scissor_rect,
+            ctx.graphics_pass_context().logical_scissor_rect(),
             semantic_frame_time,
             viewport.target_format(),
             scroll_budget,
@@ -2102,7 +2102,7 @@ fn select_retained_auto_authority_with_semantics(
             paint_generations,
             viewport.scale_factor(),
             ctx.paint_offset(),
-            ctx.graphics_pass_context().scissor_rect,
+            ctx.graphics_pass_context().logical_scissor_rect(),
             semantic_frame_time,
             viewport.target_format(),
             scroll_budget,
@@ -2119,7 +2119,7 @@ fn select_retained_auto_authority_with_semantics(
             paint_generations,
             viewport.scale_factor(),
             ctx.paint_offset(),
-            ctx.graphics_pass_context().scissor_rect,
+            ctx.graphics_pass_context().logical_scissor_rect(),
             semantic_frame_time,
             viewport.target_format(),
             scroll_budget,
@@ -2134,7 +2134,7 @@ fn select_retained_auto_authority_with_semantics(
         if forest_topology {
             let plan_context = crate::view::paint::TransformSurfacePlanContext::new(
                 ctx.paint_offset(),
-                ctx.graphics_pass_context().scissor_rect,
+                ctx.graphics_pass_context().logical_scissor_rect(),
             );
             match crate::view::paint::plan_native_scroll_forest_scaffold_with_context(
                 arena,
@@ -2160,7 +2160,7 @@ fn select_retained_auto_authority_with_semantics(
                 paint_generations,
                 viewport.scale_factor(),
                 ctx.paint_offset(),
-                ctx.graphics_pass_context().scissor_rect,
+                ctx.graphics_pass_context().logical_scissor_rect(),
                 semantic_frame_time,
                 viewport.target_format(),
                 scroll_budget,
@@ -2192,7 +2192,7 @@ fn select_retained_auto_authority_with_semantics(
             paint_generations,
             viewport.scale_factor(),
             ctx.paint_offset(),
-            ctx.graphics_pass_context().scissor_rect,
+            ctx.graphics_pass_context().logical_scissor_rect(),
             viewport.target_format(),
             scroll_budget,
         ) {
@@ -2247,7 +2247,7 @@ fn select_retained_auto_authority_with_semantics(
         }
         let plan_context = crate::view::paint::TransformSurfacePlanContext::new(
             ctx.paint_offset(),
-            ctx.graphics_pass_context().scissor_rect,
+            ctx.graphics_pass_context().logical_scissor_rect(),
         );
         return match crate::view::paint::plan_property_effect_scene_with_context(
             arena,
@@ -2284,7 +2284,7 @@ fn select_retained_auto_authority_with_semantics(
         }
         let plan_context = crate::view::paint::TransformSurfacePlanContext::new(
             ctx.paint_offset(),
-            ctx.graphics_pass_context().scissor_rect,
+            ctx.graphics_pass_context().logical_scissor_rect(),
         );
         return match crate::view::paint::plan_transform_property_scene_with_context(
             arena,
@@ -2435,7 +2435,7 @@ fn select_retained_transform_canary_with_trace_capture(
         ViewportPaintRendererMode::RetainedTransformCanary => {
             let plan_context = crate::view::paint::TransformSurfacePlanContext::new(
                 ctx.paint_offset(),
-                ctx.graphics_pass_context().scissor_rect,
+                ctx.graphics_pass_context().logical_scissor_rect(),
             );
             match crate::view::paint::plan_single_root_transform_surface_with_context(
                 arena,
@@ -2458,7 +2458,7 @@ fn select_retained_transform_canary_with_trace_capture(
         ViewportPaintRendererMode::RetainedSurfaceTreeCanary => {
             let plan_context = crate::view::paint::TransformSurfacePlanContext::new(
                 ctx.paint_offset(),
-                ctx.graphics_pass_context().scissor_rect,
+                ctx.graphics_pass_context().logical_scissor_rect(),
             );
             match crate::view::paint::plan_single_root_transform_surface_with_context(
                 arena,
@@ -2481,7 +2481,7 @@ fn select_retained_transform_canary_with_trace_capture(
                 viewport.target_width(),
                 viewport.target_height(),
                 viewport.scale_factor(),
-                ctx.graphics_pass_context().scissor_rect,
+                ctx.graphics_pass_context().logical_scissor_rect(),
             ) {
                 Ok(plan) => RetainedTransformCanarySelection::IsolationPlanned(plan),
                 Err(error) => RetainedTransformCanarySelection::IsolationPlanRejected(error),
@@ -2498,7 +2498,7 @@ fn select_retained_transform_canary_with_trace_capture(
         ViewportPaintRendererMode::RetainedEffectTreeCanary => {
             let plan_context = crate::view::paint::TransformSurfacePlanContext::new(
                 ctx.paint_offset(),
-                ctx.graphics_pass_context().scissor_rect,
+                ctx.graphics_pass_context().logical_scissor_rect(),
             );
             match crate::view::paint::plan_single_root_transform_child_isolation_surface_with_context(
                 arena,
@@ -2527,7 +2527,7 @@ fn select_retained_transform_canary_with_trace_capture(
                 paint_generations,
                 viewport.scale_factor(),
                 ctx.paint_offset(),
-                ctx.graphics_pass_context().scissor_rect,
+                ctx.graphics_pass_context().logical_scissor_rect(),
             ) {
                 Ok(plan) => RetainedTransformCanarySelection::ScrollHostPlanned(plan),
                 Err(error) => RetainedTransformCanarySelection::ScrollHostPlanRejected(error),

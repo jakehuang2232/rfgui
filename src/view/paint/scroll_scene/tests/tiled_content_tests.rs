@@ -427,7 +427,12 @@ fn tiled_executor_rerasterizes_row_major_global_zero_space_tiles_and_composites_
     assert_eq!(
         clears
             .iter()
-            .map(|pass| pass.test_snapshot().pass_context.scissor_rect.unwrap())
+            .map(|pass| {
+                pass.test_snapshot()
+                    .pass_context
+                    .logical_scissor_rect()
+                    .unwrap()
+            })
             .collect::<Vec<_>>(),
         raster_bounds
     );
@@ -437,7 +442,12 @@ fn tiled_executor_rerasterizes_row_major_global_zero_space_tiles_and_composites_
     assert_eq!(
         draws
             .iter()
-            .map(|pass| pass.test_snapshot().pass_context.scissor_rect.unwrap())
+            .map(|pass| {
+                pass.test_snapshot()
+                    .pass_context
+                    .logical_scissor_rect()
+                    .unwrap()
+            })
             .collect::<Vec<_>>(),
         raster_bounds
     );

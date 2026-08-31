@@ -79,7 +79,7 @@ fn transformed_layer_subtree_starts_without_ancestor_scissor_rect() {
     let previous = ctx.push_scissor_rect(Some([10, 10, 40, 40]));
     assert_eq!(previous, None);
     assert_eq!(
-        ctx.graphics_pass_context().scissor_rect,
+        ctx.graphics_pass_context().logical_scissor_rect(),
         Some([10, 10, 40, 40])
     );
 
@@ -88,7 +88,7 @@ fn transformed_layer_subtree_starts_without_ancestor_scissor_rect() {
     let layer_ctx = UiBuildContext::from_parts(ctx.viewport(), layer_state);
 
     assert_eq!(
-        layer_ctx.graphics_pass_context().scissor_rect,
+        layer_ctx.graphics_pass_context().logical_scissor_rect(),
         None,
         "transformed offscreen subtree should rasterize from viewport clip, not ancestor scissor"
     );

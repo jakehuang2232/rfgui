@@ -234,7 +234,7 @@ fn production_fixture_context() -> TransformSurfacePlanContext {
     let ui_context = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let context = TransformSurfacePlanContext::new(
         ui_context.paint_offset(),
-        ui_context.graphics_pass_context().scissor_rect,
+        ui_context.graphics_pass_context().logical_scissor_rect(),
     );
     assert_eq!(context, TransformSurfacePlanContext::default());
     context
