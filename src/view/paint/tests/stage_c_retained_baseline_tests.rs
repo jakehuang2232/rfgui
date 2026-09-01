@@ -60,6 +60,7 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
     let actual = [
         include_str!("gpu_equivalence_tests/native_transform_surface_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_scroll_content_tests.rs"),
         include_str!("gpu_equivalence_tests/native_scroll_boundary_tests.rs"),
         include_str!("gpu_equivalence_tests/native_nested_scroll_tests.rs"),
         include_str!("gpu_equivalence_tests/native_nested_scroll_segment_tests.rs"),
@@ -81,7 +82,7 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         "native_production_transform_and_effect_scroll_match_legacy_and_reuse_two_real_pairs",
         "native_production_transform_effect_scroll_matches_legacy_and_reuses_three_real_pairs",
         "native_production_nested_scroll_image_svg_text_frozen_payloads_match_legacy_and_reuse_real_r1",
-        "native_production_nested_scroll_matches_legacy_and_reuses_real_r1",
+        "native_production_nested_scroll_matches_legacy_within_one_lsb_and_reuses_real_r1",
         "native_direct_nested_scroll_segment_image_svg_dpr1_dpr2_one_lsb_gate",
         "native_direct_nested_scroll_segment_rect_matches_legacy_within_one_lsb_at_dpr1_dpr2",
         "native_direct_nested_scroll_segment_rgba8_physical_integer_logical_fractional_text_dpr2_exact_gate",
@@ -96,6 +97,8 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         "native_scroll_scene_tiled_cross_tile_pixels_match_and_reuse",
         "native_production_artifact_transform_matches_legacy_and_reuses_real_pool",
         "native_production_artifact_effect_matches_legacy_and_reuses_real_pool",
+        "native_production_artifact_nested_scroll_multi_leaf_matches_legacy_within_one_lsb_and_reuses_real_pool",
+        "native_production_artifact_nested_scroll_inline_ifc_text_matches_legacy_within_one_lsb_and_reuses_real_pool",
     ]);
     assert_eq!(actual, expected);
 }

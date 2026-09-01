@@ -401,7 +401,7 @@ fn validate_nested_segment_non_clear_pixels(pixels: &[u8], path: &str) -> Result
         .ok_or_else(|| format!("{path} nested-segment frame contains no non-clear pixels"))
 }
 
-fn compare_nested_segment_pixels_within_one_lsb(
+pub(super) fn compare_nested_segment_pixels_within_one_lsb(
     legacy: &[u8],
     direct: &[u8],
     adapter: &str,

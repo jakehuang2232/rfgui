@@ -129,9 +129,14 @@ fn native_production_nested_scroll_image_svg_text_frozen_payloads_match_legacy_a
 
 #[test]
 #[ignore = "requires native GPU adapter"]
+// This gate was exact while production used the legacy retained path. The
+// Artifact authority adds one RGBA8 intermediate surface, so partial-coverage
+// edges undergo one additional explained quantization step. Opaque and fully
+// transparent pixels remain bit-exact, and cold/warm reuse remains exact.
 // Run explicitly with:
-// cargo test -q native_production_nested_scroll_matches_legacy_and_reuses_real_r1 -- --ignored --nocapture
-fn native_production_nested_scroll_matches_legacy_and_reuses_real_r1() -> Result<(), String> {
+// cargo test -q native_production_nested_scroll_matches_legacy_within_one_lsb_and_reuses_real_r1 -- --ignored --nocapture
+fn native_production_nested_scroll_matches_legacy_within_one_lsb_and_reuses_real_r1()
+-> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU initialized");
     let adapter = gpu.label();
@@ -180,10 +185,15 @@ fn native_production_nested_scroll_matches_legacy_and_reuses_real_r1() -> Result
         legacy_nested_scroll_graph(outer_offset_y, inner_offset_y, outer_scissor)?,
         gpu,
     )?;
-    compare_pixels(
+    super::native_nested_scroll_segment_tests::compare_nested_segment_pixels_within_one_lsb(
         &legacy_pixels,
         &cold_pixels,
-        [0, 0, WIDTH, HEIGHT],
+        &adapter,
+        "production-nested-scroll/frame-1-r1",
+    )?;
+    super::native_artifact_scroll_content_tests::validate_artifact_roundtrip_differences_are_partial_coverage_only(
+        &legacy_pixels,
+        &cold_pixels,
         &adapter,
         "production-nested-scroll/frame-1-r1",
     )?;
@@ -225,6 +235,8 @@ fn native_production_nested_scroll_matches_legacy_and_reuses_real_r1() -> Result
         &adapter,
         "production-nested-scroll/frame-2-real-pool-u",
     )?;
-    eprintln!("production nested-scroll real-pool parity passed on {adapter}");
+    eprintln!(
+        "production nested-scroll real-pool <=1 LSB partial-coverage parity passed on {adapter}"
+    );
     Ok(())
 }

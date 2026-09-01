@@ -55,6 +55,11 @@ fn property_boundary_dag_success_telemetry_grammar(
     (phase, topology, residency)
 }
 
+/// Shared scroll-topology boundary for two opposite production decisions.
+/// `true` admits the native forest scaffold once enough scroll nodes exist;
+/// `false` admits the linear ScrollContent-only Artifact attempt. Changing
+/// this predicate therefore changes Artifact production admission too and
+/// requires rerunning the named Artifact ScrollContent Metal gates.
 fn native_scroll_forest_topology_is_branching_or_multi_root(
     roots: &[crate::view::node_arena::NodeKey],
     property_trees: &crate::view::compositor::PropertyTrees,
@@ -1413,6 +1418,10 @@ enum RecordedArtifactSurfacePrepareError {
         surface: crate::view::paint::SurfaceDagNodeId,
         role: crate::view::paint::RetainedSurfaceRasterRole,
     },
+    UnsupportedScrollContentSurfaceRole {
+        surface: crate::view::paint::SurfaceDagNodeId,
+        role: crate::view::paint::RetainedSurfaceRasterRole,
+    },
 }
 
 enum RecordedArtifactCandidateRejection {
@@ -1811,6 +1820,7 @@ fn require_detached_artifact_surface_plan(
 enum RecordedArtifactSurfaceRequirement {
     ZeroResident,
     Detached,
+    ScrollContentOnly,
 }
 
 fn prepare_recorded_artifact_candidate(
@@ -1837,6 +1847,9 @@ fn prepare_recorded_artifact_candidate(
                         }
                         RecordedArtifactSurfaceRequirement::Detached => {
                             require_detached_artifact_surface_plan(plan)
+                        }
+                        RecordedArtifactSurfaceRequirement::ScrollContentOnly => {
+                            require_scroll_content_artifact_surface_plan(plan)
                         }
                     }
                     .map_err(RecordedArtifactCandidateRejection::Prepare)?;
@@ -1871,6 +1884,33 @@ fn require_zero_resident_artifact_surface_plan(
         return Err(
             RecordedArtifactSurfacePrepareError::DetachedSurfacesUnsupported {
                 candidates: plan.nodes().len(),
+            },
+        );
+    }
+    Ok(plan)
+}
+
+fn require_scroll_content_artifact_surface_plan(
+    plan: crate::view::paint::PreparedArtifactSurfaceRasterPlan,
+) -> Result<
+    crate::view::paint::PreparedArtifactSurfaceRasterPlan,
+    RecordedArtifactSurfacePrepareError,
+> {
+    // All three plan-side rejections are unreachable for current
+    // ScrollContent-only production inputs. An authored scroll container with
+    // no scroll snapshot is rejected earlier by the recorder as
+    // LegacyBoundary(ScrollContainer), so no empty raster plan is created. A
+    // valid recording derives at least one ScrollContent surface. The detached
+    // role gate therefore protects future Surface DAG roles, while the role
+    // check below protects agreement between source admission and derivation.
+    let plan = require_detached_artifact_surface_plan(plan)?;
+    if let Some(node) = plan.nodes().iter().find(|node| {
+        node.identity().role != crate::view::paint::RetainedSurfaceRasterRole::ScrollContent
+    }) {
+        return Err(
+            RecordedArtifactSurfacePrepareError::UnsupportedScrollContentSurfaceRole {
+                surface: node.source(),
+                role: node.identity().role,
             },
         );
     }
@@ -1922,6 +1962,7 @@ fn record_auto_detached_surface_candidate(
     property_trees: &crate::view::compositor::PropertyTrees,
     paint_generations: &crate::view::compositor::PaintGenerationTracker,
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
+    requirement: RecordedArtifactSurfaceRequirement,
 ) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
     let outcome = crate::view::paint::record_surface_dag_frame_artifact(
         arena,
@@ -1931,11 +1972,7 @@ fn record_auto_detached_surface_candidate(
         crate::view::paint::RendererMode::Auto,
     )
     .expect("automatic production selection never forces artifact recording");
-    prepare_recorded_artifact_candidate(
-        outcome,
-        raster_context,
-        RecordedArtifactSurfaceRequirement::Detached,
-    )
+    prepare_recorded_artifact_candidate(outcome, raster_context, requirement)
 }
 
 /// Pure selector attempt. This function has no graph, pool, or mutable
@@ -1948,6 +1985,7 @@ fn try_select_auto_detached_surface_candidate(
     property_trees: &crate::view::compositor::PropertyTrees,
     paint_generations: &crate::view::compositor::PaintGenerationTracker,
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
+    requirement: RecordedArtifactSurfaceRequirement,
     trace: &mut AutoAuthorityTrace,
 ) -> Option<RecordedArtifactCandidate> {
     match record_auto_detached_surface_candidate(
@@ -1956,6 +1994,7 @@ fn try_select_auto_detached_surface_candidate(
         property_trees,
         paint_generations,
         raster_context,
+        requirement,
     ) {
         Ok(candidate) => Some(candidate),
         Err(RecordedArtifactCandidateRejection::Eligibility(eligibility)) => {
@@ -2011,12 +2050,36 @@ fn is_exact_native_root_opacity_artifact(
         })
 }
 
-fn reachable_tree_has_scroll_container(
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RetainedAutoReachableTreeFacts {
+    has_scroll_container: bool,
+    has_text_area_paint_family: bool,
+}
+
+fn retained_auto_paint_kind_is_text_area_family(
+    kind: crate::view::base_component::RetainedScrollNormalizedPaintKind,
+) -> bool {
+    use crate::view::base_component::RetainedScrollNormalizedPaintKind;
+
+    match kind {
+        RetainedScrollNormalizedPaintKind::Element
+        | RetainedScrollNormalizedPaintKind::Text
+        | RetainedScrollNormalizedPaintKind::Image
+        | RetainedScrollNormalizedPaintKind::Svg => false,
+        RetainedScrollNormalizedPaintKind::TextArea
+        | RetainedScrollNormalizedPaintKind::TextAreaProjectionSegment
+        | RetainedScrollNormalizedPaintKind::TextAreaTextRun
+        | RetainedScrollNormalizedPaintKind::TextAreaLineBreak => true,
+    }
+}
+
+fn retained_auto_reachable_tree_facts(
     arena: &crate::view::node_arena::NodeArena,
     roots: &[crate::view::node_arena::NodeKey],
-) -> bool {
+) -> RetainedAutoReachableTreeFacts {
     let mut pending = roots.to_vec();
     let mut seen = FxHashSet::default();
+    let mut facts = RetainedAutoReachableTreeFacts::default();
     while let Some(key) = pending.pop() {
         if !seen.insert(key) {
             continue;
@@ -2025,11 +2088,20 @@ fn reachable_tree_has_scroll_container(
             continue;
         };
         if node.element.retained_paint_properties().is_scroll_container {
-            return true;
+            facts.has_scroll_container = true;
+        }
+        if node
+            .element
+            .retained_scroll_normalized_paint_capability()
+            .is_some_and(|capability| {
+                retained_auto_paint_kind_is_text_area_family(capability.kind())
+            })
+        {
+            facts.has_text_area_paint_family = true;
         }
         pending.extend(node.children().iter().copied());
     }
-    false
+    facts
 }
 
 fn select_retained_auto_authority_with_semantics(
@@ -2048,9 +2120,36 @@ fn select_retained_auto_authority_with_semantics(
     let effects = property_trees.effects.len();
     let scrolls = property_trees.scrolls.len();
     let mut trace = AutoAuthorityTrace::new(capture_trace);
+    let reachable_tree_facts = retained_auto_reachable_tree_facts(arena, roots);
 
-    if scrolls != 0 || reachable_tree_has_scroll_container(arena, roots) {
+    if scrolls != 0 || reachable_tree_facts.has_scroll_container {
         let viewport = ctx.viewport();
+        // TextArea projection, caret, and selection authority remains on the
+        // existing retained path until a named TextArea authority-transfer
+        // batch runs and passes its Metal pixel and reuse gates. That batch may
+        // delete this exclusion only when every named gate actually executes
+        // and passes; merely adding ignored gates is not sufficient.
+        let scroll_content_artifact_admitted = transforms == 0
+            && effects == 0
+            && !reachable_tree_facts.has_text_area_paint_family
+            && !native_scroll_forest_topology_is_branching_or_multi_root(roots, property_trees);
+        if scroll_content_artifact_admitted
+            && let Some(candidate) = try_select_auto_detached_surface_candidate(
+                arena,
+                roots,
+                property_trees,
+                paint_generations,
+                artifact_surface_raster_context(
+                    ctx,
+                    artifact_surface_max_texture_dimension_2d,
+                    artifact_surface_max_texture_bytes,
+                ),
+                RecordedArtifactSurfaceRequirement::ScrollContentOnly,
+                &mut trace,
+            )
+        {
+            return AutoAuthorityDecision::Artifact { candidate, trace };
+        }
         match crate::view::paint::plan_and_validate_frame_root_scroll_scene(
             arena,
             roots,
@@ -2246,6 +2345,7 @@ fn select_retained_auto_authority_with_semantics(
                 artifact_surface_max_texture_dimension_2d,
                 artifact_surface_max_texture_bytes,
             ),
+            RecordedArtifactSurfaceRequirement::Detached,
             &mut trace,
         ) {
             return AutoAuthorityDecision::Artifact { candidate, trace };
@@ -2283,6 +2383,7 @@ fn select_retained_auto_authority_with_semantics(
                 artifact_surface_max_texture_dimension_2d,
                 artifact_surface_max_texture_bytes,
             ),
+            RecordedArtifactSurfaceRequirement::Detached,
             &mut trace,
         ) {
             return AutoAuthorityDecision::Artifact { candidate, trace };

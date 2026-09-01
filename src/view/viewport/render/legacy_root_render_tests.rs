@@ -2429,6 +2429,7 @@ mod property_boundary_forest_linear_tests;
 mod property_boundary_forest_multi_root_tests;
 mod property_boundary_forest_plain_root_tests;
 mod property_boundary_forest_tests;
+mod reachable_tree_facts_tests;
 mod same_owner_transform_effect_scroll_tests;
 mod scroll_forest_tests;
 mod scroll_production_dispatch_tests;

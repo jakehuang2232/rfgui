@@ -4881,7 +4881,9 @@ pub(crate) enum ArtifactSurfaceCompositeGeometryStamp {
         offset_bits: [u32; 2],
         generation: u64,
         receiver_clip: Option<ClipNodeId>,
-        /// Sealed receiver result; the executor must not re-resolve the id.
+        /// Sealed final scrollport result. `receiver_clip` remains the
+        /// post-transition closure parent, so the executor must not attempt to
+        /// re-resolve that parent as the consumed contents boundary.
         resolved_receiver_clip: ArtifactSurfaceResolvedClip,
     },
 }
@@ -4924,6 +4926,7 @@ impl ArtifactSurfaceCompositeGeometryStamp {
     fn project_into_surface_receiver(
         &mut self,
         projection: ArtifactSurfaceRasterOriginProjection,
+        receiver_destination_bounds_bits: [u32; 4],
     ) -> Option<()> {
         let (destination_bounds_bits, resolved_receiver_clip) = match self {
             Self::Transform {
@@ -4942,7 +4945,8 @@ impl ArtifactSurfaceCompositeGeometryStamp {
                 ..
             } => (destination_bounds_bits, resolved_receiver_clip),
         };
-        *destination_bounds_bits = projection.project_bounds_bits(*destination_bounds_bits)?;
+        *destination_bounds_bits =
+            projection.project_bounds_bits(receiver_destination_bounds_bits)?;
         *resolved_receiver_clip =
             resolved_receiver_clip.project_for_surface_receiver(projection)?;
         Some(())
@@ -5030,11 +5034,12 @@ impl ArtifactSurfaceCompositeGeometryState {
     fn finalize_surface_receiver(
         &mut self,
         projection: ArtifactSurfaceRasterOriginProjection,
+        receiver_destination_bounds_bits: [u32; 4],
     ) -> Option<()> {
         let Self::Pending(mut geometry) = *self else {
             return None;
         };
-        geometry.project_into_surface_receiver(projection)?;
+        geometry.project_into_surface_receiver(projection, receiver_destination_bounds_bits)?;
         *self = Self::Finalized(geometry);
         Some(())
     }
@@ -5252,12 +5257,15 @@ fn translated_chunk_bounds_bits(
     bounds: crate::view::base_component::Rect,
     delta: [f32; 2],
 ) -> Option<[u32; 4]> {
-    let translated = [
-        bounds.x + delta[0],
-        bounds.y + delta[1],
-        bounds.width,
-        bounds.height,
-    ];
+    translated_bounds_bits(
+        [bounds.x, bounds.y, bounds.width, bounds.height].map(f32::to_bits),
+        delta,
+    )
+}
+
+fn translated_bounds_bits(bounds_bits: [u32; 4], delta: [f32; 2]) -> Option<[u32; 4]> {
+    let [x, y, width, height] = bounds_bits.map(f32::from_bits);
+    let translated = [x + delta[0], y + delta[1], width, height];
     (translated.into_iter().all(f32::is_finite)
         && translated[2] >= 0.0
         && translated[3] >= 0.0
@@ -5347,6 +5355,29 @@ impl ArtifactSurfaceRasterOriginProjection {
 
     fn physical_origin_f32(self) -> [f32; 2] {
         self.physical_origin.map(|value| value as f32)
+    }
+
+    fn composite_source_physical_origin(
+        self,
+        source_bounds_bits: [u32; 4],
+        destination_bounds_bits: [u32; 4],
+    ) -> Option<[f32; 2]> {
+        if source_bounds_bits != self.normalized_source_bounds_bits {
+            return None;
+        }
+        let source = source_bounds_bits.map(f32::from_bits);
+        let destination = destination_bounds_bits.map(f32::from_bits);
+        let scale = f32::from_bits(self.scale_factor_bits);
+        let origin = [
+            (destination[0] - source[0]) * scale,
+            (destination[1] - source[1]) * scale,
+        ];
+        (scale.is_finite()
+            && scale > 0.0
+            && source.into_iter().all(f32::is_finite)
+            && destination.into_iter().all(f32::is_finite)
+            && origin.into_iter().all(f32::is_finite))
+        .then_some(origin)
     }
 
     fn combined_translation(self, base: [f32; 2]) -> Option<[f32; 2]> {
@@ -5945,8 +5976,16 @@ fn surface_composite_geometry(
     let receiver_clip = closure
         .map(SurfaceDagClipClosureProjection::receiver_clip)
         .unwrap_or(node.transition().clip.to);
+    let composite_clip = match node.kind() {
+        // ScrollContent consumes its contents clip while detaching the raster,
+        // so the closure identity remains the post-transition parent while
+        // the final composite still clips the complete surface to the consumed
+        // scrollport boundary.
+        SurfaceDagNodeKind::ScrollContent { contents_clip, .. } => Some(contents_clip),
+        SurfaceDagNodeKind::Transform(_) | SurfaceDagNodeKind::Effect(_) => receiver_clip,
+    };
     let (resolved_receiver_clip, receiver_clip_chain) =
-        resolve_artifact_surface_clip(receiver_clip, clips).ok_or(
+        resolve_artifact_surface_clip(composite_clip, clips).ok_or(
             ArtifactSurfaceRasterPlanError::InvalidReceiverClip(node.id()),
         )?;
     let resolved_receiver_clip = if matches!(receiver, SurfaceDagExecutionTargetId::SceneRoot(_)) {
@@ -6146,9 +6185,19 @@ fn prepare_artifact_surface_raster_plan_from_program(
                             child: *child_source,
                         },
                     )?;
-                    append_bounds(&mut raw_bounds, child_geometry.destination_bounds_bits())
+                    // Direct spans already carry this surface's base translation.
+                    // Seal the child's destination in that same parent space once,
+                    // then reuse the exact value for both the raw-bounds union and
+                    // final receiver projection. The child's receiver clip remains
+                    // a fixed receiver boundary and must not inherit this delta.
+                    let receiver_destination_bounds_bits = translated_bounds_bits(
+                        child_geometry.destination_bounds_bits(),
+                        base_delta,
+                    )
+                    .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(source))?;
+                    append_bounds(&mut raw_bounds, receiver_destination_bounds_bits)
                         .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(source))?;
-                    nested_children.push(child_execution);
+                    nested_children.push((child_execution, receiver_destination_bounds_bits));
                 }
             }
         }
@@ -6194,7 +6243,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 }
             }
         }
-        for child_execution in nested_children {
+        for (child_execution, receiver_destination_bounds_bits) in nested_children {
             let child = prepared_nodes
                 .get_mut(child_execution.index())
                 .and_then(Option::as_mut)
@@ -6204,7 +6253,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 })?;
             child
                 .geometry
-                .finalize_surface_receiver(raster_origin)
+                .finalize_surface_receiver(raster_origin, receiver_destination_bounds_bits)
                 .ok_or(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(
                     child.source,
                 ))?;

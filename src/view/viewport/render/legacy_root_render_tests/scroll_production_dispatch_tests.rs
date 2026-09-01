@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn retained_auto_scroll_content_budget_overflow_is_a_typed_preparation_rejection() {
+    let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let (arena, roots, properties, generations) = prepared_exact_scroll_scene();
+    let decision = super::super::select_retained_auto_authority_with_artifact_budget_for_test(
+        &arena,
+        &roots,
+        &properties,
+        &generations,
+        &ctx,
+        1,
+        true,
+    );
+    let AutoAuthorityDecision::PropertyScrollScene { trace, .. } = decision else {
+        panic!("a rejected Artifact budget must fall back before dispatch")
+    };
+
+    assert!(trace.rejections.iter().any(|rejection| matches!(
+        rejection,
+        AutoAuthorityRejection::ArtifactPrepare {
+            error: RecordedArtifactSurfacePrepareError::RasterPlan(
+                crate::view::paint::ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_),
+            ),
+        }
+    )));
+}
+
+#[test]
 fn retained_auto_direct_scroll_transform_production_preflight_and_rejection_dispatch() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, _, _) = prepared_exact_scroll_scene();

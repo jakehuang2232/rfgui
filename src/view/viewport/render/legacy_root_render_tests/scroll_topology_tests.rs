@@ -200,10 +200,10 @@ fn retained_auto_exact_multi_scroll_selects_one_atomic_scene() {
 fn retained_auto_occupied_pending_falls_back_without_finishing_foreign_owner() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, properties, generations) = prepared_exact_scroll_scene();
-    let AutoAuthorityDecision::PropertyScrollScene { scene, .. } =
+    let AutoAuthorityDecision::Artifact { .. } =
         select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true)
     else {
-        panic!("exact B0 scroll must select PropertyScene before prepare")
+        panic!("exact scroll must select Artifact before dispatch")
     };
 
     let mut viewport = Viewport::new();
@@ -220,8 +220,6 @@ fn retained_auto_occupied_pending_falls_back_without_finishing_foreign_owner() {
 
     let mut graph = FrameGraph::new();
     let graph_before = graph.build_state_snapshot_for_test();
-    assert!(scene.is_canonical());
-    assert!(!viewport.retained_property_scroll_scene_stage_is_available());
     assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
 
     let mut legacy_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -358,26 +356,14 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
         &ctx,
         false,
     );
-    assert!(matches!(&captured, AutoAuthorityDecision::Legacy { .. }));
-    assert!(matches!(&uncaptured, AutoAuthorityDecision::Legacy { .. }));
+    assert!(matches!(&captured, AutoAuthorityDecision::Artifact { .. }));
+    assert!(matches!(&uncaptured, AutoAuthorityDecision::Artifact { .. }));
     assert_eq!(
         auto_authority_kind(&captured),
         auto_authority_kind(&uncaptured),
-        "trace capture must not change malformed nested-scroll authority"
+        "trace capture must not change multi-leaf nested-scroll authority"
     );
-    assert!(matches!(
-        auto_authority_trace(&captured).rejections.as_slice(),
-        [
-            AutoAuthorityRejection::FrameRootScrollPlan { .. },
-            AutoAuthorityRejection::PropertyScrollPlan { .. },
-            AutoAuthorityRejection::TransformScrollPlan { .. },
-            AutoAuthorityRejection::EffectScrollPlan { .. },
-            AutoAuthorityRejection::TransformEffectScrollPlan { .. },
-            AutoAuthorityRejection::PropertyBoundaryDagPlan { .. },
-            AutoAuthorityRejection::NativeScrollForestPlan { .. },
-            AutoAuthorityRejection::DirectScrollTransformPlan { .. }
-        ]
-    ));
+    assert!(auto_authority_trace(&captured).rejections.is_empty());
     assert!(auto_authority_trace(&uncaptured).rejections.is_empty());
 
     for matrix in [
@@ -752,10 +738,9 @@ fn retained_auto_does_not_treat_plain_overflow_as_an_authored_scroll_boundary() 
     let (measure, place) = constraints();
     measure_and_place(&mut arena, root, measure, place);
     assert!(arena.get(child).is_some());
-    assert!(!super::super::reachable_tree_has_scroll_container(
-        &arena,
-        &[root]
-    ));
+    assert!(
+        !super::super::retained_auto_reachable_tree_facts(&arena, &[root]).has_scroll_container
+    );
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let decision = auto_decision(&arena, &[root], &ctx);
     assert!(!matches!(

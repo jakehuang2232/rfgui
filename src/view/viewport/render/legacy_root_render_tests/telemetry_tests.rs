@@ -127,7 +127,7 @@ fn retained_auto_telemetry_labels_every_selected_authority_without_named_aliases
         telemetry_for_auto_decision(decision)
             .snapshot()
             .authority_label,
-        "retained-auto:property-scene"
+        "retained-auto:artifact"
     );
 }
 
