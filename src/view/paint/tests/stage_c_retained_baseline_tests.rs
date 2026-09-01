@@ -96,7 +96,7 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         "native_scroll_scene_single_backing_pixels_match_and_reuse",
         "native_scroll_scene_tiled_cross_tile_pixels_match_and_reuse",
         "native_production_artifact_transform_matches_legacy_and_reuses_real_pool",
-        "native_production_artifact_effect_matches_legacy_and_reuses_real_pool",
+        "native_production_artifact_effect_matches_property_scene_and_reuses_real_pool",
         "native_production_artifact_nested_scroll_multi_leaf_matches_legacy_within_one_lsb_and_reuses_real_pool",
         "native_production_artifact_nested_scroll_inline_ifc_text_matches_legacy_within_one_lsb_and_reuses_real_pool",
     ]);
