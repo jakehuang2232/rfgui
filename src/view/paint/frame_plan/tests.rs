@@ -2165,8 +2165,6 @@ fn native_nested_effect_fixture(
     PropertyTrees,
     PaintGenerationTracker,
 ) {
-    const SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' width='18' height='14'><rect width='18' height='14' fill='#38bdf8'/></svg>";
-
     let mut parent = Element::new_with_id(0xc1_1200, 0.0, 0.0, 64.0, 40.0);
     let mut parent_style = Style::new();
     parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
@@ -2211,6 +2209,7 @@ fn native_nested_effect_fixture(
         );
     }
     let stable_id = 0xc1_1201;
+    let mut svg_content = None;
     let child: Box<dyn ElementTrait> = match host {
         "text" => {
             let mut text = Text::new_with_id(stable_id, 0.0, 0.0, 18.0, 14.0, "native");
@@ -2218,14 +2217,13 @@ fn native_nested_effect_fixture(
             Box::new(text)
         }
         "image" => {
-            let source = if state == "ready" {
-                ImageSource::Rgba {
-                    width: 1,
-                    height: 1,
-                    pixels: Arc::from([64_u8, 160, 255, 255]),
-                }
-            } else {
-                ImageSource::Path(format!("nested-effect-{state}.png").into())
+            // Each fixture invocation must own one registry entry. Path-backed
+            // sources are globally deduplicated, so parallel loading/error
+            // overrides would otherwise mutate another test's resource state.
+            let source = ImageSource::Rgba {
+                width: 1,
+                height: 1,
+                pixels: Arc::from([64_u8, 160, 255, 255]),
             };
             let mut image = Image::new_with_id(stable_id, source);
             image.apply_style(native_style);
@@ -2237,11 +2235,18 @@ fn native_nested_effect_fixture(
             Box::new(image)
         }
         "svg" => {
-            let source = if state == "ready" {
-                SvgSource::Content(SVG.into())
-            } else {
-                SvgSource::Path(format!("nested-effect-{state}.svg").into())
-            };
+            // Unlike inline Image pixels, whose identity uses Arc::ptr_eq, SVG
+            // content identity compares text by value. A fixed SVG string would
+            // still alias, so include a unique inert marker to keep parallel
+            // document-state overrides isolated too.
+            static NEXT_SVG_FIXTURE: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(1);
+            let fixture_id = NEXT_SVG_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let content = format!(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='18' height='14'><rect width='18' height='14' fill='#38bdf8'/><desc>nested-effect-{fixture_id}</desc></svg>"
+            );
+            let source = SvgSource::Content(content.clone());
+            svg_content = Some(content);
             let mut svg = Svg::new_with_id(stable_id, source);
             svg.apply_style(native_style);
             match state {
@@ -2344,7 +2349,11 @@ fn native_nested_effect_fixture(
             .as_any_mut()
             .downcast_mut::<Svg>()
             .expect("Svg host")
-            .prepare_content_paint_for_test(SVG, (18.0, 14.0), 1.0)
+            .prepare_content_paint_for_test(
+                svg_content.as_deref().expect("Svg fixture content"),
+                (18.0, 14.0),
+                1.0,
+            )
             .expect("prepare exact SVG paint");
     }
     let mut properties = PropertyTrees::default();
