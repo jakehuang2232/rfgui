@@ -14,8 +14,8 @@ use crate::view::{
 
 use super::{
     ArtifactCursor, ArtifactOwnerGraph, ArtifactSceneTarget, ArtifactTransitionRequest,
-    ClassifiedTransitionEvent, PaintArtifact, PropertySnapshotGraph, TransitionError,
-    artifact_cursors, classify_property_transition,
+    ClassifiedTransitionEvent, PaintArtifact, PaintChunk, PaintNodePhase, PropertySnapshotGraph,
+    RETAINED_CHILD_MASK_SLOT, TransitionError, artifact_cursors, classify_property_transition,
 };
 
 /// Explicit C2 layerization input. The first policy preserves every authored
@@ -357,6 +357,7 @@ impl ArtifactSurfaceCoverageRoot {
 pub(crate) struct ArtifactSurfaceCoverageNode {
     surface: SurfaceDagNodeId,
     steps: Vec<ArtifactSurfaceCoverageStep>,
+    receiver_mask_envelope_ranges: Vec<Range<usize>>,
     clip_closure: Option<SurfaceDagClipClosureProjection>,
 }
 
@@ -367,6 +368,14 @@ impl ArtifactSurfaceCoverageNode {
 
     pub(crate) fn steps(&self) -> &[ArtifactSurfaceCoverageStep] {
         &self.steps
+    }
+
+    /// Boundary-mask chunks execute in the receiver but retain their spatial
+    /// envelope in this surface's raster-origin derivation. This preserves
+    /// padding around direct content without admitting the mask op into the
+    /// resident raster program.
+    pub(crate) fn receiver_mask_envelope_ranges(&self) -> &[Range<usize>] {
+        &self.receiver_mask_envelope_ranges
     }
 
     pub(crate) fn clip_closure(&self) -> Option<&SurfaceDagClipClosureProjection> {
@@ -1305,6 +1314,45 @@ fn append_coverage_span(
     ));
 }
 
+fn append_coverage_span_to_target(
+    roots: &mut [ArtifactSurfaceCoverageRoot],
+    nodes: &mut [ArtifactSurfaceCoverageNode],
+    target: SurfaceDagTargetId,
+    chunk_index: usize,
+    op_range: Range<usize>,
+    localized_state: PropertyTreeState,
+    local_clips: &[ClipNodeSnapshot],
+) {
+    let steps = match target {
+        SurfaceDagTargetId::SceneRoot(root) => &mut roots[root.index()].steps,
+        SurfaceDagTargetId::Surface(surface) => &mut nodes[surface.index()].steps,
+    };
+    append_coverage_span(steps, chunk_index, op_range, localized_state, local_clips);
+}
+
+/// Returns the ScrollContent surface whose own boundary-mask sentinel this
+/// chunk represents. That mask clips the composite in the receiver; it is not
+/// part of the detached surface's offset-zero resident raster program.
+fn scroll_boundary_mask_surface(
+    chunk: &PaintChunk,
+    logical_chain: &[SurfaceDagNodeId],
+    surface_dag: &SurfaceDag,
+) -> Result<Option<SurfaceDagNodeId>, SurfaceDagError> {
+    if chunk.id.slot != RETAINED_CHILD_MASK_SLOT {
+        return Ok(None);
+    }
+    for surface in logical_chain.iter().rev().copied() {
+        let node = surface_dag.surface_node(surface)?;
+        if matches!(
+            node.kind,
+            SurfaceDagNodeKind::ScrollContent { scroll, .. } if scroll.0 == chunk.id.owner
+        ) {
+            return Ok(Some(surface));
+        }
+    }
+    Ok(None)
+}
+
 /// Derives hierarchical painter coverage without minting raster stamps or
 /// admitting detached surfaces into production.
 ///
@@ -1377,6 +1425,7 @@ pub(crate) fn derive_artifact_surface_coverage_forest(
         .map(|node| ArtifactSurfaceCoverageNode {
             surface: node.id,
             steps: Vec::new(),
+            receiver_mask_envelope_ranges: Vec::new(),
             clip_closure: node
                 .clip_rebase
                 .map(|rebase| SurfaceDagClipClosureProjection {
@@ -1478,6 +1527,50 @@ pub(crate) fn derive_artifact_surface_coverage_forest(
             }
         }
 
+        let boundary_mask_surface =
+            scroll_boundary_mask_surface(chunk, &logical_chain, surface_dag)?;
+        if let Some(surface) = boundary_mask_surface
+            && chunk.id.phase == PaintNodePhase::BeforeChildren
+        {
+            nodes[surface.index()]
+                .receiver_mask_envelope_ranges
+                .push(chunk_index..chunk_index + 1);
+        }
+        let direct_target = boundary_mask_surface
+            .map(|surface| surface_dag.nodes[surface.index()].receiver)
+            .unwrap_or_else(|| {
+                logical_chain
+                    .last()
+                    .copied()
+                    .map(SurfaceDagTargetId::Surface)
+                    .unwrap_or(SurfaceDagTargetId::SceneRoot(scene_root))
+            });
+        let direct_local_clips = match direct_target {
+            SurfaceDagTargetId::SceneRoot(_) => &[][..],
+            SurfaceDagTargetId::Surface(surface) => walk
+                .local_clips
+                .iter()
+                .find(|(kind, _)| node_by_kind.get(kind) == Some(&surface))
+                .map(|(_, clips)| clips.as_slice())
+                .unwrap_or(&[]),
+        };
+
+        // The opening boundary mask must execute in the receiver before the
+        // nested ScrollContent composite. Its closing sentinel is appended
+        // after the nested step below. Ordinary chunks keep their existing
+        // direct-after-nesting order.
+        if boundary_mask_surface.is_some() && chunk.id.phase == PaintNodePhase::BeforeChildren {
+            append_coverage_span_to_target(
+                &mut roots,
+                &mut nodes,
+                direct_target,
+                chunk_index,
+                chunk.op_range.clone(),
+                walk.localized_state,
+                direct_local_clips,
+            );
+        }
+
         for surface in &logical_chain {
             if nested_inserted[surface.index()] {
                 continue;
@@ -1494,31 +1587,16 @@ pub(crate) fn derive_artifact_surface_coverage_forest(
             nested_inserted[surface.index()] = true;
         }
 
-        let direct_local_clips = logical_chain
-            .last()
-            .and_then(|surface| {
-                walk.local_clips
-                    .iter()
-                    .find(|(kind, _)| node_by_kind.get(kind) == Some(surface))
-                    .map(|(_, clips)| clips.as_slice())
-            })
-            .unwrap_or(&[]);
-        if let Some(surface) = logical_chain.last().copied() {
-            append_coverage_span(
-                &mut nodes[surface.index()].steps,
+        if boundary_mask_surface.is_none() || chunk.id.phase == PaintNodePhase::AfterChildren {
+            append_coverage_span_to_target(
+                &mut roots,
+                &mut nodes,
+                direct_target,
                 chunk_index,
                 chunk.op_range.clone(),
                 walk.localized_state,
                 direct_local_clips,
-            );
-        } else {
-            append_coverage_span(
-                &mut roots[scene_root.index()].steps,
-                chunk_index,
-                chunk.op_range.clone(),
-                walk.localized_state,
-                &[],
-            );
+            )
         }
     }
 

@@ -2812,11 +2812,24 @@ fn try_compile_auto_artifact_frame(
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ArtifactSurfaceIntermediateReadbackForTest {
+    pub(crate) color_key: crate::view::frame_graph::PersistentTextureKey,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    /// Destination-space physical coordinate occupied by intermediate texel
+    /// `(0, 0)`. This is the same sealed sampling fact consumed by the
+    /// composite pass, not a test-side reconstruction.
+    pub(crate) source_physical_origin: [f32; 2],
+}
+
+#[cfg(test)]
 pub(crate) struct AutoArtifactSurfaceEmissionForTest {
     pub(crate) frame_owner: crate::view::viewport::RetainedSurfaceFrameStageOwner,
     pub(crate) surface_count: usize,
     pub(crate) aggregate_texture_bytes: u64,
     pub(crate) actions: Vec<crate::view::paint::RetainedSurfaceCompileAction>,
+    pub(crate) intermediate_surfaces: Vec<ArtifactSurfaceIntermediateReadbackForTest>,
 }
 
 /// Native Stage C gate seam for both zero-resident and detached artifact
@@ -2858,6 +2871,21 @@ pub(crate) fn emit_retained_auto_artifact_surface_for_test(
                 .and_then(|bytes| bytes.checked_add(depth.bytes))
         })
         .ok_or_else(|| "artifact surface descriptor byte total overflowed".to_owned())?;
+    let intermediate_surfaces = frame
+        .raster_plan()
+        .nodes()
+        .iter()
+        .filter_map(|node| {
+            let (color_key, width, height, source_physical_origin) =
+                node.intermediate_readback_observation_for_test()?;
+            Some(ArtifactSurfaceIntermediateReadbackForTest {
+                color_key,
+                width,
+                height,
+                source_physical_origin,
+            })
+        })
+        .collect();
     let owner = viewport
         .begin_retained_surface_frame_stage()
         .ok_or_else(|| "artifact surface frame stage is already active".to_owned())?;
@@ -2910,6 +2938,7 @@ pub(crate) fn emit_retained_auto_artifact_surface_for_test(
         surface_count,
         aggregate_texture_bytes,
         actions,
+        intermediate_surfaces,
     })
 }
 

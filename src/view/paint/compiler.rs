@@ -5117,6 +5117,37 @@ impl PreparedArtifactSurfaceRasterNode {
     pub(crate) fn steps(&self) -> &[PreparedArtifactSurfaceRasterStep] {
         &self.steps
     }
+
+    #[cfg(test)]
+    pub(crate) fn intermediate_readback_observation_for_test(
+        &self,
+    ) -> Option<(
+        crate::view::frame_graph::PersistentTextureKey,
+        u32,
+        u32,
+        [f32; 2],
+    )> {
+        let (source_bounds_bits, destination_bounds_bits) = match self.geometry() {
+            ArtifactSurfaceCompositeGeometryStamp::Effect {
+                source_bounds_bits,
+                destination_bounds_bits,
+                ..
+            }
+            | ArtifactSurfaceCompositeGeometryStamp::ScrollContent {
+                source_bounds_bits,
+                destination_bounds_bits,
+                ..
+            } => (source_bounds_bits, destination_bounds_bits),
+            ArtifactSurfaceCompositeGeometryStamp::Transform { .. } => return None,
+        };
+        Some((
+            self.identity.color_key,
+            self.target.color.width(),
+            self.target.color.height(),
+            self.raster_origin
+                .composite_source_physical_origin(source_bounds_bits, destination_bounds_bits)?,
+        ))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -5836,10 +5867,29 @@ fn artifact_surface_span_raw_bounds(
     span: &ArtifactSurfaceCoverageSpan,
     base_delta: [f32; 2],
 ) -> Result<Option<[u32; 4]>, ArtifactSurfaceRasterPlanError> {
-    let chunks = artifact_surface_span_chunks(artifact, target, span)?;
+    artifact_surface_chunk_range_raw_bounds(
+        artifact,
+        target,
+        boundary_root,
+        span.chunk_range(),
+        base_delta,
+    )
+}
+
+fn artifact_surface_chunk_range_raw_bounds(
+    artifact: &PaintArtifact,
+    target: ArtifactSurfaceRasterTargetId,
+    boundary_root: Option<NodeKey>,
+    chunk_range: Range<usize>,
+    base_delta: [f32; 2],
+) -> Result<Option<[u32; 4]>, ArtifactSurfaceRasterPlanError> {
+    let chunks = artifact
+        .chunks
+        .get(chunk_range.clone())
+        .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?;
     let mut bounds = None;
     for (local_index, chunk) in chunks.iter().enumerate() {
-        let chunk_index = span.chunk_range().start + local_index;
+        let chunk_index = chunk_range.start + local_index;
         let delta = artifact_surface_chunk_base_translation(boundary_root, chunk.owner, base_delta);
         let translated = translated_chunk_bounds_bits(chunk.bounds, delta).ok_or(
             ArtifactSurfaceRasterPlanError::InvalidChunkBounds {
@@ -6338,6 +6388,18 @@ fn prepare_artifact_surface_raster_plan_from_program(
         let target_id = ArtifactSurfaceRasterTargetId::Surface(source);
         let mut raw_bounds = None;
         let mut nested_children = Vec::new();
+        for chunk_range in coverage.receiver_mask_envelope_ranges() {
+            if let Some(mask_bounds) = artifact_surface_chunk_range_raw_bounds(
+                &program.artifact,
+                target_id,
+                Some(node.target()),
+                chunk_range.clone(),
+                base_delta,
+            )? {
+                append_bounds(&mut raw_bounds, mask_bounds)
+                    .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(source))?;
+            }
+        }
         for step in coverage.steps() {
             match step {
                 ArtifactSurfaceCoverageStep::ArtifactSpan(span) => {

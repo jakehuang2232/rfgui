@@ -191,7 +191,7 @@ fn native_production_nested_scroll_matches_legacy_within_one_lsb_and_reuses_real
         &adapter,
         "production-nested-scroll/frame-1-r1",
     )?;
-    super::native_artifact_scroll_content_tests::validate_artifact_roundtrip_differences_are_partial_coverage_only(
+    super::artifact_intermediate_coverage_tests::validate_artifact_roundtrip_differences_are_partial_coverage_only(
         &legacy_pixels,
         &cold_pixels,
         &adapter,

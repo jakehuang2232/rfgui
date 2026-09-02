@@ -285,6 +285,54 @@ impl OffscreenRenderTargetPool {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(crate) fn encode_persistent_readback(
+        &self,
+        stable_key: PersistentTextureKey,
+        encoder: &mut wgpu::CommandEncoder,
+        buffer: &wgpu::Buffer,
+        padded_bytes_per_row: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let binding = self
+            .persistent_bindings
+            .get(&stable_key)
+            .ok_or_else(|| format!("persistent target {stable_key:?} is not bound"))?;
+        let entry = self
+            .entries
+            .get(&binding.entry_id)
+            .ok_or_else(|| format!("persistent target {stable_key:?} lost its pool entry"))?;
+        if width == 0 || height == 0 || width > entry.width || height > entry.height {
+            return Err(format!(
+                "persistent readback extent is invalid: requested={width}x{height}, resident={}x{}",
+                entry.width, entry.height
+            ));
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &entry.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        Ok(())
+    }
+
     pub fn clear(&mut self) {
         for entry in self.entries.values() {
             entry.texture.destroy();

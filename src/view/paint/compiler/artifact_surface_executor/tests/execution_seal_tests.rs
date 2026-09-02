@@ -168,3 +168,107 @@ fn execution_seal_keeps_the_frame_and_one_child_mask_program_together() {
         .expect("parent mask pop step");
     assert!(push_index < nested_index && nested_index < pop_index);
 }
+
+#[test]
+fn scroll_boundary_masks_wrap_nested_composites_in_the_receiver_program() {
+    fn significant_steps(program: &ArtifactSurfaceChildMaskTargetProgram) -> Vec<&'static str> {
+        let mut observed = Vec::new();
+        for step in &program.steps {
+            match step {
+                ArtifactSurfaceChildMaskStep::ArtifactSpan { chunk_actions, .. } => {
+                    for action in chunk_actions {
+                        match action {
+                            ArtifactSurfaceChildMaskAction::Push(_) => observed.push("push"),
+                            ArtifactSurfaceChildMaskAction::Pop => observed.push("pop"),
+                            ArtifactSurfaceChildMaskAction::Unchanged => {}
+                        }
+                    }
+                }
+                ArtifactSurfaceChildMaskStep::NestedSurface(_) => observed.push("nested"),
+            }
+        }
+        observed
+    }
+
+    fn mask_owners(
+        program: &ArtifactSurfaceChildMaskTargetProgram,
+        steps: &[PreparedArtifactSurfaceRasterStep],
+    ) -> Vec<crate::view::node_arena::NodeKey> {
+        let mut owners = Vec::new();
+        for step in &program.steps {
+            let ArtifactSurfaceChildMaskStep::ArtifactSpan {
+                step_index,
+                chunk_actions,
+            } = step
+            else {
+                continue;
+            };
+            let PreparedArtifactSurfaceRasterStep::ArtifactSpan(span) = &steps[*step_index] else {
+                unreachable!("sealed artifact-span action points at an artifact span")
+            };
+            for (chunk, action) in span.chunks().iter().zip(chunk_actions) {
+                if !matches!(action, ArtifactSurfaceChildMaskAction::Unchanged) {
+                    owners.push(chunk.source().owner);
+                }
+            }
+        }
+        owners
+    }
+
+    let execution =
+        seal_prepared_artifact_surface_execution(prepared_nested_scroll_surface_frame());
+    assert_eq!(execution.root_programs.len(), 1);
+    assert_eq!(execution.node_programs.len(), 2);
+
+    let root_program = &execution.root_programs[0];
+    let root_steps = &execution.frame.raster_plan().roots()[0].steps;
+    assert_eq!(significant_steps(root_program), ["push", "nested", "pop"]);
+    assert_eq!(root_program.max_mask_depth, 1);
+
+    let outer_index = execution
+        .frame
+        .raster_plan()
+        .nodes()
+        .iter()
+        .position(|node| matches!(node.receiver(), SurfaceDagExecutionTargetId::SceneRoot(_)))
+        .expect("outer ScrollContent surface");
+    let inner_index = execution
+        .frame
+        .raster_plan()
+        .nodes()
+        .iter()
+        .position(|node| matches!(node.receiver(), SurfaceDagExecutionTargetId::Surface(_)))
+        .expect("inner ScrollContent surface");
+    let outer_node = &execution.frame.raster_plan().nodes()[outer_index];
+    let inner_node = &execution.frame.raster_plan().nodes()[inner_index];
+    let outer_program = &execution.node_programs[outer_index];
+    let inner_program = &execution.node_programs[inner_index];
+
+    assert_eq!(
+        significant_steps(outer_program),
+        ["push", "nested", "pop"],
+        "the outer resident excludes its own boundary mask but retains the inner boundary around the nested composite",
+    );
+    assert!(significant_steps(inner_program).is_empty());
+    assert_eq!(
+        (
+            root_program.max_mask_depth,
+            outer_program.max_mask_depth,
+            inner_program.max_mask_depth,
+        ),
+        (1, 1, 0),
+        "mask depth moves from each detached target to its receiver without changing the nesting maximum",
+    );
+
+    let outer_owner = outer_node.identity().boundary_root;
+    let inner_owner = inner_node.identity().boundary_root;
+    assert_eq!(
+        mask_owners(root_program, root_steps),
+        [outer_owner, outer_owner]
+    );
+    assert_eq!(
+        mask_owners(outer_program, outer_node.steps()),
+        [inner_owner, inner_owner],
+    );
+    assert!(mask_owners(inner_program, inner_node.steps()).is_empty());
+}
