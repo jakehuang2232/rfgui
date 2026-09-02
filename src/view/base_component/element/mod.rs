@@ -8061,22 +8061,7 @@ impl Element {
 
     fn paint_offset_after_own_snap(&self, parent: [f32; 2]) -> Option<[f32; 2]> {
         let position = self.layout_state.layout_position;
-        if parent.iter().any(|value| !value.is_finite())
-            || !position.x.is_finite()
-            || !position.y.is_finite()
-        {
-            return None;
-        }
-        let paint_x = position.x + parent[0];
-        let paint_y = position.y + parent[1];
-        if !paint_x.is_finite() || !paint_y.is_finite() {
-            return None;
-        }
-        let next = [
-            parent[0] + round_layout_value(paint_x) - paint_x,
-            parent[1] + round_layout_value(paint_y) - paint_y,
-        ];
-        next.iter().all(|value| value.is_finite()).then_some(next)
+        super::paint_offset_after_owner_snap([position.x, position.y], parent)
     }
 
     pub(crate) fn retained_child_paint_offset(&self, parent: [f32; 2]) -> Option<[f32; 2]> {

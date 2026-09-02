@@ -552,6 +552,27 @@ impl<'a> SpatialProjectionGraph<'a> {
         })
     }
 
+    /// Reconstruct an ordinary paint owner's viewport placement without a
+    /// live arena. A missing layout-position or visual-offset family denotes
+    /// that family's neutral value for ordinary owners; transform projection
+    /// deliberately retains its stricter requirement for both snapshots.
+    pub(crate) fn derive_optional_owner_viewport_position(
+        &self,
+        owner: NodeKey,
+    ) -> Result<Vec2, SpatialProjectionError> {
+        let layout = if self.positions.contains_key(&LayoutPositionNodeId(owner)) {
+            self.layout_flow_position(owner)?
+        } else {
+            Vec2::ZERO
+        };
+        let visual = if self.visuals.contains_key(&VisualOffsetNodeId(owner)) {
+            self.cumulative_visual_offset(owner)?
+        } else {
+            Vec2::ZERO
+        };
+        Ok(layout + visual)
+    }
+
     fn layout_flow_position(&self, owner: NodeKey) -> Result<Vec2, SpatialProjectionError> {
         let leaf = LayoutPositionNodeId(owner);
         let mut chain = Vec::new();

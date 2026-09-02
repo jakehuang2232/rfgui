@@ -2,12 +2,13 @@
 
 use crate::view::base_component::{
     AncestorClipContext, BuildState, RetainedSurfaceBounds, Text, UiBuildContext,
+    paint_offset_after_owner_snap,
 };
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
     LayoutPositionNodeId, LayoutPositionNodeSnapshot, PropertyTreeState, ScrollNodeId,
-    ScrollNodeSnapshot, TransformNodeId, TransformNodeSnapshot, VisualOffsetNodeId,
-    VisualOffsetNodeSnapshot,
+    ScrollNodeSnapshot, SpatialProjectionError, SpatialProjectionGraph, TransformNodeId,
+    TransformNodeSnapshot, VisualOffsetNodeId, VisualOffsetNodeSnapshot,
 };
 use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::{NodeArena, NodeKey};
@@ -41,7 +42,7 @@ use super::surface_dag::{
 use super::{
     EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactTarget, PaintChunkRole,
     PaintContentRevision, PaintOp, PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope,
-    PreparedImageIdentity, PreparedShadowOp, PreparedSvgIdentity, PreparedTextOp,
+    PreparedImageIdentity, PreparedShadowOp, PreparedSvgIdentity, PreparedTextOp, TransitionError,
     classify_artifact_transition_sequence,
 };
 
@@ -4732,6 +4733,7 @@ struct ValidatedArtifactSurfaceDagProgram {
     surface_dag: SurfaceDag,
     execution_order: SurfaceDagExecutionOrder,
     coverage: ArtifactSurfaceCoverageForest,
+    host_placement: ArtifactSurfaceHostPlacementProjection,
 }
 
 /// Sealed per-chunk scissor program for the future artifact executor.
@@ -5243,6 +5245,10 @@ fn validate_artifact_surface_dag_program(
         LayerizationPolicy::PreservePropertyBoundaries,
     )
     .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+    let host_placement = ArtifactSurfaceHostPlacementProjection::try_new(&artifact)
+        .map_err(TransitionError::SpatialSnapshot)
+        .map_err(SurfaceDagError::Transition)
+        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
 
     Ok(ValidatedArtifactSurfaceDagProgram {
         artifact,
@@ -5250,6 +5256,7 @@ fn validate_artifact_surface_dag_program(
         surface_dag,
         execution_order,
         coverage,
+        host_placement,
     })
 }
 
@@ -5292,6 +5299,122 @@ fn append_bounds(accumulated: &mut Option<[u32; 4]>, next: [u32; 4]) -> Option<(
         None => next,
     });
     Some(())
+}
+
+/// Graph-inert artifact owner placement sealed for the next Stage C wiring
+/// batch. That consumer will apply it only to paint landing in the scene root;
+/// detached raster content remains host-independent.
+#[derive(Debug)]
+struct ArtifactSurfaceHostPlacementProjection {
+    owners: Vec<ArtifactSurfaceOwnerPlacement>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ArtifactSurfaceOwnerPlacement {
+    owner: NodeKey,
+    parent: Option<NodeKey>,
+    viewport_position_bits: [u32; 2],
+}
+
+#[derive(Debug)]
+struct ResolvedArtifactSurfaceHostPlacement {
+    owner_paint_offset_bits: FxHashMap<NodeKey, [u32; 2]>,
+}
+
+impl ArtifactSurfaceHostPlacementProjection {
+    fn try_new(artifact: &PaintArtifact) -> Result<Self, SpatialProjectionError> {
+        let graph = SpatialProjectionGraph::try_new(
+            &artifact.transform_nodes,
+            &artifact.layout_position_nodes,
+            &artifact.visual_offset_nodes,
+            &artifact.scroll_nodes,
+        )?;
+        let mut owners = Vec::with_capacity(artifact.owner_nodes.len());
+        for snapshot in &artifact.owner_nodes {
+            owners.push(ArtifactSurfaceOwnerPlacement {
+                owner: snapshot.owner,
+                parent: snapshot.parent,
+                viewport_position_bits: graph
+                    .derive_optional_owner_viewport_position(snapshot.owner)?
+                    .to_array()
+                    .map(f32::to_bits),
+            });
+        }
+        Ok(Self { owners })
+    }
+
+    fn resolve(
+        &self,
+        host_paint_offset: [f32; 2],
+    ) -> Result<ResolvedArtifactSurfaceHostPlacement, SpatialProjectionError> {
+        let mut placements = FxHashMap::default();
+        for placement in &self.owners {
+            if placements.insert(placement.owner, *placement).is_some() {
+                return Err(SpatialProjectionError::InvalidSnapshot(placement.owner));
+            }
+        }
+        let mut owner_paint_offset_bits: FxHashMap<NodeKey, [u32; 2]> = FxHashMap::default();
+        for placement in &self.owners {
+            if owner_paint_offset_bits.contains_key(&placement.owner) {
+                continue;
+            }
+            let mut chain = Vec::new();
+            let mut seen = FxHashSet::default();
+            let mut cursor = placement.owner;
+            // Artifact owner stores preserve canonical traversal order, not a
+            // parent-first topological order. Resolve the bounded ancestry
+            // explicitly so a child-first store cannot change snap semantics.
+            let mut parent_paint_offset = loop {
+                if let Some(bits) = owner_paint_offset_bits.get(&cursor) {
+                    break bits.map(f32::from_bits);
+                }
+                if chain.len() >= usize::from(u8::MAX) || !seen.insert(cursor) {
+                    return Err(SpatialProjectionError::InvalidSnapshot(cursor));
+                }
+                let current = placements
+                    .get(&cursor)
+                    .copied()
+                    .ok_or(SpatialProjectionError::InvalidSnapshot(cursor))?;
+                chain.push(current);
+                match current.parent {
+                    Some(parent) => cursor = parent,
+                    None => break host_paint_offset,
+                }
+            };
+            for current in chain.into_iter().rev() {
+                parent_paint_offset = paint_offset_after_owner_snap(
+                    current.viewport_position_bits.map(f32::from_bits),
+                    parent_paint_offset,
+                )
+                .ok_or(SpatialProjectionError::InvalidSnapshot(current.owner))?;
+                owner_paint_offset_bits
+                    .insert(current.owner, parent_paint_offset.map(f32::to_bits));
+            }
+        }
+        Ok(ResolvedArtifactSurfaceHostPlacement {
+            owner_paint_offset_bits,
+        })
+    }
+}
+
+impl ResolvedArtifactSurfaceHostPlacement {
+    fn owner_paint_offset(&self, owner: NodeKey) -> Option<[f32; 2]> {
+        self.owner_paint_offset_bits
+            .get(&owner)
+            .copied()
+            .map(|bits| bits.map(f32::from_bits))
+    }
+
+    fn receiver_paint_offset(
+        &self,
+        owner: NodeKey,
+        receiver: SurfaceDagExecutionTargetId,
+    ) -> Option<[f32; 2]> {
+        match receiver {
+            SurfaceDagExecutionTargetId::Surface(_) => Some([0.0, 0.0]),
+            SurfaceDagExecutionTargetId::SceneRoot(_) => self.owner_paint_offset(owner),
+        }
+    }
 }
 
 /// One surface's sole receiver-space to texture-local projection.
@@ -6120,7 +6243,6 @@ fn prepare_artifact_surface_raster_plan_from_program(
         .iter()
         .map(|snapshot| (snapshot.id, *snapshot))
         .collect::<FxHashMap<_, _>>();
-
     let mut prepared_nodes: Vec<Option<PreparedArtifactSurfaceRasterNode>> =
         vec![None; program.execution_order.nodes().len()];
     let mut total_texture_bytes = 0_u64;

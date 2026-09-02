@@ -39,6 +39,32 @@ pub(crate) fn round_layout_value(value: f32) -> f32 {
     }
 }
 
+/// Paint offset inherited by an owner's children after the owner applies the
+/// engine's layout-position snap. Both live traversal and arena-independent
+/// artifact placement use this derivation so they cannot disagree on host
+/// placement at fractional coordinates.
+pub(crate) fn paint_offset_after_owner_snap(
+    owner_viewport_position: [f32; 2],
+    parent_paint_offset: [f32; 2],
+) -> Option<[f32; 2]> {
+    if owner_viewport_position
+        .into_iter()
+        .chain(parent_paint_offset)
+        .any(|value| !value.is_finite())
+    {
+        return None;
+    }
+    let paint = [
+        owner_viewport_position[0] + parent_paint_offset[0],
+        owner_viewport_position[1] + parent_paint_offset[1],
+    ];
+    let next = [
+        parent_paint_offset[0] + round_layout_value(paint[0]) - paint[0],
+        parent_paint_offset[1] + round_layout_value(paint[1]) - paint[1],
+    ];
+    next.into_iter().all(f32::is_finite).then_some(next)
+}
+
 pub(crate) fn build_node_by_id(
     node: &mut dyn ElementTrait,
     node_id: u64,

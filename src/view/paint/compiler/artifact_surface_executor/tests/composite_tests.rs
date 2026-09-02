@@ -1,4 +1,50 @@
+use super::super::super::{ArtifactSurfaceHostPlacementProjection, ArtifactSurfaceOwnerPlacement};
 use super::*;
+
+#[test]
+fn owner_scoped_host_placement_replays_parent_then_child_snapping() {
+    let mut arena = crate::view::test_support::new_test_arena();
+    let root = crate::view::test_support::commit_element(
+        &mut arena,
+        Box::new(Element::new_with_id(0xc3_e100, 0.0, 0.0, 1.0, 1.0)),
+    );
+    let child = crate::view::test_support::commit_child(
+        &mut arena,
+        root,
+        Box::new(Element::new_with_id(0xc3_e101, 0.0, 0.0, 1.0, 1.0)),
+    );
+    let projection = ArtifactSurfaceHostPlacementProjection {
+        owners: vec![
+            ArtifactSurfaceOwnerPlacement {
+                owner: child,
+                parent: Some(root),
+                viewport_position_bits: [17.5_f32.to_bits(), 15.0_f32.to_bits()],
+            },
+            ArtifactSurfaceOwnerPlacement {
+                owner: root,
+                parent: None,
+                viewport_position_bits: [5.25_f32.to_bits(), 5.0_f32.to_bits()],
+            },
+        ],
+    };
+    let resolved = projection
+        .resolve([0.0, 0.0])
+        .expect("canonical owner-scoped placement");
+
+    assert_eq!(
+        resolved
+            .owner_paint_offset(root)
+            .map(|value| value.map(f32::to_bits)),
+        Some([(-0.25_f32).to_bits(), 0.0_f32.to_bits()])
+    );
+    assert_eq!(
+        resolved
+            .owner_paint_offset(child)
+            .map(|value| value.map(f32::to_bits)),
+        Some([(-0.5_f32).to_bits(), 0.0_f32.to_bits()]),
+        "child snapping must inherit the parent's correction instead of recomputing directly from the frame offset"
+    );
+}
 
 #[test]
 fn three_surface_roles_emit_only_their_sealed_typed_composites() {
@@ -92,10 +138,7 @@ fn three_surface_roles_emit_only_their_sealed_typed_composites() {
                     destination_bounds_bits
                 );
                 assert_eq!(opacity.to_bits(), opacity_bits);
-                assert_eq!(
-                    source_physical_origin,
-                    node.raster_origin.physical_origin_f32()
-                );
+                assert_eq!(source_physical_origin, node.raster_origin.physical_origin_f32());
                 assert_eq!(resolved_clip, resolved_receiver_clip);
             }
             ArtifactSurfaceCompositeGeometryStamp::ScrollContent {
