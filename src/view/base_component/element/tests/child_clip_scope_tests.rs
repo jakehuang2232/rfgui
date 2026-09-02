@@ -266,6 +266,44 @@ fn fractional_inner_clip_scissor_preserves_raw_coverage() {
 }
 
 #[test]
+fn child_clip_scissor_follows_the_same_paint_offset_as_its_stencil_geometry() {
+    let parent = Element::new(0.0, 0.0, 100.5, 50.25);
+    let mut arena = new_test_arena();
+    let parent_key = commit_element(&mut arena, Box::new(parent));
+    measure_and_place(
+        &mut arena,
+        parent_key,
+        LayoutConstraints {
+            max_width: 200.0,
+            max_height: 200.0,
+            viewport_width: 200.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(200.0),
+        },
+        LayoutPlacement {
+            parent_x: 10.25,
+            parent_y: 20.75,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 200.0,
+            available_height: 200.0,
+            viewport_width: 200.0,
+            viewport_height: 200.0,
+            percent_base_width: Some(200.0),
+            percent_base_height: Some(200.0),
+        },
+    );
+
+    let parent_ref = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+    assert_eq!(
+        parent_ref.inner_clip_scissor_rect_with_paint_offset([0.4, -0.6]),
+        Some([10, 20, 102, 51]),
+        "fractional paint placement must be applied before floor/ceil coverage"
+    );
+}
+
+#[test]
 fn child_clip_scope_is_skipped_when_inner_scissor_is_outside_ancestor_scissor() {
     let parent = Element::new(100.0, 100.0, 50.0, 50.0);
     let mut child = Element::new(0.0, 0.0, 80.0, 20.0);

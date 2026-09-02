@@ -87,7 +87,11 @@ impl Element {
 
     fn has_visible_inner_render_area(&self, ctx: &UiBuildContext) -> bool {
         self.has_inner_render_area()
-            && intersect_scissor_rects(ctx.scissor_rect(), self.inner_clip_scissor_rect()).is_some()
+            && intersect_scissor_rects(
+                ctx.scissor_rect(),
+                self.inner_clip_scissor_rect_with_paint_offset(ctx.paint_offset()),
+            )
+            .is_some()
     }
 
     pub(crate) fn absolute_clip_scissor_rect(&self) -> Option<[u32; 4]> {
@@ -245,6 +249,16 @@ impl Element {
 
     fn inner_clip_scissor_rect(&self) -> Option<[u32; 4]> {
         rect_to_scissor_rect(self.inner_clip_rect())
+    }
+
+    fn inner_clip_scissor_rect_with_paint_offset(
+        &self,
+        paint_offset: [f32; 2],
+    ) -> Option<[u32; 4]> {
+        let mut rect = self.inner_clip_rect();
+        rect.x += paint_offset[0];
+        rect.y += paint_offset[1];
+        rect_to_scissor_rect(rect)
     }
 
     fn inner_clip_radii(&self, outer_radii: CornerRadii) -> CornerRadii {
@@ -420,7 +434,7 @@ impl Element {
         ctx: &mut UiBuildContext,
         inner_radii: CornerRadii,
     ) -> Option<ChildClipScope> {
-        let inner_scissor = self.inner_clip_scissor_rect();
+        let inner_scissor = self.inner_clip_scissor_rect_with_paint_offset(ctx.paint_offset());
         intersect_scissor_rects(ctx.scissor_rect(), inner_scissor)?;
         let parent_clip_id = ctx.current_clip_id();
         let Some(child_clip_id) = ctx.push_clip_id() else {
