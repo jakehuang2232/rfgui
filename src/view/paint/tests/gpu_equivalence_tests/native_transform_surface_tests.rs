@@ -169,6 +169,83 @@ fn native_forced_nested_transform_surfaces_match_legacy_pixels() -> Result<(), S
     Ok(())
 }
 
+fn property_scene_effect_pixels_at_offset(
+    gpu: &NativeGpu,
+    paint_offset: [f32; 2],
+) -> Result<Vec<u8>, String> {
+    let scale_factor = 1.0;
+    let (arena, root) = super::native_artifact_surface_tests::nested_effect_fixture();
+    let roots = [root];
+    let (properties, generations) = sync_identity(&arena, &roots);
+    let (mut graph, mut ctx, target) = transformed_graph_prelude(scale_factor, None);
+    ctx.set_paint_offset(paint_offset);
+    let plan = crate::view::paint::plan_property_effect_scene_with_context(
+        &arena,
+        &roots,
+        &properties,
+        &generations,
+        crate::view::paint::TransformSurfacePlanContext::new(
+            ctx.paint_offset(),
+            ctx.graphics_pass_context().logical_scissor_rect(),
+        ),
+    )
+    .map_err(|error| format!("fractional-offset PropertyScene plan rejected: {error:?}"))?;
+    let mut viewport = Viewport::new();
+    crate::view::paint::build_retained_property_scene_with_forced_pool_for_test(
+        &mut viewport,
+        &plan,
+        &mut graph,
+        ctx,
+    )
+    .map_err(|error| format!("fractional-offset PropertyScene execute rejected: {error:?}"))?;
+    add_present(&mut graph, &target)?;
+    render_with_config(graph, gpu, scale_factor, FORMAT)
+}
+
+fn translated_pixels(source: &[u8], delta: [i32; 2]) -> Vec<u8> {
+    let mut translated = vec![0; source.len()];
+    for y in 0..HEIGHT as i32 {
+        for x in 0..WIDTH as i32 {
+            let destination = [x + delta[0], y + delta[1]];
+            if destination[0] < 0
+                || destination[1] < 0
+                || destination[0] >= WIDTH as i32
+                || destination[1] >= HEIGHT as i32
+            {
+                continue;
+            }
+            let source_offset = ((y as u32 * WIDTH + x as u32) * BYTES_PER_PIXEL) as usize;
+            let destination_offset = ((destination[1] as u32 * WIDTH + destination[0] as u32)
+                * BYTES_PER_PIXEL) as usize;
+            translated[destination_offset..destination_offset + BYTES_PER_PIXEL as usize]
+                .copy_from_slice(&source[source_offset..source_offset + BYTES_PER_PIXEL as usize]);
+        }
+    }
+    translated
+}
+
+#[test]
+#[ignore = "requires native GPU adapter"]
+fn native_fractional_host_offset_property_scene_bounds_translate_exactly() -> Result<(), String> {
+    let gpu = native_gpu_test_context()?;
+    let gpu = gpu.as_ref().expect("native GPU initialized");
+    let adapter = gpu.label();
+    let zero = property_scene_effect_pixels_at_offset(gpu, [0.0, 0.0])?;
+    let fractional = property_scene_effect_pixels_at_offset(gpu, [3.5, -2.25])?;
+    // Root [5,5] snaps to [9,3], so the complete output moves by [4,-2].
+    // These are independent constants, not values derived by the bounds helper.
+    let expected = translated_pixels(&zero, [4, -2]);
+    compare_pixels(
+        &expected,
+        &fractional,
+        [0, 0, WIDTH, HEIGHT],
+        &adapter,
+        "fractional-host-offset-property-scene-bounds",
+    )?;
+    eprintln!("fractional host-offset PropertyScene bounds parity passed on {adapter}");
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires native GPU adapter"]
 // Run explicitly with:

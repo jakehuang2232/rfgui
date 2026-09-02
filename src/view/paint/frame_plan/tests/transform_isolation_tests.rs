@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn planner_rejects_negative_origin_known_legacy_crop_before_execution() {
     for (root_id, child_id, root_x, root_y, expected_source) in [
-        (0xc2_a001, 0xc2_a002, -4.25, 3.5, [-8.5, 7.0]),
+        (0xc2_a001, 0xc2_a002, -4.25, 3.5, [-9.0, 7.0]),
         (0xc2_a003, 0xc2_a004, 4.25, -3.5, [8.5, -7.0]),
     ] {
         let (arena, root, properties, generations) =
@@ -245,7 +245,7 @@ fn transform_child_isolation_recording_rejects_wrong_boundary_and_live_projectio
 }
 
 #[test]
-fn transform_child_isolation_planner_freezes_exact_fractional_geometry_and_cursors() {
+fn transform_child_isolation_planner_freezes_exact_snapped_geometry_and_cursors() {
     let (arena, root, _, child, _, _, properties, generations) =
         exact_transform_child_isolation_fixture();
     let parent_snapped_offset = arena
@@ -266,10 +266,16 @@ fn transform_child_isolation_planner_freezes_exact_fractional_geometry_and_curso
         .unwrap()
         .exact_nested_isolation_render_output_bounds(&arena, parent_snapped_offset)
         .unwrap();
-    assert!(exact_child_bounds.x > 0.0 && exact_child_bounds.y > 0.0);
-    assert!(
-        exact_child_bounds.x.fract() != 0.0 || exact_child_bounds.y.fract() != 0.0,
-        "fixture must retain a positive fractional nonzero child-local origin"
+    assert_eq!(
+        [
+            exact_child_bounds.x,
+            exact_child_bounds.y,
+            exact_child_bounds.width,
+            exact_child_bounds.height,
+        ]
+        .map(f32::to_bits),
+        [5.0, 3.0, 18.0, 10.0].map(f32::to_bits),
+        "nested isolation output must include the owner's snapped receiver-space placement"
     );
 
     let plan = plan_single_root_transform_child_isolation_surface(

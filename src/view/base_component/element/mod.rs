@@ -7943,7 +7943,15 @@ impl Element {
         require_exact: bool,
     ) -> Option<RetainedSurfaceBounds> {
         let child_paint_offset = self.paint_offset_after_own_snap(paint_offset)?;
-        let own_bounds = self.untransformed_paint_bounds();
+        let mut own_bounds = self.untransformed_paint_bounds();
+        if self.resolved_transform.is_none() {
+            // Without a transform this is receiver-space output, not a raw
+            // transform source. Match the snapped recording context of our
+            // own ops before unioning child output bounds: those already
+            // carry their placement and must not be translated a second time.
+            own_bounds.x += child_paint_offset[0];
+            own_bounds.y += child_paint_offset[1];
+        }
         if !Self::is_valid_transform_surface_bounds(own_bounds) {
             return None;
         }

@@ -4,7 +4,7 @@ use crate::view::viewport::{
     AutoArtifactSurfaceEmissionForTest, emit_retained_auto_artifact_surface_for_test,
 };
 
-fn nested_effect_fixture() -> (NodeArena, NodeKey) {
+pub(super) fn nested_effect_fixture() -> (NodeArena, NodeKey) {
     let mut root = Element::new_with_id(0xc3_c210, 5.0, 5.0, 54.0, 48.0);
     let mut root_style = Style::new();
     root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));

@@ -3028,14 +3028,14 @@ mod paint_snap_tests {
             [
                 (-20.5_f32).to_bits(),
                 11.0_f32.to_bits(),
-                60.0_f32.to_bits(),
+                60.5_f32.to_bits(),
                 30.0_f32.to_bits(),
             ],
-            "negative-origin source coverage is a hard-coded legacy oracle"
+            "negative-origin source coverage must include snapped receiver-space child paint"
         );
         assert_eq!(
             (transformed_desc.width(), transformed_desc.height()),
-            (79, 60)
+            (80, 60)
         );
         assert_eq!(transformed_desc.origin(), (0, 22));
         assert_eq!(
@@ -3043,18 +3043,18 @@ mod paint_snap_tests {
             Some([
                 (-20.5_f32).to_bits(),
                 11.0_f32.to_bits(),
-                60.0_f32.to_bits(),
+                60.5_f32.to_bits(),
                 30.0_f32.to_bits(),
             ])
         );
         // Independent scale-2 oracle: full logical X coverage is
-        // floor(-20.5 * 2)=-41 through ceil(39.5 * 2)=79, i.e. 120 pixels.
-        // Legacy clamps the texture origin to zero and allocates only 79
+        // floor(-20.5 * 2)=-41 through ceil(40.0 * 2)=80, i.e. 121 pixels.
+        // Legacy clamps the texture origin to zero and allocates only 80
         // pixels while the composite still asks for UV x=-20.5. This freezes
         // the existing left-edge crop and proves C2 must reject negative
         // source origins until descriptor/UV semantics are deliberately fixed.
-        assert_eq!(79_i32 - (-41_i32), 120);
-        assert_eq!(transformed_desc.width(), 79);
+        assert_eq!(80_i32 - (-41_i32), 121);
+        assert_eq!(transformed_desc.width(), 80);
     }
 
     #[test]
