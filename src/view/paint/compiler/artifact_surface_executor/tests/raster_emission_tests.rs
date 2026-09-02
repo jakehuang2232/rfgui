@@ -115,6 +115,45 @@ fn sealed_shadow_prefix_and_empty_suffix_drive_emission_without_rederivation() {
 }
 
 #[test]
+fn sealed_terminal_clip_replaces_a_disjoint_incoming_scissor() {
+    let sealed_scissor = [30, 8, 20, 16];
+    let mut ctx = execution_context();
+    ctx.replace_scissor_rect(Some([0, 0, 16, 600]));
+
+    let mut viewport = Viewport::new();
+    let owner = viewport
+        .begin_retained_surface_frame_stage()
+        .expect("terminal-clip owner");
+    let mut graph = FrameGraph::new();
+    emit_prepared_artifact_surface_frame_for_forced_test(
+        &mut viewport,
+        owner,
+        prepared_whole_chunk_clip_surface_frame(ArtifactSurfaceResolvedClip::Scissor(
+            GraphicsPassScissor::Logical(sealed_scissor),
+        )),
+        &mut graph,
+        ctx,
+    )
+    .expect("terminal-clip emission");
+
+    let visible_rects = graph
+        .test_rect_pass_snapshots()
+        .into_iter()
+        .filter(|pass| pass.color_write_enabled)
+        .collect::<Vec<_>>();
+    assert!(
+        !visible_rects.is_empty(),
+        "terminal-clip fixture must emit paint"
+    );
+    assert!(
+        visible_rects
+            .iter()
+            .all(|pass| pass.effective_scissor_rect == Some(sealed_scissor)),
+        "the sealed terminal clip already contains incoming-clip polarity and must replace, not re-intersect, the active scissor"
+    );
+}
+
+#[test]
 fn child_mask_preflight_rejects_overflow_then_emits_sealed_push_and_pop() {
     let mut overflow_ctx = execution_context();
     for _ in 0..u8::MAX {

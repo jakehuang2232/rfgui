@@ -446,6 +446,16 @@ fn emit_child_mask_chunk(
     }
 }
 
+/// Apply a sealed terminal clip without re-deriving its relationship to the
+/// incoming scissor. Preparation has already resolved the complete clip chain,
+/// including whether Replace severs that external input.
+fn replace_sealed_terminal_scissor(
+    ctx: &mut UiBuildContext,
+    scissor: GraphicsPassScissor,
+) -> Option<GraphicsPassScissor> {
+    ctx.replace_graphics_pass_scissor(Some(scissor))
+}
+
 fn emit_chunk_ops(
     chunk: &PreparedArtifactSurfaceRasterChunk,
     graph: &mut FrameGraph,
@@ -463,7 +473,7 @@ fn emit_chunk_ops(
         super::ArtifactSurfaceChunkClipSchedule::WholeChunk(
             ArtifactSurfaceResolvedClip::Scissor(scissor),
         ) => {
-            let previous = ctx.push_graphics_pass_scissor(Some(scissor));
+            let previous = replace_sealed_terminal_scissor(ctx, scissor);
             emit(chunk.localized_ops(), graph, ctx);
             ctx.restore_graphics_pass_scissor(previous);
         }
@@ -478,7 +488,7 @@ fn emit_chunk_ops(
             match suffix_clip {
                 ArtifactSurfaceResolvedClip::Unclipped => emit(suffix, graph, ctx),
                 ArtifactSurfaceResolvedClip::Scissor(scissor) => {
-                    let previous = ctx.push_graphics_pass_scissor(Some(scissor));
+                    let previous = replace_sealed_terminal_scissor(ctx, scissor);
                     emit(suffix, graph, ctx);
                     ctx.restore_graphics_pass_scissor(previous);
                 }
@@ -533,7 +543,7 @@ fn emit_composite(
             }
             let previous_scissor = match resolved_clip {
                 ArtifactSurfaceResolvedClip::Scissor(scissor) => {
-                    Some(parent_ctx.push_graphics_pass_scissor(Some(scissor)))
+                    Some(replace_sealed_terminal_scissor(parent_ctx, scissor))
                 }
                 ArtifactSurfaceResolvedClip::Unclipped | ArtifactSurfaceResolvedClip::Empty => None,
             };
@@ -568,7 +578,7 @@ fn emit_composite(
             }
             let previous_scissor = match resolved_clip {
                 ArtifactSurfaceResolvedClip::Scissor(scissor) => {
-                    Some(parent_ctx.push_graphics_pass_scissor(Some(scissor)))
+                    Some(replace_sealed_terminal_scissor(parent_ctx, scissor))
                 }
                 ArtifactSurfaceResolvedClip::Unclipped | ArtifactSurfaceResolvedClip::Empty => None,
             };
