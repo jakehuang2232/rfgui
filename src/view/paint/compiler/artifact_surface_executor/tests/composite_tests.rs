@@ -1,4 +1,7 @@
-use super::super::super::{ArtifactSurfaceHostPlacementProjection, ArtifactSurfaceOwnerPlacement};
+use super::super::super::{
+    ArtifactSurfaceHostPlacementProjection, ArtifactSurfaceOwnerPlacement, ResolvedClip,
+    artifact_surface_terminal_clip, translate_artifact_surface_logical_clip,
+};
 use super::*;
 
 #[test]
@@ -47,6 +50,75 @@ fn owner_scoped_host_placement_replays_parent_then_child_snapping() {
 }
 
 #[test]
+fn effect_sampling_origin_tracks_finalized_destination_and_normalized_source() {
+    let cases = [
+        (
+            [7.0, 11.0, 10.0, 8.0],
+            1.0_f32,
+            [7.0, 11.0, 10.0, 8.0],
+            [7.0, 11.0],
+        ),
+        (
+            [7.0, 11.0, 10.0, 8.0],
+            1.0_f32,
+            [10.0, 9.0, 10.0, 8.0],
+            [10.0, 9.0],
+        ),
+        (
+            [7.25, 11.5, 10.0, 8.0],
+            2.0_f32,
+            [10.75, 9.25, 10.0, 8.0],
+            [21.0, 18.5],
+        ),
+    ];
+
+    for (raw_source, scale, destination, expected_origin) in cases {
+        let raster_origin = ArtifactSurfaceRasterOriginProjection::new(
+            raw_source.map(f32::to_bits),
+            scale.to_bits(),
+        )
+        .expect("canonical raster origin");
+        let geometry = ArtifactSurfaceCompositeGeometryStamp::Effect {
+            source_bounds_bits: raster_origin.normalized_source_bounds_bits,
+            destination_bounds_bits: destination.map(f32::to_bits),
+            opacity_bits: 0.625_f32.to_bits(),
+            generation: 1,
+            receiver_clip: None,
+            resolved_receiver_clip: ArtifactSurfaceResolvedClip::Unclipped,
+        };
+        let PreparedArtifactSurfaceComposite::Layer {
+            source_physical_origin,
+            ..
+        } = prepare_composite_geometry(geometry, raster_origin)
+            .expect("canonical Effect composite")
+        else {
+            panic!("Effect geometry must remain a layer composite")
+        };
+
+        assert_eq!(
+            source_physical_origin.map(f32::to_bits),
+            expected_origin.map(f32::to_bits),
+            "Effect sampling must follow finalized destination placement instead of the raw raster origin"
+        );
+    }
+}
+
+#[test]
+fn scene_root_receiver_clip_moves_before_incoming_scissor_intersection() {
+    let moved = translate_artifact_surface_logical_clip(
+        ResolvedClip::Scissor([10, 20, 100, 80]),
+        [4.0, -2.0],
+    )
+    .expect("finite owner placement");
+    assert_eq!(moved, ResolvedClip::Scissor([14, 18, 100, 80]));
+    assert_eq!(
+        artifact_surface_terminal_clip(moved, &[], Some([0, 0, 50, 50])),
+        ResolvedClip::Scissor([14, 18, 36, 32]),
+        "the owner clip moves with its content while the frame scissor stays fixed"
+    );
+}
+
+#[test]
 fn three_surface_roles_emit_only_their_sealed_typed_composites() {
     let prepared = prepared_co_located_surface_frame();
     assert_eq!(prepared.raster_plan().nodes().len(), 3);
@@ -72,9 +144,16 @@ fn three_surface_roles_emit_only_their_sealed_typed_composites() {
         .nodes()
         .iter()
         .filter_map(|node| match node.geometry() {
-            ArtifactSurfaceCompositeGeometryStamp::Effect { .. } => {
-                Some(node.raster_origin.physical_origin_f32().map(f32::to_bits))
-            }
+            ArtifactSurfaceCompositeGeometryStamp::Effect {
+                source_bounds_bits,
+                destination_bounds_bits,
+                ..
+            } => Some(
+                node.raster_origin
+                    .composite_source_physical_origin(source_bounds_bits, destination_bounds_bits)
+                    .expect("sealed Effect sampling origin")
+                    .map(f32::to_bits),
+            ),
             ArtifactSurfaceCompositeGeometryStamp::ScrollContent {
                 source_bounds_bits,
                 destination_bounds_bits,
@@ -118,6 +197,7 @@ fn three_surface_roles_emit_only_their_sealed_typed_composites() {
                 assert_eq!(resolved_clip, resolved_receiver_clip);
             }
             ArtifactSurfaceCompositeGeometryStamp::Effect {
+                source_bounds_bits,
                 destination_bounds_bits,
                 opacity_bits,
                 resolved_receiver_clip,
@@ -138,7 +218,15 @@ fn three_surface_roles_emit_only_their_sealed_typed_composites() {
                     destination_bounds_bits
                 );
                 assert_eq!(opacity.to_bits(), opacity_bits);
-                assert_eq!(source_physical_origin, node.raster_origin.physical_origin_f32());
+                assert_eq!(
+                    source_physical_origin,
+                    node.raster_origin
+                        .composite_source_physical_origin(
+                            source_bounds_bits,
+                            destination_bounds_bits,
+                        )
+                        .expect("sealed Effect sampling origin")
+                );
                 assert_eq!(resolved_clip, resolved_receiver_clip);
             }
             ArtifactSurfaceCompositeGeometryStamp::ScrollContent {

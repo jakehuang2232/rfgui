@@ -202,28 +202,6 @@ fn property_scene_effect_pixels_at_offset(
     render_with_config(graph, gpu, scale_factor, FORMAT)
 }
 
-fn translated_pixels(source: &[u8], delta: [i32; 2]) -> Vec<u8> {
-    let mut translated = vec![0; source.len()];
-    for y in 0..HEIGHT as i32 {
-        for x in 0..WIDTH as i32 {
-            let destination = [x + delta[0], y + delta[1]];
-            if destination[0] < 0
-                || destination[1] < 0
-                || destination[0] >= WIDTH as i32
-                || destination[1] >= HEIGHT as i32
-            {
-                continue;
-            }
-            let source_offset = ((y as u32 * WIDTH + x as u32) * BYTES_PER_PIXEL) as usize;
-            let destination_offset = ((destination[1] as u32 * WIDTH + destination[0] as u32)
-                * BYTES_PER_PIXEL) as usize;
-            translated[destination_offset..destination_offset + BYTES_PER_PIXEL as usize]
-                .copy_from_slice(&source[source_offset..source_offset + BYTES_PER_PIXEL as usize]);
-        }
-    }
-    translated
-}
-
 #[test]
 #[ignore = "requires native GPU adapter"]
 fn native_fractional_host_offset_property_scene_bounds_translate_exactly() -> Result<(), String> {

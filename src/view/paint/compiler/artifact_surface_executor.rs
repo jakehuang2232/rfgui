@@ -349,6 +349,7 @@ fn prepare_composite_geometry(
             })
         }
         ArtifactSurfaceCompositeGeometryStamp::Effect {
+            source_bounds_bits,
             destination_bounds_bits,
             opacity_bits,
             resolved_receiver_clip,
@@ -356,6 +357,8 @@ fn prepare_composite_geometry(
         } => {
             let [x, y, width, height] = destination_bounds_bits.map(f32::from_bits);
             let opacity = f32::from_bits(opacity_bits);
+            let source_physical_origin = raster_origin
+                .composite_source_physical_origin(source_bounds_bits, destination_bounds_bits)?;
             ([x, y, width, height, opacity]
                 .into_iter()
                 .all(f32::is_finite)
@@ -366,7 +369,7 @@ fn prepare_composite_geometry(
                 rect_pos: [x, y],
                 rect_size: [width, height],
                 opacity,
-                source_physical_origin: raster_origin.physical_origin_f32(),
+                source_physical_origin,
                 resolved_clip: resolved_receiver_clip,
             })
         }

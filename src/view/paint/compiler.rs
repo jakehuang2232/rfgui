@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use crate::view::base_component::{
-    AncestorClipContext, BuildState, RetainedSurfaceBounds, Text, UiBuildContext,
-    paint_offset_after_owner_snap,
+    AncestorClipContext, BuildState, Rect, RetainedSurfaceBounds, Text, UiBuildContext,
+    exact_logical_scissor_for_rect, paint_offset_after_owner_snap,
 };
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
@@ -5301,8 +5301,8 @@ fn append_bounds(accumulated: &mut Option<[u32; 4]>, next: [u32; 4]) -> Option<(
     Some(())
 }
 
-/// Graph-inert artifact owner placement sealed for the next Stage C wiring
-/// batch. That consumer will apply it only to paint landing in the scene root;
+/// Artifact owner placement sealed before raster preparation. The raster plan
+/// applies it only to paint and composite edges landing in the scene root;
 /// detached raster content remains host-independent.
 #[derive(Debug)]
 struct ArtifactSurfaceHostPlacementProjection {
@@ -5476,10 +5476,6 @@ impl ArtifactSurfaceRasterOriginProjection {
         self.translation_bits.map(f32::from_bits)
     }
 
-    fn physical_origin_f32(self) -> [f32; 2] {
-        self.physical_origin.map(|value| value as f32)
-    }
-
     fn composite_source_physical_origin(
         self,
         source_bounds_bits: [u32; 4],
@@ -5638,6 +5634,28 @@ fn artifact_surface_terminal_clip(
         resolved
     } else {
         intersect_optional_scissor(resolved, incoming_scissor)
+    }
+}
+
+fn translate_artifact_surface_logical_clip(
+    clip: ResolvedClip,
+    paint_offset: [f32; 2],
+) -> Option<ResolvedClip> {
+    match clip {
+        ResolvedClip::Unclipped | ResolvedClip::Empty => Some(clip),
+        ResolvedClip::Scissor([x, y, width, height]) => {
+            let translated = Rect {
+                x: x as f32 + paint_offset[0],
+                y: y as f32 + paint_offset[1],
+                width: width as f32,
+                height: height as f32,
+            };
+            Some(
+                exact_logical_scissor_for_rect(translated)
+                    .map(ResolvedClip::Scissor)
+                    .unwrap_or(ResolvedClip::Empty),
+            )
+        }
     }
 }
 
@@ -5838,15 +5856,72 @@ fn artifact_surface_span_raw_bounds(
     Ok(bounds)
 }
 
+/// Selects the only placement authority available to one prepared span.
+/// Scene-root spans consume owner-scoped host placement; detached spans consume
+/// only surface-local translation plus raster-origin normalization.
+#[derive(Clone, Copy)]
+enum ArtifactSurfaceSpanPlacement<'a> {
+    SceneRoot(&'a ResolvedArtifactSurfaceHostPlacement),
+    Surface {
+        boundary_root: NodeKey,
+        base_delta: [f32; 2],
+        raster_origin: ArtifactSurfaceRasterOriginProjection,
+    },
+}
+
+impl ArtifactSurfaceSpanPlacement<'_> {
+    fn boundary_root(self) -> Option<NodeKey> {
+        match self {
+            Self::SceneRoot(_) => None,
+            Self::Surface { boundary_root, .. } => Some(boundary_root),
+        }
+    }
+
+    fn chunk_translation(
+        self,
+        target: ArtifactSurfaceRasterTargetId,
+        owner: NodeKey,
+    ) -> Result<[f32; 2], ArtifactSurfaceRasterPlanError> {
+        match self {
+            Self::SceneRoot(host_placement) => host_placement
+                .owner_paint_offset(owner)
+                .ok_or(ArtifactSurfaceRasterPlanError::InvalidOwnerTopology { target, owner }),
+            Self::Surface {
+                boundary_root,
+                base_delta,
+                raster_origin,
+            } => raster_origin
+                .combined_translation(artifact_surface_chunk_base_translation(
+                    Some(boundary_root),
+                    owner,
+                    base_delta,
+                ))
+                .ok_or(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(
+                    match target {
+                        ArtifactSurfaceRasterTargetId::Surface(source) => source,
+                        ArtifactSurfaceRasterTargetId::SceneRoot(_) => {
+                            unreachable!("scene-root spans do not own a raster-origin projection")
+                        }
+                    },
+                )),
+        }
+    }
+
+    fn raster_origin(self) -> Option<ArtifactSurfaceRasterOriginProjection> {
+        match self {
+            Self::SceneRoot(_) => None,
+            Self::Surface { raster_origin, .. } => Some(raster_origin),
+        }
+    }
+}
+
 fn prepare_artifact_surface_span(
     artifact: &PaintArtifact,
     target: ArtifactSurfaceRasterTargetId,
-    boundary_root: Option<NodeKey>,
     span: &ArtifactSurfaceCoverageSpan,
-    base_delta: [f32; 2],
+    placement: ArtifactSurfaceSpanPlacement<'_>,
     composite_effect: Option<EffectNodeSnapshot>,
     incoming_scissor: Option<[u32; 4]>,
-    raster_origin: Option<ArtifactSurfaceRasterOriginProjection>,
 ) -> Result<PreparedArtifactSurfaceRasterSpan, ArtifactSurfaceRasterPlanError> {
     let chunk_range = span.chunk_range();
     let op_range = span.op_range();
@@ -5854,7 +5929,7 @@ fn prepare_artifact_surface_span(
     let owner_topology = artifact_surface_span_owner_topology(
         artifact,
         target,
-        boundary_root,
+        placement.boundary_root(),
         chunks.iter().map(|chunk| chunk.owner),
     )?;
 
@@ -5873,19 +5948,7 @@ fn prepare_artifact_surface_span(
         chunks.iter().zip(span.localized_states()).enumerate()
     {
         let chunk_index = chunk_range.start + local_index;
-        let chunk_base_delta =
-            artifact_surface_chunk_base_translation(boundary_root, chunk.owner, base_delta);
-        let delta = match raster_origin {
-            Some(projection) => projection.combined_translation(chunk_base_delta).ok_or(
-                ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(match target {
-                    ArtifactSurfaceRasterTargetId::Surface(source) => source,
-                    ArtifactSurfaceRasterTargetId::SceneRoot(_) => {
-                        unreachable!("scene-root spans do not own a raster-origin projection")
-                    }
-                }),
-            )?,
-            None => chunk_base_delta,
-        };
+        let delta = placement.chunk_translation(target, chunk.owner)?;
         let ops = artifact
             .ops
             .get(chunk.op_range.clone())
@@ -5952,7 +6015,7 @@ fn prepare_artifact_surface_span(
             resolved_clip,
             &clip_chain,
             incoming_scissor,
-            raster_origin,
+            placement.raster_origin(),
         );
         opaque_order_count = opaque_order_count
             .checked_add(
@@ -6086,6 +6149,7 @@ fn surface_composite_geometry(
     receiver_source_bounds_bits: [u32; 4],
     receiver: SurfaceDagExecutionTargetId,
     receiver_transform: Option<TransformNodeId>,
+    receiver_paint_offset: [f32; 2],
     context: ArtifactSurfaceRasterContext,
     transforms: &FxHashMap<TransformNodeId, TransformNodeSnapshot>,
     effects: &FxHashMap<EffectNodeId, EffectNodeSnapshot>,
@@ -6093,9 +6157,6 @@ fn surface_composite_geometry(
     clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
     closure: Option<&SurfaceDagClipClosureProjection>,
 ) -> Result<ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceRasterPlanError> {
-    let root_offset = matches!(receiver, SurfaceDagExecutionTargetId::SceneRoot(_))
-        .then(|| context.paint_offset())
-        .unwrap_or([0.0, 0.0]);
     let receiver_clip = closure
         .map(SurfaceDagClipClosureProjection::receiver_clip)
         .unwrap_or(node.transition().clip.to);
@@ -6112,6 +6173,11 @@ fn surface_composite_geometry(
             ArtifactSurfaceRasterPlanError::InvalidReceiverClip(node.id()),
         )?;
     let resolved_receiver_clip = if matches!(receiver, SurfaceDagExecutionTargetId::SceneRoot(_)) {
+        let resolved_receiver_clip =
+            translate_artifact_surface_logical_clip(resolved_receiver_clip, receiver_paint_offset)
+                .ok_or(ArtifactSurfaceRasterPlanError::InvalidReceiverClip(
+                    node.id(),
+                ))?;
         artifact_surface_terminal_clip(
             resolved_receiver_clip,
             &receiver_clip_chain,
@@ -6152,7 +6218,7 @@ fn surface_composite_geometry(
             let destination_bounds_bits = transform_destination_bounds(
                 receiver_source_bounds_bits,
                 receiver_transform,
-                root_offset,
+                receiver_paint_offset,
             )
             .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
                 node.id(),
@@ -6170,8 +6236,8 @@ fn surface_composite_geometry(
                 ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(node.id()),
             )?;
             let mut destination = receiver_source_bounds_bits.map(f32::from_bits);
-            destination[0] += root_offset[0];
-            destination[1] += root_offset[1];
+            destination[0] += receiver_paint_offset[0];
+            destination[1] += receiver_paint_offset[1];
             if destination.into_iter().any(|value| !value.is_finite())
                 || !snapshot.opacity.is_finite()
                 || !(0.0..=1.0).contains(&snapshot.opacity)
@@ -6196,8 +6262,8 @@ fn surface_composite_geometry(
             )?;
             let offset = [snapshot.offset.x, snapshot.offset.y];
             let mut destination = receiver_source_bounds_bits.map(f32::from_bits);
-            destination[0] = destination[0] - offset[0] + root_offset[0];
-            destination[1] = destination[1] - offset[1] + root_offset[1];
+            destination[0] = destination[0] - offset[0] + receiver_paint_offset[0];
+            destination[1] = destination[1] - offset[1] + receiver_paint_offset[1];
             if destination.into_iter().any(|value| !value.is_finite()) || snapshot.generation == 0 {
                 return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
                     node.id(),
@@ -6219,6 +6285,12 @@ fn prepare_artifact_surface_raster_plan_from_program(
     program: ValidatedArtifactSurfaceDagProgram,
     context: ArtifactSurfaceRasterContext,
 ) -> Result<PreparedArtifactSurfaceRasterPlan, ArtifactSurfaceRasterPlanError> {
+    let host_placement = program
+        .host_placement
+        .resolve(context.paint_offset())
+        .map_err(TransitionError::SpatialSnapshot)
+        .map_err(SurfaceDagError::Transition)
+        .map_err(ArtifactSurfaceRasterPlanError::SurfaceDag)?;
     let transforms = program
         .artifact
         .transform_nodes
@@ -6338,16 +6410,18 @@ fn prepare_artifact_surface_raster_plan_from_program(
                         prepare_artifact_surface_span(
                             &program.artifact,
                             target_id,
-                            Some(node.target()),
                             span,
-                            base_delta,
+                            ArtifactSurfaceSpanPlacement::Surface {
+                                boundary_root: node.target(),
+                                base_delta,
+                                raster_origin,
+                            },
                             match node.kind() {
                                 SurfaceDagNodeKind::Effect(effect) => effects.get(&effect).copied(),
                                 SurfaceDagNodeKind::Transform(_)
                                 | SurfaceDagNodeKind::ScrollContent { .. } => None,
                             },
                             None,
-                            Some(raster_origin),
                         )?,
                     ));
                 }
@@ -6469,6 +6543,12 @@ fn prepare_artifact_surface_raster_plan_from_program(
                     }
                 }
             },
+            host_placement
+                .receiver_paint_offset(node.target(), execution.receiver())
+                .ok_or(ArtifactSurfaceRasterPlanError::InvalidOwnerTopology {
+                    target: target_id,
+                    owner: node.target(),
+                })?,
             context,
             &transforms,
             &effects,
@@ -6525,12 +6605,10 @@ fn prepare_artifact_surface_raster_plan_from_program(
                     PreparedArtifactSurfaceRasterStep::ArtifactSpan(prepare_artifact_surface_span(
                         &program.artifact,
                         target,
-                        None,
                         span,
-                        [0.0, 0.0],
+                        ArtifactSurfaceSpanPlacement::SceneRoot(&host_placement),
                         None,
                         context.incoming_scissor,
-                        None,
                     )?),
                 ),
                 ArtifactSurfaceCoverageStep::NestedSurface(child_source) => {

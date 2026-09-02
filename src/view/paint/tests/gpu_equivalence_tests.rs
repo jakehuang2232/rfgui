@@ -13,6 +13,9 @@ const WIDTH: u32 = 67;
 const HEIGHT: u32 = 64;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const BYTES_PER_PIXEL: u32 = 4;
+// At DPR 1 the owner snap maps this fractional placement to the independently
+// checkable physical-pixel delta [4, -2] used by the Transform oracle below.
+const ARTIFACT_HOST_PLACEMENT_OFFSET: [f32; 2] = [3.5, -2.25];
 const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = 256;
 const ROOT_GROUP_FIRST_COLOR: [f32; 4] = [1.0, 0.08, 0.02, 0.75];
 const ROOT_GROUP_SECOND_COLOR: [f32; 4] = [0.02, 0.12, 1.0, 0.65];
@@ -1148,6 +1151,28 @@ fn legacy_transformed_rect_graph(
         .ok_or_else(|| "legacy transformed rect root disappeared".to_string())?;
     add_present(&mut graph, &target)?;
     Ok(graph)
+}
+
+fn translated_pixels(source: &[u8], delta: [i32; 2]) -> Vec<u8> {
+    let mut translated = vec![0; source.len()];
+    for y in 0..HEIGHT as i32 {
+        for x in 0..WIDTH as i32 {
+            let destination = [x + delta[0], y + delta[1]];
+            if destination[0] < 0
+                || destination[1] < 0
+                || destination[0] >= WIDTH as i32
+                || destination[1] >= HEIGHT as i32
+            {
+                continue;
+            }
+            let source_offset = ((y as u32 * WIDTH + x as u32) * BYTES_PER_PIXEL) as usize;
+            let destination_offset = ((destination[1] as u32 * WIDTH + destination[0] as u32)
+                * BYTES_PER_PIXEL) as usize;
+            translated[destination_offset..destination_offset + BYTES_PER_PIXEL as usize]
+                .copy_from_slice(&source[source_offset..source_offset + BYTES_PER_PIXEL as usize]);
+        }
+    }
+    translated
 }
 
 fn forced_transformed_rect_graph(
@@ -3833,9 +3858,9 @@ mod native_pixel_oracle_tests;
 mod oracle_tests;
 mod scroll_graph_build_tests;
 
-mod native_artifact_surface_tests;
-mod native_artifact_scroll_content_tests;
 mod artifact_scroll_content_contract_tests;
+mod native_artifact_scroll_content_tests;
+mod native_artifact_surface_tests;
 mod native_nested_scroll_segment_tests;
 mod native_nested_scroll_tests;
 mod native_root_effect_tests;

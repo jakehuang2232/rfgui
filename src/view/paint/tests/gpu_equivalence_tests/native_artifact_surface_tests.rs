@@ -53,11 +53,12 @@ pub(super) fn nested_effect_fixture() -> (NodeArena, NodeKey) {
     (arena, root)
 }
 
-fn property_scene_nested_effect_graph() -> Result<FrameGraph, String> {
+fn property_scene_nested_effect_graph(paint_offset: [f32; 2]) -> Result<FrameGraph, String> {
     let (arena, root) = nested_effect_fixture();
     let roots = [root];
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (mut graph, ctx, target) = transformed_graph_prelude(1.0, None);
+    let (mut graph, mut ctx, target) = transformed_graph_prelude(1.0, None);
+    ctx.set_paint_offset(paint_offset);
     // The pre-cutover production authority is PropertyScene, whose effect
     // group isolation is the semantic oracle. The immediate painter bakes
     // opacity per op and therefore is not an equivalent effect authority.
@@ -139,11 +140,13 @@ fn assert_property_scene_effect_fixture_is_overlap_sensitive(
 fn production_artifact_graph(
     viewport: &mut Viewport,
     fixture: fn() -> (NodeArena, NodeKey),
+    paint_offset: [f32; 2],
 ) -> Result<(FrameGraph, AutoArtifactSurfaceEmissionForTest), String> {
     let (arena, root) = fixture();
     let roots = [root];
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (mut graph, ctx, target) = transformed_graph_prelude(1.0, None);
+    let (mut graph, mut ctx, target) = transformed_graph_prelude(1.0, None);
+    ctx.set_paint_offset(paint_offset);
     let trace = emit_retained_auto_artifact_surface_for_test(
         viewport,
         &arena,
@@ -162,12 +165,17 @@ fn verify_cold_warm_artifact_surface(
     adapter: &str,
     case: &str,
     fixture: fn() -> (NodeArena, NodeKey),
-    legacy: FrameGraph,
+    paint_offset: [f32; 2],
+    oracle: FrameGraph,
+    oracle_pixel_translation: Option<[i32; 2]>,
 ) -> Result<(usize, u64), String> {
-    let legacy_pixels = render(legacy, gpu)?;
+    let oracle_pixels = render(oracle, gpu)?;
+    let legacy_pixels = oracle_pixel_translation
+        .map(|delta| translated_pixels(&oracle_pixels, delta))
+        .unwrap_or(oracle_pixels);
     let mut viewport = Viewport::new();
 
-    let (cold_graph, cold) = production_artifact_graph(&mut viewport, fixture)?;
+    let (cold_graph, cold) = production_artifact_graph(&mut viewport, fixture, paint_offset)?;
     if cold.actions.len() != cold.surface_count
         || cold
             .actions
@@ -186,7 +194,7 @@ fn verify_cold_warm_artifact_surface(
         ));
     }
 
-    let (warm_graph, warm) = production_artifact_graph(&mut viewport, fixture)?;
+    let (warm_graph, warm) = production_artifact_graph(&mut viewport, fixture, paint_offset)?;
     if warm.surface_count != cold.surface_count
         || warm.aggregate_texture_bytes != cold.aggregate_texture_bytes
         || warm
@@ -237,7 +245,18 @@ fn native_production_artifact_transform_matches_legacy_and_reuses_real_pool() ->
         &adapter,
         "production-artifact-transform",
         transformed_rect_fixture,
+        ARTIFACT_HOST_PLACEMENT_OFFSET,
+        // This proves that non-zero Artifact placement equals the independently
+        // rendered zero-offset legacy result translated by the fixture's known
+        // DPR-1 snap: [3.5, -2.25] -> [4, -2]. It does not prove equality with
+        // the legacy Transform path at the same non-zero placement: that path
+        // bakes the host offset into its detached raster and is a known-invalid
+        // oracle. A simple detached-layer offset reset was rejected because it
+        // breaks `nested_exact_transform_builds_ordered_owning_stream_and_absolute_matrix_golden`
+        // and `production_tree_canary_first_frame_matches_legacy_and_uses_pool_only_actions`;
+        // repairing that owner-scoped legacy behavior remains a separate task.
         legacy_transformed_rect_graph(1.0, None)?,
+        Some([4, -2]),
     )?;
     if surface_count == 0 || bytes == 0 {
         return Err(format!(
@@ -264,7 +283,9 @@ fn native_production_artifact_effect_matches_property_scene_and_reuses_real_pool
         &adapter,
         "production-artifact-effect",
         nested_effect_fixture,
-        property_scene_nested_effect_graph()?,
+        ARTIFACT_HOST_PLACEMENT_OFFSET,
+        property_scene_nested_effect_graph(ARTIFACT_HOST_PLACEMENT_OFFSET)?,
+        None,
     )?;
     if surface_count == 0 || bytes == 0 {
         return Err(format!(

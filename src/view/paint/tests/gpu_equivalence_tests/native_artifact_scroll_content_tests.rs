@@ -133,9 +133,11 @@ fn nested_inline_ifc_text_fixture() -> (NodeArena, NodeKey, PropertyTrees, Paint
 
 fn legacy_artifact_scroll_fixture_graph(
     fixture: ArtifactScrollFixture,
+    paint_offset: [f32; 2],
 ) -> Result<FrameGraph, String> {
     let (mut arena, root, _, _) = fixture();
-    let (mut graph, ctx, target) = transformed_graph_prelude(1.0, None);
+    let (mut graph, mut ctx, target) = transformed_graph_prelude(1.0, None);
+    ctx.set_paint_offset(paint_offset);
     arena
         .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
         .ok_or_else(|| "legacy Artifact scroll root disappeared".to_owned())?;
@@ -147,9 +149,18 @@ pub(super) fn production_artifact_scroll_fixture_graph(
     viewport: &mut Viewport,
     fixture: ArtifactScrollFixture,
 ) -> Result<(FrameGraph, AutoArtifactSurfaceEmissionForTest), String> {
+    production_artifact_scroll_fixture_graph_with_paint_offset(viewport, fixture, [0.0, 0.0])
+}
+
+fn production_artifact_scroll_fixture_graph_with_paint_offset(
+    viewport: &mut Viewport,
+    fixture: ArtifactScrollFixture,
+    paint_offset: [f32; 2],
+) -> Result<(FrameGraph, AutoArtifactSurfaceEmissionForTest), String> {
     let (arena, root, properties, generations) = fixture();
     let roots = [root];
-    let (mut graph, ctx, target) = transformed_graph_prelude(1.0, None);
+    let (mut graph, mut ctx, target) = transformed_graph_prelude(1.0, None);
+    ctx.set_paint_offset(paint_offset);
     let emission = emit_retained_auto_artifact_surface_for_test(
         viewport,
         &arena,
@@ -169,10 +180,16 @@ fn verify_artifact_scroll_fixture(
     case: &str,
     fixture: ArtifactScrollFixture,
 ) -> Result<(usize, u64), String> {
-    let legacy_pixels = render(legacy_artifact_scroll_fixture_graph(fixture)?, gpu)?;
+    let legacy_graph =
+        legacy_artifact_scroll_fixture_graph(fixture, ARTIFACT_HOST_PLACEMENT_OFFSET)?;
+    let legacy_pixels = render(legacy_graph, gpu)?;
     let mut viewport = Viewport::new();
 
-    let (cold_graph, cold) = production_artifact_scroll_fixture_graph(&mut viewport, fixture)?;
+    let (cold_graph, cold) = production_artifact_scroll_fixture_graph_with_paint_offset(
+        &mut viewport,
+        fixture,
+        ARTIFACT_HOST_PLACEMENT_OFFSET,
+    )?;
     if cold.surface_count == 0
         || cold.aggregate_texture_bytes == 0
         || cold.actions.len() != cold.surface_count
@@ -193,7 +210,11 @@ fn verify_artifact_scroll_fixture(
         ));
     }
 
-    let (warm_graph, warm) = production_artifact_scroll_fixture_graph(&mut viewport, fixture)?;
+    let (warm_graph, warm) = production_artifact_scroll_fixture_graph_with_paint_offset(
+        &mut viewport,
+        fixture,
+        ARTIFACT_HOST_PLACEMENT_OFFSET,
+    )?;
     if warm.surface_count != cold.surface_count
         || warm.aggregate_texture_bytes != cold.aggregate_texture_bytes
         || warm.actions.len() != warm.surface_count
