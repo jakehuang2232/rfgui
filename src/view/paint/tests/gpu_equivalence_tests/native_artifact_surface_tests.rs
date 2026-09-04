@@ -137,7 +137,7 @@ fn assert_property_scene_effect_fixture_is_overlap_sensitive(
         })
 }
 
-fn production_artifact_graph(
+pub(super) fn production_artifact_graph(
     viewport: &mut Viewport,
     fixture: fn() -> (NodeArena, NodeKey),
     paint_offset: [f32; 2],
@@ -248,13 +248,10 @@ fn native_production_artifact_transform_matches_legacy_and_reuses_real_pool() ->
         ARTIFACT_HOST_PLACEMENT_OFFSET,
         // This proves that non-zero Artifact placement equals the independently
         // rendered zero-offset legacy result translated by the fixture's known
-        // DPR-1 snap: [3.5, -2.25] -> [4, -2]. It does not prove equality with
-        // the legacy Transform path at the same non-zero placement: that path
-        // bakes the host offset into its detached raster and is a known-invalid
-        // oracle. A simple detached-layer offset reset was rejected because it
-        // breaks `nested_exact_transform_builds_ordered_owning_stream_and_absolute_matrix_golden`
-        // and `production_tree_canary_first_frame_matches_legacy_and_uses_pool_only_actions`;
-        // repairing that owner-scoped legacy behavior remains a separate task.
+        // DPR-1 snap: [3.5, -2.25] -> [4, -2]. The dedicated three-way gate
+        // also proves that the repaired same-placement legacy Transform path
+        // agrees with this independent translation and with Artifact. Keep the
+        // independent oracle here until a later batch deliberately retires it.
         legacy_transformed_rect_graph(1.0, None)?,
         Some([4, -2]),
     )?;

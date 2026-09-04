@@ -385,14 +385,11 @@ impl Element {
             return self.build_transformed_subtree(graph, arena, ctx, force_self_opaque);
         }
 
-        let parent_paint_offset = ctx.paint_offset();
-        let [paint_offset_x, paint_offset_y] = parent_paint_offset;
-        let paint_x = self.layout_state.layout_position.x + paint_offset_x;
-        let paint_y = self.layout_state.layout_position.y + paint_offset_y;
-        ctx.translate_paint_offset(
-            round_layout_value(paint_x) - paint_x,
-            round_layout_value(paint_y) - paint_y,
-        );
+        let parent_paint_projection = ctx.owner_paint_offset_projection();
+        ctx.snap_owner_paint_offset([
+            self.layout_state.layout_position.x,
+            self.layout_state.layout_position.y,
+        ]);
 
         let previous_scissor_rect = self.apply_self_clip_scissor(&mut ctx);
 
@@ -504,7 +501,7 @@ impl Element {
         if let Some(previous) = previous_scissor_rect {
             ctx.restore_scissor_rect(previous);
         }
-        ctx.set_paint_offset(parent_paint_offset);
+        ctx.restore_owner_paint_offset_projection(parent_paint_projection);
         ctx.into_state()
     }
 
@@ -1880,9 +1877,25 @@ impl Element {
         paint_offset: [f32; 2],
         outer_scissor_rect: Option<[u32; 4]>,
     ) -> Option<TransformSurfaceGeometrySnapshot> {
+        self.transform_surface_geometry_snapshot_with_placement(
+            arena,
+            paint_offset,
+            paint_offset,
+            outer_scissor_rect,
+        )
+    }
+
+    fn transform_surface_geometry_snapshot_with_placement(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+        raster_paint_offset: [f32; 2],
+        composite_paint_offset: [f32; 2],
+        outer_scissor_rect: Option<[u32; 4]>,
+    ) -> Option<TransformSurfaceGeometrySnapshot> {
         let viewport_transform = self.resolved_transform?;
-        let source_bounds = self.legacy_transform_surface_bounds(arena, paint_offset)?;
-        let visual_bounds = self.paint_snapped_own_composite_bounds(source_bounds, paint_offset);
+        let source_bounds = self.legacy_transform_surface_bounds(arena, raster_paint_offset)?;
+        let visual_bounds =
+            self.paint_snapped_own_composite_bounds(source_bounds, composite_paint_offset);
         TransformSurfaceGeometrySnapshot::new(
             source_bounds,
             visual_bounds,
@@ -1952,9 +1965,13 @@ impl Element {
         mut ctx: UiBuildContext,
         force_self_opaque: bool,
     ) -> BuildState {
-        let Some(geometry) =
-            self.transform_surface_geometry_snapshot(arena, ctx.paint_offset(), ctx.scissor_rect())
-        else {
+        let placement = ctx.owner_paint_offset_projection();
+        let Some(geometry) = self.transform_surface_geometry_snapshot_with_placement(
+            arena,
+            placement.host_neutral,
+            placement.active,
+            ctx.scissor_rect(),
+        ) else {
             // Invalid transform geometry must never reach texture allocation
             // or a composite pass. Retaining the caller state is the legacy
             // fail-closed fallback for this frame.
@@ -1965,6 +1982,11 @@ impl Element {
             ctx.viewport(),
             ctx.layer_subtree_state_with_ancestor_clip(AncestorClipContext::default()),
         );
+        // Host placement belongs to the receiver edge. Re-enter the owner in
+        // the detached target with the same zero-host owner snap chain used to
+        // derive `source_bounds`; nested surfaces retain their parent-surface
+        // fractional snap instead of being reset globally to zero.
+        layer_ctx.set_paint_offset(placement.host_neutral);
         layer_ctx.set_current_render_transform(ctx.current_render_transform());
         let layer_target = layer_ctx.allocate_persistent_target_with_key(
             graph,
@@ -2926,8 +2948,28 @@ mod paint_snap_tests {
         let geometry = {
             let root = crate::view::test_support::get_element::<Element>(&arena, root_key);
             let own_bounds = root.untransformed_paint_bounds();
+            let owner_position = [
+                root.layout_state.layout_position.x,
+                root.layout_state.layout_position.y,
+            ];
+            let raster_paint_offset = crate::view::base_component::paint_offset_after_owner_snap(
+                owner_position,
+                [0.0, 0.0],
+            )
+            .expect("finite zero-host owner placement");
+            let composite_paint_offset =
+                crate::view::base_component::paint_offset_after_owner_snap(
+                    owner_position,
+                    paint_offset,
+                )
+                .expect("finite active owner placement");
             let geometry = root
-                .transform_surface_geometry_snapshot(&arena, paint_offset, Some(outer_scissor))
+                .transform_surface_geometry_snapshot_with_placement(
+                    &arena,
+                    raster_paint_offset,
+                    composite_paint_offset,
+                    Some(outer_scissor),
+                )
                 .expect("measured transformed root must expose legacy surface geometry");
             assert!(
                 geometry.source_bounds.width > own_bounds.width
@@ -3026,35 +3068,35 @@ mod paint_snap_tests {
                 geometry.source_bounds.height.to_bits(),
             ],
             [
-                (-20.5_f32).to_bits(),
+                (-21.0_f32).to_bits(),
                 11.0_f32.to_bits(),
-                60.5_f32.to_bits(),
+                60.0_f32.to_bits(),
                 30.0_f32.to_bits(),
             ],
-            "negative-origin source coverage must include snapped receiver-space child paint"
+            "detached source coverage must retain the zero-host owner snap"
         );
         assert_eq!(
             (transformed_desc.width(), transformed_desc.height()),
-            (80, 60)
+            (78, 60)
         );
         assert_eq!(transformed_desc.origin(), (0, 22));
         assert_eq!(
             composite.uv_bounds_bits,
             Some([
-                (-20.5_f32).to_bits(),
+                (-21.0_f32).to_bits(),
                 11.0_f32.to_bits(),
-                60.5_f32.to_bits(),
+                60.0_f32.to_bits(),
                 30.0_f32.to_bits(),
             ])
         );
         // Independent scale-2 oracle: full logical X coverage is
-        // floor(-20.5 * 2)=-41 through ceil(40.0 * 2)=80, i.e. 121 pixels.
-        // Legacy clamps the texture origin to zero and allocates only 80
-        // pixels while the composite still asks for UV x=-20.5. This freezes
+        // floor(-21.0 * 2)=-42 through ceil(39.0 * 2)=78, i.e. 120 pixels.
+        // Legacy clamps the texture origin to zero and allocates only 78
+        // pixels while the composite still asks for UV x=-21.0. This freezes
         // the existing left-edge crop and proves C2 must reject negative
         // source origins until descriptor/UV semantics are deliberately fixed.
-        assert_eq!(80_i32 - (-41_i32), 121);
-        assert_eq!(transformed_desc.width(), 80);
+        assert_eq!(78_i32 - (-42_i32), 120);
+        assert_eq!(transformed_desc.width(), 78);
     }
 
     #[test]

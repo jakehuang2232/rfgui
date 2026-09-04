@@ -227,6 +227,75 @@ fn native_fractional_host_offset_property_scene_bounds_translate_exactly() -> Re
 #[test]
 #[ignore = "requires native GPU adapter"]
 // Run explicitly with:
+// cargo test -q native_nonzero_host_transform_legacy_artifact_and_independent_translation_agree -- --ignored --nocapture
+fn native_nonzero_host_transform_legacy_artifact_and_independent_translation_agree()
+-> Result<(), String> {
+    let gpu = native_gpu_test_context()?;
+    let gpu = gpu.as_ref().expect("native graphics device initialized");
+    let adapter = gpu.label();
+
+    let zero_legacy = render(legacy_transformed_rect_graph(1.0, None)?, gpu)?;
+    // Independent DPR-1 oracle: [3.5, -2.25] snaps to [4, -2]. Do not derive
+    // this value through the placement code under test.
+    let translated_zero_legacy = translated_pixels(&zero_legacy, [4, -2]);
+    let placed_legacy = render(
+        legacy_transformed_rect_graph_with_paint_offset(1.0, None, ARTIFACT_HOST_PLACEMENT_OFFSET)?,
+        gpu,
+    )?;
+
+    let mut viewport = Viewport::new();
+    let (artifact_graph, artifact) =
+        super::native_artifact_surface_tests::production_artifact_graph(
+            &mut viewport,
+            transformed_rect_fixture,
+            ARTIFACT_HOST_PLACEMENT_OFFSET,
+        )?;
+    if artifact.surface_count == 0
+        || artifact.aggregate_texture_bytes == 0
+        || artifact
+            .actions
+            .iter()
+            .any(|action| *action != RetainedSurfaceCompileAction::Reraster)
+    {
+        return Err(format!(
+            "nonzero-host transform artifact did not reraster a real detached surface on {adapter}: surfaces={}, bytes={}, actions={:?}",
+            artifact.surface_count, artifact.aggregate_texture_bytes, artifact.actions
+        ));
+    }
+    let artifact_pixels = render_on_viewport(artifact_graph, gpu, &mut viewport, 1.0, FORMAT)?;
+    viewport.finish_retained_surface_transaction(true);
+
+    compare_pixels(
+        &translated_zero_legacy,
+        &placed_legacy,
+        [0, 0, WIDTH, HEIGHT],
+        &adapter,
+        "nonzero-host-transform/legacy-vs-independent-translation",
+    )?;
+    compare_pixels(
+        &placed_legacy,
+        &artifact_pixels,
+        [0, 0, WIDTH, HEIGHT],
+        &adapter,
+        "nonzero-host-transform/legacy-vs-artifact",
+    )?;
+    compare_pixels(
+        &translated_zero_legacy,
+        &artifact_pixels,
+        [0, 0, WIDTH, HEIGHT],
+        &adapter,
+        "nonzero-host-transform/independent-translation-vs-artifact",
+    )?;
+    eprintln!(
+        "nonzero-host Transform three-way parity passed on {adapter}: surfaces={}, aggregate_color_depth_bytes={}",
+        artifact.surface_count, artifact.aggregate_texture_bytes
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires native GPU adapter"]
+// Run explicitly with:
 // cargo test -q native_forced_nested_r_u_and_u_u_frames_match_legacy_pixels -- --ignored --nocapture
 fn native_forced_nested_r_u_and_u_u_frames_match_legacy_pixels() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;

@@ -436,6 +436,7 @@ mod hover_and_style_sync_tests;
 mod layout_transition_tests;
 mod transition_measure_tests;
 mod transition_clip_tests;
+mod transform_surface_placement_tests;
 mod min_max_size_tests;
 mod child_clip_scope_tests;
 mod scroll_container_tests;
@@ -446,4 +447,3 @@ mod inline_layout_tests;
 mod inline_ifc_package_tests;
 mod vertical_align_tests;
 mod persistent_target_key_tests;
-

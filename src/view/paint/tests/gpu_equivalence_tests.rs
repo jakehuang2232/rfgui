@@ -1144,8 +1144,17 @@ fn legacy_transformed_rect_graph(
     scale_factor: f32,
     outer_scissor: Option<[u32; 4]>,
 ) -> Result<FrameGraph, String> {
+    legacy_transformed_rect_graph_with_paint_offset(scale_factor, outer_scissor, [0.0, 0.0])
+}
+
+fn legacy_transformed_rect_graph_with_paint_offset(
+    scale_factor: f32,
+    outer_scissor: Option<[u32; 4]>,
+    paint_offset: [f32; 2],
+) -> Result<FrameGraph, String> {
     let (mut arena, root) = transformed_rect_fixture();
-    let (mut graph, ctx, target) = transformed_graph_prelude(scale_factor, outer_scissor);
+    let (mut graph, mut ctx, target) = transformed_graph_prelude(scale_factor, outer_scissor);
+    ctx.set_paint_offset(paint_offset);
     arena
         .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
         .ok_or_else(|| "legacy transformed rect root disappeared".to_string())?;

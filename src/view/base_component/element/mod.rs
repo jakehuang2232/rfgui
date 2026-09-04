@@ -1337,6 +1337,13 @@ pub struct ViewportContext {
     scale_factor: f32,
     render_transform: Option<Mat4>,
     paint_offset: [f32; 2],
+    host_neutral_owner_paint_offset: [f32; 2],
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OwnerPaintOffsetProjection {
+    active: [f32; 2],
+    host_neutral: [f32; 2],
 }
 
 /// Mutable build state threaded through low-level render graph construction.
@@ -1627,6 +1634,7 @@ impl UiBuildContext {
                 scale_factor: scale_factor.max(0.0001),
                 render_transform: None,
                 paint_offset: [0.0, 0.0],
+                host_neutral_owner_paint_offset: [0.0, 0.0],
             },
             state: BuildState {
                 frame_build_token,
@@ -1825,6 +1833,29 @@ impl UiBuildContext {
         self.viewport.paint_offset
     }
 
+    fn owner_paint_offset_projection(&self) -> OwnerPaintOffsetProjection {
+        OwnerPaintOffsetProjection {
+            active: self.viewport.paint_offset,
+            host_neutral: self.viewport.host_neutral_owner_paint_offset,
+        }
+    }
+
+    fn snap_owner_paint_offset(&mut self, owner_viewport_position: [f32; 2]) {
+        let projection = self.owner_paint_offset_projection();
+        self.viewport.paint_offset =
+            super::paint_offset_after_owner_snap(owner_viewport_position, projection.active)
+                .expect("canonical owner placement produces a finite active paint offset");
+        self.viewport.host_neutral_owner_paint_offset =
+            super::paint_offset_after_owner_snap(owner_viewport_position, projection.host_neutral)
+                .expect("canonical owner placement produces a finite host-neutral paint offset");
+    }
+
+    fn restore_owner_paint_offset_projection(&mut self, projection: OwnerPaintOffsetProjection) {
+        self.viewport.paint_offset = projection.active;
+        self.viewport.host_neutral_owner_paint_offset = projection.host_neutral;
+    }
+
+    #[cfg(test)]
     pub(crate) fn translate_paint_offset(&mut self, dx: f32, dy: f32) {
         self.viewport.paint_offset[0] += dx;
         self.viewport.paint_offset[1] += dy;
