@@ -2438,6 +2438,8 @@ mod stage_a_authority_selection_parity_tests;
 mod stage_a_reuse_contract_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod stage_c_surface_dag_producer_tests;
+#[cfg(not(target_arch = "wasm32"))]
+mod stage_c_surface_materialization_tests;
 mod stage_c_zero_surface_v2_tests;
 mod telemetry_tests;
 mod text_area_caret_reuse_tests;

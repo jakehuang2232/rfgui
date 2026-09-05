@@ -1,13 +1,12 @@
-#![allow(dead_code)] // C3a consumes the zero-surface path; later C3 slices consume the remaining seams.
-
 use std::ops::Range;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::view::{
     compositor::property_tree::{
-        ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, PropertyStateTransition,
-        PropertyTreeState, ScrollNodeId, TransformNodeId,
+        ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
+        PropertyStateTransition, PropertyTreeState, ScrollNodeId, ScrollNodeSnapshot,
+        TransformNodeId, TransformNodeSnapshot,
     },
     node_arena::NodeKey,
 };
@@ -18,12 +17,16 @@ use super::{
     RETAINED_CHILD_MASK_SLOT, TransitionError, artifact_cursors, classify_property_transition,
 };
 
-/// Explicit C2 layerization input. The first policy preserves every authored
-/// property boundary; adding another policy is an enum extension rather than
-/// a hidden global behavior change.
+#[cfg(test)]
+mod materialization_tests;
+
+/// Explicit materialization input for the retained target projection.
+///
+/// Logical property boundaries remain present in [`SurfaceDag`]. This policy
+/// controls only whether a boundary needs its own physical raster target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LayerizationPolicy {
-    PreservePropertyBoundaries,
+    ResolveMaterializedTargets,
 }
 
 /// Durable surface-producing property families.
@@ -82,14 +85,17 @@ pub(crate) struct SurfaceDagSceneRoot {
 }
 
 impl SurfaceDagSceneRoot {
+    #[cfg(test)]
     pub(crate) fn id(self) -> SurfaceDagSceneRootId {
         self.id
     }
 
+    #[cfg(test)]
     pub(crate) fn target(self) -> NodeKey {
         self.target
     }
 
+    #[cfg(test)]
     pub(crate) fn stable_id(self) -> u64 {
         self.stable_id
     }
@@ -107,6 +113,7 @@ pub(crate) enum SurfaceDagTargetId {
 }
 
 impl SurfaceDagTargetId {
+    #[cfg(test)]
     pub(crate) fn scene_root_ordinal(self) -> Option<u32> {
         match self {
             Self::SceneRoot(root) => Some(root.0),
@@ -149,16 +156,18 @@ pub(crate) struct SurfaceDagExecutionRoot {
 }
 
 impl SurfaceDagExecutionRoot {
+    #[cfg(test)]
     pub(crate) fn identity(&self) -> SurfaceDagSceneRoot {
         self.identity
     }
 
+    #[cfg(test)]
     pub(crate) fn node_span(&self) -> Range<u32> {
         self.node_span.clone()
     }
 }
 
-/// One source surface in parent-before-child execution order.
+/// One materialized surface in parent-before-child execution order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SurfaceDagExecutionNode {
     id: SurfaceDagExecutionNodeId,
@@ -168,20 +177,208 @@ pub(crate) struct SurfaceDagExecutionNode {
 }
 
 impl SurfaceDagExecutionNode {
-    pub(crate) fn id(self) -> SurfaceDagExecutionNodeId {
+    pub(crate) fn id(&self) -> SurfaceDagExecutionNodeId {
         self.id
     }
 
+    pub(crate) fn source(&self) -> SurfaceDagNodeId {
+        self.source
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scene_root(&self) -> SurfaceDagSceneRootId {
+        self.scene_root
+    }
+
+    pub(crate) fn receiver(&self) -> SurfaceDagExecutionTargetId {
+        self.receiver
+    }
+}
+
+/// Why one logical boundary did or did not receive a physical target.
+///
+/// The vocabulary intentionally describes materialization obligations rather
+/// than property-family grammar. A future property kind must satisfy the same
+/// target contract instead of adding another authority path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SurfaceMaterializationOutcome {
+    RetainedOwnRasterContent,
+    RetainedNestedTargetCount,
+    RetainedIsolation,
+    RetainedNonTranslation,
+    RetainedClipTransfer,
+    RetainedUncomposedBoundary,
+    EliminatedPassThrough,
+}
+
+/// Frozen obligations consumed by the raster planner after target elimination.
+/// Raster compensation and receiver placement are intentionally separate: a
+/// scroll offset normalizes resident content but a transform moves composition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceBoundaryTransfer {
+    pub(crate) raster_translation_bits: [u32; 2],
+    pub(crate) composite_translation_bits: [u32; 2],
+    pub(crate) clip: Option<SurfaceDagClipRebase>,
+}
+
+// Exact numeric equality is intentional (signed zeros compare equal). Even
+// tiny scale/shear/perspective residuals retain the target. An epsilon would
+// broaden admission and requires a separate raster-identity and pixel proof.
+fn finite_translation(matrix: glam::Mat4) -> Option<[f32; 2]> {
+    let v = matrix.to_cols_array();
+    let expected = glam::Mat4::from_translation(glam::Vec3::new(v[12], v[13], 0.0));
+    (matrix.is_finite() && matrix == expected).then_some([v[12], v[13]])
+}
+
+fn boundary_transfer(
+    kind: SurfaceDagNodeKind,
+    transition: PropertyStateTransition,
+    clip: Option<SurfaceDagClipRebase>,
+    transforms: &FxHashMap<TransformNodeId, TransformNodeSnapshot>,
+    effects: &FxHashMap<EffectNodeId, EffectNodeSnapshot>,
+    scrolls: &FxHashMap<ScrollNodeId, ScrollNodeSnapshot>,
+) -> Result<Result<SurfaceBoundaryTransfer, SurfaceMaterializationOutcome>, SurfaceDagError> {
+    // Structural failure aborts DAG construction; the inner result describes
+    // only a valid boundary's materialization obligations. Resolve required
+    // snapshots before testing properties so malformed input cannot be hidden
+    // behind an ordinary retained outcome.
+    let missing = SurfaceDagError::MissingMaterializationSnapshot;
+    match kind {
+        SurfaceDagNodeKind::Transform(id) => {
+            let snapshot = transforms.get(&id).ok_or(missing(kind))?;
+            if let Some(parent) = snapshot.parent {
+                transforms
+                    .get(&parent)
+                    .ok_or(missing(SurfaceDagNodeKind::Transform(parent)))?;
+            }
+        }
+        SurfaceDagNodeKind::Effect(id) => {
+            effects.get(&id).ok_or(missing(kind))?;
+        }
+        SurfaceDagNodeKind::ScrollContent { scroll, .. } => {
+            scrolls.get(&scroll).ok_or(missing(kind))?;
+        }
+    }
+    Ok((|| {
+        use SurfaceMaterializationOutcome::*;
+        let mut transfer = SurfaceBoundaryTransfer {
+            raster_translation_bits: [0; 2],
+            composite_translation_bits: [0; 2],
+            clip: None,
+        };
+        match kind {
+            SurfaceDagNodeKind::Transform(id) => {
+                let snapshot = transforms.get(&id).expect("snapshot checked above");
+                finite_translation(snapshot.local_matrix).ok_or(RetainedNonTranslation)?;
+                let current = finite_translation(snapshot.owner_viewport_transform)
+                    .ok_or(RetainedNonTranslation)?;
+                let parent = match snapshot.parent {
+                    Some(parent) => finite_translation(
+                        transforms
+                            .get(&parent)
+                            .expect("parent snapshot checked above")
+                            .owner_viewport_transform,
+                    )
+                    .ok_or(RetainedNonTranslation)?,
+                    None => [0.0; 2],
+                };
+                let delta = [current[0] - parent[0], current[1] - parent[1]];
+                if !delta.into_iter().all(f32::is_finite) {
+                    return Err(RetainedNonTranslation);
+                }
+                transfer.composite_translation_bits = delta.map(f32::to_bits);
+            }
+            SurfaceDagNodeKind::Effect(id) => {
+                let snapshot = effects.get(&id).expect("snapshot checked above");
+                // Effect snapshots currently encode group opacity. Only the exact
+                // identity has no remaining isolation/compositing obligation.
+                if snapshot.opacity != 1.0 {
+                    return Err(RetainedIsolation);
+                }
+            }
+            SurfaceDagNodeKind::ScrollContent { scroll, .. } => {
+                let offset = scrolls.get(&scroll).expect("snapshot checked above").offset;
+                if !offset.is_finite() {
+                    return Err(RetainedNonTranslation);
+                }
+                transfer.raster_translation_bits = offset.to_array().map(f32::to_bits);
+                transfer.clip = Some(clip.ok_or(RetainedClipTransfer)?);
+            }
+        }
+        // Unclipped boundaries need no clip transfer. A consumed scrollport has
+        // its own validated transfer. Other clip composition needs a separate
+        // proof; absence of that proof is not an isolation obligation.
+        if transfer.clip.is_none()
+            && (transition.clip.from.is_some() || transition.clip.to.is_some())
+        {
+            return Err(RetainedClipTransfer);
+        }
+        Ok(transfer)
+    })())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceMaterializationDecision {
+    source: SurfaceDagNodeId,
+    target: NodeKey,
+    nested_target_count: usize,
+    has_own_raster_content: bool,
+    outcome: SurfaceMaterializationOutcome,
+}
+
+impl SurfaceMaterializationDecision {
+    #[cfg(test)]
     pub(crate) fn source(self) -> SurfaceDagNodeId {
         self.source
     }
 
-    pub(crate) fn scene_root(self) -> SurfaceDagSceneRootId {
-        self.scene_root
+    #[cfg(test)]
+    pub(crate) fn target(self) -> NodeKey {
+        self.target
     }
 
-    pub(crate) fn receiver(self) -> SurfaceDagExecutionTargetId {
-        self.receiver
+    #[cfg(test)]
+    pub(crate) fn nested_target_count(self) -> usize {
+        self.nested_target_count
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_own_raster_content(self) -> bool {
+        self.has_own_raster_content
+    }
+
+    #[cfg(test)]
+    pub(crate) fn outcome(self) -> SurfaceMaterializationOutcome {
+        self.outcome
+    }
+
+    fn is_eliminated(self) -> bool {
+        self.outcome == SurfaceMaterializationOutcome::EliminatedPassThrough
+    }
+}
+
+fn retain_uncomposed_adjacent_pass_through_boundaries(
+    sole_nested_child: &mut [Option<SurfaceDagNodeId>],
+    decisions: &mut [SurfaceMaterializationDecision],
+) {
+    // Snapshot before mutation is essential: consulting updated outcomes
+    // makes elimination depend on artifact-store order and can erase adjacent
+    // boundaries without a composed transfer proof.
+    let elimination_candidates = decisions
+        .iter()
+        .map(|decision| decision.is_eliminated())
+        .collect::<Vec<_>>();
+    for decision in decisions.iter_mut() {
+        if !elimination_candidates[decision.source.index()] {
+            continue;
+        }
+        let Some(child) = sole_nested_child[decision.source.index()] else {
+            continue;
+        };
+        if elimination_candidates[child.index()] {
+            sole_nested_child[decision.source.index()] = None;
+            decision.outcome = SurfaceMaterializationOutcome::RetainedUncomposedBoundary;
+        }
     }
 }
 
@@ -196,9 +393,12 @@ pub(crate) struct SurfaceDagExecutionOrder {
     roots: Vec<SurfaceDagExecutionRoot>,
     nodes: Vec<SurfaceDagExecutionNode>,
     source_to_execution: Vec<SurfaceDagExecutionNodeId>,
+    folded_boundaries: Vec<Vec<SurfaceDagNodeId>>,
+    decisions: Vec<SurfaceMaterializationDecision>,
 }
 
 impl SurfaceDagExecutionOrder {
+    #[cfg(test)]
     pub(crate) fn roots(&self) -> &[SurfaceDagExecutionRoot] {
         &self.roots
     }
@@ -223,6 +423,19 @@ impl SurfaceDagExecutionOrder {
             .filter(|node| node.id == execution)
             .map(|node| node.source)
     }
+
+    pub(crate) fn decisions(&self) -> &[SurfaceMaterializationDecision] {
+        &self.decisions
+    }
+
+    pub(crate) fn folded_boundaries(
+        &self,
+        execution: SurfaceDagExecutionNodeId,
+    ) -> Option<&[SurfaceDagNodeId]> {
+        self.folded_boundaries
+            .get(execution.index())
+            .map(Vec::as_slice)
+    }
 }
 
 /// The clip-space obligation carried by a detached scroll-content surface.
@@ -244,27 +457,6 @@ impl SurfaceDagClipRebase {
             receiver_clip: snapshots.clip_parent(local_clip)?,
             local_clip,
         })
-    }
-
-    pub(crate) fn try_from_artifact(
-        artifact: &PaintArtifact,
-        local_clip: ClipNodeId,
-    ) -> Result<Self, SurfaceDagError> {
-        let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
-        let scroll = ScrollNodeId(local_clip.owner);
-        let expected = ClipNodeId {
-            owner: local_clip.owner,
-            role: ClipNodeRole::ContentsClip,
-        };
-        if local_clip != expected
-            || !artifact
-                .scroll_nodes
-                .iter()
-                .any(|snapshot| snapshot.id == scroll && snapshot.owner == local_clip.owner)
-        {
-            return Err(SurfaceDagError::MissingScrollContentsClip { scroll, expected });
-        }
-        Self::from_validated(local_clip, &snapshots)
     }
 
     pub(crate) fn receiver_clip(self) -> Option<ClipNodeId> {
@@ -415,9 +607,14 @@ pub(crate) struct SurfaceDagNode {
     receiver: SurfaceDagTargetId,
     transition: PropertyStateTransition,
     clip_rebase: Option<SurfaceDagClipRebase>,
+    transfer: Result<SurfaceBoundaryTransfer, SurfaceMaterializationOutcome>,
 }
 
 impl SurfaceDagNode {
+    pub(crate) fn transfer(&self) -> Option<SurfaceBoundaryTransfer> {
+        self.transfer.ok()
+    }
+
     pub(crate) fn id(&self) -> SurfaceDagNodeId {
         self.id
     }
@@ -432,6 +629,7 @@ impl SurfaceDagNode {
         self.stable_id
     }
 
+    #[cfg(test)]
     pub(crate) fn cursor(&self) -> ArtifactCursor {
         self.cursor
     }
@@ -440,6 +638,7 @@ impl SurfaceDagNode {
         self.kind
     }
 
+    #[cfg(test)]
     pub(crate) fn receiver(&self) -> SurfaceDagTargetId {
         self.receiver
     }
@@ -448,6 +647,7 @@ impl SurfaceDagNode {
         self.transition
     }
 
+    #[cfg(test)]
     pub(crate) fn clip_rebase(&self) -> Option<SurfaceDagClipRebase> {
         self.clip_rebase
     }
@@ -464,6 +664,7 @@ pub(crate) struct SurfaceDag {
 impl SurfaceDag {
     /// Complete admitted scene-root registry, including roots with no surface.
     /// This is complete only for the artifact owner set, not for the arena.
+    #[cfg(test)]
     pub(crate) fn roots(&self) -> &[SurfaceDagSceneRoot] {
         &self.roots
     }
@@ -478,6 +679,7 @@ impl SurfaceDag {
     /// each child to its receiver's adjacency list fixes the sibling tie-break
     /// without any per-parent sort. Iterative preorder then visits every edge
     /// once, preserving O(N) time and O(N) storage.
+    #[cfg(test)]
     pub(crate) fn derive_execution_order(
         &self,
     ) -> Result<SurfaceDagExecutionOrder, SurfaceDagError> {
@@ -557,6 +759,223 @@ impl SurfaceDag {
             roots,
             nodes,
             source_to_execution: dense_source_to_execution,
+            folded_boundaries: vec![Vec::new(); self.nodes.len()],
+            decisions: self
+                .nodes
+                .iter()
+                .map(|node| SurfaceMaterializationDecision {
+                    source: node.id,
+                    target: node.target,
+                    nested_target_count: 0,
+                    has_own_raster_content: false,
+                    outcome: SurfaceMaterializationOutcome::RetainedUncomposedBoundary,
+                })
+                .collect(),
+        })
+    }
+
+    /// Projects the complete logical DAG into the physical retained-target
+    /// graph. A pass-through boundary remains fully validated in `SurfaceDag`,
+    /// but aliases its sole nested child in the execution projection.
+    pub(crate) fn derive_materialized_execution_order(
+        &self,
+        coverage: &ArtifactSurfaceCoverageForest,
+        policy: LayerizationPolicy,
+    ) -> Result<SurfaceDagExecutionOrder, SurfaceDagError> {
+        match policy {
+            LayerizationPolicy::ResolveMaterializedTargets => {}
+        }
+        if coverage.nodes.len() != self.nodes.len() {
+            return Err(SurfaceDagError::MaterializationCoverageCount {
+                surfaces: self.nodes.len(),
+                coverage: coverage.nodes.len(),
+            });
+        }
+
+        let mut sole_nested_child = vec![None; self.nodes.len()];
+        let mut decisions = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            let coverage = coverage
+                .nodes
+                .get(node.id.index())
+                .filter(|candidate| candidate.surface == node.id)
+                .ok_or(SurfaceDagError::UnknownSurfaceReceiver(node.id))?;
+            let nested = coverage
+                .steps
+                .iter()
+                .filter_map(|step| match step {
+                    ArtifactSurfaceCoverageStep::NestedSurface(child) => Some(*child),
+                    ArtifactSurfaceCoverageStep::ArtifactSpan(_) => None,
+                })
+                .collect::<Vec<_>>();
+            let has_own_raster_content = coverage
+                .steps
+                .iter()
+                .any(|step| matches!(step, ArtifactSurfaceCoverageStep::ArtifactSpan(_)));
+            let outcome = if has_own_raster_content {
+                SurfaceMaterializationOutcome::RetainedOwnRasterContent
+            } else if nested.len() != 1 {
+                SurfaceMaterializationOutcome::RetainedNestedTargetCount
+            } else if let Err(reason) = node.transfer {
+                reason
+            } else {
+                let child = self.surface_node(nested[0])?;
+                let transfer = node.transfer.expect("checked transfer");
+                let moves_composite = transfer
+                    .composite_translation_bits
+                    .map(f32::from_bits)
+                    .into_iter()
+                    .any(|delta| delta != 0.0);
+                // Moving a clipped child requires proving clip-space transport,
+                // including its consumed scrollport. Keep it until then.
+                if moves_composite
+                    && (child.transition.clip.from.is_some()
+                        || child.transition.clip.to.is_some()
+                        || child.clip_rebase.is_some())
+                {
+                    SurfaceMaterializationOutcome::RetainedClipTransfer
+                } else {
+                    sole_nested_child[node.id.index()] = nested.first().copied();
+                    SurfaceMaterializationOutcome::EliminatedPassThrough
+                }
+            };
+            decisions.push(SurfaceMaterializationDecision {
+                source: node.id,
+                target: node.target,
+                nested_target_count: nested.len(),
+                has_own_raster_content,
+                outcome,
+            });
+        }
+
+        // Do not simultaneously erase adjacent pass-through boundaries. One
+        // erased boundary has a single typed clip/placement transfer. A chain
+        // would require a separate composition proof for those obligations;
+        // retaining its outer boundary is the fail-closed generic result, not
+        // a property-family special case.
+        retain_uncomposed_adjacent_pass_through_boundaries(&mut sole_nested_child, &mut decisions);
+
+        let retained = decisions
+            .iter()
+            .map(|decision| !decision.is_eliminated())
+            .collect::<Vec<_>>();
+        let final_receiver = |source: SurfaceDagNodeId| {
+            let mut receiver = self.surface_node(source)?.receiver;
+            let mut folded = Vec::new();
+            let mut seen = FxHashSet::default();
+            while let SurfaceDagTargetId::Surface(parent) = receiver {
+                if !seen.insert(parent) || seen.len() > usize::from(u8::MAX) {
+                    return Err(SurfaceDagError::CyclicSurfaceReceiver(parent));
+                }
+                if retained[parent.index()] {
+                    break;
+                }
+                folded.push(parent);
+                receiver = self.surface_node(parent)?.receiver;
+            }
+            Ok((receiver, folded))
+        };
+
+        let mut root_children = vec![Vec::new(); self.roots.len()];
+        let mut surface_children = vec![Vec::new(); self.nodes.len()];
+        let mut folded_by_source = vec![Vec::new(); self.nodes.len()];
+        for node in self.nodes.iter().filter(|node| retained[node.id.index()]) {
+            let (receiver, folded) = final_receiver(node.id)?;
+            folded_by_source[node.id.index()] = folded;
+            match receiver {
+                SurfaceDagTargetId::SceneRoot(root) => {
+                    self.scene_root(root)?;
+                    root_children[root.index()].push(node.id);
+                }
+                SurfaceDagTargetId::Surface(parent) => {
+                    self.surface_node(parent)?;
+                    surface_children[parent.index()].push(node.id);
+                }
+            }
+        }
+
+        let execution_ordinal = |ordinal: usize| {
+            u32::try_from(ordinal)
+                .map(SurfaceDagExecutionNodeId)
+                .map_err(|_| SurfaceDagError::ExecutionNodeOrdinalOverflow(ordinal))
+        };
+        let span_ordinal = |ordinal: usize| {
+            u32::try_from(ordinal)
+                .map_err(|_| SurfaceDagError::ExecutionNodeOrdinalOverflow(ordinal))
+        };
+        let mut roots = Vec::with_capacity(self.roots.len());
+        let mut nodes = Vec::with_capacity(retained.iter().filter(|retained| **retained).count());
+        let mut source_to_execution = vec![None; self.nodes.len()];
+
+        for root in &self.roots {
+            let start = span_ordinal(nodes.len())?;
+            let mut stack = root_children[root.id.index()]
+                .iter()
+                .rev()
+                .copied()
+                .map(|source| (source, SurfaceDagExecutionTargetId::SceneRoot(root.id)))
+                .collect::<Vec<_>>();
+            while let Some((source, receiver)) = stack.pop() {
+                if source_to_execution[source.index()].is_some() {
+                    return Err(SurfaceDagError::CyclicSurfaceReceiver(source));
+                }
+                let id = execution_ordinal(nodes.len())?;
+                source_to_execution[source.index()] = Some(id);
+                nodes.push(SurfaceDagExecutionNode {
+                    id,
+                    source,
+                    scene_root: root.id,
+                    receiver,
+                });
+                stack.extend(
+                    surface_children[source.index()]
+                        .iter()
+                        .rev()
+                        .copied()
+                        .map(|child| (child, SurfaceDagExecutionTargetId::Surface(id))),
+                );
+            }
+            roots.push(SurfaceDagExecutionRoot {
+                identity: *root,
+                node_span: start..span_ordinal(nodes.len())?,
+            });
+        }
+
+        for node in self.nodes.iter().filter(|node| !retained[node.id.index()]) {
+            let mut cursor = node.id;
+            let mut seen = FxHashSet::default();
+            let execution = loop {
+                if !seen.insert(cursor) || seen.len() > usize::from(u8::MAX) {
+                    return Err(SurfaceDagError::CyclicSurfaceReceiver(cursor));
+                }
+                if let Some(execution) = source_to_execution[cursor.index()] {
+                    break execution;
+                }
+                cursor = sole_nested_child[cursor.index()]
+                    .ok_or(SurfaceDagError::MissingMaterializedDescendant(cursor))?;
+            };
+            source_to_execution[node.id.index()] = Some(execution);
+        }
+        let source_to_execution = source_to_execution
+            .into_iter()
+            .enumerate()
+            .map(|(index, execution)| {
+                execution.ok_or(SurfaceDagError::MissingMaterializedDescendant(
+                    self.nodes[index].id,
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let folded_boundaries = nodes
+            .iter()
+            .map(|node| std::mem::take(&mut folded_by_source[node.source.index()]))
+            .collect();
+        Ok(SurfaceDagExecutionOrder {
+            roots,
+            nodes,
+            source_to_execution,
+            folded_boundaries,
+            decisions,
         })
     }
 
@@ -588,6 +1007,7 @@ impl SurfaceDag {
     /// Resolves a generic receiver to its surface node. This is why collapsing
     /// legacy `Surface(id)` and `ScrollContent(id)` receiver variants loses no
     /// information: the referenced node's own `kind` retains that distinction.
+    #[cfg(test)]
     pub(crate) fn receiver_node(
         &self,
         receiver: SurfaceDagTargetId,
@@ -697,6 +1117,7 @@ impl ArtifactSurfaceCandidate {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SurfaceDagError {
+    MissingMaterializationSnapshot(SurfaceDagNodeKind),
     Transition(TransitionError),
     MissingScrollContentsClip {
         scroll: ScrollNodeId,
@@ -747,10 +1168,6 @@ pub(crate) enum SurfaceDagError {
         surface: SurfaceDagNodeId,
         expected_receiver: SurfaceDagTargetId,
     },
-    ClipRebaseScroll {
-        expected: ScrollNodeId,
-        actual: Option<ScrollNodeId>,
-    },
     ClipRebaseOutsideBoundary {
         live: Option<ClipNodeId>,
         boundary: ClipNodeId,
@@ -760,6 +1177,11 @@ pub(crate) enum SurfaceDagError {
     UnknownSceneRootReceiver(SurfaceDagSceneRootId),
     UnknownSurfaceReceiver(SurfaceDagNodeId),
     CyclicSurfaceReceiver(SurfaceDagNodeId),
+    MaterializationCoverageCount {
+        surfaces: usize,
+        coverage: usize,
+    },
+    MissingMaterializedDescendant(SurfaceDagNodeId),
 }
 
 impl From<TransitionError> for SurfaceDagError {
@@ -773,6 +1195,7 @@ impl From<TransitionError> for SurfaceDagError {
 /// This is not receiver reconstruction. It freezes the surface-kind mapping
 /// and clip-rebase obligation while leaving consumption classification and
 /// compositing receivers as separate inputs.
+#[cfg(test)]
 pub(crate) fn derive_artifact_surface_candidates(
     artifact: &PaintArtifact,
     policy: LayerizationPolicy,
@@ -793,7 +1216,7 @@ fn derive_artifact_surface_candidates_from_validated(
     cursors: &[ArtifactCursor],
 ) -> Result<Vec<ArtifactSurfaceCandidate>, SurfaceDagError> {
     match policy {
-        LayerizationPolicy::PreservePropertyBoundaries => {}
+        LayerizationPolicy::ResolveMaterializedTargets => {}
     }
 
     let transforms = artifact
@@ -1690,6 +2113,13 @@ pub(crate) fn reconstruct_surface_dag(
         innermost_id_by_owner.insert(candidate.target(), id);
     }
 
+    let transforms = artifact
+        .transform_nodes
+        .iter()
+        .map(|s| (s.id, *s))
+        .collect();
+    let effects = artifact.effect_nodes.iter().map(|s| (s.id, *s)).collect();
+    let scrolls = artifact.scroll_nodes.iter().map(|s| (s.id, *s)).collect();
     let mut previous_id_by_owner = FxHashMap::default();
     let mut nodes = Vec::with_capacity(candidates.len());
 
@@ -1751,6 +2181,14 @@ pub(crate) fn reconstruct_surface_dag(
             receiver,
             transition,
             clip_rebase: candidate.clip_rebase(),
+            transfer: boundary_transfer(
+                candidate.kind(),
+                transition,
+                candidate.clip_rebase(),
+                &transforms,
+                &effects,
+                &scrolls,
+            )?,
         });
         previous_id_by_owner.insert(owner, id);
     }

@@ -174,9 +174,12 @@ pub(crate) use surface_dag::{
     SurfaceDagError, SurfaceDagExecutionNode, SurfaceDagExecutionNodeId, SurfaceDagExecutionOrder,
     SurfaceDagExecutionRoot, SurfaceDagExecutionTargetId, SurfaceDagNode, SurfaceDagNodeId,
     SurfaceDagNodeKind, SurfaceDagSceneRoot, SurfaceDagSceneRootId, SurfaceDagTargetId,
-    derive_artifact_surface_candidates, derive_artifact_surface_coverage_forest,
+    SurfaceMaterializationDecision, SurfaceMaterializationOutcome,
+    derive_artifact_surface_coverage_forest,
     derive_artifact_surface_transition_requests, reconstruct_surface_dag,
 };
+#[cfg(test)]
+pub(crate) use surface_dag::derive_artifact_surface_candidates;
 #[cfg(test)]
 pub(crate) fn canonical_manifest_matches_for_test(
     metadata: &PaintCoverageManifest,

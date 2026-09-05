@@ -13,7 +13,7 @@ use crate::view::paint::{
 fn reconstruct(artifact: &PaintArtifact) -> SurfaceDag {
     let requests = derive_artifact_surface_transition_requests(
         artifact,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("coverage transition requests");
     let events = classify_artifact_transition_sequence(artifact, &requests)
@@ -21,7 +21,7 @@ fn reconstruct(artifact: &PaintArtifact) -> SurfaceDag {
     reconstruct_surface_dag(
         artifact,
         &events,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("coverage Surface DAG")
 }
@@ -30,7 +30,7 @@ fn coverage(artifact: &PaintArtifact, dag: &SurfaceDag) -> ArtifactSurfaceCovera
     derive_artifact_surface_coverage_forest(
         artifact,
         dag,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("artifact surface coverage")
 }
@@ -426,7 +426,7 @@ fn coverage_rejects_a_receiver_chain_that_terminates_at_the_wrong_scene_root() {
         derive_artifact_surface_coverage_forest(
             &artifact,
             &dag,
-            LayerizationPolicy::PreservePropertyBoundaries,
+            LayerizationPolicy::ResolveMaterializedTargets,
         ),
         Err(SurfaceDagError::NonReceiverClosedChunkSurfaceChain {
             expected_receiver: SurfaceDagTargetId::SceneRoot(root),
@@ -464,7 +464,7 @@ fn coverage_rejects_matched_ancestry_omitted_from_the_receiver_chain() {
         derive_artifact_surface_coverage_forest(
             &artifact,
             &dag,
-            LayerizationPolicy::PreservePropertyBoundaries,
+            LayerizationPolicy::ResolveMaterializedTargets,
         ),
         Err(SurfaceDagError::NonReceiverClosedChunkSurfaceChain {
             surface,
@@ -499,7 +499,7 @@ fn receiver_gap_rejects_before_an_unrepresentable_chunk_is_forced_into_a_span() 
         derive_artifact_surface_coverage_forest(
             &artifact,
             &dag,
-            LayerizationPolicy::PreservePropertyBoundaries,
+            LayerizationPolicy::ResolveMaterializedTargets,
         ),
         Err(SurfaceDagError::NonReceiverClosedChunkSurfaceChain {
             chunk_index: 0,

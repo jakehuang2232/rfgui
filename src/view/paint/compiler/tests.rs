@@ -65,6 +65,7 @@ pub(super) fn same_owner_transform_effect_scroll_role_fixture() -> (
 }
 
 mod artifact_space_translation_tests;
+mod artifact_surface_materialization_tests;
 mod artifact_surface_resident_stamp_tests;
 mod local_clip_generation_semantics_tests;
 mod property_boundary_forest_branching_tests;

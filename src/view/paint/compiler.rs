@@ -36,8 +36,9 @@ use super::surface_dag::{
     ArtifactSurfaceCoverageForest, ArtifactSurfaceCoverageSpan, ArtifactSurfaceCoverageStep,
     LayerizationPolicy, SurfaceDag, SurfaceDagClipClosureProjection, SurfaceDagError,
     SurfaceDagExecutionNodeId, SurfaceDagExecutionOrder, SurfaceDagExecutionTargetId,
-    SurfaceDagNodeId, SurfaceDagNodeKind, derive_artifact_surface_coverage_forest,
-    derive_artifact_surface_transition_requests, reconstruct_surface_dag,
+    SurfaceDagNodeId, SurfaceDagNodeKind, SurfaceMaterializationDecision,
+    derive_artifact_surface_coverage_forest, derive_artifact_surface_transition_requests,
+    reconstruct_surface_dag,
 };
 use super::{
     EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactTarget, PaintChunkRole,
@@ -4925,6 +4926,33 @@ impl ArtifactSurfaceCompositeGeometryStamp {
         }
     }
 
+    fn replace_receiver_clip(
+        &mut self,
+        receiver_clip: Option<ClipNodeId>,
+        resolved_receiver_clip: ArtifactSurfaceResolvedClip,
+    ) {
+        match self {
+            Self::Transform {
+                receiver_clip: current_receiver_clip,
+                resolved_receiver_clip: current_resolved_clip,
+                ..
+            }
+            | Self::Effect {
+                receiver_clip: current_receiver_clip,
+                resolved_receiver_clip: current_resolved_clip,
+                ..
+            }
+            | Self::ScrollContent {
+                receiver_clip: current_receiver_clip,
+                resolved_receiver_clip: current_resolved_clip,
+                ..
+            } => {
+                *current_receiver_clip = receiver_clip;
+                *current_resolved_clip = resolved_receiver_clip;
+            }
+        }
+    }
+
     fn project_into_surface_receiver(
         &mut self,
         projection: ArtifactSurfaceRasterOriginProjection,
@@ -5173,6 +5201,7 @@ pub(crate) struct PreparedArtifactSurfaceRasterPlan {
     context: ArtifactSurfaceRasterContext,
     roots: Vec<PreparedArtifactSurfaceRasterRoot>,
     nodes: Vec<PreparedArtifactSurfaceRasterNode>,
+    materialization_decisions: Vec<SurfaceMaterializationDecision>,
 }
 
 impl PreparedArtifactSurfaceRasterPlan {
@@ -5186,6 +5215,10 @@ impl PreparedArtifactSurfaceRasterPlan {
 
     pub(crate) fn nodes(&self) -> &[PreparedArtifactSurfaceRasterNode] {
         &self.nodes
+    }
+
+    pub(crate) fn materialization_decisions(&self) -> &[SurfaceMaterializationDecision] {
+        &self.materialization_decisions
     }
 
     #[cfg(test)]
@@ -5255,7 +5288,7 @@ fn validate_artifact_surface_dag_program(
 
     let requests = derive_artifact_surface_transition_requests(
         &artifact,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
     let events = classify_artifact_transition_sequence(&artifact, &requests)
@@ -5264,18 +5297,21 @@ fn validate_artifact_surface_dag_program(
     let surface_dag = reconstruct_surface_dag(
         &artifact,
         &events,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-    let execution_order = surface_dag
-        .derive_execution_order()
-        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
     let coverage = derive_artifact_surface_coverage_forest(
         &artifact,
         &surface_dag,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+    let execution_order = surface_dag
+        .derive_materialized_execution_order(
+            &coverage,
+            LayerizationPolicy::ResolveMaterializedTargets,
+        )
+        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
     let host_placement = ArtifactSurfaceHostPlacementProjection::try_new(&artifact)
         .map_err(TransitionError::SpatialSnapshot)
         .map_err(SurfaceDagError::Transition)
@@ -6132,6 +6168,46 @@ fn surface_raster_translation(
     }
 }
 
+fn materialized_surface_raster_translation(
+    source: SurfaceDagNodeId,
+    kind: SurfaceDagNodeKind,
+    folded_boundaries: &[SurfaceDagNodeId],
+    surface_dag: &SurfaceDag,
+    scrolls: &FxHashMap<ScrollNodeId, ScrollNodeSnapshot>,
+) -> Result<[f32; 2], ArtifactSurfaceRasterPlanError> {
+    if folded_boundaries.len() > 1 {
+        // The materializer currently retains adjacent pass-through boundaries
+        // until clip and placement composition has its own typed proof.
+        return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
+            folded_boundaries[1],
+        ));
+    }
+    let mut translation = surface_raster_translation(source, kind, scrolls)?;
+    for boundary in folded_boundaries {
+        let node = surface_dag
+            .nodes()
+            .get(boundary.index())
+            .filter(|node| node.id() == *boundary)
+            .ok_or(ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(
+                *boundary,
+            ))?;
+        let transfer =
+            node.transfer()
+                .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
+                    *boundary,
+                ))?;
+        let delta = transfer.raster_translation_bits.map(f32::from_bits);
+        translation[0] += delta[0];
+        translation[1] += delta[1];
+        if translation.into_iter().any(|value| !value.is_finite()) {
+            return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
+                *boundary,
+            ));
+        }
+    }
+    Ok(translation)
+}
+
 fn transform_destination_bounds(
     source_bounds_bits: [u32; 4],
     matrix: glam::Mat4,
@@ -6331,6 +6407,76 @@ fn surface_composite_geometry(
     }
 }
 
+fn fold_materialized_composite_boundaries(
+    mut geometry: ArtifactSurfaceCompositeGeometryStamp,
+    folded_boundaries: &[SurfaceDagNodeId],
+    surface_dag: &SurfaceDag,
+    receiver: SurfaceDagExecutionTargetId,
+    receiver_paint_offset: [f32; 2],
+    context: ArtifactSurfaceRasterContext,
+    clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
+) -> Result<ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceRasterPlanError> {
+    let Some(boundary) = folded_boundaries.first().copied() else {
+        return Ok(geometry);
+    };
+    let node = surface_dag
+        .nodes()
+        .get(boundary.index())
+        .filter(|node| node.id() == boundary)
+        .ok_or(ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(
+            boundary,
+        ))?;
+    let transfer = node
+        .transfer()
+        .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
+            boundary,
+        ))?;
+    // Transform geometry already resolves its accumulated viewport matrix
+    // against the final receiver. Other geometry carries only local placement.
+    if !matches!(
+        geometry,
+        ArtifactSurfaceCompositeGeometryStamp::Transform { .. }
+    ) {
+        let delta = transfer.composite_translation_bits.map(f32::from_bits);
+        let destination = match &mut geometry {
+            ArtifactSurfaceCompositeGeometryStamp::Effect {
+                destination_bounds_bits,
+                ..
+            }
+            | ArtifactSurfaceCompositeGeometryStamp::ScrollContent {
+                destination_bounds_bits,
+                ..
+            } => destination_bounds_bits,
+            ArtifactSurfaceCompositeGeometryStamp::Transform { .. } => unreachable!(),
+        };
+        *destination = translated_bounds_bits(*destination, delta).ok_or(
+            ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(boundary),
+        )?;
+    }
+    let Some(clip) = transfer.clip else {
+        return Ok(geometry);
+    };
+    let contents_clip = clip.local_clip();
+    let (resolved_clip, clip_chain) = resolve_artifact_surface_clip(Some(contents_clip), clips)
+        .ok_or(ArtifactSurfaceRasterPlanError::InvalidReceiverClip(
+            boundary,
+        ))?;
+    let resolved_clip = if matches!(receiver, SurfaceDagExecutionTargetId::SceneRoot(_)) {
+        let translated =
+            translate_artifact_surface_logical_clip(resolved_clip, receiver_paint_offset).ok_or(
+                ArtifactSurfaceRasterPlanError::InvalidReceiverClip(boundary),
+            )?;
+        artifact_surface_terminal_clip(translated, &clip_chain, context.incoming_scissor)
+    } else {
+        resolved_clip
+    };
+    geometry.replace_receiver_clip(
+        clip.receiver_clip(),
+        ArtifactSurfaceResolvedClip::from_logical(resolved_clip),
+    );
+    Ok(geometry)
+}
+
 fn prepare_artifact_surface_raster_plan_from_program(
     program: ValidatedArtifactSurfaceDagProgram,
     context: ArtifactSurfaceRasterContext,
@@ -6384,7 +6530,19 @@ fn prepare_artifact_surface_raster_plan_from_program(
             .get(source.index())
             .filter(|coverage| coverage.surface() == source)
             .ok_or(ArtifactSurfaceRasterPlanError::MissingCoverageNode(source))?;
-        let base_delta = surface_raster_translation(source, node.kind(), &scrolls)?;
+        let folded_boundaries = program
+            .execution_order
+            .folded_boundaries(execution.id())
+            .ok_or(ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(
+                source,
+            ))?;
+        let base_delta = materialized_surface_raster_translation(
+            source,
+            node.kind(),
+            folded_boundaries,
+            &program.surface_dag,
+            &scrolls,
+        )?;
         let target_id = ArtifactSurfaceRasterTargetId::Surface(source);
         let mut raw_bounds = None;
         let mut nested_children = Vec::new();
@@ -6573,19 +6731,28 @@ fn prepare_artifact_surface_raster_plan_from_program(
         {
             return Err(ArtifactSurfaceRasterPlanError::InvalidDescriptor(source));
         }
+        let receiver_paint_offset = host_placement
+            .receiver_paint_offset(node.target(), execution.receiver())
+            .ok_or(ArtifactSurfaceRasterPlanError::InvalidOwnerTopology {
+                target: target_id,
+                owner: node.target(),
+            })?;
         let geometry = surface_composite_geometry(
             node,
             source_bounds_bits,
             raw_source_bounds_bits,
             execution.receiver(),
-            match node.receiver() {
-                super::SurfaceDagTargetId::SceneRoot(_) => None,
-                super::SurfaceDagTargetId::Surface(receiver) => {
+            match execution.receiver() {
+                SurfaceDagExecutionTargetId::SceneRoot(_) => None,
+                SurfaceDagExecutionTargetId::Surface(receiver) => {
+                    let receiver_source = program.execution_order.source_node_id(receiver).ok_or(
+                        ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(source),
+                    )?;
                     let receiver = program
                         .surface_dag
                         .nodes()
-                        .get(receiver.index())
-                        .filter(|candidate| candidate.id() == receiver)
+                        .get(receiver_source.index())
+                        .filter(|candidate| candidate.id() == receiver_source)
                         .ok_or(ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(
                             source,
                         ))?;
@@ -6605,18 +6772,22 @@ fn prepare_artifact_surface_raster_plan_from_program(
                     }
                 }
             },
-            host_placement
-                .receiver_paint_offset(node.target(), execution.receiver())
-                .ok_or(ArtifactSurfaceRasterPlanError::InvalidOwnerTopology {
-                    target: target_id,
-                    owner: node.target(),
-                })?,
+            receiver_paint_offset,
             context,
             &transforms,
             &effects,
             &scrolls,
             &clips,
             coverage.clip_closure(),
+        )?;
+        let geometry = fold_materialized_composite_boundaries(
+            geometry,
+            folded_boundaries,
+            &program.surface_dag,
+            execution.receiver(),
+            receiver_paint_offset,
+            context,
+            &clips,
         )?;
         prepared_nodes[execution.id().index()] = Some(PreparedArtifactSurfaceRasterNode {
             execution_id: execution.id(),
@@ -6717,6 +6888,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
         context,
         roots,
         nodes,
+        materialization_decisions: program.execution_order.decisions().to_vec(),
     })
 }
 

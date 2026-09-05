@@ -66,7 +66,7 @@ fn reconstruct_artifact_surface_dag(artifact: &PaintArtifact) -> SurfaceDag {
     reconstruct_surface_dag(
         artifact,
         &events,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("closed artifact surface DAG")
 }
@@ -198,7 +198,7 @@ fn stage_c_eight_legacy_success_shapes_reconstruct_the_same_generic_receivers() 
         let surface_dag = reconstruct_surface_dag(
             &artifact,
             &events,
-            LayerizationPolicy::PreservePropertyBoundaries,
+            LayerizationPolicy::ResolveMaterializedTargets,
         )
         .expect("C2b reconstructed surface DAG");
         assert_eq!(surface_dag.nodes().len(), legacy.nodes.len());
@@ -266,7 +266,7 @@ fn stage_c_native_forest_reconstructs_branch_and_multi_root_receivers() {
     let surface_dag = reconstruct_surface_dag(
         &artifact,
         &events,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("C2b native surface DAG");
     assert_eq!(surface_dag.nodes().len(), forest.boundaries.len());
@@ -338,6 +338,9 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
     fn error_name(error: SurfaceDagError) -> &'static str {
         match error {
             SurfaceDagError::Transition(_) => "transition",
+            SurfaceDagError::MissingMaterializationSnapshot(_) => {
+                "missing-materialization-snapshot"
+            }
             SurfaceDagError::MissingScrollContentsClip { .. } => "missing-scroll-contents-clip",
             SurfaceDagError::TransitionCount { .. } => "transition-count",
             SurfaceDagError::TransitionSceneRoot { .. } => "transition-scene-root",
@@ -357,13 +360,16 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
             SurfaceDagError::NonReceiverClosedChunkSurfaceChain { .. } => {
                 "non-receiver-closed-chunk-surface-chain"
             }
-            SurfaceDagError::ClipRebaseScroll { .. } => "clip-rebase-scroll",
             SurfaceDagError::ClipRebaseOutsideBoundary { .. } => "clip-rebase-outside-boundary",
             SurfaceDagError::SurfaceNodeOrdinalOverflow(_) => "surface-node-ordinal-overflow",
             SurfaceDagError::ExecutionNodeOrdinalOverflow(_) => "execution-node-ordinal-overflow",
             SurfaceDagError::UnknownSceneRootReceiver(_) => "unknown-scene-root-receiver",
             SurfaceDagError::UnknownSurfaceReceiver(_) => "unknown-surface-receiver",
             SurfaceDagError::CyclicSurfaceReceiver(_) => "cyclic-surface-receiver",
+            SurfaceDagError::MaterializationCoverageCount { .. } => {
+                "materialization-coverage-count"
+            }
+            SurfaceDagError::MissingMaterializedDescendant(_) => "missing-materialized-descendant",
         }
     }
 
@@ -378,7 +384,7 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
     let count_error = reconstruct_surface_dag(
         &artifact,
         &events[..events.len() - 1],
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect_err("an incomplete consumption stream must fail closed");
     assert_eq!(
@@ -396,7 +402,7 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
         reconstruct_surface_dag(
             &artifact,
             &wrong_kind,
-            LayerizationPolicy::PreservePropertyBoundaries,
+            LayerizationPolicy::ResolveMaterializedTargets,
         ),
         Err(SurfaceDagError::TransitionKind {
             index: 0,
@@ -572,7 +578,7 @@ fn stage_c_surface_dag_retains_plain_roots_without_minting_surfaces() {
         .expect("C3 complete scene-root identity registry");
     let candidates = derive_artifact_surface_candidates(
         &artifact,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("C3 artifact surface candidates");
 
@@ -623,7 +629,7 @@ fn stage_c_surface_dag_rejects_an_unknown_scene_root_receiver() {
     let mut surface_dag = reconstruct_surface_dag(
         &artifact,
         &events,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("C3 scene-root DAG");
     let root_id = surface_dag.roots()[0].id();
@@ -663,7 +669,7 @@ fn stage_c_surface_dag_accepts_the_production_leaf_first_owner_order() {
     let surface_dag = reconstruct_surface_dag(
         &artifact,
         &events,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("C2c leaf-first surface DAG");
     let [scroll, transform] = surface_dag.nodes() else {
@@ -703,7 +709,7 @@ fn stage_c_surface_dag_accepts_a_leaf_first_nested_scroll_chain() {
     let surface_dag = reconstruct_surface_dag(
         &artifact,
         &events,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("C2c leaf-first nested-scroll DAG");
     let [inner, outer] = surface_dag.nodes() else {

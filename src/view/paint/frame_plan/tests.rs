@@ -830,7 +830,7 @@ fn stage_c_artifact_surface_transition_requests(
 
     let candidates = derive_artifact_surface_candidates(
         artifact,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("closed artifact must derive surface candidates");
     let parents = artifact
@@ -2106,7 +2106,7 @@ fn stage_c_transform_effect_transform_artifact_fixture() -> PaintArtifact {
             .expect("T -> E -> T artifact fixture");
     let kinds = derive_artifact_surface_candidates(
         &artifact,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("T -> E -> T candidates")
     .iter()

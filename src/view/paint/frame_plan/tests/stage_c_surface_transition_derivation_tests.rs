@@ -43,7 +43,7 @@ fn production_requests(
 ) -> Result<Vec<ArtifactTransitionRequest>, crate::view::paint::SurfaceDagError> {
     derive_artifact_surface_transition_requests(
         artifact,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
 }
 
@@ -75,7 +75,7 @@ fn production_transition_derivation_closes_the_legacy_scroll_transform_rejection
     let dag = reconstruct_surface_dag(
         &artifact,
         &events,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("scroll-transform production DAG");
     assert_eq!(dag.nodes().len(), 2);
@@ -95,7 +95,7 @@ fn transform_effect_transform_boundary_transitions_ignore_coverage_ancestry() {
     let requests = production_requests(&artifact).expect("T -> E -> T production requests");
     let candidates = derive_artifact_surface_candidates(
         &artifact,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("T -> E -> T candidates");
     let endpoints = |owner| {
@@ -214,7 +214,7 @@ fn transform_and_effect_only_artifacts_derive_closed_surface_dags() {
     let transform_dag = reconstruct_surface_dag(
         &transform_artifact,
         &transform_events,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("transform-only surface DAG");
     assert!(!transform_dag.nodes().is_empty());
@@ -235,7 +235,7 @@ fn transform_and_effect_only_artifacts_derive_closed_surface_dags() {
     let effect_dag = reconstruct_surface_dag(
         &effect_artifact,
         &effect_events,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("effect-only surface DAG");
     assert!(!effect_dag.nodes().is_empty());

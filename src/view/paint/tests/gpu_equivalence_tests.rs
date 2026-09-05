@@ -1118,8 +1118,16 @@ fn transformed_graph_prelude(
     scale_factor: f32,
     outer_scissor: Option<[u32; 4]>,
 ) -> (FrameGraph, UiBuildContext, RenderTargetOut) {
+    transformed_graph_prelude_with_size(scale_factor, outer_scissor, [WIDTH, HEIGHT])
+}
+
+fn transformed_graph_prelude_with_size(
+    scale_factor: f32,
+    outer_scissor: Option<[u32; 4]>,
+    [width, height]: [u32; 2],
+) -> (FrameGraph, UiBuildContext, RenderTargetOut) {
     let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(WIDTH, HEIGHT, FORMAT, scale_factor);
+    let mut ctx = UiBuildContext::new(width, height, FORMAT, scale_factor);
     let target = ctx.allocate_target(&mut graph);
     ctx.set_current_target(target);
     graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
@@ -2336,14 +2344,25 @@ fn render_with_config(
 }
 
 fn render_on_viewport(
-    mut graph: FrameGraph,
+    graph: FrameGraph,
     gpu: &NativeGpu,
     viewport: &mut Viewport,
     scale_factor: f32,
     format: wgpu::TextureFormat,
 ) -> Result<Vec<u8>, String> {
-    let padded_bytes_per_row = padded_bytes_per_row(WIDTH);
-    let buffer_size = padded_bytes_per_row as u64 * HEIGHT as u64;
+    render_on_viewport_with_size(graph, gpu, viewport, scale_factor, format, [WIDTH, HEIGHT])
+}
+
+fn render_on_viewport_with_size(
+    mut graph: FrameGraph,
+    gpu: &NativeGpu,
+    viewport: &mut Viewport,
+    scale_factor: f32,
+    format: wgpu::TextureFormat,
+    [width, height]: [u32; 2],
+) -> Result<Vec<u8>, String> {
+    let padded_bytes_per_row = padded_bytes_per_row(width);
+    let buffer_size = padded_bytes_per_row as u64 * height as u64;
     let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("rfgui pixel parity readback"),
         size: buffer_size,
@@ -2353,8 +2372,8 @@ fn render_on_viewport(
     viewport.begin_offscreen_test_frame(
         gpu.device.clone(),
         gpu.queue.clone(),
-        WIDTH,
-        HEIGHT,
+        width,
+        height,
         format,
     )?;
     viewport.set_scale_factor(scale_factor);
@@ -2364,7 +2383,7 @@ fn render_on_viewport(
     graph
         .execute_profiled(viewport, false)
         .map_err(|error| format!("pixel graph execute failed: {error:?}"))?;
-    viewport.encode_offscreen_test_readback(&readback, padded_bytes_per_row, WIDTH, HEIGHT)?;
+    viewport.encode_offscreen_test_readback(&readback, padded_bytes_per_row, width, height)?;
     viewport.end_offscreen_test_frame()?;
 
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -2383,7 +2402,7 @@ fn render_on_viewport(
         .slice(..)
         .get_mapped_range()
         .map_err(|error| format!("failed to access mapped pixel buffer: {error:?}"))?;
-    let pixels = remove_row_padding(&mapped, WIDTH, HEIGHT, padded_bytes_per_row)?;
+    let pixels = remove_row_padding(&mapped, width, height, padded_bytes_per_row)?;
     drop(mapped);
     readback.unmap();
     Ok(pixels)
@@ -3867,9 +3886,10 @@ mod native_pixel_oracle_tests;
 mod oracle_tests;
 mod scroll_graph_build_tests;
 
-mod artifact_scroll_content_contract_tests;
 mod artifact_intermediate_coverage_tests;
+mod artifact_scroll_content_contract_tests;
 mod native_artifact_scroll_content_tests;
+mod native_artifact_surface_materialization_tests;
 mod native_artifact_surface_tests;
 mod native_nested_scroll_segment_tests;
 mod native_nested_scroll_tests;

@@ -24,7 +24,7 @@ fn surface_target_name(target: SurfaceDagTargetId) -> &'static str {
 fn stage_c_surface_dag_type_domains_are_exhaustive() {
     fn policy_name(policy: LayerizationPolicy) -> &'static str {
         match policy {
-            LayerizationPolicy::PreservePropertyBoundaries => "preserve-property-boundaries",
+            LayerizationPolicy::ResolveMaterializedTargets => "resolve-materialized-targets",
         }
     }
 
@@ -37,8 +37,8 @@ fn stage_c_surface_dag_type_domains_are_exhaustive() {
     }
 
     assert_eq!(
-        policy_name(LayerizationPolicy::PreservePropertyBoundaries),
-        "preserve-property-boundaries",
+        policy_name(LayerizationPolicy::ResolveMaterializedTargets),
+        "resolve-materialized-targets",
     );
     assert_eq!(
         kind_name(SurfaceDagNodeKind::Transform(TransformNodeId(
@@ -56,7 +56,7 @@ fn stage_c_same_owner_artifact_derives_three_surface_kinds_in_canonical_order() 
             .expect("C2a same-owner artifact");
     let candidates = derive_artifact_surface_candidates(
         &artifact,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("C2a same-owner candidates");
     assert_eq!(
@@ -115,7 +115,7 @@ fn stage_c_nested_scroll_candidates_preserve_outer_and_local_clip_ids() {
             .expect("C2a native-forest artifact");
     let candidates = derive_artifact_surface_candidates(
         &artifact,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("C2a native-forest candidates");
     let scrolls = candidates
@@ -174,7 +174,7 @@ fn stage_c_named_anchor_spatial_closure_mints_only_its_authored_transform_surfac
     assert!(!artifact.visual_offset_nodes.is_empty());
     let candidates = derive_artifact_surface_candidates(
         &artifact,
-        LayerizationPolicy::PreservePropertyBoundaries,
+        LayerizationPolicy::ResolveMaterializedTargets,
     )
     .expect("C2a named-anchor candidates");
     assert_eq!(
@@ -215,7 +215,7 @@ fn stage_c_scroll_surface_rejects_a_missing_contents_clip_with_exact_identity() 
     assert_eq!(
         derive_artifact_surface_candidates(
             &artifact,
-            LayerizationPolicy::PreservePropertyBoundaries,
+            LayerizationPolicy::ResolveMaterializedTargets,
         ),
         Err(SurfaceDagError::MissingScrollContentsClip {
             scroll: ScrollNodeId(root),
