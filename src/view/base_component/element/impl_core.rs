@@ -10,6 +10,9 @@ impl Element {
 
     fn has_visible_background(&self) -> bool {
         self.computed_style.background_color.to_rgba_f32()[3] > 0.0
+            // A gradient paints independently of background-color. Do not
+            // cull its commands before either renderer can consume them.
+            || self.computed_style.background_image.is_some()
     }
 
     fn has_visible_border(

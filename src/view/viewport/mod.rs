@@ -2,6 +2,10 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 #[cfg(test)]
+mod artifact_style_pipeline_test_support;
+#[cfg(test)]
+pub(crate) use artifact_style_pipeline_test_support::layout_artifact_style_scene_for_test;
+#[cfg(test)]
 mod clipboard_tests;
 mod compositor_sync;
 mod debug;

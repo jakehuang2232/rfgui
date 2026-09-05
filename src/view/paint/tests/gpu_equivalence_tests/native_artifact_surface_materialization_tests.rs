@@ -1,5 +1,7 @@
 use super::*;
 
+mod style_pipeline_tests;
+
 // Admission gap for the selector-transfer batch: both the direct S->T fixture
 // and the T->E fixture below install resolved transforms through a test hook.
 // These gates prove materialization execution, not the production style-to-
