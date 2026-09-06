@@ -1,6 +1,8 @@
 use super::*;
 use crate::view::viewport::ViewportPaintRendererMode;
 
+mod invalidation_tests;
+
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_single_viewport_artifact_layout_paint_and_pool_reuse() -> Result<(), String> {
@@ -19,19 +21,7 @@ fn run_single_viewport_frames(mode: ViewportPaintRendererMode) -> Result<(), Str
     for dpr in [1_u32, 2] {
         let mut viewport = Viewport::new();
         viewport.set_paint_renderer_mode(mode);
-        let mut arena = NodeArena::new();
-        let mut style = sized_grid(20.0, 16.0);
-        style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(Color::rgb(224, 36, 28)),
-        );
-        style.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.5)));
-        let mut element = Element::new_with_id(0xb4_8301, 0.0, 0.0, 20.0, 16.0);
-        element.apply_style(style.clone());
-        let root = commit_element(&mut arena, Box::new(element));
-        // Scene ownership transfers once. Every subsequent mutation, layout,
-        // property observation, paint, and pool operation uses this Viewport.
-        viewport.install_single_viewport_scene_for_test(arena, root);
+        let (root, mut style) = install_translucent_scene(&mut viewport);
         let mut first_target = None;
         for (frame, (translation, scroll_y)) in
             StyleScene::TranslucentFill.states().into_iter().enumerate()
@@ -154,4 +144,21 @@ fn read_submitted_texture(
     drop(mapped);
     readback.unmap();
     Ok(pixels)
+}
+
+fn install_translucent_scene(viewport: &mut Viewport) -> (crate::view::node_arena::NodeKey, Style) {
+    let mut arena = NodeArena::new();
+    let mut style = sized_grid(20.0, 16.0);
+    style.insert(
+        PropertyId::BackgroundColor,
+        ParsedValue::color_like(Color::rgb(224, 36, 28)),
+    );
+    style.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.5)));
+    let mut element = Element::new_with_id(0xb4_8301, 0.0, 0.0, 20.0, 16.0);
+    element.apply_style(style.clone());
+    let root = commit_element(&mut arena, Box::new(element));
+    // Scene ownership transfers once. Every subsequent mutation, layout,
+    // property observation, paint, and pool operation uses this Viewport.
+    viewport.install_single_viewport_scene_for_test(arena, root);
+    (root, style)
 }
