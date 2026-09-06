@@ -1,6 +1,9 @@
 use super::*;
 use crate::view::paint::PropertyBoundaryDagCompiler;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod single_viewport_frame_test_support;
+
 fn build_root_legacy(
     graph: &mut FrameGraph,
     arena: &mut crate::view::node_arena::NodeArena,

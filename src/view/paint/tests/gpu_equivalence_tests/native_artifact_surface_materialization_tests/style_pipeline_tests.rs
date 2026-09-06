@@ -2,6 +2,8 @@ use super::*;
 use crate::style::{Opacity, Transform, Translate};
 use crate::view::test_support::{commit_child, commit_element, get_element_mut};
 
+mod single_viewport_tests;
+
 #[derive(Clone, Copy, Debug)]
 enum StyleScene {
     ScrollingGradient,
@@ -21,8 +23,9 @@ impl StyleScene {
 // use a separate Viewport for rendering and the retained pool. They prove that
 // production layout output feeds recording/painting correctly, including the
 // explicitly tested selector path. They do not prove the production coupling
-// of layout, paint, and resident state within a single Viewport. That full
-// lifecycle remains a separate integration gate before RetainMode completion.
+// of layout, paint, and resident state within a single Viewport. The separate
+// single_viewport_tests gates exercise that lifecycle for TranslucentFill;
+// ScrollingGradient still has no equivalent artifact-selector integration gate.
 struct StyleFixture {
     scene: StyleScene,
     layout_viewport: Viewport,
