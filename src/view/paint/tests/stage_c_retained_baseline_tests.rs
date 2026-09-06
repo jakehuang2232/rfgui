@@ -81,8 +81,6 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         "native_fractional_host_offset_property_scene_bounds_translate_exactly",
         "native_nonzero_host_transform_legacy_artifact_and_independent_translation_agree",
         "native_production_direct_scroll_transform_matches_legacy_and_reuses_real_pair",
-        "native_production_transform_and_effect_scroll_match_legacy_and_reuse_two_real_pairs",
-        "native_production_transform_effect_scroll_matches_legacy_and_reuses_three_real_pairs",
         "native_production_nested_scroll_image_svg_text_frozen_payloads_match_legacy_and_reuse_real_r1",
         "native_production_nested_scroll_matches_legacy_within_one_lsb_and_reuses_real_r1",
         "native_direct_nested_scroll_segment_image_svg_dpr1_dpr2_one_lsb_gate",
