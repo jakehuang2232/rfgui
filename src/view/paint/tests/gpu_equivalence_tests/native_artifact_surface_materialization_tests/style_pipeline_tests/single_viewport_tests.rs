@@ -2,6 +2,7 @@ use super::*;
 use crate::view::viewport::ViewportPaintRendererMode;
 
 mod invalidation_tests;
+mod residency_tests;
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
