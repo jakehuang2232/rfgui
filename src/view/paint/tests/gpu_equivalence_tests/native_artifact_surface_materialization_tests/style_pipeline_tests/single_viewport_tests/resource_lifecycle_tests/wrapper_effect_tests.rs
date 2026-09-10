@@ -155,3 +155,4 @@ fn run_wrapper_effect(mode: ViewportPaintRendererMode) -> Result<(), String> {
 }
 
 mod ancestor_slot_tests;
+mod ready_owner_scope_tests;

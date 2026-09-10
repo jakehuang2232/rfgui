@@ -77,6 +77,35 @@ fn native_prepared_image_2x2_fit_sampling_alpha_and_arena_drop_match() -> Result
         &adapter,
         "prepared-image-decorated-fill-linear-0.65",
     )?;
+    // Independent of either renderer: opaque blue replaces the background
+    // inside the group's content box, then owner opacity 0.65 gives alpha166.
+    // Per-op opacity would leave background color and alpha above166 here.
+    for (path, graph) in [
+        (
+            "legacy",
+            legacy_image_graph(
+                Arc::from([0, 0, 255, 255].repeat(4)),
+                crate::view::ImageFit::Fill,
+                crate::view::ImageSampling::Nearest,
+                0.65,
+                true,
+            )?,
+        ),
+        (
+            "group artifact",
+            artifact_image_graph(
+                Arc::from([0, 0, 255, 255].repeat(4)),
+                crate::view::ImageFit::Fill,
+                crate::view::ImageSampling::Nearest,
+                0.65,
+                true,
+            )?,
+        ),
+    ] {
+        let output = render(graph, gpu)?;
+        assert_pixel_near(&output, 30, 28, [0, 0, 255, 166], 1, path)?;
+        assert_pixel_near(&output, 0, 0, [0; 4], 0, path)?;
+    }
     eprintln!("native PreparedImage parity passed on {adapter}");
     Ok(())
 }

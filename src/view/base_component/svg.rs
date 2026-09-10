@@ -2,10 +2,7 @@ use crate::style::{ComputedStyle, ParsedValue, PropertyId, Style};
 use crate::time::{Duration, Instant};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::ImageSnapshot;
-use crate::view::render_pass::TextureCompositePass;
-use crate::view::render_pass::texture_composite_pass::{
-    TextureCompositeInput, TextureCompositeOutput, TextureCompositeParams,
-};
+use crate::view::render_pass::texture_composite_pass::TextureCompositeParams;
 use crate::view::sampled_texture::{SampledTextureAlphaMode, SampledTextureUpload};
 use crate::view::svg_resource::{
     SvgDocumentSnapshot, SvgRasterMode, SvgRasterRequest, acquire_svg_document, acquire_svg_raster,
@@ -1700,11 +1697,9 @@ impl ElementTrait for Svg {
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
     ) -> Option<super::RetainedSurfaceBounds> {
-        let wrapper = self
-            .element
-            .retained_transform_render_output_bounds(arena, paint_offset)?;
-        let media = super::image::paint_adjusted_media_bounds(&self.element, paint_offset);
-        Element::checked_union_transform_surface_bounds(wrapper, media)
+        // Ready raster paint shares the owner's transform and fits its box.
+        self.element
+            .retained_transform_render_output_bounds(arena, paint_offset)
     }
 
     fn exact_nested_isolation_render_output_bounds(
@@ -1726,11 +1721,8 @@ impl ElementTrait for Svg {
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
     ) -> Option<super::RetainedSurfaceBounds> {
-        let wrapper = self
-            .element
-            .legacy_transform_render_output_bounds(arena, paint_offset)?;
-        let media = super::image::paint_adjusted_media_bounds(&self.element, paint_offset);
-        Element::checked_union_transform_surface_bounds(wrapper, media)
+        self.element
+            .legacy_transform_render_output_bounds(arena, paint_offset)
     }
 
     fn retained_transform_raster_seed_bounds(&self) -> Option<super::RetainedSurfaceBounds> {
@@ -1982,37 +1974,17 @@ impl Renderable for Svg {
         arena: &mut crate::view::node_arena::NodeArena,
         ctx: UiBuildContext,
     ) -> super::BuildState {
-        let parent_paint_offset = ctx.paint_offset();
-        let viewport = ctx.viewport();
-        let base_state = self.element.build_base_only(graph, arena, ctx);
-        let mut ctx = UiBuildContext::from_parts(viewport, base_state);
-        let Some(parent_target) = ctx.current_target() else {
-            return ctx.into_state();
-        };
         let opacity = self
             .frozen_paint
             .as_ref()
             .map_or(0.0, |paint| paint.opacity);
-        let Some(prepared) = self.prepared_svg_op(
-            super::image::paint_adjusted_offset(&self.element, parent_paint_offset),
-            opacity,
-        ) else {
-            return ctx.into_state();
+        // Retain SVG's frozen upload/identity. Only Legacy execution joins
+        // the owner's scope; the distinct artifact SVG op is unchanged.
+        let Some(prepared) = self.prepared_svg_op([0.0, 0.0], opacity) else {
+            return self.element.build_base_only(graph, arena, ctx);
         };
-
-        graph.add_graphics_pass(TextureCompositePass::new(
-            prepared.params,
-            TextureCompositeInput::from_sampled_texture(
-                prepared.upload,
-                Default::default(),
-                ctx.graphics_pass_context(),
-            ),
-            TextureCompositeOutput {
-                render_target: parent_target,
-            },
-        ));
-        ctx.set_current_target(parent_target);
-        ctx.into_state()
+        self.element
+            .build_base_with_texture(graph, arena, ctx, prepared.params, prepared.upload)
     }
 }
 

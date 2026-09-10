@@ -16,6 +16,15 @@ struct PreparedSelfPaintRecord {
     payload_identity: crate::view::paint::PaintPayloadIdentity,
 }
 
+/// One frozen native texture operation owned by this Element's paint scope.
+/// Bounds are prepared with zero paint offset and no owner transform. The
+/// owner walk applies its snap once, before restoring self clip or compositing
+/// its layer. This is a Legacy execution payload, not retained paint identity.
+struct LegacyOwnerTexturePaint {
+    params: crate::view::render_pass::TextureCompositeParams,
+    upload: crate::view::sampled_texture::SampledTextureUpload,
+}
+
 /// Complete geometry contract for the legacy transformed-subtree surface.
 ///
 /// Raster content stays in the untransformed logical `source_bounds`; the
@@ -357,7 +366,7 @@ impl Element {
         ctx: UiBuildContext,
         force_self_opaque: bool,
     ) -> BuildState {
-        self.build_base_descendants_only_inner(graph, arena, ctx, force_self_opaque, true)
+        self.build_base_descendants_only_inner(graph, arena, ctx, force_self_opaque, true, None)
     }
 
     fn build_base_descendants_only_inner(
@@ -367,6 +376,7 @@ impl Element {
         mut ctx: UiBuildContext,
         force_self_opaque: bool,
         allow_layer: bool,
+        owner_texture: Option<LegacyOwnerTexturePaint>,
     ) -> BuildState {
         let accumulated_render_transform =
             self.resolved_transform
@@ -385,12 +395,14 @@ impl Element {
         // opacity belongs to the final group composite, not each child op.
         // This also changes an existing transform layer: neutralize owner
         // paint inside that layer, then apply its opacity at composition.
-        // Native Ready payloads and leaf decoration keep their existing path.
+        // A native Ready texture can overlap visible owner decoration even
+        // without children. A bare texture has only one op, so its opacity
+        // can stay on that op without an extra layer or quantization step.
         // Fragmented inline spans are painted by their IFC root; arena
         // children there are not an independently owned paint subtree.
         let group_opacity = !force_self_opaque
             && self.opacity < 1.0
-            && !self.children.is_empty()
+            && (!self.children.is_empty() || (owner_texture.is_some() && self.core.should_paint))
             && !self.is_fragmentable_inline_element()
             && !self.inline_ifc_owned_by_root;
         if allow_layer && (self.resolved_transform.is_some() || group_opacity) {
@@ -400,6 +412,7 @@ impl Element {
                 ctx,
                 force_self_opaque,
                 group_opacity,
+                owner_texture,
             );
         }
 
@@ -513,6 +526,31 @@ impl Element {
                 if let Some(c) = next_ctx {
                     ctx = c;
                 }
+            }
+        }
+
+        if let Some(mut texture) = owner_texture {
+            // Preserve Legacy's native-after-children paint order, but emit
+            // inside this owner's self clip and layer rather than after the
+            // owner scope has been restored by build_base_only.
+            let paint_offset = ctx.paint_offset();
+            texture.params.bounds[0] += paint_offset[0];
+            texture.params.bounds[1] += paint_offset[1];
+            if force_self_opaque {
+                texture.params.opacity = 1.0;
+            }
+            if let Some(target) = ctx.current_target() {
+                graph.add_graphics_pass(crate::view::render_pass::TextureCompositePass::new(
+                    texture.params,
+                    crate::view::render_pass::TextureCompositeInput::from_sampled_texture(
+                        texture.upload,
+                        Default::default(),
+                        ctx.graphics_pass_context(),
+                    ),
+                    crate::view::render_pass::TextureCompositeOutput {
+                        render_target: target,
+                    },
+                ));
             }
         }
 
@@ -1986,6 +2024,7 @@ impl Element {
         mut ctx: UiBuildContext,
         force_self_opaque: bool,
         group_opacity: bool,
+        owner_texture: Option<LegacyOwnerTexturePaint>,
     ) -> BuildState {
         let placement = ctx.owner_paint_offset_projection();
         let transformed = self.resolved_transform.is_some();
@@ -2056,6 +2095,7 @@ impl Element {
             layer_ctx,
             force_self_opaque || group_opacity,
             false,
+            owner_texture,
         );
         ctx.state.merge_child_render_state(&layer_state);
 
@@ -2090,6 +2130,28 @@ impl Element {
         ));
         ctx.set_current_target(parent_target);
         ctx.into_state()
+    }
+
+    /// Execute an axis-aligned native texture prepared at zero paint offset
+    /// inside the same owner scope as decoration and descendants. Preparation
+    /// and resource freezing remain the caller's responsibility; owner layout
+    /// bounds must enclose the texture (Image/SVG fit maps into the content box).
+    pub(crate) fn build_base_with_texture(
+        &mut self,
+        graph: &mut FrameGraph,
+        arena: &mut crate::view::node_arena::NodeArena,
+        ctx: UiBuildContext,
+        params: crate::view::render_pass::TextureCompositeParams,
+        upload: crate::view::sampled_texture::SampledTextureUpload,
+    ) -> BuildState {
+        self.build_base_descendants_only_inner(
+            graph,
+            arena,
+            ctx,
+            false,
+            true,
+            Some(LegacyOwnerTexturePaint { params, upload }),
+        )
     }
 
     pub(crate) fn build_base_only(

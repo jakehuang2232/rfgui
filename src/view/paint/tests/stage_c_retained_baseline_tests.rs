@@ -78,6 +78,7 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/resource_lifecycle_tests/slot_content_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/resource_lifecycle_tests/svg_resource_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/resource_lifecycle_tests/wrapper_effect_tests/ancestor_slot_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/resource_lifecycle_tests/wrapper_effect_tests/ready_owner_scope_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/resource_lifecycle_tests/wrapper_effect_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/resource_lifecycle_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests.rs"),
@@ -150,6 +151,14 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         "native_materialization_style_pipeline_transform_effect_production_pixels_and_reuse",
         "native_materialization_style_pipeline_legacy_pixels",
         "native_single_viewport_group_opacity_overlap_and_sibling_scope",
+        "native_ready_owner_scope_image_artifact_dpr1",
+        "native_ready_owner_scope_image_artifact_dpr2",
+        "native_ready_owner_scope_image_legacy_dpr1",
+        "native_ready_owner_scope_image_legacy_dpr2",
+        "native_ready_owner_scope_svg_artifact_dpr1",
+        "native_ready_owner_scope_svg_artifact_dpr2",
+        "native_ready_owner_scope_svg_legacy_dpr1",
+        "native_ready_owner_scope_svg_legacy_dpr2",
     ]);
     assert_eq!(actual, expected);
 }

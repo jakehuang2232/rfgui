@@ -3,18 +3,16 @@ use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::{
     ImageHandle, ImageSnapshot, acquire_image_resource, snapshot_image,
 };
-use crate::view::render_pass::TextureCompositePass;
-use crate::view::render_pass::texture_composite_pass::{
-    TextureCompositeInput, TextureCompositeOutput, TextureCompositeParams,
-};
+use crate::view::render_pass::texture_composite_pass::TextureCompositeParams;
 use crate::view::sampled_texture::{SampledTextureAlphaMode, SampledTextureUpload};
 use crate::view::{ImageFit, ImageSampling, ImageSource};
 
 use super::{
     BoxModelSnapshot, ComputedStyleConsumer, Element, ElementStyleSnapshot, ElementTrait,
     EventTarget, LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
-    round_layout_value,
 };
+#[cfg(test)]
+use super::round_layout_value;
 use crate::view::node_arena::{NodeArena, NodeKey};
 use rustc_hash::FxHashSet;
 use std::collections::hash_map::DefaultHasher;
@@ -1072,11 +1070,10 @@ impl ElementTrait for Image {
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
     ) -> Option<super::RetainedSurfaceBounds> {
-        let wrapper = self
-            .element
-            .retained_transform_render_output_bounds(arena, paint_offset)?;
-        let media = paint_adjusted_media_bounds(&self.element, paint_offset);
-        Element::checked_union_transform_surface_bounds(wrapper, media)
+        // The fitted texture is inside the owner's content box and now
+        // follows the owner's transform; no untransformed media tail remains.
+        self.element
+            .retained_transform_render_output_bounds(arena, paint_offset)
     }
 
     fn exact_nested_isolation_render_output_bounds(
@@ -1098,11 +1095,8 @@ impl ElementTrait for Image {
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
     ) -> Option<super::RetainedSurfaceBounds> {
-        let wrapper = self
-            .element
-            .legacy_transform_render_output_bounds(arena, paint_offset)?;
-        let media = paint_adjusted_media_bounds(&self.element, paint_offset);
-        Element::checked_union_transform_surface_bounds(wrapper, media)
+        self.element
+            .legacy_transform_render_output_bounds(arena, paint_offset)
     }
 
     fn retained_transform_raster_seed_bounds(&self) -> Option<super::RetainedSurfaceBounds> {
@@ -1339,28 +1333,14 @@ pub(crate) fn paint_adjusted_texture_bounds(
     bounds
 }
 
-pub(crate) fn paint_adjusted_offset(element: &Element, parent_paint_offset: [f32; 2]) -> [f32; 2] {
+#[cfg(test)]
+fn paint_adjusted_offset(element: &Element, parent_paint_offset: [f32; 2]) -> [f32; 2] {
     let paint_x = element.layout_state.layout_position.x + parent_paint_offset[0];
     let paint_y = element.layout_state.layout_position.y + parent_paint_offset[1];
     [
         parent_paint_offset[0] + round_layout_value(paint_x) - paint_x,
         parent_paint_offset[1] + round_layout_value(paint_y) - paint_y,
     ]
-}
-
-pub(crate) fn paint_adjusted_media_bounds(
-    element: &Element,
-    parent_paint_offset: [f32; 2],
-) -> super::RetainedSurfaceBounds {
-    let snapshot = element.box_model_snapshot();
-    let paint_offset = paint_adjusted_offset(element, parent_paint_offset);
-    super::RetainedSurfaceBounds {
-        x: snapshot.x + paint_offset[0],
-        y: snapshot.y + paint_offset[1],
-        width: snapshot.width,
-        height: snapshot.height,
-        corner_radii: [0.0; 4],
-    }
 }
 
 impl Renderable for Image {
@@ -1370,37 +1350,14 @@ impl Renderable for Image {
         arena: &mut crate::view::node_arena::NodeArena,
         ctx: UiBuildContext,
     ) -> super::BuildState {
-        let parent_paint_offset = ctx.paint_offset();
-        let viewport = ctx.viewport();
-        let base_state = self.element.build_base_only(graph, arena, ctx);
-        let mut ctx = UiBuildContext::from_parts(viewport, base_state);
         let opacity = self.element.retained_paint_properties().opacity;
-        let Some(prepared) = self.prepared_image_op_with_upload(
-            match self.frozen_upload() {
-                Some(upload) => upload,
-                None => return ctx.into_state(),
-            },
-            paint_adjusted_offset(&self.element, parent_paint_offset),
-            opacity,
-        ) else {
-            return ctx.into_state();
+        // Keep the frozen payload separate from owner placement. Element
+        // applies its paint snap and composite scope exactly once.
+        let Some(prepared) = self.prepared_image_op([0.0, 0.0], opacity) else {
+            return self.element.build_base_only(graph, arena, ctx);
         };
-        let Some(parent_target) = ctx.current_target() else {
-            return ctx.into_state();
-        };
-        graph.add_graphics_pass(TextureCompositePass::new(
-            prepared.params,
-            TextureCompositeInput::from_sampled_texture(
-                prepared.upload,
-                Default::default(),
-                ctx.graphics_pass_context(),
-            ),
-            TextureCompositeOutput {
-                render_target: parent_target,
-            },
-        ));
-        ctx.set_current_target(parent_target);
-        ctx.into_state()
+        self.element
+            .build_base_with_texture(graph, arena, ctx, prepared.params, prepared.upload)
     }
 }
 

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn transformed_svg_wrapper_and_untransformed_media_expand_parent_exact_bounds() {
+fn transformed_svg_owner_scope_bounds_exclude_untransformed_media_tail() {
     let mut parent = Element::new_with_id(0xA200, 0.0, 0.0, 10.0, 10.0);
     parent.set_resolved_transform_for_test(Some(Mat4::from_translation(Vec3::new(
         100.0, 0.0, 0.0,
@@ -18,7 +18,7 @@ fn transformed_svg_wrapper_and_untransformed_media_expand_parent_exact_bounds() 
     let _svg_key = commit_child(&mut arena, parent_key, Box::new(svg));
     let geometry = crate::view::test_support::get_element::<Element>(&arena, parent_key)
         .exact_transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None)
-        .expect("Svg explicitly supplies exact wrapper plus media coverage");
+        .expect("Svg supplies one transformed owner scope covering its fitted media");
     assert_eq!(
         [
             geometry.source_bounds.x.to_bits(),
@@ -29,7 +29,7 @@ fn transformed_svg_wrapper_and_untransformed_media_expand_parent_exact_bounds() 
         [
             0.0_f32.to_bits(),
             0.0_f32.to_bits(),
-            104.0_f32.to_bits(),
+            10.0_f32.to_bits(),
             10.0_f32.to_bits(),
         ]
     );

@@ -2177,7 +2177,14 @@ fn artifact_image_graph(
         bare_image_fixture(pixels, fit, sampling, opacity)
     };
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
+    // Overlapping decoration and image require a group contract. The flat
+    // WholeFrame target intentionally bakes opacity per op and is not a
+    // correct pixel oracle for this scene (it used to match Legacy's bug).
+    let (artifact, eligibility) = if decorated && opacity < 1.0 {
+        root_group_artifact(&arena, &roots, &properties, &generations)
+    } else {
+        whole_frame_artifact(&arena, &roots, &properties, &generations)
+    };
     if !eligibility.eligible {
         return Err(format!(
             "image fixture is not artifact eligible: {eligibility:?}"

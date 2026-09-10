@@ -40,7 +40,7 @@ fn texture_bounds_apply_host_paint_offset_without_changing_size() {
 }
 
 #[test]
-fn transformed_image_wrapper_and_untransformed_media_expand_parent_surface_in_order() {
+fn transformed_image_media_stays_inside_owner_surface_and_parent_bounds() {
     let mut parent = Element::new_with_id(0x9200, 0.0, 0.0, 10.0, 10.0);
     parent.set_resolved_transform_for_test(Some(Mat4::from_translation(Vec3::new(
         100.0, 0.0, 0.0,
@@ -58,7 +58,7 @@ fn transformed_image_wrapper_and_untransformed_media_expand_parent_surface_in_or
     let _image_key = commit_child(&mut arena, parent_key, Box::new(image));
     let geometry = crate::view::test_support::get_element::<Element>(&arena, parent_key)
         .exact_transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None)
-        .expect("Image explicitly supplies exact wrapper plus media coverage");
+        .expect("Image supplies the transformed owner scope covering its media");
     assert_eq!(
         [
             geometry.source_bounds.x.to_bits(),
@@ -69,10 +69,10 @@ fn transformed_image_wrapper_and_untransformed_media_expand_parent_surface_in_or
         [
             0.0_f32.to_bits(),
             0.0_f32.to_bits(),
-            104.0_f32.to_bits(),
+            10.0_f32.to_bits(),
             10.0_f32.to_bits(),
         ],
-        "wrapper moves to x=0..4, but the sampled media still paints at x=100..104"
+        "owner and media both move to x=0..4 inside the parent's 0..10 box"
     );
 
     let mut graph = FrameGraph::new();
@@ -88,18 +88,22 @@ fn transformed_image_wrapper_and_untransformed_media_expand_parent_surface_in_or
     let composites =
         graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
     assert_eq!(composites.len(), 3);
-    let wrapper = composites[0].test_snapshot();
-    let media = composites[1].test_snapshot();
+    let media = composites[0].test_snapshot();
+    let wrapper = composites[1].test_snapshot();
     let parent = composites[2].test_snapshot();
     assert!(wrapper.source_handle.is_some());
     assert!(media.source_handle.is_none(), "media is a sampled upload");
     assert_eq!(
         media.bounds_bits,
         [100.0, 2.0, 4.0, 2.0].map(f32::to_bits),
-        "the media pass remains untransformed even though the embedded Element wrapper moves"
+        "media paints in owner raster coordinates; the owner composite then moves it"
     );
-    assert_eq!(wrapper.output_target, media.output_target);
-    assert_eq!(media.output_target, parent.source_handle);
+    assert_eq!(media.output_target, wrapper.source_handle);
+    assert_eq!(wrapper.output_target, parent.source_handle);
+    assert_eq!(
+        wrapper.quad_position_bits,
+        Some([[0.0, 4.0], [4.0, 4.0], [4.0, 2.0], [0.0, 2.0]].map(|point| point.map(f32::to_bits)))
+    );
     assert_eq!(parent.output_target, outer_target.handle());
     assert_eq!(
         graph.declared_persistent_textures().count(),

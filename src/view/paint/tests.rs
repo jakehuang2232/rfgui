@@ -4060,3 +4060,6 @@ mod resource_wrapper_state_tests;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod legacy_group_opacity_tests;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod legacy_native_scope_tests;
