@@ -4052,3 +4052,6 @@ mod text_area_projection_selection_tests;
 mod text_area_state_tests;
 mod text_artifact_tests;
 mod whole_frame_tests;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod resource_wrapper_state_tests;

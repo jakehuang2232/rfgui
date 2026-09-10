@@ -884,7 +884,16 @@ impl Svg {
                     {
                         return Err(super::ShadowPaintBlocker::ScrollContainer);
                     }
+                    // The generic recorder owns the complete state. Record local
+                    // opacity in paint ops; the surface compiler neutralizes it
+                    // for rasterization and applies the effect at composition.
+                    // This does not bake opacity into the reusable raster pixels.
                     if let Some(effect) = properties.effect
+                        && !recording_context.authorizes_surface_dag_paint_properties(
+                            owner,
+                            self.stable_id(),
+                            properties,
+                        )
                         && !matches!(
                             recording_context.opacity_authority,
                             crate::view::paint::PaintOpacityAuthority::NeutralRootEffect(authority)

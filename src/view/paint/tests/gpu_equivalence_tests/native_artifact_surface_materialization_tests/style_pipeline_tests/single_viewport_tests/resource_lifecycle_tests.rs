@@ -305,3 +305,5 @@ fn native_single_viewport_completion_after_freeze_waits_until_next_frame() -> Re
     eprintln!("post-freeze completion passed on {}", gpu.label());
     Ok(())
 }
+
+mod wrapper_effect_tests;

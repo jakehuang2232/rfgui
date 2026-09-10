@@ -1,7 +1,7 @@
 use super::*;
 use crate::view::paint::{
     ArtifactSurfaceRasterContext, ArtifactSurfaceRasterPlanError, ArtifactSurfaceResidentSealError,
-    FrameArtifactFallbackReason, FrameArtifactRecordOutcome, LegacyPaintReason,
+    FrameArtifactFallbackReason, FrameArtifactRecordOutcome,
     PreparedArtifactSurfaceRasterStep, RETAINED_CHILD_MASK_SLOT, RendererMode,
     RetainedSurfaceCompileAction, RetainedSurfaceRasterRole,
     artifact_surface_op_has_baked_opacity_for_test, prepare_artifact_surface_raster_plan,
@@ -274,16 +274,6 @@ fn prepared_row(
     }
 }
 
-fn missing_paint_identity_row(label: &'static str, dpr: f32) -> ProducerMeasurementRow {
-    ProducerMeasurementRow {
-        label,
-        dpr_bits: dpr.to_bits(),
-        outcome: ProducerMeasurementOutcome::RecordRejected(vec![
-            FrameArtifactFallbackReason::LegacyBoundary(LegacyPaintReason::MissingPaintIdentity),
-        ]),
-    }
-}
-
 #[test]
 fn surface_dag_producer_preserves_the_frozen_no_scroll_measurement_contract() {
     let rows = CASES
@@ -296,6 +286,9 @@ fn surface_dag_producer_preserves_the_frozen_no_scroll_measurement_contract() {
         RetainedSurfaceRasterRole::Transform,
         RetainedSurfaceRasterRole::PropertyEffect,
     ];
+    // C-1.2 deliberately updates the eight former MissingPaintIdentity rows.
+    // Wrapper bounds are 18x14, so each RGBA8 + depth pair costs
+    // 18 * 14 * (4 + 8) * DPR^2 = 3024 / 12096 bytes, as for Ready.
     let expected = vec![
         prepared_row("transform-image-ready", 1.0, &transform, &[20_736]),
         prepared_row("transform-image-ready", 2.0, &transform, &[82_944]),
@@ -313,16 +306,16 @@ fn surface_dag_producer_preserves_the_frozen_no_scroll_measurement_contract() {
         prepared_row("effect-text-ready", 2.0, &effect, &[12_096]),
         prepared_row("effect-image-ready", 1.0, &effect, &[3_024]),
         prepared_row("effect-image-ready", 2.0, &effect, &[12_096]),
-        missing_paint_identity_row("effect-image-loading", 1.0),
-        missing_paint_identity_row("effect-image-loading", 2.0),
-        missing_paint_identity_row("effect-image-error", 1.0),
-        missing_paint_identity_row("effect-image-error", 2.0),
+        prepared_row("effect-image-loading", 1.0, &effect, &[3_024]),
+        prepared_row("effect-image-loading", 2.0, &effect, &[12_096]),
+        prepared_row("effect-image-error", 1.0, &effect, &[3_024]),
+        prepared_row("effect-image-error", 2.0, &effect, &[12_096]),
         prepared_row("effect-svg-ready", 1.0, &effect, &[3_024]),
         prepared_row("effect-svg-ready", 2.0, &effect, &[12_096]),
-        missing_paint_identity_row("effect-svg-loading", 1.0),
-        missing_paint_identity_row("effect-svg-loading", 2.0),
-        missing_paint_identity_row("effect-svg-error", 1.0),
-        missing_paint_identity_row("effect-svg-error", 2.0),
+        prepared_row("effect-svg-loading", 1.0, &effect, &[3_024]),
+        prepared_row("effect-svg-loading", 2.0, &effect, &[12_096]),
+        prepared_row("effect-svg-error", 1.0, &effect, &[3_024]),
+        prepared_row("effect-svg-error", 2.0, &effect, &[12_096]),
         prepared_row(
             "co-located-transform-effect",
             1.0,
@@ -351,8 +344,8 @@ fn surface_dag_producer_preserves_the_frozen_no_scroll_measurement_contract() {
         .iter()
         .map(|(label, _)| *label)
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(non_empty_labels.len(), 10);
-    assert_eq!(non_empty_rows.len(), 20);
+    assert_eq!(non_empty_labels.len(), 14);
+    assert_eq!(non_empty_rows.len(), 28);
     assert!(
         non_empty_labels
             .iter()
@@ -370,10 +363,13 @@ fn surface_dag_producer_preserves_the_frozen_no_scroll_measurement_contract() {
         .map(|(_, bytes)| *bytes)
         .collect::<Vec<_>>();
     aggregate_bytes.sort_unstable();
-    let median = (aggregate_bytes[9] + aggregate_bytes[10]) / 2;
-    let p90 = aggregate_bytes[17];
+    let median = (aggregate_bytes[13] + aggregate_bytes[14]) / 2;
+    // Nearest-rank p90: zero-based index = ceil(0.9 * N) - 1.
+    // The frozen 28-row corpus uses 25; the former 20-row corpus used 17
+    // under the same convention. Update the index if the corpus size changes.
+    let p90 = aggregate_bytes[25];
     let maximum = *aggregate_bytes.last().expect("non-empty producer rows");
-    assert_eq!((median, p90, maximum), (20_736, 82_944, 82_944));
+    assert_eq!((median, p90, maximum), (13_338, 82_944, 82_944));
     assert!(
         maximum <= 32 * 1024 * 1024,
         "exceeding the precommitted headroom bound stops C3b3c1b-1"

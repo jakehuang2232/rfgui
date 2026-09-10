@@ -138,20 +138,11 @@ fn retained_auto_final_authority_covers_native_transform_effect_and_root_opacity
         for state in states {
             let (arena, roots, _child) = prepared_nested_native_effect(host, state);
             let emit = !emitted_effect && host == "Text";
-            if *state == "ready" {
-                assert_native_artifact_surface_authority(
-                    &format!("nested {host} effect {state}"),
-                    &arena,
-                    &roots,
-                    emit,
-                );
-            } else {
-                assert_native_missing_paint_identity_falls_back_to_property_scene(
-                    &format!("nested {host} effect {state}"),
-                    &arena,
-                    &roots,
-                );
-            }
+            // C-1.2: complete generic wrapper state now records Loading/Error
+            // too; the unchanged selector must select the prepared artifact.
+            assert_native_artifact_surface_authority(
+                &format!("nested {host} effect {state}"), &arena, &roots, emit,
+            );
             emitted_effect |= emit;
         }
     }

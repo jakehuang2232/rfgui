@@ -1991,37 +1991,6 @@ fn assert_native_artifact_surface_authority(
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true,));
 }
 
-fn assert_native_missing_paint_identity_falls_back_to_property_scene(
-    host: &str,
-    arena: &NodeArena,
-    roots: &[NodeKey],
-) {
-    let selection_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let (properties, generations) = synced_paint_state(arena, roots);
-    let AutoAuthorityDecision::PropertyScene { trace, .. } = select_retained_auto_authority(
-        arena,
-        roots,
-        &properties,
-        &generations,
-        &selection_ctx,
-        true,
-    ) else {
-        panic!("{host}: missing paint identity must fall back to PropertyScene")
-    };
-    assert!(
-        trace.rejections.iter().any(|rejection| matches!(
-            rejection,
-            AutoAuthorityRejection::Artifact { eligibility }
-                if eligibility.reasons.contains(
-                    &crate::view::paint::FrameArtifactFallbackReason::LegacyBoundary(
-                        crate::view::paint::LegacyPaintReason::MissingPaintIdentity,
-                    )
-                )
-        )),
-        "{host}: fallback must preserve the complete MissingPaintIdentity reason: {trace:?}"
-    );
-}
-
 fn selected_artifact_surface(
     host: &str,
     arena: &NodeArena,
