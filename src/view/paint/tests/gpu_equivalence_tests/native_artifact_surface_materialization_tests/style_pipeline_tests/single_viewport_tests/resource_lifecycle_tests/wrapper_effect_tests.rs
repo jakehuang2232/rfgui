@@ -153,3 +153,5 @@ fn run_wrapper_effect(mode: ViewportPaintRendererMode) -> Result<(), String> {
     eprintln!("resource wrapper effect {mode:?} passed on {}", gpu.label());
     Ok(())
 }
+
+mod ancestor_slot_tests;
