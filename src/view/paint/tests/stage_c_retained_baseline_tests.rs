@@ -149,6 +149,7 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         "native_materialization_style_pipeline_scroll_executor_pixels_and_reuse",
         "native_materialization_style_pipeline_transform_effect_production_pixels_and_reuse",
         "native_materialization_style_pipeline_legacy_pixels",
+        "native_single_viewport_group_opacity_overlap_and_sibling_scope",
     ]);
     assert_eq!(actual, expected);
 }

@@ -366,7 +366,7 @@ impl Element {
         arena: &mut crate::view::node_arena::NodeArena,
         mut ctx: UiBuildContext,
         force_self_opaque: bool,
-        allow_transform: bool,
+        allow_layer: bool,
     ) -> BuildState {
         let accumulated_render_transform =
             self.resolved_transform
@@ -381,8 +381,26 @@ impl Element {
             return ctx.into_state();
         }
 
-        if allow_transform && self.resolved_transform.is_some() {
-            return self.build_transformed_subtree(graph, arena, ctx, force_self_opaque);
+        // A nonempty subtree contributes overlapping paint. Its local
+        // opacity belongs to the final group composite, not each child op.
+        // This also changes an existing transform layer: neutralize owner
+        // paint inside that layer, then apply its opacity at composition.
+        // Native Ready payloads and leaf decoration keep their existing path.
+        // Fragmented inline spans are painted by their IFC root; arena
+        // children there are not an independently owned paint subtree.
+        let group_opacity = !force_self_opaque
+            && self.opacity < 1.0
+            && !self.children.is_empty()
+            && !self.is_fragmentable_inline_element()
+            && !self.inline_ifc_owned_by_root;
+        if allow_layer && (self.resolved_transform.is_some() || group_opacity) {
+            return self.build_legacy_layer_subtree(
+                graph,
+                arena,
+                ctx,
+                force_self_opaque,
+                group_opacity,
+            );
         }
 
         let parent_paint_projection = ctx.owner_paint_offset_projection();
@@ -1961,21 +1979,38 @@ impl Element {
         )
     }
 
-    fn build_transformed_subtree(
+    fn build_legacy_layer_subtree(
         &mut self,
         graph: &mut FrameGraph,
         arena: &mut crate::view::node_arena::NodeArena,
         mut ctx: UiBuildContext,
         force_self_opaque: bool,
+        group_opacity: bool,
     ) -> BuildState {
         let placement = ctx.owner_paint_offset_projection();
-        let Some(geometry) = self.transform_surface_geometry_snapshot_with_placement(
-            arena,
-            placement.host_neutral,
-            placement.active,
-            ctx.scissor_rect(),
-        ) else {
-            // Invalid transform geometry must never reach texture allocation
+        let transformed = self.resolved_transform.is_some();
+        let geometry = if transformed {
+            self.transform_surface_geometry_snapshot_with_placement(
+                arena,
+                placement.host_neutral,
+                placement.active,
+                ctx.scissor_rect(),
+            )
+        } else {
+            // Opacity alone keeps the caller's coordinate space and snap.
+            // Include descendant output, even outside the owner's layout box.
+            self.transform_subtree_raster_bounds(arena, ctx.paint_offset(), false)
+                .and_then(|bounds| {
+                    TransformSurfaceGeometrySnapshot::new(
+                        bounds,
+                        bounds,
+                        Mat4::IDENTITY,
+                        ctx.scissor_rect(),
+                    )
+                })
+        };
+        let Some(geometry) = geometry else {
+            // Invalid layer geometry must never reach texture allocation
             // or a composite pass. Retaining the caller state is the legacy
             // fail-closed fallback for this frame.
             return ctx.into_state();
@@ -1985,15 +2020,23 @@ impl Element {
             ctx.viewport(),
             ctx.layer_subtree_state_with_ancestor_clip(AncestorClipContext::default()),
         );
-        // Host placement belongs to the receiver edge. Re-enter the owner in
-        // the detached target with the same zero-host owner snap chain used to
+        // With a transform, host placement belongs to the receiver edge.
+        // Re-enter the detached target with the same zero-host owner snap chain used to
         // derive `source_bounds`; nested surfaces retain their parent-surface
         // fractional snap instead of being reset globally to zero.
-        layer_ctx.set_paint_offset(placement.host_neutral);
+        layer_ctx.set_paint_offset(if transformed {
+            placement.host_neutral
+        } else {
+            ctx.paint_offset()
+        });
         layer_ctx.set_current_render_transform(ctx.current_render_transform());
         let layer_target = layer_ctx.allocate_persistent_target_with_key(
             graph,
-            crate::view::base_component::transformed_layer_stable_key(self.stable_id()),
+            if transformed {
+                crate::view::base_component::transformed_layer_stable_key(self.stable_id())
+            } else {
+                crate::view::base_component::isolation_layer_stable_key(self.stable_id())
+            },
             source_bounds,
         );
         layer_ctx.set_current_target(layer_target);
@@ -2011,7 +2054,7 @@ impl Element {
             graph,
             arena,
             layer_ctx,
-            force_self_opaque,
+            force_self_opaque || group_opacity,
             false,
         );
         ctx.state.merge_child_render_state(&layer_state);
@@ -2023,7 +2066,15 @@ impl Element {
         });
         ctx.set_current_target(parent_target);
         graph.add_graphics_pass(crate::view::render_pass::TextureCompositePass::new(
-            geometry.texture_composite_params(),
+            {
+                let mut params = geometry.texture_composite_params();
+                if group_opacity {
+                    // Only this owner's opacity is neutralized inside the
+                    // layer. Child groups retain their own local opacity.
+                    params.opacity = self.opacity;
+                }
+                params
+            },
             crate::view::render_pass::TextureCompositeInput::from_render_target(
                 crate::view::render_pass::TextureCompositeSourceIn::with_handle(
                     layer_target
