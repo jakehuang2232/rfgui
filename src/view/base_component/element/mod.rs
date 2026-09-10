@@ -3047,6 +3047,18 @@ pub trait ElementTrait:
         None
     }
 
+    /// Additional self-clip snapshot for generic command recording. The older
+    /// leaf/deferred capability remains separate; this alone grants no paint
+    /// authority. Coverage must bind the exact owner and descendant clip scope.
+    fn exact_generic_subtree_self_clip_scissor_rect(
+        &self,
+        _owner: crate::view::node_arena::NodeKey,
+        _arena: &crate::view::node_arena::NodeArena,
+        _is_frame_root: bool,
+    ) -> Option<[u32; 4]> {
+        None
+    }
+
     /// Returns the exact viewport self-clip owned by this node when it is
     /// emitted through the deferred root-viewport phase.
     ///
@@ -8244,6 +8256,15 @@ impl ElementTrait for Element {
         Some(RetainedScrollNormalizedPaintCapability::native(
             RetainedScrollNormalizedPaintKind::Element,
         ))
+    }
+
+    fn exact_generic_subtree_self_clip_scissor_rect(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+        is_frame_root: bool,
+    ) -> Option<[u32; 4]> {
+        self.exact_anchor_parent_subtree_self_clip_scissor_rect(owner, arena, is_frame_root)
     }
 
     fn exact_retained_self_clip_scissor_rect(

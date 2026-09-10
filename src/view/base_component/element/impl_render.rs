@@ -876,6 +876,9 @@ impl Element {
     ) -> bool {
         (self.anchor_parent_leaf_self_clip_scissor_rect().is_some()
             && recording_context.authorizes_self_clip_for(self.stable_id()))
+            || self.absolute_clip_scissor_rect().is_some_and(|scissor| {
+                recording_context.authorizes_subtree_self_clip_for(self.stable_id(), scissor)
+            })
             || recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id())
     }
 

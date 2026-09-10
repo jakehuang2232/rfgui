@@ -6269,8 +6269,38 @@ fn surface_identity(
     }
 }
 
+// Keep only receiver clips that belong to the surface owner's recorded scope.
+// A deeper transition witness may add descendant clips; an earlier consumed
+// boundary may remove ancestor clips. Intersecting the two chains preserves
+// both obligations without reintroducing a detached scrollport.
+// Both chains are innermost-first parent paths in the same validated forest.
+// A common node therefore implies a common suffix: `find` selects the deepest
+// common clip, whose remaining ancestry is exactly the chain intersection.
+fn artifact_surface_receiver_clip(
+    owner_clip: Option<ClipNodeId>,
+    transitioned_clip: Option<ClipNodeId>,
+    clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
+) -> Option<Option<ClipNodeId>> {
+    let (_, owner_chain) = resolve_artifact_surface_clip(owner_clip, clips)?;
+    let (_, transitioned_chain) = resolve_artifact_surface_clip(transitioned_clip, clips)?;
+    Some(
+        transitioned_chain
+            .iter()
+            .find(|clip| {
+                owner_chain
+                    .iter()
+                    .any(|owner_clip| owner_clip.id == clip.id)
+            })
+            .map(|clip| clip.id),
+    )
+}
+
+#[cfg(test)]
+mod subtree_receiver_clip_tests;
+
 fn surface_composite_geometry(
     node: &super::SurfaceDagNode,
+    owner_clip: Option<ClipNodeId>,
     raster_source_bounds_bits: [u32; 4],
     receiver_source_bounds_bits: [u32; 4],
     receiver: SurfaceDagExecutionTargetId,
@@ -6283,9 +6313,19 @@ fn surface_composite_geometry(
     clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
     closure: Option<&SurfaceDagClipClosureProjection>,
 ) -> Result<ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceRasterPlanError> {
+    // Consumption transitions may borrow the deepest descendant witness's
+    // non-consumed dimensions. That descendant's self clip is raster-local
+    // inside this surface, not an outer composite clip. Only the surface
+    // owner's recorded paint scope can supply this receiver boundary.
     let receiver_clip = closure
         .map(SurfaceDagClipClosureProjection::receiver_clip)
-        .unwrap_or(node.transition().clip.to);
+        .map(Some)
+        .unwrap_or_else(|| {
+            artifact_surface_receiver_clip(owner_clip, node.transition().clip.to, clips)
+        })
+        .ok_or(ArtifactSurfaceRasterPlanError::InvalidReceiverClip(
+            node.id(),
+        ))?;
     let composite_clip = match node.kind() {
         // ScrollContent consumes its contents clip while detaching the raster,
         // so the closure identity remains the post-transition parent while
@@ -6510,6 +6550,12 @@ fn prepare_artifact_surface_raster_plan_from_program(
         .clip_nodes
         .iter()
         .map(|snapshot| (snapshot.id, *snapshot))
+        .collect::<FxHashMap<_, _>>();
+    let owner_states = program
+        .artifact
+        .owner_property_states
+        .iter()
+        .map(|snapshot| (snapshot.owner, snapshot.paint))
         .collect::<FxHashMap<_, _>>();
     let mut prepared_nodes: Vec<Option<PreparedArtifactSurfaceRasterNode>> =
         vec![None; program.execution_order.nodes().len()];
@@ -6737,8 +6783,17 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 target: target_id,
                 owner: node.target(),
             })?;
+        let owner_state =
+            owner_states
+                .get(&node.target())
+                .ok_or(ArtifactSurfaceRasterPlanError::SurfaceDag(
+                    SurfaceDagError::Transition(TransitionError::MissingOwnerPropertyState(
+                        node.target(),
+                    )),
+                ))?;
         let geometry = surface_composite_geometry(
             node,
+            owner_state.clip,
             source_bounds_bits,
             raw_source_bounds_bits,
             execution.receiver(),

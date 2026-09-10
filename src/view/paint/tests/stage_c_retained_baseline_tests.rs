@@ -49,7 +49,11 @@ mod nested {
 }
 
 /// Names of the 23 ignored native GPU tests present at the start of Stage C,
-/// plus each named V2 hardware gate added during the migration.
+/// plus the named V2 hardware gates, including the materialization,
+/// style-pipeline and single-Viewport suites. Their files also contain CPU
+/// tests, so only `native_` test names participate in this inventory.
+/// Keep failing Legacy acceptance gates in the set until explicitly retired;
+/// their presence does not mean their pixel/reuse assertions pass.
 ///
 /// This inventory guards deletion and renaming only. It neither executes the
 /// hardware tests in normal CI nor prevents a named test body from being
@@ -66,9 +70,22 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         include_str!("gpu_equivalence_tests/native_nested_scroll_segment_tests.rs"),
         include_str!("gpu_equivalence_tests/native_scroll_forest_tests.rs"),
         include_str!("gpu_equivalence_tests/native_scroll_scene_pixel_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/execution_failure_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/invalidation_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/residency_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/resource_lifecycle_tests/pressure_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/resource_lifecycle_tests/slot_content_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/resource_lifecycle_tests/svg_resource_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/resource_lifecycle_tests/wrapper_effect_tests/ancestor_slot_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/resource_lifecycle_tests/wrapper_effect_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/resource_lifecycle_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests.rs"),
     ]
     .into_iter()
     .flat_map(declared_test_function_names)
+    .filter(|name| name.starts_with("native_"))
     .collect::<BTreeSet<_>>();
     let expected = expected_names([
         "native_offscreen_legacy_and_artifact_pixels_match",
@@ -100,6 +117,38 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         "native_production_artifact_nested_scroll_multi_leaf_matches_legacy_within_one_lsb_and_reuses_real_pool",
         "native_production_artifact_nested_scroll_inline_ifc_text_matches_legacy_within_one_lsb_and_reuses_real_pool",
         "native_production_artifact_scroll_offset_only_reuses_real_pool_and_matches_legacy_immediate",
+        "native_materialized_direct_scroll_transform_matches_the_pre_cutover_pixels_and_reuses_one_pair",
+        "native_materialization_absolute_pixels_and_reuse_at_both_dprs",
+        "native_materialization_translation_effect_pixels_and_reuse",
+        "native_single_viewport_execute_failure_legacy_recovery_and_explicit_retry",
+        "native_single_viewport_content_opacity_and_dpr_invalidation",
+        "native_single_viewport_legacy_content_opacity_and_dpr_pixels",
+        "native_single_viewport_mode_switch_discards_stale_retained_content",
+        "native_single_viewport_missing_backing_rerasterizes_then_reuses",
+        "native_single_viewport_real_sampled_pressure_preserves_raster_and_recovers_source",
+        "native_single_viewport_legacy_real_sampled_pressure_pixels",
+        "native_single_viewport_sampled_idle_eviction_and_active_legacy_protection",
+        "native_single_viewport_nonempty_resource_slots",
+        "native_single_viewport_legacy_nonempty_resource_slots",
+        "native_single_viewport_svg_raster_generation_and_freeze",
+        "native_single_viewport_ancestor_state_nonempty_slots_image_artifact_dpr1",
+        "native_single_viewport_ancestor_state_nonempty_slots_image_artifact_dpr2",
+        "native_single_viewport_ancestor_state_nonempty_slots_image_legacy_dpr1",
+        "native_single_viewport_ancestor_state_nonempty_slots_image_legacy_dpr2",
+        "native_single_viewport_ancestor_state_nonempty_slots_svg_artifact_dpr1",
+        "native_single_viewport_ancestor_state_nonempty_slots_svg_artifact_dpr2",
+        "native_single_viewport_ancestor_state_nonempty_slots_svg_legacy_dpr1",
+        "native_single_viewport_ancestor_state_nonempty_slots_svg_legacy_dpr2",
+        "native_single_viewport_resource_wrapper_effect_and_reuse",
+        "native_single_viewport_legacy_resource_wrapper_effect_pixels",
+        "native_single_viewport_resource_completion_and_generation_invalidation",
+        "native_single_viewport_legacy_resource_completion_and_generation_pixels",
+        "native_single_viewport_completion_after_freeze_waits_until_next_frame",
+        "native_single_viewport_artifact_layout_paint_and_pool_reuse",
+        "native_single_viewport_legacy_layout_and_paint",
+        "native_materialization_style_pipeline_scroll_executor_pixels_and_reuse",
+        "native_materialization_style_pipeline_transform_effect_production_pixels_and_reuse",
+        "native_materialization_style_pipeline_legacy_pixels",
     ]);
     assert_eq!(actual, expected);
 }

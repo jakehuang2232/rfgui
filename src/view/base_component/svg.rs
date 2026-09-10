@@ -1267,6 +1267,16 @@ impl ElementTrait for Svg {
         ))
     }
 
+    fn exact_generic_subtree_self_clip_scissor_rect(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+        is_frame_root: bool,
+    ) -> Option<[u32; 4]> {
+        self.element
+            .exact_anchor_parent_subtree_self_clip_scissor_rect(owner, arena, is_frame_root)
+    }
+
     fn exact_retained_self_clip_scissor_rect(
         &self,
         owner: crate::view::node_arena::NodeKey,

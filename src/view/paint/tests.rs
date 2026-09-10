@@ -4011,6 +4011,8 @@ fn hidden_element_subtree(root_id: u64, child_id: u64) -> (NodeArena, NodeKey, N
 }
 
 mod anchor_parent_clip_tests;
+#[cfg(not(target_arch = "wasm32"))]
+mod subtree_self_clip_tests;
 mod artifact_identity_tests;
 mod atomic_projection_emission_tests;
 mod atomic_projection_property_scroll_tests;

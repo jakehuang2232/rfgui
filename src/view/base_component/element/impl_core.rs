@@ -174,6 +174,52 @@ impl Element {
         if !arena.children_of(owner).is_empty() {
             return None;
         }
+        self.anchor_parent_self_clip_with_parent_order(scissor, owner, arena, is_frame_root)
+    }
+
+    /// The generic recorder can retain a nonempty scope when both child mirrors
+    /// and the parent's normal-before-overflow phase agree with arena order.
+    /// Descendants are still visited and validated individually by coverage;
+    /// this proof does not authorize unsupported paint inside the subtree.
+    pub(crate) fn exact_anchor_parent_subtree_self_clip_scissor_rect(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+        is_frame_root: bool,
+    ) -> Option<[u32; 4]> {
+        if self.children.is_empty()
+            || self.computed_style.position.mode() != PositionMode::Absolute
+            || self.computed_style.position.clip_mode() != ClipMode::AnchorParent
+        {
+            return None;
+        }
+        let node = arena.get(owner)?;
+        if node.element.stable_id() != self.stable_id()
+            || node.children() != self.children.as_slice()
+        {
+            return None;
+        }
+        let mut seen = rustc_hash::FxHashSet::default();
+        for child in self.children.iter().copied() {
+            if !seen.insert(child) || arena.get(child)?.parent() != Some(owner) {
+                return None;
+            }
+        }
+        self.anchor_parent_self_clip_with_parent_order(
+            self.absolute_clip_scissor_rect()?,
+            owner,
+            arena,
+            is_frame_root,
+        )
+    }
+
+    fn anchor_parent_self_clip_with_parent_order(
+        &self,
+        scissor: [u32; 4],
+        owner: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+        is_frame_root: bool,
+    ) -> Option<[u32; 4]> {
         if is_frame_root {
             return Some(scissor);
         }

@@ -13,6 +13,76 @@ use crate::view::node_arena::NodeKey;
 
 use super::artifact::*;
 
+/// Exact nonempty self-clip proof from the live tree. Private fields prevent a
+/// component hook from manufacturing authority from a clip id alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PaintSubtreeSelfClipWitness {
+    owner: NodeKey,
+    stable_id: u64,
+    state: crate::view::compositor::property_tree::NodePropertyState,
+    scissor: [u32; 4],
+}
+
+impl PaintSubtreeSelfClipWitness {
+    pub(crate) fn matches_recorded_scopes(
+        self,
+        paint: PropertyTreeState,
+        descendants: PropertyTreeState,
+    ) -> bool {
+        self.state.paint == paint && self.state.descendants == descendants
+    }
+
+    pub(crate) fn from_live_owner(
+        arena: &crate::view::node_arena::NodeArena,
+        owner: NodeKey,
+        trees: &crate::view::compositor::property_tree::PropertyTrees,
+        is_frame_root: bool,
+    ) -> Option<Self> {
+        use crate::view::compositor::property_tree::ClipBehavior;
+        let node = arena.get(owner)?;
+        let stable_id = node.element.stable_id();
+        if stable_id == 0 {
+            return None;
+        }
+        let scissor = node.element.exact_generic_subtree_self_clip_scissor_rect(
+            owner,
+            arena,
+            is_frame_root,
+        )?;
+        let state = trees.node_state_for(owner)?;
+        let id = trees.authoritative_self_clip_for_owner(owner, state.paint)?;
+        let paint_chain = trees.clip_snapshot_for(state.paint.clip)?;
+        let clip = paint_chain.first()?;
+        if clip.id != id || clip.logical_scissor != scissor {
+            return None;
+        }
+        let descendants = trees.clip_snapshot_for(state.descendants.clip)?;
+        let position = descendants
+            .iter()
+            .position(|candidate| candidate.id == id)?;
+        // An optional contents scope may tighten this self clip; it may not
+        // replace it or substitute another owner's boundary. The complete
+        // frozen chains are validated again by artifact validation.
+        if descendants[position..] != paint_chain
+            || descendants[..position].iter().any(|clip| {
+                clip.owner != owner
+                    || clip.id.owner != owner
+                    || clip.id.role != ClipNodeRole::ContentsClip
+                    || clip.behavior != ClipBehavior::Intersect
+                    || clip.generation == 0
+            })
+        {
+            return None;
+        }
+        Some(Self {
+            owner,
+            stable_id,
+            state,
+            scissor,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PaintRecordingContext {
     pub(crate) paint_offset: [f32; 2],
@@ -37,6 +107,9 @@ pub(crate) struct PaintRecordingContext {
     /// exact logical `SelfClip / Replace` boundary. It is cleared before every
     /// node and cannot act as ambient custom-host authority.
     pub(crate) authoritative_self_clip: Option<ClipNodeId>,
+    /// Rebuilt after hooks, only by the generic recorder. It binds both paint
+    /// and descendant clip scope to this owner, never an ambient permission.
+    pub(crate) subtree_self_clip: Option<PaintSubtreeSelfClipWitness>,
     /// Recorder-minted proof for the one exact deferred viewport-clipped
     /// native root. Coverage clears and rebinds this frozen replace-scissor
     /// witness after every component context hook.
@@ -125,6 +198,23 @@ impl PaintRecordingContext {
             && self.recording_owner == Some(owner)
             && self.recording_owner_stable_id == Some(stable_id)
             && self.surface_dag_paint_state == Some(properties)
+    }
+
+    pub(crate) fn authorizes_subtree_self_clip_for(
+        self,
+        stable_id: u64,
+        scissor: [u32; 4],
+    ) -> bool {
+        self.subtree_self_clip.is_some_and(|witness| {
+            witness.stable_id == stable_id
+                && witness.scissor == scissor
+                && self.authorizes_surface_dag_paint_properties(
+                    witness.owner,
+                    stable_id,
+                    witness.state.paint,
+                )
+                && self.authoritative_self_clip == witness.state.paint.clip
+        })
     }
 
     pub(crate) fn authorizes_self_clip_for(self, stable_id: u64) -> bool {

@@ -1731,7 +1731,11 @@ impl PropertyTrees {
 
         let clip = node
             .element
-            .exact_retained_self_clip_scissor_rect(key, arena, is_frame_root);
+            .exact_retained_self_clip_scissor_rect(key, arena, is_frame_root)
+            .or_else(|| {
+                node.element
+                    .exact_generic_subtree_self_clip_scissor_rect(key, arena, is_frame_root)
+            });
         let clip = if let Some(logical_scissor) = clip {
             let id = ClipNodeId {
                 owner: key,

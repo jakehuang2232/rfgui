@@ -931,6 +931,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
             recording_context.recording_owner = Some(key);
             recording_context.recording_owner_stable_id = Some(stable_id);
             recording_context.authoritative_self_clip = None;
+            recording_context.subtree_self_clip = None;
             // A component hook cannot mint or retarget consumed-property
             // authority.  Rebind the recorder-owned witness to this canonical
             // traversal owner after the hook returns.
@@ -1081,6 +1082,18 @@ fn record_coverage_manifest_with_property_authorities_impl(
             recording_context.authoritative_self_clip = self
                 .properties
                 .authoritative_self_clip_for_owner(key, live_properties);
+            recording_context.subtree_self_clip = self
+                .surface_dag
+                .then(|| {
+                    super::recording_context::PaintSubtreeSelfClipWitness::from_live_owner(
+                        self.arena,
+                        key,
+                        self.properties,
+                        recording_context.is_frame_root,
+                    )
+                })
+                .flatten()
+                .filter(|witness| witness.matches_recorded_scopes(properties, contents_properties));
             recording_context.deferred_viewport_self_clip = None;
             recording_context.deferred_viewport_effect = None;
             if deferred_phase_root {
