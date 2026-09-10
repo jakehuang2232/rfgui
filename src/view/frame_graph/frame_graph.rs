@@ -1,3 +1,6 @@
+#[cfg(test)]
+pub(crate) mod execution_failure_test_support;
+
 use crate::time::Instant;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
@@ -3083,6 +3086,10 @@ impl FrameGraph {
                     self.execute_graphics_group(group, &mut ctx, &mut timings)
                 }
             };
+            // Inject only after a real execution step succeeded; the normal
+            // error cleanup and viewport abort path below remain authoritative.
+            #[cfg(test)]
+            let result = result.and_then(|()| execution_failure_test_support::after_step());
             if let Err(error) = result {
                 execution_error = Some(error);
                 break;

@@ -1052,6 +1052,9 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 };
                 contents_properties.clip = projected;
             }
+            // Rebind after component hooks and projection: a resource host may
+            // preserve only this owner's exact generic recorded property state.
+            recording_context.surface_dag_paint_state = self.surface_dag.then_some(properties);
             let owner_property_state = PaintOwnerPropertyStateSnapshot {
                 owner: key,
                 stable_id,

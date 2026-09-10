@@ -3,6 +3,8 @@ use crate::view::paint::PropertyBoundaryDagCompiler;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod single_viewport_frame_test_support;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use single_viewport_frame_test_support::SingleViewportFrameObservation;
 
 fn build_root_legacy(
     graph: &mut FrameGraph,
@@ -3976,6 +3978,9 @@ impl Viewport {
                 now: semantic_now,
             },
         );
+
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        single_viewport_frame_test_support::run_after_resource_freeze(self);
 
         // Observe the final resolved frame state after transition sampling
         // and any required relayout.  These shadow trees do not yet drive

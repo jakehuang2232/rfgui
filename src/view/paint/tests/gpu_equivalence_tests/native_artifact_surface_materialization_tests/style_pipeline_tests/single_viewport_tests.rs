@@ -3,6 +3,8 @@ use crate::view::viewport::ViewportPaintRendererMode;
 
 mod invalidation_tests;
 mod residency_tests;
+mod resource_lifecycle_tests;
+mod execution_failure_tests;
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]

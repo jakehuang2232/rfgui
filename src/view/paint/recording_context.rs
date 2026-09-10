@@ -54,6 +54,10 @@ pub(crate) struct PaintRecordingContext {
     /// current owner's state after every component hook. Artifact validation
     /// remains responsible for proving the resulting snapshot store.
     pub(crate) surface_dag: bool,
+    /// Exact post-projection paint state for this coverage invocation. Coverage
+    /// overwrites it after component hooks; it cannot authorize another owner
+    /// or property state copied from a neighboring node.
+    pub(crate) surface_dag_paint_state: Option<PropertyTreeState>,
     /// Owner-scoped transform accepted by the generic Surface DAG
     /// recorder. Coverage overwrites it before every node paints, so it cannot
     /// become ambient authority inherited from a component context hook.
@@ -111,6 +115,18 @@ pub(crate) struct PaintRecordingContext {
 }
 
 impl PaintRecordingContext {
+    pub(crate) fn authorizes_surface_dag_paint_properties(
+        self,
+        owner: NodeKey,
+        stable_id: u64,
+        properties: PropertyTreeState,
+    ) -> bool {
+        self.surface_dag
+            && self.recording_owner == Some(owner)
+            && self.recording_owner_stable_id == Some(stable_id)
+            && self.surface_dag_paint_state == Some(properties)
+    }
+
     pub(crate) fn authorizes_self_clip_for(self, stable_id: u64) -> bool {
         matches!(
             (
@@ -378,3 +394,6 @@ impl PaintRecordingContext {
         self.resident_caret_suppressed && self.recording_owner == Some(owner)
     }
 }
+
+#[cfg(test)]
+mod resource_property_tests;

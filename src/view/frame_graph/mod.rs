@@ -21,3 +21,6 @@ pub use frame_graph::{
 #[cfg(test)]
 pub(crate) use frame_graph::{FrameGraphTestSnapshot, FramePassTestPayload, TopologySignature};
 pub use texture_resource::TextureDesc;
+
+#[cfg(test)]
+pub(crate) use frame_graph::execution_failure_test_support;

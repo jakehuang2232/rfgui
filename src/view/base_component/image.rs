@@ -358,7 +358,15 @@ impl Image {
                     {
                         return Err(super::ShadowPaintBlocker::Transform);
                     }
-                    if properties.scroll.is_some() {
+                    // Generic recording preserves inherited state for the
+                    // planner; legacy recording still needs its projection.
+                    if properties.scroll.is_some()
+                        && !recording_context.authorizes_surface_dag_paint_properties(
+                            owner,
+                            self.stable_id(),
+                            properties,
+                        )
+                    {
                         return Err(super::ShadowPaintBlocker::ScrollContainer);
                     }
                 }
@@ -405,7 +413,15 @@ impl Image {
                     {
                         return Err(super::ShadowPaintBlocker::Transform);
                     }
-                    if properties.scroll.is_some() {
+                    // Generic recording preserves inherited state for the
+                    // planner; legacy recording still needs its projection.
+                    if properties.scroll.is_some()
+                        && !recording_context.authorizes_surface_dag_paint_properties(
+                            owner,
+                            self.stable_id(),
+                            properties,
+                        )
+                    {
                         return Err(super::ShadowPaintBlocker::ScrollContainer);
                     }
                 }
@@ -418,6 +434,10 @@ impl Image {
                 {
                     return Err(super::ShadowPaintBlocker::StatefulPaint);
                 }
+                // sync_active_slot moves the active roots out of slot storage
+                // into element/arena children. Empty storage proves that
+                // transfer completed; nonempty active children are allowed
+                // and validated below before normal coverage traversal.
                 let active_target_is_empty = match self.active_slot {
                     ActiveSlot::Loading => self.loading_slot.is_empty(),
                     ActiveSlot::Error => self.error_slot.is_empty(),

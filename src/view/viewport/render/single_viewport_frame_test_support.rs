@@ -4,6 +4,7 @@ pub(crate) struct SingleViewportFrameObservation {
     pub(crate) texture: wgpu::Texture,
     pub(crate) artifact_selected: bool,
     pub(crate) legacy_selected: bool,
+    pub(crate) rejection_labels: Vec<String>,
     pub(crate) actions: Vec<crate::view::paint::RetainedSurfaceCompileAction>,
     pub(crate) color_targets: Vec<(
         crate::view::frame_graph::PersistentTextureKey,
@@ -14,6 +15,13 @@ pub(crate) struct SingleViewportFrameObservation {
 }
 
 impl Viewport {
+    pub(crate) fn edit_scene_arena_for_test(
+        &mut self,
+        edit: impl FnOnce(&mut crate::view::node_arena::NodeArena),
+    ) {
+        edit(&mut self.scene.node_arena);
+    }
+
     pub(crate) fn install_single_viewport_scene_for_test(
         &mut self,
         arena: crate::view::node_arena::NodeArena,
@@ -30,6 +38,52 @@ impl Viewport {
     /// The returned texture handle survives submission for independent readback.
     pub(crate) fn render_single_viewport_scene_for_test(
         &mut self,
+    ) -> Result<SingleViewportFrameObservation, String> {
+        self.render_single_viewport_observed_frame_for_test(None)
+    }
+
+    pub(crate) fn render_single_viewport_legacy_recovery_for_test(
+        &mut self,
+    ) -> Result<SingleViewportFrameObservation, String> {
+        if self.retained_auto_terminal_failure != Some(RetainedAutoTerminalFailureStage::Execute) {
+            return Err("Legacy recovery requires a latched execute failure".into());
+        }
+        self.render_single_viewport_observed_frame_for_test(Some(
+            PaintAuthorityFallbackStage::Execute,
+        ))
+    }
+
+    /// A caller must name the expected unavailable-recording reason. This is
+    /// distinct from success and execute-failure recovery, so neither can
+    /// accidentally pass through a selection rejection.
+    pub(crate) fn render_single_viewport_selection_fallback_for_test(
+        &mut self,
+        expected_rejection: &str,
+    ) -> Result<SingleViewportFrameObservation, String> {
+        if self.paint_renderer_mode != ViewportPaintRendererMode::RetainedAuto
+            || self.retained_auto_terminal_failure.is_some()
+        {
+            return Err("selection fallback requires Auto without a terminal failure".into());
+        }
+        let observed = self.render_single_viewport_observed_frame_for_test(Some(
+            PaintAuthorityFallbackStage::Selection,
+        ))?;
+        if !observed
+            .rejection_labels
+            .iter()
+            .any(|label| label == expected_rejection)
+        {
+            return Err(format!(
+                "missing expected rejection {expected_rejection}: {:?}",
+                observed.rejection_labels
+            ));
+        }
+        Ok(observed)
+    }
+
+    fn render_single_viewport_observed_frame_for_test(
+        &mut self,
+        expected_fallback: Option<PaintAuthorityFallbackStage>,
     ) -> Result<SingleViewportFrameObservation, String> {
         let texture = self
             .frame
@@ -51,8 +105,13 @@ impl Viewport {
             ));
         }
         let snapshot = take_paint_authority_test_snapshot().ok_or("missing frame authority")?;
-        if snapshot.legacy_fallback_stage.is_some() || snapshot.terminal_failure_stage.is_some() {
-            return Err(format!("frame failed or fell back: {snapshot:?}"));
+        if snapshot.legacy_fallback_stage != expected_fallback
+            || snapshot.terminal_failure_stage.is_some()
+            || (expected_fallback.is_some() && snapshot.selected != PaintAuthorityKind::Legacy)
+        {
+            return Err(format!(
+                "unexpected frame outcome: {snapshot:?}, expected fallback {expected_fallback:?}"
+            ));
         }
         let graph = self
             .frame
@@ -73,10 +132,117 @@ impl Viewport {
             texture,
             artifact_selected: snapshot.selected == PaintAuthorityKind::Artifact,
             legacy_selected: snapshot.selected == PaintAuthorityKind::Legacy,
+            rejection_labels: snapshot.rejection_labels,
             actions: crate::view::paint::take_last_production_actions_for_test(),
             color_targets,
             texture_bytes,
             frame_number: self.frame.frame_number,
         })
+    }
+}
+
+impl Viewport {
+    /// Observe an intentionally failed production frame without relaxing the
+    /// success harness. The caller must arm a scoped execution fault first.
+    pub(crate) fn render_single_viewport_execution_failure_for_test(
+        &mut self,
+    ) -> Result<(), String> {
+        if self.frame.frame_state.is_none() {
+            return Err("failure test requires an acquired frame".into());
+        }
+        let _capture = enable_paint_authority_test_capture();
+        let before = self.frame_completion_counts_for_test();
+        let _ = self.render_render_tree(0.0, 0.0, crate::time::Instant::now());
+        let after = self.frame_completion_counts_for_test();
+        if after != (before.0, before.1, before.2 + 1) || self.frame.frame_state.is_some() {
+            return Err(format!(
+                "failed frame must abort without submission: {before:?} -> {after:?}"
+            ));
+        }
+        let snapshot =
+            take_paint_authority_test_snapshot().ok_or("missing failed-frame authority")?;
+        if snapshot.selected != PaintAuthorityKind::Artifact
+            || snapshot.terminal_failure_stage != Some(PaintAuthorityFallbackStage::Execute)
+            || snapshot.legacy_fallback_stage.is_some()
+        {
+            return Err(format!("unexpected failed-frame authority: {snapshot:?}"));
+        }
+        if self.retained_auto_terminal_failure != Some(RetainedAutoTerminalFailureStage::Execute)
+            || self.frame.compile_cache.is_some()
+            || self.retained_surface_transaction_shape_for_test() != (0, None)
+        {
+            return Err(
+                "failed frame left a cache/transaction or did not latch execute failure".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+impl Viewport {
+    pub(crate) fn sampled_cache_observation_for_test(
+        &self,
+        id: crate::view::sampled_texture::SampledTextureId,
+    ) -> (Option<(u64, u32, u32)>, u64, u64) {
+        (
+            self.frame
+                .sampled_texture_cache
+                .get(&id)
+                .map(|entry| (entry.generation, entry.width, entry.height)),
+            self.frame.sampled_texture_upload_count,
+            self.frame
+                .sampled_texture_cache
+                .values()
+                .map(|entry| entry.byte_size)
+                .sum(),
+        )
+    }
+    pub(crate) fn sampled_cache_policy_for_test() -> (u64, u64, u64) {
+        (
+            Self::SAMPLED_TEXTURE_PRESSURE_BYTES,
+            Self::SAMPLED_TEXTURE_EVICT_TO_BYTES,
+            Self::SAMPLED_TEXTURE_STALE_FRAMES,
+        )
+    }
+}
+
+// Scoped to the current test thread; callbacks cannot leak on early return or
+// unwind. This seam runs after the production frame counter and resource freeze,
+// so resource uploads use the current frame's real pinning epoch.
+thread_local! {
+    static AFTER_FREEZE: std::cell::RefCell<Option<Box<dyn FnOnce(&mut Viewport)>>> = const { std::cell::RefCell::new(None) };
+}
+struct AfterFreezeGuard;
+impl Drop for AfterFreezeGuard {
+    fn drop(&mut self) {
+        AFTER_FREEZE.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+pub(super) fn run_after_resource_freeze(viewport: &mut Viewport) {
+    let action = AFTER_FREEZE.with(|slot| slot.borrow_mut().take());
+    if let Some(action) = action {
+        action(viewport);
+    }
+}
+impl Viewport {
+    pub(crate) fn render_single_viewport_after_freeze_for_test(
+        &mut self,
+        action: impl FnOnce(&mut Viewport) + 'static,
+    ) -> Result<SingleViewportFrameObservation, String> {
+        AFTER_FREEZE.with(|slot| {
+            assert!(
+                slot.borrow().is_none(),
+                "resource-freeze callback already active"
+            );
+            *slot.borrow_mut() = Some(Box::new(action));
+        });
+        let _guard = AfterFreezeGuard;
+        let observed = self.render_single_viewport_scene_for_test()?;
+        if AFTER_FREEZE.with(|slot| slot.borrow().is_some()) {
+            return Err("production resource-freeze callback did not run".into());
+        }
+        Ok(observed)
     }
 }

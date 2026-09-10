@@ -3246,3 +3246,6 @@ impl Viewport {
         (arena, control)
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use render::SingleViewportFrameObservation;
