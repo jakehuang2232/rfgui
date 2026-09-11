@@ -3449,11 +3449,16 @@ impl FrameGraph {
             ..Default::default()
         });
 
+        // Buffer bindings persist across logical passes in this one encoder
+        // render pass. Never carry this state into another GraphicsGroup.
+        let mut buffer_bindings =
+            crate::view::render_pass::buffer_bindings::GraphicsBufferBindings::default();
         for &index in pass_indices {
             let pass_name = self.passes[index].pass.name();
             let pass_started_at = timings.start();
             let mut graphics_ctx = GraphicsRecordContext::new(ctx);
-            let mut pass_ctx = GraphicsCtx::new(&mut graphics_ctx, &mut render_pass);
+            let mut pass_ctx =
+                GraphicsCtx::new(&mut graphics_ctx, &mut render_pass, &mut buffer_bindings);
             self.passes[index].pass.execute_graphics(&mut pass_ctx);
             timings.record(pass_name, pass_started_at);
             if !graphics_group_can_continue(graphics_ctx.execution_failed()) {

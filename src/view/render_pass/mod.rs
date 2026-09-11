@@ -6,6 +6,7 @@ use crate::view::viewport::Viewport;
 use wgpu::util::DeviceExt;
 
 pub mod blur_module;
+pub(crate) mod buffer_bindings;
 pub mod clear_pass;
 pub mod composite_layer_pass;
 pub mod debug_overlay_pass;
@@ -28,16 +29,19 @@ pub use texture_composite_pass::{
 pub struct GraphicsCtx<'a, 'ctx, 'res, 'pass> {
     frame_resources: &'a mut GraphicsRecordContext<'ctx, 'res>,
     render_pass: &'a mut wgpu::RenderPass<'pass>,
+    buffer_bindings: &'a mut buffer_bindings::GraphicsBufferBindings,
 }
 
 impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
     pub(crate) fn new(
         frame_resources: &'a mut GraphicsRecordContext<'ctx, 'res>,
         render_pass: &'a mut wgpu::RenderPass<'pass>,
+        buffer_bindings: &'a mut buffer_bindings::GraphicsBufferBindings,
     ) -> Self {
         Self {
             frame_resources,
             render_pass,
+            buffer_bindings,
         }
     }
 
@@ -67,7 +71,8 @@ impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
     }
 
     pub fn set_vertex_buffer(&mut self, slot: u32, buffer_slice: wgpu::BufferSlice<'_>) {
-        self.render_pass.set_vertex_buffer(slot, buffer_slice);
+        self.buffer_bindings
+            .set_vertex_buffer(self.render_pass, slot, buffer_slice);
     }
 
     pub fn set_index_buffer(
@@ -75,8 +80,8 @@ impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
         buffer_slice: wgpu::BufferSlice<'_>,
         index_format: wgpu::IndexFormat,
     ) {
-        self.render_pass
-            .set_index_buffer(buffer_slice, index_format);
+        self.buffer_bindings
+            .set_index_buffer(self.render_pass, buffer_slice, index_format);
     }
 
     pub fn set_scissor_rect(&mut self, x: u32, y: u32, width: u32, height: u32) {
