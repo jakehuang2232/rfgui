@@ -329,7 +329,7 @@ struct FrameRuntime {
     gradient_stops_byte_cursor: u64,
     frame_stats: FrameStats,
     frame_presented: bool,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "renderer-test-support"))]
     completion_counts: FrameCompletionCounts,
     last_frame_graph: Option<FrameGraph>,
     compile_cache: Option<CachedCompiledGraph>,
@@ -343,7 +343,7 @@ struct FrameRuntime {
     frame_number: u64,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FrameCompletionCounts {
     submits: u64,
@@ -366,7 +366,7 @@ impl FrameRuntime {
             gradient_stops_byte_cursor: 0,
             frame_stats: FrameStats::new(trace_fps),
             frame_presented: false,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "renderer-test-support"))]
             completion_counts: FrameCompletionCounts::default(),
             last_frame_graph: None,
             compile_cache: None,
@@ -1065,3 +1065,7 @@ impl Viewport {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) use render::SingleViewportFrameObservation;
+
+#[cfg(feature = "renderer-test-support")]
+#[doc(hidden)]
+pub use render::downstream_test_support::RendererTestFrame;

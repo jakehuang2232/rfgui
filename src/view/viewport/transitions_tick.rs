@@ -254,8 +254,7 @@ impl Viewport {
         false
     }
 
-    pub(super) fn transition_timing(&mut self) -> (f32, f64) {
-        let now = Instant::now();
+    pub(super) fn transition_timing(&mut self, now: Instant) -> (f32, f64) {
         let dt = self
             .transitions
             .last_transition_tick

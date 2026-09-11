@@ -303,7 +303,6 @@ impl Element {
         if (self.scroll_direction != ScrollDirection::None
             && !(recording_context.authorizes_frame_root_scroll_host_child_mask(self.stable_id())
                 || recording_context.authorizes_generic_scroll_host_root(self.stable_id())))
-            || self.inline_ifc_owned_by_root
             || (self.is_fragmentable_inline_element() && self.inline_paint_fragments.len() > 1)
             || !self.requires_child_mask_surface(arena)
             || recording_context
@@ -1615,7 +1614,12 @@ impl Element {
         // validates those two frozen inputs against each other below, so an
         // active size track is not itself a paint blocker. A stale or partial
         // package still fails closed as MissingPreparedInlineDecoration.
-        if self.requires_child_mask_surface(arena) {
+        // A single installed inline fragment has a real inner rectangle and
+        // can use the same child-mask command scope as an ordinary owner.
+        // Fragmented spans still never acquire one box around all fragments.
+        if self.requires_child_mask_surface(arena)
+            && self.prepared_retained_child_mask_plan(arena, recording_context).is_none()
+        {
             return Some(ShadowPaintBlocker::ChildClip);
         }
         self.prepared_inline_ifc_decoration_payload(recording_context)

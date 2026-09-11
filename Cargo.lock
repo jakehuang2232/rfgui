@@ -2751,8 +2751,10 @@ dependencies = [
 name = "rfgui-components"
 version = "0.1.0"
 dependencies = [
+ "pollster",
  "rfgui",
  "web-sys",
+ "wgpu",
 ]
 
 [[package]]

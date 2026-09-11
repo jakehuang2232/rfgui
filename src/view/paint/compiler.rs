@@ -78,7 +78,7 @@ impl ArtifactSurfaceResolvedClip {
 }
 
 mod artifact_surface_executor;
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 pub(crate) use artifact_surface_executor::take_last_production_actions_for_test;
 pub(crate) use artifact_surface_executor::{
     ArtifactSurfaceExecutionError, emit_prepared_artifact_surface_frame_from_pool,

@@ -23,13 +23,13 @@ use crate::view::render_pass::{ClearPass, TextureCompositePass};
 use crate::view::viewport::{RetainedSurfaceFrameStageOwner, Viewport};
 use rustc_hash::FxHashSet;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 thread_local! {
     static LAST_PRODUCTION_ACTIONS: std::cell::RefCell<Vec<RetainedSurfaceCompileAction>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 pub(crate) fn take_last_production_actions_for_test() -> Vec<RetainedSurfaceCompileAction> {
     LAST_PRODUCTION_ACTIONS.with(|actions| std::mem::take(&mut *actions.borrow_mut()))
 }
@@ -783,7 +783,7 @@ fn emit_prepared_artifact_surface_frame(
             *action
         })
         .collect::<Vec<_>>();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "renderer-test-support"))]
     LAST_PRODUCTION_ACTIONS.with(|observed| observed.replace(actions.clone()));
     let composites = plan
         .nodes()

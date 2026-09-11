@@ -184,6 +184,7 @@ pub(crate) struct RenderTargetBundle {
 
 pub(crate) struct OffscreenRenderTargetPool {
     entries: FxHashMap<u32, RenderTargetEntry>,
+    retired_frame_entries: Vec<RenderTargetEntry>,
     frame_bindings: FxHashMap<u32, u32>,
     persistent_bindings: FxHashMap<PersistentTextureKey, PersistentRenderTargetBinding>,
     frame_epoch: u64,
@@ -217,6 +218,7 @@ impl OffscreenRenderTargetPool {
     pub fn new() -> Self {
         Self {
             entries: FxHashMap::default(),
+            retired_frame_entries: Vec::new(),
             frame_bindings: FxHashMap::default(),
             persistent_bindings: FxHashMap::default(),
             frame_epoch: 0,
@@ -225,6 +227,14 @@ impl OffscreenRenderTargetPool {
     }
 
     pub fn begin_frame(&mut self) {
+        // The previous encoder has been submitted or discarded. Retired
+        // attachments may now be explicitly destroyed, including on WebGPU.
+        for entry in self.retired_frame_entries.drain(..) {
+            entry.texture.destroy();
+            if let Some(msaa) = entry.msaa_texture {
+                msaa.destroy();
+            }
+        }
         self.frame_epoch = self.frame_epoch.saturating_add(1);
         self.frame_bindings.clear();
         let frame_epoch = self.frame_epoch;
@@ -334,13 +344,14 @@ impl OffscreenRenderTargetPool {
     }
 
     pub fn clear(&mut self) {
-        for entry in self.entries.values() {
+        for entry in self.entries.values().chain(self.retired_frame_entries.iter()) {
             entry.texture.destroy();
             if let Some(msaa) = entry.msaa_texture.as_ref() {
                 msaa.destroy();
             }
         }
         self.entries.clear();
+        self.retired_frame_entries.clear();
         self.frame_bindings.clear();
         self.persistent_bindings.clear();
         self.frame_epoch = 0;
@@ -639,11 +650,17 @@ impl OffscreenRenderTargetPool {
 
     fn remove_entry(&mut self, entry_id: u32) {
         if let Some(entry) = self.entries.remove(&entry_id) {
-            // Explicitly release GPU memory instead of waiting for JS GC
-            // (which does not know about GPU memory pressure on WebGPU).
-            entry.texture.destroy();
-            if let Some(msaa) = entry.msaa_texture.as_ref() {
-                msaa.destroy();
+            // Removing residency must be immediate, but an attachment used
+            // this frame may still be referenced by an unsubmitted encoder.
+            // This includes selection fallback: Legacy can render into the
+            // same key before the retained transaction releases old stamps.
+            if entry.frame_busy_epoch == self.frame_epoch {
+                self.retired_frame_entries.push(entry);
+            } else {
+                entry.texture.destroy();
+                if let Some(msaa) = entry.msaa_texture.as_ref() {
+                    msaa.destroy();
+                }
             }
         }
         self.frame_bindings
@@ -890,3 +907,6 @@ fn intersect_target_physical_scissors(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pending_submission_tests;

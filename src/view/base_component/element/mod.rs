@@ -7566,11 +7566,12 @@ impl ElementTrait for Element {
                 && !self.has_exact_inactive_scroll_paint(arena)
             {
                 Some(ShadowPaintBlocker::ScrollContainer)
-            } else if self.opacity.to_bits() != 1.0_f32.to_bits()
-                || !matches!(
-                    recording_context.opacity_authority,
-                    crate::view::paint::PaintOpacityAuthority::Baked
-                )
+            } else if !recording_context.surface_dag
+                && (self.opacity.to_bits() != 1.0_f32.to_bits()
+                    || !matches!(
+                        recording_context.opacity_authority,
+                        crate::view::paint::PaintOpacityAuthority::Baked
+                    ))
             {
                 Some(ShadowPaintBlocker::StatefulPaint)
             } else {

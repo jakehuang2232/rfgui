@@ -1117,7 +1117,7 @@ impl FrameGraph {
             .filter_map(|metadata| metadata.stable_key)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "renderer-test-support"))]
     pub(crate) fn declared_persistent_textures(
         &self,
     ) -> impl Iterator<Item = (PersistentTextureKey, &TextureDesc)> + '_ {

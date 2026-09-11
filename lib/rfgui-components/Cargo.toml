@@ -11,3 +11,8 @@ rfgui = { path = "../.." }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3.85", features = ["console"] }
+
+[dev-dependencies]
+rfgui = { path = "../..", features = ["renderer-test-support"] }
+wgpu = "30.0.0"
+pollster = "0.4.0"

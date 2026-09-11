@@ -626,9 +626,11 @@ pub(super) fn style_field_requires_relayout(field: StyleField) -> bool {
         | StyleField::BorderRightColor
         | StyleField::BorderBottomColor
         | StyleField::BorderLeftColor
-        | StyleField::BoxShadow
-        | StyleField::Transform
-        | StyleField::TransformOrigin => false,
+        | StyleField::BoxShadow => false,
+        // These setters mark placement dirty after the first layout pass.
+        // Complete that placement (including hit testing and IFC witnesses)
+        // before recording; updating the matrix alone leaves stale evidence.
+        StyleField::Transform | StyleField::TransformOrigin => true,
     }
 }
 

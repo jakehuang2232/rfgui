@@ -79,11 +79,11 @@ impl FrameStats {
 }
 
 pub(super) struct FrameState {
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "renderer-test-support")))]
     pub render_texture: wgpu::SurfaceTexture,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "renderer-test-support"))]
     pub render_texture: Option<wgpu::SurfaceTexture>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "renderer-test-support"))]
     pub offscreen_texture: Option<wgpu::Texture>,
     pub view: wgpu::TextureView,
     pub resolve_view: Option<wgpu::TextureView>,
@@ -97,7 +97,7 @@ impl FrameState {
     /// final `SurfaceTexture` drop releases the acquired image without
     /// presenting it.
     pub(super) fn discard_unsubmitted(self) {
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "renderer-test-support")))]
         let Self {
             render_texture,
             view,
@@ -105,7 +105,7 @@ impl FrameState {
             encoder,
             depth_view,
         } = self;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "renderer-test-support"))]
         let Self {
             render_texture,
             offscreen_texture,
@@ -121,7 +121,7 @@ impl FrameState {
         drop(resolve_view);
         drop(depth_view);
         drop(view);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "renderer-test-support"))]
         drop(offscreen_texture);
         // Keep the acquired surface image last so its Drop path can discard it
         // after every unsubmitted reference owned by FrameState is gone.

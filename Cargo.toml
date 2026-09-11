@@ -15,6 +15,10 @@ members = [
     "examples",
 ]
 
+[features]
+# Opt-in native integration-test observation; disabled for normal consumers.
+renderer-test-support = []
+
 [dependencies]
 wgpu = { version = "30.0.0", features = ["naga-ir"] }
 bytemuck = { version = "1.14", features = ["derive"] }

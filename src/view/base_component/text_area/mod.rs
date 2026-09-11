@@ -917,6 +917,7 @@ pub struct TextArea {
     /// Constraints of the last full measure; a clean subtree re-measured
     /// with identical constraints skips the O(children) child loops.
     pub(crate) last_measure_constraints: Option<LayoutConstraints>,
+    pub(crate) last_atomic_placement: Option<super::LayoutPlacement>,
     /// (origin_x, origin_y, source revision) of the last child placement
     /// apply; identical values skip the O(children) apply loop and a pure
     /// move applies as an in-place delta shift.
@@ -996,6 +997,7 @@ impl Default for TextArea {
             children_dirty: true,
             unified_ifc_source_revision: std::cell::Cell::new(0),
             last_measure_constraints: None,
+            last_atomic_placement: None,
             last_unified_apply: std::cell::Cell::new(None),
             unified_inline_ifc_root_cache: std::cell::RefCell::default(),
 
@@ -1127,6 +1129,45 @@ impl TextArea {
 }
 
 impl ElementTrait for TextArea {
+    #[allow(private_interfaces)]
+    fn inline_atomic_measurement_snapshot(
+        &self,
+    ) -> Option<crate::view::inline_formatting_context::InlineIfcMeasuredAtomicBox> {
+        use crate::view::inline_formatting_context::{
+            InlineIfcAtomicMeasureConstraints, InlineIfcAtomicSizingRules,
+            InlineIfcMeasuredAtomicBox, InlineIfcPercentBase, InlineIfcSize,
+        };
+        // TextArea measures its own IFC content rather than an Element sizing
+        // proposal. Publish those actual inputs; a parent's paint witness must
+        // not substitute a legacy size-only measurement for this atomic host.
+        let constraints = self.last_measure_constraints?;
+        let (width, height) = super::Layoutable::measured_size(self);
+        Some(InlineIfcMeasuredAtomicBox::new(
+            InlineIfcSize::new(width, height),
+            InlineIfcAtomicMeasureConstraints {
+                max_width: Some(constraints.max_width),
+                available_height: Some(constraints.max_height),
+                viewport: Some(InlineIfcSize::new(
+                    constraints.viewport_width,
+                    constraints.viewport_height,
+                )),
+                percent_base: InlineIfcPercentBase::new(
+                    constraints.percent_base_width,
+                    constraints.percent_base_height,
+                ),
+                sizing: InlineIfcAtomicSizingRules::none(),
+            },
+        ))
+    }
+
+    fn inline_atomic_vertical_align(&self) -> Option<crate::style::VerticalAlign> {
+        Some(self.vertical_align)
+    }
+
+    fn last_placement(&self) -> Option<super::LayoutPlacement> {
+        self.last_atomic_placement
+    }
+
     fn compositor_spatial_placement_snapshot(&self) -> Option<super::SpatialPlacementSnapshot> {
         // TextArea's internal viewport offset is currently baked by its IFC
         // layout, not a compositor ScrollNode. Freeze that child reference

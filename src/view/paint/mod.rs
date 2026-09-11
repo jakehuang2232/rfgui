@@ -39,7 +39,7 @@ pub(crate) use artifact::{
     has_canonical_paint_bounds, preedit_glyph_identity_is_exact,
     preedit_underline_identity_is_exact,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 pub(crate) use compiler::take_last_production_actions_for_test;
 #[allow(unused_imports)]
 pub(crate) use compiler::{

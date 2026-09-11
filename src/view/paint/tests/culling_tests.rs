@@ -304,3 +304,47 @@ fn culled_subtree_keeps_root_effect_and_deferred_fail_closed() {
     )));
     assert_eq!(take_full_artifact_record_count(), 0);
 }
+
+#[test]
+fn generic_culled_subtree_with_nested_effects_records_no_paint() {
+    let (arena, root, child) = hidden_element_subtree(0x7e30, 0x7e31);
+    for owner in [root, child] {
+        arena
+            .get_mut(owner)
+            .unwrap()
+            .element
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .unwrap()
+            .set_opacity(0.5);
+    }
+    let (properties, generations) = sync_identity(&arena, &[root]);
+    assert!(
+        properties
+            .node_state_for(child)
+            .unwrap()
+            .paint
+            .effect
+            .is_some()
+    );
+    let FrameArtifactRecordOutcome::Artifact {
+        artifact,
+        eligibility,
+    } = record_surface_dag_frame_artifact(
+        &arena,
+        &[root],
+        &properties,
+        &generations,
+        RendererMode::ForcedForTests,
+    )
+    .expect("generic culling must preserve validated property scopes")
+    else {
+        panic!("no fallback")
+    };
+    assert!(eligibility.eligible);
+    assert!(artifact.chunks.is_empty());
+    assert!(
+        artifact.ops.is_empty(),
+        "ancestor and child opacity cannot make a culled subtree paint"
+    );
+}

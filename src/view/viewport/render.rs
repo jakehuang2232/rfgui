@@ -364,7 +364,7 @@ impl PaintAuthorityTelemetry {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "renderer-test-support"))]
     fn snapshot(&self) -> PaintAuthorityTelemetrySnapshot {
         PaintAuthorityTelemetrySnapshot {
             authority_label: self.authority_label(),
@@ -731,7 +731,7 @@ fn retained_auto_fallback_overlay_records(
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PaintAuthorityTelemetrySnapshot {
     authority_label: String,
@@ -742,7 +742,7 @@ struct PaintAuthorityTelemetrySnapshot {
     resident_release_count: Option<usize>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 std::thread_local! {
     static PAINT_AUTHORITY_TEST_CAPTURE_ENABLED: std::cell::Cell<bool> =
         std::cell::Cell::new(false);
@@ -750,12 +750,12 @@ std::thread_local! {
         std::cell::RefCell::new(None);
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 struct PaintAuthorityTestCaptureGuard {
     previous: bool,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 impl Drop for PaintAuthorityTestCaptureGuard {
     fn drop(&mut self) {
         clear_paint_authority_test_snapshot();
@@ -763,7 +763,7 @@ impl Drop for PaintAuthorityTestCaptureGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 fn enable_paint_authority_test_capture() -> PaintAuthorityTestCaptureGuard {
     let previous = PAINT_AUTHORITY_TEST_CAPTURE_ENABLED.with(|enabled| {
         let previous = enabled.get();
@@ -774,17 +774,17 @@ fn enable_paint_authority_test_capture() -> PaintAuthorityTestCaptureGuard {
     PaintAuthorityTestCaptureGuard { previous }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 fn paint_authority_test_capture_enabled() -> bool {
     PAINT_AUTHORITY_TEST_CAPTURE_ENABLED.with(std::cell::Cell::get)
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "renderer-test-support")))]
 fn paint_authority_test_capture_enabled() -> bool {
     false
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 fn store_paint_authority_test_snapshot(telemetry: &PaintAuthorityTelemetry) {
     if paint_authority_test_capture_enabled() {
         LAST_PAINT_AUTHORITY_TELEMETRY
@@ -792,22 +792,22 @@ fn store_paint_authority_test_snapshot(telemetry: &PaintAuthorityTelemetry) {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 fn clear_paint_authority_test_snapshot() {
     LAST_PAINT_AUTHORITY_TELEMETRY.with(|snapshot| snapshot.borrow_mut().take());
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 fn begin_paint_authority_telemetry_attempt() {
     if paint_authority_test_capture_enabled() {
         clear_paint_authority_test_snapshot();
     }
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "renderer-test-support")))]
 fn begin_paint_authority_telemetry_attempt() {}
 
-#[cfg(test)]
+#[cfg(any(test, feature = "renderer-test-support"))]
 fn take_paint_authority_test_snapshot() -> Option<PaintAuthorityTelemetrySnapshot> {
     LAST_PAINT_AUTHORITY_TELEMETRY.with(|snapshot| snapshot.borrow_mut().take())
 }
@@ -2556,7 +2556,7 @@ impl Viewport {
         }
         if let Some(telemetry) = paint_authority_telemetry.as_mut() {
             telemetry.set_detail(paint_authority_trace);
-            #[cfg(test)]
+            #[cfg(any(test, feature = "renderer-test-support"))]
             store_paint_authority_test_snapshot(telemetry);
         }
 
@@ -2612,7 +2612,14 @@ impl Viewport {
         // The sole semantic engine-time sample for this viewport frame. Every
         // retained animation tick and paint-resource freeze observes this
         // exact value; profiling clocks below remain observational only.
-        let semantic_now = crate::time::Instant::now();
+        self.render_rsx_at(root, crate::time::Instant::now())
+    }
+
+    fn render_rsx_at(
+        &mut self,
+        root: &RsxNode,
+        semantic_now: crate::time::Instant,
+    ) -> Result<(), String> {
         let state_dirty = take_state_dirty();
         // Apply any viewport mutations that component event handlers
         // enqueued via `use_viewport()` during the previous tick. Must
@@ -2839,7 +2846,7 @@ impl Viewport {
             self.scene.node_arena = arena;
             result
         };
-        let (dt, now_seconds) = self.transition_timing();
+        let (dt, now_seconds) = self.transition_timing(semantic_now);
         let transition_changed_before_render = canceled_tracks
             || reconciled_transition_state
             || self.run_pre_layout_transitions(dt, now_seconds);
@@ -3114,11 +3121,11 @@ impl Viewport {
         let create_encoder_ms = create_encoder_started_at.elapsed().as_secs_f64() * 1000.0;
 
         self.frame.frame_state = Some(FrameState {
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "renderer-test-support")))]
             render_texture,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "renderer-test-support"))]
             render_texture: Some(render_texture),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "renderer-test-support"))]
             offscreen_texture: None,
             view,
             resolve_view,
@@ -3132,7 +3139,7 @@ impl Viewport {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "renderer-test-support"))]
     pub(crate) fn begin_offscreen_test_frame(
         &mut self,
         device: wgpu::Device,
@@ -3274,7 +3281,7 @@ impl Viewport {
         #[cfg(target_arch = "wasm32")]
         crate::view::render_pass::destroy_frame_transient_buffers();
 
-        #[cfg(test)]
+        #[cfg(any(test, feature = "renderer-test-support"))]
         {
             self.frame.completion_counts.aborts =
                 self.frame.completion_counts.aborts.saturating_add(1);
@@ -3296,7 +3303,7 @@ impl Viewport {
         let submit_started_at = Instant::now();
         let queue = self.gpu.queue.as_ref().unwrap();
         let _submission_index = queue.submit(Some(frame.encoder.finish()));
-        #[cfg(test)]
+        #[cfg(any(test, feature = "renderer-test-support"))]
         {
             self.frame.completion_counts.submits =
                 self.frame.completion_counts.submits.saturating_add(1);
@@ -3310,9 +3317,9 @@ impl Viewport {
         let submit_ms = submit_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let present_started_at = Instant::now();
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "renderer-test-support")))]
         queue.present(frame.render_texture);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "renderer-test-support"))]
         if let Some(render_texture) = frame.render_texture {
             queue.present(render_texture);
             self.frame.completion_counts.presents =
@@ -3349,7 +3356,7 @@ impl Viewport {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "renderer-test-support"))]
     fn frame_completion_counts_for_test(&self) -> (u64, u64, u64) {
         let counts = self.frame.completion_counts;
         (counts.submits, counts.presents, counts.aborts)
@@ -3372,3 +3379,6 @@ fn unpack_root_set(root: &crate::ui::RsxNode) -> Vec<&crate::ui::RsxNode> {
         other => vec![other],
     }
 }
+
+#[cfg(feature = "renderer-test-support")]
+pub(super) mod downstream_test_support;

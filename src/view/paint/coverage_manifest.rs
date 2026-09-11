@@ -651,7 +651,12 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 let Some(node) = self.arena.get(key) else {
                     continue;
                 };
-                if let Some(state) = self.properties.node_state_for(key) {
+                // Generic recording freezes property scopes. A culled subtree
+                // contributes no operations even under an effect/transform;
+                // deferred roots above remain separate paint obligations.
+                if !self.surface_dag
+                    && let Some(state) = self.properties.node_state_for(key)
+                {
                     for properties in [state.paint, state.descendants] {
                         if properties.transform.is_some() {
                             return Some(CulledSubtreeBoundary::Property(

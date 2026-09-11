@@ -226,7 +226,7 @@ fn owning_inline_root_atomic_child_participates_in_root_opacity_group_once() {
 }
 
 #[test]
-fn owning_inline_root_with_text_area_atomic_fails_closed_before_full_hooks() {
+fn owning_inline_root_with_prepared_text_area_atomic_records_without_fallback() {
     let mut arena = new_test_arena();
     let mut root = Element::new_with_id(0x7d20, 0.0, 0.0, 160.0, 40.0);
     let mut root_style = Style::new();
@@ -257,17 +257,29 @@ fn owning_inline_root_with_text_area_atomic_fails_closed_before_full_hooks() {
         RendererMode::Auto,
     )
     .unwrap();
-    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) = outcome else {
-        panic!("TextArea atomic host must remain fail closed before full hooks")
+    // Keep the former rejection scene: TextArea now supplies the exact
+    // measured proposal, vertical alignment and installed placement.
+    let FrameArtifactRecordOutcome::Artifact {
+        artifact,
+        eligibility,
+    } = outcome
+    else {
+        panic!("prepared TextArea atomic host must be recordable: {outcome:?}")
     };
-    assert!(
-        eligibility
-            .reasons
-            .contains(&FrameArtifactFallbackReason::LegacyBoundary(
-                LegacyPaintReason::MissingPreparedInlineRoot
-            ))
+    assert!(eligibility.eligible);
+    assert_eq!(
+        artifact
+            .chunks
+            .iter()
+            .filter(|chunk| chunk.owner == root)
+            .count(),
+        1
     );
-    assert_eq!(take_full_artifact_record_count(), 0);
+    assert!(
+        artifact.ops.is_empty(),
+        "this fixture is an empty undecorated editor"
+    );
+    assert!(take_full_artifact_record_count() > 0);
 }
 
 #[test]

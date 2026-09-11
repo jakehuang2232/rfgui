@@ -63,6 +63,8 @@ mod nested {
 #[test]
 fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
     let actual = [
+        include_str!("../../render_pass/render_target/pending_submission_tests.rs"),
+        include_str!("../../../../lib/rfgui-components/tests/retained_controls.rs"),
         include_str!("portable_renderer_tests.rs"),
         include_str!("gpu_equivalence_tests/native_transform_surface_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_tests.rs"),
@@ -96,6 +98,8 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
     .filter(|name| name.starts_with("native_"))
     .collect::<BTreeSet<_>>();
     let expected = expected_names([
+        "native_persistent_retirement_preserves_unsubmitted_attachments",
+        "native_controls_record_and_reuse_real_component_trees",
         "native_full_window_budget_descriptors_reuse_and_whole_frame_legacy",
         "native_generic_and_legacy_frozen_scrollbar_absolute_alpha",
         "native_generic_text_area_frozen_ime_caret_and_reuse",

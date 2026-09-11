@@ -148,6 +148,7 @@ impl Layoutable for TextArea {
         self.layout_state.layout_flow_position = self.layout_state.layout_position;
         self.layout_state.layout_flow_inner_position = self.layout_state.layout_inner_position;
 
+        self.last_atomic_placement = Some(placement);
         self.place_inline_children(placement, arena);
         if self.pending_caret_scroll {
             self.pending_caret_scroll = false;

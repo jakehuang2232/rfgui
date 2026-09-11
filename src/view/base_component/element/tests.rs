@@ -449,3 +449,5 @@ mod vertical_align_tests;
 mod persistent_target_key_tests;
 
 pub(super) mod inline_ifc_preflight_tests;
+
+mod inline_text_area_witness_tests;
