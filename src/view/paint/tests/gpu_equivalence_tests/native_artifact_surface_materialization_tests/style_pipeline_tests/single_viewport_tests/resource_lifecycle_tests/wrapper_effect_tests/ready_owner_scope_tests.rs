@@ -83,14 +83,13 @@ fn run_ready_owner_scope(
     viewport.install_single_viewport_scene_for_test(arena, root);
     if svg {
         begin_resource_frame(&mut viewport, gpu, dpr)?;
-        // Real post-layout acquisition cannot mutate the already frozen
-        // resource snapshot. Only this setup frame may select Legacy.
+        // First acquisition records the frozen Loading state, even when the
+        // shared raster is already ready. No setup frame may bypass Artifact.
+        let observed = viewport.render_single_viewport_scene_for_test()?;
         if mode == ViewportPaintRendererMode::RetainedAuto {
-            viewport.render_single_viewport_selection_fallback_for_test(
-                "artifact:[LegacyBoundary(MissingPreparedSvg)]",
-            )?;
+            assert!(observed.artifact_selected);
         } else {
-            viewport.render_single_viewport_scene_for_test()?;
+            assert!(observed.legacy_selected);
         }
     }
     // Ordered sequence: cold/warm, opacity only, add transform, move/warm,

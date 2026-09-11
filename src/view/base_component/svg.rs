@@ -111,9 +111,25 @@ struct FrozenSvgPaint {
     opacity: f32,
 }
 
+/// Post-layout request state paired with the frozen upload. A valid frame may
+/// keep its existing raster while a different resolution is pending (or during
+/// shrink hysteresis). That is different from request drift after preparation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FrozenSvgRequestState {
+    active_key: Option<u64>,
+    active_request: Option<SvgRasterRequest>,
+    active_scale: Option<u32>,
+    desired_request: Option<SvgRasterRequest>,
+    pending_key: Option<u64>,
+    pending_request: Option<SvgRasterRequest>,
+    pending_scale: Option<u32>,
+    failed_request: Option<SvgRasterRequest>,
+    exact: bool,
+}
+
 #[derive(Clone, Debug)]
 enum SvgShadowPaintClass {
-    ReadyExact(crate::view::paint::PreparedSvgOp),
+    ReadyPrepared(crate::view::paint::PreparedSvgOp),
     ActiveSlotWrapper(ActiveSlot),
 }
 
@@ -143,6 +159,7 @@ pub struct Svg {
     frozen_paint: Option<FrozenSvgPaint>,
     frozen_desired_request: Option<SvgRasterRequest>,
     frozen_request_is_exact: bool,
+    frozen_request_state: Option<FrozenSvgRequestState>,
     prepared_by_arena_sync: bool,
     prepared_frame_number: Option<u64>,
 }
@@ -196,6 +213,7 @@ impl Svg {
             frozen_paint: None,
             frozen_desired_request: None,
             frozen_request_is_exact: false,
+            frozen_request_state: None,
             prepared_by_arena_sync: false,
             prepared_frame_number: None,
         }
@@ -320,6 +338,7 @@ impl Svg {
         self.frozen_paint = None;
         self.frozen_desired_request = None;
         self.frozen_request_is_exact = false;
+        self.frozen_request_state = None;
         self.prepared_by_arena_sync = false;
         self.prepared_frame_number = None;
         self.element.mark_layout_dirty();
@@ -331,14 +350,33 @@ impl Svg {
 
     fn refresh_frozen_resources(&mut self, arena: &mut crate::view::node_arena::NodeArena) {
         let document = self.document_snapshot();
-        let active_raster = self
+        let mut active_raster = self
             .active_raster_key
             .and_then(snapshot_svg_raster)
             .or_else(|| self.active_raster_key.map(|_| ImageSnapshot::Loading));
-        let pending_raster = self
+        let mut pending_raster = self
             .pending_raster_key
             .and_then(snapshot_svg_raster)
             .or_else(|| self.pending_raster_key.map(|_| ImageSnapshot::Loading));
+        // Recover a Loading/Error active raster at the topology boundary.
+        // Promoting the ready replacement later in prepare would leave the
+        // Loading/Error children laid out while paint expects the Ready slot.
+        // A still-Ready active raster keeps the existing post-layout request
+        // selection policy, including cancellation back to the active request.
+        if !matches!(active_raster, Some(ImageSnapshot::Ready(_)))
+            && matches!(pending_raster, Some(ImageSnapshot::Ready(_)))
+            && self.pending_raster_request.is_some()
+            && self.pending_device_scale_bits.is_some()
+        {
+            if let Some(key) = self.pending_raster_key.take() {
+                if let Some(previous) = self.active_raster_key.replace(key) {
+                    release_svg_raster(previous);
+                }
+                self.active_raster_request = self.pending_raster_request.take();
+                self.active_device_scale_bits = self.pending_device_scale_bits.take();
+                active_raster = pending_raster.take();
+            }
+        }
         let next_slot = Self::resolve_frozen_slot(&document, active_raster.as_ref());
         let document_changed =
             !same_document_snapshot(self.frozen_document.as_ref(), Some(&document));
@@ -359,6 +397,7 @@ impl Svg {
         self.frozen_paint = None;
         self.frozen_desired_request = None;
         self.frozen_request_is_exact = false;
+        self.frozen_request_state = None;
         self.prepared_frame_number = None;
         self.sync_active_slot(arena, next_slot);
         if document_changed || slot_changed {
@@ -625,30 +664,28 @@ impl Svg {
         }
         self.pending_raster_request = None;
         self.pending_device_scale_bits = None;
-        if self
-            .active_raster_request
-            .is_some_and(|active| active.mode != request.mode)
-        {
-            if let Some(previous) = self.active_raster_key.take() {
-                release_svg_raster(previous);
-            }
-            self.active_raster_request = None;
-            self.active_device_scale_bits = None;
-        }
+        // A mode change is also a pending request. Keep the frozen active
+        // upload until replacement is observed at a frame boundary; mapping
+        // uses that upload's actual mode/extent with the current fit. Releasing
+        // it here would invalidate the Ready slot already used for layout.
         let raster_key = acquire_svg_raster(self.source_key, request);
         self.last_raster_request_at = Some(now);
         if self.active_raster_key.is_none() {
             self.active_raster_key = Some(raster_key);
             self.active_raster_request = Some(request);
             self.active_device_scale_bits = Some(scale_bits);
-            // A key acquired after the pre-layout freeze is deliberately not
-            // snapshotted in this frame, even if another host already made
-            // the shared registry entry ready.
+            // Completion for a key acquired after the pre-layout freeze is
+            // deliberately not read in this frame, even if another host
+            // already made the shared registry entry ready.
+            // Pin its identity with an explicit Loading value. This records
+            // the request without observing completion or changing slot topology.
+            self.frozen_active_raster_key = Some(raster_key);
             self.frozen_active_raster = Some(ImageSnapshot::Loading);
         } else {
             self.pending_raster_key = Some(raster_key);
             self.pending_raster_request = Some(request);
             self.pending_device_scale_bits = Some(scale_bits);
+            self.frozen_pending_raster_key = Some(raster_key);
             self.frozen_pending_raster = Some(ImageSnapshot::Loading);
         }
         self.active_raster_key
@@ -662,6 +699,7 @@ impl Svg {
         self.frozen_paint = None;
         self.frozen_desired_request = None;
         self.frozen_request_is_exact = false;
+        self.frozen_request_state = None;
 
         let Some(SvgDocumentSnapshot::Ready {
             intrinsic_width,
@@ -746,6 +784,25 @@ impl Svg {
         self.frozen_request_is_exact = self.active_raster_request == Some(desired_plan.request)
             && self.active_device_scale_bits == Some(device_scale_bits)
             && self.pending_raster_request.is_none();
+        self.frozen_request_state = Some(self.current_request_state());
+    }
+
+    fn current_request_state(&self) -> FrozenSvgRequestState {
+        FrozenSvgRequestState {
+            active_key: self.active_raster_key,
+            active_request: self.active_raster_request,
+            active_scale: self.active_device_scale_bits,
+            desired_request: self.frozen_desired_request,
+            pending_key: self.pending_raster_key,
+            pending_request: self.pending_raster_request,
+            pending_scale: self.pending_device_scale_bits,
+            failed_request: self.failed_raster_request,
+            exact: self.frozen_request_is_exact,
+        }
+    }
+
+    fn has_frozen_ready_request_state(&self) -> bool {
+        self.frozen_request_state == Some(self.current_request_state())
     }
 
     fn classify_shadow_paint(
@@ -799,7 +856,7 @@ impl Svg {
                         return Err(super::ShadowPaintBlocker::ScrollContainer);
                     }
                 }
-                if !self.element.children().is_empty() || !self.frozen_request_is_exact {
+                if !self.element.children().is_empty() || !self.has_frozen_ready_request_state() {
                     return Err(super::ShadowPaintBlocker::MissingPreparedSvg);
                 }
                 let mut inactive_roots = FxHashSet::default();
@@ -834,11 +891,8 @@ impl Svg {
                     || self.frozen_document_key != Some(self.source_key)
                     || self.active_raster_key != Some(frozen.raster_key)
                     || self.active_raster_request != Some(frozen.plan.request)
-                    || self.frozen_desired_request != Some(frozen.plan.request)
-                    || self.active_device_scale_bits != Some(frozen.device_scale_bits)
-                    || self.pending_raster_key.is_some()
-                    || self.pending_raster_request.is_some()
-                    || self.pending_device_scale_bits.is_some()
+                    || (self.frozen_request_is_exact
+                        && self.active_device_scale_bits != Some(frozen.device_scale_bits))
                     || current_asset_id
                         .map(crate::view::sampled_texture::SampledTextureId::SvgRaster)
                         != Some(frozen.upload.id)
@@ -847,7 +901,7 @@ impl Svg {
                 {
                     return Err(super::ShadowPaintBlocker::MissingPreparedSvg);
                 }
-                Ok(SvgShadowPaintClass::ReadyExact(prepared))
+                Ok(SvgShadowPaintClass::ReadyPrepared(prepared))
             }
             (Some(document), ActiveSlot::Loading | ActiveSlot::Error) => {
                 if let Some(blocker) = self.element.shadow_paint_blocker(
@@ -995,16 +1049,13 @@ impl Svg {
                     frozen.plan.request,
                 );
                 if !self.element.children().is_empty()
-                    || !self.frozen_request_is_exact
+                    || !self.has_frozen_ready_request_state()
                     || frozen.document_key != self.source_key
                     || self.frozen_document_key != Some(self.source_key)
                     || self.active_raster_key != Some(frozen.raster_key)
                     || self.active_raster_request != Some(frozen.plan.request)
-                    || self.frozen_desired_request != Some(frozen.plan.request)
-                    || self.active_device_scale_bits != Some(frozen.device_scale_bits)
-                    || self.pending_raster_key.is_some()
-                    || self.pending_raster_request.is_some()
-                    || self.pending_device_scale_bits.is_some()
+                    || (self.frozen_request_is_exact
+                        && self.active_device_scale_bits != Some(frozen.device_scale_bits))
                     || current_asset_id
                         .map(crate::view::sampled_texture::SampledTextureId::SvgRaster)
                         != Some(frozen.upload.id)
@@ -1180,6 +1231,7 @@ impl Svg {
         self.error_slot.clear();
         self.element.sync_children_mirror(&[]);
         self.frozen_request_is_exact = true;
+        self.frozen_request_state = Some(self.current_request_state());
         Ok(())
     }
 }
@@ -1448,7 +1500,7 @@ impl ElementTrait for Svg {
             )
             .ok()?
         {
-            SvgShadowPaintClass::ReadyExact(prepared) => {
+            SvgShadowPaintClass::ReadyPrepared(prepared) => {
                 let identity = crate::view::paint::PreparedSvgIdentity::from_op(&prepared)?;
                 let mut metadata = self
                     .element
@@ -1510,7 +1562,7 @@ impl ElementTrait for Svg {
             )
             .ok()?;
         let artifact = match classification {
-            SvgShadowPaintClass::ReadyExact(prepared) => {
+            SvgShadowPaintClass::ReadyPrepared(prepared) => {
                 let identity = crate::view::paint::PreparedSvgIdentity::from_op(&prepared)?;
                 let mut metadata = self
                     .element

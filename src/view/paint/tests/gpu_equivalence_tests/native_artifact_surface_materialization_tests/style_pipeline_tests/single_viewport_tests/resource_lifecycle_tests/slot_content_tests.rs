@@ -241,14 +241,7 @@ fn run_slots(mode: ViewportPaintRendererMode) -> Result<(), String> {
                     _ => {}
                 }
                 begin_resource_frame(&mut viewport, gpu, dpr)?;
-                let initial_svg = matches!(host, Host::Svg) && frame == 0;
-                let observed = if initial_svg && mode == ViewportPaintRendererMode::RetainedAuto {
-                    viewport.render_single_viewport_selection_fallback_for_test(
-                        "artifact:[LegacyBoundary(MissingPreparedSvg)]",
-                    )?
-                } else {
-                    viewport.render_single_viewport_scene_for_test()?
-                };
+                let observed = viewport.render_single_viewport_scene_for_test()?;
                 let pixels =
                     read_submitted_texture(&observed.texture, gpu, [WIDTH * dpr, HEIGHT * dpr])?;
                 let ready = matches!(frame, 7 | 8 | 11 | 12);
@@ -300,12 +293,9 @@ fn run_slots(mode: ViewportPaintRendererMode) -> Result<(), String> {
                     viewport.node_arena().children_of(scene.owner),
                     expected_children
                 );
-                if !initial_svg {
-                    check_recorded_slot_owners(&viewport, &scene, frame, ready, error);
-                }
-                if mode == ViewportPaintRendererMode::RetainedAuto && !initial_svg {
-                    let reraster = matches!(frame, 0 | 3 | 5 | 7 | 9 | 11 | 13)
-                        || (matches!(host, Host::Svg) && frame == 1);
+                check_recorded_slot_owners(&viewport, &scene, frame, ready, error);
+                if mode == ViewportPaintRendererMode::RetainedAuto {
+                    let reraster = matches!(frame, 0 | 3 | 5 | 7 | 9 | 11 | 13);
                     check_resource_retention(
                         &viewport,
                         &observed,

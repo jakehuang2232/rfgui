@@ -2,6 +2,9 @@
 //! Use actual layout + property sync + the production Auto selector (record,
 //! plan, seal). No GPU execution, pixel correctness or reuse is claimed here.
 //! When a normal-state gap is fixed, retain its scene and update its expectation.
+//! BeforePreparation rows deliberately call the low-level selector between a
+//! source mutation and frame preparation. Their rejection guards stale data;
+//! it is not an acceptable fallback outcome for a complete production frame.
 use super::*;
 use crate::view::paint::{FrameArtifactDebugBoundaryKind, LegacyPaintReason};
 use crate::view::test_support::get_element_mut;
@@ -9,7 +12,7 @@ use crate::view::test_support::get_element_mut;
 #[derive(Clone, Copy, Debug)]
 enum Status {
     Supported,
-    AwaitingPreparation,
+    BeforePreparation,
     InvalidSnapshot,
 }
 
@@ -426,7 +429,7 @@ fn native_inventory_image_resource_states() {
                 scene.sync();
                 scene.observe(
                     "source-changed-before-freeze",
-                    Status::AwaitingPreparation,
+                    Status::BeforePreparation,
                     Some(LegacyPaintReason::MissingPreparedImage),
                 );
                 scene.layout();
@@ -462,8 +465,8 @@ fn native_inventory_svg_resource_states() {
             if state == "ready" {
                 scene.observe(
                     "raster-acquired-after-freeze",
-                    Status::AwaitingPreparation,
-                    Some(LegacyPaintReason::MissingPreparedSvg),
+                    Status::Supported,
+                    None,
                 );
                 // Deterministic resource completion using the existing raster
                 // fixture; subsequent recording still passes production layout.
@@ -484,7 +487,7 @@ fn native_inventory_svg_resource_states() {
                 scene.sync();
                 scene.observe(
                     "source-changed-before-freeze",
-                    Status::AwaitingPreparation,
+                    Status::BeforePreparation,
                     Some(LegacyPaintReason::MissingPreparedSvg),
                 );
             }

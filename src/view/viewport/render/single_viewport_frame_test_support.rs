@@ -61,34 +61,6 @@ impl Viewport {
         ))
     }
 
-    /// A caller must name the expected unavailable-recording reason. This is
-    /// distinct from success and execute-failure recovery, so neither can
-    /// accidentally pass through a selection rejection.
-    pub(crate) fn render_single_viewport_selection_fallback_for_test(
-        &mut self,
-        expected_rejection: &str,
-    ) -> Result<SingleViewportFrameObservation, String> {
-        if self.paint_renderer_mode != ViewportPaintRendererMode::RetainedAuto
-            || self.retained_auto_terminal_failure.is_some()
-        {
-            return Err("selection fallback requires Auto without a terminal failure".into());
-        }
-        let observed = self.render_single_viewport_observed_frame_for_test(Some(
-            PaintAuthorityFallbackStage::Selection,
-        ))?;
-        if !observed
-            .rejection_labels
-            .iter()
-            .any(|label| label == expected_rejection)
-        {
-            return Err(format!(
-                "missing expected rejection {expected_rejection}: {:?}",
-                observed.rejection_labels
-            ));
-        }
-        Ok(observed)
-    }
-
     fn render_single_viewport_observed_frame_for_test(
         &mut self,
         expected_fallback: Option<PaintAuthorityFallbackStage>,

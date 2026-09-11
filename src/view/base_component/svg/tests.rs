@@ -28,6 +28,8 @@ use crate::view::test_support::{
 };
 use glam::{Mat4, Vec3};
 
+mod prepared_request_state_tests;
+
 fn simple_svg() -> SvgSource {
     SvgSource::Content(
         r##"<svg width="80" height="40" viewBox="0 0 80 40" xmlns="http://www.w3.org/2000/svg"><rect width="80" height="40" fill="#ff0000"/></svg>"##.to_string(),

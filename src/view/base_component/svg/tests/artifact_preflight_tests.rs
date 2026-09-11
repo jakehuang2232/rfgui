@@ -67,7 +67,7 @@ fn actual_svg_artifact_compiles_after_arena_drop_and_forced_registry_removal() {
 }
 
 #[test]
-fn visible_child_and_nonexact_svg_fail_preflight_without_full_artifact_hook() {
+fn visible_child_and_unprepared_request_drift_fail_preflight_without_full_artifact_hook() {
     fn assert_missing_prepared_svg(
         arena: &crate::view::node_arena::NodeArena,
         root: crate::view::node_arena::NodeKey,
@@ -134,6 +134,8 @@ fn visible_child_and_nonexact_svg_fail_preflight_without_full_artifact_hook() {
 
     let mut nonexact_arena = new_test_arena();
     let mut nonexact = freeze_ready_svg(70, simple_svg(), 1.0);
+    // Unlike a pending request produced by prepare_frozen_paint, these fields
+    // drift after preparation and have no matching frozen request state.
     nonexact.frozen_request_is_exact = false;
     nonexact.pending_raster_request =
         Some(SvgRasterRequest::new(160, 80, SvgRasterMode::Uniform));

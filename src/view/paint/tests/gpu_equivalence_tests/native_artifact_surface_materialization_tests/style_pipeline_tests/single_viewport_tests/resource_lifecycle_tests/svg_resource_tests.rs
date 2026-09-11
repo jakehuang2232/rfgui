@@ -62,15 +62,7 @@ fn native_single_viewport_svg_raster_generation_and_freeze() -> Result<(), Strin
                     .expect("SVG completion");
                 }
                 begin_resource_frame(&mut viewport, gpu, dpr)?;
-                let observed = if frame == 0 && mode == ViewportPaintRendererMode::RetainedAuto {
-                    // The first post-layout raster acquisition cannot alter
-                    // the pre-layout resource freeze. Production explicitly
-                    // falls back for this one unprepared frame; next-frame
-                    // sync reconciles the key and enables artifact recording.
-                    viewport.render_single_viewport_selection_fallback_for_test(
-                        "artifact:[LegacyBoundary(MissingPreparedSvg)]",
-                    )?
-                } else if frame == 3 {
+                let observed = if frame == 3 {
                     let blue = blue.clone();
                     viewport.render_single_viewport_after_freeze_for_test(move |_| {
                         std::thread::spawn(move || {
@@ -97,12 +89,12 @@ fn native_single_viewport_svg_raster_generation_and_freeze() -> Result<(), Strin
                     expected,
                     &format!("SVG {mode:?} frame {frame}"),
                 )?;
-                if mode == ViewportPaintRendererMode::RetainedAuto && frame != 0 {
+                if mode == ViewportPaintRendererMode::RetainedAuto {
                     check_resource_retention(
                         &viewport,
                         &observed,
                         dpr,
-                        if frame == 1 || frame == 2 || frame == 4 {
+                        if frame == 0 || frame == 2 || frame == 4 {
                             RetainedSurfaceCompileAction::Reraster
                         } else {
                             RetainedSurfaceCompileAction::Reuse

@@ -11,6 +11,7 @@ use std::sync::Arc;
 mod pressure_tests;
 mod svg_resource_tests;
 mod slot_content_tests;
+mod source_transition_tests;
 
 struct ResourceScene {
     _handle: crate::view::image_resource::ImageHandle,
