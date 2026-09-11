@@ -97,7 +97,7 @@ fn recorded_zero_surface_child_mask_candidate() -> RecordedArtifactCandidate {
         artifact_surface_raster_context(
             &ctx,
             wgpu::Limits::default().max_texture_dimension_2d,
-            PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+            ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
         ),
     )
     .expect("zero-surface child-mask artifact must prepare");
@@ -174,7 +174,7 @@ fn stage_c_zero_surface_prepare_seals_exact_multi_root_artifact_order() {
         artifact_surface_raster_context(
             &context,
             wgpu::Limits::default().max_texture_dimension_2d,
-            PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+            ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
         ),
     )
     .expect("current-target zero-surface artifact must seal through the generic raster plan");
@@ -230,7 +230,7 @@ fn stage_c_detached_role_gate_accepts_scroll_and_rejects_empty_or_future_roles()
         artifact_surface_raster_context(
             &context,
             wgpu::Limits::default().max_texture_dimension_2d,
-            PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+            ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
         ),
     )
     .expect("real scroll scene must prepare");
@@ -252,7 +252,7 @@ fn stage_c_detached_role_gate_accepts_scroll_and_rejects_empty_or_future_roles()
         artifact_surface_raster_context(
             &context,
             wgpu::Limits::default().max_texture_dimension_2d,
-            PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+            ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
         ),
     )
     .expect("zero-surface plan");
@@ -283,11 +283,11 @@ fn stage_c_detached_role_gate_accepts_scroll_and_rejects_empty_or_future_roles()
 }
 
 #[test]
-fn stage_c_no_scroll_budget_rejection_is_typed_before_property_scene_fallback() {
+fn stage_c_no_scroll_budget_rejection_selects_whole_frame_legacy() {
     let (arena, roots) = prepared_transform_leaf();
     let (properties, generations) = synced_paint_state(&arena, &roots);
     let context = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let AutoAuthorityDecision::PropertyScene { trace, .. } =
+    let AutoAuthorityDecision::Legacy { trace } =
         select_retained_auto_authority_with_artifact_budget_for_test(
             &arena,
             &roots,
@@ -327,7 +327,7 @@ fn stage_c_zero_surface_prepare_rejects_invalid_store_without_graph_mutation() {
         artifact_surface_raster_context(
             &context,
             wgpu::Limits::default().max_texture_dimension_2d,
-            PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+            ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
         ),
     )
     .expect_err("invalid store must reject before generic raster-plan preparation");

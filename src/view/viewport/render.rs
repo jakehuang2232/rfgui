@@ -1765,13 +1765,14 @@ fn transform_effect_scroll_prepare_rejection_fallback_stage() -> PaintAuthorityF
     PaintAuthorityFallbackStage::Prepare
 }
 
-// Provisional Artifact Surface aggregate limit. C3b3c1b-1 proves that the
-// generic producer can mint detached surfaces, but its 48x36 and 64x40 logical
-// pixel corpus reaches only 82,944 bytes. That does not exercise full-window
-// surface scale, so this value is not a measured policy and deliberately does
-// not borrow the scroll-tile budget's meaning. Revisit it when a real
-// full-window detached surface is admitted.
-const PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
+// Per-frame generic detached color + depth payload limit (128 MiB).
+// Count every materialized target, including warm reused targets, using real
+// physical descriptors after DPR and content-envelope resolution. This is
+// not a cap on total GPU residency, sampled resources, or Legacy rendering.
+// C-3 full-window gates cover 1280x720 at DPR 1/2 and aggregate rejection.
+// A budget/dimension rejection selects whole-frame Legacy directly; it must
+// not retry an older retained planner with a different accounting policy.
+const ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
 
 fn artifact_surface_raster_context(
     ctx: &crate::view::base_component::UiBuildContext,
@@ -2133,7 +2134,7 @@ fn select_retained_auto_authority_with_semantics(
     // can execute. Property counts, host families and topology do not gate
     // this attempt. The older rejection cascade remains during C-3; its
     // final removal and fallback convergence are tracked separately in C-6.
-    if let Some(candidate) = try_select_auto_detached_surface_candidate(
+    match record_auto_detached_surface_candidate(
         arena,
         roots,
         property_trees,
@@ -2144,9 +2145,24 @@ fn select_retained_auto_authority_with_semantics(
             artifact_surface_max_texture_bytes,
         ),
         RecordedArtifactSurfaceRequirement::General,
-        &mut trace,
     ) {
-        return AutoAuthorityDecision::Artifact { candidate, trace };
+        Ok(candidate) => return AutoAuthorityDecision::Artifact { candidate, trace },
+        Err(RecordedArtifactCandidateRejection::Eligibility(eligibility)) => {
+            trace.capture(|| AutoAuthorityRejection::Artifact { eligibility });
+        }
+        Err(RecordedArtifactCandidateRejection::Prepare(error)) => {
+            // Decide from the typed error, never from optional debug telemetry.
+            let budget_rejected = matches!(
+                error,
+                RecordedArtifactSurfacePrepareError::RasterPlan(
+                    crate::view::paint::ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_)
+                )
+            );
+            trace.capture(|| AutoAuthorityRejection::ArtifactPrepare { error });
+            if budget_rejected {
+                return AutoAuthorityDecision::Legacy { trace };
+            }
+        }
     }
     select_retained_auto_compatibility_authority_with_semantics(
         arena,
@@ -2508,7 +2524,7 @@ fn select_retained_auto_authority(
         property_trees,
         paint_generations,
         ctx,
-        PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+        ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
         capture_trace,
     )
 }
@@ -2566,7 +2582,7 @@ fn select_retained_transform_canary(
         crate::time::Instant::now(),
         scroll_budget,
         wgpu::Limits::default().max_texture_dimension_2d,
-        PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+        ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
         false,
     )
 }
@@ -4079,7 +4095,7 @@ impl Viewport {
                 semantic_now,
                 property_scroll_budget,
                 artifact_surface_max_texture_dimension_2d,
-                PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+                ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
                 capture_paint_authority_telemetry,
             )
         });

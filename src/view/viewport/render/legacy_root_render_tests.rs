@@ -74,7 +74,7 @@ impl ElementTrait for UnknownOverlayHost {
 
 use super::{
     AutoAuthorityDecision, AutoAuthorityKind, AutoAuthorityRejection, AutoAuthorityTrace,
-    CachedCompiledGraph, FrameDisposition, PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+    CachedCompiledGraph, FrameDisposition, ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
     PaintAuthorityFallbackStage, PaintAuthorityKind, PaintAuthorityTelemetry,
     PendingRootEffectTransaction, PropertyNeutralArtifactAttempt, RecordedArtifactCandidate,
     RecordedArtifactPayload, RecordedArtifactSurfacePrepareError, RetainedAutoTerminalFailureStage,
@@ -1677,7 +1677,7 @@ fn compatibility_decision(
         )
         .unwrap(),
         wgpu::Limits::default().max_texture_dimension_2d,
-        PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+        ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
         AutoAuthorityTrace::new(capture_trace),
     )
 }

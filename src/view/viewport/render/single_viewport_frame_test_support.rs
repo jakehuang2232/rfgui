@@ -147,6 +147,26 @@ impl Viewport {
             frame_number: self.frame.frame_number,
         })
     }
+
+    pub(crate) fn render_single_viewport_budget_fallback_for_test(
+        &mut self,
+    ) -> Result<SingleViewportFrameObservation, String> {
+        let observed = self.render_single_viewport_observed_frame_for_test(Some(
+            PaintAuthorityFallbackStage::Prepare,
+        ))?;
+        if observed.rejection_labels.len() != 1
+            || !observed.rejection_labels[0]
+                .starts_with("artifact-prepare:RasterPlan(TextureBudgetExceeded(")
+            || !observed.actions.is_empty()
+            || self.retained_surface_transaction_shape_for_test() != (0, None)
+        {
+            return Err(format!(
+                "budget rejection must bypass compatibility and stage no residents: {:?}",
+                observed.rejection_labels
+            ));
+        }
+        Ok(observed)
+    }
 }
 
 impl Viewport {

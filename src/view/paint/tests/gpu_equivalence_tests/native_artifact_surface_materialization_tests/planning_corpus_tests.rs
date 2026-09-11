@@ -11,6 +11,8 @@ use crate::view::test_support::{commit_child, commit_element, get_element_mut};
 mod contracts_tests;
 mod pixel_tests;
 mod viewport_tests;
+mod budget_tests;
+mod multi_target_tests;
 
 const EXTENT: [u32; 2] = [160, 128];
 const RED: [u8; 4] = [255, 0, 0, 255];
