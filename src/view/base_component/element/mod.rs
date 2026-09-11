@@ -3242,7 +3242,7 @@ pub trait ElementTrait:
         ) {
             let mut plan = crate::view::paint::PaintNodePlan::single_before(metadata);
             if let Some(scroll) =
-                recording_context.baked_scroll_host_snapshot_for_root(self.stable_id())
+                recording_context.recorded_scroll_host_snapshot_for_root(self.stable_id())
             {
                 let bounds = self.box_model_snapshot();
                 let payload_identity = match scroll.scrollbar_overlay.paint_state {
@@ -3337,7 +3337,7 @@ pub trait ElementTrait:
         ) {
             let mut plan = crate::view::paint::PaintNodePlan::single_before(artifact);
             if let Some(scroll) =
-                recording_context.baked_scroll_host_snapshot_for_root(self.stable_id())
+                recording_context.recorded_scroll_host_snapshot_for_root(self.stable_id())
             {
                 let bounds = self.box_model_snapshot();
                 let (ops, payload_identity) = match scroll.scrollbar_overlay.paint_state {

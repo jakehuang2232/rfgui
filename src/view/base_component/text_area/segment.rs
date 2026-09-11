@@ -33,6 +33,7 @@ pub(crate) struct TextAreaProjectionSegment {
     children: Vec<NodeKey>,
     flow_offset: Position,
     layout_state: LayoutState,
+    spatial_placement: Option<crate::view::base_component::SpatialPlacementSnapshot>,
     flex_info: Option<FlexLayoutInfo>,
     vertical_align: VerticalAlign,
     owner_inline_baseline: f32,
@@ -61,6 +62,7 @@ impl Default for TextAreaProjectionSegment {
             children: Vec::new(),
             flow_offset: Position { x: 0.0, y: 0.0 },
             layout_state: LayoutState::new(0.0, 0.0, 0.0, 0.0),
+            spatial_placement: None,
             flex_info: None,
             vertical_align: VerticalAlign::Baseline,
             owner_inline_baseline: 0.0,
@@ -259,6 +261,16 @@ impl Layoutable for TextAreaProjectionSegment {
     ) {
         let x = placement.parent_x + placement.visual_offset_x + self.flow_offset.x;
         let y = placement.parent_y + placement.visual_offset_y + self.flow_offset.y;
+        self.spatial_placement = Some(crate::view::base_component::SpatialPlacementSnapshot::new(
+            crate::view::base_component::SpatialPositionReferenceSnapshot::LayoutParent(self.parent_id),
+            [self.flow_offset.x, self.flow_offset.y],
+            [
+                placement.parent_x + self.flow_offset.x,
+                placement.parent_y + self.flow_offset.y,
+            ],
+            [0.0, 0.0],
+            [x, y],
+        ));
         self.layout_state.layout_position = Position { x, y };
         self.layout_state.layout_inner_position = Position { x, y };
         self.layout_state.layout_inner_size = self.layout_state.layout_size;
@@ -363,6 +375,12 @@ impl EventTarget for TextAreaProjectionSegment {
 }
 
 impl ElementTrait for TextAreaProjectionSegment {
+    fn compositor_spatial_placement_snapshot(
+        &self,
+    ) -> Option<crate::view::base_component::SpatialPlacementSnapshot> {
+        self.spatial_placement
+    }
+
     fn retained_scroll_normalized_paint_capability(
         &self,
     ) -> Option<crate::view::base_component::RetainedScrollNormalizedPaintCapability> {

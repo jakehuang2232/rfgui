@@ -4037,6 +4037,8 @@ mod owning_inline_root_atomic_tests;
 mod owning_inline_root_tests;
 mod plain_text_area_preedit_tests;
 mod plain_text_area_tests;
+mod generic_text_area_tests;
+mod generic_recording_capability_tests;
 mod prepared_image_tests;
 mod property_boundary_forest_branching_executor_tests;
 mod property_boundary_forest_depth_three_executor_tests;

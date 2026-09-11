@@ -6,6 +6,10 @@
 //! layerizer consumes `PaintArtifact` and the six-dimensional property
 //! snapshots, never these wrappers.
 //!
+//! Exact legacy boundary preflights compare their four legacy dimensions via
+//! `legacy_boundary_eq`. TextArea now supplies spatial snapshots as well;
+//! these remain in the full artifact and are not discarded by the recorder.
+//!
 //! Typed proof is preserved deliberately — these tokens still own host/local
 //! parity and exact-once consumption until the old path is deleted. This whole
 //! file goes in the Stage C hard-cutover change set. Do not add items here,
@@ -1140,11 +1144,17 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
     if property_trees
         .states
         .get(&content_root)
-        .is_none_or(|state| state.paint != outer_state || state.descendants != outer_state)
+        .is_none_or(|state| {
+            !state.paint.legacy_boundary_eq(outer_state)
+                || !state.descendants.legacy_boundary_eq(outer_state)
+        })
         || property_trees
             .states
             .get(&text_area_root)
-            .is_none_or(|state| state.paint != outer_state || state.descendants != text_area_state)
+            .is_none_or(|state| {
+                !state.paint.legacy_boundary_eq(outer_state)
+                    || !state.descendants.legacy_boundary_eq(text_area_state)
+            })
     {
         return Err(invalid(text_area_root));
     }
@@ -1184,7 +1194,10 @@ pub(super) fn record_scroll_interactive_text_area_subtree_local_artifact_for_pla
         if property_trees
             .states
             .get(&key)
-            .is_none_or(|state| (state.paint, state.descendants) != expected)
+            .is_none_or(|state| {
+                !state.paint.legacy_boundary_eq(expected.0)
+                    || !state.descendants.legacy_boundary_eq(expected.1)
+            })
         {
             return Err(invalid(key));
         }
@@ -2675,11 +2688,17 @@ pub(super) fn record_scroll_atomic_projection_text_area_subtree_local_artifact_f
         || property_trees
             .states
             .get(&content_root)
-            .is_none_or(|state| (state.paint, state.descendants) != (outer_state, outer_state))
+            .is_none_or(|state| {
+                !state.paint.legacy_boundary_eq(outer_state)
+                    || !state.descendants.legacy_boundary_eq(outer_state)
+            })
         || property_trees
             .states
             .get(&text_area_root)
-            .is_none_or(|state| (state.paint, state.descendants) != (outer_state, text_area_state))
+            .is_none_or(|state| {
+                !state.paint.legacy_boundary_eq(outer_state)
+                    || !state.descendants.legacy_boundary_eq(text_area_state)
+            })
     {
         return Err(invalid(content_root));
     }
@@ -2922,11 +2941,17 @@ pub(super) fn record_scroll_focused_atomic_projection_text_area_subtree_local_ar
         || property_trees
             .states
             .get(&content_root)
-            .is_none_or(|state| (state.paint, state.descendants) != (outer_state, outer_state))
+            .is_none_or(|state| {
+                !state.paint.legacy_boundary_eq(outer_state)
+                    || !state.descendants.legacy_boundary_eq(outer_state)
+            })
         || property_trees
             .states
             .get(&text_area_root)
-            .is_none_or(|state| (state.paint, state.descendants) != (outer_state, text_area_state))
+            .is_none_or(|state| {
+                !state.paint.legacy_boundary_eq(outer_state)
+                    || !state.descendants.legacy_boundary_eq(text_area_state)
+            })
     {
         return Err(invalid(content_root));
     }
@@ -3216,11 +3241,17 @@ pub(super) fn record_scroll_atomic_projection_selection_text_area_subtree_local_
         || property_trees
             .states
             .get(&content_root)
-            .is_none_or(|state| (state.paint, state.descendants) != (outer_state, outer_state))
+            .is_none_or(|state| {
+                !state.paint.legacy_boundary_eq(outer_state)
+                    || !state.descendants.legacy_boundary_eq(outer_state)
+            })
         || property_trees
             .states
             .get(&text_area_root)
-            .is_none_or(|state| (state.paint, state.descendants) != (outer_state, text_area_state))
+            .is_none_or(|state| {
+                !state.paint.legacy_boundary_eq(outer_state)
+                    || !state.descendants.legacy_boundary_eq(text_area_state)
+            })
     {
         return Err(invalid(content_root));
     }
@@ -4115,11 +4146,17 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
     if property_trees
         .states
         .get(&content_root)
-        .is_none_or(|state| state.paint != outer_state || state.descendants != outer_state)
+        .is_none_or(|state| {
+            !state.paint.legacy_boundary_eq(outer_state)
+                || !state.descendants.legacy_boundary_eq(outer_state)
+        })
         || property_trees
             .states
             .get(&text_area_root)
-            .is_none_or(|state| state.paint != outer_state || state.descendants != text_area_state)
+            .is_none_or(|state| {
+                !state.paint.legacy_boundary_eq(outer_state)
+                    || !state.descendants.legacy_boundary_eq(text_area_state)
+            })
     {
         return Err(invalid(text_area_root));
     }
@@ -4160,7 +4197,10 @@ pub(super) fn record_scroll_text_area_subtree_local_artifact_for_plan(
         if property_trees
             .states
             .get(&key)
-            .is_none_or(|state| (state.paint, state.descendants) != expected)
+            .is_none_or(|state| {
+                !state.paint.legacy_boundary_eq(expected.0)
+                    || !state.descendants.legacy_boundary_eq(expected.1)
+            })
         {
             return Err(invalid(key));
         }

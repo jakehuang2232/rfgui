@@ -132,6 +132,16 @@ impl Layoutable for TextArea {
 
         let x = placement.parent_x + placement.visual_offset_x + self.flow_offset.x;
         let y = placement.parent_y + placement.visual_offset_y + self.flow_offset.y;
+        self.spatial_placement = Some(crate::view::base_component::SpatialPlacementSnapshot::new(
+            crate::view::base_component::SpatialPositionReferenceSnapshot::LayoutParent(self.parent_id),
+            [self.flow_offset.x, self.flow_offset.y],
+            [
+                placement.parent_x + self.flow_offset.x,
+                placement.parent_y + self.flow_offset.y,
+            ],
+            [0.0, 0.0],
+            [x, y],
+        ));
         self.layout_state.layout_position = Position { x, y };
         self.layout_state.layout_inner_position = Position { x, y };
         self.layout_state.layout_inner_size = self.layout_state.layout_size;

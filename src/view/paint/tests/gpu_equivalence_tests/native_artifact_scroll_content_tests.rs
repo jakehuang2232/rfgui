@@ -11,7 +11,7 @@ use crate::view::viewport::{
 
 type ArtifactScrollFixture = fn() -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker);
 
-struct NativeArtifactTextThreadCacheCleanup;
+pub(super) struct NativeArtifactTextThreadCacheCleanup;
 
 impl Drop for NativeArtifactTextThreadCacheCleanup {
     fn drop(&mut self) {

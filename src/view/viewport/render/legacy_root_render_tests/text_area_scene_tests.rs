@@ -61,10 +61,16 @@ fn retained_auto_scroll_text_area_subtree_selects_typed_property_scene() {
         scroll: Some(outer_scroll),
         ..Default::default()
     };
+    // The legacy boundary contract is unchanged; TextArea now also freezes
+    // its own spatial endpoints for the generic recorder.
+    let text_paint_state = crate::view::compositor::property_tree::PropertyTreeState {
+        layout_position: Some(crate::view::compositor::property_tree::LayoutPositionNodeId(text_area)),
+        visual_offset: Some(crate::view::compositor::property_tree::VisualOffsetNodeId(text_area)),
+        ..outer_state
+    };
     let text_state = crate::view::compositor::property_tree::PropertyTreeState {
         clip: Some(text_clip),
-        scroll: Some(outer_scroll),
-        ..Default::default()
+        ..text_paint_state
     };
     let root_state = properties.node_state_for(roots[0]).unwrap();
     assert_eq!(root_state.paint, Default::default());
@@ -73,7 +79,7 @@ fn retained_auto_scroll_text_area_subtree_selects_typed_property_scene() {
     assert_eq!(wrapper_state.paint, outer_state);
     assert_eq!(wrapper_state.descendants, outer_state);
     let text_area_state = properties.node_state_for(text_area).unwrap();
-    assert_eq!(text_area_state.paint, outer_state);
+    assert_eq!(text_area_state.paint, text_paint_state);
     assert_eq!(text_area_state.descendants, text_state);
     for child in arena.children_of(text_area) {
         let child_state = properties.node_state_for(child).unwrap();

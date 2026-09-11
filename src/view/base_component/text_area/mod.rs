@@ -926,6 +926,7 @@ pub struct TextArea {
 
     // layout output
     pub(crate) flow_offset: crate::view::base_component::Position,
+    pub(crate) spatial_placement: Option<super::SpatialPlacementSnapshot>,
     pub(crate) layout_state: LayoutState,
     pub(crate) inline_paint_fragments: Vec<Rect>,
     pub(crate) flex_info: Option<FlexLayoutInfo>,
@@ -999,6 +1000,7 @@ impl Default for TextArea {
             unified_inline_ifc_root_cache: std::cell::RefCell::default(),
 
             flow_offset: crate::view::base_component::Position { x: 0.0, y: 0.0 },
+            spatial_placement: None,
             layout_state: LayoutState::new(0.0, 0.0, 0.0, 0.0),
             inline_paint_fragments: Vec::new(),
             flex_info: None,
@@ -1125,6 +1127,16 @@ impl TextArea {
 }
 
 impl ElementTrait for TextArea {
+    fn compositor_spatial_placement_snapshot(&self) -> Option<super::SpatialPlacementSnapshot> {
+        // TextArea's internal viewport offset is currently baked by its IFC
+        // layout, not a compositor ScrollNode. Freeze that child reference
+        // explicitly; it must not be reconstructed from a projected Text's
+        // absolute bounds or confused with an ancestor compositor scroll.
+        self.spatial_placement.map(|snapshot| {
+            snapshot.with_child_reference_offset_at_scroll_zero([-self.scroll_x, -self.scroll_y])
+        })
+    }
+
     fn retained_scroll_normalized_paint_capability(
         &self,
     ) -> Option<super::RetainedScrollNormalizedPaintCapability> {

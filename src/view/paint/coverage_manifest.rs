@@ -970,6 +970,9 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     (live_contents_properties.scroll == Some(scroll)).then_some(scroll)
                 })
                 .flatten();
+            recording_context.surface_dag_scroll_snapshot = recording_context
+                .surface_dag_scroll
+                .and_then(|id| self.properties.scroll_snapshot_for(id));
             if let Some(witness) = self.transform_surface_authority
                 && live_properties.transform == Some(witness.transform)
             {

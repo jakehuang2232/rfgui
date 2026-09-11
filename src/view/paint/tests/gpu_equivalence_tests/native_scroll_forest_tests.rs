@@ -6,6 +6,10 @@ use super::*;
 // cargo test -q native_focused_atomic_projection_scroll_forest_matches_legacy_and_reuses_real_pair -- --ignored --nocapture
 fn native_focused_atomic_projection_scroll_forest_matches_legacy_and_reuses_real_pair()
 -> Result<(), String> {
+    // Drop GPU-backed text caches before thread-local Metal teardown, even
+    // when a pixel/reuse assertion returns an error.
+    let _thread_cache_cleanup =
+        super::native_artifact_scroll_content_tests::NativeArtifactTextThreadCacheCleanup;
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU initialized");
     let adapter = gpu.label();

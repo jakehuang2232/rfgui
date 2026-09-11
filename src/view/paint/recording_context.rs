@@ -140,6 +140,8 @@ pub(crate) struct PaintRecordingContext {
     /// same owner-keyed scroll node, so foreign scroll authority cannot leak
     /// through copied component context.
     pub(crate) surface_dag_scroll: Option<ScrollNodeId>,
+    pub(crate) surface_dag_scroll_snapshot:
+        Option<crate::view::compositor::property_tree::ScrollNodeSnapshot>,
     /// Recorder-owned authority for the one exact M10E1A root/child path.
     /// Coverage clears and rebinds this after every component hook.
     pub(crate) baked_scroll_host: Option<PaintBakedScrollHostWitness>,
@@ -344,6 +346,22 @@ impl PaintRecordingContext {
             (Some(owner), Some(recording_stable_id), true, Some(scroll))
                 if recording_stable_id == stable_id && scroll == ScrollNodeId(owner)
         )
+    }
+
+    /// Complete frozen host state for command recording. The legacy accessor
+    /// remains exact-witness-only; generic recording binds this snapshot from
+    /// PropertyTrees after component hooks, for the canonical traversal owner.
+    pub(crate) fn recorded_scroll_host_snapshot_for_root(
+        self,
+        stable_id: u64,
+    ) -> Option<crate::view::compositor::property_tree::ScrollNodeSnapshot> {
+        self.baked_scroll_host_snapshot_for_root(stable_id).or_else(|| {
+            let snapshot = self.surface_dag_scroll_snapshot?;
+            (self.authorizes_generic_scroll_host_root(stable_id)
+                && Some(snapshot.id) == self.surface_dag_scroll
+                && Some(snapshot.owner) == self.recording_owner)
+                .then_some(snapshot)
+        })
     }
 
     pub(crate) fn authorizes_frame_root_scroll_host_child_mask(self, stable_id: u64) -> bool {

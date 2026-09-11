@@ -71,6 +71,8 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         include_str!("gpu_equivalence_tests/native_scroll_forest_tests.rs"),
         include_str!("gpu_equivalence_tests/native_scroll_scene_pixel_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/text_area_recording_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/recording_overlay_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/execution_failure_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/invalidation_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/residency_tests.rs"),
@@ -89,6 +91,9 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
     .filter(|name| name.starts_with("native_"))
     .collect::<BTreeSet<_>>();
     let expected = expected_names([
+        "native_generic_text_area_frozen_ime_caret_and_reuse",
+        "native_generic_and_legacy_frozen_scrollbar_absolute_alpha",
+        "native_legacy_text_area_frozen_ime_caret_pixels",
         "native_offscreen_legacy_and_artifact_pixels_match",
         "native_zero_surface_v2_matches_legacy_pixels",
         "native_forced_transform_surface_matches_legacy_pixels",

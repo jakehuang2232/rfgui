@@ -23,6 +23,7 @@ use wgpu::util::DeviceExt;
 pub(crate) struct TextPreparedInputPass {
     params: TextPassPreparedParams,
     prepared: Option<TextPreparedState>,
+    prepared_empty: bool,
     input: TextInput,
     output: TextOutput,
 }
@@ -60,6 +61,7 @@ impl TextPreparedInputPass {
         Self {
             params,
             prepared: None,
+            prepared_empty: false,
             input,
             output,
         }
@@ -533,13 +535,19 @@ impl GraphicsPass for TextPreparedInputPass {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
-        self.prepared =
-            prepare_text_prepared_input_pass(&self.params, &self.input, &self.output, ctx);
+        self.prepared_empty = false;
+        self.prepared = prepare_text_prepared_input_pass(
+            &self.params,
+            &self.input,
+            &self.output,
+            ctx,
+            &mut self.prepared_empty,
+        );
     }
 
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
         let Some(prepared) = self.prepared.as_ref() else {
-            if !self.params.fragments.is_empty() && !self.params.staging_input.glyphs.is_empty() {
+            if !self.prepared_empty {
                 ctx.mark_execution_failed();
             }
             return;
@@ -575,8 +583,13 @@ fn prepare_text_prepared_input_pass(
     input: &TextInput,
     output: &TextOutput,
     ctx: &mut PrepareContext<'_, '_>,
+    prepared_empty: &mut bool,
 ) -> Option<TextPreparedState> {
-    if params.fragments.is_empty() || params.staging_input.glyphs.is_empty() {
+    if params.staging_input.glyphs.is_empty() {
+        *prepared_empty = true;
+        return None;
+    }
+    if !prepared_text_raster_sources_are_valid(params) {
         return None;
     }
 
@@ -685,6 +698,11 @@ fn prepare_text_prepared_input_pass(
         });
 
         if pending.is_empty() {
+            // Valid glyphs may have no raster image (e.g. spaces). This is a
+            // successfully prepared no-op, distinct from missing font/target
+            // resources or failed GPU draw allocation. Never classify it by
+            // the nonempty glyph count in execute().
+            *prepared_empty = true;
             return None;
         }
     }
@@ -802,6 +820,22 @@ fn prepare_text_prepared_input_pass(
         stencil_clip_id,
     })
 }
+
+fn prepared_text_raster_sources_are_valid(params: &TextPassPreparedParams) -> bool {
+    params.staging_input.glyphs.iter().all(|glyph| {
+        glyph.paint.fragment_index < params.fragments.len() as u32
+            && glyph.raster.font_size.is_finite()
+            && glyph.raster.font_size > 0.0
+            && text_raster_key_for_raster_input(&glyph.raster, 1.0).is_some()
+            && glyph.raster.font_data.as_ref().and_then(swash_font_ref)
+                .is_some_and(|font| {
+                    glyph.raster.glyph_id < u32::from(font.glyph_metrics(&[]).glyph_count())
+                })
+    })
+}
+
+#[cfg(test)]
+mod empty_preparation_tests;
 
 /// Content hash of everything that shapes vertex-buffer bytes: glyph
 /// raster identity, paint colors/opacity, fragment indices, the scale

@@ -424,7 +424,10 @@ fn assert_authority_deletion_line_ledger(
     let four_file_lines = [
         (S.text(), 25069),
         (F.text(), 15267),
-        (include_str!("../../../paint/legacy_recording.rs"), 4946),
+        // C-1 spatial coexistence: 12 existing preflights use the established
+        // four-dimensional comparison. Multiline formatting adds 36 lines,
+        // and its contract comment adds 4; no bridge items were added.
+        (include_str!("../../../paint/legacy_recording.rs"), 4986),
         (include_str!("../../../paint/legacy_admission.rs"), 1506),
     ]
     .into_iter()
@@ -437,14 +440,14 @@ fn assert_authority_deletion_line_ledger(
         expected
     })
     .sum::<usize>();
-    assert_eq!(four_file_lines, 46788);
-    assert_eq!(four_file_lines - (entry_total - outside_four_files), 40979);
+    assert_eq!(four_file_lines, 46828);
+    assert_eq!(four_file_lines - (entry_total - outside_four_files), 41019);
     assert_eq!(
         four_file_lines - (entry_total - outside_four_files) - shared_total,
-        38526
+        38566
     );
     // Unattributed is NOT permanently retained. Neither the entry subtotal nor
-    // the shared lower bound licenses leaving the other 38,526 lines behind.
+    // the shared lower bound licenses leaving the other 38,566 lines behind.
     // Retirement must close production callers, port behavioral tests, and
     // leave named hardware evidence at TAKEOVER time whose oracle and execution
     // do not pass through the implementation being deleted. No gate execution

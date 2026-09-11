@@ -5803,8 +5803,17 @@ fn artifact_surface_span_owner_topology(
         .copied()
         .map(|snapshot| (snapshot.owner, snapshot))
         .collect::<FxHashMap<_, _>>();
+    if owners.len() != artifact.owner_nodes.len() {
+        return Err(ArtifactSurfaceRasterPlanError::InvalidOwnerTopology {
+            target,
+            owner: boundary_root,
+        });
+    }
     let mut required = FxHashSet::default();
+    let mut emitted = FxHashSet::default();
+    let mut topology = Vec::new();
     for chunk_owner in chunk_owners {
+        let mut chain = Vec::new();
         let mut cursor = chunk_owner;
         let mut reached_boundary = false;
         for _ in 0..=artifact.owner_nodes.len() {
@@ -5815,6 +5824,7 @@ fn artifact_surface_span_owner_topology(
                 },
             )?;
             required.insert(cursor);
+            chain.push(snapshot);
             if cursor == boundary_root {
                 reached_boundary = true;
                 break;
@@ -5833,19 +5843,24 @@ fn artifact_surface_span_owner_topology(
                 owner: chunk_owner,
             });
         }
+        // The artifact store follows recording discovery, not parent-first
+        // topology (transparent parents can be discovered after a paint
+        // child). Order only this span's required closure from parent edges;
+        // command order remains in chunks. Keep the sealer's parent-first
+        // invariant instead of weakening it for a component family.
+        for snapshot in chain.into_iter().rev() {
+            if emitted.insert(snapshot.owner) {
+                topology.push(PaintOwnerSnapshot {
+                    parent: if snapshot.owner == boundary_root {
+                        None
+                    } else {
+                        snapshot.parent
+                    },
+                    ..snapshot
+                });
+            }
+        }
     }
-    let topology = artifact
-        .owner_nodes
-        .iter()
-        .copied()
-        .filter(|snapshot| required.contains(&snapshot.owner))
-        .map(|snapshot| PaintOwnerSnapshot {
-            parent: (snapshot.owner != boundary_root)
-                .then_some(snapshot.parent)
-                .flatten(),
-            ..snapshot
-        })
-        .collect::<Vec<_>>();
     if topology.len() != required.len()
         || topology
             .iter()
