@@ -47,7 +47,32 @@ impl Viewport {
     pub(crate) fn render_single_viewport_scene_for_test(
         &mut self,
     ) -> Result<SingleViewportFrameObservation, String> {
-        self.render_single_viewport_observed_frame_for_test(None)
+        self.render_single_viewport_observed_frame_for_test(None, crate::time::Instant::now())
+    }
+
+    /// Match render_rsx's focus dispatch and animation sampling before layout.
+    /// The fixture supplies one semantic time for animation and preparation;
+    /// it does not run RSX reconciliation or a platform event loop.
+    fn sample_single_viewport_interaction_for_test(&mut self, now: crate::time::Instant) {
+        self.sync_focus_dispatch();
+        let roots = self.scene.ui_root_keys.clone();
+        crate::view::base_component::tick_animation_frames(&mut self.scene.node_arena, &roots, now);
+    }
+
+    pub(crate) fn layout_single_viewport_interaction_for_test(
+        &mut self,
+        now: crate::time::Instant,
+    ) {
+        self.sample_single_viewport_interaction_for_test(now);
+        self.run_layout_pass();
+    }
+
+    pub(crate) fn render_single_viewport_interaction_frame_for_test(
+        &mut self,
+        now: crate::time::Instant,
+    ) -> Result<SingleViewportFrameObservation, String> {
+        self.sample_single_viewport_interaction_for_test(now);
+        self.render_single_viewport_observed_frame_for_test(None, now)
     }
 
     pub(crate) fn render_single_viewport_legacy_recovery_for_test(
@@ -56,14 +81,16 @@ impl Viewport {
         if self.retained_auto_terminal_failure != Some(RetainedAutoTerminalFailureStage::Execute) {
             return Err("Legacy recovery requires a latched execute failure".into());
         }
-        self.render_single_viewport_observed_frame_for_test(Some(
-            PaintAuthorityFallbackStage::Execute,
-        ))
+        self.render_single_viewport_observed_frame_for_test(
+            Some(PaintAuthorityFallbackStage::Execute),
+            crate::time::Instant::now(),
+        )
     }
 
     fn render_single_viewport_observed_frame_for_test(
         &mut self,
         expected_fallback: Option<PaintAuthorityFallbackStage>,
+        semantic_now: crate::time::Instant,
     ) -> Result<SingleViewportFrameObservation, String> {
         let texture = self
             .frame
@@ -76,8 +103,8 @@ impl Viewport {
         let before = self.frame_completion_counts_for_test();
         // The bool reports transition/animation redraw demand, not render
         // success. Submission/abort counts and authority telemetry below
-        // establish success; these static fixtures need no redraw assertion.
-        let _ = self.render_render_tree(0.0, 0.0, crate::time::Instant::now());
+        // establish success. Event-loop redraw scheduling is outside this harness.
+        let _ = self.render_render_tree(0.0, 0.0, semantic_now);
         let after = self.frame_completion_counts_for_test();
         if self.frame.frame_state.is_some() || after.0 != before.0 + 1 || after.2 != before.2 {
             return Err(format!(
@@ -123,9 +150,10 @@ impl Viewport {
     pub(crate) fn render_single_viewport_budget_fallback_for_test(
         &mut self,
     ) -> Result<SingleViewportFrameObservation, String> {
-        let observed = self.render_single_viewport_observed_frame_for_test(Some(
-            PaintAuthorityFallbackStage::Prepare,
-        ))?;
+        let observed = self.render_single_viewport_observed_frame_for_test(
+            Some(PaintAuthorityFallbackStage::Prepare),
+            crate::time::Instant::now(),
+        )?;
         if observed.rejection_labels.len() != 1
             || !observed.rejection_labels[0]
                 .starts_with("artifact-prepare:RasterPlan(TextureBudgetExceeded(")

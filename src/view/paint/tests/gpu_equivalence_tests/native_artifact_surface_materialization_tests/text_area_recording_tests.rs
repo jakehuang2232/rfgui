@@ -2,6 +2,7 @@ use super::*;
 use crate::style::Opacity;
 
 mod viewport_tests;
+mod ime_lifecycle_tests;
 
 const EXTENT: [u32; 2] = [320, 240];
 
