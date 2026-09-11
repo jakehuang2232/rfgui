@@ -6785,7 +6785,7 @@ impl Element {
                     }
                     if !text.matches_inline_ifc_owned_install(
                         &absolute_lines,
-                        paint_input.as_ref(),
+                        paint_input,
                         expected_paint_bounds,
                         expected_shell_bounds,
                     ) {

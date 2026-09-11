@@ -17,6 +17,7 @@ mod cache;
 mod events;
 mod hit_test;
 mod layout;
+mod paint_cache;
 mod measure;
 mod profile;
 mod props;
@@ -119,6 +120,8 @@ pub struct Text {
     /// hit-test/caret APIs consume this same context.
     pub(super) shaped_context: Option<Arc<InlineFormattingContext>>,
     inline_ifc_owned: Option<Box<TextInlineIfcOwnedState>>,
+    paint_memo: std::cell::RefCell<Option<paint_cache::TextPaintMemo>>,
+    install_memo: std::cell::RefCell<Option<paint_cache::TextInstallMemo>>,
     pub(super) node_id: u64,
     pub(super) parent_id: Option<u64>,
     pub(super) dirty_flags: super::DirtyFlags,
@@ -201,6 +204,8 @@ impl Text {
             layout_cache: TextLayoutCache::default(),
             shaped_context: None,
             inline_ifc_owned: None,
+            paint_memo: Default::default(),
+            install_memo: Default::default(),
             dirty_flags: super::DirtyFlags::ALL,
             last_layout_constraints: None,
             last_layout_placement: None,
@@ -366,7 +371,7 @@ impl Text {
     pub(crate) fn matches_inline_ifc_owned_install(
         &self,
         expected_lines: &[TextIfcOwnedLine],
-        expected_paint_input: &InlineIfcTextPassPaintInput,
+        expected_paint_input: &Arc<InlineIfcTextPassPaintInput>,
         expected_paint_bounds: crate::ui::Rect,
         expected_shell_bounds: crate::ui::Rect,
     ) -> bool {
@@ -398,7 +403,11 @@ impl Text {
                 .iter()
                 .zip(expected_lines)
                 .all(|(left, right)| line_bits_eq(left, right))
-            && owned.paint_input.as_ref() == expected_paint_input
+            && paint_cache::TextInstallMemo::matches(
+                &self.install_memo,
+                &owned.paint_input,
+                expected_paint_input,
+            )
             && rect_bits_eq(owned.paint_bounds, expected_paint_bounds)
             && self.layout_state.layout_position.x.to_bits() == expected_shell_bounds.x.to_bits()
             && self.layout_state.layout_position.y.to_bits() == expected_shell_bounds.y.to_bits()
@@ -865,7 +874,8 @@ impl ElementTrait for Text {
             crate::view::paint::PaintPayloadIdentity::prepared_texts(glyph.op.iter());
         let ops = glyph
             .op
-            .into_iter()
+            .iter()
+            .cloned()
             .map(crate::view::paint::PaintOp::PreparedText)
             .collect::<Vec<_>>();
         before_children.push(crate::view::paint::PaintArtifact {
@@ -968,7 +978,8 @@ impl ElementTrait for Text {
             crate::view::paint::PaintPayloadIdentity::prepared_texts(payload.op.iter());
         let ops = payload
             .op
-            .into_iter()
+            .iter()
+            .cloned()
             .map(crate::view::paint::PaintOp::PreparedText)
             .collect::<Vec<_>>();
         Some(crate::view::paint::PaintArtifact {

@@ -65,7 +65,7 @@ fn text_preflight_stream_matches_recording_and_legacy_adapter_without_building_o
             }
             assert_eq!(PreparedTextOp::construction_count_for_test(), before);
             let payload = text.prepared_shadow_text_payload(offset, opacity).unwrap();
-            let op = payload.op.unwrap();
+            let op = payload.op.as_ref().unwrap();
             assert_eq!(PreparedTextOp::construction_count_for_test(), before + 1);
             let (input, bounds, color_override) = if owned {
                 (
@@ -165,5 +165,136 @@ fn text_preflight_stream_preserves_empty_and_hidden_paint() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn text_paint_memo_reuses_only_identical_source_and_complete_paint_parameters() {
+    for owned in [false, true] {
+        let mut text = placed_text("memo hello", owned);
+        let initial = text.prepared_shadow_text_payload([0.0, 0.0], 1.0).unwrap();
+        let count = PreparedTextOp::construction_count_for_test();
+        for _ in 0..3 {
+            assert_eq!(text.validate_shadow_text_payload([0.0, 0.0], 1.0), Ok(()));
+            assert!(Arc::ptr_eq(
+                &initial,
+                &text.prepared_shadow_text_payload([0.0, 0.0], 1.0).unwrap()
+            ));
+        }
+        assert_eq!(PreparedTextOp::construction_count_for_test(), count);
+        // Compare each miss to an independently rebuilt payload using the same
+        // established conversion, not merely a cache hit/miss counter.
+        for step in 0..6 {
+            // Reset the cached offset/opacity before each isolated change.
+            let baseline = text.prepared_shadow_text_payload([0.0, 0.0], 1.0).unwrap();
+            let offset = if step == 0 { [2.5, -1.0] } else { [0.0, 0.0] };
+            let opacity = if step == 1 { 0.25 } else { 1.0 };
+            if step == 2 {
+                text.set_color(crate::style::Color::rgb(40, 90, 170));
+            }
+            if step == 3 {
+                if owned {
+                    text.inline_ifc_owned.as_mut().unwrap().paint_bounds.width += 3.0;
+                } else {
+                    text.layout_state.layout_size.width =
+                        text.standalone_paint_bounds().width + 3.0;
+                }
+            }
+            if step == 4 {
+                if owned {
+                    text.inline_ifc_owned.as_mut().unwrap().paint_bounds.x += 4.0;
+                } else {
+                    text.layout_state.layout_position.x += 4.0;
+                }
+            }
+            if step == 5 {
+                if owned {
+                    let input = &mut text.inline_ifc_owned.as_mut().unwrap().paint_input;
+                    Arc::make_mut(input).glyphs[0].x += 1.0;
+                } else {
+                    text.shaped_context = placed_text("different content", false).shaped_context;
+                }
+            }
+            let cached = text.prepared_shadow_text_payload(offset, opacity).unwrap();
+            if !owned || step != 2 {
+                assert!(
+                    !Arc::ptr_eq(&baseline, &cached),
+                    "input change must miss: owned={owned}, step={step}"
+                );
+            } else {
+                // IFC-owned glyph color comes from its immutable input.
+                assert!(Arc::ptr_eq(&baseline, &cached));
+            }
+            *text.paint_memo.borrow_mut() = None;
+            let rebuilt = text.prepared_shadow_text_payload(offset, opacity).unwrap();
+            assert_eq!(
+                [
+                    cached.bounds.x,
+                    cached.bounds.y,
+                    cached.bounds.width,
+                    cached.bounds.height
+                ],
+                [
+                    rebuilt.bounds.x,
+                    rebuilt.bounds.y,
+                    rebuilt.bounds.width,
+                    rebuilt.bounds.height
+                ],
+                "owned={owned}, step={step}"
+            );
+            assert_eq!(
+                cached.op.as_ref().unwrap().params,
+                rebuilt.op.as_ref().unwrap().params,
+                "owned={owned}, step={step}"
+            );
+            assert_eq!(
+                cached.op.as_ref().unwrap().frozen_identity(),
+                rebuilt.op.as_ref().unwrap().frozen_identity()
+            );
+        }
+    }
+}
+
+#[test]
+fn text_paint_memo_cannot_hide_invalid_or_missing_inputs_after_warming() {
+    for damage in 0..4 {
+        let mut text = placed_text("memo", true);
+        let old = text.prepared_shadow_text_payload([0.0, 0.0], 1.0).unwrap();
+        let input = Arc::make_mut(&mut text.inline_ifc_owned.as_mut().unwrap().paint_input);
+        match damage {
+            0 => input.glyphs[0].font_data_id ^= 1,
+            1 => input.glyphs[0].x = f32::NAN,
+            2 => input.glyphs[0].color[0] = f32::INFINITY,
+            _ => input.glyphs.clear(),
+        }
+        assert!(text.validate_shadow_text_payload([0.0, 0.0], 1.0).is_err());
+        assert!(text.prepared_shadow_text_payload([0.0, 0.0], 1.0).is_err());
+        assert!(old.op.as_ref().unwrap().has_canonical_identity());
+    }
+    let mut text = placed_text("memo", false);
+    text.prepared_shadow_text_payload([0.0, 0.0], 1.0).unwrap();
+    text.set_text("changed");
+    assert!(text.validate_shadow_text_payload([0.0, 0.0], 1.0).is_err());
+    assert!(text.prepared_shadow_text_payload([0.0, 0.0], 1.0).is_err());
+}
+
+#[test]
+fn text_install_memo_preserves_structural_equality_and_rechecks_copy_on_write() {
+    use super::super::paint_cache::TextInstallMemo;
+    let text = placed_text("memo", true);
+    let mut installed = text.inline_ifc_owned.as_ref().unwrap().paint_input.clone();
+    let expected = Arc::new(installed.as_ref().clone());
+    let slot = Default::default();
+    for _ in 0..3 {
+        assert!(TextInstallMemo::matches(&slot, &installed, &expected));
+    }
+    Arc::make_mut(&mut installed).glyphs[0].x += 1.0;
+    assert!(!TextInstallMemo::matches(&slot, &installed, &expected));
+    Arc::make_mut(&mut installed).glyphs[0].x = f32::NAN;
+    for _ in 0..3 {
+        assert!(
+            !TextInstallMemo::matches(&slot, &installed, &installed),
+            "same Arc with NaN must remain unequal"
+        );
     }
 }

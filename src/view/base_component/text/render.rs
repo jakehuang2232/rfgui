@@ -16,10 +16,12 @@ use crate::view::render_pass::text_pass::{
 use super::super::ShadowPaintBlocker;
 use super::Text;
 use super::hit_test::current_text_area_selection_render_context;
+use super::paint_cache::{TextPaintKey, TextPaintMemo};
 use crate::view::inline_text_pass_adapter::{
     inline_ifc_paint_input_to_text_pass_staging_input,
     inline_ifc_paint_input_to_text_pass_staging_input_with_color,
 };
+use std::sync::Arc;
 
 impl Renderable for Text {
     fn build(
@@ -238,6 +240,15 @@ impl Text {
             return Ok(());
         };
         let fragment = source.fragment(paint_offset);
+        let key = TextPaintKey::new(self, &source, paint_offset, opacity);
+        if self
+            .paint_memo
+            .borrow()
+            .as_ref()
+            .is_some_and(|memo| memo.key.matches(&key))
+        {
+            return Ok(());
+        }
         if !crate::view::paint::PreparedTextOp::validate_unclipped_glyph_stream(
             1.0,
             &[fragment],
@@ -248,21 +259,30 @@ impl Text {
         Ok(())
     }
 
-    /// Only recording materializes the glyph vector and frozen identity.
+    /// Recording materializes the glyph vector and frozen identity on a cache miss.
     /// Capability uses the same source, conversion and field validators as a
     /// stream, so it does not build a complete op merely to discard it.
     pub(super) fn prepared_shadow_text_payload(
         &self,
         paint_offset: [f32; 2],
         opacity: f32,
-    ) -> Result<PreparedShadowTextPayload, ShadowPaintBlocker> {
+    ) -> Result<Arc<PreparedShadowTextPayload>, ShadowPaintBlocker> {
         let source = self.shadow_text_paint_source(opacity)?;
         let Some(input) = source.input.filter(|input| !input.glyphs.is_empty()) else {
-            return Ok(PreparedShadowTextPayload {
+            return Ok(Arc::new(PreparedShadowTextPayload {
                 bounds: source.bounds,
                 op: None,
-            });
+            }));
         };
+        let key = TextPaintKey::new(self, &source, paint_offset, opacity);
+        if let Some(memo) = self
+            .paint_memo
+            .borrow()
+            .as_ref()
+            .filter(|memo| memo.key.matches(&key))
+        {
+            return Ok(memo.payload.clone());
+        }
         let fragment = source.fragment(paint_offset);
         let params = TextPassPreparedParams {
             staging_input: crate::view::render_pass::text_pass::TextPassPreparedStagingInput {
@@ -277,10 +297,15 @@ impl Text {
         };
         let op = crate::view::paint::PreparedTextOp::new(params)
             .ok_or(ShadowPaintBlocker::MissingPreparedText)?;
-        Ok(PreparedShadowTextPayload {
+        let payload = Arc::new(PreparedShadowTextPayload {
             bounds: source.bounds,
             op: Some(op),
-        })
+        });
+        *self.paint_memo.borrow_mut() = Some(TextPaintMemo {
+            key,
+            payload: payload.clone(),
+        });
+        Ok(payload)
     }
 
     /// Emit the TextArea-selection underlay rects for this Text when a
@@ -365,10 +390,10 @@ pub(super) struct PreparedShadowTextPayload {
     pub(super) op: Option<crate::view::paint::PreparedTextOp>,
 }
 
-struct ShadowTextPaintSource<'a> {
-    bounds: super::super::Rect,
+pub(super) struct ShadowTextPaintSource<'a> {
+    pub(super) bounds: super::super::Rect,
     input: Option<&'a crate::view::inline_formatting_context::InlineIfcTextPassPaintInput>,
-    color_override: Option<[f32; 4]>,
+    pub(super) color_override: Option<[f32; 4]>,
 }
 
 impl ShadowTextPaintSource<'_> {
