@@ -12,6 +12,7 @@ fn native_legacy_planning_corpus_absolute_coordinates() -> Result<(), String> {
 }
 
 fn run(legacy: bool) -> Result<(), String> {
+    let _text_cleanup = crate::view::paint::tests::gpu_equivalence_tests::native_artifact_scroll_content_tests::NativeArtifactTextThreadCacheCleanup;
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().unwrap();
     for scene in Scene::ALL {
@@ -42,6 +43,17 @@ fn run(legacy: bool) -> Result<(), String> {
                                 })
                                 .unwrap();
                             ctx.set_state(state);
+                        }
+                        // Match the production entry's second phase: Element
+                        // only queues viewport-deferred descendants above.
+                        while let Some(node) = ctx.next_deferred() {
+                            crate::view::base_component::build_node_by_key(
+                                node.key,
+                                node.stable_id,
+                                &mut graph,
+                                &mut fixture.arena,
+                                &mut ctx,
+                            );
                         }
                         add_present(&mut graph, &target)?;
                         graphs.push(graph);

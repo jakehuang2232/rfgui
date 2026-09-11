@@ -1862,13 +1862,29 @@ fn premultiplied_to_readback_rgba8(color: [f32; 4]) -> [u8; 4] {
     straight.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
+fn quantize_premultiplied_rgba8(color: [f32; 4]) -> [f32; 4] {
+    // Preserve the supplied f32 value while evaluating the UNORM conversion:
+    // f32 multiplication by 255 can itself round a value just below a half
+    // code onto the tie before the actual quantization (e.g. alpha 0.7).
+    color.map(|v| ((f64::from(v.clamp(0.0, 1.0)) * 255.0).round() / 255.0) as f32)
+}
+
+fn root_group_raster_readback(color: [f32; 4], opacity: f32) -> [u8; 4] {
+    // Both the reusable layer and the receiver are RGBA8 UNORM targets.
+    // Quantize at both writes before the final straight-alpha readback; a
+    // low-alpha unpremultiply can amplify a one-byte raster difference.
+    let layer = quantize_premultiplied_rgba8(color);
+    let receiver = quantize_premultiplied_rgba8(scale_premultiplied(layer, opacity));
+    premultiplied_to_readback_rgba8(receiver)
+}
+
 fn root_group_anchor_oracle(opacity: f32) -> [[u8; 4]; 3] {
-    let first = premultiply(ROOT_GROUP_FIRST_COLOR);
+    let first = quantize_premultiplied_rgba8(premultiply(ROOT_GROUP_FIRST_COLOR));
     let second = premultiply(ROOT_GROUP_SECOND_COLOR);
     [
-        premultiplied_to_readback_rgba8(scale_premultiplied(first, opacity)),
-        premultiplied_to_readback_rgba8(scale_premultiplied(source_over(second, first), opacity)),
-        premultiplied_to_readback_rgba8(scale_premultiplied(second, opacity)),
+        root_group_raster_readback(first, opacity),
+        root_group_raster_readback(source_over(second, first), opacity),
+        root_group_raster_readback(second, opacity),
     ]
 }
 
@@ -1905,6 +1921,18 @@ fn root_group_overlap_artifact(opacity: f32) -> PaintArtifact {
         topology_revision: 1,
     };
     let rects = root_group_overlap_rects();
+    // This hand-built fixture must carry the same exact payload identity the
+    // recorder now requires; a missing identity is deliberately rejected.
+    let identities = rects.each_ref().map(|params| {
+        PaintPayloadIdentity::prepared_shadows_with_decoration(
+            std::iter::empty(),
+            [&DrawRectOp {
+                params: params.clone(),
+                mode: crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
+            }],
+        )
+        .expect("canonical root-group rectangle")
+    });
     PaintArtifact {
         target: PaintArtifactTarget::RootOpacityGroup { root, effect },
         chunks: vec![
@@ -1926,7 +1954,7 @@ fn root_group_overlap_artifact(opacity: f32) -> PaintArtifact {
                 },
                 properties,
                 content_revision: revision,
-                payload_identity: PaintPayloadIdentity::None,
+                payload_identity: identities[0].clone(),
             },
             PaintChunk {
                 id: PaintChunkId {
@@ -1946,7 +1974,7 @@ fn root_group_overlap_artifact(opacity: f32) -> PaintArtifact {
                 },
                 properties,
                 content_revision: revision,
-                payload_identity: PaintPayloadIdentity::None,
+                payload_identity: identities[1].clone(),
             },
         ],
         ops: rects
@@ -2158,10 +2186,46 @@ fn artifact_outer_shadow_graph(opacity: f32) -> Result<FrameGraph, String> {
 }
 
 fn outer_shadow_anchor_oracle(opacity: f32) -> [u8; 4] {
-    premultiplied_to_readback_rgba8(scale_premultiplied(
-        premultiply([51.0 / 255.0, 102.0 / 255.0, 204.0 / 255.0, 153.0 / 255.0]),
+    // Fixture colors are sRGB bytes. FORMAT is linear Rgba8Unorm, and
+    // PresentSurface divides its quantized premultiplied RGB by quantized
+    // alpha. Compute the conversion independently of ColorLike and readback.
+    let linear = [51.0_f32, 102.0, 204.0].map(|byte| {
+        let encoded = byte / 255.0;
+        if encoded <= 0.04045 {
+            encoded / 12.92
+        } else {
+            ((encoded + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    let alpha = (153.0 / 255.0) * opacity;
+    let quantized_alpha = (alpha * 255.0).round();
+    if quantized_alpha == 0.0 {
+        return [0; 4];
+    }
+    let rgb = linear.map(|channel| {
+        let quantized_premultiplied = (channel * alpha * 255.0).round();
+        (quantized_premultiplied / quantized_alpha * 255.0).round() as u8
+    });
+    [rgb[0], rgb[1], rgb[2], quantized_alpha as u8]
+}
+
+fn legacy_outer_shadow_graph(opacity: f32) -> Result<FrameGraph, String> {
+    let (mut arena, root, _, _) = prepared_shadow_leaf(
+        0x6d70,
         opacity,
-    ))
+        vec![
+            BoxShadow::new()
+                .color(Color::rgba(51, 102, 204, 153))
+                .offset_x(-4.0),
+        ],
+        false,
+    );
+    let (mut graph, ctx, target) = graph_prelude();
+    arena
+        .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
+        .ok_or_else(|| "legacy shadow root disappeared".to_string())?;
+    add_present(&mut graph, &target)?;
+    Ok(graph)
 }
 
 fn artifact_image_graph(
@@ -2799,30 +2863,33 @@ fn validate_scroll_forest_anchors(
     let left_after = pixel_at(pixels, 12, 36)?;
     let right_before = pixel_at(pixels, 44, 20)?;
     let right_after = pixel_at(pixels, 44, 40)?;
-    let left_matches = match version {
-        ScrollForestContentVersion::Baseline => {
-            left_before[0] > 170
-                && left_before[1] < 100
-                && left_before[2] < 100
-                && left_after[0] < 100
-                && left_after[1] > 140
-                && left_after[2] < 130
-        }
-        ScrollForestContentVersion::FirstRootMutated => {
-            left_before[0] > 140
-                && left_before[1] < 100
-                && left_before[2] > 130
-                && left_after[0] < 100
-                && left_after[1] > 130
-                && left_after[2] > 130
-        }
+    // Readback is straight *linear* RGBA8. Derive exact anchors from the
+    // fixture's sRGB stops instead of using thresholds in the wrong space.
+    let linear = |rgb: [u8; 3]| {
+        let rgb = rgb.map(|v| {
+            let s = f64::from(v) / 255.0;
+            let l = if s <= 0.04045 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            };
+            (l * 255.0).round() as u8
+        });
+        [rgb[0], rgb[1], rgb[2], 255]
     };
-    let right_matches = right_before[0] < 100
-        && right_before[1] < 130
-        && right_before[2] > 150
-        && right_after[0] > 150
-        && right_after[1] > 130
-        && right_after[2] < 100;
+    let matches = |actual: [u8; 4], rgb| {
+        actual
+            .iter()
+            .zip(linear(rgb))
+            .all(|(a, e)| a.abs_diff(e) <= 1)
+    };
+    let (left_top, left_bottom) = match version {
+        ScrollForestContentVersion::Baseline => ([224, 36, 28], [30, 196, 72]),
+        ScrollForestContentVersion::FirstRootMutated => ([208, 36, 196], [24, 188, 208]),
+    };
+    let left_matches = matches(left_before, left_top) && matches(left_after, left_bottom);
+    let right_matches =
+        matches(right_before, [24, 72, 224]) && matches(right_after, [224, 188, 24]);
     if clear != [0, 0, 0, 0] || !left_matches || !right_matches {
         return Err(format!(
             "{case}: scroll-forest anchors drifted on {adapter}: clear={clear:?}, left_before={left_before:?}, left_after={left_after:?}, right_before={right_before:?}, right_after={right_after:?}"

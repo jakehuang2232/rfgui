@@ -17,6 +17,7 @@ use std::hash::{Hash, Hasher};
 
 pub struct TextureCompositePass {
     params: TextureCompositeParams,
+    pixel_preserving: bool,
     #[cfg(test)]
     explicit_scissor_rect: Option<[u32; 4]>,
     #[cfg(test)]
@@ -154,6 +155,7 @@ impl TextureCompositePass {
         let explicit_scissor_rect = params.scissor_rect;
         Self {
             params,
+            pixel_preserving: false,
             #[cfg(test)]
             explicit_scissor_rect,
             #[cfg(test)]
@@ -309,6 +311,10 @@ impl GraphicsPass for TextureCompositePass {
             surface_size,
             scale,
         );
+        // Freeze the policy with the same resource descriptors as the vertex
+        // upload. Prepare runs each frame, including the transient-buffer path;
+        // execute need not reconstruct geometry just to select a sampler.
+        self.pixel_preserving = resolved.pixel_preserving;
         let (target_w, target_h) = resolved.target_meta.physical_size;
         if target_w == 0 || target_h == 0 {
             return;
@@ -368,7 +374,9 @@ impl GraphicsPass for TextureCompositePass {
                 ctx.mark_execution_failed();
                 return;
             }
-            (false, handle) => handle.and_then(|h| render_target_view(ctx.frame_resources(), h)),
+            (false, handle) => {
+                handle.and_then(|h| render_target_view(ctx.frame_resources(), h))
+            }
         };
 
         let device = match ctx.viewport().device() {
@@ -453,6 +461,7 @@ impl GraphicsPass for TextureCompositePass {
                                 .map(|source| source.sampling)
                             {
                                 Some(ImageSampling::Nearest) => &resources.nearest_sampler,
+                                None if self.pixel_preserving => &resources.nearest_sampler,
                                 _ => &resources.linear_sampler,
                             },
                         ),
@@ -572,6 +581,7 @@ fn resolve_target_meta(
 }
 
 struct ResolvedCompositeGeometry {
+    pixel_preserving: bool,
     target_meta: ResolvedTextureRef,
     vertices: [CompositeVertex; 4],
     indices: [u16; 6],
@@ -630,11 +640,67 @@ fn resolve_composite_geometry(
         mask_uv_bounds,
     );
     ResolvedCompositeGeometry {
+        pixel_preserving: render_target_pixel_preserving(
+            params,
+            bounds,
+            source_meta.physical_size,
+            scale,
+        ),
         target_meta,
         vertices,
         indices,
     }
 }
+
+// A translated raster with one source texel per destination device pixel must
+// retain its discrete paint coverage. Linear sampling would introduce a second
+// antialiasing step at fractional placement (e.g. mixing a hard color boundary).
+// Decide from geometry, independently of the property family that produced it.
+// Scaling, skew, rotation, reflection and unproven mask mappings keep linear
+// filtering. Exact equality is deliberate: no epsilon may silently classify an
+// actual resampling operation as a pixel-preserving copy. Explicit image filters
+// take precedence at the call site. The immediate API has no source extent and
+// therefore cannot establish this proof; it retains its existing linear filter.
+fn render_target_pixel_preserving(
+    params: &TextureCompositeParams,
+    physical_bounds: [f32; 4],
+    source_size: (u32, u32),
+    scale: f32,
+) -> bool {
+    if params.use_mask
+        || !scale.is_finite()
+        || scale <= 0.0
+        || !physical_bounds.iter().all(|v| v.is_finite())
+        || params
+            .uv_bounds
+            .is_some_and(|uv| !uv.iter().all(|v| v.is_finite()))
+    {
+        return false;
+    }
+    let source_span = params
+        .uv_bounds
+        .map_or([source_size.0 as f32, source_size.1 as f32], |uv| {
+            [uv[2] * scale, uv[3] * scale]
+        });
+    if !source_span.iter().all(|v| v.is_finite() && *v > 0.0) {
+        return false;
+    }
+    if let Some(q) = params.quad_positions {
+        // Quad order: bottom-left, bottom-right, top-right, top-left.
+        q.iter().flatten().all(|v| v.is_finite())
+            && q[0][0] == q[3][0]
+            && q[1][0] == q[2][0]
+            && q[0][1] == q[1][1]
+            && q[2][1] == q[3][1]
+            && (q[1][0] - q[0][0]) * scale == source_span[0]
+            && (q[0][1] - q[3][1]) * scale == source_span[1]
+    } else {
+        [physical_bounds[2], physical_bounds[3]] == source_span
+    }
+}
+
+#[cfg(test)]
+mod sampling_tests;
 
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)]
@@ -1312,29 +1378,7 @@ pub(crate) fn texture_composite_resources_cache_len() -> usize {
 }
 
 #[cfg(test)]
-mod resource_scope_tests {
-    use super::texture_composite_resource_descriptor_matches;
-
-    #[test]
-    fn canonical_scope_is_checked_even_when_cache_lookup_key_collides() {
-        assert!(texture_composite_resource_descriptor_matches(
-            1,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
-            4,
-            1,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
-            4,
-        ));
-        assert!(!texture_composite_resource_descriptor_matches(
-            1,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
-            4,
-            2,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
-            4,
-        ));
-    }
-}
+mod resource_scope_tests;
 
 #[cfg(test)]
 fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
@@ -1359,141 +1403,4 @@ fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::view::sampled_texture::{
-        ImageAssetId, SampledTextureAlphaMode, SampledTextureId, SampledTextureUpload,
-    };
-    use std::sync::Arc;
-
-    fn sampled_pass(pixels: Arc<[u8]>) -> TextureCompositePass {
-        TextureCompositePass::new(
-            TextureCompositeParams {
-                bounds: [1.25, 2.5, 3.75, 4.0],
-                uv_bounds: Some([0.0, 0.0, 1.0, 1.0]),
-                opacity: 0.5,
-                scissor_rect: Some([1, 2, 3, 4]),
-                ..Default::default()
-            },
-            TextureCompositeInput::from_sampled_texture(
-                SampledTextureUpload {
-                    id: SampledTextureId::Image(ImageAssetId::for_test(81)),
-                    generation: 7,
-                    width: 1,
-                    height: 1,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    alpha_mode: SampledTextureAlphaMode::Straight,
-                    pixels,
-                    sampling: ImageSampling::Linear,
-                },
-                Default::default(),
-                RenderPassContext::default(),
-            ),
-            TextureCompositeOutput::default(),
-        )
-    }
-
-    #[test]
-    fn strict_snapshot_compares_actual_pixels_and_every_sampled_render_field() {
-        let base = sampled_pass(Arc::from([1_u8, 2, 3, 4])).test_snapshot();
-        let changed_pixels = sampled_pass(Arc::from([1_u8, 2, 3, 5])).test_snapshot();
-        assert_ne!(base, changed_pixels);
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.params.bounds[0] = -0.0;
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.params.opacity = 0.25;
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.input.sampled_source.as_mut().unwrap().generation += 1;
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.input.sampled_source.as_mut().unwrap().id =
-            SampledTextureId::Image(ImageAssetId::for_test(82));
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.input.sampled_source.as_mut().unwrap().width = 2;
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.input.sampled_source.as_mut().unwrap().height = 2;
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.input.sampled_source.as_mut().unwrap().format = wgpu::TextureFormat::Rgba8Unorm;
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.input.sampled_source.as_mut().unwrap().sampling = ImageSampling::Nearest;
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.params.uv_bounds = Some([0.25, 0.0, 0.75, 1.0]);
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.params.quad_positions = Some([[0.0, 0.0]; 4]);
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.params.mask_uv_bounds = Some([0.0, 0.0, 0.5, 0.5]);
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.params.use_mask = true;
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.params.source_is_premultiplied = true;
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.params.scissor_rect = Some([9, 9, 9, 9]);
-        assert_ne!(base, changed.test_snapshot());
-
-        let mut changed = sampled_pass(Arc::from([1_u8, 2, 3, 4]));
-        changed.input.pass_context.scissor_rect = Some(
-            crate::view::render_pass::render_target::GraphicsPassScissor::Logical([9, 8, 7, 6]),
-        );
-        assert_ne!(base, changed.test_snapshot());
-    }
-
-    fn assert_rgba_close(actual: [f32; 4], expected: [f32; 4]) {
-        for (actual, expected) in actual.into_iter().zip(expected) {
-            assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
-        }
-    }
-
-    fn composite_sample(color: [f32; 4], factor: f32, source_is_premultiplied: bool) -> [f32; 4] {
-        let alpha = color[3] * factor;
-        if source_is_premultiplied {
-            [
-                color[0] * factor,
-                color[1] * factor,
-                color[2] * factor,
-                alpha,
-            ]
-        } else {
-            [color[0] * alpha, color[1] * alpha, color[2] * alpha, alpha]
-        }
-    }
-
-    #[test]
-    fn premultiplied_sources_do_not_apply_alpha_twice() {
-        let premultiplied_color = [0.30, 0.12, 0.06, 0.60];
-        let out = composite_sample(premultiplied_color, 0.5, true);
-        assert_rgba_close(out, [0.15, 0.06, 0.03, 0.30]);
-    }
-
-    #[test]
-    fn straight_alpha_sources_still_convert_to_premultiplied_output() {
-        let straight_alpha_color = [1.0, 0.4, 0.2, 0.60];
-        let out = composite_sample(straight_alpha_color, 0.5, false);
-        assert_rgba_close(out, [0.30, 0.12, 0.06, 0.30]);
-    }
-}
+mod tests;

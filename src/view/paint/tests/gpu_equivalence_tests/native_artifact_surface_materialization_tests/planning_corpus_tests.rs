@@ -8,11 +8,11 @@ use crate::view::paint::{
 };
 use crate::view::test_support::{commit_child, commit_element, get_element_mut};
 
+mod budget_tests;
 mod contracts_tests;
+mod multi_target_tests;
 mod pixel_tests;
 mod viewport_tests;
-mod budget_tests;
-mod multi_target_tests;
 
 const EXTENT: [u32; 2] = [160, 128];
 const RED: [u8; 4] = [255, 0, 0, 255];
@@ -25,7 +25,16 @@ enum Scene {
     Scale,
     QuarterTurn,
     ObliqueTurn,
+    // Uniform fill is insufficient alone to prove source preservation;
+    // the two nonuniform cases below expose lost negative-source texels.
     NegativeOrigin,
+    NegativeOriginContent,
+    NegativeOriginVerticalContent,
+    DeferredOverlay,
+    DecoratedInlineClip,
+    ShadowClip,
+    FractionalPositive,
+    FractionalNegative,
     DeepForest,
     NamedAnchor,
     ClipScopes,
@@ -33,11 +42,18 @@ enum Scene {
     ScrolledClipScopeSurface,
 }
 impl Scene {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 16] = [
         Self::Scale,
         Self::QuarterTurn,
         Self::ObliqueTurn,
         Self::NegativeOrigin,
+        Self::NegativeOriginContent,
+        Self::NegativeOriginVerticalContent,
+        Self::DeferredOverlay,
+        Self::DecoratedInlineClip,
+        Self::ShadowClip,
+        Self::FractionalPositive,
+        Self::FractionalNegative,
         Self::DeepForest,
         Self::NamedAnchor,
         Self::ClipScopes,
@@ -95,8 +111,15 @@ fn unlaid_out_fixture(scene: Scene) -> Fixture {
     let mut paint_owners = Vec::new();
     let mut probes = Vec::new();
     match scene {
-        Scene::Scale | Scene::QuarterTurn | Scene::ObliqueTurn | Scene::NegativeOrigin => {
-            let at = if matches!(scene, Scene::NegativeOrigin) {
+        Scene::Scale
+        | Scene::QuarterTurn
+        | Scene::ObliqueTurn
+        | Scene::NegativeOrigin
+        | Scene::NegativeOriginContent
+        | Scene::NegativeOriginVerticalContent => {
+            let at = if matches!(scene, Scene::NegativeOriginVerticalContent) {
+                [20.0, -8.0]
+            } else if matches!(scene, Scene::NegativeOrigin | Scene::NegativeOriginContent) {
                 [-8.0, 20.0]
             } else {
                 [20.0, 20.0]
@@ -130,7 +153,7 @@ fn unlaid_out_fixture(scene: Scene) -> Fixture {
                 }
             } else {
                 s.set_transform(Transform::new([Scale::uniform(2.0)]));
-                if matches!(scene, Scene::NegativeOrigin) {
+                if matches!(scene, Scene::NegativeOrigin | Scene::NegativeOriginContent) {
                     // The interior only checks visible fill. The far/right
                     // probes constrain the output extent; none can prove
                     // negative-source content preservation for a uniform fill
@@ -146,6 +169,46 @@ fn unlaid_out_fixture(scene: Scene) -> Fixture {
                         ("outside scaled right", [64, 28], CLEAR),
                     ]);
                 }
+            }
+            if matches!(scene, Scene::NegativeOriginContent) {
+                // Local x=6 (global source x=-2) becomes screen x=4 after
+                // scaling around the owner's x=-8 origin. Both sides are
+                // visible, so clamping away negative source texels cannot hide
+                // behind a uniform ClampToEdge color.
+                s.set_background_image(
+                    Gradient::linear(SideOrCorner::Right)
+                        .stop(Color::rgb(255, 0, 0), Some(Length::percent(0.0)))
+                        .stop(Color::rgb(255, 0, 0), Some(Length::percent(30.0)))
+                        .stop(Color::rgb(0, 0, 255), Some(Length::percent(30.0)))
+                        .stop(Color::rgb(0, 0, 255), Some(Length::percent(100.0)))
+                        .build(),
+                );
+                probes.clear();
+                probes.extend([
+                    ("negative source red survives projection", [0, 28], RED),
+                    ("past projected negative-source boundary", [8, 28], BLUE),
+                    ("positive source blue at far edge", [28, 44], BLUE),
+                    ("outside nonuniform projected content", [36, 28], CLEAR),
+                ]);
+            }
+            if matches!(scene, Scene::NegativeOriginVerticalContent) {
+                // Local y=6 of a 16px source is 37.5%; after scaling about
+                // y=-8 the boundary is at y=4. The red source lies above zero.
+                s.set_background_image(
+                    Gradient::linear(SideOrCorner::Bottom)
+                        .stop(Color::rgb(255, 0, 0), Some(Length::percent(0.0)))
+                        .stop(Color::rgb(255, 0, 0), Some(Length::percent(37.5)))
+                        .stop(Color::rgb(0, 0, 255), Some(Length::percent(37.5)))
+                        .stop(Color::rgb(0, 0, 255), Some(Length::percent(100.0)))
+                        .build(),
+                );
+                probes.clear();
+                probes.extend([
+                    ("negative vertical source survives projection", [28, 0], RED),
+                    ("past projected vertical boundary", [28, 8], BLUE),
+                    ("far vertical source content", [28, 20], BLUE),
+                    ("outside projected bottom", [28, 28], CLEAR),
+                ]);
             }
             paint_owners.push(commit_child(
                 &mut arena,
@@ -231,6 +294,206 @@ fn unlaid_out_fixture(scene: Scene) -> Fixture {
             roots.push(second);
             paint_owners.push(second);
             probes.push(("independent gradient root", [110, 22], GREEN));
+        }
+        Scene::FractionalPositive | Scene::FractionalNegative => {
+            let shift = if matches!(scene, Scene::FractionalPositive) {
+                0.125
+            } else {
+                -0.125
+            };
+            let mut s = style([20.0, 16.0], Some([20.0, 20.0]), None);
+            s.set_transform(Transform::new([Translate::xy(
+                Length::px(shift),
+                Length::px(0.0),
+            )]));
+            s.set_background_image(
+                Gradient::linear(SideOrCorner::Right)
+                    .stop(Color::rgb(255, 0, 0), Some(Length::percent(0.0)))
+                    .stop(Color::rgb(255, 0, 0), Some(Length::percent(40.0)))
+                    .stop(Color::rgb(0, 0, 255), Some(Length::percent(40.0)))
+                    .stop(Color::rgb(0, 0, 255), Some(Length::percent(100.0)))
+                    .build(),
+            );
+            let owner = commit_child(
+                &mut arena,
+                root,
+                Box::new(element(0xc2_0090, [20.0, 16.0], s)),
+            );
+            paint_owners.push(owner);
+            // x=28 +/- 1/8 is a hard texel boundary. The physical probes at
+            // logical 27 and 28 lie on opposite sides at both DPRs, never on
+            // the boundary itself. Linear resampling would mix their colors.
+            probes.extend([
+                ("last red texel at fractional placement", [27, 28], RED),
+                ("first blue texel at fractional placement", [28, 28], BLUE),
+                ("outside fractionally placed raster", [44, 28], CLEAR),
+            ]);
+        }
+        Scene::ShadowClip => {
+            let mut outer_style = style([32.0, 32.0], Some([16.0, 16.0]), None);
+            outer_style.insert(
+                PropertyId::ScrollDirection,
+                ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+            );
+            outer_style.set_transform(Transform::new([Translate::xy(
+                Length::px(4.0),
+                Length::px(0.0),
+            )]));
+            outer_style.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.5)));
+            let outer = commit_child(
+                &mut arena,
+                root,
+                Box::new(element(0xc2_0080, [32.0, 32.0], outer_style)),
+            );
+            let mut leaf_style = style([16.0, 16.0], Some([8.0, 8.0]), Some(RED));
+            leaf_style.set_box_shadow(vec![
+                crate::style::BoxShadow::new()
+                    .offset_x(12.0)
+                    .offset_y(12.0)
+                    .blur(0.0)
+                    .color(Color::rgb(0, 0, 255)),
+            ]);
+            let leaf = commit_child(
+                &mut arena,
+                outer,
+                Box::new(element(0xc2_0081, [16.0, 16.0], leaf_style)),
+            );
+            // A transparent in-flow spacer makes this a real overflowing
+            // scrollport; absolute shadow output does not establish layout
+            // scroll extent on its own.
+            commit_child(
+                &mut arena,
+                outer,
+                Box::new(element(
+                    0xc2_0082,
+                    [1.0, 80.0],
+                    style([1.0, 80.0], None, None),
+                )),
+            );
+            paint_owners.push(leaf);
+            probes.extend([
+                (
+                    "fill covers shadow inside isolated group",
+                    [42, 38],
+                    [255, 0, 0, 128],
+                ),
+                (
+                    "outer shadow inside translated clip",
+                    [50, 44],
+                    [0, 0, 255, 128],
+                ),
+                ("shadow clipped at right", [54, 44], CLEAR),
+                ("shadow clipped at bottom", [44, 50], CLEAR),
+            ]);
+        }
+        Scene::DecoratedInlineClip => {
+            let mut outer_style = style([80.0, 32.0], Some([16.0, 16.0]), None);
+            outer_style.insert(
+                PropertyId::ScrollDirection,
+                ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+            );
+            outer_style.set_transform(Transform::new([Translate::xy(
+                Length::px(4.0),
+                Length::px(0.0),
+            )]));
+            outer_style.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.5)));
+            let outer = commit_child(
+                &mut arena,
+                root,
+                Box::new(element(0xc2_0070, [80.0, 32.0], outer_style)),
+            );
+            let mut inline_style = style([80.0, 0.0], None, None);
+            inline_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+            inline_style.insert(PropertyId::Height, ParsedValue::Auto);
+            let inline = commit_child(
+                &mut arena,
+                outer,
+                Box::new(element(0xc2_0071, [80.0, 0.0], inline_style)),
+            );
+            let mut span_style = style([0.0, 0.0], None, Some(RED));
+            span_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+            span_style.insert(PropertyId::Width, ParsedValue::Auto);
+            span_style.insert(PropertyId::Height, ParsedValue::Auto);
+            span_style.set_border(crate::style::Border::uniform(
+                Length::px(6.0),
+                &Color::rgb(0, 0, 255),
+            ));
+            span_style.set_padding(crate::style::Padding::uniform(Length::px(4.0)));
+            let span = commit_child(
+                &mut arena,
+                inline,
+                Box::new(element(0xc2_0072, [0.0, 0.0], span_style)),
+            );
+            let text = commit_child(
+                &mut arena,
+                span,
+                Box::new(Text::new_with_id(
+                    0xc2_0073,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    "alpha beta gamma delta epsilon zeta",
+                )),
+            );
+            paint_owners.extend([span, text]);
+            // Solid border and padding avoid font rasterization as an oracle.
+            // The independent command gate below requires actual glyph ops and
+            // multiple fragments; the clip probes require content below 48.
+            probes.extend([
+                ("translated inline left border", [23, 24], [0, 0, 255, 128]),
+                (
+                    "inline background in left padding",
+                    [28, 24],
+                    [255, 0, 0, 128],
+                ),
+                ("outside translated inline left", [18, 20], CLEAR),
+                ("below inline scrollport", [28, 52], CLEAR),
+            ]);
+        }
+        Scene::DeferredOverlay => {
+            let mut late = style([16.0, 16.0], None, Some(GREEN));
+            late.insert(
+                PropertyId::Position,
+                ParsedValue::Position(
+                    Position::absolute()
+                        .left(Length::px(20.0))
+                        .top(Length::px(20.0))
+                        .clip(ClipMode::Viewport),
+                ),
+            );
+            late.set_transform(Transform::new([Translate::xy(
+                Length::px(4.0),
+                Length::px(0.0),
+            )]));
+            late.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.5)));
+            // Arena order is deliberately opposite paint order. The overlay
+            // carries a transform and effect across the deferred clip scope.
+            let late = commit_child(
+                &mut arena,
+                root,
+                Box::new(element(0xc2_0060, [16.0, 16.0], late)),
+            );
+            let normal = commit_child(
+                &mut arena,
+                root,
+                Box::new(element(
+                    0xc2_0061,
+                    [32.0, 32.0],
+                    style([32.0, 32.0], Some([20.0, 20.0]), Some(BLUE)),
+                )),
+            );
+            paint_owners.extend([normal, late]);
+            probes.extend([
+                (
+                    "deferred group paints above later arena sibling",
+                    [28, 28],
+                    [0, 128, 127, 255],
+                ),
+                ("deferred translation vacates left strip", [22, 28], BLUE),
+                ("normal sibling outside overlay", [44, 28], BLUE),
+                ("outside both phases", [56, 28], CLEAR),
+            ]);
         }
         Scene::NamedAnchor => {
             let mut anchor = element(

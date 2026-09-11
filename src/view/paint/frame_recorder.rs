@@ -3422,8 +3422,13 @@ fn production_property_boundary_reasons(
                 PaintCoverageValidationError::InvalidOwnerSnapshot(key),
             ));
         }
-        let exact_deferred_viewport_root =
-            exact_deferred_viewport_self_clip_witness(arena, key, property_trees).is_some();
+        let exact_deferred_viewport_root = exact_deferred_viewport_self_clip_witness(
+            arena,
+            key,
+            property_trees,
+            policy == FrameArtifactAuthorityPolicy::SurfaceDag,
+        )
+        .is_some();
         if node.element.is_deferred_to_root_viewport_render() && !exact_deferred_viewport_root {
             let reason = FrameArtifactFallbackReason::LegacyBoundary(LegacyPaintReason::Deferred);
             if !reasons.contains(&reason) {

@@ -170,7 +170,12 @@ fn planning_corpus_preserves_command_order_and_exact_once_ownership() {
                 }
                 if matches!(
                     scene,
-                    Scene::Scale | Scene::QuarterTurn | Scene::ObliqueTurn | Scene::NegativeOrigin
+                    Scene::Scale
+                        | Scene::QuarterTurn
+                        | Scene::ObliqueTurn
+                        | Scene::NegativeOrigin
+                        | Scene::NegativeOriginContent
+                        | Scene::NegativeOriginVerticalContent
                 ) {
                     assert_eq!(
                         plan.nodes().len(),
@@ -212,4 +217,124 @@ fn planning_corpus_preserves_command_order_and_exact_once_ownership() {
             }
         }
     }
+}
+
+#[test]
+fn deferred_clip_proof_preserves_scope_checks_with_complete_generic_state() {
+    use crate::view::paint::coverage_manifest::exact_deferred_viewport_self_clip_witness;
+    let fixture = fixture(Scene::DeferredOverlay);
+    let owner = fixture.paint_owners[1];
+    let (properties, generations) = sync_identity(&fixture.arena, &fixture.roots);
+    assert!(
+        exact_deferred_viewport_self_clip_witness(&fixture.arena, owner, &properties, true)
+            .is_some()
+    );
+    assert!(
+        exact_deferred_viewport_self_clip_witness(&fixture.arena, owner, &properties, false)
+            .is_none(),
+        "the compatibility proof still excludes this complete property state"
+    );
+    let id = properties
+        .node_state_for(owner)
+        .unwrap()
+        .paint
+        .clip
+        .unwrap();
+    for case in 0..6 {
+        let (mut broken, _) = sync_identity(&fixture.arena, &fixture.roots);
+        match case {
+            0 => {
+                broken.clips.remove(&id);
+            }
+            1 => {
+                broken.clips.get_mut(&id).unwrap().owner = fixture.roots[0];
+            }
+            2 => {
+                broken.clips.get_mut(&id).unwrap().generation = 0;
+            }
+            3 => {
+                broken.clips.get_mut(&id).unwrap().behavior =
+                    crate::view::compositor::property_tree::ClipBehavior::Intersect;
+            }
+            4 => { broken.states.get_mut(&owner).unwrap().descendants.clip = None; }
+            5 => {
+                let foreign = crate::view::compositor::property_tree::ClipNodeId {
+                    owner: fixture.roots[0],
+                    role: crate::view::compositor::property_tree::ClipNodeRole::ContentsClip,
+                };
+                let mut clip = broken.clips.get(&id).unwrap().clone();
+                clip.owner = foreign.owner;
+                clip.parent = Some(id);
+                clip.behavior = crate::view::compositor::property_tree::ClipBehavior::Intersect;
+                broken.clips.insert(foreign, clip);
+                broken.states.get_mut(&owner).unwrap().descendants.clip = Some(foreign);
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            exact_deferred_viewport_self_clip_witness(&fixture.arena, owner, &broken, true)
+                .is_none(),
+            "malformed late clip case {case}"
+        );
+    }
+    let (mut missing_transform, _) = sync_identity(&fixture.arena, &fixture.roots);
+    let transform = missing_transform
+        .node_state_for(owner)
+        .unwrap()
+        .paint
+        .transform
+        .unwrap();
+    missing_transform.transforms.remove(&transform);
+    assert!(
+        record_surface_dag_frame_artifact(
+            &fixture.arena,
+            &fixture.roots,
+            &missing_transform,
+            &generations,
+            RendererMode::ForcedForTests,
+        )
+        .is_err(),
+        "a clip proof must not authorize a missing transform snapshot"
+    );
+}
+
+#[test]
+fn decorated_inline_cross_feature_records_fragments_and_glyphs() {
+    let f = fixture(Scene::DecoratedInlineClip);
+    let artifact = record(&f);
+    let decorations = artifact
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            PaintOp::PreparedInlineIfcDecoration(d) => Some(d),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    // Inline padding expands the fragment above its line box (y=8, while
+    // the scrollport starts at y=16), so its top border is clipped away.
+    // Use the first fragment's left border/padding, both inside the clip.
+    let first = decorations.first().unwrap();
+    assert_eq!(first.fill.position, [16.0, 8.0]);
+    assert_eq!(first.fill.border_widths, [6.0, 0.0, 6.0, 6.0]);
+    assert!(first.fill.size[1] > 12.0);
+    assert!(
+        decorations
+            .iter()
+            .any(|d| d.fill.position[1] >= 52.0 && d.fill.size[0] > 12.0),
+        "bottom clear probe must cover real inline content beyond the scrollport"
+    );
+    assert!(
+        artifact
+            .ops
+            .iter()
+            .any(|op| matches!(op, PaintOp::PreparedText(_)))
+    );
+    assert!(
+        artifact
+            .ops
+            .iter()
+            .filter(|op| matches!(op, PaintOp::PreparedInlineIfcDecoration(_)))
+            .count()
+            >= 2
+    );
 }

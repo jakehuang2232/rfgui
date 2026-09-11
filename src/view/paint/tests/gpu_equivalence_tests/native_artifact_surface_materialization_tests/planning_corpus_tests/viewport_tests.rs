@@ -15,6 +15,7 @@ fn native_single_viewport_planning_corpus_legacy_pixels() -> Result<(), String> 
 }
 
 fn run(mode: ViewportPaintRendererMode) -> Result<(), String> {
+    let _text_cleanup = crate::view::paint::tests::gpu_equivalence_tests::native_artifact_scroll_content_tests::NativeArtifactTextThreadCacheCleanup;
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU");
     for scene in Scene::ALL {

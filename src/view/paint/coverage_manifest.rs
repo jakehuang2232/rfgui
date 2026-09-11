@@ -302,6 +302,7 @@ pub(super) fn exact_deferred_viewport_self_clip_witness(
     arena: &NodeArena,
     owner: NodeKey,
     property_trees: &PropertyTrees,
+    generic: bool,
 ) -> Option<super::PaintDeferredViewportSelfClipWitness> {
     let node = arena.get(owner)?;
     let stable_id = node.element.stable_id();
@@ -340,7 +341,27 @@ pub(super) fn exact_deferred_viewport_self_clip_witness(
             && state
                 .descendants
                 .legacy_boundary_eq(exact_clip_effect_state));
-    if !state_is_exact {
+    // Generic recording validates and freezes the complete property chains
+    // separately. This witness only proves the late Replace clip and must not
+    // reject independent placement/effect obligations because they coexist.
+    // Compatibility recording still needs its original complete-state proof.
+    let generic_clip_scope = generic
+        && state.paint.clip == Some(id)
+        && property_trees
+            .clip_snapshot_for(state.descendants.clip)
+            .is_some_and(|chain| {
+                // Descendants may tighten this owner's scope, but cannot
+                // replace it or borrow another owner's contents clip.
+                chain.last().is_some_and(|clip| clip.id == id)
+                    && chain[..chain.len().saturating_sub(1)].iter().all(|clip| {
+                        clip.owner == owner
+                            && clip.id.owner == owner
+                            && clip.id.role == crate::view::compositor::property_tree::ClipNodeRole::ContentsClip
+                            && clip.behavior == crate::view::compositor::property_tree::ClipBehavior::Intersect
+                            && clip.generation != 0
+                    })
+            });
+    if !generic_clip_scope && !state_is_exact {
         return None;
     }
     let clip_chain = property_trees.clip_snapshot_for(Some(id))?;
@@ -1101,7 +1122,9 @@ fn record_coverage_manifest_with_property_authorities_impl(
             recording_context.deferred_viewport_effect = None;
             if deferred_phase_root {
                 let clip =
-                    exact_deferred_viewport_self_clip_witness(self.arena, key, self.properties);
+                    exact_deferred_viewport_self_clip_witness(
+                        self.arena, key, self.properties, self.surface_dag,
+                    );
                 recording_context.deferred_viewport_self_clip = clip;
                 recording_context.deferred_viewport_effect = clip.and_then(|clip| {
                     let contract = self.effect_surface_authority?;
