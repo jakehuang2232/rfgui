@@ -1597,6 +1597,56 @@ impl Element {
         child_inner_height: f32,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
+        let placed_offset = self.scroll_offset;
+        self.place_children_at_current_scroll_offset(
+            viewport_width,
+            viewport_height,
+            child_percent_base_width,
+            child_percent_base_height,
+            child_available_width,
+            child_available_height,
+            child_inner_width,
+            child_inner_height,
+            arena,
+        );
+        profile_layout_place_time(LayoutPlaceTiming::ClampScroll, || {
+            self.clamp_scroll_offset();
+        });
+        if placed_offset.x != self.scroll_offset.x || placed_offset.y != self.scroll_offset.y {
+            // Content extent is known only after placement. If resize/content
+            // removal clamps the offset, install child positions at that final
+            // offset in this same pass. Updating just the owner's offset leaves
+            // paint, hit testing and spatial snapshots at the old displacement.
+            // This is one bounded placement replay, not another layout pass;
+            // update_content_size_from_children removes scroll displacement.
+            // Profiling includes both placement attempts: UpdateContentSize
+            // and RecomputeHitTest run again here; ClampScroll runs only once.
+            self.place_children_at_current_scroll_offset(
+                viewport_width,
+                viewport_height,
+                child_percent_base_width,
+                child_percent_base_height,
+                child_available_width,
+                child_available_height,
+                child_inner_width,
+                child_inner_height,
+                arena,
+            );
+        }
+    }
+
+    fn place_children_at_current_scroll_offset(
+        &mut self,
+        viewport_width: f32,
+        viewport_height: f32,
+        child_percent_base_width: Option<f32>,
+        child_percent_base_height: Option<f32>,
+        child_available_width: f32,
+        child_available_height: f32,
+        child_inner_width: f32,
+        child_inner_height: f32,
+        arena: &mut crate::view::node_arena::NodeArena,
+    ) {
         let absolute_mask = self.compute_children_absolute_mask(arena);
         let child_parent_hit_test_clip = self.current_child_hit_test_clip_rect();
         self.last_child_hit_test_clip_rect = Some(child_parent_hit_test_clip);
@@ -1729,9 +1779,6 @@ impl Element {
         }
         profile_layout_place_time(LayoutPlaceTiming::UpdateContentSize, || {
             self.update_content_size_from_children(arena, &absolute_mask);
-        });
-        profile_layout_place_time(LayoutPlaceTiming::ClampScroll, || {
-            self.clamp_scroll_offset();
         });
         profile_layout_place_time(LayoutPlaceTiming::RecomputeHitTest, || {
             self.recompute_absolute_descendant_for_hit_test(arena);

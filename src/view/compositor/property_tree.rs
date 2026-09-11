@@ -1100,6 +1100,9 @@ pub(crate) struct PropertyTrees {
     pub(crate) clips: FxHashMap<ClipNodeId, ClipNode>,
     pub(crate) effects: FxHashMap<EffectNodeId, EffectNode>,
     pub(crate) scrolls: FxHashMap<ScrollNodeId, ScrollNode>,
+    // Rebuilt every sync from live observations, not inferred from an absent
+    // ScrollNode (which could instead mean an invalid/missing contract).
+    inactive_scroll_owners: FxHashSet<NodeKey>,
     transform_generations: FxHashMap<TransformNodeId, u64>,
     local_transform_generations: FxHashMap<TransformNodeId, u64>,
     layout_position_generations: FxHashMap<LayoutPositionNodeId, u64>,
@@ -1548,6 +1551,7 @@ impl PropertyTrees {
 
     pub(crate) fn sync(&mut self, arena: &NodeArena, roots: &[NodeKey]) {
         self.epoch = self.epoch.wrapping_add(1);
+        self.inactive_scroll_owners.clear();
         self.changes.clear();
         self.validation_errors.clear();
         self.spatial_validation_errors.clear();
@@ -1674,7 +1678,10 @@ impl PropertyTrees {
                         .push(PropertyTreeValidationError::ScrollContractUnavailable(key));
                     None
                 }
-                ScrollGeometryObservation::Inactive => None,
+                ScrollGeometryObservation::Inactive => {
+                    self.inactive_scroll_owners.insert(key);
+                    None
+                }
             }
         } else {
             None
@@ -2000,7 +2007,11 @@ impl PropertyTrees {
                     let (x, y) = node.element.get_scroll_offset();
                     x.to_bits() != 0.0_f32.to_bits() || y.to_bits() != 0.0_f32.to_bits()
                 });
-                (declared_scroll
+                // Parent-first sync has already resolved this owner's actual
+                // scroll observation. An inactive declaration with zero offset
+                // contributes no subtraction to the child's spatial edge.
+                // Nonzero offsets and invalid contracts still require a node.
+                ((declared_scroll && !self.inactive_scroll_owners.contains(&parent))
                     || applied_scroll
                     || self.scrolls.contains_key(&ScrollNodeId(parent)))
                 .then_some(ScrollNodeId(parent))

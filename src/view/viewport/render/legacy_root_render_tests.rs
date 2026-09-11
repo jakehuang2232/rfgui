@@ -1758,6 +1758,8 @@ mod authority_deletion_inventory_tests;
 mod composite_dirty_tests;
 mod mode_and_failure_tests;
 mod native_authority_tests;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_component_inventory_tests;
 
 mod production_artifact_tests;
 

@@ -73,6 +73,8 @@ include!("helpers.rs");
 include!("event_handler_props.rs");
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod inactive_scroll_paint_tests;
 
 use crate::time::{Duration, Instant};
 
@@ -7560,7 +7562,9 @@ impl ElementTrait for Element {
                 Some(ShadowPaintBlocker::Transform)
             } else if self.should_append_to_root_viewport_render() || deferred_phase_root {
                 Some(ShadowPaintBlocker::Deferred)
-            } else if self.scroll_direction != ScrollDirection::None {
+            } else if self.scroll_direction != ScrollDirection::None
+                && !self.has_exact_inactive_scroll_paint(arena)
+            {
                 Some(ShadowPaintBlocker::ScrollContainer)
             } else if self.opacity.to_bits() != 1.0_f32.to_bits()
                 || !matches!(

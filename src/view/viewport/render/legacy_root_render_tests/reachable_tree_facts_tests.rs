@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn authored_scroll_without_a_surface_snapshot_fails_closed_at_recording() {
+fn active_scroll_with_a_removed_surface_snapshot_fails_closed_at_recording() {
     let mut arena = new_test_arena();
     let mut root_element = Element::new_with_id(0xe2_a330, 0.0, 0.0, 100.0, 80.0);
     let mut style = Style::new();
@@ -10,18 +10,39 @@ fn authored_scroll_without_a_surface_snapshot_fails_closed_at_recording() {
         ParsedValue::ScrollDirection(ScrollDirection::Vertical),
     );
     style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(100.0)));
+    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(80.0)));
     root_element.apply_style(style);
     let root = commit_element(&mut arena, Box::new(root_element));
-    commit_child(
+    let mut child = Element::new_with_id(0xe2_a331, 0.0, 0.0, 20.0, 160.0);
+    let mut style = Style::new();
+    style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
+    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(160.0)));
+    style.insert(
+        PropertyId::BackgroundColor,
+        ParsedValue::color_like(Color::rgb(255, 0, 0)),
+    );
+    child.apply_style(style);
+    commit_child(&mut arena, root, Box::new(child));
+    let mut viewport = Viewport::new();
+    crate::view::viewport::layout_artifact_style_scene_for_test(
+        &mut viewport,
         &mut arena,
         root,
-        Box::new(Element::new_with_id(0xe2_a331, 0.0, 0.0, 20.0, 20.0)),
+        [320.0, 240.0],
     );
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, root, measure, place);
     let roots = [root];
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    assert!(properties.scrolls.is_empty());
+    let (mut properties, generations) = synced_paint_state(&arena, &roots);
+    assert_eq!(properties.scrolls.len(), 1);
+    let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    assert!(matches!(
+        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true),
+        AutoAuthorityDecision::Artifact { .. }
+    ));
+    // A complete active observation is not interchangeable with an inactive
+    // declaration. Simulate loss of its frozen snapshot, retaining the scene.
+    properties.scrolls.clear();
     assert!(
         arena
             .get(root)
@@ -43,22 +64,7 @@ fn authored_scroll_without_a_surface_snapshot_fails_closed_at_recording() {
     };
 
     assert!(
-        trace.rejections.iter().any(|rejection| matches!(
-            rejection,
-            AutoAuthorityRejection::Artifact { eligibility }
-                if eligibility.reasons.as_slice()
-                    == [crate::view::paint::FrameArtifactFallbackReason::LegacyBoundary(
-                        crate::view::paint::LegacyPaintReason::ScrollContainer,
-                    )]
-        )),
-        "authored scroll fallback trace: {:?}",
-        trace.rejections
-    );
-    assert!(
-        !trace
-            .rejections
-            .iter()
-            .any(|rejection| matches!(rejection, AutoAuthorityRejection::ArtifactPrepare { .. })),
-        "recording rejection must prevent construction of an empty raster plan"
+        !trace.rejections.is_empty(),
+        "missing active snapshot must remain a typed rejection"
     );
 }

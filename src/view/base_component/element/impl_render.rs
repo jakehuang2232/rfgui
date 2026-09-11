@@ -938,6 +938,36 @@ impl Element {
             || recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id())
     }
 
+    /// An authored scroll declaration need not create a paint scope. Reuse the
+    /// live, dirty-checked observation that PropertyTrees consumes, then prove
+    /// that omitting that scope loses neither displacement nor overlay paint.
+    /// This does not authorize an active host with a missing ScrollNode.
+    pub(super) fn has_exact_inactive_scroll_paint(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> bool {
+        if self.scroll_direction == ScrollDirection::None
+            || self.scroll_offset.x != 0.0
+            || self.scroll_offset.y != 0.0
+        {
+            return false;
+        }
+        let Some(owner) = arena.find_by_stable_id(self.stable_id()) else {
+            return false;
+        };
+        if !matches!(
+            self.scroll_geometry_observation(owner, arena),
+            ScrollGeometryObservation::Inactive
+        ) {
+            return false;
+        }
+        let geometry = self.scrollbar_geometry(0.0, 0.0);
+        geometry.vertical_track.is_none()
+            && geometry.vertical_thumb.is_none()
+            && geometry.horizontal_track.is_none()
+            && geometry.horizontal_thumb.is_none()
+    }
+
     pub(super) fn record_shadow_node_paint_metadata(
         &self,
         owner: crate::view::node_arena::NodeKey,
@@ -965,6 +995,7 @@ impl Element {
         if self.scroll_direction != ScrollDirection::None
             && !(recording_context.authorizes_baked_scroll_host_root(self.stable_id())
                 || recording_context.authorizes_generic_scroll_host_root(self.stable_id()))
+            && !arena.is_some_and(|arena| self.has_exact_inactive_scroll_paint(arena))
         {
             return Err(LegacyPaintReason::ScrollContainer);
         }
@@ -1120,6 +1151,7 @@ impl Element {
         if self.scroll_direction != ScrollDirection::None
             && !(recording_context.authorizes_baked_scroll_host_root(self.stable_id())
                 || recording_context.authorizes_generic_scroll_host_root(self.stable_id()))
+            && !self.has_exact_inactive_scroll_paint(arena)
         {
             return Some(ShadowPaintBlocker::ScrollContainer);
         }

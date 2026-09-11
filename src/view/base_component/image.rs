@@ -798,7 +798,9 @@ impl ElementTrait for Image {
                 Some(super::ShadowPaintBlocker::Transform)
             } else if self.element.is_deferred_to_root_viewport_render() || deferred_phase_root {
                 Some(super::ShadowPaintBlocker::Deferred)
-            } else if paint.is_scroll_container {
+            } else if paint.is_scroll_container
+                && !self.element.has_exact_inactive_scroll_paint(arena)
+            {
                 Some(super::ShadowPaintBlocker::ScrollContainer)
             } else if paint.opacity.to_bits() != 1.0_f32.to_bits()
                 || !matches!(
