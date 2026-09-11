@@ -314,6 +314,7 @@ fn compatibility_window_like_final_keeps_candidate_rejection_off_fallback_overla
 
     let owner = roots[0];
     let trace = AutoAuthorityTrace {
+        artifact_prepare_rejected: false,
         capture_rejections: true,
         rejections: vec![AutoAuthorityRejection::Artifact {
             eligibility: crate::view::paint::FrameArtifactEligibility {

@@ -322,7 +322,7 @@ mod census_coverage_dedupe {
 /// the flag can touch selection, so purity is proven where it enters.
 mod capture_flag_is_decision_neutral {
     use super::super::{
-        AutoAuthorityDecision, AutoAuthorityRejection, AutoAuthorityTrace,
+        RetainedAutoDecision, AutoAuthorityRejection, AutoAuthorityTrace,
         RetainedAutoTerminalFailureStage, RetainedTransformCanarySelection,
         retained_auto_circuit_breaker_selection,
     };
@@ -379,13 +379,13 @@ mod capture_flag_is_decision_neutral {
             assert!(matches!(
                 off,
                 Some(RetainedTransformCanarySelection::Auto(
-                    AutoAuthorityDecision::Legacy { .. }
+                    RetainedAutoDecision::Legacy { .. }
                 ))
             ));
             assert!(matches!(
                 on,
                 Some(RetainedTransformCanarySelection::Auto(
-                    AutoAuthorityDecision::Legacy { .. }
+                    RetainedAutoDecision::Legacy { .. }
                 ))
             ));
         }

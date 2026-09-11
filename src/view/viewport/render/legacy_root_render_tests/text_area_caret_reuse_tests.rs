@@ -1,7 +1,9 @@
+//! Historical planner/pool regression; the production selector no longer selects this payload.
+//! Real generic TextArea frames are covered by the single-Viewport native tests.
 use super::*;
 
 #[test]
-fn retained_auto_interactive_text_area_reuses_dynamic_caret_and_invalidates_resident_base() {
+fn compatibility_interactive_text_area_reuses_dynamic_caret_and_invalidates_resident_base() {
     let make_scene = |kind: &str| {
         let (outer_scroll, local_scroll) = if kind == "culled" {
             (20.0, 9.0)
@@ -99,7 +101,7 @@ fn retained_auto_interactive_text_area_reuses_dynamic_caret_and_invalidates_resi
             arena.refresh_subtree_dirty_cache(roots[0]);
         }
         let (properties, generations) = synced_paint_state(&arena, &roots);
-        match select_retained_auto_authority(
+        match compatibility_decision(
             &arena,
             &roots,
             &properties,
@@ -158,7 +160,7 @@ fn retained_auto_interactive_text_area_reuses_dynamic_caret_and_invalidates_resi
     let dynamic_text_area = dynamic_arena.children_of(dynamic_wrapper)[0];
     let select_dynamic = |arena: &NodeArena, roots: &[NodeKey]| {
         let (properties, generations) = synced_paint_state(arena, roots);
-        match select_retained_auto_authority(
+        match compatibility_decision(
             arena,
             roots,
             &properties,

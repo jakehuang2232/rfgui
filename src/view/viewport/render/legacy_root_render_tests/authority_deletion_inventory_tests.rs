@@ -16,8 +16,8 @@ fn auto_authority_variant_payloads(
     // the exhaustive matcher remains the compiler-enforced protection for
     // that shape and must not be treated as redundant with this parser.
     let body = source
-        .split_once("enum AutoAuthorityDecision {")
-        .expect("render.rs declares AutoAuthorityDecision")
+        .split_once("enum CompatibilityAuthorityDecision {")
+        .expect("test reference declares historical CompatibilityAuthorityDecision")
         .1
         .split_once("\n}")
         .expect("the authority declaration is brace-terminated")
@@ -117,7 +117,16 @@ fn stage_c_deletion_inventory_closes_auto_authority_variants_and_payloads() {
         "all eight unique retained authority payload types must be deleted together",
     );
 
-    let actual = auto_authority_variant_payloads(include_str!("../../render.rs"));
+    // Production convergence does not erase the historical deletion ledger.
+    // Check the new closed declaration separately; execution is covered by the
+    // actual-selector tests and the complete single-Viewport native corpus.
+    let production = include_str!("../../render.rs")
+        .replace("enum RetainedAutoDecision {", "enum CompatibilityAuthorityDecision {");
+    assert_eq!(auto_authority_variant_payloads(&production), [
+        ("Artifact".to_owned(), Some("RecordedArtifactCandidate".to_owned())),
+        ("Legacy".to_owned(), None),
+    ].into_iter().collect());
+    let actual = auto_authority_variant_payloads(include_str!("../compatibility_reference.rs"));
     let expected = [
         ("Artifact", Some("RecordedArtifactCandidate")),
         (

@@ -193,6 +193,7 @@ fn stage_c_retained_auto_zero_resident_gate_rejects_a_detached_surface_plan() {
         RecordedArtifactSurfacePrepareError::DetachedSurfacesUnsupported { candidates: 4 },
     );
     let trace = AutoAuthorityTrace {
+        artifact_prepare_rejected: true,
         capture_rejections: true,
         rejections: vec![AutoAuthorityRejection::ArtifactPrepare {
             error: RecordedArtifactSurfacePrepareError::DetachedSurfacesUnsupported {

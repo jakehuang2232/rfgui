@@ -20,7 +20,7 @@ fn retained_auto_is_default_and_named_modes_remain_isolated() {
             &generations,
             &ctx,
         ),
-        RetainedTransformCanarySelection::Auto(AutoAuthorityDecision::Artifact { .. })
+        RetainedTransformCanarySelection::Auto(super::super::RetainedAutoDecision::Artifact { .. })
     ));
     assert!(matches!(
         select_retained_transform_canary(
@@ -352,11 +352,11 @@ fn retained_auto_open_breaker_forces_auto_legacy_with_capture_invariant_telemetr
             &generations,
             &ctx,
         ),
-        RetainedTransformCanarySelection::Auto(AutoAuthorityDecision::Artifact { .. })
+        RetainedTransformCanarySelection::Auto(super::super::RetainedAutoDecision::Artifact { .. })
     ));
 
     for capture_trace in [false, true] {
-        let Some(RetainedTransformCanarySelection::Auto(AutoAuthorityDecision::Legacy { trace })) =
+        let Some(RetainedTransformCanarySelection::Auto(super::super::RetainedAutoDecision::Legacy { trace })) =
             retained_auto_circuit_breaker_selection(
                 Some(RetainedAutoTerminalFailureStage::Execute),
                 capture_trace,

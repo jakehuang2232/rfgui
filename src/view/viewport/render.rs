@@ -1,4 +1,17 @@
+#[cfg(test)]
+mod compatibility_reference;
+#[cfg(test)]
+mod attempts;
+#[cfg(test)]
+use compatibility_reference::{
+    CompatibilityAuthorityDecision as AutoAuthorityDecision,
+    native_scroll_forest_topology_is_branching_or_multi_root,
+    retained_auto_reachable_tree_facts,
+    select_retained_auto_compatibility_authority_with_semantics,
+};
+
 use super::*;
+#[cfg(test)]
 use crate::view::paint::PropertyBoundaryDagCompiler;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -60,31 +73,6 @@ fn property_boundary_dag_success_telemetry_grammar(
     (phase, topology, residency)
 }
 
-/// Shared scroll-topology boundary for two opposite production decisions.
-/// `true` admits the native forest scaffold once enough scroll nodes exist;
-/// `false` admits the linear ScrollContent-only Artifact attempt. Changing
-/// this predicate therefore changes Artifact production admission too and
-/// requires rerunning the named Artifact ScrollContent Metal gates.
-fn native_scroll_forest_topology_is_branching_or_multi_root(
-    roots: &[crate::view::node_arena::NodeKey],
-    property_trees: &crate::view::compositor::PropertyTrees,
-) -> bool {
-    if roots.len() > 1 {
-        return true;
-    }
-    let mut seen_parent = FxHashSet::default();
-    let mut has_scroll_root = false;
-    for scroll in property_trees.scrolls.values() {
-        match scroll.parent {
-            Some(parent) if !seen_parent.insert(parent) => return true,
-            Some(_) => {}
-            None if has_scroll_root => return true,
-            None => has_scroll_root = true,
-        }
-    }
-    false
-}
-
 #[derive(Clone, Debug)]
 enum AutoAuthorityRejection {
     Plan {
@@ -126,13 +114,14 @@ enum AutoAuthorityRejection {
     },
 }
 
-/// Observational history of rejected candidates during one authority search.
-/// A recorded rejection is not the frame's final authority: selection may
-/// continue and return a later retained candidate. Disabling capture must not
-/// alter candidate evaluation or the returned [`AutoAuthorityDecision`].
+/// Optional diagnostics plus the unconditional prepare-rejection stage marker.
+/// Production records at most one rejection; the test-only historical selector
+/// can accumulate a cascade. Capture never changes selection or fallback stage.
 #[derive(Clone, Debug, Default)]
 struct AutoAuthorityTrace {
     capture_rejections: bool,
+    // Frame lifecycle consumes this even when diagnostic capture is disabled.
+    artifact_prepare_rejected: bool,
     rejections: Vec<AutoAuthorityRejection>,
 }
 
@@ -140,8 +129,14 @@ impl AutoAuthorityTrace {
     fn new(capture_rejections: bool) -> Self {
         Self {
             capture_rejections,
+            artifact_prepare_rejected: false,
             rejections: Vec::new(),
         }
+    }
+
+    fn reject_artifact_prepare(&mut self, error: RecordedArtifactSurfacePrepareError) {
+        self.artifact_prepare_rejected = true;
+        self.capture(|| AutoAuthorityRejection::ArtifactPrepare { error });
     }
 
     fn capture(&mut self, rejection: impl FnOnce() -> AutoAuthorityRejection) {
@@ -152,11 +147,7 @@ impl AutoAuthorityTrace {
 }
 
 fn auto_artifact_legacy_fallback_stage(trace: &AutoAuthorityTrace) -> PaintAuthorityFallbackStage {
-    if trace
-        .rejections
-        .iter()
-        .any(|rejection| matches!(rejection, AutoAuthorityRejection::ArtifactPrepare { .. }))
-    {
+    if trace.artifact_prepare_rejected {
         PaintAuthorityFallbackStage::Prepare
     } else {
         PaintAuthorityFallbackStage::Selection
@@ -1434,47 +1425,9 @@ enum RecordedArtifactCandidateRejection {
     Prepare(RecordedArtifactSurfacePrepareError),
 }
 
-/// One owning M11A decision. Selection records or plans only; it has no
-/// frame-graph handle and cannot mutate the viewport runtime. The decision is
-/// consumed exactly once by dispatch, where each payload stages its own
-/// retained transaction.
-enum AutoAuthorityDecision {
-    NativeScrollForest {
-        plan: crate::view::paint::FramePaintPlan,
-        trace: AutoAuthorityTrace,
-    },
-    PropertyBoundaryDagScene {
-        scene: crate::view::paint::ValidatedPropertyBoundaryDagScene,
-        trace: AutoAuthorityTrace,
-    },
-    DirectScrollTransformScene {
-        scene: crate::view::paint::ValidatedDirectScrollTransformTransaction,
-        trace: AutoAuthorityTrace,
-    },
-    PropertyScrollScene {
-        scene: crate::view::paint::ValidatedPropertyScrollScene,
-        trace: AutoAuthorityTrace,
-    },
-    FrameRootScrollScene {
-        scene: crate::view::paint::ValidatedFrameRootScrollScene,
-        trace: AutoAuthorityTrace,
-    },
-    TransformScrollScene {
-        scene: crate::view::paint::ValidatedTransformScrollScene,
-        trace: AutoAuthorityTrace,
-    },
-    EffectScrollScene {
-        scene: crate::view::paint::ValidatedEffectScrollSceneCheckpoint,
-        trace: AutoAuthorityTrace,
-    },
-    TransformEffectScrollScene {
-        scene: crate::view::paint::ValidatedTransformEffectScrollScene,
-        trace: AutoAuthorityTrace,
-    },
-    PropertyScene {
-        plan: crate::view::paint::FramePaintPlan,
-        trace: AutoAuthorityTrace,
-    },
+/// One complete generic attempt selects an owned sealed artifact or whole-frame Legacy.
+/// There is no property-specific retained payload that dispatch could select after rejection.
+enum RetainedAutoDecision {
     Artifact {
         candidate: RecordedArtifactCandidate,
         trace: AutoAuthorityTrace,
@@ -1556,7 +1509,7 @@ enum RetainedTransformCanarySelection {
     ScrollSceneShapeRejected {
         scroll_count: usize,
     },
-    Auto(AutoAuthorityDecision),
+    Auto(RetainedAutoDecision),
     AutoArtifact(RecordedArtifactCandidate),
     AutoLegacy,
 }
@@ -1566,7 +1519,7 @@ fn retained_auto_circuit_breaker_selection(
     capture_trace: bool,
 ) -> Option<RetainedTransformCanarySelection> {
     terminal_failure.map(|_| {
-        RetainedTransformCanarySelection::Auto(AutoAuthorityDecision::Legacy {
+        RetainedTransformCanarySelection::Auto(RetainedAutoDecision::Legacy {
             trace: AutoAuthorityTrace::new(capture_trace),
         })
     })
@@ -1842,6 +1795,8 @@ fn prepare_recorded_artifact_candidate(
         } => {
             let payload = match artifact.target {
                 crate::view::paint::PaintArtifactTarget::CurrentTarget => {
+                    #[cfg(test)]
+                    attempts::record("raster-plan");
                     let plan = crate::view::paint::prepare_artifact_surface_raster_plan(
                         artifact,
                         raster_context,
@@ -1866,6 +1821,8 @@ fn prepare_recorded_artifact_candidate(
                         }
                     }
                     .map_err(RecordedArtifactCandidateRejection::Prepare)?;
+                    #[cfg(test)]
+                    attempts::record("resident-seal");
                     RecordedArtifactPayload::ArtifactSurface(
                         crate::view::paint::seal_prepared_artifact_surface_frame(plan)
                             .map_err(RecordedArtifactSurfacePrepareError::ResidentSeal)
@@ -1930,45 +1887,6 @@ fn require_scroll_content_artifact_surface_plan(
     Ok(plan)
 }
 
-fn record_auto_artifact_candidate(
-    arena: &crate::view::node_arena::NodeArena,
-    roots: &[crate::view::node_arena::NodeKey],
-    property_trees: &crate::view::compositor::PropertyTrees,
-    paint_generations: &crate::view::compositor::PaintGenerationTracker,
-    raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
-) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
-    // RetainedAuto owns and records the complete frame.
-    let has_single_root_effect = roots.first().is_some_and(|root| {
-        roots.len() == 1
-            && property_trees
-                .paint_state_for(*root)
-                .is_some_and(|properties| properties.effect.is_some())
-    });
-    let outcome = if has_single_root_effect {
-        crate::view::paint::record_root_group_opacity_frame_artifact(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            crate::view::paint::RendererMode::Auto,
-        )
-    } else {
-        crate::view::paint::record_closed_single_target_frame_artifact(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            crate::view::paint::RendererMode::Auto,
-        )
-    }
-    .expect("automatic production selection never forces artifact recording");
-    prepare_recorded_artifact_candidate(
-        outcome,
-        raster_context,
-        RecordedArtifactSurfaceRequirement::ZeroResident,
-    )
-}
-
 fn record_auto_detached_surface_candidate(
     arena: &crate::view::node_arena::NodeArena,
     roots: &[crate::view::node_arena::NodeKey],
@@ -1977,6 +1895,8 @@ fn record_auto_detached_surface_candidate(
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
     requirement: RecordedArtifactSurfaceRequirement,
 ) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
+    #[cfg(test)]
+    attempts::record("generic-record");
     let outcome = crate::view::paint::record_surface_dag_frame_artifact(
         arena,
         roots,
@@ -1988,152 +1908,21 @@ fn record_auto_detached_surface_candidate(
     prepare_recorded_artifact_candidate(outcome, raster_context, requirement)
 }
 
-/// Pure selector attempt. This function has no graph, pool, or mutable
-/// viewport handle; rejection may therefore continue to the retained planner.
-/// Once dispatch enters `try_compile_auto_artifact_frame`, fallback is no
-/// longer permitted because graph and pool mutation may have begun.
-fn try_select_auto_detached_surface_candidate(
-    arena: &crate::view::node_arena::NodeArena,
-    roots: &[crate::view::node_arena::NodeKey],
-    property_trees: &crate::view::compositor::PropertyTrees,
-    paint_generations: &crate::view::compositor::PaintGenerationTracker,
-    raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
-    requirement: RecordedArtifactSurfaceRequirement,
-    trace: &mut AutoAuthorityTrace,
-) -> Option<RecordedArtifactCandidate> {
-    match record_auto_detached_surface_candidate(
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        raster_context,
-        requirement,
-    ) {
-        Ok(candidate) => Some(candidate),
-        Err(RecordedArtifactCandidateRejection::Eligibility(eligibility)) => {
-            trace.capture(|| AutoAuthorityRejection::Artifact { eligibility });
-            None
-        }
-        Err(RecordedArtifactCandidateRejection::Prepare(error)) => {
-            trace.capture(|| AutoAuthorityRejection::ArtifactPrepare { error });
-            None
-        }
-    }
-}
-
-fn is_exact_native_root_opacity_artifact(
-    arena: &crate::view::node_arena::NodeArena,
-    roots: &[crate::view::node_arena::NodeKey],
-    property_trees: &crate::view::compositor::PropertyTrees,
-) -> bool {
-    let [root] = roots else {
-        return false;
-    };
-    if !property_trees.transforms.is_empty()
-        || !property_trees.clips.is_empty()
-        || !property_trees.scrolls.is_empty()
-        || property_trees.effects.len() != 1
-    {
-        return false;
-    }
-    let Some(node) = arena.get(*root) else {
-        return false;
-    };
-    let effect = crate::view::compositor::property_tree::EffectNodeId(*root);
-    let exact_state = crate::view::compositor::property_tree::PropertyTreeState {
-        effect: Some(effect),
-        ..Default::default()
-    };
-    node.element.admits_exact_retained_root_opacity_artifact()
-        && !node.element.is_deferred_to_root_viewport_render()
-        && !node
-            .element
-            .placement_eligibility_metadata()
-            .contains_runtime_layout_state
-        && property_trees.effects.get(&effect).is_some_and(|snapshot| {
-            snapshot.owner == *root
-                && snapshot.parent.is_none()
-                && snapshot.generation != 0
-                && snapshot.opacity.is_finite()
-                && (0.0..=1.0).contains(&snapshot.opacity)
-        })
-        && property_trees.node_state_for(*root).is_some_and(|state| {
-            state.paint.legacy_boundary_eq(exact_state)
-                && state.descendants.legacy_boundary_eq(exact_state)
-        })
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct RetainedAutoReachableTreeFacts {
-    has_scroll_container: bool,
-    has_text_area_paint_family: bool,
-}
-
-fn retained_auto_paint_kind_is_text_area_family(
-    kind: crate::view::base_component::RetainedScrollNormalizedPaintKind,
-) -> bool {
-    use crate::view::base_component::RetainedScrollNormalizedPaintKind;
-
-    match kind {
-        RetainedScrollNormalizedPaintKind::Element
-        | RetainedScrollNormalizedPaintKind::Text
-        | RetainedScrollNormalizedPaintKind::Image
-        | RetainedScrollNormalizedPaintKind::Svg => false,
-        RetainedScrollNormalizedPaintKind::TextArea
-        | RetainedScrollNormalizedPaintKind::TextAreaProjectionSegment
-        | RetainedScrollNormalizedPaintKind::TextAreaTextRun
-        | RetainedScrollNormalizedPaintKind::TextAreaLineBreak => true,
-    }
-}
-
-fn retained_auto_reachable_tree_facts(
-    arena: &crate::view::node_arena::NodeArena,
-    roots: &[crate::view::node_arena::NodeKey],
-) -> RetainedAutoReachableTreeFacts {
-    let mut pending = roots.to_vec();
-    let mut seen = FxHashSet::default();
-    let mut facts = RetainedAutoReachableTreeFacts::default();
-    while let Some(key) = pending.pop() {
-        if !seen.insert(key) {
-            continue;
-        }
-        let Some(node) = arena.get(key) else {
-            continue;
-        };
-        if node.element.retained_paint_properties().is_scroll_container {
-            facts.has_scroll_container = true;
-        }
-        if node
-            .element
-            .retained_scroll_normalized_paint_capability()
-            .is_some_and(|capability| {
-                retained_auto_paint_kind_is_text_area_family(capability.kind())
-            })
-        {
-            facts.has_text_area_paint_family = true;
-        }
-        pending.extend(node.children().iter().copied());
-    }
-    facts
-}
-
-fn select_retained_auto_authority_with_semantics(
+fn select_retained_auto_frame(
     arena: &crate::view::node_arena::NodeArena,
     roots: &[crate::view::node_arena::NodeKey],
     property_trees: &crate::view::compositor::PropertyTrees,
     paint_generations: &crate::view::compositor::PaintGenerationTracker,
     ctx: &crate::view::base_component::UiBuildContext,
-    semantic_frame_time: crate::time::Instant,
-    scroll_budget: crate::view::paint::ScrollSceneSingleTextureBudget,
     artifact_surface_max_texture_dimension_2d: u32,
     artifact_surface_max_texture_bytes: u64,
     capture_trace: bool,
-) -> AutoAuthorityDecision {
+) -> RetainedAutoDecision {
     let mut trace = AutoAuthorityTrace::new(capture_trace);
     // Complete recording and the common plan/seal decide whether this frame
     // can execute. Property counts, host families and topology do not gate
-    // this attempt. The older rejection cascade remains during C-3; its
-    // final removal and fallback convergence are tracked separately in C-6.
+    // this attempt. Every rejection selects whole-frame Legacy before graph
+    // mutation. Never retry with a planner using different coverage or accounting.
     match record_auto_detached_surface_candidate(
         arena,
         roots,
@@ -2146,367 +1935,15 @@ fn select_retained_auto_authority_with_semantics(
         ),
         RecordedArtifactSurfaceRequirement::General,
     ) {
-        Ok(candidate) => return AutoAuthorityDecision::Artifact { candidate, trace },
+        Ok(candidate) => return RetainedAutoDecision::Artifact { candidate, trace },
         Err(RecordedArtifactCandidateRejection::Eligibility(eligibility)) => {
             trace.capture(|| AutoAuthorityRejection::Artifact { eligibility });
         }
         Err(RecordedArtifactCandidateRejection::Prepare(error)) => {
-            // Decide from the typed error, never from optional debug telemetry.
-            let budget_rejected = matches!(
-                error,
-                RecordedArtifactSurfacePrepareError::RasterPlan(
-                    crate::view::paint::ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_)
-                )
-            );
-            trace.capture(|| AutoAuthorityRejection::ArtifactPrepare { error });
-            if budget_rejected {
-                return AutoAuthorityDecision::Legacy { trace };
-            }
+            trace.reject_artifact_prepare(error);
         }
     }
-    select_retained_auto_compatibility_authority_with_semantics(
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        ctx,
-        semantic_frame_time,
-        scroll_budget,
-        artifact_surface_max_texture_dimension_2d,
-        artifact_surface_max_texture_bytes,
-        trace,
-    )
-}
-
-// Historical retained planners remain reachable only after the general
-// attempt rejects. Keep this entry explicit so their existing mutation and
-// atomicity tests do not pretend that a valid frame still selects a bridge.
-fn select_retained_auto_compatibility_authority_with_semantics(
-    arena: &crate::view::node_arena::NodeArena,
-    roots: &[crate::view::node_arena::NodeKey],
-    property_trees: &crate::view::compositor::PropertyTrees,
-    paint_generations: &crate::view::compositor::PaintGenerationTracker,
-    ctx: &crate::view::base_component::UiBuildContext,
-    semantic_frame_time: crate::time::Instant,
-    scroll_budget: crate::view::paint::ScrollSceneSingleTextureBudget,
-    artifact_surface_max_texture_dimension_2d: u32,
-    artifact_surface_max_texture_bytes: u64,
-    mut trace: AutoAuthorityTrace,
-) -> AutoAuthorityDecision {
-    let transforms = property_trees.transforms.len();
-    let effects = property_trees.effects.len();
-    let scrolls = property_trees.scrolls.len();
-    let reachable_tree_facts = retained_auto_reachable_tree_facts(arena, roots);
-
-    if scrolls != 0 || reachable_tree_facts.has_scroll_container {
-        let viewport = ctx.viewport();
-        // Compatibility-only admission: successful complete recordings have
-        // already selected the generic executor. Preserve these historical
-        // restrictions for rejected inputs until C-6 removes this cascade.
-        // General TextArea authority is exercised by the native single-
-        // Viewport caret/selection/IME gates, including an outer scroll scope.
-        let scroll_content_artifact_admitted = transforms == 0
-            && effects == 0
-            && !reachable_tree_facts.has_text_area_paint_family
-            && !native_scroll_forest_topology_is_branching_or_multi_root(roots, property_trees);
-        if scroll_content_artifact_admitted
-            && let Some(candidate) = try_select_auto_detached_surface_candidate(
-                arena,
-                roots,
-                property_trees,
-                paint_generations,
-                artifact_surface_raster_context(
-                    ctx,
-                    artifact_surface_max_texture_dimension_2d,
-                    artifact_surface_max_texture_bytes,
-                ),
-                RecordedArtifactSurfaceRequirement::ScrollContentOnly,
-                &mut trace,
-            )
-        {
-            return AutoAuthorityDecision::Artifact { candidate, trace };
-        }
-        match crate::view::paint::plan_and_validate_frame_root_scroll_scene(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            viewport.scale_factor(),
-            ctx.paint_offset(),
-            ctx.graphics_pass_context().logical_scissor_rect(),
-            viewport.target_format(),
-        ) {
-            Ok(scene) => return AutoAuthorityDecision::FrameRootScrollScene { scene, trace },
-            Err(error) => {
-                trace.capture(|| AutoAuthorityRejection::FrameRootScrollPlan { error });
-            }
-        }
-        match crate::view::paint::plan_and_validate_property_scroll_scene(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            viewport.scale_factor(),
-            ctx.paint_offset(),
-            ctx.graphics_pass_context().logical_scissor_rect(),
-            semantic_frame_time,
-            viewport.target_format(),
-            scroll_budget,
-        ) {
-            Ok(scene) => return AutoAuthorityDecision::PropertyScrollScene { scene, trace },
-            Err(error) => {
-                trace.capture(|| AutoAuthorityRejection::PropertyScrollPlan { error });
-            }
-        }
-        match crate::view::paint::plan_and_validate_transform_scroll_scene(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            viewport.scale_factor(),
-            ctx.paint_offset(),
-            ctx.graphics_pass_context().logical_scissor_rect(),
-            semantic_frame_time,
-            viewport.target_format(),
-            scroll_budget,
-        ) {
-            Ok(scene) => return AutoAuthorityDecision::TransformScrollScene { scene, trace },
-            Err(error) => {
-                trace.capture(|| AutoAuthorityRejection::TransformScrollPlan { error });
-            }
-        }
-        match crate::view::paint::plan_and_validate_effect_scroll_scene_checkpoint(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            viewport.scale_factor(),
-            ctx.paint_offset(),
-            ctx.graphics_pass_context().logical_scissor_rect(),
-            semantic_frame_time,
-            viewport.target_format(),
-            scroll_budget,
-        ) {
-            Ok(scene) => return AutoAuthorityDecision::EffectScrollScene { scene, trace },
-            Err(error) => {
-                trace.capture(|| AutoAuthorityRejection::EffectScrollPlan { error });
-            }
-        }
-        match crate::view::paint::plan_and_validate_transform_effect_scroll_scene(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            viewport.scale_factor(),
-            ctx.paint_offset(),
-            ctx.graphics_pass_context().logical_scissor_rect(),
-            semantic_frame_time,
-            viewport.target_format(),
-            scroll_budget,
-        ) {
-            Ok(scene) => return AutoAuthorityDecision::TransformEffectScrollScene { scene, trace },
-            Err(error) => {
-                trace.capture(|| AutoAuthorityRejection::TransformEffectScrollPlan { error });
-            }
-        }
-        let forest_topology = scrolls >= 2
-            && native_scroll_forest_topology_is_branching_or_multi_root(roots, property_trees);
-        if forest_topology {
-            let plan_context = crate::view::paint::TransformSurfacePlanContext::new(
-                ctx.paint_offset(),
-                ctx.graphics_pass_context().logical_scissor_rect(),
-            );
-            match crate::view::paint::plan_native_scroll_forest_scaffold_with_context(
-                arena,
-                roots,
-                property_trees,
-                paint_generations,
-                viewport.scale_factor(),
-                plan_context,
-            ) {
-                Ok(plan) => {
-                    return AutoAuthorityDecision::NativeScrollForest { plan, trace };
-                }
-                Err(error) => {
-                    trace.capture(|| AutoAuthorityRejection::NativeScrollForestPlan { error });
-                }
-            }
-        }
-        let boundary_dag =
-            PropertyBoundaryDagCompiler::plan_and_validate_after_fixed_grammar_cascade(
-                arena,
-                roots,
-                property_trees,
-                paint_generations,
-                viewport.scale_factor(),
-                ctx.paint_offset(),
-                ctx.graphics_pass_context().logical_scissor_rect(),
-                semantic_frame_time,
-                viewport.target_format(),
-                scroll_budget,
-            );
-        match boundary_dag {
-            Ok(Some(scene)) => {
-                return AutoAuthorityDecision::PropertyBoundaryDagScene { scene, trace };
-            }
-            Ok(None) => {}
-            Err(error) => {
-                trace.capture(|| AutoAuthorityRejection::PropertyBoundaryDagPlan { error });
-            }
-        }
-        if scrolls >= 2 && !forest_topology {
-            trace.capture(|| AutoAuthorityRejection::NativeScrollForestPlan {
-                error: crate::view::paint::FramePaintPlanError {
-                    reasons: vec![
-                        crate::view::paint::FramePaintPlanRejection::InvalidPropertyScene(
-                            "native-scroll-forest-linear-chain",
-                        ),
-                    ],
-                },
-            });
-        }
-        return match crate::view::paint::plan_and_validate_direct_scroll_transform_scene(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            viewport.scale_factor(),
-            ctx.paint_offset(),
-            ctx.graphics_pass_context().logical_scissor_rect(),
-            viewport.target_format(),
-            scroll_budget,
-        ) {
-            Ok(scene) => AutoAuthorityDecision::DirectScrollTransformScene { scene, trace },
-            Err(error) => {
-                trace.capture(|| AutoAuthorityRejection::DirectScrollTransformPlan { error });
-                AutoAuthorityDecision::Legacy { trace }
-            }
-        };
-    }
-
-    if effects != 0 {
-        // Native hosts explicitly admitted by ElementTrait use the existing
-        // host-generic root-opacity artifact grammar. The full tree/property
-        // witness and metadata/full-artifact pair remain authoritative, so a
-        // resource, topology, property, or generation drift still fails
-        // closed before emission.
-        if is_exact_native_root_opacity_artifact(arena, roots, property_trees) {
-            match record_auto_artifact_candidate(
-                arena,
-                roots,
-                property_trees,
-                paint_generations,
-                artifact_surface_raster_context(
-                    ctx,
-                    artifact_surface_max_texture_dimension_2d,
-                    artifact_surface_max_texture_bytes,
-                ),
-            ) {
-                Ok(candidate) => return AutoAuthorityDecision::Artifact { candidate, trace },
-                Err(RecordedArtifactCandidateRejection::Eligibility(eligibility)) => {
-                    trace.capture(|| AutoAuthorityRejection::Artifact { eligibility });
-                }
-                Err(RecordedArtifactCandidateRejection::Prepare(error)) => {
-                    trace.capture(|| AutoAuthorityRejection::ArtifactPrepare { error });
-                }
-            }
-        }
-        if let Some(candidate) = try_select_auto_detached_surface_candidate(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            artifact_surface_raster_context(
-                ctx,
-                artifact_surface_max_texture_dimension_2d,
-                artifact_surface_max_texture_bytes,
-            ),
-            RecordedArtifactSurfaceRequirement::Detached,
-            &mut trace,
-        ) {
-            return AutoAuthorityDecision::Artifact { candidate, trace };
-        }
-        let plan_context = crate::view::paint::TransformSurfacePlanContext::new(
-            ctx.paint_offset(),
-            ctx.graphics_pass_context().logical_scissor_rect(),
-        );
-        return match crate::view::paint::plan_property_effect_scene_with_context(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            plan_context,
-        ) {
-            Ok(plan) => AutoAuthorityDecision::PropertyScene { plan, trace },
-            Err(error) => {
-                trace.capture(|| AutoAuthorityRejection::Plan {
-                    authority: AutoAuthorityKind::PropertyScene,
-                    error,
-                });
-                AutoAuthorityDecision::Legacy { trace }
-            }
-        };
-    }
-
-    if transforms != 0 && effects == 0 {
-        if let Some(candidate) = try_select_auto_detached_surface_candidate(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            artifact_surface_raster_context(
-                ctx,
-                artifact_surface_max_texture_dimension_2d,
-                artifact_surface_max_texture_bytes,
-            ),
-            RecordedArtifactSurfaceRequirement::Detached,
-            &mut trace,
-        ) {
-            return AutoAuthorityDecision::Artifact { candidate, trace };
-        }
-        let plan_context = crate::view::paint::TransformSurfacePlanContext::new(
-            ctx.paint_offset(),
-            ctx.graphics_pass_context().logical_scissor_rect(),
-        );
-        return match crate::view::paint::plan_transform_property_scene_with_context(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            plan_context,
-        ) {
-            Ok(plan) => AutoAuthorityDecision::PropertyScene { plan, trace },
-            Err(error) => {
-                trace.capture(|| AutoAuthorityRejection::Plan {
-                    authority: AutoAuthorityKind::PropertyScene,
-                    error,
-                });
-                AutoAuthorityDecision::Legacy { trace }
-            }
-        };
-    }
-
-    match record_auto_artifact_candidate(
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        artifact_surface_raster_context(
-            ctx,
-            artifact_surface_max_texture_dimension_2d,
-            artifact_surface_max_texture_bytes,
-        ),
-    ) {
-        Ok(candidate) => AutoAuthorityDecision::Artifact { candidate, trace },
-        Err(RecordedArtifactCandidateRejection::Eligibility(eligibility)) => {
-            trace.capture(|| AutoAuthorityRejection::Artifact { eligibility });
-            AutoAuthorityDecision::Legacy { trace }
-        }
-        Err(RecordedArtifactCandidateRejection::Prepare(error)) => {
-            trace.capture(|| AutoAuthorityRejection::ArtifactPrepare { error });
-            AutoAuthorityDecision::Legacy { trace }
-        }
-    }
+    RetainedAutoDecision::Legacy { trace }
 }
 
 #[cfg(test)]
@@ -2539,23 +1976,17 @@ fn select_retained_auto_authority_with_artifact_budget_for_test(
     artifact_surface_max_texture_bytes: u64,
     capture_trace: bool,
 ) -> AutoAuthorityDecision {
-    let scroll_budget = crate::view::paint::ScrollSceneSingleTextureBudget::new(
-        wgpu::Limits::default().max_texture_dimension_2d,
-        128 * 1024 * 1024,
-    )
-    .expect("test scroll budget is non-zero");
-    select_retained_auto_authority_with_semantics(
+    select_retained_auto_frame(
         arena,
         roots,
         property_trees,
         paint_generations,
         ctx,
-        crate::time::Instant::now(),
-        scroll_budget,
         wgpu::Limits::default().max_texture_dimension_2d,
         artifact_surface_max_texture_bytes,
         capture_trace,
     )
+    .into()
 }
 
 #[cfg(test)]
@@ -2567,11 +1998,6 @@ fn select_retained_transform_canary(
     paint_generations: &crate::view::compositor::PaintGenerationTracker,
     ctx: &crate::view::base_component::UiBuildContext,
 ) -> RetainedTransformCanarySelection {
-    let scroll_budget = crate::view::paint::ScrollSceneSingleTextureBudget::new(
-        wgpu::Limits::default().max_texture_dimension_2d,
-        128 * 1024 * 1024,
-    )
-    .expect("test scroll budget is non-zero");
     select_retained_transform_canary_with_trace_capture(
         mode,
         arena,
@@ -2579,8 +2005,6 @@ fn select_retained_transform_canary(
         property_trees,
         paint_generations,
         ctx,
-        crate::time::Instant::now(),
-        scroll_budget,
         wgpu::Limits::default().max_texture_dimension_2d,
         ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
         false,
@@ -2594,8 +2018,6 @@ fn select_retained_transform_canary_with_trace_capture(
     property_trees: &crate::view::compositor::PropertyTrees,
     paint_generations: &crate::view::compositor::PaintGenerationTracker,
     ctx: &crate::view::base_component::UiBuildContext,
-    semantic_frame_time: crate::time::Instant,
-    scroll_budget: crate::view::paint::ScrollSceneSingleTextureBudget,
     artifact_surface_max_texture_dimension_2d: u32,
     artifact_surface_max_texture_bytes: u64,
     capture_auto_trace: bool,
@@ -2726,14 +2148,12 @@ fn select_retained_transform_canary_with_trace_capture(
             RetainedTransformCanarySelection::ScrollSceneActive
         }
         ViewportPaintRendererMode::RetainedAuto => {
-            RetainedTransformCanarySelection::Auto(select_retained_auto_authority_with_semantics(
+            RetainedTransformCanarySelection::Auto(select_retained_auto_frame(
                 arena,
                 roots,
                 property_trees,
                 paint_generations,
                 ctx,
-                semantic_frame_time,
-                scroll_budget,
                 artifact_surface_max_texture_dimension_2d,
                 artifact_surface_max_texture_bytes,
                 capture_auto_trace,
@@ -4078,7 +3498,6 @@ impl Viewport {
             .device()
             .map(|device| device.limits().max_texture_dimension_2d)
             .unwrap_or_else(|| wgpu::Limits::default().max_texture_dimension_2d);
-        let property_scroll_budget = crate::view::paint::production_single_texture_budget(self);
         let retained_auto_terminal_failure = self.retained_auto_terminal_failure;
         let retained_transform_selection = retained_auto_circuit_breaker_selection(
             retained_auto_terminal_failure,
@@ -4092,8 +3511,6 @@ impl Viewport {
                 &self.compositor.property_trees,
                 &self.compositor.paint_generations,
                 &ctx,
-                semantic_now,
-                property_scroll_budget,
                 artifact_surface_max_texture_dimension_2d,
                 ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
                 capture_paint_authority_telemetry,
@@ -4102,47 +3519,11 @@ impl Viewport {
         let (mut retained_transform_selection, auto_authority_trace) =
             match retained_transform_selection {
                 RetainedTransformCanarySelection::Auto(decision) => match decision {
-                    AutoAuthorityDecision::NativeScrollForest { plan, trace } => (
-                        RetainedTransformCanarySelection::NativeScrollForestPlanned(plan),
-                        Some((AutoAuthorityKind::NativeScrollForest, trace)),
-                    ),
-                    AutoAuthorityDecision::PropertyBoundaryDagScene { scene, trace } => (
-                        RetainedTransformCanarySelection::PropertyBoundaryDagScenePlanned(scene),
-                        Some((AutoAuthorityKind::PropertyScene, trace)),
-                    ),
-                    AutoAuthorityDecision::DirectScrollTransformScene { scene, trace } => (
-                        RetainedTransformCanarySelection::DirectScrollTransformScenePlanned(scene),
-                        Some((AutoAuthorityKind::PropertyScene, trace)),
-                    ),
-                    AutoAuthorityDecision::PropertyScrollScene { scene, trace } => (
-                        RetainedTransformCanarySelection::PropertyScrollScenePlanned(scene),
-                        Some((AutoAuthorityKind::PropertyScene, trace)),
-                    ),
-                    AutoAuthorityDecision::FrameRootScrollScene { scene, trace } => (
-                        RetainedTransformCanarySelection::FrameRootScrollScenePlanned(scene),
-                        Some((AutoAuthorityKind::PropertyScene, trace)),
-                    ),
-                    AutoAuthorityDecision::TransformScrollScene { scene, trace } => (
-                        RetainedTransformCanarySelection::TransformScrollScenePlanned(scene),
-                        Some((AutoAuthorityKind::PropertyScene, trace)),
-                    ),
-                    AutoAuthorityDecision::EffectScrollScene { scene, trace } => (
-                        RetainedTransformCanarySelection::EffectScrollScenePlanned(scene),
-                        Some((AutoAuthorityKind::PropertyScene, trace)),
-                    ),
-                    AutoAuthorityDecision::TransformEffectScrollScene { scene, trace } => (
-                        RetainedTransformCanarySelection::TransformEffectScrollScenePlanned(scene),
-                        Some((AutoAuthorityKind::PropertyScene, trace)),
-                    ),
-                    AutoAuthorityDecision::PropertyScene { plan, trace } => (
-                        RetainedTransformCanarySelection::PropertyScenePlanned(plan),
-                        Some((AutoAuthorityKind::PropertyScene, trace)),
-                    ),
-                    AutoAuthorityDecision::Artifact { candidate, trace } => (
+                    RetainedAutoDecision::Artifact { candidate, trace } => (
                         RetainedTransformCanarySelection::AutoArtifact(candidate),
                         Some((AutoAuthorityKind::Artifact, trace)),
                     ),
-                    AutoAuthorityDecision::Legacy { trace } => (
+                    RetainedAutoDecision::Legacy { trace } => (
                         RetainedTransformCanarySelection::AutoLegacy,
                         Some((AutoAuthorityKind::Legacy, trace)),
                     ),

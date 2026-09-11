@@ -1653,7 +1653,7 @@ fn assert_generic_primary(
     );
 }
 
-// Direct coverage of the compatibility cascade retained until C-6. Callers
+// Direct coverage of the historical cascade, now compiled only for tests. Callers
 // use this name explicitly; the actual Auto primary is covered separately by
 // generic_selection_tests and the native single-Viewport corpus.
 fn compatibility_decision(
@@ -2489,3 +2489,5 @@ mod text_transform_tests;
 mod window_showcase_tests;
 
 mod generic_selection_tests;
+
+mod selector_convergence_tests;

@@ -158,10 +158,9 @@ fn retained_auto_unready_nested_media_does_not_retry_the_retired_executor() {
                 auto_authority_trace(&decision).rejections
             )
         };
-        assert!(trace.rejections.iter().any(|rejection| matches!(
-            rejection,
-            AutoAuthorityRejection::PropertyBoundaryDagPlan { .. }
-        )));
+        assert_eq!(trace.rejections.len(), 1, "must not retry a compatibility planner");
+        assert!(matches!(&trace.rejections[0], AutoAuthorityRejection::Artifact { eligibility }
+            if !eligibility.eligible && !eligibility.reasons.is_empty()), "{trace:?}");
     }
 }
 
@@ -191,10 +190,9 @@ fn retained_auto_missing_text_stays_legacy_while_inline_ifc_owned_text_selects_a
                 auto_authority_trace(&decision).rejections
             )
         };
-        assert!(trace.rejections.iter().any(|rejection| matches!(
-            rejection,
-            AutoAuthorityRejection::PropertyBoundaryDagPlan { .. }
-        )));
+        assert_eq!(trace.rejections.len(), 1, "must not retry a compatibility planner");
+        assert!(matches!(&trace.rejections[0], AutoAuthorityRejection::Artifact { eligibility }
+            if !eligibility.eligible && !eligibility.reasons.is_empty()), "{trace:?}");
     }
 
     let kind = crate::view::paint::NestedTextFallbackKind::InlineIfcOwned;

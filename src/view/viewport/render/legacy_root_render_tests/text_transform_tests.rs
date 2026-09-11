@@ -127,13 +127,7 @@ fn retained_auto_text_transform_nonfinite_and_topology_drift_fail_closed() {
         )),
         "non-finite artifact rejection: {trace:?}"
     );
-    assert!(trace.rejections.iter().any(|rejection| matches!(
-        rejection,
-        AutoAuthorityRejection::Plan {
-            authority: AutoAuthorityKind::PropertyScene,
-            ..
-        }
-    )));
+    assert_eq!(trace.rejections.len(), 1, "must not retry the retired property planner");
 
     let (mut arena, roots, child) =
         prepared_native_text_transform(Transform::new([Scale::uniform(1.25)]), true, false);

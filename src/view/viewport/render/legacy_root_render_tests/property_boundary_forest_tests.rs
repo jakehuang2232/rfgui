@@ -192,6 +192,7 @@ fn property_forest_prepare_rejection_cannot_report_retained_success() {
     )
     .expect("legacy property forest component fixture plans");
     let trace = AutoAuthorityTrace {
+        artifact_prepare_rejected: false,
         capture_rejections: true,
         rejections: Vec::new(),
     };

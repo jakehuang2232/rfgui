@@ -234,9 +234,9 @@ fn stage_c_property_boundary_forest_executor_gate_names_are_a_closed_set() {
 }
 
 /// Stage A freezes one retained scroll-content surface under five content
-/// shapes. C3b keeps this exact old-path test unchanged while adding a
-/// separate exact per-fixture V2 Surface DAG matrix. The old test is replaced,
-/// never loosened to an arbitrary Vec, in the hard-cutover batch.
+/// shapes. The complete scenario now explicitly exercises the test-only
+/// compatibility selector. Keep its exact name guarded after the rename;
+/// production selection is independently covered by the generic native corpus.
 #[test]
 fn stage_c_stage_a_reuse_baseline_has_one_exact_test() {
     let actual = declared_test_function_names(include_str!(
@@ -244,7 +244,7 @@ fn stage_c_stage_a_reuse_baseline_has_one_exact_test() {
     ));
     assert_eq!(
         actual,
-        expected_names(["stage_a_one_surface_reuse_contract_covers_five_content_shapes"]),
+        expected_names(["compatibility_stage_a_one_surface_reuse_contract_covers_five_content_shapes"]),
     );
 }
 

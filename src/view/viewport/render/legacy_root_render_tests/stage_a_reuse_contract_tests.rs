@@ -1,3 +1,5 @@
+//! Historical planner/pool regression; the production selector no longer selects this payload.
+//! Real generic TextArea frames are covered by the single-Viewport native tests.
 use super::*;
 
 #[derive(Clone, Copy, Debug)]
@@ -225,7 +227,7 @@ fn observe_reuse_action(
     Vec<ScrollbarOverlayFillObservation>,
 ) {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let decision = select_retained_auto_authority(
+    let decision = compatibility_decision(
         &fixture.arena,
         &fixture.roots,
         &fixture.properties,
@@ -315,7 +317,7 @@ fn expected_scrollbar_overlay_fills(case: StageAReuseCase) -> Vec<ScrollbarOverl
 /// vary the content recorded into that surface; they are not five reuse-layer
 /// surface shapes or five distinct reuse policies.
 #[test]
-fn stage_a_one_surface_reuse_contract_covers_five_content_shapes() {
+fn compatibility_stage_a_one_surface_reuse_contract_covers_five_content_shapes() {
     use crate::view::paint::RetainedSurfaceCompileAction::{Reraster, Reuse};
 
     for case in [

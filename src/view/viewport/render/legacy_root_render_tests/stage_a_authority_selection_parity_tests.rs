@@ -1,3 +1,5 @@
+//! Historical planner/pool regression; the production selector no longer selects this payload.
+//! Real generic TextArea frames are covered by the single-Viewport native tests.
 use super::*;
 
 fn text_area_owner(arena: &NodeArena, root: NodeKey) -> NodeKey {
@@ -77,7 +79,7 @@ fn assert_property_scroll_authority_and_typed_rejection(
 ) {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let accepted =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     let AutoAuthorityDecision::PropertyScrollScene { scene, .. } = accepted else {
         panic!("{name}: Stage A must preserve PropertyScrollScene authority")
     };
@@ -104,7 +106,7 @@ fn assert_property_scroll_authority_and_typed_rejection(
     arena.refresh_stable_id_index();
     arena.refresh_subtree_dirty_cache(roots[0]);
     let (rejected_properties, rejected_generations) = sync_scene(&arena, &roots);
-    let rejected = select_retained_auto_authority(
+    let rejected = compatibility_decision(
         &arena,
         &roots,
         &rejected_properties,
@@ -144,7 +146,7 @@ fn assert_property_scroll_authority_and_typed_rejection(
 }
 
 #[test]
-fn stage_a_text_area_authority_selection_and_rejection_parity() {
+fn compatibility_stage_a_text_area_authority_selection_and_rejection_parity() {
     let plain = prepared_scroll_text_area_scene();
     let interactive = interactive_scene();
     let atomic = projection_scene(false, false);
