@@ -9,7 +9,7 @@ fn persistent_target_keys_are_unique_across_roles_and_full_u64_ids() {
         for color in [
             transformed_layer_stable_key(node_id),
             isolation_layer_stable_key(node_id),
-            scroll_host_layer_stable_key(node_id),
+            PersistentTextureKey::retained(RetainedTextureRole::ScrollHostColor, node_id),
             scroll_content_layer_stable_key(node_id),
         ] {
             assert!(keys.insert(color));
@@ -80,5 +80,3 @@ fn full_viewport_persistent_target_uses_exact_physical_descriptor_and_pair() {
     assert!(declared.contains(&color_key));
     assert!(declared.contains(&color_key.depth_stencil().unwrap()));
 }
-
-

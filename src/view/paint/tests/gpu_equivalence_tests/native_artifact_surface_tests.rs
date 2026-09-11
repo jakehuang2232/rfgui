@@ -53,55 +53,32 @@ pub(super) fn nested_effect_fixture() -> (NodeArena, NodeKey) {
     (arena, root)
 }
 
-fn property_scene_nested_effect_graph(paint_offset: [f32; 2]) -> Result<FrameGraph, String> {
-    let (arena, root) = nested_effect_fixture();
-    let roots = [root];
-    let (properties, generations) = sync_identity(&arena, &roots);
+fn legacy_nested_effect_graph(paint_offset: [f32; 2]) -> Result<FrameGraph, String> {
+    let (mut arena, root) = nested_effect_fixture();
     let (mut graph, mut ctx, target) = transformed_graph_prelude(1.0, None);
     ctx.set_paint_offset(paint_offset);
-    // The pre-cutover production authority is PropertyScene, whose effect
-    // group isolation is the semantic oracle. The immediate painter bakes
-    // opacity per op and therefore is not an equivalent effect authority.
-    let plan = crate::view::paint::plan_property_effect_scene_with_context(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        crate::view::paint::TransformSurfacePlanContext::new(
-            ctx.paint_offset(),
-            ctx.graphics_pass_context().logical_scissor_rect(),
-        ),
-    )
-    .map_err(|error| format!("PropertyScene planner rejected fixture: {error:?}"))?;
-    let mut viewport = Viewport::new();
-    crate::view::paint::build_retained_property_scene_with_forced_pool_for_test(
-        &mut viewport,
-        &plan,
-        &mut graph,
-        ctx,
-    )
-    .map_err(|error| format!("PropertyScene executor rejected fixture: {error:?}"))?;
-    assert_property_scene_effect_fixture_is_overlap_sensitive(&graph)?;
+    arena
+        .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
+        .unwrap();
+    // Legacy now applies subtree group opacity correctly. Its live owner scope,
+    // not a retired retained planner, provides this supplementary comparison.
+    assert_legacy_effect_fixture_is_overlap_sensitive(&graph)?;
     add_present(&mut graph, &target)?;
     Ok(graph)
 }
 
-fn assert_property_scene_effect_fixture_is_overlap_sensitive(
-    graph: &FrameGraph,
-) -> Result<(), String> {
+fn assert_legacy_effect_fixture_is_overlap_sensitive(graph: &FrameGraph) -> Result<(), String> {
     let effect_opacity_bits = 0.625_f32.to_bits();
-    let layers = graph
-        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
-        );
+    let layers = graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
     let [effect_layer] = layers.as_slice() else {
         return Err(format!(
-            "PropertyScene oracle must composite exactly one Effect layer, got {}",
+            "Legacy comparison must composite exactly one Effect layer, got {}",
             layers.len()
         ));
     };
-    let opacity_bits = effect_layer.test_params().opacity.to_bits();
+    let opacity_bits = effect_layer.test_snapshot().opacity_bits;
     if opacity_bits != effect_opacity_bits || opacity_bits == 1.0_f32.to_bits() {
-        return Err("PropertyScene oracle must composite one non-neutral Effect layer".to_owned());
+        return Err("Legacy comparison must composite one non-neutral Effect layer".to_owned());
     }
 
     let rects = graph
@@ -132,7 +109,7 @@ fn assert_property_scene_effect_fixture_is_overlap_sensitive(
     has_overlapping_effect_ops
         .then_some(())
         .ok_or_else(|| {
-            "PropertyScene oracle must raster at least two non-transparent overlapping Effect ops into one target"
+            "Legacy comparison must raster at least two non-transparent overlapping Effect ops into one target"
                 .to_owned()
         })
 }
@@ -168,6 +145,7 @@ fn verify_cold_warm_artifact_surface(
     paint_offset: [f32; 2],
     oracle: FrameGraph,
     oracle_pixel_translation: Option<[i32; 2]>,
+    absolute_probes: &[([u32; 2], [u8; 4])],
 ) -> Result<(usize, u64), String> {
     let oracle_pixels = render(oracle, gpu)?;
     let legacy_pixels = oracle_pixel_translation
@@ -214,6 +192,24 @@ fn verify_cold_warm_artifact_surface(
         ));
     }
 
+    // The rectangular group must not paint a halo outside its authored box.
+    // These expected background colors are independent of either renderer.
+    for &(at, expected) in absolute_probes {
+        for (name, pixels) in [
+            ("legacy", &legacy_pixels),
+            ("cold", &cold_pixels),
+            ("warm", &warm_pixels),
+        ] {
+            assert_pixel_near(
+                pixels,
+                at[0],
+                at[1],
+                expected,
+                1,
+                &format!("{case}/{name}/absolute outside group"),
+            )?;
+        }
+    }
     compare_pixels(
         &legacy_pixels,
         &cold_pixels,
@@ -254,6 +250,7 @@ fn native_production_artifact_transform_matches_legacy_and_reuses_real_pool() ->
         // independent oracle here until a later batch deliberately retires it.
         legacy_transformed_rect_graph(1.0, None)?,
         Some([4, -2]),
+        &[],
     )?;
     if surface_count == 0 || bytes == 0 {
         return Err(format!(
@@ -269,8 +266,8 @@ fn native_production_artifact_transform_matches_legacy_and_reuses_real_pool() ->
 #[test]
 #[ignore = "requires native GPU adapter"]
 // Run explicitly with:
-// cargo test -q native_production_artifact_effect_matches_property_scene_and_reuses_real_pool -- --ignored --nocapture
-fn native_production_artifact_effect_matches_property_scene_and_reuses_real_pool()
+// cargo test -q native_production_artifact_effect_matches_legacy_group_and_reuses_real_pool -- --ignored --nocapture
+fn native_production_artifact_effect_matches_legacy_group_and_reuses_real_pool()
 -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU initialized");
@@ -281,8 +278,17 @@ fn native_production_artifact_effect_matches_property_scene_and_reuses_real_pool
         "production-artifact-effect",
         nested_effect_fixture,
         ARTIFACT_HOST_PLACEMENT_OFFSET,
-        property_scene_nested_effect_graph(ARTIFACT_HOST_PLACEMENT_OFFSET)?,
+        legacy_nested_effect_graph(ARTIFACT_HOST_PLACEMENT_OFFSET)?,
         None,
+        // The group is [21,13] + [32,26] after owner snapping. All four
+        // probes are inside the root but immediately outside the group.
+        // sRGB [24,64,116] converts to RGBA8 linear [2,13,45,255].
+        &[
+            ([20, 20], [2, 13, 45, 255]),
+            ([30, 12], [2, 13, 45, 255]),
+            ([53, 20], [2, 13, 45, 255]),
+            ([30, 39], [2, 13, 45, 255]),
+        ],
     )?;
     if surface_count == 0 || bytes == 0 {
         return Err(format!(

@@ -4,109 +4,18 @@
 //! these records every ladder path that returns Legacy before reaching the
 //! artifact candidate produces a whole-frame fallback that names no component.
 
-use super::{
-    PaintAuthorityKind, PaintAuthoritySelectionRejection, selection_rejection_debug_records,
-};
+use super::{PaintAuthoritySelectionRejection, selection_rejection_debug_records};
+use crate::view::debug::DebugFallbackStage;
 use crate::view::debug::census::fallback_detail_label;
-use crate::view::debug::{DebugFallbackCategory, DebugFallbackStage};
 use crate::view::paint::{
-    FrameArtifactEligibility, FrameArtifactFallbackReason, FramePaintPlanError,
-    FramePaintPlanRejection, LegacyPaintReason, PropertyScrollScenePlanError,
+    FrameArtifactEligibility, FrameArtifactFallbackReason, LegacyPaintReason,
 };
-
-fn plan(reasons: Vec<FramePaintPlanRejection>) -> PaintAuthoritySelectionRejection {
-    PaintAuthoritySelectionRejection::Plan {
-        authority: PaintAuthorityKind::PropertyScene,
-        error: FramePaintPlanError { reasons },
-    }
-}
 
 fn codes(rejection: &PaintAuthoritySelectionRejection) -> Vec<String> {
     selection_rejection_debug_records(rejection)
         .into_iter()
         .map(|record| fallback_detail_label(&record.detail))
         .collect()
-}
-
-#[test]
-fn each_plan_reason_becomes_one_coded_record_in_order() {
-    let rejection = plan(vec![
-        FramePaintPlanRejection::IsolationOuterScissor,
-        FramePaintPlanRejection::InvalidPropertyScene("property-scene-artifact-invalid"),
-    ]);
-
-    assert_eq!(
-        codes(&rejection),
-        vec![
-            "property-scene:isolation-outer-scissor".to_string(),
-            "property-scene:property-scene-artifact-invalid".to_string(),
-        ]
-    );
-}
-
-#[test]
-fn a_node_naming_reason_carries_its_owner_for_element_attribution() {
-    let mut arena = crate::view::node_arena::NodeArena::new();
-    let owner = arena.insert(crate::view::node_arena::Node::new(Box::new(
-        crate::view::base_component::Element::new_with_id(1, 0.0, 0.0, 10.0, 10.0),
-    )));
-    let rejection = plan(vec![FramePaintPlanRejection::ScrollBoundary(owner)]);
-
-    let records = selection_rejection_debug_records(&rejection);
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].stage, DebugFallbackStage::Planning);
-    assert_eq!(records[0].owner, Some(owner));
-    assert_eq!(records[0].category, DebugFallbackCategory::PropertyTopology);
-    assert_eq!(
-        fallback_detail_label(&records[0].detail),
-        "property-scene:scroll-boundary"
-    );
-}
-
-#[test]
-fn a_whole_scene_reason_reports_no_owner() {
-    let records = selection_rejection_debug_records(&plan(vec![
-        FramePaintPlanRejection::IsolationOuterScissor,
-    ]));
-
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].stage, DebugFallbackStage::Planning);
-    assert_eq!(records[0].owner, None);
-}
-
-#[test]
-fn scroll_scene_plan_errors_delegate_their_inner_frame_reasons() {
-    let rejection = PaintAuthoritySelectionRejection::Auto(
-        super::AutoAuthorityRejection::DirectScrollTransformPlan {
-            error: PropertyScrollScenePlanError::Frame(FramePaintPlanError {
-                reasons: vec![FramePaintPlanRejection::InvalidPropertyScene(
-                    "property-scene-artifact-invalid",
-                )],
-            }),
-        },
-    );
-
-    assert_eq!(
-        codes(&rejection),
-        vec!["direct-scroll-transform:property-scene-artifact-invalid".to_string()]
-    );
-}
-
-#[test]
-fn scroll_scene_plan_errors_without_an_inner_frame_error_map_directly() {
-    let rejection =
-        PaintAuthoritySelectionRejection::Auto(super::AutoAuthorityRejection::PropertyScrollPlan {
-            error: PropertyScrollScenePlanError::BackingBudget,
-        });
-
-    let records = selection_rejection_debug_records(&rejection);
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].stage, DebugFallbackStage::Planning);
-    assert_eq!(records[0].category, DebugFallbackCategory::Capacity);
-    assert_eq!(
-        fallback_detail_label(&records[0].detail),
-        "property-scroll:scroll-backing-budget"
-    );
 }
 
 #[test]
@@ -144,34 +53,9 @@ fn artifact_rejections_emit_non_boundary_reasons_at_selection_stage() {
                 .iter()
                 .map(|record| fallback_detail_label(&record.detail))
                 .collect::<Vec<_>>(),
-            vec![
-                "artifact:property-boundary".to_string(),
-                "artifact:root-count".to_string(),
-            ]
+            vec!["property-boundary".to_string(), "root-count".to_string(),]
         );
     }
-}
-
-#[test]
-fn shape_rejections_emit_nothing_here() {
-    assert!(
-        selection_rejection_debug_records(&PaintAuthoritySelectionRejection::NoTransform)
-            .is_empty()
-    );
-    assert!(
-        selection_rejection_debug_records(&PaintAuthoritySelectionRejection::Shape {
-            authority: PaintAuthorityKind::PropertyScene,
-            transforms: 1,
-            effects: 0,
-            scrolls: 0,
-        })
-        .is_empty()
-    );
-}
-
-#[test]
-fn an_empty_plan_error_emits_nothing_and_leaves_the_whole_frame_record() {
-    assert!(selection_rejection_debug_records(&plan(Vec::new())).is_empty());
 }
 
 /// The census-only coverage pass may add records, never duplicate them.
@@ -322,19 +206,19 @@ mod census_coverage_dedupe {
 /// the flag can touch selection, so purity is proven where it enters.
 mod capture_flag_is_decision_neutral {
     use super::super::{
-        RetainedAutoDecision, AutoAuthorityRejection, AutoAuthorityTrace,
-        RetainedAutoTerminalFailureStage, RetainedTransformCanarySelection,
-        retained_auto_circuit_breaker_selection,
+        AutoAuthorityRejection, AutoAuthorityTrace, FramePaintSelection, RetainedAutoDecision,
+        RetainedAutoTerminalFailureStage, retained_auto_circuit_breaker_selection,
     };
-    use crate::view::paint::{FramePaintPlanError, FramePaintPlanRejection};
+
     use std::cell::Cell;
 
     fn rejection() -> AutoAuthorityRejection {
-        AutoAuthorityRejection::NativeScrollForestPlan {
-            error: FramePaintPlanError {
-                reasons: vec![FramePaintPlanRejection::InvalidPropertyScene(
-                    "property-scene-artifact-invalid",
+        AutoAuthorityRejection::Artifact {
+            eligibility: crate::view::paint::FrameArtifactEligibility {
+                reasons: vec![crate::view::paint::FrameArtifactFallbackReason::RootCount(
+                    0,
                 )],
+                ..Default::default()
             },
         }
     }
@@ -378,13 +262,13 @@ mod capture_flag_is_decision_neutral {
 
             assert!(matches!(
                 off,
-                Some(RetainedTransformCanarySelection::Auto(
+                Some(FramePaintSelection::Auto(
                     RetainedAutoDecision::Legacy { .. }
                 ))
             ));
             assert!(matches!(
                 on,
-                Some(RetainedTransformCanarySelection::Auto(
+                Some(FramePaintSelection::Auto(
                     RetainedAutoDecision::Legacy { .. }
                 ))
             ));

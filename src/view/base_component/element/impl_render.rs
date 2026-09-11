@@ -1980,43 +1980,6 @@ impl Element {
         )
     }
 
-    /// Builds the same exact transform composite geometry from a
-    /// compiler-proven pre-transform raster union. Mixed property receivers
-    /// use this after excluding detached boundary subtrees from their normal
-    /// descendant bounds walk.
-    pub(crate) fn exact_transform_receiver_geometry_snapshot_for_raster_bounds(
-        &self,
-        raster_bounds: crate::view::base_component::RetainedSurfaceBounds,
-        paint_offset: [f32; 2],
-        outer_scissor_rect: Option<[u32; 4]>,
-    ) -> Option<TransformSurfaceGeometrySnapshot> {
-        let viewport_transform = self.resolved_transform?;
-        let visual_bounds = self.paint_snapped_own_composite_bounds(raster_bounds, paint_offset);
-        TransformSurfaceGeometrySnapshot::new(
-            raster_bounds,
-            visual_bounds,
-            viewport_transform,
-            outer_scissor_rect,
-        )
-    }
-
-    /// Counterpart for a compiler-proven artifact union whose coordinates
-    /// already include the recorder's exact paint snap.  Applying the live
-    /// Element snap again would cancel a later scroll projection for S->T.
-    pub(crate) fn exact_transform_receiver_geometry_snapshot_for_presnapped_raster_bounds(
-        &self,
-        raster_bounds: crate::view::base_component::RetainedSurfaceBounds,
-        outer_scissor_rect: Option<[u32; 4]>,
-    ) -> Option<TransformSurfaceGeometrySnapshot> {
-        let viewport_transform = self.resolved_transform?;
-        TransformSurfaceGeometrySnapshot::new(
-            raster_bounds,
-            raster_bounds,
-            viewport_transform,
-            outer_scissor_rect,
-        )
-    }
-
     fn build_legacy_layer_subtree(
         &mut self,
         graph: &mut FrameGraph,

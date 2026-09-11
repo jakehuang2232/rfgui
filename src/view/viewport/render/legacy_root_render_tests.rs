@@ -1,7 +1,9 @@
 use crate::style::{
-    Border, BoxShadow, ClipMode, Color, Layout, Length, ParsedValue, Position, PropertyId, Rotate,
-    Scale, ScrollDirection, Style, Transform, TransformEntry, Transition, TransitionProperty,
-    Transitions, Translate,
+    Border, Rotate, Scale, TransformEntry, Transition, TransitionProperty, Transitions,
+};
+use crate::style::{
+    ClipMode, Color, Layout, Length, ParsedValue, Position, PropertyId, ScrollDirection, Style,
+    Transform, Translate,
 };
 use crate::view::base_component::{
     BoxModelSnapshot, BuildState, DirtyFlags, DirtyPassMask, Element, ElementTrait, EventTarget,
@@ -73,28 +75,21 @@ impl ElementTrait for UnknownOverlayHost {
 }
 
 use super::{
-    AutoAuthorityDecision, AutoAuthorityKind, AutoAuthorityRejection, AutoAuthorityTrace,
-    CachedCompiledGraph, FrameDisposition, ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
-    PaintAuthorityFallbackStage, PaintAuthorityKind, PaintAuthorityTelemetry,
-    PendingRootEffectTransaction, PropertyNeutralArtifactAttempt, RecordedArtifactCandidate,
-    RecordedArtifactPayload, RecordedArtifactSurfacePrepareError, RetainedAutoTerminalFailureStage,
-    RetainedTransformCanarySelection, RootEffectBuildPlan, RootEffectRetainedState, Viewport,
+    ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES, ArtifactFrameCompileOutcome, AutoAuthorityKind,
+    AutoAuthorityRejection, AutoAuthorityTrace, CachedCompiledGraph, FrameDisposition,
+    FramePaintSelection, PaintAuthorityFallbackStage, PaintAuthorityKind, PaintAuthorityTelemetry,
+    RecordedArtifactCandidate, RecordedArtifactPayload, RecordedArtifactSurfacePrepareError,
+    RetainedAutoDecision as AutoAuthorityDecision, RetainedAutoTerminalFailureStage, Viewport,
     artifact_surface_raster_context, auto_artifact_legacy_fallback_stage,
     begin_paint_authority_telemetry_attempt, build_root_legacy, debug_legacy_fallback,
-    direct_scroll_transform_prepare_rejection_dispatch,
-    direct_scroll_transform_prepare_rejection_fallback_stage, enable_paint_authority_test_capture,
-    finish_frame_dirty_lifecycle, frame_disposition, paint_authority_test_capture_enabled,
-    preflight_direct_scroll_transform_selection, preflight_transform_effect_scroll_selection,
-    require_detached_artifact_surface_plan, require_zero_resident_artifact_surface_plan,
-    retained_auto_circuit_breaker_selection, retained_auto_fallback_overlay_records,
-    retained_auto_overlay_label, retained_auto_terminal_fallback_stage,
-    select_retained_auto_authority, select_retained_auto_authority_with_artifact_budget_for_test,
-    select_retained_transform_canary, should_store_compile_cache,
+    enable_paint_authority_test_capture, finish_frame_dirty_lifecycle, frame_disposition,
+    paint_authority_test_capture_enabled, require_detached_artifact_surface_plan,
+    require_zero_resident_artifact_surface_plan, retained_auto_circuit_breaker_selection,
+    retained_auto_fallback_overlay_records, retained_auto_overlay_label,
+    retained_auto_terminal_fallback_stage, select_retained_auto_authority,
+    select_retained_auto_authority_with_artifact_budget_for_test, should_store_compile_cache,
     store_paint_authority_test_snapshot, take_paint_authority_test_snapshot,
-    terminal_failure_stage, transform_effect_scroll_prepare_rejection_dispatch,
-    transform_effect_scroll_prepare_rejection_fallback_stage,
-    try_build_property_neutral_artifact_frame, try_compile_auto_artifact_frame,
-    try_compile_existing_artifact_frame,
+    terminal_failure_stage, try_compile_auto_artifact_frame,
 };
 
 fn constraints() -> (LayoutConstraints, LayoutPlacement) {
@@ -156,79 +151,6 @@ fn prepared_safe_leaf() -> (NodeArena, Vec<NodeKey>) {
     (arena, vec![root])
 }
 
-fn prepared_sampled_inline_span_layout_transition() -> (NodeArena, Vec<NodeKey>) {
-    let mut arena = new_test_arena();
-    let mut parent = Element::new_with_id(0xe2_a180, 0.0, 0.0, 92.0, 0.0);
-    let mut parent_style = Style::new();
-    parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
-    parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(92.0)));
-    parent.apply_style(parent_style);
-    let parent_key = commit_element(&mut arena, Box::new(parent));
-
-    let mut span = Element::new_with_id(0xe2_a181, 0.0, 0.0, 0.0, 0.0);
-    let mut span_style = Style::new();
-    span_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
-    span_style.insert(
-        PropertyId::BackgroundColor,
-        ParsedValue::color_like(Color::hex("#bfdbfe")),
-    );
-    span_style.set_border(Border::uniform(Length::px(2.0), &Color::hex("#2563eb")));
-    span.apply_style(span_style);
-    let span_key = commit_child(&mut arena, parent_key, Box::new(span));
-    commit_child(
-        &mut arena,
-        span_key,
-        Box::new(Text::new_with_id(
-            0xe2_a182,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            "alpha beta gamma delta epsilon zeta",
-        )),
-    );
-
-    let (mut measure, mut place) = constraints();
-    measure.max_width = 92.0;
-    measure.max_height = 220.0;
-    place.available_width = 92.0;
-    place.available_height = 220.0;
-    measure_and_place(&mut arena, parent_key, measure, place);
-    {
-        let mut node = arena.get_mut(span_key).unwrap();
-        let span = node.element.as_any_mut().downcast_mut::<Element>().unwrap();
-        assert!(
-            span.inline_fragment_rects().len() >= 2,
-            "fixture must exercise a wrapping inline-owned Element"
-        );
-        span.set_layout_transition_width(71.0);
-        span.set_layout_transition_height(39.0);
-        span.clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-    arena.clear_arena_dirty_subtree(span_key, DirtyFlags::ALL);
-    arena.refresh_subtree_dirty_cache(span_key);
-    (arena, vec![span_key])
-}
-
-fn prepared_deferred_viewport_leaf() -> (NodeArena, Vec<NodeKey>, NodeKey) {
-    let mut deferred = colored_element(0xe2_a310, 10.0, Color::rgb(230, 20, 30));
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Position,
-        ParsedValue::Position(
-            Position::absolute()
-                .left(Length::px(4.0))
-                .clip(ClipMode::Viewport),
-        ),
-    );
-    deferred.apply_style(style);
-    let mut arena = new_test_arena();
-    let root = commit_element(&mut arena, Box::new(deferred));
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, root, measure, place);
-    (arena, vec![root], root)
-}
-
 fn prepared_native_text() -> (NodeArena, Vec<NodeKey>) {
     prepared_native_text_with_opacity(1.0)
 }
@@ -251,56 +173,6 @@ fn prepared_native_text_with_opacity(opacity: f32) -> (NodeArena, Vec<NodeKey>) 
     let (measure, place) = constraints();
     measure_and_place(&mut arena, root, measure, place);
     (arena, vec![root])
-}
-
-fn prepared_native_text_transform(
-    transform: Transform,
-    nested: bool,
-    sampled_parent: bool,
-) -> (NodeArena, Vec<NodeKey>, NodeKey) {
-    let mut text = Text::new_with_id(0xd3_a012, 3.0, 5.0, 96.0, 28.0, "native Text transform");
-    text.set_font("sans-serif");
-    text.set_font_size(18.0);
-    text.set_color(Color::rgb(30, 80, 210));
-    text.set_transform(transform);
-    let mut arena = new_test_arena();
-    if !nested {
-        let root = commit_element(&mut arena, Box::new(text));
-        let (measure, place) = constraints();
-        measure_and_place(&mut arena, root, measure, place);
-        return (arena, vec![root], root);
-    }
-
-    let mut parent = Element::new_with_id(0xd3_a013, 0.0, 0.0, 180.0, 72.0);
-    let mut parent_style = Style::new();
-    parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    if sampled_parent {
-        parent_style.insert(
-            PropertyId::Transition,
-            ParsedValue::Transition(Transitions::single(Transition::new(
-                TransitionProperty::Width,
-                200,
-            ))),
-        );
-    }
-    parent.apply_style(parent_style);
-    let root = commit_element(&mut arena, Box::new(parent));
-    let child = commit_child(&mut arena, root, Box::new(text));
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, root, measure, place);
-    if sampled_parent {
-        let mut node = arena.get_mut(root).expect("sampled Text transform parent");
-        let parent = node
-            .element
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .expect("Element parent");
-        parent.set_layout_transition_width(164.0);
-        parent.set_layout_transition_height(64.0);
-        drop(node);
-        measure_and_place(&mut arena, root, measure, place);
-    }
-    (arena, vec![root], child)
 }
 
 fn prepared_transparent_native_text() -> (NodeArena, Vec<NodeKey>, NodeKey) {
@@ -909,16 +781,6 @@ fn prepared_transform_child_isolation_tree() -> (NodeArena, Vec<NodeKey>, NodeKe
     (arena, vec![root], root, child, descendant)
 }
 
-fn prepared_nested_opacity_tree() -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey, NodeKey) {
-    let (arena, roots, root, child, descendant) = prepared_transform_child_isolation_tree();
-    crate::view::test_support::get_element_mut::<Element>(&arena, root)
-        .set_resolved_transform_for_test(None);
-    crate::view::test_support::get_element_mut::<Element>(&arena, root).set_opacity(0.5);
-    crate::view::test_support::get_element_mut::<Element>(&arena, child).set_opacity(0.25);
-    crate::view::test_support::get_element_mut::<Element>(&arena, descendant).set_opacity(0.75);
-    (arena, roots, root, child, descendant)
-}
-
 fn prepared_transform_scroll_scene(
     matrix: glam::Mat4,
 ) -> (
@@ -1115,15 +977,6 @@ fn prepared_scroll_text_area_scene() -> (
         9.0,
         "RetainedAuto must admit bounded internal TextArea scrolling without a ScrollNode",
     )
-}
-
-fn prepared_focused_atomic_projection_scroll_text_area_scene() -> (
-    NodeArena,
-    Vec<NodeKey>,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
-    prepared_focused_atomic_projection_scroll_text_area_scene_with_preedit(None)
 }
 
 fn prepared_focused_atomic_projection_scroll_text_area_scene_with_preedit(
@@ -1371,106 +1224,6 @@ fn prepared_scroll_text_area_scene_with(
     (arena, roots, properties, generations)
 }
 
-fn update_prepared_scroll_text_area_scene(
-    arena: &mut NodeArena,
-    roots: &[NodeKey],
-    properties: &mut PropertyTrees,
-    generations: &mut PaintGenerationTracker,
-    outer_scroll_y: f32,
-    local_scroll_y: f32,
-) {
-    let [root] = roots else {
-        panic!("C1 fixture must have one root")
-    };
-    let root_children = arena.children_of(*root);
-    let [wrapper] = root_children.as_slice() else {
-        panic!("C1 root must have one content wrapper")
-    };
-    let wrapper = *wrapper;
-    let wrapper_children = arena.children_of(wrapper);
-    let [text_area] = wrapper_children.as_slice() else {
-        panic!("C1 wrapper must have one TextArea")
-    };
-    let text_area = *text_area;
-    crate::view::test_support::get_element_mut::<Element>(arena, wrapper)
-        .layout_state
-        .layout_position
-        .y = -outer_scroll_y;
-    {
-        let mut root_element = crate::view::test_support::get_element_mut::<Element>(arena, *root);
-        root_element.set_scroll_offset((0.0, outer_scroll_y));
-    }
-    let text_area_place = LayoutPlacement {
-        parent_x: 0.0,
-        parent_y: -outer_scroll_y,
-        visual_offset_x: 0.0,
-        visual_offset_y: 0.0,
-        available_width: 108.0,
-        available_height: 28.0,
-        viewport_width: 320.0,
-        viewport_height: 240.0,
-        percent_base_width: Some(320.0),
-        percent_base_height: Some(240.0),
-    };
-    arena.refresh_subtree_dirty_cache(text_area);
-    arena.with_element_taken(text_area, |element, arena| {
-        let text_area = element
-            .as_any_mut()
-            .downcast_mut::<TextArea>()
-            .expect("C1 child remains TextArea");
-        text_area.scroll_y = local_scroll_y;
-        element.place(text_area_place, arena);
-        let text_area = element
-            .as_any_mut()
-            .downcast_mut::<TextArea>()
-            .expect("C1 child remains TextArea");
-        text_area.pending_caret_scroll = false;
-        text_area.caret_visible = false;
-    });
-    let mut stack = vec![*root];
-    while let Some(key) = stack.pop() {
-        stack.extend(arena.children_of(key));
-        arena
-            .get_mut(key)
-            .expect("C1 fixture owner")
-            .element
-            .clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-    arena.clear_arena_dirty_subtree(*root, DirtyFlags::ALL);
-    arena.refresh_subtree_dirty_cache(*root);
-    properties.sync(arena, roots);
-    generations.sync(arena, roots, properties);
-}
-
-fn update_prepared_scroll_text_area_selection(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    properties: &mut PropertyTrees,
-    generations: &mut PaintGenerationTracker,
-    selection: (Option<usize>, Option<usize>),
-    color: Option<Color>,
-) {
-    let [root] = roots else {
-        panic!("C2a fixture must have one root")
-    };
-    let wrapper = arena.children_of(*root)[0];
-    let text_area = arena.children_of(wrapper)[0];
-    let mut node = arena.get_mut(text_area).expect("C2a TextArea");
-    let text_area = node
-        .element
-        .as_any_mut()
-        .downcast_mut::<TextArea>()
-        .expect("C2a TextArea type");
-    text_area.selection_anchor_char = selection.0;
-    text_area.selection_focus_char = selection.1;
-    if let Some(color) = color {
-        text_area.selection_background_color = color;
-    }
-    drop(node);
-    properties.sync(arena, roots);
-    generations.sync(arena, roots, properties);
-}
-
 fn prepared_exact_nested_scroll_scene() -> (
     NodeArena,
     Vec<NodeKey>,
@@ -1480,135 +1233,6 @@ fn prepared_exact_nested_scroll_scene() -> (
     let (arena, outer, _inner, _leaf, properties, generations) =
         crate::view::paint::nested_scroll_plan_fixture();
     (arena, vec![outer], properties, generations)
-}
-
-fn prepared_exact_depth_three_nested_scroll_scene() -> (
-    NodeArena,
-    Vec<NodeKey>,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
-    let (mut arena, outer, _inner, third_scroll, _properties, _generations) =
-        crate::view::paint::nested_scroll_plan_fixture();
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::ScrollDirection,
-        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
-    );
-    style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    {
-        let mut element =
-            crate::view::test_support::get_element_mut::<Element>(&arena, third_scroll);
-        element.apply_style(style);
-        element.layout_state.layout_position.x = 10.0;
-        element.layout_state.layout_position.y = 20.0;
-        element.layout_state.layout_size = Size {
-            width: 100.0,
-            height: 600.0,
-        };
-        element.layout_state.layout_inner_position.x = 10.0;
-        element.layout_state.layout_inner_position.y = 20.0;
-        element.layout_state.layout_inner_size = Size {
-            width: 100.0,
-            height: 600.0,
-        };
-        element.layout_state.content_size = Size {
-            width: 100.0,
-            height: 900.0,
-        };
-        element.set_scroll_offset((0.0, 0.0));
-        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-    }
-    let leaf = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0xe2_b3f0, 10.0, 20.0, 100.0, 900.0,
-    ))));
-    arena.set_parent(leaf, Some(third_scroll));
-    arena.push_child(third_scroll, leaf);
-    {
-        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, leaf);
-        element.layout_state.layout_position.x = 10.0;
-        element.layout_state.layout_position.y = 20.0;
-        element.layout_state.layout_size = Size {
-            width: 100.0,
-            height: 900.0,
-        };
-        element.layout_state.layout_inner_position.x = 10.0;
-        element.layout_state.layout_inner_position.y = 20.0;
-        element.layout_state.layout_inner_size = Size {
-            width: 100.0,
-            height: 900.0,
-        };
-        element.layout_state.content_size = Size {
-            width: 100.0,
-            height: 900.0,
-        };
-        element.set_background_color_value(Color::rgb(24, 48, 72));
-        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-    }
-    arena.refresh_subtree_dirty_cache(outer);
-    let roots = vec![outer];
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    (arena, roots, properties, generations)
-}
-
-fn prepared_exact_multi_scroll_scene() -> (
-    NodeArena,
-    Vec<NodeKey>,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
-    let mut arena = NodeArena::new();
-    let mut roots = Vec::new();
-    for (ordinal, offset_y) in [20.0_f32, 36.0].into_iter().enumerate() {
-        let stable_base = 0xe2_b300 + u64::try_from(ordinal).unwrap() * 10;
-        let root = arena.insert(Node::new(Box::new(Element::new_with_id(
-            stable_base,
-            0.0,
-            0.0,
-            100.0,
-            80.0,
-        ))));
-        let child = arena.insert(Node::new(Box::new(Element::new_with_id(
-            stable_base + 1,
-            0.0,
-            -offset_y,
-            100.0,
-            300.0,
-        ))));
-        arena.set_parent(child, Some(root));
-        arena.push_child(root, child);
-        let mut style = Style::new();
-        style.insert(
-            PropertyId::ScrollDirection,
-            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
-        );
-        style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        {
-            let mut root_node = arena.get_mut(root).expect("scroll root");
-            let root_element = root_node
-                .element
-                .as_any_mut()
-                .downcast_mut::<Element>()
-                .expect("Element scroll root");
-            root_element.apply_style(style);
-            root_element.layout_state.content_size = Size {
-                width: 100.0,
-                height: 300.0,
-            };
-            root_element.set_scroll_offset((0.0, offset_y));
-            root_element
-                .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        }
-        arena
-            .get_mut(child)
-            .expect("scroll content")
-            .element
-            .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        arena.refresh_subtree_dirty_cache(root);
-        roots.push(root);
-    }
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    (arena, roots, properties, generations)
 }
 
 fn synced_paint_state(
@@ -1656,40 +1280,6 @@ fn assert_generic_primary(
 // Direct coverage of the historical cascade, now compiled only for tests. Callers
 // use this name explicitly; the actual Auto primary is covered separately by
 // generic_selection_tests and the native single-Viewport corpus.
-fn compatibility_decision(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    properties: &PropertyTrees,
-    generations: &PaintGenerationTracker,
-    ctx: &UiBuildContext,
-    capture_trace: bool,
-) -> AutoAuthorityDecision {
-    super::select_retained_auto_compatibility_authority_with_semantics(
-        arena,
-        roots,
-        properties,
-        generations,
-        ctx,
-        crate::time::Instant::now(),
-        crate::view::paint::ScrollSceneSingleTextureBudget::new(
-            wgpu::Limits::default().max_texture_dimension_2d,
-            128 * 1024 * 1024,
-        )
-        .unwrap(),
-        wgpu::Limits::default().max_texture_dimension_2d,
-        ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
-        AutoAuthorityTrace::new(capture_trace),
-    )
-}
-
-fn compatibility_auto_decision(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    ctx: &UiBuildContext,
-) -> AutoAuthorityDecision {
-    let (properties, generations) = synced_paint_state(arena, roots);
-    compatibility_decision(arena, roots, &properties, &generations, ctx, true)
-}
 
 fn auto_decision(
     arena: &NodeArena,
@@ -1702,58 +1292,13 @@ fn auto_decision(
 
 fn telemetry_for_auto_decision(decision: AutoAuthorityDecision) -> PaintAuthorityTelemetry {
     let (selection, authority, trace) = match decision {
-        AutoAuthorityDecision::NativeScrollForest { plan, trace } => (
-            RetainedTransformCanarySelection::NativeScrollForestPlanned(plan),
-            AutoAuthorityKind::NativeScrollForest,
-            trace,
-        ),
-        AutoAuthorityDecision::PropertyBoundaryDagScene { scene, trace } => (
-            RetainedTransformCanarySelection::PropertyBoundaryDagScenePlanned(scene),
-            AutoAuthorityKind::PropertyScene,
-            trace,
-        ),
-        AutoAuthorityDecision::DirectScrollTransformScene { scene, trace } => (
-            RetainedTransformCanarySelection::DirectScrollTransformScenePlanned(scene),
-            AutoAuthorityKind::PropertyScene,
-            trace,
-        ),
-        AutoAuthorityDecision::PropertyScrollScene { scene, trace } => (
-            RetainedTransformCanarySelection::PropertyScrollScenePlanned(scene),
-            AutoAuthorityKind::PropertyScene,
-            trace,
-        ),
-        AutoAuthorityDecision::FrameRootScrollScene { scene, trace } => (
-            RetainedTransformCanarySelection::FrameRootScrollScenePlanned(scene),
-            AutoAuthorityKind::PropertyScene,
-            trace,
-        ),
-        AutoAuthorityDecision::TransformScrollScene { scene, trace } => (
-            RetainedTransformCanarySelection::TransformScrollScenePlanned(scene),
-            AutoAuthorityKind::PropertyScene,
-            trace,
-        ),
-        AutoAuthorityDecision::EffectScrollScene { scene, trace } => (
-            RetainedTransformCanarySelection::EffectScrollScenePlanned(scene),
-            AutoAuthorityKind::PropertyScene,
-            trace,
-        ),
-        AutoAuthorityDecision::TransformEffectScrollScene { scene, trace } => (
-            RetainedTransformCanarySelection::TransformEffectScrollScenePlanned(scene),
-            AutoAuthorityKind::PropertyScene,
-            trace,
-        ),
-        AutoAuthorityDecision::PropertyScene { plan, trace } => (
-            RetainedTransformCanarySelection::PropertyScenePlanned(plan),
-            AutoAuthorityKind::PropertyScene,
-            trace,
-        ),
         AutoAuthorityDecision::Artifact { candidate, trace } => (
-            RetainedTransformCanarySelection::AutoArtifact(candidate),
+            FramePaintSelection::AutoArtifact(candidate),
             AutoAuthorityKind::Artifact,
             trace,
         ),
         AutoAuthorityDecision::Legacy { trace } => (
-            RetainedTransformCanarySelection::AutoLegacy,
+            FramePaintSelection::AutoLegacy,
             AutoAuthorityKind::Legacy,
             trace,
         ),
@@ -1767,37 +1312,16 @@ fn telemetry_for_auto_decision(decision: AutoAuthorityDecision) -> PaintAuthorit
 
 fn auto_authority_kind(decision: &AutoAuthorityDecision) -> AutoAuthorityKind {
     match decision {
-        AutoAuthorityDecision::NativeScrollForest { .. } => AutoAuthorityKind::NativeScrollForest,
-        AutoAuthorityDecision::PropertyBoundaryDagScene { .. } => AutoAuthorityKind::PropertyScene,
-        AutoAuthorityDecision::DirectScrollTransformScene { .. } => {
-            AutoAuthorityKind::PropertyScene
-        }
-        AutoAuthorityDecision::PropertyScrollScene { .. } => AutoAuthorityKind::PropertyScene,
-        AutoAuthorityDecision::FrameRootScrollScene { .. } => AutoAuthorityKind::PropertyScene,
-        AutoAuthorityDecision::TransformScrollScene { .. } => AutoAuthorityKind::PropertyScene,
-        AutoAuthorityDecision::EffectScrollScene { .. } => AutoAuthorityKind::PropertyScene,
-        AutoAuthorityDecision::TransformEffectScrollScene { .. } => {
-            AutoAuthorityKind::PropertyScene
-        }
-        AutoAuthorityDecision::PropertyScene { .. } => AutoAuthorityKind::PropertyScene,
         AutoAuthorityDecision::Artifact { .. } => AutoAuthorityKind::Artifact,
         AutoAuthorityDecision::Legacy { .. } => AutoAuthorityKind::Legacy,
     }
 }
 
-fn auto_authority_trace(decision: &AutoAuthorityDecision) -> &super::AutoAuthorityTrace {
+fn auto_authority_trace(decision: &AutoAuthorityDecision) -> &AutoAuthorityTrace {
     match decision {
-        AutoAuthorityDecision::NativeScrollForest { trace, .. }
-        | AutoAuthorityDecision::PropertyBoundaryDagScene { trace, .. }
-        | AutoAuthorityDecision::DirectScrollTransformScene { trace, .. }
-        | AutoAuthorityDecision::PropertyScrollScene { trace, .. }
-        | AutoAuthorityDecision::FrameRootScrollScene { trace, .. }
-        | AutoAuthorityDecision::TransformScrollScene { trace, .. }
-        | AutoAuthorityDecision::EffectScrollScene { trace, .. }
-        | AutoAuthorityDecision::TransformEffectScrollScene { trace, .. }
-        | AutoAuthorityDecision::PropertyScene { trace, .. }
-        | AutoAuthorityDecision::Artifact { trace, .. }
-        | AutoAuthorityDecision::Legacy { trace } => trace,
+        AutoAuthorityDecision::Artifact { trace, .. } | AutoAuthorityDecision::Legacy { trace } => {
+            trace
+        }
     }
 }
 
@@ -1894,108 +1418,44 @@ fn assert_native_root_opacity_artifact(
         "{host}: metadata/full canonical identity"
     );
 
-    let selection_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    assert_generic_primary(arena, roots, &properties, &generations, &selection_ctx);
-    // Keep the old root-effect compiler assertions as compatibility coverage.
-    let AutoAuthorityDecision::Artifact { candidate, trace } = compatibility_decision(
-        arena,
-        roots,
-        &properties,
-        &generations,
-        &selection_ctx,
-        true,
-    ) else {
-        panic!("{host}: native root opacity must select artifact authority")
+    if opacity != 1.0 {
+        assert_eq!(
+            properties.effects[&crate::view::compositor::property_tree::EffectNodeId(root)]
+                .opacity
+                .to_bits(),
+            opacity.to_bits()
+        );
+    }
+    let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let AutoAuthorityDecision::Artifact { candidate, trace } =
+        select_retained_auto_authority(arena, roots, &properties, &generations, &ctx, true)
+    else {
+        panic!("{host}: complete recording must select Artifact")
     };
-    assert!(candidate.eligibility.eligible, "{host}: eligibility");
-    assert!(trace.rejections.is_empty(), "{host}: {trace:?}");
-    if opacity.to_bits() == 1.0_f32.to_bits() {
-        let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
-            panic!("{host}: opacity=1 current target must use the generic surface seal")
-        };
-        assert!(frame.raster_plan().nodes().is_empty());
-        assert!(frame.residents().is_empty());
-    } else {
-        let RecordedArtifactPayload::ExistingArtifact(artifact) = &candidate.payload else {
-            panic!("{host}: root opacity remains on the existing artifact path")
-        };
-        assert!(matches!(
-            artifact.target,
-            crate::view::paint::PaintArtifactTarget::RootOpacityGroup {
-                root: owner,
-                effect,
-            } if owner == root
-                && effect == crate::view::compositor::property_tree::EffectNodeId(root)
-        ));
-        assert!(artifact.effect_nodes.iter().any(|snapshot| {
-            snapshot.id == crate::view::compositor::property_tree::EffectNodeId(root)
-                && snapshot.opacity.to_bits() == opacity.to_bits()
-                && snapshot.generation != 0
-        }));
-    }
-
-    let mut graph = FrameGraph::new();
+    assert!(trace.rejections.is_empty());
+    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
+        panic!("{host}: generic sealed payload required")
+    };
+    assert!(frame.residents().is_canonical());
+    let resident_count = frame.residents().len();
     let mut viewport = Viewport::new();
-    let owner = viewport
-        .begin_retained_surface_frame_stage()
-        .expect("native root artifact owns one retained transaction");
-    let mut compile_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = compile_ctx.allocate_target(&mut graph);
-    compile_ctx.set_current_target(target);
-    let root_effect_plan = (opacity.to_bits() != 1.0_f32.to_bits()).then(|| {
-        let key = crate::view::base_component::root_effect_stable_key(root);
-        let desc = compile_ctx.persistent_full_viewport_target_desc(key);
-        RootEffectBuildPlan {
-            committed: RootEffectRetainedState::Invalid,
-            key,
-            target: crate::view::paint::RootEffectRasterInputs {
-                width: desc.width(),
-                height: desc.height(),
-                format: desc.format(),
-                sample_count: desc.sample_count(),
-                scale_factor_bits: compile_ctx.viewport().scale_factor().to_bits(),
-            },
-            pair_resident: false,
-        }
-    });
+    let owner = viewport.begin_retained_surface_frame_stage().unwrap();
+    let mut graph = FrameGraph::new();
+    let mut ctx = ctx;
+    let target = ctx.allocate_target(&mut graph);
+    ctx.set_current_target(target);
     assert!(matches!(
-        try_compile_auto_artifact_frame(
-            &mut viewport,
-            owner,
-            &mut graph,
-            candidate,
-            &compile_ctx,
-            root_effect_plan.as_ref(),
-        ),
-        PropertyNeutralArtifactAttempt::Compiled { .. }
+        try_compile_auto_artifact_frame(&mut viewport, owner, &mut graph, candidate, &ctx,),
+        ArtifactFrameCompileOutcome::Compiled { .. }
     ));
-    if opacity.to_bits() == 1.0_f32.to_bits() {
-        assert_eq!(
-            viewport.pending_artifact_surface_resident_keys_for_test(),
-            Some(Vec::new())
-        );
-    } else {
-        assert!(
-            viewport
-                .pending_artifact_surface_resident_keys_for_test()
-                .is_none(),
-            "root opacity stages Clear rather than artifact residents"
-        );
-    }
+    assert_eq!(
+        viewport
+            .pending_artifact_surface_resident_keys_for_test()
+            .unwrap()
+            .len(),
+        resident_count
+    );
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
-    let composites = graph
-        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
-        );
-    if opacity.to_bits() == 1.0_f32.to_bits() {
-        assert!(composites.is_empty(), "{host}: neutral opacity");
-    } else {
-        assert_eq!(composites.len(), 1, "{host}: one root composite");
-        assert_eq!(
-            composites[0].test_params().opacity.to_bits(),
-            opacity.to_bits(),
-            "{host}: final composite opacity"
-        );
-    }
 }
 
 fn assert_native_artifact_surface_authority(
@@ -2053,42 +1513,12 @@ fn assert_native_artifact_surface_authority(
         &mut graph,
         candidate,
         &execution_ctx,
-        None,
     );
     assert!(
-        matches!(outcome, PropertyNeutralArtifactAttempt::Compiled { .. }),
+        matches!(outcome, ArtifactFrameCompileOutcome::Compiled { .. }),
         "{host}: artifact surface execution"
     );
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true,));
-}
-
-fn selected_artifact_surface(
-    host: &str,
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    properties: &PropertyTrees,
-    generations: &PaintGenerationTracker,
-    ctx: &UiBuildContext,
-) -> (RecordedArtifactCandidate, AutoAuthorityTrace, usize) {
-    let decision = select_retained_auto_authority(arena, roots, properties, generations, ctx, true);
-    let AutoAuthorityDecision::Artifact { candidate, trace } = decision else {
-        panic!(
-            "{host}: production selector must choose Artifact, got {:?}: {:?}",
-            auto_authority_kind(&decision),
-            auto_authority_trace(&decision).rejections
-        )
-    };
-    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
-        panic!("{host}: production selector must carry a generic surface frame")
-    };
-    let surface_count = frame.raster_plan().nodes().len();
-    assert_ne!(surface_count, 0, "{host}: detached surface count");
-    assert!(frame.raster_plan().nodes().iter().all(|node| matches!(
-        node.identity().role,
-        crate::view::paint::RetainedSurfaceRasterRole::Transform
-            | crate::view::paint::RetainedSurfaceRasterRole::PropertyEffect
-    )));
-    (candidate, trace, surface_count)
 }
 
 fn emit_selected_artifact_surface(
@@ -2104,10 +1534,9 @@ fn emit_selected_artifact_surface(
     let mut ctx = ctx;
     let target = ctx.allocate_target(&mut graph);
     ctx.set_current_target(target);
-    let attempt =
-        try_compile_auto_artifact_frame(viewport, owner, &mut graph, candidate, &ctx, None);
+    let attempt = try_compile_auto_artifact_frame(viewport, owner, &mut graph, candidate, &ctx);
     assert!(
-        matches!(attempt, PropertyNeutralArtifactAttempt::Compiled { .. }),
+        matches!(attempt, ArtifactFrameCompileOutcome::Compiled { .. }),
         "{host}: production artifact executor must compile"
     );
     let pending = viewport
@@ -2225,29 +1654,6 @@ fn prepared_contents_clipped_leaf() -> (NodeArena, Vec<NodeKey>) {
     (arena, vec![parent])
 }
 
-fn prepared_outer_shadow_leaf(opacity: f32, blur: f32) -> (NodeArena, Vec<NodeKey>) {
-    let mut element = colored_element(0x6d50, 10.25, Color::rgb(230, 20, 30));
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::BackgroundColor,
-        ParsedValue::color_like(Color::rgb(230, 20, 30)),
-    );
-    style.set_box_shadow(vec![
-        BoxShadow::new()
-            .color(Color::rgb(20, 40, 220))
-            .offset_x(2.0)
-            .offset_y(3.0)
-            .blur(blur),
-    ]);
-    element.apply_style(style);
-    element.set_opacity(opacity);
-    let mut arena = new_test_arena();
-    let root = commit_element(&mut arena, Box::new(element));
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, root, measure, place);
-    (arena, vec![root])
-}
-
 fn prepared_mixed_eligibility_roots() -> (NodeArena, Vec<NodeKey>) {
     let mut arena = new_test_arena();
     let safe_leaf = commit_element(
@@ -2274,132 +1680,24 @@ fn build_roots_graph(
     roots: &[NodeKey],
     through_production_dispatch: bool,
 ) -> FrameGraph {
-    if through_production_dispatch {
-        return build_roots_graph_with_renderer_mode(
-            arena,
-            roots,
-            ViewportPaintRendererMode::Legacy,
-        );
-    }
     let mut graph = FrameGraph::new();
     let mut ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let target = ctx.allocate_target(&mut graph);
     ctx.set_current_target(target);
     for &root_key in roots {
         let child_ctx = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-        let next_state = arena
-            .with_element_taken(root_key, |root, arena| {
-                root.build(&mut graph, arena, child_ctx)
-            })
-            .expect("legacy root should exist");
+        let next_state = if through_production_dispatch {
+            build_root_legacy(&mut graph, &mut arena, root_key, child_ctx)
+        } else {
+            arena
+                .with_element_taken(root_key, |root, arena| {
+                    root.build(&mut graph, arena, child_ctx)
+                })
+                .expect("legacy root should exist")
+        };
         ctx.set_state(next_state);
     }
     graph
-}
-
-fn build_roots_graph_with_renderer_mode(
-    mut arena: NodeArena,
-    roots: &[NodeKey],
-    mode: ViewportPaintRendererMode,
-) -> FrameGraph {
-    let mut properties = PropertyTrees::default();
-    properties.sync(&arena, roots);
-    let mut generations = PaintGenerationTracker::default();
-    generations.sync(&arena, roots, &properties);
-
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
-        crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-        crate::view::render_pass::clear_pass::ClearInput {
-            pass_context: ctx.graphics_pass_context(),
-            clear_depth_stencil: true,
-        },
-        crate::view::render_pass::clear_pass::ClearOutput {
-            render_target: target,
-        },
-    ));
-    ctx.set_current_target(target);
-    let root_effect_plan = roots.first().copied().and_then(|root| {
-        (roots.len() == 1).then(|| {
-            let key = crate::view::base_component::root_effect_stable_key(root);
-            let desc = ctx.persistent_full_viewport_target_desc(key);
-            RootEffectBuildPlan {
-                committed: RootEffectRetainedState::Invalid,
-                key,
-                target: crate::view::paint::RootEffectRasterInputs {
-                    width: desc.width(),
-                    height: desc.height(),
-                    format: desc.format(),
-                    sample_count: desc.sample_count(),
-                    scale_factor_bits: ctx.viewport().scale_factor().to_bits(),
-                },
-                pair_resident: false,
-            }
-        })
-    });
-    let attempt = try_build_property_neutral_artifact_frame(
-        &mut graph,
-        &arena,
-        roots,
-        &properties,
-        &generations,
-        mode,
-        &ctx,
-        root_effect_plan.as_ref(),
-    );
-    match attempt {
-        PropertyNeutralArtifactAttempt::Compiled { state, .. } => ctx.set_state(state),
-        PropertyNeutralArtifactAttempt::WholeFrameLegacy { .. }
-        | PropertyNeutralArtifactAttempt::CompileRejected(_) => {
-            for &root_key in roots {
-                let child_ctx = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-                let next_state = build_root_legacy(&mut graph, &mut arena, root_key, child_ctx);
-                ctx.set_state(next_state);
-            }
-        }
-    }
-    graph
-}
-
-fn artifact_canary_attempt(arena: &NodeArena, roots: &[NodeKey]) -> PropertyNeutralArtifactAttempt {
-    let mut properties = PropertyTrees::default();
-    properties.sync(arena, roots);
-    let mut generations = PaintGenerationTracker::default();
-    generations.sync(arena, roots, &properties);
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    try_build_property_neutral_artifact_frame(
-        &mut graph,
-        arena,
-        roots,
-        &properties,
-        &generations,
-        ViewportPaintRendererMode::ArtifactCanary,
-        &ctx,
-        None,
-    )
-}
-
-fn preflight_fallback_reasons(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-) -> Vec<crate::view::paint::FrameArtifactFallbackReason> {
-    crate::view::paint::take_full_artifact_record_count();
-    let attempt = artifact_canary_attempt(arena, roots);
-    let PropertyNeutralArtifactAttempt::WholeFrameLegacy { eligibility } = attempt else {
-        panic!("unsupported production property must fall back during metadata preflight")
-    };
-    assert_eq!(
-        crate::view::paint::take_full_artifact_record_count(),
-        0,
-        "metadata rejection must happen before every full hook",
-    );
-    eligibility.reasons
 }
 
 fn observe_compositor_state(
@@ -2456,38 +1754,254 @@ fn assert_composite_dirty_preserved(arena: &NodeArena, key: NodeKey) {
 }
 
 mod authority_deletion_inventory_tests;
-mod canary_tests;
+
 mod composite_dirty_tests;
 mod mode_and_failure_tests;
 mod native_authority_tests;
-mod nested_scroll_baseline_tests;
-mod nested_scroll_tests;
+
 mod production_artifact_tests;
-mod property_boundary_forest_branching_tests;
-mod property_boundary_forest_depth_three_tests;
-mod property_boundary_forest_linear_tests;
-mod property_boundary_forest_multi_root_tests;
-mod property_boundary_forest_plain_root_tests;
-mod property_boundary_forest_tests;
-mod reachable_tree_facts_tests;
-mod same_owner_transform_effect_scroll_tests;
-mod scroll_forest_tests;
-mod scroll_production_dispatch_tests;
-mod scroll_topology_tests;
-mod stage_a_authority_selection_parity_tests;
-mod stage_a_reuse_contract_tests;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod stage_c_surface_dag_producer_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod stage_c_surface_materialization_tests;
 mod stage_c_zero_surface_v2_tests;
 mod telemetry_tests;
-mod text_area_caret_reuse_tests;
-mod text_area_interaction_tests;
-mod text_area_scene_tests;
-mod text_transform_tests;
-mod window_showcase_tests;
 
 mod generic_selection_tests;
 
 mod selector_convergence_tests;
+
+mod text_transform_tests;
+
+mod property_boundary_forest_branching_tests;
+
+mod property_boundary_forest_depth_three_tests;
+
+mod property_boundary_forest_linear_tests;
+
+mod property_boundary_forest_multi_root_tests;
+
+mod property_boundary_forest_plain_root_tests;
+
+mod property_boundary_forest_tests;
+
+mod nested_scroll_tests;
+
+mod scroll_production_dispatch_tests;
+
+mod window_showcase_tests;
+
+fn prepared_sampled_inline_span_layout_transition() -> (NodeArena, Vec<NodeKey>) {
+    let mut arena = new_test_arena();
+    let mut parent = Element::new_with_id(0xe2_a180, 0.0, 0.0, 92.0, 0.0);
+    let mut parent_style = Style::new();
+    parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+    parent_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(92.0)));
+    parent.apply_style(parent_style);
+    let parent_key = commit_element(&mut arena, Box::new(parent));
+
+    let mut span = Element::new_with_id(0xe2_a181, 0.0, 0.0, 0.0, 0.0);
+    let mut span_style = Style::new();
+    span_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+    span_style.insert(
+        PropertyId::BackgroundColor,
+        ParsedValue::color_like(Color::hex("#bfdbfe")),
+    );
+    span_style.set_border(Border::uniform(Length::px(2.0), &Color::hex("#2563eb")));
+    span.apply_style(span_style);
+    let span_key = commit_child(&mut arena, parent_key, Box::new(span));
+    commit_child(
+        &mut arena,
+        span_key,
+        Box::new(Text::new_with_id(
+            0xe2_a182,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            "alpha beta gamma delta epsilon zeta",
+        )),
+    );
+
+    let (mut measure, mut place) = constraints();
+    measure.max_width = 92.0;
+    measure.max_height = 220.0;
+    place.available_width = 92.0;
+    place.available_height = 220.0;
+    measure_and_place(&mut arena, parent_key, measure, place);
+    {
+        let mut node = arena.get_mut(span_key).unwrap();
+        let span = node.element.as_any_mut().downcast_mut::<Element>().unwrap();
+        assert!(
+            span.inline_fragment_rects().len() >= 2,
+            "fixture must exercise a wrapping inline-owned Element"
+        );
+        span.set_layout_transition_width(71.0);
+        span.set_layout_transition_height(39.0);
+        span.clear_local_dirty_flags(DirtyFlags::ALL);
+    }
+    arena.clear_arena_dirty_subtree(span_key, DirtyFlags::ALL);
+    arena.refresh_subtree_dirty_cache(span_key);
+    (arena, vec![span_key])
+}
+
+fn prepared_native_text_transform(
+    transform: Transform,
+    nested: bool,
+    sampled_parent: bool,
+) -> (NodeArena, Vec<NodeKey>, NodeKey) {
+    let mut text = Text::new_with_id(0xd3_a012, 3.0, 5.0, 96.0, 28.0, "native Text transform");
+    text.set_font("sans-serif");
+    text.set_font_size(18.0);
+    text.set_color(Color::rgb(30, 80, 210));
+    text.set_transform(transform);
+    let mut arena = new_test_arena();
+    if !nested {
+        let root = commit_element(&mut arena, Box::new(text));
+        let (measure, place) = constraints();
+        measure_and_place(&mut arena, root, measure, place);
+        return (arena, vec![root], root);
+    }
+
+    let mut parent = Element::new_with_id(0xd3_a013, 0.0, 0.0, 180.0, 72.0);
+    let mut parent_style = Style::new();
+    parent_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    if sampled_parent {
+        parent_style.insert(
+            PropertyId::Transition,
+            ParsedValue::Transition(Transitions::single(Transition::new(
+                TransitionProperty::Width,
+                200,
+            ))),
+        );
+    }
+    parent.apply_style(parent_style);
+    let root = commit_element(&mut arena, Box::new(parent));
+    let child = commit_child(&mut arena, root, Box::new(text));
+    let (measure, place) = constraints();
+    measure_and_place(&mut arena, root, measure, place);
+    if sampled_parent {
+        let mut node = arena.get_mut(root).expect("sampled Text transform parent");
+        let parent = node
+            .element
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .expect("Element parent");
+        parent.set_layout_transition_width(164.0);
+        parent.set_layout_transition_height(64.0);
+        drop(node);
+        measure_and_place(&mut arena, root, measure, place);
+    }
+    (arena, vec![root], child)
+}
+
+fn prepared_nested_opacity_tree() -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey, NodeKey) {
+    let (arena, roots, root, child, descendant) = prepared_transform_child_isolation_tree();
+    crate::view::test_support::get_element_mut::<Element>(&arena, root)
+        .set_resolved_transform_for_test(None);
+    crate::view::test_support::get_element_mut::<Element>(&arena, root).set_opacity(0.5);
+    crate::view::test_support::get_element_mut::<Element>(&arena, child).set_opacity(0.25);
+    crate::view::test_support::get_element_mut::<Element>(&arena, descendant).set_opacity(0.75);
+    (arena, roots, root, child, descendant)
+}
+
+fn prepared_exact_depth_three_nested_scroll_scene() -> (
+    NodeArena,
+    Vec<NodeKey>,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
+    let (mut arena, outer, _inner, third_scroll, _properties, _generations) =
+        crate::view::paint::nested_scroll_plan_fixture();
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::ScrollDirection,
+        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+    );
+    style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    {
+        let mut element =
+            crate::view::test_support::get_element_mut::<Element>(&arena, third_scroll);
+        element.apply_style(style);
+        element.layout_state.layout_position.x = 10.0;
+        element.layout_state.layout_position.y = 20.0;
+        element.layout_state.layout_size = Size {
+            width: 100.0,
+            height: 600.0,
+        };
+        element.layout_state.layout_inner_position.x = 10.0;
+        element.layout_state.layout_inner_position.y = 20.0;
+        element.layout_state.layout_inner_size = Size {
+            width: 100.0,
+            height: 600.0,
+        };
+        element.layout_state.content_size = Size {
+            width: 100.0,
+            height: 900.0,
+        };
+        element.set_scroll_offset((0.0, 0.0));
+        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+    }
+    let leaf = arena.insert(Node::new(Box::new(Element::new_with_id(
+        0xe2_b3f0, 10.0, 20.0, 100.0, 900.0,
+    ))));
+    arena.set_parent(leaf, Some(third_scroll));
+    arena.push_child(third_scroll, leaf);
+    {
+        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, leaf);
+        element.layout_state.layout_position.x = 10.0;
+        element.layout_state.layout_position.y = 20.0;
+        element.layout_state.layout_size = Size {
+            width: 100.0,
+            height: 900.0,
+        };
+        element.layout_state.layout_inner_position.x = 10.0;
+        element.layout_state.layout_inner_position.y = 20.0;
+        element.layout_state.layout_inner_size = Size {
+            width: 100.0,
+            height: 900.0,
+        };
+        element.layout_state.content_size = Size {
+            width: 100.0,
+            height: 900.0,
+        };
+        element.set_background_color_value(Color::rgb(24, 48, 72));
+        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+    }
+    arena.refresh_subtree_dirty_cache(outer);
+    let roots = vec![outer];
+    let (properties, generations) = synced_paint_state(&arena, &roots);
+    (arena, roots, properties, generations)
+}
+
+fn selected_artifact_surface(
+    host: &str,
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    properties: &PropertyTrees,
+    generations: &PaintGenerationTracker,
+    ctx: &UiBuildContext,
+) -> (RecordedArtifactCandidate, AutoAuthorityTrace, usize) {
+    let decision = select_retained_auto_authority(arena, roots, properties, generations, ctx, true);
+    let AutoAuthorityDecision::Artifact { candidate, trace } = decision else {
+        panic!(
+            "{host}: production selector must choose Artifact, got {:?}: {:?}",
+            auto_authority_kind(&decision),
+            auto_authority_trace(&decision).rejections
+        )
+    };
+    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
+        panic!("{host}: production selector must carry a generic surface frame")
+    };
+    let surface_count = frame.raster_plan().nodes().len();
+    assert_ne!(surface_count, 0, "{host}: detached surface count");
+    assert!(frame.raster_plan().nodes().iter().all(|node| matches!(
+        node.identity().role,
+        crate::view::paint::RetainedSurfaceRasterRole::Transform
+            | crate::view::paint::RetainedSurfaceRasterRole::PropertyEffect
+    )));
+    (candidate, trace, surface_count)
+}
+
+mod reachable_tree_facts_tests;

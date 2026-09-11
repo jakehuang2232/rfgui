@@ -478,40 +478,6 @@ pub(super) fn record_coverage_manifest_with_property_authorities(
         None,
         planned_boundary_cutouts,
         None,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn record_retained_coverage_manifest_with_property_forest_authorities(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    force_legacy_roots: bool,
-    emit_deferred_late: bool,
-    recording_mode: CoverageRecordingMode,
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    initial_recording_context: PaintRecordingContext,
-    transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
-    effect_surface_authority: Option<&super::EffectPropertySurfaceArtifactContract>,
-    property_forest_ancestor_chain: &super::ConsumedPropertyForestAncestorChainWitness,
-    planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
-) -> PaintCoverageManifest {
-    record_coverage_manifest_with_property_authorities_impl(
-        arena,
-        roots,
-        force_legacy_roots,
-        emit_deferred_late,
-        recording_mode,
-        property_trees,
-        paint_generations,
-        initial_recording_context,
-        transform_surface_authority,
-        effect_surface_authority,
-        Some(property_forest_ancestor_chain),
-        planned_boundary_cutouts,
-        None,
-        None,
     )
 }
 
@@ -545,119 +511,6 @@ pub(super) fn record_retained_coverage_manifest_with_property_authorities(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn record_retained_coverage_manifest_with_native_scroll_receiver(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    recording_mode: CoverageRecordingMode,
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    initial_recording_context: PaintRecordingContext,
-    receiver: NativeScrollContentReceiverCutout,
-) -> PaintCoverageManifest {
-    record_coverage_manifest_with_property_authorities_impl(
-        arena,
-        roots,
-        false,
-        true,
-        recording_mode,
-        property_trees,
-        paint_generations,
-        initial_recording_context,
-        None,
-        None,
-        None,
-        &PlannedBoundaryCutoutSet::default(),
-        Some(receiver),
-        None,
-    )
-}
-
-/// Project one node's live property state onto the surface being recorded.
-///
-/// This is the only projection dispatch coverage performs, and the three
-/// outcomes are not interchangeable. A validated legacy authority owns the
-/// projection outright: it consumes the outer scroll/clip pair and rebases the
-/// descendant clip, so running the generic projection afterwards would look for
-/// ancestor properties the legacy result no longer carries. `Rejected` is
-/// therefore a rejection of the node, not a reason to retry generically —
-/// falling through would let a node whose exact authority failed be admitted by
-/// a weaker one. `NoAuthority` is the single path into the generic projection.
-pub(super) fn project_recorded_node_properties(
-    context: &PaintRecordingContext,
-    authority: Option<super::PaintLegacyTextAreaCoverageAuthority>,
-    key: NodeKey,
-    live: PropertyTreeState,
-) -> Option<PropertyTreeState> {
-    match authority.map_or(super::LegacyTextAreaProjection::NoAuthority, |authority| {
-        authority.project_for(key, live)
-    }) {
-        super::LegacyTextAreaProjection::Projected(projected) => Some(projected),
-        super::LegacyTextAreaProjection::Rejected => None,
-        super::LegacyTextAreaProjection::NoAuthority => {
-            context.project_consumed_ancestor_property(live)
-        }
-    }
-}
-
-/// Re-derive the three legacy-backed behavior flags for one node.
-///
-/// Every flag is cleared first and then re-derived by validating the authority
-/// against `key`. The clear is load-bearing on its own: child contexts inherit
-/// the parent's value by copy and the walker rebinds `recording_owner` to the
-/// child, so without it a parent's `true` would authorize its whole subtree.
-/// A component hook that sets a flag is overwritten by the same call.
-pub(super) fn rebind_legacy_behavior_flags(
-    context: &mut PaintRecordingContext,
-    authority: Option<super::PaintLegacyTextAreaCoverageAuthority>,
-    key: NodeKey,
-) {
-    context.scroll_content_local_owner = false;
-    context.descendant_contents_clip = false;
-    context.resident_caret_suppressed = false;
-    let Some(authority) = authority else {
-        return;
-    };
-    context.scroll_content_local_owner = authority.authorizes_scroll_content_local_owner(key);
-    context.descendant_contents_clip = authority.authorizes_descendant_contents_clip(key);
-    context.resident_caret_suppressed = authority.suppresses_resident_caret(key);
-}
-
-/// The one entry point that may carry a legacy detached-subtree authority.
-///
-/// It exists so `legacy_recording` can drive coverage without the authority
-/// ever passing through a `record_coverage_manifest*` API, the recorder
-/// capability context, or the artifact. Entry point, parameter, and every
-/// caller are deleted with `legacy_admission` in the Stage C hard cutover; the
-/// generic coverage path must not import that module afterwards.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn record_legacy_text_area_coverage_manifest(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    recording_mode: CoverageRecordingMode,
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    initial_recording_context: PaintRecordingContext,
-    legacy_text_area_authority: super::PaintLegacyTextAreaCoverageAuthority,
-) -> PaintCoverageManifest {
-    record_coverage_manifest_with_property_authorities_impl(
-        arena,
-        roots,
-        false,
-        true,
-        recording_mode,
-        property_trees,
-        paint_generations,
-        initial_recording_context,
-        None,
-        None,
-        None,
-        &PlannedBoundaryCutoutSet::default(),
-        None,
-        Some(legacy_text_area_authority),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
 fn record_coverage_manifest_with_property_authorities_impl(
     arena: &NodeArena,
     roots: &[NodeKey],
@@ -672,7 +525,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
     property_forest_ancestor_chain: Option<&super::ConsumedPropertyForestAncestorChainWitness>,
     planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
     native_scroll_receiver: Option<NativeScrollContentReceiverCutout>,
-    legacy_text_area_authority: Option<super::PaintLegacyTextAreaCoverageAuthority>,
 ) -> PaintCoverageManifest {
     let mut manifest = PaintCoverageManifest::default();
     let mut seen_keys = FxHashSet::default();
@@ -763,7 +615,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
         /// never through a `record_coverage_manifest*` API, never through
         /// `PaintRecordingContext`, and never into the artifact. It is deleted
         /// with `legacy_admission` in the Stage C hard cutover.
-        legacy_text_area_authority: Option<super::PaintLegacyTextAreaCoverageAuthority>,
         required_scroll_content_paint_offset_bits: Option<[u32; 2]>,
         opacity_authority: super::PaintOpacityAuthority,
         planned_boundary_cutouts: &'a PlannedBoundaryCutoutSet,
@@ -966,10 +817,10 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 .property_forest_ancestor_chain
                 .and_then(|witness| witness.projection_for_target(key));
             recording_context.scroll_forest_host = self.scroll_forest_host;
-            let legacy_text_area_authority = self
-                .legacy_text_area_authority
-                .map(|authority| authority.for_target(key));
-            rebind_legacy_behavior_flags(&mut recording_context, legacy_text_area_authority, key);
+            // Retired detached-subtree flags cannot be inherited from component hooks.
+            recording_context.scroll_content_local_owner = false;
+            recording_context.descendant_contents_clip = false;
+            recording_context.resident_caret_suppressed = false;
             // Opacity authority is a recorder policy, not ambient component
             // state. Rebind it after every node/child hook so a component
             // cannot bake a root-group opacity that the compositor will apply
@@ -1005,14 +856,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
             {
                 recording_context.baked_scroll_host = Some(witness.for_target(key));
             }
-            let project = |live| {
-                project_recorded_node_properties(
-                    &recording_context,
-                    legacy_text_area_authority,
-                    key,
-                    live,
-                )
-            };
+            let project = |live| recording_context.project_consumed_ancestor_property(live);
             let Some(mut properties) = project(live_properties) else {
                 self.push_legacy_boundary(
                     key,
@@ -1121,10 +965,12 @@ fn record_coverage_manifest_with_property_authorities_impl(
             recording_context.deferred_viewport_self_clip = None;
             recording_context.deferred_viewport_effect = None;
             if deferred_phase_root {
-                let clip =
-                    exact_deferred_viewport_self_clip_witness(
-                        self.arena, key, self.properties, self.surface_dag,
-                    );
+                let clip = exact_deferred_viewport_self_clip_witness(
+                    self.arena,
+                    key,
+                    self.properties,
+                    self.surface_dag,
+                );
                 recording_context.deferred_viewport_self_clip = clip;
                 recording_context.deferred_viewport_effect = clip.and_then(|clip| {
                     let contract = self.effect_surface_authority?;
@@ -1610,11 +1456,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
 
         fn clip_snapshot_for(&self, state: PropertyTreeState) -> Option<Vec<ClipNodeSnapshot>> {
             let mut snapshots = self.properties.clip_snapshot_for(state.clip)?;
-            if let Some(authority) = self.legacy_text_area_authority
-                && authority.detaches_clip_snapshot()
-            {
-                snapshots = authority.detach_clip_snapshot(&snapshots)?;
-            }
             if let Some(authority) = self.effect_surface_authority {
                 snapshots = authority.detach_clip_snapshot(&snapshots)?;
             }
@@ -1706,7 +1547,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
         consumed_ancestor_property_stack: initial_recording_context
             .consumed_ancestor_property_stack,
         scroll_forest_host: initial_recording_context.scroll_forest_host,
-        legacy_text_area_authority,
         required_scroll_content_paint_offset_bits: initial_recording_context
             .required_scroll_content_paint_offset_bits,
         opacity_authority: initial_recording_context.opacity_authority,

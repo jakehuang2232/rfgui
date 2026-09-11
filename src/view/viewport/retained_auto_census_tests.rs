@@ -86,7 +86,7 @@ fn census_reports_retained_success_without_inspecting_candidate_rejections() {
     // final authority, so authority plus disposition decide success.
     let mut viewport = Viewport::new();
     viewport.frame.last_retained_auto_debug = Some(attempt(
-        DebugFramePaintAuthority::RetainedScrollScene,
+        DebugFramePaintAuthority::Artifact,
         DebugFrameDisposition::Presented,
         vec![boundary("transform")],
     ));

@@ -26,90 +26,9 @@ fn retained_auto_treats_empty_text_as_a_transparent_native_leaf() {
 }
 
 #[test]
-fn transparent_native_text_root_uses_host_generic_root_effect_artifact() {
-    let (arena, roots, root) = prepared_transparent_native_text();
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    let record = |mode| {
-        crate::view::paint::record_coverage_manifest(
-            &arena,
-            &roots,
-            false,
-            true,
-            mode,
-            &properties,
-            &generations,
-        )
-    };
-    let metadata = record(crate::view::paint::CoverageRecordingMode::MetadataOnly);
-    let full = record(crate::view::paint::CoverageRecordingMode::FullArtifact);
-    assert!(matches!(
-        metadata.items.as_slice(),
-        [crate::view::paint::PaintCoverageItem::TransparentNode { owner, .. }]
-            if *owner == root
-    ));
-    assert!(crate::view::paint::canonical_manifest_matches_for_test(
-        &metadata, &full
-    ));
-
-    let selection_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    assert_generic_primary(&arena, &roots, &properties, &generations, &selection_ctx);
-    // Directly retain the legacy root-effect compiler contract.
-    let AutoAuthorityDecision::Artifact { candidate, trace } = compatibility_decision(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        &selection_ctx,
-        true,
-    ) else {
-        panic!("transparent native Text root must bypass Element-only effect geometry")
-    };
-    assert!(candidate.eligibility.eligible);
-    assert!(trace.rejections.is_empty());
-    let RecordedArtifactPayload::ExistingArtifact(artifact) = &candidate.payload else {
-        panic!("transparent native root opacity must remain on the existing artifact path")
-    };
-    assert!(matches!(
-        artifact.target,
-        crate::view::paint::PaintArtifactTarget::RootOpacityGroup { root: owner, .. }
-            if owner == root
-    ));
-
-    let mut graph = FrameGraph::new();
-    let mut compile_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = compile_ctx.allocate_target(&mut graph);
-    compile_ctx.set_current_target(target);
-    let key = crate::view::base_component::root_effect_stable_key(root);
-    let desc = compile_ctx.persistent_full_viewport_target_desc(key);
-    let root_effect_plan = RootEffectBuildPlan {
-        committed: RootEffectRetainedState::Invalid,
-        key,
-        target: crate::view::paint::RootEffectRasterInputs {
-            width: desc.width(),
-            height: desc.height(),
-            format: desc.format(),
-            sample_count: desc.sample_count(),
-            scale_factor_bits: compile_ctx.viewport().scale_factor().to_bits(),
-        },
-        pair_resident: false,
-    };
-    let RecordedArtifactCandidate {
-        payload: RecordedArtifactPayload::ExistingArtifact(artifact),
-        eligibility,
-    } = candidate
-    else {
-        panic!("transparent root opacity compiles through ExistingArtifact")
-    };
-    assert!(matches!(
-        try_compile_existing_artifact_frame(
-            &mut graph,
-            artifact,
-            eligibility,
-            &compile_ctx,
-            Some(&root_effect_plan),
-        ),
-        PropertyNeutralArtifactAttempt::Compiled { .. }
-    ));
+fn transparent_native_text_root_uses_generic_surface_artifact() {
+    let (arena, roots, _) = prepared_transparent_native_text();
+    assert_native_root_opacity_artifact("transparent Text", &arena, &roots, 0.0);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -143,7 +62,10 @@ fn retained_auto_final_authority_covers_native_transform_effect_and_root_opacity
             // C-1.2: complete generic wrapper state now records Loading/Error
             // too; the unchanged selector must select the prepared artifact.
             assert_native_artifact_surface_authority(
-                &format!("nested {host} effect {state}"), &arena, &roots, emit,
+                &format!("nested {host} effect {state}"),
+                &arena,
+                &roots,
+                emit,
             );
             emitted_effect |= emit;
         }
@@ -251,138 +173,6 @@ fn native_image_svg_loading_error_root_opacity_stays_retained_auto() {
             assert_native_root_opacity_artifact(&format!("Svg {state}"), &arena, &roots, 0.5);
         }
     }
-}
-
-#[test]
-fn native_root_opacity_contract_rejects_property_resource_and_topology_drift() {
-    let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let (arena, roots) = prepared_native_text_with_opacity(0.5);
-    let root = roots[0];
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    let effect = crate::view::compositor::property_tree::EffectNodeId(root);
-    assert_generic_primary(&arena, &roots, &properties, &generations, &ctx);
-    let candidate = || {
-        let AutoAuthorityDecision::Artifact { candidate, .. } =
-            compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true)
-        else {
-            panic!("baseline native root opacity must select artifact")
-        };
-        candidate
-    };
-    let compile_tampered = |candidate: RecordedArtifactCandidate| {
-        let RecordedArtifactCandidate {
-            payload: RecordedArtifactPayload::ExistingArtifact(artifact),
-            eligibility,
-        } = candidate
-        else {
-            panic!("root opacity tamper compiles through ExistingArtifact")
-        };
-        let mut graph = FrameGraph::new();
-        let mut compile_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        let target = compile_ctx.allocate_target(&mut graph);
-        compile_ctx.set_current_target(target);
-        let key = crate::view::base_component::root_effect_stable_key(root);
-        let desc = compile_ctx.persistent_full_viewport_target_desc(key);
-        let plan = RootEffectBuildPlan {
-            committed: RootEffectRetainedState::Invalid,
-            key,
-            target: crate::view::paint::RootEffectRasterInputs {
-                width: desc.width(),
-                height: desc.height(),
-                format: desc.format(),
-                sample_count: desc.sample_count(),
-                scale_factor_bits: compile_ctx.viewport().scale_factor().to_bits(),
-            },
-            pair_resident: false,
-        };
-        try_compile_existing_artifact_frame(
-            &mut graph,
-            artifact,
-            eligibility,
-            &compile_ctx,
-            Some(&plan),
-        )
-    };
-    let mut generation_tamper = candidate();
-    let RecordedArtifactPayload::ExistingArtifact(generation_artifact) =
-        &mut generation_tamper.payload
-    else {
-        panic!("root opacity tamper requires the existing artifact path")
-    };
-    generation_artifact
-        .effect_nodes
-        .iter_mut()
-        .find(|snapshot| snapshot.id == effect)
-        .unwrap()
-        .generation = 0;
-    assert!(matches!(
-        compile_tampered(generation_tamper),
-        PropertyNeutralArtifactAttempt::CompileRejected(
-            crate::view::paint::ArtifactCompileErrorKind::InvalidStore
-        )
-    ));
-    let mut opacity_tamper = candidate();
-    let RecordedArtifactPayload::ExistingArtifact(opacity_artifact) = &mut opacity_tamper.payload
-    else {
-        panic!("root opacity tamper requires the existing artifact path")
-    };
-    opacity_artifact
-        .effect_nodes
-        .iter_mut()
-        .find(|snapshot| snapshot.id == effect)
-        .unwrap()
-        .opacity = f32::NAN;
-    assert!(matches!(
-        compile_tampered(opacity_tamper),
-        PropertyNeutralArtifactAttempt::CompileRejected(
-            crate::view::paint::ArtifactCompileErrorKind::InvalidStore
-        )
-    ));
-
-    let (mut properties, generations) = synced_paint_state(&arena, &roots);
-    properties.effects.get_mut(&effect).unwrap().generation = 0;
-    assert!(matches!(
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true,),
-        AutoAuthorityDecision::Legacy { .. }
-    ));
-
-    let (mut properties, generations) = synced_paint_state(&arena, &roots);
-    properties.effects.get_mut(&effect).unwrap().opacity = f32::NAN;
-    assert!(matches!(
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true,),
-        AutoAuthorityDecision::Legacy { .. }
-    ));
-
-    let (arena, roots) = prepared_native_image_with_opacity(0.5);
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    arena
-        .get_mut(roots[0])
-        .unwrap()
-        .element
-        .as_any_mut()
-        .downcast_mut::<Image>()
-        .unwrap()
-        .set_source(ImageSource::Rgba {
-            width: 1,
-            height: 1,
-            pixels: Arc::from([9_u8, 8, 7, 255]),
-        });
-    assert!(matches!(
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true,),
-        AutoAuthorityDecision::Legacy { .. }
-    ));
-
-    let (mut arena, roots) = prepared_native_text_with_opacity(0.5);
-    let unrelated = commit_element(
-        &mut arena,
-        Box::new(colored_element(0xd3_a012, 0.0, Color::rgb(1, 2, 3))),
-    );
-    arena.set_arena_children_without_mirror_for_test(roots[0], vec![unrelated]);
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    assert!(matches!(
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true,),
-        AutoAuthorityDecision::Legacy { .. }
-    ));
 }
 
 #[test]

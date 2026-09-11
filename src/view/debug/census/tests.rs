@@ -151,7 +151,7 @@ fn node_mirrored_fallbacks_are_not_counted_twice() {
 #[test]
 fn retained_success_requires_presented_and_non_legacy_authority() {
     let mut presented_retained = snapshot(Vec::new());
-    presented_retained.frame.selected_authority = DebugFramePaintAuthority::NativeScrollForest;
+    presented_retained.frame.selected_authority = DebugFramePaintAuthority::Artifact;
     presented_retained.frame.disposition = DebugFrameDisposition::Presented;
     assert!(DebugFallbackCensus::from_snapshot(&presented_retained).is_retained_success());
 
@@ -169,8 +169,7 @@ fn retained_success_requires_presented_and_non_legacy_authority() {
 fn an_earlier_candidate_rejection_does_not_decide_the_frame() {
     // Contract 1.2: a rejection entry may coexist with a retained authority.
     let mut retained_with_rejection = snapshot(vec![boundary(Some(ELEMENT), "transform")]);
-    retained_with_rejection.frame.selected_authority =
-        DebugFramePaintAuthority::RetainedScrollScene;
+    retained_with_rejection.frame.selected_authority = DebugFramePaintAuthority::Artifact;
     retained_with_rejection.frame.disposition = DebugFrameDisposition::Presented;
 
     let census = DebugFallbackCensus::from_snapshot(&retained_with_rejection);

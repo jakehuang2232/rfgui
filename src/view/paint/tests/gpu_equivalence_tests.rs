@@ -296,163 +296,6 @@ impl GpuScrollbarCase {
     const ALL: [Self; 3] = [Self::Hidden, Self::Opaque, Self::Translucent];
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ScrollSceneGpuCase {
-    name: &'static str,
-    offset_y: f32,
-    content_height: f32,
-    backing: ScrollSceneBackingKind,
-    max_dimension_2d: u32,
-    transition_local_y: f32,
-}
-
-fn scroll_scene_gpu_fixture(
-    case: ScrollSceneGpuCase,
-    scrollbar: GpuScrollbarCase,
-) -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
-    const ROOT_X: f32 = 8.0;
-    const ROOT_Y: f32 = 8.0;
-    const SCROLLPORT_WIDTH: f32 = 48.0;
-    const SCROLLPORT_HEIGHT: f32 = 40.0;
-
-    let mut root = Element::new_with_id(
-        0x5c_1101,
-        ROOT_X,
-        ROOT_Y,
-        SCROLLPORT_WIDTH,
-        SCROLLPORT_HEIGHT,
-    );
-    let mut root_style = Style::new();
-    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    root_style.insert(
-        PropertyId::ScrollDirection,
-        ParsedValue::ScrollDirection(crate::style::ScrollDirection::Vertical),
-    );
-    root_style.insert(
-        PropertyId::BackgroundColor,
-        ParsedValue::color_like(Color::rgb(12, 18, 28)),
-    );
-    root.apply_style(root_style);
-
-    let mut child = Element::new_with_id(
-        0x5c_1102,
-        ROOT_X,
-        ROOT_Y - case.offset_y,
-        SCROLLPORT_WIDTH,
-        case.content_height,
-    );
-    let transition_percent =
-        (case.transition_local_y / case.content_height * 100.0).clamp(0.0, 100.0);
-    let sharp_gradient = Gradient::linear(SideOrCorner::Bottom)
-        .stop(Color::rgb(224, 36, 28), Some(Length::percent(0.0)))
-        .stop(
-            Color::rgb(224, 36, 28),
-            Some(Length::percent(transition_percent)),
-        )
-        .stop(
-            Color::rgb(24, 72, 224),
-            Some(Length::percent(transition_percent)),
-        )
-        .stop(Color::rgb(24, 72, 224), Some(Length::percent(100.0)))
-        .build();
-    let mut child_style = Style::new();
-    child_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    child_style.insert(
-        PropertyId::BackgroundColor,
-        ParsedValue::color_like(Color::rgb(224, 36, 28)),
-    );
-    child_style.set_background_image(sharp_gradient);
-    child.apply_style(child_style);
-
-    let mut arena = NodeArena::new();
-    let root = arena.insert(Node::new(Box::new(root)));
-    let child = arena.insert(Node::new(Box::new(child)));
-    arena.set_parent(child, Some(root));
-    arena.push_child(root, child);
-    {
-        let mut root_node = arena.get_mut(root).unwrap();
-        let root_element = root_node
-            .element
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .unwrap();
-        root_element.layout_state.content_size = Size {
-            width: SCROLLPORT_WIDTH,
-            height: case.content_height,
-        };
-        root_element.set_scroll_offset((0.0, case.offset_y));
-        root_element.set_scrollbar_shadow_blur_radius(3.0);
-        match scrollbar {
-            GpuScrollbarCase::Hidden => {}
-            GpuScrollbarCase::Opaque => {
-                root_element.set_hovered(true);
-            }
-            GpuScrollbarCase::Translucent => {
-                root_element.set_hovered(true);
-                root_element.set_hovered(false);
-                let sampled_at = crate::time::Instant::now();
-                let _ = root_element.tick_post_layout_animation_frame(sampled_at);
-                let _ = root_element.tick_post_layout_animation_frame(
-                    sampled_at + crate::time::Duration::from_millis(1_000),
-                );
-            }
-        }
-        root_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-    }
-    arena
-        .get_mut(child)
-        .unwrap()
-        .element
-        .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-    arena.refresh_subtree_dirty_cache(root);
-    let mut properties = PropertyTrees::default();
-    properties.sync(&arena, &[root]);
-    assert!(
-        properties.validation_errors.is_empty(),
-        "GPU scroll-scene fixture property errors: {:?}",
-        properties.validation_errors
-    );
-    let mut generations = PaintGenerationTracker::default();
-    generations.sync(&arena, &[root], &properties);
-    (arena, root, properties, generations)
-}
-
-fn legacy_scroll_scene_graph(
-    case: ScrollSceneGpuCase,
-    scrollbar: GpuScrollbarCase,
-) -> Result<FrameGraph, String> {
-    let (mut arena, root, _, _) = scroll_scene_gpu_fixture(case, scrollbar);
-    let (mut graph, ctx, target) = graph_prelude();
-    arena
-        .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
-        .ok_or_else(|| "legacy scroll-scene root disappeared".to_string())?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
-fn retained_scroll_scene_graph(
-    viewport: &mut Viewport,
-    case: ScrollSceneGpuCase,
-    scrollbar: GpuScrollbarCase,
-) -> Result<(FrameGraph, ScrollSceneBuildTrace), String> {
-    let (arena, root, properties, generations) = scroll_scene_gpu_fixture(case, scrollbar);
-    viewport.install_scroll_scene_live_authorities_for_test(properties, generations);
-    let (mut graph, ctx, target) = graph_prelude();
-    let outcome = build_scroll_scene_from_pool_with_budget_for_test(
-        viewport,
-        &arena,
-        &[root],
-        &mut graph,
-        ctx,
-        case.max_dimension_2d,
-        64 * 1024 * 1024,
-    )
-    .map_err(|error| format!("retained scroll-scene build rejected: {error:?}"))?;
-    let (_, trace) = outcome.into_parts();
-    add_present(&mut graph, &target)?;
-    Ok((graph, trace))
-}
-
 fn focused_atomic_projection_scroll_fixture(
     caret_visible: bool,
     preedit: Option<(&str, Option<(usize, usize)>)>,
@@ -594,83 +437,6 @@ fn focused_atomic_projection_scroll_fixture(
     (arena, roots, properties, generations)
 }
 
-fn legacy_focused_atomic_projection_scroll_graph(
-    caret_visible: bool,
-    preedit: Option<(&str, Option<(usize, usize)>)>,
-) -> Result<FrameGraph, String> {
-    let (mut arena, roots, _, _) = focused_atomic_projection_scroll_fixture(caret_visible, preedit);
-    let (mut graph, mut ctx, target) = graph_prelude();
-    for root in roots {
-        let child_ctx = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-        let next = arena
-            .with_element_taken(root, |element, arena| {
-                element.build(&mut graph, arena, child_ctx)
-            })
-            .ok_or_else(|| "legacy focused atomic projection root disappeared".to_string())?;
-        ctx.set_state(next);
-    }
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
-fn retained_focused_atomic_projection_scroll_graph(
-    viewport: &mut Viewport,
-    caret_visible: bool,
-    preedit: Option<(&str, Option<(usize, usize)>)>,
-) -> Result<
-    (
-        FrameGraph,
-        RetainedPropertyScrollSceneBuildTrace,
-        crate::view::viewport::RetainedSurfaceFrameStageOwner,
-        Vec<ScrollForestResident>,
-    ),
-    String,
-> {
-    let (arena, roots, properties, generations) =
-        focused_atomic_projection_scroll_fixture(caret_visible, preedit);
-    let scene = plan_and_validate_property_scroll_scene(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        1.0,
-        [0.0; 2],
-        None,
-        crate::time::Instant::now(),
-        FORMAT,
-        ScrollSceneSingleTextureBudget::new(8192, 64 * 1024 * 1024)
-            .expect("focused atomic projection GPU budget is non-zero"),
-    )
-    .map_err(|error| format!("focused atomic projection planner rejected: {error:?}"))?;
-    if scene.boundary_count() != 1 {
-        return Err(format!(
-            "focused atomic projection planner returned {} boundaries",
-            scene.boundary_count()
-        ));
-    }
-    let owner = viewport
-        .begin_retained_surface_frame_stage()
-        .ok_or_else(|| "focused atomic projection retained stage is unavailable".to_string())?;
-    let mut graph = FrameGraph::new();
-    let prepared = prepare_retained_property_scroll_forest_from_pool(
-        viewport,
-        scene,
-        &mut graph,
-        UiBuildContext::new(WIDTH, HEIGHT, FORMAT, 1.0),
-        [0.0; 4],
-        owner,
-    )
-    .map_err(|error| format!("focused atomic projection prepare rejected: {error:?}"))?;
-    let outcome = emit_prepared_retained_property_scroll_forest(prepared);
-    let (state, trace) = outcome.into_parts();
-    let target = state
-        .current_target()
-        .ok_or_else(|| "focused atomic projection emitted no root target".to_string())?;
-    let residents = scroll_forest_residents(&graph)?;
-    add_present(&mut graph, &target)?;
-    Ok((graph, trace, owner, residents))
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScrollForestContentVersion {
     Baseline,
@@ -810,182 +576,10 @@ fn scroll_forest_gpu_fixture(
     (arena, roots, properties, generations)
 }
 
-fn legacy_scroll_forest_graph(version: ScrollForestContentVersion) -> Result<FrameGraph, String> {
-    let (mut arena, roots, _, _) = scroll_forest_gpu_fixture(version);
-    let (mut graph, mut ctx, target) = graph_prelude();
-    for root in roots {
-        let child_ctx = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-        let next = arena
-            .with_element_taken(root, |element, arena| {
-                element.build(&mut graph, arena, child_ctx)
-            })
-            .ok_or_else(|| "legacy scroll-forest root disappeared".to_string())?;
-        ctx.set_state(next);
-    }
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
 type ScrollForestResident = (
     crate::view::frame_graph::PersistentTextureKey,
     crate::view::frame_graph::TextureDesc,
 );
-
-fn scroll_forest_residents(graph: &FrameGraph) -> Result<Vec<ScrollForestResident>, String> {
-    let declared = graph
-        .declared_persistent_textures()
-        .map(|(key, desc)| (key, desc.clone()))
-        .collect::<Vec<_>>();
-    let colors = declared
-        .iter()
-        .filter(|(key, _)| key.depth_stencil().is_some())
-        .cloned()
-        .collect::<Vec<_>>();
-    if colors.is_empty()
-        || colors.len() * 2 != declared.len()
-        || colors.iter().any(|(color, _)| {
-            color
-                .depth_stencil()
-                .is_none_or(|depth| !declared.iter().any(|(key, _)| *key == depth))
-        })
-    {
-        return Err(format!(
-            "scroll-forest declarations are not complete color/depth pairs: {declared:?}"
-        ));
-    }
-    Ok(colors)
-}
-
-fn validate_scroll_forest_resident_topology(
-    residents: &[ScrollForestResident],
-) -> Result<(), String> {
-    let expected = [
-        crate::view::base_component::scroll_content_layer_stable_key(0x5c_2101),
-        crate::view::base_component::scroll_content_tile_layer_stable_key(0x5c_2111, 0, 0)
-            .expect("scroll-forest row-0 tile key is canonical"),
-        crate::view::base_component::scroll_content_tile_layer_stable_key(0x5c_2111, 0, 1)
-            .expect("scroll-forest row-1 tile key is canonical"),
-    ];
-    if residents.len() != expected.len()
-        || expected
-            .iter()
-            .any(|expected| !residents.iter().any(|(key, _)| key == expected))
-    {
-        return Err(format!(
-            "scroll-forest resident topology must be one single left-root pair and two row-adjacent right-root tile pairs: expected={expected:?}, actual={residents:?}"
-        ));
-    }
-    Ok(())
-}
-
-fn same_scroll_forest_residents(
-    left: &[ScrollForestResident],
-    right: &[ScrollForestResident],
-) -> bool {
-    left.len() == right.len() && left.iter().all(|resident| right.contains(resident))
-}
-
-fn production_scroll_forest_graph(
-    viewport: &mut Viewport,
-    version: ScrollForestContentVersion,
-    semantic_frame_time: crate::time::Instant,
-) -> Result<
-    (
-        FrameGraph,
-        RetainedPropertyScrollSceneBuildTrace,
-        crate::view::viewport::RetainedSurfaceFrameStageOwner,
-        Vec<ScrollForestResident>,
-    ),
-    String,
-> {
-    let (arena, roots, properties, generations) = scroll_forest_gpu_fixture(version);
-    let budget = ScrollSceneSingleTextureBudget::new(
-        SCROLL_FOREST_MAX_DIMENSION,
-        SCROLL_FOREST_PAIR_BUDGET_BYTES,
-    )
-    .expect("scroll-forest GPU budget is non-zero");
-    let scene = plan_and_validate_property_scroll_scene(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        1.0,
-        [0.0; 2],
-        None,
-        semantic_frame_time,
-        FORMAT,
-        budget,
-    )
-    .map_err(|error| format!("production scroll-forest planner rejected: {error:?}"))?;
-    if scene.boundary_count() != 2 {
-        return Err(format!(
-            "production scroll-forest planner returned {} boundaries",
-            scene.boundary_count()
-        ));
-    }
-    let owner = viewport
-        .begin_retained_surface_frame_stage()
-        .ok_or_else(|| "scroll-forest retained stage is unavailable".to_string())?;
-    let mut graph = FrameGraph::new();
-    let prepared = prepare_retained_property_scroll_forest_from_pool(
-        viewport,
-        scene,
-        &mut graph,
-        UiBuildContext::new(WIDTH, HEIGHT, FORMAT, 1.0),
-        [0.0; 4],
-        owner,
-    )
-    .map_err(|error| format!("production scroll-forest preflight rejected: {error:?}"))?;
-    let outcome = emit_prepared_retained_property_scroll_forest(prepared);
-    let (state, trace) = outcome.into_parts();
-    let target = state
-        .current_target()
-        .ok_or_else(|| "production scroll-forest emitted no root target".to_string())?;
-    let residents = scroll_forest_residents(&graph)?;
-    add_present(&mut graph, &target)?;
-    Ok((graph, trace, owner, residents))
-}
-
-fn validate_scroll_forest_graph_shape(
-    graph: &FrameGraph,
-    trace: &RetainedPropertyScrollSceneBuildTrace,
-    expected_reraster: usize,
-    expected_reuse: usize,
-) -> Result<(), String> {
-    if trace.root_count != 2
-        || trace.scroll_group_count != 2
-        || trace.backing != ScrollSceneBackingKind::Tiled
-        || trace.tile_count <= 2
-        || trace.reraster_count != expected_reraster
-        || trace.reuse_count != expected_reuse
-        || expected_reraster + expected_reuse != trace.tile_count
-    {
-        return Err(format!("scroll-forest trace is not exact: {trace:?}"));
-    }
-    let clear_count = graph
-        .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-        .len();
-    let composite_count = graph
-        .test_graphics_passes::<crate::view::render_pass::TextureCompositePass>()
-        .len();
-    if clear_count != 1 + expected_reraster || composite_count != trace.tile_count {
-        return Err(format!(
-            "scroll-forest graph shape drifted: clears={clear_count}, composites={composite_count}, trace={trace:?}"
-        ));
-    }
-    let residents = scroll_forest_residents(graph)?;
-    validate_scroll_forest_resident_topology(&residents)?;
-    if residents.len() != trace.tile_count
-        || graph.declared_persistent_texture_keys().count() != trace.tile_count * 2
-    {
-        return Err(format!(
-            "scroll-forest resident declaration count drifted: residents={}, keys={}, trace={trace:?}",
-            residents.len(),
-            graph.declared_persistent_texture_keys().count()
-        ));
-    }
-    Ok(())
-}
 
 fn transformed_rect_fixture() -> (NodeArena, NodeKey) {
     let mut element = Element::new_with_id(0xc3_a001, 10.0, 8.0, 28.0, 20.0);
@@ -1192,36 +786,6 @@ fn translated_pixels(source: &[u8], delta: [i32; 2]) -> Vec<u8> {
     translated
 }
 
-fn forced_transformed_rect_graph(
-    scale_factor: f32,
-    outer_scissor: Option<[u32; 4]>,
-) -> Result<FrameGraph, String> {
-    let (arena, root) = transformed_rect_fixture();
-    let roots = [root];
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let plan = plan_single_root_transform_surface_with_context(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        TransformSurfacePlanContext::new([0.0, 0.0], outer_scissor),
-    )
-    .map_err(|error| format!("forced transformed rect plan rejected: {error:?}"))?;
-    let (mut graph, ctx, target) = transformed_graph_prelude(scale_factor, outer_scissor);
-    let mut viewport = Viewport::new();
-    execute_forced_transform_surface_for_test(&mut viewport, &plan, &mut graph, ctx)
-        .map_err(|error| format!("forced transformed rect execute rejected: {error:?}"))?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
-fn legacy_nested_transformed_rect_graph(
-    scale_factor: f32,
-    outer_scissor: Option<[u32; 4]>,
-) -> Result<FrameGraph, String> {
-    legacy_nested_transformed_rect_graph_with_transforms(scale_factor, outer_scissor, 7.0, 5.0)
-}
-
 fn legacy_nested_transformed_rect_graph_with_transforms(
     scale_factor: f32,
     outer_scissor: Option<[u32; 4]>,
@@ -1235,117 +799,6 @@ fn legacy_nested_transformed_rect_graph_with_transforms(
         .ok_or_else(|| "legacy nested transformed rect root disappeared".to_string())?;
     add_present(&mut graph, &target)?;
     Ok(graph)
-}
-
-fn forced_nested_transformed_rect_graph(
-    scale_factor: f32,
-    outer_scissor: Option<[u32; 4]>,
-) -> Result<FrameGraph, String> {
-    let mut viewport = Viewport::new();
-    forced_nested_transformed_rect_graph_on_viewport(
-        &mut viewport,
-        scale_factor,
-        outer_scissor,
-        7.0,
-        5.0,
-    )
-}
-
-fn forced_nested_transformed_rect_graph_on_viewport(
-    viewport: &mut Viewport,
-    scale_factor: f32,
-    outer_scissor: Option<[u32; 4]>,
-    parent_translate_x: f32,
-    child_translate_y: f32,
-) -> Result<FrameGraph, String> {
-    let (arena, root) = nested_transformed_rect_fixture(parent_translate_x, child_translate_y);
-    let roots = [root];
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let plan = plan_single_root_transform_surface_with_context(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        TransformSurfacePlanContext::new([0.0, 0.0], outer_scissor),
-    )
-    .map_err(|error| format!("forced nested transformed rect plan rejected: {error:?}"))?;
-    let (mut graph, ctx, target) = transformed_graph_prelude(scale_factor, outer_scissor);
-    execute_forced_transform_surface_for_test(viewport, &plan, &mut graph, ctx)
-        .map_err(|error| format!("forced nested transformed rect execute rejected: {error:?}"))?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
-fn production_transformed_rect_graph(
-    viewport: &mut Viewport,
-    scale_factor: f32,
-    outer_scissor: Option<[u32; 4]>,
-) -> Result<(FrameGraph, RetainedSurfaceBuildTrace), String> {
-    let (arena, root) = transformed_rect_fixture();
-    let roots = [root];
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let plan = plan_single_root_transform_surface_with_context(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        TransformSurfacePlanContext::new([0.0, 0.0], outer_scissor),
-    )
-    .map_err(|error| format!("production transformed rect plan rejected: {error:?}"))?;
-    let (mut graph, ctx, target) = transformed_graph_prelude(scale_factor, outer_scissor);
-    let outcome = build_retained_surface_from_pool(viewport, &plan, &mut graph, ctx)
-        .map_err(|error| format!("production transformed rect execute rejected: {error:?}"))?;
-    let (_, trace) = outcome.into_parts();
-    add_present(&mut graph, &target)?;
-    Ok((graph, trace))
-}
-
-fn production_nested_transformed_rect_graph(
-    viewport: &mut Viewport,
-    scale_factor: f32,
-    outer_scissor: Option<[u32; 4]>,
-) -> Result<(FrameGraph, Vec<RetainedSurfaceBuildTrace>), String> {
-    let (arena, root) = nested_transformed_rect_fixture(7.0, 5.0);
-    let roots = [root];
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let plan = plan_single_root_transform_surface_with_context(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        TransformSurfacePlanContext::new([0.0, 0.0], outer_scissor),
-    )
-    .map_err(|error| format!("production nested transform plan rejected: {error:?}"))?;
-    let (mut graph, ctx, target) = transformed_graph_prelude(scale_factor, outer_scissor);
-    let outcome = build_retained_surface_tree_from_pool(viewport, &plan, &mut graph, ctx)
-        .map_err(|error| format!("production nested transform execute rejected: {error:?}"))?;
-    let (_, traces) = outcome.into_parts();
-    add_present(&mut graph, &target)?;
-    Ok((graph, traces))
-}
-
-fn production_isolation_graph(
-    viewport: &mut Viewport,
-    opacity: f32,
-) -> Result<(FrameGraph, RetainedSurfaceBuildTrace), String> {
-    let (arena, root, properties, generations) = exact_isolation_fixture(opacity);
-    let plan = plan_single_root_isolation_surface(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        WIDTH,
-        HEIGHT,
-        1.0,
-        None,
-    )
-    .map_err(|error| format!("production isolation plan rejected: {error:?}"))?;
-    let (mut graph, ctx, target) = transformed_graph_prelude(1.0, None);
-    let outcome = build_retained_isolation_surface_from_pool(viewport, &plan, &mut graph, ctx)
-        .map_err(|error| format!("production isolation execute rejected: {error:?}"))?;
-    let (_, trace) = outcome.into_parts();
-    add_present(&mut graph, &target)?;
-    Ok((graph, trace))
 }
 
 fn set_nested_scroll_gpu_position(element: &mut Element, x: f32, y: f32) {
@@ -1594,19 +1047,6 @@ fn nested_scroll_gpu_leaf_fixture(
     (arena, outer, properties, generations)
 }
 
-fn legacy_nested_scroll_graph(
-    outer_offset_y: f32,
-    inner_offset_y: f32,
-    outer_scissor: Option<[u32; 4]>,
-) -> Result<FrameGraph, String> {
-    legacy_nested_scroll_leaf_graph(
-        NestedScrollGpuLeafKind::Rect,
-        outer_offset_y,
-        inner_offset_y,
-        outer_scissor,
-    )
-}
-
 fn legacy_nested_scroll_leaf_graph(
     kind: NestedScrollGpuLeafKind,
     outer_offset_y: f32,
@@ -1623,188 +1063,6 @@ fn legacy_nested_scroll_leaf_graph(
         .ok_or_else(|| "legacy nested-scroll root disappeared".to_string())?;
     add_present(&mut graph, &target)?;
     Ok(graph)
-}
-
-fn production_nested_scroll_graph(
-    viewport: &mut Viewport,
-    outer_offset_y: f32,
-    inner_offset_y: f32,
-    outer_scissor: Option<[u32; 4]>,
-) -> Result<
-    (
-        FrameGraph,
-        RetainedPropertyScrollSceneBuildTrace,
-        crate::view::viewport::RetainedSurfaceFrameStageOwner,
-        crate::view::frame_graph::PersistentTextureKey,
-        crate::view::frame_graph::TextureDesc,
-    ),
-    String,
-> {
-    production_nested_scroll_leaf_graph(
-        viewport,
-        NestedScrollGpuLeafKind::Rect,
-        outer_offset_y,
-        inner_offset_y,
-        outer_scissor,
-    )
-}
-
-fn production_nested_scroll_leaf_graph(
-    viewport: &mut Viewport,
-    kind: NestedScrollGpuLeafKind,
-    outer_offset_y: f32,
-    inner_offset_y: f32,
-    outer_scissor: Option<[u32; 4]>,
-) -> Result<
-    (
-        FrameGraph,
-        RetainedPropertyScrollSceneBuildTrace,
-        crate::view::viewport::RetainedSurfaceFrameStageOwner,
-        crate::view::frame_graph::PersistentTextureKey,
-        crate::view::frame_graph::TextureDesc,
-    ),
-    String,
-> {
-    let (arena, outer, properties, generations) =
-        nested_scroll_gpu_leaf_fixture(kind, outer_offset_y, inner_offset_y);
-    let mut ctx = UiBuildContext::new(WIDTH, HEIGHT, FORMAT, 1.0);
-    ctx.push_scissor_rect(outer_scissor);
-    let scene = PropertyBoundaryDagCompiler::plan_and_validate(
-        &arena,
-        &[outer],
-        &properties,
-        &generations,
-        1.0,
-        ctx.paint_offset(),
-        ctx.graphics_pass_context().logical_scissor_rect(),
-        crate::time::Instant::now(),
-        FORMAT,
-        ScrollSceneSingleTextureBudget::new(
-            wgpu::Limits::default().max_texture_dimension_2d,
-            128 * 1024 * 1024,
-        )
-        .expect("native nested-scroll budget is non-zero"),
-    )
-    .map_err(|error| {
-        format!(
-            "nested-scroll {} production DAG rejected: {error:?}",
-            kind.label()
-        )
-    })?;
-    let (leaf_key, leaf_desc) = scene
-        .nested_scroll_persistent_leaf_target_for_test()
-        .ok_or_else(|| format!("nested-scroll {} has no persistent leaf", kind.label()))?;
-    let owner = viewport
-        .begin_retained_surface_frame_stage()
-        .ok_or_else(|| "nested-scroll retained stage is unavailable".to_string())?;
-    let mut graph = FrameGraph::new();
-    let prepared = prepare_property_boundary_dag_scene_from_pool(
-        viewport,
-        scene,
-        &mut graph,
-        ctx,
-        [0.0, 0.0, 0.0, 0.0],
-        owner,
-    )
-    .map_err(|error| {
-        format!(
-            "nested-scroll {} production preflight rejected: {error:?}",
-            kind.label()
-        )
-    })?;
-    let outcome = emit_prepared_property_boundary_dag_scene(prepared);
-    let (state, trace) = outcome.into_parts();
-    let target = state
-        .current_target()
-        .ok_or_else(|| "nested-scroll emission did not produce a root target".to_string())?;
-    let depth_key = leaf_key
-        .depth_stencil()
-        .ok_or_else(|| "nested-scroll R1 key has no depth pair".to_string())?;
-    let declared = graph
-        .declared_persistent_texture_keys()
-        .collect::<rustc_hash::FxHashSet<_>>();
-    let expected = [leaf_key, depth_key]
-        .into_iter()
-        .collect::<rustc_hash::FxHashSet<_>>();
-    if declared != expected {
-        return Err(format!(
-            "nested-scroll must persist only the leaf color/depth pair: declared={declared:?} expected={expected:?}"
-        ));
-    }
-    add_present(&mut graph, &target)?;
-    Ok((graph, trace, owner, leaf_key, leaf_desc))
-}
-
-fn validate_nested_scroll_leaf_graph_shape(
-    graph: &FrameGraph,
-    kind: NestedScrollGpuLeafKind,
-    cold: bool,
-) -> Result<(), String> {
-    let clear_count = graph
-        .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-        .len();
-    let expected_clears = if cold { 2 } else { 1 };
-    if clear_count != expected_clears {
-        return Err(format!(
-            "nested-scroll {} {} graph clears={clear_count}, expected={expected_clears}",
-            kind.label(),
-            if cold { "cold" } else { "warm" },
-        ));
-    }
-    let composite_count = graph
-        .test_graphics_passes::<crate::view::render_pass::texture_composite_pass::TextureCompositePass>(
-        )
-        .len();
-    let expected_composites = if cold {
-        kind.expected_cold_composite_count().saturating_sub(1)
-    } else {
-        1
-    };
-    if composite_count != expected_composites {
-        return Err(format!(
-            "nested-scroll {} {} graph composites={composite_count}, expected={expected_composites}",
-            kind.label(),
-            if cold { "cold" } else { "warm" },
-        ));
-    }
-    let text_count = graph
-        .test_graphics_passes::<crate::view::render_pass::text_pass::TextPreparedInputPass>()
-        .len();
-    let expected_text = usize::from(cold && kind == NestedScrollGpuLeafKind::Text);
-    if text_count != expected_text {
-        return Err(format!(
-            "nested-scroll {} {} graph text passes={text_count}, expected={expected_text}",
-            kind.label(),
-            if cold { "cold" } else { "warm" },
-        ));
-    }
-    Ok(())
-}
-
-fn validate_nested_scroll_legacy_leaf_graph_shape(
-    graph: &FrameGraph,
-    kind: NestedScrollGpuLeafKind,
-) -> Result<(), String> {
-    let composites = graph
-        .test_graphics_passes::<crate::view::render_pass::texture_composite_pass::TextureCompositePass>(
-        )
-        .len();
-    let text = graph
-        .test_graphics_passes::<crate::view::render_pass::text_pass::TextPreparedInputPass>()
-        .len();
-    let valid = match kind {
-        NestedScrollGpuLeafKind::Image | NestedScrollGpuLeafKind::Svg => {
-            composites == 1 && text == 0
-        }
-        NestedScrollGpuLeafKind::Text => composites == 0 && text == 1,
-        NestedScrollGpuLeafKind::Rect => composites == 0 && text == 0,
-    };
-    valid.then_some(()).ok_or_else(|| {
-        format!(
-            "legacy nested-scroll {} leaf passes are not exact: composites={composites}, text={text}",
-            kind.label()
-        )
-    })
 }
 
 fn root_group_overlap_rects() -> [RectPassParams; 2] {
@@ -2027,76 +1285,6 @@ fn artifact_root_group_overlap_graph(opacity: f32) -> Result<FrameGraph, String>
     })?;
     add_present(&mut graph, &target)?;
     Ok(graph)
-}
-
-fn retained_root_effect_witness(
-    artifact: &PaintArtifact,
-) -> Result<
-    (
-        RootEffectRasterStamp,
-        crate::view::frame_graph::PersistentTextureKey,
-        crate::view::frame_graph::texture_resource::TextureDesc,
-    ),
-    String,
-> {
-    let PaintArtifactTarget::RootOpacityGroup { root, .. } = artifact.target else {
-        return Err("retained root-effect fixture must target a root opacity group".to_string());
-    };
-    let key = crate::view::base_component::root_effect_stable_key(root);
-    let ctx = UiBuildContext::new(WIDTH, HEIGHT, FORMAT, 1.0);
-    let color_desc = ctx.persistent_full_viewport_target_desc(key);
-    let stamp = validated_root_effect_raster_stamp(
-        artifact,
-        RootEffectRasterInputs {
-            width: color_desc.width(),
-            height: color_desc.height(),
-            format: color_desc.format(),
-            sample_count: color_desc.sample_count(),
-            scale_factor_bits: 1.0_f32.to_bits(),
-        },
-    )
-    .ok_or_else(|| "retained root-effect fixture failed strict stamp validation".to_string())?;
-    Ok((stamp, key, color_desc))
-}
-
-fn retained_root_group_graph(
-    artifact: &PaintArtifact,
-    action: RootEffectCompileAction,
-) -> Result<FrameGraph, String> {
-    let (mut graph, ctx, target) = graph_prelude();
-    try_compile_root_effect_artifact(artifact, action, &mut graph, ctx).map_err(|error| {
-        format!(
-            "retained root opacity group artifact failed validation: {:?}",
-            error.kind()
-        )
-    })?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
-fn assert_retained_root_effect_graph_shape(
-    graph: &FrameGraph,
-    expected_clear_count: usize,
-    expected_raster_count: usize,
-    case: &str,
-) -> Result<(), String> {
-    let clear_count = graph
-        .test_graphics_passes::<crate::view::render_pass::ClearPass>()
-        .len();
-    let raster_count = graph.test_graphics_passes::<DrawRectPass>().len();
-    let composite_count = graph
-        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
-        )
-        .len();
-    if clear_count != expected_clear_count
-        || raster_count != expected_raster_count
-        || composite_count != 1
-    {
-        return Err(format!(
-            "{case}: unexpected retained root-effect graph shape: clears={clear_count} (expected {expected_clear_count}), raster_rects={raster_count} (expected {expected_raster_count}), composites={composite_count} (expected 1)"
-        ));
-    }
-    Ok(())
 }
 
 fn explicit_root_group_overlap_graph(opacity: f32) -> Result<FrameGraph, String> {
@@ -2516,49 +1704,6 @@ fn pixel_at(pixels: &[u8], x: u32, y: u32) -> Result<[u8; 4], String> {
     Ok([slice[0], slice[1], slice[2], slice[3]])
 }
 
-fn validate_nested_scroll_leaf_anchor(
-    pixels: &[u8],
-    kind: NestedScrollGpuLeafKind,
-) -> Result<(), String> {
-    let predicate = |pixel: [u8; 4]| match kind {
-        NestedScrollGpuLeafKind::Image => pixel[0] > 180 && pixel[1] > 30 && pixel[2] < 80,
-        NestedScrollGpuLeafKind::Svg => {
-            (pixel[1] > 140 && pixel[0] < 100) || (pixel[2] > 150 && pixel[0] < 100)
-        }
-        NestedScrollGpuLeafKind::Text => pixel[0] > 120 && pixel[1] > 100 && pixel[2] < 100,
-        NestedScrollGpuLeafKind::Rect => pixel == [24, 48, 72, 255],
-    };
-    let mut count = 0usize;
-    let mut bounds = [u32::MAX, u32::MAX, 0, 0];
-    for y in 20..HEIGHT {
-        for x in 10..WIDTH {
-            if predicate(pixel_at(pixels, x, y)?) {
-                count += 1;
-                bounds[0] = bounds[0].min(x);
-                bounds[1] = bounds[1].min(y);
-                bounds[2] = bounds[2].max(x);
-                bounds[3] = bounds[3].max(y);
-            }
-        }
-    }
-    if count == 0 {
-        return Err(format!(
-            "nested-scroll {} output has no recognizable leaf anchor",
-            kind.label()
-        ));
-    }
-    if kind == NestedScrollGpuLeafKind::Text {
-        let width = bounds[2] - bounds[0] + 1;
-        let height = bounds[3] - bounds[1] + 1;
-        if count < 3 || width > 40 || height > 28 {
-            return Err(format!(
-                "nested-scroll Text glyph anchor is not localized: pixels={count}, bounds={bounds:?}"
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn rgba8_unorm(color: Color) -> [u8; 4] {
     color
         .to_rgba_f32()
@@ -2745,256 +1890,6 @@ fn compare_pixels(
     ))
 }
 
-fn compare_scroll_scene_pixels(
-    legacy: &[u8],
-    retained: &[u8],
-    transition_screen_y: f32,
-    adapter: &str,
-    case: &str,
-) -> Result<(), String> {
-    if legacy.len() != retained.len() {
-        return Err(format!(
-            "{case}: pixel buffer lengths differ on {adapter}: legacy={}, retained={}",
-            legacy.len(),
-            retained.len()
-        ));
-    }
-    let mut diff = PixelDiff::default();
-    for pixel_index in 0..(WIDTH * HEIGHT) as usize {
-        let x = pixel_index as u32 % WIDTH;
-        let y = pixel_index as u32 / WIDTH;
-        let in_fractional_or_seam_band =
-            (8..56).contains(&x) && ((y as f32 + 0.5) - transition_screen_y).abs() <= 1.5;
-        let allowed = if in_fractional_or_seam_band { 2 } else { 1 };
-        let offset = pixel_index * BYTES_PER_PIXEL as usize;
-        let mut pixel_failed = false;
-        for channel in 0..BYTES_PER_PIXEL as usize {
-            let delta = legacy[offset + channel].abs_diff(retained[offset + channel]);
-            diff.max_channel_delta = diff.max_channel_delta.max(delta);
-            if delta > allowed {
-                pixel_failed = true;
-            }
-        }
-        if !pixel_failed {
-            continue;
-        }
-        diff.mismatched_pixels += 1;
-        diff.bounds = Some(match diff.bounds {
-            None => [x, y, x, y],
-            Some([left, top, right, bottom]) => {
-                [left.min(x), top.min(y), right.max(x), bottom.max(y)]
-            }
-        });
-    }
-    if diff.mismatched_pixels == 0 {
-        return Ok(());
-    }
-    Err(format!(
-        "{case}: legacy/RetainedScrollScene mismatch on {adapter}: mismatched_pixels={}, max_channel_delta={}, bounds={:?}, transition_y={transition_screen_y}, rule=delta<=1 outside the 1px transition/seam band and <=2 inside",
-        diff.mismatched_pixels, diff.max_channel_delta, diff.bounds
-    ))
-}
-
-fn compare_scroll_forest_pixels(
-    legacy: &[u8],
-    retained: &[u8],
-    adapter: &str,
-    case: &str,
-) -> Result<(), String> {
-    if legacy.len() != retained.len() {
-        return Err(format!(
-            "{case}: scroll-forest pixel buffer lengths differ on {adapter}: legacy={}, retained={}",
-            legacy.len(),
-            retained.len()
-        ));
-    }
-    let transition_screen_y = [
-        SCROLL_FOREST_ROOT_Y + SCROLL_FOREST_TRANSITIONS[0] - SCROLL_FOREST_OFFSETS[0],
-        SCROLL_FOREST_ROOT_Y + SCROLL_FOREST_TRANSITIONS[1] - SCROLL_FOREST_OFFSETS[1],
-    ];
-    let mut diff = PixelDiff::default();
-    for pixel_index in 0..(WIDTH * HEIGHT) as usize {
-        let x = pixel_index as u32 % WIDTH;
-        let y = pixel_index as u32 / WIDTH;
-        let in_transition_band = (0..2).any(|ordinal| {
-            let left = SCROLL_FOREST_ROOT_X[ordinal] as u32;
-            let right = (SCROLL_FOREST_ROOT_X[ordinal] + SCROLL_FOREST_ROOT_WIDTH) as u32;
-            (left..right).contains(&x)
-                && ((y as f32 + 0.5) - transition_screen_y[ordinal]).abs() <= 1.5
-        });
-        let allowed = if in_transition_band { 2 } else { 1 };
-        let offset = pixel_index * BYTES_PER_PIXEL as usize;
-        let mut pixel_failed = false;
-        for channel in 0..BYTES_PER_PIXEL as usize {
-            let delta = legacy[offset + channel].abs_diff(retained[offset + channel]);
-            diff.max_channel_delta = diff.max_channel_delta.max(delta);
-            if delta > allowed {
-                pixel_failed = true;
-            }
-        }
-        if !pixel_failed {
-            continue;
-        }
-        diff.mismatched_pixels += 1;
-        diff.bounds = Some(match diff.bounds {
-            None => [x, y, x, y],
-            Some([left, top, right, bottom]) => {
-                [left.min(x), top.min(y), right.max(x), bottom.max(y)]
-            }
-        });
-    }
-    if diff.mismatched_pixels == 0 {
-        return Ok(());
-    }
-    Err(format!(
-        "{case}: legacy/production scroll-forest mismatch on {adapter}: mismatched_pixels={}, max_channel_delta={}, bounds={:?}",
-        diff.mismatched_pixels, diff.max_channel_delta, diff.bounds
-    ))
-}
-
-fn validate_scroll_forest_anchors(
-    pixels: &[u8],
-    version: ScrollForestContentVersion,
-    adapter: &str,
-    case: &str,
-) -> Result<(), String> {
-    let clear = pixel_at(pixels, 1, 1)?;
-    let left_before = pixel_at(pixels, 12, 16)?;
-    let left_after = pixel_at(pixels, 12, 36)?;
-    let right_before = pixel_at(pixels, 44, 20)?;
-    let right_after = pixel_at(pixels, 44, 40)?;
-    // Readback is straight *linear* RGBA8. Derive exact anchors from the
-    // fixture's sRGB stops instead of using thresholds in the wrong space.
-    let linear = |rgb: [u8; 3]| {
-        let rgb = rgb.map(|v| {
-            let s = f64::from(v) / 255.0;
-            let l = if s <= 0.04045 {
-                s / 12.92
-            } else {
-                ((s + 0.055) / 1.055).powf(2.4)
-            };
-            (l * 255.0).round() as u8
-        });
-        [rgb[0], rgb[1], rgb[2], 255]
-    };
-    let matches = |actual: [u8; 4], rgb| {
-        actual
-            .iter()
-            .zip(linear(rgb))
-            .all(|(a, e)| a.abs_diff(e) <= 1)
-    };
-    let (left_top, left_bottom) = match version {
-        ScrollForestContentVersion::Baseline => ([224, 36, 28], [30, 196, 72]),
-        ScrollForestContentVersion::FirstRootMutated => ([208, 36, 196], [24, 188, 208]),
-    };
-    let left_matches = matches(left_before, left_top) && matches(left_after, left_bottom);
-    let right_matches =
-        matches(right_before, [24, 72, 224]) && matches(right_after, [224, 188, 24]);
-    if clear != [0, 0, 0, 0] || !left_matches || !right_matches {
-        return Err(format!(
-            "{case}: scroll-forest anchors drifted on {adapter}: clear={clear:?}, left_before={left_before:?}, left_after={left_after:?}, right_before={right_before:?}, right_after={right_after:?}"
-        ));
-    }
-    Ok(())
-}
-
-fn validate_scroll_forest_right_root_unchanged(
-    before: &[u8],
-    after: &[u8],
-    adapter: &str,
-) -> Result<(), String> {
-    for y in SCROLL_FOREST_ROOT_Y as u32..(SCROLL_FOREST_ROOT_Y + SCROLL_FOREST_ROOT_HEIGHT) as u32
-    {
-        for x in SCROLL_FOREST_ROOT_X[1] as u32
-            ..(SCROLL_FOREST_ROOT_X[1] + SCROLL_FOREST_ROOT_WIDTH) as u32
-        {
-            let old = pixel_at(before, x, y)?;
-            let new = pixel_at(after, x, y)?;
-            if old
-                .into_iter()
-                .zip(new)
-                .any(|(old, new)| old.abs_diff(new) > 1)
-            {
-                return Err(format!(
-                    "scroll-forest first-root mutation changed the tiled sibling at ({x},{y}) on {adapter}: before={old:?}, after={new:?}"
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn run_native_scroll_scene_case(
-    gpu: &NativeGpu,
-    case: ScrollSceneGpuCase,
-    scrollbar: GpuScrollbarCase,
-) -> Result<(), String> {
-    let adapter = gpu.label();
-    let label = format!("{}/{scrollbar:?}", case.name);
-    let mut viewport = Viewport::new();
-
-    let (first_graph, first_trace) = retained_scroll_scene_graph(&mut viewport, case, scrollbar)?;
-    if first_trace.backing != case.backing
-        || first_trace.action != RetainedSurfaceCompileAction::Reraster
-        || first_trace.reraster_count != first_trace.tile_count
-        || first_trace.reuse_count != 0
-    {
-        return Err(format!(
-            "{label}: frame 1 did not fully reraster {:?} backing on {adapter}: {first_trace:?}",
-            case.backing
-        ));
-    }
-    if (case.backing == ScrollSceneBackingKind::Single && first_trace.tile_count != 1)
-        || (case.backing == ScrollSceneBackingKind::Tiled && first_trace.tile_count < 2)
-    {
-        return Err(format!(
-            "{label}: unexpected frame-1 tile count on {adapter}: {first_trace:?}"
-        ));
-    }
-    let first_pixels = render_on_viewport(first_graph, gpu, &mut viewport, 1.0, FORMAT)?;
-    viewport.finish_retained_surface_transaction(true);
-
-    let (second_graph, second_trace) = retained_scroll_scene_graph(&mut viewport, case, scrollbar)?;
-    if second_trace.backing != case.backing
-        || second_trace.action != RetainedSurfaceCompileAction::Reuse
-        || second_trace.reraster_count != 0
-        || second_trace.reuse_count != second_trace.tile_count
-        || second_trace.tile_count != first_trace.tile_count
-    {
-        return Err(format!(
-            "{label}: frame 2 did not fully reuse {:?} backing on {adapter}: first={first_trace:?}, second={second_trace:?}",
-            case.backing
-        ));
-    }
-    let second_pixels = render_on_viewport(second_graph, gpu, &mut viewport, 1.0, FORMAT)?;
-    viewport.finish_retained_surface_transaction(true);
-
-    let legacy_pixels = render(legacy_scroll_scene_graph(case, scrollbar)?, gpu)?;
-    let transition_screen_y = 8.0 + case.transition_local_y - case.offset_y;
-    compare_scroll_scene_pixels(
-        &legacy_pixels,
-        &first_pixels,
-        transition_screen_y,
-        &adapter,
-        &format!("{label}/frame-1-reraster"),
-    )?;
-    compare_scroll_scene_pixels(
-        &legacy_pixels,
-        &second_pixels,
-        transition_screen_y,
-        &adapter,
-        &format!("{label}/frame-2-reuse"),
-    )?;
-    compare_pixels(
-        &first_pixels,
-        &second_pixels,
-        [0, 0, WIDTH, HEIGHT],
-        &adapter,
-        &format!("{label}/retained-frame-stability"),
-    )?;
-    Ok(())
-}
-
 #[derive(Clone, Copy, Debug)]
 struct DirectScrollTransformGpuCase {
     label: &'static str,
@@ -3029,7 +1924,7 @@ const DIRECT_SCROLL_TRANSFORM_GRADIENT_TRANSITION_Y: f32 = 24.0;
 fn direct_scroll_transform_gpu_fixture(
     case: DirectScrollTransformGpuCase,
 ) -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
-    // Mirrors frame_plan::tests::property_scroll_interleave_fixture's exact
+    // Mirrors planning_tests::property_scroll_interleave_fixture's exact
     // ScrollTransform topology. The sharp gradient is deliberately stronger
     // than that CPU fixture's uniform fill: a scroll-only composite error must
     // move visible red/blue coverage instead of producing the same pixels.
@@ -3123,219 +2018,12 @@ type DirectScrollTransformResident = (
     crate::view::frame_graph::TextureDesc,
 );
 
-fn direct_scroll_transform_resident(
-    graph: &FrameGraph,
-) -> Result<DirectScrollTransformResident, String> {
-    let declared = graph
-        .declared_persistent_textures()
-        .map(|(key, desc)| (key, desc.clone()))
-        .collect::<Vec<_>>();
-    if declared.len() != 2 {
-        return Err(format!(
-            "direct S->T must declare exactly one color/depth pair: {declared:?}"
-        ));
-    }
-    let colors = declared
-        .iter()
-        .filter(|(key, _)| key.depth_stencil().is_some())
-        .cloned()
-        .collect::<Vec<_>>();
-    let [resident] = colors.as_slice() else {
-        return Err(format!(
-            "direct S->T declarations do not contain exactly one color key: {declared:?}"
-        ));
-    };
-    let Some(depth_key) = resident.0.depth_stencil() else {
-        unreachable!("filtered direct S->T resident owns a depth key")
-    };
-    if !declared.iter().any(|(key, _)| *key == depth_key) {
-        return Err(format!(
-            "direct S->T color key has no declared depth partner: {declared:?}"
-        ));
-    }
-    Ok(resident.clone())
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DirectScrollTransformCompositeShape {
     bounds_bits: [u32; 4],
     quad_position_bits: [[u32; 2]; 4],
     uv_bounds_bits: Option<[u32; 4]>,
     scissor_rect: Option<[u32; 4]>,
-}
-
-fn direct_scroll_transform_composite_shape(
-    graph: &FrameGraph,
-) -> Result<DirectScrollTransformCompositeShape, String> {
-    let composites = graph.test_graphics_passes::<
-        crate::view::render_pass::texture_composite_pass::TextureCompositePass,
-    >();
-    let [composite] = composites.as_slice() else {
-        return Err(format!(
-            "direct S->T must emit exactly one final texture composite, got {}",
-            composites.len()
-        ));
-    };
-    let snapshot = composite.test_snapshot();
-    let Some(quad_position_bits) = snapshot.quad_position_bits else {
-        return Err("direct S->T final composite must own explicit quad positions".to_string());
-    };
-    Ok(DirectScrollTransformCompositeShape {
-        bounds_bits: snapshot.bounds_bits,
-        quad_position_bits,
-        uv_bounds_bits: snapshot.uv_bounds_bits,
-        scissor_rect: snapshot.explicit_scissor_rect,
-    })
-}
-
-fn production_direct_scroll_transform_graph(
-    viewport: &mut Viewport,
-    case: DirectScrollTransformGpuCase,
-) -> Result<
-    (
-        FrameGraph,
-        RetainedPropertyScrollSceneBuildTrace,
-        crate::view::viewport::RetainedSurfaceFrameStageOwner,
-        DirectScrollTransformResident,
-        DirectScrollTransformCompositeShape,
-    ),
-    String,
-> {
-    // The admitted direct S->T production contract is deliberately exact:
-    // DPR 1, incoming paint offset zero, and no external scissor.
-    let (arena, root, properties, generations) = direct_scroll_transform_gpu_fixture(case);
-    let budget = ScrollSceneSingleTextureBudget::new(
-        wgpu::Limits::default().max_texture_dimension_2d,
-        128 * 1024 * 1024,
-    )
-    .expect("direct S->T GPU budget is non-zero");
-    let scene = plan_and_validate_direct_scroll_transform_scene(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        1.0,
-        [0.0; 2],
-        None,
-        FORMAT,
-        budget,
-    )
-    .map_err(|error| format!("direct S->T {} planner rejected: {error:?}", case.label))?;
-    let owner = viewport
-        .begin_retained_surface_frame_stage()
-        .ok_or_else(|| format!("direct S->T {} retained stage is unavailable", case.label))?;
-    let mut graph = FrameGraph::new();
-    let ctx = UiBuildContext::new(WIDTH, HEIGHT, FORMAT, 1.0);
-    let prepared = prepare_direct_scroll_transform_scene_from_pool(
-        viewport, scene, &mut graph, ctx, [0.0; 4], owner,
-    )
-    .map_err(|error| format!("direct S->T {} preflight rejected: {error:?}", case.label))?;
-    let outcome = emit_prepared_direct_scroll_transform_scene(prepared);
-    let (state, trace) = outcome.into_parts();
-    let target = state.current_target().ok_or_else(|| {
-        format!(
-            "direct S->T {} emission produced no root target",
-            case.label
-        )
-    })?;
-    let resident = direct_scroll_transform_resident(&graph)?;
-    let composite = direct_scroll_transform_composite_shape(&graph)?;
-    add_present(&mut graph, &target)?;
-    Ok((graph, trace, owner, resident, composite))
-}
-
-fn validate_direct_scroll_transform_graph_shape(
-    graph: &FrameGraph,
-    trace: RetainedPropertyScrollSceneBuildTrace,
-    cold: bool,
-    path: &str,
-) -> Result<(), String> {
-    let clears = graph
-        .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-        .len();
-    let draw_rects = graph.test_rect_pass_snapshots();
-    let composite_passes = graph
-        .test_graphics_passes::<
-            crate::view::render_pass::texture_composite_pass::TextureCompositePass,
-        >();
-    let content_target = composite_passes
-        .first()
-        .and_then(|pass| pass.test_snapshot().source_handle);
-    let content_gradient_draws = content_target.map_or(0, |content_target| {
-        draw_rects
-            .iter()
-            .filter(|draw| draw.output_target == Some(content_target) && draw.gradient.is_some())
-            .count()
-    });
-    let layer_composites = graph
-        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
-        )
-        .len();
-    let expected_trace = if cold { (1, 0) } else { (0, 1) };
-    let expected_clears = if cold { 2 } else { 1 };
-    // The transparent host-before artifact is intentionally replayed every
-    // frame, so it contributes one DrawRect even on U. Only the persistent T
-    // target's gradient payload disappears on reuse.
-    let expected_draw_rects = if cold { 2 } else { 1 };
-    let expected_content_gradient_draws = usize::from(cold);
-    if (trace.reraster_count, trace.reuse_count) != expected_trace
-        || clears != expected_clears
-        || draw_rects.len() != expected_draw_rects
-        || content_gradient_draws != expected_content_gradient_draws
-        || composite_passes.len() != 1
-        || layer_composites != 0
-        || graph.declared_persistent_texture_keys().count() != 2
-    {
-        return Err(format!(
-            "direct S->T {path} graph shape drifted: trace=({},{}) clears={clears}, draw_rects={}, content_gradient_draws={content_gradient_draws}, texture_composites={}, layer_composites={layer_composites}, persistent_keys={}",
-            trace.reraster_count,
-            trace.reuse_count,
-            draw_rects.len(),
-            composite_passes.len(),
-            graph.declared_persistent_texture_keys().count(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_direct_scroll_transform_composite_delta(
-    before: DirectScrollTransformCompositeShape,
-    after: DirectScrollTransformCompositeShape,
-    expected_delta: [f32; 2],
-    path: &str,
-) -> Result<(), String> {
-    if before.uv_bounds_bits != after.uv_bounds_bits || before.scissor_rect != after.scissor_rect {
-        return Err(format!(
-            "direct S->T {path} changed offset-zero UV/scissor: before={before:?}, after={after:?}"
-        ));
-    }
-    for (before_point, after_point) in before
-        .quad_position_bits
-        .iter()
-        .zip(after.quad_position_bits.iter())
-    {
-        let actual = [
-            f32::from_bits(after_point[0]) - f32::from_bits(before_point[0]),
-            f32::from_bits(after_point[1]) - f32::from_bits(before_point[1]),
-        ];
-        if actual.map(f32::to_bits) != expected_delta.map(f32::to_bits) {
-            return Err(format!(
-                "direct S->T {path} quad delta drifted: expected={expected_delta:?}, actual={actual:?}"
-            ));
-        }
-    }
-    let actual_bounds_delta = [
-        f32::from_bits(after.bounds_bits[0]) - f32::from_bits(before.bounds_bits[0]),
-        f32::from_bits(after.bounds_bits[1]) - f32::from_bits(before.bounds_bits[1]),
-    ];
-    if actual_bounds_delta.map(f32::to_bits) != expected_delta.map(f32::to_bits)
-        || before.bounds_bits[2..] != after.bounds_bits[2..]
-    {
-        return Err(format!(
-            "direct S->T {path} bounds delta drifted: expected={expected_delta:?}, actual={actual_bounds_delta:?}"
-        ));
-    }
-    Ok(())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3493,198 +2181,10 @@ fn direct_property_scroll_gpu_fixture(
     (arena, root, properties, generations)
 }
 
-fn legacy_direct_property_scroll_graph(
-    grammar: DirectPropertyScrollGpuGrammar,
-) -> Result<FrameGraph, String> {
-    let (mut arena, root, _, _) = direct_property_scroll_gpu_fixture(grammar);
-    let (mut graph, ctx, target) = transformed_graph_prelude(1.0, None);
-    arena
-        .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
-        .ok_or_else(|| format!("legacy {} root disappeared", grammar.label()))?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
 type DirectPropertyScrollResident = (
     crate::view::frame_graph::PersistentTextureKey,
     crate::view::frame_graph::TextureDesc,
 );
-
-fn direct_property_scroll_residents(
-    graph: &FrameGraph,
-) -> Result<Vec<DirectPropertyScrollResident>, String> {
-    let declared = graph
-        .declared_persistent_textures()
-        .map(|(key, desc)| (key, desc.clone()))
-        .collect::<Vec<_>>();
-    if declared.is_empty() || declared.len() % 2 != 0 {
-        return Err(format!(
-            "direct property-scroll declarations must contain complete color/depth pairs: {declared:?}"
-        ));
-    }
-    let colors = declared
-        .iter()
-        .filter(|(key, _)| key.depth_stencil().is_some())
-        .cloned()
-        .collect::<Vec<_>>();
-    if colors.len() * 2 != declared.len()
-        || colors.iter().any(|(color, _)| {
-            color
-                .depth_stencil()
-                .is_none_or(|depth| !declared.iter().any(|(key, _)| *key == depth))
-        })
-    {
-        return Err(format!(
-            "direct property-scroll persistent declarations are not complete pairs: {declared:?}"
-        ));
-    }
-    Ok(colors)
-}
-
-fn production_direct_property_scroll_graph(
-    viewport: &mut Viewport,
-    grammar: DirectPropertyScrollGpuGrammar,
-    sampled_at: crate::time::Instant,
-) -> Result<
-    (
-        FrameGraph,
-        RetainedPropertyScrollSceneBuildTrace,
-        crate::view::viewport::RetainedSurfaceFrameStageOwner,
-        Vec<DirectPropertyScrollResident>,
-    ),
-    String,
-> {
-    // These production wrappers currently admit only scale=1, paint offset=0,
-    // and no external scissor. Keep this closure pinned to that exact contract.
-    let (arena, root, properties, generations) = direct_property_scroll_gpu_fixture(grammar);
-    let budget = ScrollSceneSingleTextureBudget::new(
-        wgpu::Limits::default().max_texture_dimension_2d,
-        128 * 1024 * 1024,
-    )
-    .expect("direct property-scroll GPU budget is non-zero");
-    let owner = viewport
-        .begin_retained_surface_frame_stage()
-        .ok_or_else(|| format!("{} retained stage is unavailable", grammar.label()))?;
-    let mut graph = FrameGraph::new();
-    let ctx = UiBuildContext::new(WIDTH, HEIGHT, FORMAT, 1.0);
-    let outcome = match grammar {
-        DirectPropertyScrollGpuGrammar::Transform { .. } => {
-            let scene = plan_and_validate_transform_scroll_scene(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                1.0,
-                [0.0; 2],
-                None,
-                sampled_at,
-                FORMAT,
-                budget,
-            )
-            .map_err(|error| format!("T->S production wrapper rejected: {error:?}"))?;
-            let prepared = prepare_retained_transform_scroll_scene_from_pool(
-                viewport, scene, &mut graph, ctx, [0.0; 4], owner,
-            )
-            .map_err(|error| format!("T->S production preflight rejected: {error:?}"))?;
-            emit_prepared_retained_transform_scroll_scene(prepared)
-        }
-        DirectPropertyScrollGpuGrammar::Effect { .. } => {
-            let scene = plan_and_validate_effect_scroll_scene_checkpoint(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                1.0,
-                [0.0; 2],
-                None,
-                sampled_at,
-                FORMAT,
-                budget,
-            )
-            .map_err(|error| format!("E->S production wrapper rejected: {error:?}"))?;
-            let prepared = prepare_retained_effect_scroll_scene_from_pool(
-                viewport, scene, &mut graph, ctx, [0.0; 4], owner,
-            )
-            .map_err(|error| format!("E->S production preflight rejected: {error:?}"))?;
-            emit_prepared_retained_effect_scroll_scene(prepared)
-        }
-    };
-    let (state, trace) = outcome.into_parts();
-    let target = state
-        .current_target()
-        .ok_or_else(|| format!("{} emission produced no root target", grammar.label()))?;
-    let residents = direct_property_scroll_residents(&graph)?;
-    add_present(&mut graph, &target)?;
-    Ok((graph, trace, owner, residents))
-}
-
-fn validate_direct_property_scroll_graph_shape(
-    graph: &FrameGraph,
-    grammar: DirectPropertyScrollGpuGrammar,
-    cold: bool,
-) -> Result<(), String> {
-    let expected_clears = if cold { 3 } else { 1 };
-    let clears = graph
-        .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-        .len();
-    let texture_composites = graph
-        .test_graphics_passes::<
-            crate::view::render_pass::texture_composite_pass::TextureCompositePass,
-        >()
-        .len();
-    let layer_composites = graph
-        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
-        )
-        .len();
-    let expected_texture_composites = match (grammar, cold) {
-        (DirectPropertyScrollGpuGrammar::Transform { .. }, true) => 2,
-        (DirectPropertyScrollGpuGrammar::Transform { .. }, false) => 1,
-        (DirectPropertyScrollGpuGrammar::Effect { .. }, true) => 1,
-        (DirectPropertyScrollGpuGrammar::Effect { .. }, false) => 0,
-    };
-    let expected_layer_composites = usize::from(matches!(
-        grammar,
-        DirectPropertyScrollGpuGrammar::Effect { .. }
-    ));
-    let expected_persistent_keys = if cold { 4 } else { 2 };
-    if clears != expected_clears
-        || texture_composites != expected_texture_composites
-        || layer_composites != expected_layer_composites
-        || graph.declared_persistent_texture_keys().count() != expected_persistent_keys
-    {
-        return Err(format!(
-            "{} {} graph shape drifted: clears={clears}, texture_composites={texture_composites}, layer_composites={layer_composites}, persistent_keys={}",
-            grammar.label(),
-            if cold { "cold" } else { "warm" },
-            graph.declared_persistent_texture_keys().count(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_direct_property_scroll_nonblank_anchor(
-    pixels: &[u8],
-    grammar: DirectPropertyScrollGpuGrammar,
-    path: &str,
-    adapter: &str,
-) -> Result<(), String> {
-    let (x, y) = grammar.nonblank_anchor();
-    let actual = pixel_at(pixels, x, y)?;
-    if actual == [0; 4] || actual[3] == 0 {
-        return Err(format!(
-            "{} {path} anchor is blank on {adapter}: ({x},{y})={actual:?}",
-            grammar.label()
-        ));
-    }
-    Ok(())
-}
-
-fn warm_direct_property_scroll_receiver_matches_cold(
-    cold: &[DirectPropertyScrollResident],
-    warm: &[DirectPropertyScrollResident],
-) -> bool {
-    warm.len() == 1 && cold.iter().any(|candidate| candidate == &warm[0])
-}
 
 #[derive(Clone, Copy, Debug)]
 struct TransformEffectScrollGpuFrame {
@@ -3781,135 +2281,6 @@ fn transform_effect_scroll_gpu_fixture(
     (arena, root, properties, generations)
 }
 
-fn legacy_transform_effect_scroll_graph(
-    frame: TransformEffectScrollGpuFrame,
-) -> Result<FrameGraph, String> {
-    let (mut arena, root, _, _) = transform_effect_scroll_gpu_fixture(frame);
-    let (mut graph, ctx, target) = transformed_graph_prelude(1.0, None);
-    arena
-        .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
-        .ok_or_else(|| "legacy T->E->S root disappeared".to_string())?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
-fn production_transform_effect_scroll_graph(
-    viewport: &mut Viewport,
-    frame: TransformEffectScrollGpuFrame,
-    sampled_at: crate::time::Instant,
-) -> Result<
-    (
-        FrameGraph,
-        RetainedPropertyScrollSceneBuildTrace,
-        crate::view::viewport::RetainedSurfaceFrameStageOwner,
-        Vec<DirectPropertyScrollResident>,
-    ),
-    String,
-> {
-    // The exact production grammar currently admits only scale=1, paint
-    // offset=0 and no external scissor.
-    let (arena, root, properties, generations) = transform_effect_scroll_gpu_fixture(frame);
-    let scene = plan_and_validate_transform_effect_scroll_scene(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        1.0,
-        [0.0; 2],
-        None,
-        sampled_at,
-        FORMAT,
-        ScrollSceneSingleTextureBudget::new(
-            wgpu::Limits::default().max_texture_dimension_2d,
-            128 * 1024 * 1024,
-        )
-        .expect("T->E->S GPU budget is non-zero"),
-    )
-    .map_err(|error| format!("T->E->S production wrapper rejected: {error:?}"))?;
-    let owner = viewport
-        .begin_retained_surface_frame_stage()
-        .ok_or_else(|| "T->E->S retained stage is unavailable".to_string())?;
-    let mut graph = FrameGraph::new();
-    let prepared = prepare_retained_transform_effect_scroll_scene_from_pool(
-        viewport,
-        scene,
-        &mut graph,
-        UiBuildContext::new(WIDTH, HEIGHT, FORMAT, 1.0),
-        [0.0; 4],
-        owner,
-    )
-    .map_err(|error| format!("T->E->S production preflight rejected: {error:?}"))?;
-    let outcome = emit_prepared_retained_transform_effect_scroll_scene(prepared);
-    let (state, trace) = outcome.into_parts();
-    let target = state
-        .current_target()
-        .ok_or_else(|| "T->E->S emission produced no root target".to_string())?;
-    let residents = direct_property_scroll_residents(&graph)?;
-    add_present(&mut graph, &target)?;
-    Ok((graph, trace, owner, residents))
-}
-
-fn validate_transform_effect_scroll_graph_shape(
-    graph: &FrameGraph,
-    cold: bool,
-) -> Result<(), String> {
-    let clears = graph
-        .test_graphics_passes::<crate::view::frame_graph::ClearPass>()
-        .len();
-    let texture_composites = graph
-        .test_graphics_passes::<
-            crate::view::render_pass::texture_composite_pass::TextureCompositePass,
-        >()
-        .len();
-    let layer_composites = graph
-        .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>(
-        )
-        .len();
-    let persistent_keys = graph.declared_persistent_texture_keys().count();
-    let expected = if cold { (4, 2, 1, 6) } else { (1, 1, 0, 4) };
-    if (
-        clears,
-        texture_composites,
-        layer_composites,
-        persistent_keys,
-    ) != expected
-    {
-        return Err(format!(
-            "T->E->S {} graph shape drifted: clears={clears}, texture_composites={texture_composites}, layer_composites={layer_composites}, persistent_keys={persistent_keys}, expected={expected:?}",
-            if cold { "cold" } else { "warm" }
-        ));
-    }
-    Ok(())
-}
-
-fn transform_effect_scroll_warm_declarations_match_cold(
-    cold: &[DirectPropertyScrollResident],
-    warm: &[DirectPropertyScrollResident],
-) -> bool {
-    if !transform_effect_scroll_resident_roles_are_exact(cold, true)
-        || !transform_effect_scroll_resident_roles_are_exact(warm, false)
-        || !warm
-            .iter()
-            .all(|pair| cold.iter().any(|cold_pair| cold_pair == pair))
-    {
-        return false;
-    }
-    let omitted = cold
-        .iter()
-        .filter(|pair| !warm.iter().any(|warm_pair| warm_pair == *pair))
-        .collect::<Vec<_>>();
-    matches!(
-        omitted.as_slice(),
-        [(
-            crate::view::frame_graph::PersistentTextureKey::Retained {
-                role: crate::view::frame_graph::RetainedTextureRole::ScrollContentColor,
-                ..
-            },
-            _
-        )]
-    )
-}
-
 fn transform_effect_scroll_resident_roles_are_exact(
     residents: &[DirectPropertyScrollResident],
     include_scroll_content: bool,
@@ -3940,36 +2311,317 @@ fn transform_effect_scroll_resident_roles_are_exact(
         && residents.len() == if include_scroll_content { 3 } else { 2 }
 }
 
-fn validate_transform_effect_scroll_nonblank_anchor(
-    pixels: &[u8],
-    frame: TransformEffectScrollGpuFrame,
-    path: &str,
-    adapter: &str,
-) -> Result<(), String> {
-    let (x, y) = frame.nonblank_anchor();
-    let actual = pixel_at(pixels, x, y)?;
-    if actual == [0; 4] || actual[3] == 0 {
-        return Err(format!(
-            "T->E->S {path} anchor is blank on {adapter}: ({x},{y})={actual:?}"
-        ));
-    }
-    Ok(())
-}
-
 mod native_pixel_oracle_tests;
 mod oracle_tests;
-mod scroll_graph_build_tests;
 
 mod artifact_intermediate_coverage_tests;
 mod artifact_scroll_content_contract_tests;
 mod native_artifact_scroll_content_tests;
 mod native_artifact_surface_materialization_tests;
 mod native_artifact_surface_tests;
-mod native_nested_scroll_segment_tests;
-mod native_nested_scroll_tests;
+
 mod native_root_effect_tests;
-mod native_scroll_boundary_tests;
-mod native_scroll_forest_tests;
-mod native_scroll_scene_pixel_tests;
+
 mod native_svg_pixel_tests;
 mod native_transform_surface_tests;
+
+#[derive(Clone, Copy, Debug)]
+struct ScrollSceneGpuCase {
+    name: &'static str,
+    offset_y: f32,
+    content_height: f32,
+    max_dimension_2d: u32,
+    transition_local_y: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum NestedTextFallbackKind {
+    MissingPrepared,
+    InlineIfcOwned,
+}
+
+fn layout_nested_media_leaf(arena: &mut NodeArena, leaf: NodeKey) {
+    arena.with_element_taken(leaf, |element, arena| {
+        element.sync_arena(arena);
+        element.measure(
+            LayoutConstraints {
+                max_width: 100.0,
+                max_height: 600.0,
+                viewport_width: 640.0,
+                viewport_height: 480.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(600.0),
+            },
+            arena,
+        );
+        element.place(
+            LayoutPlacement {
+                parent_x: 10.0,
+                parent_y: 20.0,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: 100.0,
+                available_height: 600.0,
+                viewport_width: 640.0,
+                viewport_height: 480.0,
+                percent_base_width: Some(100.0),
+                percent_base_height: Some(600.0),
+            },
+            arena,
+        );
+        element.clear_local_dirty_flags(crate::view::base_component::DirtyFlags::ALL);
+    });
+    arena.clear_arena_dirty_subtree(leaf, crate::view::base_component::DirtyFlags::ALL);
+}
+
+fn nested_scroll_text_fixture() -> (
+    NodeArena,
+    NodeKey,
+    NodeKey,
+    NodeKey,
+    PropertyTrees,
+    PaintGenerationTracker,
+) {
+    let (mut arena, outer, inner, leaf, _properties, _generations) =
+        crate::view::paint::planning_tests::nested_scroll_plan_fixture();
+    let mut text = Text::new_with_id(
+        0x1251_03,
+        0.0,
+        0.0,
+        100.0,
+        600.0,
+        "standalone nested retained text at a fractional origin",
+    );
+    text.set_font("sans-serif");
+    text.set_font_size(18.5);
+    text.set_color(Color::rgb(31, 91, 173));
+    text.set_opacity(1.0);
+    {
+        let mut node = arena.get_mut(leaf).unwrap();
+        *node.element = Box::new(text);
+    }
+    arena.refresh_stable_id_index();
+    layout_nested_media_leaf(&mut arena, leaf);
+    arena.refresh_subtree_dirty_cache(outer);
+    let mut properties = PropertyTrees::default();
+    properties.sync(&arena, &[outer]);
+    assert!(
+        properties.validation_errors.is_empty(),
+        "Text property sync failed: {:?}",
+        properties.validation_errors
+    );
+    let mut generations = PaintGenerationTracker::default();
+    generations.sync(&arena, &[outer], &properties);
+    (arena, outer, inner, leaf, properties, generations)
+}
+
+pub(crate) fn nested_scroll_unready_text_fixture_for_test(
+    kind: NestedTextFallbackKind,
+) -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
+    let (arena, outer, _inner, leaf, _properties, _generations) = nested_scroll_text_fixture();
+    match kind {
+        NestedTextFallbackKind::MissingPrepared => {
+            arena
+                .get_mut(leaf)
+                .unwrap()
+                .element
+                .as_any_mut()
+                .downcast_mut::<Text>()
+                .unwrap()
+                .clear_prepared_standalone_text_for_test();
+        }
+        NestedTextFallbackKind::InlineIfcOwned => {
+            let (paint_input, bounds) = {
+                let node = arena.get(leaf).unwrap();
+                let text = node.element.as_any().downcast_ref::<Text>().unwrap();
+                let bounds = node.element.box_model_snapshot();
+                (
+                    text.shaped_context_for_test()
+                        .unwrap()
+                        .text_pass_paint_input(),
+                    bounds,
+                )
+            };
+            arena
+                .get_mut(leaf)
+                .unwrap()
+                .element
+                .as_any_mut()
+                .downcast_mut::<Text>()
+                .unwrap()
+                .install_inline_ifc_owned_geometry(
+                    Vec::new(),
+                    std::sync::Arc::new(paint_input),
+                    crate::ui::Rect {
+                        x: bounds.x,
+                        y: bounds.y,
+                        width: bounds.width,
+                        height: bounds.height,
+                    },
+                );
+        }
+    }
+    arena.refresh_subtree_dirty_cache(outer);
+    let mut properties = PropertyTrees::default();
+    properties.sync(&arena, &[outer]);
+    let mut generations = PaintGenerationTracker::default();
+    generations.sync(&arena, &[outer], &properties);
+    (arena, outer, properties, generations)
+}
+
+fn scroll_scene_gpu_fixture(
+    case: ScrollSceneGpuCase,
+    scrollbar: GpuScrollbarCase,
+) -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
+    const ROOT_X: f32 = 8.0;
+    const ROOT_Y: f32 = 8.0;
+    const SCROLLPORT_WIDTH: f32 = 48.0;
+    const SCROLLPORT_HEIGHT: f32 = 40.0;
+
+    let mut root = Element::new_with_id(
+        0x5c_1101,
+        ROOT_X,
+        ROOT_Y,
+        SCROLLPORT_WIDTH,
+        SCROLLPORT_HEIGHT,
+    );
+    let mut root_style = Style::new();
+    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    root_style.insert(
+        PropertyId::ScrollDirection,
+        ParsedValue::ScrollDirection(crate::style::ScrollDirection::Vertical),
+    );
+    root_style.insert(
+        PropertyId::BackgroundColor,
+        ParsedValue::color_like(Color::rgb(12, 18, 28)),
+    );
+    root.apply_style(root_style);
+
+    let mut child = Element::new_with_id(
+        0x5c_1102,
+        ROOT_X,
+        ROOT_Y - case.offset_y,
+        SCROLLPORT_WIDTH,
+        case.content_height,
+    );
+    let transition_percent =
+        (case.transition_local_y / case.content_height * 100.0).clamp(0.0, 100.0);
+    let sharp_gradient = Gradient::linear(SideOrCorner::Bottom)
+        .stop(Color::rgb(224, 36, 28), Some(Length::percent(0.0)))
+        .stop(
+            Color::rgb(224, 36, 28),
+            Some(Length::percent(transition_percent)),
+        )
+        .stop(
+            Color::rgb(24, 72, 224),
+            Some(Length::percent(transition_percent)),
+        )
+        .stop(Color::rgb(24, 72, 224), Some(Length::percent(100.0)))
+        .build();
+    let mut child_style = Style::new();
+    child_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
+    child_style.insert(
+        PropertyId::BackgroundColor,
+        ParsedValue::color_like(Color::rgb(224, 36, 28)),
+    );
+    child_style.set_background_image(sharp_gradient);
+    child.apply_style(child_style);
+
+    let mut arena = NodeArena::new();
+    let root = arena.insert(Node::new(Box::new(root)));
+    let child = arena.insert(Node::new(Box::new(child)));
+    arena.set_parent(child, Some(root));
+    arena.push_child(root, child);
+    {
+        let mut root_node = arena.get_mut(root).unwrap();
+        let root_element = root_node
+            .element
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .unwrap();
+        root_element.layout_state.content_size = Size {
+            width: SCROLLPORT_WIDTH,
+            height: case.content_height,
+        };
+        root_element.set_scroll_offset((0.0, case.offset_y));
+        root_element.set_scrollbar_shadow_blur_radius(3.0);
+        match scrollbar {
+            GpuScrollbarCase::Hidden => {}
+            GpuScrollbarCase::Opaque => {
+                root_element.set_hovered(true);
+            }
+            GpuScrollbarCase::Translucent => {
+                root_element.set_hovered(true);
+                root_element.set_hovered(false);
+                let sampled_at = crate::time::Instant::now();
+                let _ = root_element.tick_post_layout_animation_frame(sampled_at);
+                let _ = root_element.tick_post_layout_animation_frame(
+                    sampled_at + crate::time::Duration::from_millis(1_000),
+                );
+            }
+        }
+        root_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+    }
+    arena
+        .get_mut(child)
+        .unwrap()
+        .element
+        .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
+    arena.refresh_subtree_dirty_cache(root);
+    let mut properties = PropertyTrees::default();
+    properties.sync(&arena, &[root]);
+    assert!(
+        properties.validation_errors.is_empty(),
+        "GPU scroll-scene fixture property errors: {:?}",
+        properties.validation_errors
+    );
+    let mut generations = PaintGenerationTracker::default();
+    generations.sync(&arena, &[root], &properties);
+    (arena, root, properties, generations)
+}
+
+pub(super) fn compare_nested_segment_pixels_within_one_lsb(
+    legacy: &[u8],
+    direct: &[u8],
+    adapter: &str,
+    case: &str,
+) -> Result<(), String> {
+    if legacy.len() != direct.len() {
+        return Err(format!(
+            "{case}: pixel buffer lengths differ on {adapter}: legacy={}, direct={}",
+            legacy.len(),
+            direct.len()
+        ));
+    }
+    let mut diff = PixelDiff::default();
+    for pixel_index in 0..(WIDTH * HEIGHT) as usize {
+        let x = pixel_index as u32 % WIDTH;
+        let y = pixel_index as u32 / WIDTH;
+        let offset = pixel_index * BYTES_PER_PIXEL as usize;
+        let mut pixel_failed = false;
+        for channel in 0..BYTES_PER_PIXEL as usize {
+            let delta = legacy[offset + channel].abs_diff(direct[offset + channel]);
+            diff.max_channel_delta = diff.max_channel_delta.max(delta);
+            if delta > 1 {
+                pixel_failed = true;
+            }
+        }
+        if !pixel_failed {
+            continue;
+        }
+        diff.mismatched_pixels += 1;
+        diff.bounds = Some(match diff.bounds {
+            None => [x, y, x, y],
+            Some([left, top, right, bottom]) => {
+                [left.min(x), top.min(y), right.max(x), bottom.max(y)]
+            }
+        });
+    }
+    if diff.mismatched_pixels == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "{case}: legacy/direct nested-segment pixel mismatch on {adapter}: mismatched_pixels={}, max_channel_delta={}, bounds={:?}, rule=whole-frame every-channel delta<=1 LSB",
+        diff.mismatched_pixels, diff.max_channel_delta, diff.bounds
+    ))
+}

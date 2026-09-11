@@ -1,18 +1,7 @@
 #[cfg(test)]
-mod compatibility_reference;
-#[cfg(test)]
 mod attempts;
-#[cfg(test)]
-use compatibility_reference::{
-    CompatibilityAuthorityDecision as AutoAuthorityDecision,
-    native_scroll_forest_topology_is_branching_or_multi_root,
-    retained_auto_reachable_tree_facts,
-    select_retained_auto_compatibility_authority_with_semantics,
-};
 
 use super::*;
-#[cfg(test)]
-use crate::view::paint::PropertyBoundaryDagCompiler;
 
 #[cfg(test)]
 mod single_viewport_frame_test_support;
@@ -30,13 +19,9 @@ fn build_root_legacy(
         .expect("root should exist during the build walk")
 }
 
-enum PropertyNeutralArtifactAttempt {
+enum ArtifactFrameCompileOutcome {
     Compiled {
         state: crate::view::base_component::BuildState,
-        eligibility: crate::view::paint::FrameArtifactEligibility,
-        root_effect_transaction: Option<PendingRootEffectTransaction>,
-    },
-    WholeFrameLegacy {
         eligibility: crate::view::paint::FrameArtifactEligibility,
     },
     CompileRejected(crate::view::paint::ArtifactCompileErrorKind),
@@ -44,68 +29,12 @@ enum PropertyNeutralArtifactAttempt {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AutoAuthorityKind {
-    PropertyScene,
-    NativeScrollForest,
     Artifact,
     Legacy,
 }
 
-fn property_boundary_dag_success_telemetry_grammar(
-    nested_scroll_depth: Option<usize>,
-    generic_surface_count: usize,
-    scroll_group_count: usize,
-) -> (&'static str, String, &'static str) {
-    let (phase, topology) = nested_scroll_depth.map_or_else(
-        || ("property-boundary-dag", String::new()),
-        |depth| {
-            (
-                "nested-scroll-segment",
-                format!(" topology=linear-scroll-chain chain-depth={depth}"),
-            )
-        },
-    );
-    let residency =
-        if nested_scroll_depth.is_some() && generic_surface_count == 0 && scroll_group_count == 0 {
-            " residency=zero"
-        } else {
-            ""
-        };
-    (phase, topology, residency)
-}
-
 #[derive(Clone, Debug)]
 enum AutoAuthorityRejection {
-    Plan {
-        authority: AutoAuthorityKind,
-        error: crate::view::paint::FramePaintPlanError,
-    },
-    PropertyScrollPlan {
-        error: crate::view::paint::PropertyScrollScenePlanError,
-    },
-    /// The frame-root scroll candidate shares `PropertyScrollScenePlanError`
-    /// with the property-scroll candidate, but they are different grammars and
-    /// a debug record must name the one that rejected.
-    FrameRootScrollPlan {
-        error: crate::view::paint::PropertyScrollScenePlanError,
-    },
-    NativeScrollForestPlan {
-        error: crate::view::paint::FramePaintPlanError,
-    },
-    PropertyBoundaryDagPlan {
-        error: crate::view::paint::PropertyScrollScenePlanError,
-    },
-    DirectScrollTransformPlan {
-        error: crate::view::paint::PropertyScrollScenePlanError,
-    },
-    TransformScrollPlan {
-        error: crate::view::paint::PropertyScrollScenePlanError,
-    },
-    EffectScrollPlan {
-        error: crate::view::paint::PropertyScrollScenePlanError,
-    },
-    TransformEffectScrollPlan {
-        error: crate::view::paint::PropertyScrollScenePlanError,
-    },
     Artifact {
         eligibility: crate::view::paint::FrameArtifactEligibility,
     },
@@ -115,8 +44,8 @@ enum AutoAuthorityRejection {
 }
 
 /// Optional diagnostics plus the unconditional prepare-rejection stage marker.
-/// Production records at most one rejection; the test-only historical selector
-/// can accumulate a cascade. Capture never changes selection or fallback stage.
+/// Each selection attempt records at most one rejection. Capture never changes
+/// selection or fallback stage.
 #[derive(Clone, Debug, Default)]
 struct AutoAuthorityTrace {
     capture_rejections: bool,
@@ -157,39 +86,8 @@ fn auto_artifact_legacy_fallback_stage(trace: &AutoAuthorityTrace) -> PaintAutho
 impl AutoAuthorityRejection {
     fn debug_label(&self) -> String {
         match self {
-            Self::Plan { authority, error } => {
-                format!("plan({}):{:?}", authority.label(), error.reasons)
-            }
-            Self::PropertyScrollPlan { error } => {
-                format!("plan(property-scene-scroll):{error:?}")
-            }
-            Self::FrameRootScrollPlan { error } => {
-                format!("plan(frame-root-scroll):{error:?}")
-            }
-            Self::NativeScrollForestPlan { error } => {
-                format!("plan(native-scroll-forest):{:?}", error.reasons)
-            }
-            Self::PropertyBoundaryDagPlan { error } => {
-                format!("plan(property-boundary-dag):{error:?}")
-            }
-            Self::DirectScrollTransformPlan { error } => {
-                format!("plan(property-scene-scroll-transform):{error:?}")
-            }
-            Self::TransformScrollPlan { error } => {
-                format!("plan(property-scene-transform-scroll):{error:?}")
-            }
-            Self::EffectScrollPlan { error } => {
-                format!("plan(property-scene-effect-scroll):{error:?}")
-            }
-            Self::TransformEffectScrollPlan { error } => {
-                format!("plan(property-scene-transform-effect-scroll):{error:?}")
-            }
-            Self::Artifact { eligibility } => {
-                format!("artifact:{:?}", eligibility.reasons)
-            }
-            Self::ArtifactPrepare { error } => {
-                format!("artifact-prepare:{error:?}")
-            }
+            Self::Artifact { eligibility } => format!("artifact:{:?}", eligibility.reasons),
+            Self::ArtifactPrepare { error } => format!("artifact-prepare:{error:?}"),
         }
     }
 }
@@ -197,8 +95,6 @@ impl AutoAuthorityRejection {
 impl AutoAuthorityKind {
     fn label(self) -> &'static str {
         match self {
-            Self::PropertyScene => "property-scene",
-            Self::NativeScrollForest => "native-scroll-forest",
             Self::Artifact => "artifact",
             Self::Legacy => "legacy",
         }
@@ -209,54 +105,27 @@ impl AutoAuthorityKind {
 enum PaintAuthorityKind {
     Legacy,
     Artifact,
-    Transform,
-    SurfaceTree,
-    Isolation,
-    EffectTree,
-    PropertyScene,
-    NativeScrollForest,
-    ScrollHost,
-    ScrollScene,
 }
 
 impl PaintAuthorityKind {
     fn from_auto(authority: AutoAuthorityKind) -> Self {
         match authority {
-            AutoAuthorityKind::PropertyScene => Self::PropertyScene,
-            AutoAuthorityKind::NativeScrollForest => Self::NativeScrollForest,
             AutoAuthorityKind::Artifact => Self::Artifact,
             AutoAuthorityKind::Legacy => Self::Legacy,
         }
     }
-
     fn from_named_mode(mode: ViewportPaintRendererMode) -> Self {
         match mode {
             ViewportPaintRendererMode::Legacy => Self::Legacy,
-            ViewportPaintRendererMode::ArtifactCanary => Self::Artifact,
-            ViewportPaintRendererMode::RetainedTransformCanary => Self::Transform,
-            ViewportPaintRendererMode::RetainedSurfaceTreeCanary => Self::SurfaceTree,
-            ViewportPaintRendererMode::RetainedIsolationCanary => Self::Isolation,
-            ViewportPaintRendererMode::RetainedEffectTreeCanary => Self::EffectTree,
-            ViewportPaintRendererMode::RetainedScrollHostCanary => Self::ScrollHost,
-            ViewportPaintRendererMode::RetainedScrollSceneCanary => Self::ScrollScene,
             ViewportPaintRendererMode::RetainedAuto => {
                 unreachable!("automatic mode supplies its selected authority")
             }
         }
     }
-
     fn label(self) -> &'static str {
         match self {
-            Self::Legacy => "legacy",
             Self::Artifact => "artifact",
-            Self::Transform => "transform",
-            Self::SurfaceTree => "surface-tree",
-            Self::Isolation => "isolation",
-            Self::EffectTree => "effect-tree",
-            Self::PropertyScene => "property-scene",
-            Self::NativeScrollForest => "native-scroll-forest",
-            Self::ScrollHost => "scroll-host",
-            Self::ScrollScene => "scroll-scene",
+            Self::Legacy => "legacy",
         }
     }
 }
@@ -285,49 +154,16 @@ impl PaintAuthorityFallbackStage {
 #[derive(Clone, Debug)]
 enum PaintAuthoritySelectionRejection {
     Auto(AutoAuthorityRejection),
-    NoTransform,
-    Shape {
-        authority: PaintAuthorityKind,
-        transforms: usize,
-        effects: usize,
-        scrolls: usize,
-    },
-    Plan {
-        authority: PaintAuthorityKind,
-        error: crate::view::paint::FramePaintPlanError,
-    },
     Artifact(crate::view::paint::FrameArtifactEligibility),
 }
 
 impl PaintAuthoritySelectionRejection {
     fn debug_label(&self) -> String {
         match self {
-            Self::Auto(rejection) => rejection.debug_label(),
-            Self::NoTransform => "no-transform".to_owned(),
-            Self::Shape {
-                authority,
-                transforms,
-                effects,
-                scrolls,
-            } => format!(
-                "shape({}):transforms={transforms},effects={effects},scrolls={scrolls}",
-                authority.label()
-            ),
-            Self::Plan { authority, error } => {
-                format!("plan({}):{:?}", authority.label(), error.reasons)
-            }
-            Self::Artifact(eligibility) => format!("artifact:{:?}", eligibility.reasons),
+            Self::Auto(r) => r.debug_label(),
+            Self::Artifact(e) => format!("artifact:{:?}", e.reasons),
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ScrollContentAuthorityTelemetry {
-    backing: crate::view::paint::ScrollSceneBackingKind,
-    tile_count: usize,
-    reraster_count: usize,
-    reuse_count: usize,
-    pair_bytes: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -337,8 +173,6 @@ struct PaintAuthorityTelemetry {
     selection_rejections: Vec<PaintAuthoritySelectionRejection>,
     legacy_fallback_stage: Option<PaintAuthorityFallbackStage>,
     terminal_failure_stage: Option<PaintAuthorityFallbackStage>,
-    scroll_content: Option<ScrollContentAuthorityTelemetry>,
-    retained_surfaces: Vec<crate::view::paint::RetainedSurfaceBuildTrace>,
     legacy_debug_boundaries: Vec<crate::view::paint::FrameArtifactDebugBoundary>,
     legacy_boundary_owners: Vec<crate::view::node_arena::NodeKey>,
     resident_release_count: Option<usize>,
@@ -348,7 +182,7 @@ struct PaintAuthorityTelemetry {
 impl PaintAuthorityTelemetry {
     fn from_selection(
         requested_mode: ViewportPaintRendererMode,
-        selection: &RetainedTransformCanarySelection,
+        _selection: &FramePaintSelection,
         auto: Option<(AutoAuthorityKind, AutoAuthorityTrace)>,
     ) -> Self {
         let mut candidate_debug_boundaries = auto
@@ -396,50 +230,7 @@ impl PaintAuthorityTelemetry {
             )
         } else {
             let selected = PaintAuthorityKind::from_named_mode(requested_mode);
-            let rejection = match selection {
-                RetainedTransformCanarySelection::NoTransform => {
-                    Some(PaintAuthoritySelectionRejection::NoTransform)
-                }
-                RetainedTransformCanarySelection::SingletonShapeRejected { transform_count }
-                | RetainedTransformCanarySelection::TreeShapeRejected { transform_count } => {
-                    Some(PaintAuthoritySelectionRejection::Shape {
-                        authority: selected,
-                        transforms: *transform_count,
-                        effects: 0,
-                        scrolls: 0,
-                    })
-                }
-                RetainedTransformCanarySelection::EffectTreeShapeRejected {
-                    transform_count,
-                    effect_count,
-                } => Some(PaintAuthoritySelectionRejection::Shape {
-                    authority: selected,
-                    transforms: *transform_count,
-                    effects: *effect_count,
-                    scrolls: 0,
-                }),
-                RetainedTransformCanarySelection::ScrollHostShapeRejected { scroll_count }
-                | RetainedTransformCanarySelection::ScrollSceneShapeRejected { scroll_count } => {
-                    Some(PaintAuthoritySelectionRejection::Shape {
-                        authority: selected,
-                        transforms: 0,
-                        effects: 0,
-                        scrolls: *scroll_count,
-                    })
-                }
-                RetainedTransformCanarySelection::PlanRejected(error)
-                | RetainedTransformCanarySelection::TreePlanRejected(error)
-                | RetainedTransformCanarySelection::IsolationPlanRejected(error)
-                | RetainedTransformCanarySelection::EffectTreePlanRejected(error)
-                | RetainedTransformCanarySelection::ScrollHostPlanRejected(error) => {
-                    Some(PaintAuthoritySelectionRejection::Plan {
-                        authority: selected,
-                        error: error.clone(),
-                    })
-                }
-                _ => None,
-            };
-            (selected, rejection.into_iter().collect())
+            (selected, Vec::new())
         };
         let legacy_debug_boundaries = if requested_mode == ViewportPaintRendererMode::RetainedAuto
             && selected == PaintAuthorityKind::Legacy
@@ -461,8 +252,6 @@ impl PaintAuthorityTelemetry {
             selection_rejections,
             legacy_fallback_stage: None,
             terminal_failure_stage: None,
-            scroll_content: None,
-            retained_surfaces: Vec::new(),
             legacy_debug_boundaries,
             legacy_boundary_owners,
             resident_release_count: None,
@@ -497,14 +286,6 @@ impl PaintAuthorityTelemetry {
             .push(PaintAuthoritySelectionRejection::Artifact(eligibility));
     }
 
-    fn note_retained_surface(&mut self, trace: crate::view::paint::RetainedSurfaceBuildTrace) {
-        self.retained_surfaces.push(trace);
-    }
-
-    fn note_retained_surfaces(&mut self, traces: &[crate::view::paint::RetainedSurfaceBuildTrace]) {
-        self.retained_surfaces.extend_from_slice(traces);
-    }
-
     fn note_legacy_fallback(&mut self, stage: PaintAuthorityFallbackStage) {
         self.legacy_fallback_stage = Some(stage);
     }
@@ -523,29 +304,6 @@ impl PaintAuthorityTelemetry {
         } else {
             self.selected
         }
-    }
-
-    fn note_scroll_content(&mut self, trace: crate::view::paint::ScrollSceneBuildTrace) {
-        self.scroll_content = Some(ScrollContentAuthorityTelemetry {
-            backing: trace.backing,
-            tile_count: trace.tile_count,
-            reraster_count: trace.reraster_count,
-            reuse_count: trace.reuse_count,
-            pair_bytes: trace.content_pair_bytes,
-        });
-    }
-
-    fn note_property_scroll_content(
-        &mut self,
-        trace: &crate::view::paint::RetainedPropertyScrollSceneBuildTrace,
-    ) {
-        self.scroll_content = Some(ScrollContentAuthorityTelemetry {
-            backing: trace.backing,
-            tile_count: trace.tile_count,
-            reraster_count: trace.reraster_count,
-            reuse_count: trace.reuse_count,
-            pair_bytes: trace.content_pair_bytes,
-        });
     }
 
     fn set_detail(&mut self, detail: String) {
@@ -569,32 +327,11 @@ impl PaintAuthorityTelemetry {
     }
 
     fn authority_label(&self) -> String {
-        if self.requested_mode == ViewportPaintRendererMode::RetainedAuto {
-            format!("retained-auto:{}", self.final_authority().label())
-        } else {
-            match self.requested_mode {
-                ViewportPaintRendererMode::Legacy => "legacy".to_owned(),
-                ViewportPaintRendererMode::ArtifactCanary => "artifact-canary".to_owned(),
-                ViewportPaintRendererMode::RetainedTransformCanary => {
-                    "retained-transform-canary".to_owned()
-                }
-                ViewportPaintRendererMode::RetainedSurfaceTreeCanary => {
-                    "retained-surface-tree-canary".to_owned()
-                }
-                ViewportPaintRendererMode::RetainedIsolationCanary => {
-                    "retained-isolation-canary".to_owned()
-                }
-                ViewportPaintRendererMode::RetainedEffectTreeCanary => {
-                    "retained-effect-tree-canary".to_owned()
-                }
-                ViewportPaintRendererMode::RetainedScrollHostCanary => {
-                    "retained-scroll-host-canary".to_owned()
-                }
-                ViewportPaintRendererMode::RetainedScrollSceneCanary => {
-                    "retained-scroll-scene-canary".to_owned()
-                }
-                ViewportPaintRendererMode::RetainedAuto => unreachable!(),
+        match self.requested_mode {
+            ViewportPaintRendererMode::RetainedAuto => {
+                format!("retained-auto:{}", self.final_authority().label())
             }
+            ViewportPaintRendererMode::Legacy => "legacy".to_owned(),
         }
     }
 
@@ -611,31 +348,17 @@ impl PaintAuthorityTelemetry {
         let terminal_failure = self
             .terminal_failure_stage
             .map_or("none", PaintAuthorityFallbackStage::label);
-        let scroll = self.scroll_content.map_or_else(
-            || "none".to_owned(),
-            |scroll| {
-                format!(
-                    "backing={:?},tiles={},reraster={},reuse={},pair-bytes={}",
-                    scroll.backing,
-                    scroll.tile_count,
-                    scroll.reraster_count,
-                    scroll.reuse_count,
-                    scroll.pair_bytes,
-                )
-            },
-        );
         let releases = self
             .resident_release_count
             .map_or_else(|| "unavailable".to_owned(), |count| count.to_string());
         format!(
-            "{} requested={:?} selected={} candidate-rejections=[{}] legacy-fallback-stage={} terminal-failure-stage={} scroll-content=[{}] resident-releases={} detail=[{}]",
+            "{} requested={:?} selected={} candidate-rejections=[{}] legacy-fallback-stage={} terminal-failure-stage={} resident-releases={} detail=[{}]",
             self.authority_label(),
             self.requested_mode,
             self.final_authority().label(),
             rejections,
             legacy_fallback,
             terminal_failure,
-            scroll,
             releases,
             self.detail,
         )
@@ -653,7 +376,6 @@ impl PaintAuthorityTelemetry {
                 .collect(),
             legacy_fallback_stage: self.legacy_fallback_stage,
             terminal_failure_stage: self.terminal_failure_stage,
-            scroll_content: self.scroll_content,
             resident_release_count: self.resident_release_count,
         }
     }
@@ -710,39 +432,20 @@ fn debug_artifact_fallback(
 fn debug_requested_mode(
     mode: ViewportPaintRendererMode,
 ) -> crate::view::debug::DebugPaintRequestedMode {
-    use crate::view::debug::DebugPaintRequestedMode as DebugMode;
     match mode {
-        ViewportPaintRendererMode::Legacy => DebugMode::Legacy,
-        ViewportPaintRendererMode::ArtifactCanary => DebugMode::ArtifactCanary,
-        ViewportPaintRendererMode::RetainedTransformCanary => DebugMode::RetainedTransformCanary,
-        ViewportPaintRendererMode::RetainedSurfaceTreeCanary => {
-            DebugMode::RetainedSurfaceTreeCanary
+        ViewportPaintRendererMode::Legacy => crate::view::debug::DebugPaintRequestedMode::Legacy,
+        ViewportPaintRendererMode::RetainedAuto => {
+            crate::view::debug::DebugPaintRequestedMode::RetainedAuto
         }
-        ViewportPaintRendererMode::RetainedIsolationCanary => DebugMode::RetainedIsolationCanary,
-        ViewportPaintRendererMode::RetainedEffectTreeCanary => DebugMode::RetainedEffectTreeCanary,
-        ViewportPaintRendererMode::RetainedScrollHostCanary => DebugMode::RetainedScrollHostCanary,
-        ViewportPaintRendererMode::RetainedScrollSceneCanary => {
-            DebugMode::RetainedScrollSceneCanary
-        }
-        ViewportPaintRendererMode::RetainedAuto => DebugMode::RetainedAuto,
     }
 }
 
 fn debug_paint_authority(
     authority: PaintAuthorityKind,
 ) -> crate::view::debug::DebugFramePaintAuthority {
-    use crate::view::debug::DebugFramePaintAuthority as DebugAuthority;
     match authority {
-        PaintAuthorityKind::Legacy => DebugAuthority::Legacy,
-        PaintAuthorityKind::Artifact => DebugAuthority::Artifact,
-        PaintAuthorityKind::Transform => DebugAuthority::RetainedTransformSurface,
-        PaintAuthorityKind::SurfaceTree
-        | PaintAuthorityKind::Isolation
-        | PaintAuthorityKind::EffectTree => DebugAuthority::RetainedEffectSurface,
-        PaintAuthorityKind::PropertyScene => DebugAuthority::PropertyScene,
-        PaintAuthorityKind::NativeScrollForest => DebugAuthority::NativeScrollForest,
-        PaintAuthorityKind::ScrollHost => DebugAuthority::RetainedScrollHost,
-        PaintAuthorityKind::ScrollScene => DebugAuthority::RetainedScrollScene,
+        PaintAuthorityKind::Legacy => crate::view::debug::DebugFramePaintAuthority::Legacy,
+        PaintAuthorityKind::Artifact => crate::view::debug::DebugFramePaintAuthority::Artifact,
     }
 }
 
@@ -812,213 +515,6 @@ struct SelectionRejectionDebugRecord {
     owner: Option<crate::view::node_arena::NodeKey>,
     category: crate::view::debug::DebugFallbackCategory,
     detail: crate::view::debug::DebugFallbackDetail,
-}
-
-/// Map one plan-level rejection onto a stable debug category and code.
-///
-/// Plan errors carry the node the planner rejected, so a whole-frame Legacy
-/// fallback that never reached the artifact candidate can still be attributed
-/// to a component instead of collapsing into an unattributed whole-frame
-/// record.
-fn frame_plan_rejection_debug(
-    rejection: &crate::view::paint::FramePaintPlanRejection,
-) -> RejectionDebugRecord {
-    use crate::view::debug::{DebugFallbackCategory as Category, DebugFallbackDetail as Detail};
-    use crate::view::paint::FramePaintPlanRejection as Rejection;
-
-    let code = |code: &'static str| Detail::Code { code };
-    match rejection {
-        Rejection::EmptyScene => (None, Category::Coverage, code("empty-scene")),
-        Rejection::DuplicateRoot(owner) => {
-            (Some(*owner), Category::Validation, code("duplicate-root"))
-        }
-        Rejection::RootCount(_) => (None, Category::Coverage, code("root-count")),
-        Rejection::MissingRoot(owner) => (Some(*owner), Category::Validation, code("missing-root")),
-        Rejection::UnknownRootHost(owner) => (
-            Some(*owner),
-            Category::UnsupportedHost,
-            code("unknown-root-host"),
-        ),
-        Rejection::RootHasParent(owner) => {
-            (Some(*owner), Category::Validation, code("root-has-parent"))
-        }
-        Rejection::TopologyMismatch(owner) => (
-            Some(*owner),
-            Category::Validation,
-            code("topology-mismatch"),
-        ),
-        Rejection::DuplicateNodeKey(owner) => (
-            Some(*owner),
-            Category::Validation,
-            code("duplicate-node-key"),
-        ),
-        Rejection::InvalidStableId(owner) => (
-            Some(*owner),
-            Category::Validation,
-            code("invalid-stable-id"),
-        ),
-        Rejection::DuplicateStableId(_) => {
-            (None, Category::Validation, code("duplicate-stable-id"))
-        }
-        Rejection::DeferredBoundary(owner) => (
-            Some(*owner),
-            Category::DeferredPaint,
-            code("deferred-boundary"),
-        ),
-        Rejection::LayoutTransition(owner) => (
-            Some(*owner),
-            Category::LayoutTransition,
-            code("layout-transition"),
-        ),
-        Rejection::PropertyTree(_) => (None, Category::Validation, code("property-tree")),
-        Rejection::TransformNodeCount(_) => (
-            None,
-            Category::PropertyTopology,
-            code("transform-node-count"),
-        ),
-        Rejection::MissingRootTransform(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("missing-root-transform"),
-        ),
-        Rejection::InvalidRootTransform(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("invalid-root-transform"),
-        ),
-        Rejection::NonAffineTransform(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("non-affine-transform"),
-        ),
-        Rejection::UnexpectedTransform(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("unexpected-transform"),
-        ),
-        Rejection::MissingPropertyState(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("missing-property-state"),
-        ),
-        Rejection::UnexpectedPropertyState(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("unexpected-property-state"),
-        ),
-        Rejection::WrongTransformBoundary(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("wrong-transform-boundary"),
-        ),
-        Rejection::ClipBoundary(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("clip-boundary"),
-        ),
-        Rejection::EffectBoundary(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("effect-boundary"),
-        ),
-        Rejection::ScrollBoundary(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("scroll-boundary"),
-        ),
-        Rejection::InvalidSurfaceGeometry(owner) => (
-            Some(*owner),
-            Category::Validation,
-            code("invalid-surface-geometry"),
-        ),
-        Rejection::NegativeSurfaceOrigin(owner) => (
-            Some(*owner),
-            Category::Validation,
-            code("negative-surface-origin"),
-        ),
-        Rejection::Coverage(reason) => {
-            let (category, detail) = debug_artifact_fallback(reason);
-            (artifact_fallback_reason_owner(reason), category, detail)
-        }
-        Rejection::InvalidSurfaceArtifact(owner) => (
-            Some(*owner),
-            Category::Validation,
-            code("invalid-surface-artifact"),
-        ),
-        Rejection::IsolationOuterScissor => (
-            None,
-            Category::PropertyTopology,
-            code("isolation-outer-scissor"),
-        ),
-        Rejection::InvalidIsolationEffect(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("invalid-isolation-effect"),
-        ),
-        Rejection::InvalidScrollHost(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("invalid-scroll-host"),
-        ),
-        Rejection::InvalidPropertyScene(invariant) => {
-            (None, Category::PropertyTopology, code(invariant))
-        }
-        Rejection::LiveSnapshotDrift { owner, field } => {
-            (*owner, Category::Validation, code(field))
-        }
-        Rejection::InvalidClipChain(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("invalid-clip-chain"),
-        ),
-        Rejection::CoLocatedTransformEffect(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("co-located-transform-effect"),
-        ),
-        Rejection::UnsupportedPropertyInterleave(owner, rule) => {
-            (Some(*owner), Category::PropertyTopology, code(rule))
-        }
-        Rejection::InvalidEffectChain(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("invalid-effect-chain"),
-        ),
-        Rejection::InvalidIsolationGeometry(owner) => (
-            Some(*owner),
-            Category::PropertyTopology,
-            code("invalid-isolation-geometry"),
-        ),
-    }
-}
-
-fn frame_plan_error_debug_records(
-    error: &crate::view::paint::FramePaintPlanError,
-) -> Vec<RejectionDebugRecord> {
-    error
-        .reasons
-        .iter()
-        .map(frame_plan_rejection_debug)
-        .collect()
-}
-
-fn property_scroll_plan_error_debug_records(
-    error: &crate::view::paint::PropertyScrollScenePlanError,
-) -> Vec<RejectionDebugRecord> {
-    use crate::view::debug::{DebugFallbackCategory as Category, DebugFallbackDetail as Detail};
-    use crate::view::paint::PropertyScrollScenePlanError as Error;
-
-    let code = |code: &'static str| Detail::Code { code };
-    match error {
-        Error::LiveSnapshotDrift => {
-            vec![(None, Category::Validation, code("live-snapshot-drift"))]
-        }
-        Error::Frame(error) => frame_plan_error_debug_records(error),
-        Error::InvalidContract(stage) => {
-            vec![(None, Category::Validation, Detail::Code { code: stage })]
-        }
-        Error::BackingBudget => vec![(None, Category::Capacity, code("scroll-backing-budget"))],
-    }
 }
 
 /// Fallback records the census coverage pass adds on top of what the artifact
@@ -1137,93 +633,22 @@ fn census_live_snapshot_fallback_additions(
     additions
 }
 
-/// Observational fallback records for one candidate rejection.
 fn selection_rejection_debug_records(
     rejection: &PaintAuthoritySelectionRejection,
 ) -> Vec<SelectionRejectionDebugRecord> {
     use crate::view::debug::DebugFallbackStage;
-
-    let (candidate, stage, mut records) = match rejection {
-        PaintAuthoritySelectionRejection::Auto(rejection) => match rejection {
-            AutoAuthorityRejection::Plan { authority, error } => (
-                authority.label(),
-                DebugFallbackStage::Planning,
-                frame_plan_error_debug_records(error),
-            ),
-            AutoAuthorityRejection::NativeScrollForestPlan { error } => (
-                "native-scroll-forest",
-                DebugFallbackStage::Planning,
-                frame_plan_error_debug_records(error),
-            ),
-            AutoAuthorityRejection::FrameRootScrollPlan { error } => (
-                "frame-root-scroll",
-                DebugFallbackStage::Planning,
-                property_scroll_plan_error_debug_records(error),
-            ),
-            AutoAuthorityRejection::PropertyScrollPlan { error } => (
-                "property-scroll",
-                DebugFallbackStage::Planning,
-                property_scroll_plan_error_debug_records(error),
-            ),
-            AutoAuthorityRejection::PropertyBoundaryDagPlan { error } => (
-                "property-boundary-dag",
-                DebugFallbackStage::Planning,
-                property_scroll_plan_error_debug_records(error),
-            ),
-            AutoAuthorityRejection::DirectScrollTransformPlan { error } => (
-                "direct-scroll-transform",
-                DebugFallbackStage::Planning,
-                property_scroll_plan_error_debug_records(error),
-            ),
-            AutoAuthorityRejection::TransformScrollPlan { error } => (
-                "transform-scroll",
-                DebugFallbackStage::Planning,
-                property_scroll_plan_error_debug_records(error),
-            ),
-            AutoAuthorityRejection::EffectScrollPlan { error } => (
-                "effect-scroll",
-                DebugFallbackStage::Planning,
-                property_scroll_plan_error_debug_records(error),
-            ),
-            AutoAuthorityRejection::TransformEffectScrollPlan { error } => (
-                "transform-effect-scroll",
-                DebugFallbackStage::Planning,
-                property_scroll_plan_error_debug_records(error),
-            ),
-            AutoAuthorityRejection::Artifact { eligibility } => (
-                "artifact",
-                DebugFallbackStage::Selection,
-                artifact_rejection_debug_records(eligibility),
-            ),
-            AutoAuthorityRejection::ArtifactPrepare { .. } => (
-                "artifact-surface-dag",
-                DebugFallbackStage::Preparation,
-                Vec::new(),
-            ),
-        },
-        PaintAuthoritySelectionRejection::Plan { authority, error } => (
-            authority.label(),
-            DebugFallbackStage::Planning,
-            frame_plan_error_debug_records(error),
-        ),
-        PaintAuthoritySelectionRejection::Artifact(eligibility) => (
-            "artifact",
+    let (stage, records) = match rejection {
+        PaintAuthoritySelectionRejection::Auto(AutoAuthorityRejection::Artifact {
+            eligibility,
+        })
+        | PaintAuthoritySelectionRejection::Artifact(eligibility) => (
             DebugFallbackStage::Selection,
             artifact_rejection_debug_records(eligibility),
         ),
-        PaintAuthoritySelectionRejection::NoTransform
-        | PaintAuthoritySelectionRejection::Shape { .. } => {
-            ("", DebugFallbackStage::Selection, Vec::new())
-        }
+        PaintAuthoritySelectionRejection::Auto(AutoAuthorityRejection::ArtifactPrepare {
+            ..
+        }) => (DebugFallbackStage::Preparation, Vec::new()),
     };
-    // Name the grammar that raised each code. Many plan reasons name no node,
-    // so the candidate is the only thing that distinguishes two grammars
-    // rejecting for the same reason.
-    for record in &mut records {
-        if let crate::view::debug::DebugFallbackDetail::Code { code } = record.2 {
-            record.2 = crate::view::debug::DebugFallbackDetail::CandidateCode { candidate, code };
-        }
-    }
     records
         .into_iter()
         .map(|(owner, category, detail)| SelectionRejectionDebugRecord {
@@ -1314,7 +739,6 @@ struct PaintAuthorityTelemetrySnapshot {
     rejection_labels: Vec<String>,
     legacy_fallback_stage: Option<PaintAuthorityFallbackStage>,
     terminal_failure_stage: Option<PaintAuthorityFallbackStage>,
-    scroll_content: Option<ScrollContentAuthorityTelemetry>,
     resident_release_count: Option<usize>,
 }
 
@@ -1392,9 +816,6 @@ enum RecordedArtifactPayload {
     /// Generic current-target artifact authority, fully prepared and resident
     /// sealed before payload-dependent resident staging.
     ArtifactSurface(crate::view::paint::PreparedArtifactSurfaceFrame),
-    /// Existing root-effect and ArtifactCanary compiler path. These are not
-    /// part of the generic current-target artifact-surface executor authority.
-    ExistingArtifact(crate::view::paint::PaintArtifact),
 }
 
 struct RecordedArtifactCandidate {
@@ -1404,16 +825,13 @@ struct RecordedArtifactCandidate {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RecordedArtifactSurfacePrepareError {
+    UnexpectedArtifactTarget,
     RasterPlan(crate::view::paint::ArtifactSurfaceRasterPlanError),
     ResidentSeal(crate::view::paint::ArtifactSurfaceResidentSealError),
     DetachedSurfacesUnsupported {
         candidates: usize,
     },
     MissingDetachedSurface,
-    UnsupportedDetachedSurfaceRole {
-        surface: crate::view::paint::SurfaceDagNodeId,
-        role: crate::view::paint::RetainedSurfaceRasterRole,
-    },
     UnsupportedScrollContentSurfaceRole {
         surface: crate::view::paint::SurfaceDagNodeId,
         role: crate::view::paint::RetainedSurfaceRasterRole,
@@ -1437,78 +855,8 @@ enum RetainedAutoDecision {
     },
 }
 
-/// Selection is completed before the common clear or any renderer-specific
-/// frame-graph mutation.  Keeping the owned plan here prevents a rejected
-/// retained-transform frame from partially entering another paint authority.
-enum RetainedTransformCanarySelection {
+enum FramePaintSelection {
     Inactive,
-    NoTransform,
-    SingletonShapeRejected {
-        transform_count: usize,
-    },
-    Planned(crate::view::paint::FramePaintPlan),
-    PlanRejected(crate::view::paint::FramePaintPlanError),
-    TreePlanned(crate::view::paint::FramePaintPlan),
-    TreeShapeRejected {
-        transform_count: usize,
-    },
-    TreePlanRejected(crate::view::paint::FramePaintPlanError),
-    IsolationPlanned(crate::view::paint::FramePaintPlan),
-    IsolationPlanRejected(crate::view::paint::FramePaintPlanError),
-    EffectTreePlanned(crate::view::paint::FramePaintPlan),
-    PropertyScenePlanned(crate::view::paint::FramePaintPlan),
-    PropertyScenePrepared,
-    PropertyScenePrepareRejected(crate::view::paint::RetainedSurfacePrepareError),
-    NativeScrollForestPlanned(crate::view::paint::FramePaintPlan),
-    NativeScrollForestPrepared,
-    NativeScrollForestPrepareRejected(crate::view::paint::RetainedPropertyScrollScenePrepareError),
-    PropertyScrollScenePlanned(crate::view::paint::ValidatedPropertyScrollScene),
-    PropertyScrollScenePrepared,
-    PropertyScrollScenePrepareRejected(crate::view::paint::RetainedPropertyScrollScenePrepareError),
-    PropertyBoundaryDagScenePlanned(crate::view::paint::ValidatedPropertyBoundaryDagScene),
-    PropertyBoundaryDagScenePrepared,
-    PropertyBoundaryDagScenePrepareRejected(
-        crate::view::paint::RetainedPropertyScrollScenePrepareError,
-    ),
-    FrameRootScrollScenePlanned(crate::view::paint::ValidatedFrameRootScrollScene),
-    FrameRootScrollScenePrepared,
-    FrameRootScrollScenePrepareRejected(
-        crate::view::paint::RetainedPropertyScrollScenePrepareError,
-    ),
-    DirectScrollTransformScenePlanned(
-        crate::view::paint::ValidatedDirectScrollTransformTransaction,
-    ),
-    DirectScrollTransformScenePrepared,
-    DirectScrollTransformScenePrepareRejected(
-        crate::view::paint::RetainedPropertyScrollScenePrepareError,
-    ),
-    TransformScrollScenePlanned(crate::view::paint::ValidatedTransformScrollScene),
-    TransformScrollScenePrepared,
-    TransformScrollScenePrepareRejected(
-        crate::view::paint::RetainedPropertyScrollScenePrepareError,
-    ),
-    EffectScrollScenePlanned(crate::view::paint::ValidatedEffectScrollSceneCheckpoint),
-    EffectScrollScenePrepared,
-    EffectScrollScenePrepareRejected(crate::view::paint::RetainedPropertyScrollScenePrepareError),
-    TransformEffectScrollScenePlanned(crate::view::paint::ValidatedTransformEffectScrollScene),
-    TransformEffectScrollScenePrepared,
-    TransformEffectScrollScenePrepareRejected(
-        crate::view::paint::RetainedPropertyScrollScenePrepareError,
-    ),
-    EffectTreeShapeRejected {
-        transform_count: usize,
-        effect_count: usize,
-    },
-    EffectTreePlanRejected(crate::view::paint::FramePaintPlanError),
-    ScrollHostPlanned(crate::view::paint::FramePaintPlan),
-    ScrollHostShapeRejected {
-        scroll_count: usize,
-    },
-    ScrollHostPlanRejected(crate::view::paint::FramePaintPlanError),
-    ScrollSceneActive,
-    ScrollSceneShapeRejected {
-        scroll_count: usize,
-    },
     Auto(RetainedAutoDecision),
     AutoArtifact(RecordedArtifactCandidate),
     AutoLegacy,
@@ -1517,9 +865,9 @@ enum RetainedTransformCanarySelection {
 fn retained_auto_circuit_breaker_selection(
     terminal_failure: Option<RetainedAutoTerminalFailureStage>,
     capture_trace: bool,
-) -> Option<RetainedTransformCanarySelection> {
+) -> Option<FramePaintSelection> {
     terminal_failure.map(|_| {
-        RetainedTransformCanarySelection::Auto(RetainedAutoDecision::Legacy {
+        FramePaintSelection::Auto(RetainedAutoDecision::Legacy {
             trace: AutoAuthorityTrace::new(capture_trace),
         })
     })
@@ -1559,165 +907,6 @@ fn should_store_compile_cache(compiled: bool, executed: bool) -> bool {
     compiled && executed
 }
 
-fn preflight_direct_scroll_transform_selection(
-    viewport: &mut Viewport,
-    graph: &mut FrameGraph,
-    ctx: crate::view::base_component::UiBuildContext,
-    clear_rgba: [f32; 4],
-    frame_owner: Option<crate::view::viewport::RetainedSurfaceFrameStageOwner>,
-    selection: RetainedTransformCanarySelection,
-) -> (
-    RetainedTransformCanarySelection,
-    Option<crate::view::paint::RetainedPropertyScrollSceneBuildOutcome>,
-) {
-    let RetainedTransformCanarySelection::DirectScrollTransformScenePlanned(scene) = selection
-    else {
-        return (selection, None);
-    };
-    let Some(frame_owner) = frame_owner else {
-        return (
-            RetainedTransformCanarySelection::DirectScrollTransformScenePrepareRejected(
-                crate::view::paint::RetainedPropertyScrollScenePrepareError::StageUnavailable,
-            ),
-            None,
-        );
-    };
-    match crate::view::paint::prepare_direct_scroll_transform_scene_from_pool(
-        viewport,
-        scene,
-        graph,
-        ctx,
-        clear_rgba,
-        frame_owner,
-    ) {
-        Ok(prepared) => (
-            RetainedTransformCanarySelection::DirectScrollTransformScenePrepared,
-            Some(crate::view::paint::emit_prepared_direct_scroll_transform_scene(prepared)),
-        ),
-        Err(error) => (
-            RetainedTransformCanarySelection::DirectScrollTransformScenePrepareRejected(error),
-            None,
-        ),
-    }
-}
-
-fn preflight_frame_root_scroll_selection(
-    viewport: &mut Viewport,
-    graph: &mut FrameGraph,
-    ctx: crate::view::base_component::UiBuildContext,
-    clear_rgba: [f32; 4],
-    frame_owner: Option<crate::view::viewport::RetainedSurfaceFrameStageOwner>,
-    selection: RetainedTransformCanarySelection,
-) -> (
-    RetainedTransformCanarySelection,
-    Option<crate::view::paint::RetainedPropertyScrollSceneBuildOutcome>,
-) {
-    let RetainedTransformCanarySelection::FrameRootScrollScenePlanned(scene) = selection else {
-        return (selection, None);
-    };
-    let Some(frame_owner) = frame_owner else {
-        return (
-            RetainedTransformCanarySelection::FrameRootScrollScenePrepareRejected(
-                crate::view::paint::RetainedPropertyScrollScenePrepareError::StageUnavailable,
-            ),
-            None,
-        );
-    };
-    match crate::view::paint::prepare_frame_root_scroll_scene(
-        viewport,
-        scene,
-        graph,
-        ctx,
-        clear_rgba,
-        frame_owner,
-    ) {
-        Ok(prepared) => (
-            RetainedTransformCanarySelection::FrameRootScrollScenePrepared,
-            Some(crate::view::paint::emit_prepared_frame_root_scroll_scene(
-                prepared,
-            )),
-        ),
-        Err(error) => (
-            RetainedTransformCanarySelection::FrameRootScrollScenePrepareRejected(error),
-            None,
-        ),
-    }
-}
-
-fn preflight_transform_effect_scroll_selection(
-    viewport: &mut Viewport,
-    graph: &mut FrameGraph,
-    ctx: crate::view::base_component::UiBuildContext,
-    clear_rgba: [f32; 4],
-    frame_owner: Option<crate::view::viewport::RetainedSurfaceFrameStageOwner>,
-    selection: RetainedTransformCanarySelection,
-) -> (
-    RetainedTransformCanarySelection,
-    Option<crate::view::paint::RetainedPropertyScrollSceneBuildOutcome>,
-) {
-    let RetainedTransformCanarySelection::TransformEffectScrollScenePlanned(scene) = selection
-    else {
-        return (selection, None);
-    };
-    let Some(frame_owner) = frame_owner else {
-        return (
-            RetainedTransformCanarySelection::TransformEffectScrollScenePrepareRejected(
-                crate::view::paint::RetainedPropertyScrollScenePrepareError::StageUnavailable,
-            ),
-            None,
-        );
-    };
-    match crate::view::paint::prepare_retained_transform_effect_scroll_scene_from_pool(
-        viewport,
-        scene,
-        graph,
-        ctx,
-        clear_rgba,
-        frame_owner,
-    ) {
-        Ok(prepared) => (
-            RetainedTransformCanarySelection::TransformEffectScrollScenePrepared,
-            Some(
-                crate::view::paint::emit_prepared_retained_transform_effect_scroll_scene(prepared),
-            ),
-        ),
-        Err(error) => (
-            RetainedTransformCanarySelection::TransformEffectScrollScenePrepareRejected(error),
-            None,
-        ),
-    }
-}
-
-fn direct_scroll_transform_prepare_rejection_dispatch(
-    error: &crate::view::paint::RetainedPropertyScrollScenePrepareError,
-) -> (bool, String) {
-    (
-        true,
-        format!(
-            "retained-auto authority=legacy direct-scroll-transform-prepare-rejected={error:?}"
-        ),
-    )
-}
-
-fn direct_scroll_transform_prepare_rejection_fallback_stage() -> PaintAuthorityFallbackStage {
-    PaintAuthorityFallbackStage::Prepare
-}
-
-fn transform_effect_scroll_prepare_rejection_dispatch(
-    error: &crate::view::paint::RetainedPropertyScrollScenePrepareError,
-) -> (bool, String) {
-    (
-        true,
-        format!(
-            "retained-auto authority=legacy transform-effect-scroll-prepare-rejected={error:?}"
-        ),
-    )
-}
-
-fn transform_effect_scroll_prepare_rejection_fallback_stage() -> PaintAuthorityFallbackStage {
-    PaintAuthorityFallbackStage::Prepare
-}
-
 // Per-frame generic detached color + depth payload limit (128 MiB).
 // Count every materialized target, including warm reused targets, using real
 // physical descriptors after DPR and content-envelope resolution. This is
@@ -1753,24 +942,14 @@ fn require_detached_artifact_surface_plan(
     if plan.nodes().is_empty() {
         return Err(RecordedArtifactSurfacePrepareError::MissingDetachedSurface);
     }
-    // The current exhaustive SurfaceDagNodeKind -> raster-role mapping emits
-    // exactly these three roles, so this branch rejects no production-reachable
-    // plan today. It is a forward-compatibility assertion: a future Surface DAG
-    // role must be admitted here deliberately before production can select it.
-    if let Some(node) = plan.nodes().iter().find(|node| {
-        !matches!(
-            node.identity().role,
+    // Keep the role domain exhaustive at compile time. All variants are
+    // produced by the generic sealer; there is no legacy role admission gate.
+    for node in plan.nodes() {
+        match node.identity().role {
             crate::view::paint::RetainedSurfaceRasterRole::Transform
-                | crate::view::paint::RetainedSurfaceRasterRole::PropertyEffect
-                | crate::view::paint::RetainedSurfaceRasterRole::ScrollContent
-        )
-    }) {
-        return Err(
-            RecordedArtifactSurfacePrepareError::UnsupportedDetachedSurfaceRole {
-                surface: node.source(),
-                role: node.identity().role,
-            },
-        );
+            | crate::view::paint::RetainedSurfaceRasterRole::PropertyEffect
+            | crate::view::paint::RetainedSurfaceRasterRole::ScrollContent => {}
+        }
     }
     Ok(plan)
 }
@@ -1830,7 +1009,9 @@ fn prepare_recorded_artifact_candidate(
                     )
                 }
                 crate::view::paint::PaintArtifactTarget::RootOpacityGroup { .. } => {
-                    RecordedArtifactPayload::ExistingArtifact(artifact)
+                    return Err(RecordedArtifactCandidateRejection::Prepare(
+                        RecordedArtifactSurfacePrepareError::UnexpectedArtifactTarget,
+                    ));
                 }
             };
             Ok(RecordedArtifactCandidate {
@@ -1954,7 +1135,7 @@ fn select_retained_auto_authority(
     paint_generations: &crate::view::compositor::PaintGenerationTracker,
     ctx: &crate::view::base_component::UiBuildContext,
     capture_trace: bool,
-) -> AutoAuthorityDecision {
+) -> RetainedAutoDecision {
     select_retained_auto_authority_with_artifact_budget_for_test(
         arena,
         roots,
@@ -1975,7 +1156,7 @@ fn select_retained_auto_authority_with_artifact_budget_for_test(
     ctx: &crate::view::base_component::UiBuildContext,
     artifact_surface_max_texture_bytes: u64,
     capture_trace: bool,
-) -> AutoAuthorityDecision {
+) -> RetainedAutoDecision {
     select_retained_auto_frame(
         arena,
         roots,
@@ -1986,258 +1167,6 @@ fn select_retained_auto_authority_with_artifact_budget_for_test(
         artifact_surface_max_texture_bytes,
         capture_trace,
     )
-    .into()
-}
-
-#[cfg(test)]
-fn select_retained_transform_canary(
-    mode: ViewportPaintRendererMode,
-    arena: &crate::view::node_arena::NodeArena,
-    roots: &[crate::view::node_arena::NodeKey],
-    property_trees: &crate::view::compositor::PropertyTrees,
-    paint_generations: &crate::view::compositor::PaintGenerationTracker,
-    ctx: &crate::view::base_component::UiBuildContext,
-) -> RetainedTransformCanarySelection {
-    select_retained_transform_canary_with_trace_capture(
-        mode,
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        ctx,
-        wgpu::Limits::default().max_texture_dimension_2d,
-        ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
-        false,
-    )
-}
-
-fn select_retained_transform_canary_with_trace_capture(
-    mode: ViewportPaintRendererMode,
-    arena: &crate::view::node_arena::NodeArena,
-    roots: &[crate::view::node_arena::NodeKey],
-    property_trees: &crate::view::compositor::PropertyTrees,
-    paint_generations: &crate::view::compositor::PaintGenerationTracker,
-    ctx: &crate::view::base_component::UiBuildContext,
-    artifact_surface_max_texture_dimension_2d: u32,
-    artifact_surface_max_texture_bytes: u64,
-    capture_auto_trace: bool,
-) -> RetainedTransformCanarySelection {
-    // Named retained canaries, like RetainedAuto, own their whole frame.
-    match mode {
-        ViewportPaintRendererMode::RetainedTransformCanary
-            if property_trees.transforms.is_empty() =>
-        {
-            RetainedTransformCanarySelection::NoTransform
-        }
-        ViewportPaintRendererMode::RetainedTransformCanary
-            if property_trees.transforms.len() != 1 =>
-        {
-            RetainedTransformCanarySelection::SingletonShapeRejected {
-                transform_count: property_trees.transforms.len(),
-            }
-        }
-        ViewportPaintRendererMode::RetainedTransformCanary => {
-            let plan_context = crate::view::paint::TransformSurfacePlanContext::new(
-                ctx.paint_offset(),
-                ctx.graphics_pass_context().logical_scissor_rect(),
-            );
-            match crate::view::paint::plan_single_root_transform_surface_with_context(
-                arena,
-                roots,
-                property_trees,
-                paint_generations,
-                plan_context,
-            ) {
-                Ok(plan) => RetainedTransformCanarySelection::Planned(plan),
-                Err(error) => RetainedTransformCanarySelection::PlanRejected(error),
-            }
-        }
-        ViewportPaintRendererMode::RetainedSurfaceTreeCanary
-            if property_trees.transforms.len() != 2 =>
-        {
-            RetainedTransformCanarySelection::TreeShapeRejected {
-                transform_count: property_trees.transforms.len(),
-            }
-        }
-        ViewportPaintRendererMode::RetainedSurfaceTreeCanary => {
-            let plan_context = crate::view::paint::TransformSurfacePlanContext::new(
-                ctx.paint_offset(),
-                ctx.graphics_pass_context().logical_scissor_rect(),
-            );
-            match crate::view::paint::plan_single_root_transform_surface_with_context(
-                arena,
-                roots,
-                property_trees,
-                paint_generations,
-                plan_context,
-            ) {
-                Ok(plan) => RetainedTransformCanarySelection::TreePlanned(plan),
-                Err(error) => RetainedTransformCanarySelection::TreePlanRejected(error),
-            }
-        }
-        ViewportPaintRendererMode::RetainedIsolationCanary => {
-            let viewport = ctx.viewport();
-            match crate::view::paint::plan_single_root_isolation_surface(
-                arena,
-                roots,
-                property_trees,
-                paint_generations,
-                viewport.target_width(),
-                viewport.target_height(),
-                viewport.scale_factor(),
-                ctx.graphics_pass_context().logical_scissor_rect(),
-            ) {
-                Ok(plan) => RetainedTransformCanarySelection::IsolationPlanned(plan),
-                Err(error) => RetainedTransformCanarySelection::IsolationPlanRejected(error),
-            }
-        }
-        ViewportPaintRendererMode::RetainedEffectTreeCanary
-            if property_trees.transforms.len() != 1 || property_trees.effects.len() != 1 =>
-        {
-            RetainedTransformCanarySelection::EffectTreeShapeRejected {
-                transform_count: property_trees.transforms.len(),
-                effect_count: property_trees.effects.len(),
-            }
-        }
-        ViewportPaintRendererMode::RetainedEffectTreeCanary => {
-            let plan_context = crate::view::paint::TransformSurfacePlanContext::new(
-                ctx.paint_offset(),
-                ctx.graphics_pass_context().logical_scissor_rect(),
-            );
-            match crate::view::paint::plan_single_root_transform_child_isolation_surface_with_context(
-                arena,
-                roots,
-                property_trees,
-                paint_generations,
-                plan_context,
-            ) {
-                Ok(plan) => RetainedTransformCanarySelection::EffectTreePlanned(plan),
-                Err(error) => RetainedTransformCanarySelection::EffectTreePlanRejected(error),
-            }
-        }
-        ViewportPaintRendererMode::RetainedScrollHostCanary
-            if property_trees.scrolls.len() != 1 =>
-        {
-            RetainedTransformCanarySelection::ScrollHostShapeRejected {
-                scroll_count: property_trees.scrolls.len(),
-            }
-        }
-        ViewportPaintRendererMode::RetainedScrollHostCanary => {
-            let viewport = ctx.viewport();
-            match crate::view::paint::plan_single_root_scroll_host_surface(
-                arena,
-                roots,
-                property_trees,
-                paint_generations,
-                viewport.scale_factor(),
-                ctx.paint_offset(),
-                ctx.graphics_pass_context().logical_scissor_rect(),
-            ) {
-                Ok(plan) => RetainedTransformCanarySelection::ScrollHostPlanned(plan),
-                Err(error) => RetainedTransformCanarySelection::ScrollHostPlanRejected(error),
-            }
-        }
-        ViewportPaintRendererMode::RetainedScrollSceneCanary
-            if property_trees.scrolls.len() != 1 =>
-        {
-            RetainedTransformCanarySelection::ScrollSceneShapeRejected {
-                scroll_count: property_trees.scrolls.len(),
-            }
-        }
-        ViewportPaintRendererMode::RetainedScrollSceneCanary => {
-            RetainedTransformCanarySelection::ScrollSceneActive
-        }
-        ViewportPaintRendererMode::RetainedAuto => {
-            RetainedTransformCanarySelection::Auto(select_retained_auto_frame(
-                arena,
-                roots,
-                property_trees,
-                paint_generations,
-                ctx,
-                artifact_surface_max_texture_dimension_2d,
-                artifact_surface_max_texture_bytes,
-                capture_auto_trace,
-            ))
-        }
-        ViewportPaintRendererMode::Legacy | ViewportPaintRendererMode::ArtifactCanary => {
-            RetainedTransformCanarySelection::Inactive
-        }
-    }
-}
-
-#[derive(Clone)]
-struct RootEffectBuildPlan {
-    committed: RootEffectRetainedState,
-    key: crate::view::frame_graph::PersistentTextureKey,
-    target: crate::view::paint::RootEffectRasterInputs,
-    pair_resident: bool,
-}
-
-/// Single production dispatch point for the artifact canary. A single root
-/// effect selects M6C1 true group opacity; an effect-neutral frame selects
-/// baked-opacity authority with validated property-tree clips. Either path
-/// owns the complete frame or emits no artifact pass at all.
-/// The function either
-/// compiles one owning artifact for the complete frame or emits no artifact
-/// pass at all, leaving the caller free to run the unchanged legacy walk.
-fn try_build_property_neutral_artifact_frame(
-    graph: &mut FrameGraph,
-    arena: &crate::view::node_arena::NodeArena,
-    roots: &[crate::view::node_arena::NodeKey],
-    property_trees: &crate::view::compositor::PropertyTrees,
-    paint_generations: &crate::view::compositor::PaintGenerationTracker,
-    mode: ViewportPaintRendererMode,
-    ctx: &crate::view::base_component::UiBuildContext,
-    root_effect_plan: Option<&RootEffectBuildPlan>,
-) -> PropertyNeutralArtifactAttempt {
-    let recorder_mode = match mode {
-        ViewportPaintRendererMode::Legacy => crate::view::paint::RendererMode::Legacy,
-        ViewportPaintRendererMode::ArtifactCanary => crate::view::paint::RendererMode::Auto,
-        // The retained-transform canary has a separate whole-frame dispatch
-        // point and must never enter the generic artifact compiler.
-        ViewportPaintRendererMode::RetainedTransformCanary
-        | ViewportPaintRendererMode::RetainedSurfaceTreeCanary
-        | ViewportPaintRendererMode::RetainedIsolationCanary
-        | ViewportPaintRendererMode::RetainedEffectTreeCanary
-        | ViewportPaintRendererMode::RetainedScrollHostCanary
-        | ViewportPaintRendererMode::RetainedScrollSceneCanary
-        | ViewportPaintRendererMode::RetainedAuto => crate::view::paint::RendererMode::Legacy,
-    };
-    let has_single_root_effect = roots.first().is_some_and(|root| {
-        roots.len() == 1
-            && property_trees
-                .paint_state_for(*root)
-                .is_some_and(|properties| properties.effect.is_some())
-    });
-    let outcome = if has_single_root_effect {
-        crate::view::paint::record_root_group_opacity_frame_artifact(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            recorder_mode,
-        )
-    } else {
-        crate::view::paint::record_clip_enabled_frame_artifact(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            recorder_mode,
-        )
-    }
-    .expect("production paint modes never request forced artifact recording");
-    match outcome {
-        crate::view::paint::FrameArtifactRecordOutcome::Artifact {
-            artifact,
-            eligibility,
-        } => {
-            try_compile_existing_artifact_frame(graph, artifact, eligibility, ctx, root_effect_plan)
-        }
-        crate::view::paint::FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) => {
-            PropertyNeutralArtifactAttempt::WholeFrameLegacy { eligibility }
-        }
-    }
 }
 
 fn try_compile_auto_artifact_frame(
@@ -2246,15 +1175,14 @@ fn try_compile_auto_artifact_frame(
     graph: &mut FrameGraph,
     candidate: RecordedArtifactCandidate,
     ctx: &crate::view::base_component::UiBuildContext,
-    root_effect_plan: Option<&RootEffectBuildPlan>,
-) -> PropertyNeutralArtifactAttempt {
+) -> ArtifactFrameCompileOutcome {
     let stage_is_active = viewport.retained_surface_frame_stage_owner_is_active(owner);
     debug_assert!(
         stage_is_active,
         "artifact dispatch requires an active owner and an empty pending slot"
     );
     if !stage_is_active {
-        return PropertyNeutralArtifactAttempt::CompileRejected(
+        return ArtifactFrameCompileOutcome::CompileRejected(
             crate::view::paint::ArtifactCompileErrorKind::SurfaceExecution(
                 crate::view::paint::ArtifactSurfaceExecutionError::InactiveFrameStageOwner,
             ),
@@ -2277,11 +1205,7 @@ fn try_compile_auto_artifact_frame(
                 graph,
                 artifact_ctx,
             ) {
-                Ok(state) => PropertyNeutralArtifactAttempt::Compiled {
-                    state,
-                    eligibility,
-                    root_effect_transaction: None,
-                },
+                Ok(state) => ArtifactFrameCompileOutcome::Compiled { state, eligibility },
                 Err(error) => {
                     if error
                         != crate::view::paint::ArtifactSurfaceExecutionError::InactiveFrameStageOwner
@@ -2291,18 +1215,11 @@ fn try_compile_auto_artifact_frame(
                             "active artifact surface rejection must stage exactly one clear transaction"
                         );
                     }
-                    PropertyNeutralArtifactAttempt::CompileRejected(
+                    ArtifactFrameCompileOutcome::CompileRejected(
                         crate::view::paint::ArtifactCompileErrorKind::SurfaceExecution(error),
                     )
                 }
             }
-        }
-        RecordedArtifactPayload::ExistingArtifact(artifact) => {
-            assert!(
-                viewport.stage_retained_surface_clear(),
-                "existing artifact authority must stage exactly one clear transaction"
-            );
-            try_compile_existing_artifact_frame(graph, artifact, eligibility, ctx, root_effect_plan)
         }
     }
 }
@@ -2344,7 +1261,7 @@ pub(crate) fn emit_retained_auto_artifact_surface_for_test(
 ) -> Result<AutoArtifactSurfaceEmissionForTest, String> {
     let decision =
         select_retained_auto_authority(arena, roots, property_trees, paint_generations, ctx, true);
-    let AutoAuthorityDecision::Artifact { candidate, trace } = decision else {
+    let RetainedAutoDecision::Artifact { candidate, trace } = decision else {
         return Err("production selector did not choose Artifact".to_owned());
     };
     let RecordedArtifactCandidate {
@@ -2395,14 +1312,10 @@ pub(crate) fn emit_retained_auto_artifact_surface_for_test(
             eligibility,
         },
         ctx,
-        None,
     );
     match attempt {
-        PropertyNeutralArtifactAttempt::Compiled { .. } => {}
-        PropertyNeutralArtifactAttempt::WholeFrameLegacy { .. } => {
-            return Err("selected artifact surface unexpectedly requested legacy".to_owned());
-        }
-        PropertyNeutralArtifactAttempt::CompileRejected(error) => {
+        ArtifactFrameCompileOutcome::Compiled { .. } => {}
+        ArtifactFrameCompileOutcome::CompileRejected(error) => {
             return Err(format!(
                 "selected artifact surface compile rejected: {error:?}"
             ));
@@ -2436,64 +1349,6 @@ pub(crate) fn emit_retained_auto_artifact_surface_for_test(
         actions,
         intermediate_surfaces,
     })
-}
-
-fn try_compile_existing_artifact_frame(
-    graph: &mut FrameGraph,
-    artifact: crate::view::paint::PaintArtifact,
-    eligibility: crate::view::paint::FrameArtifactEligibility,
-    ctx: &crate::view::base_component::UiBuildContext,
-    root_effect_plan: Option<&RootEffectBuildPlan>,
-) -> PropertyNeutralArtifactAttempt {
-    let artifact_ctx =
-        crate::view::base_component::UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-    let root_effect = match artifact.target {
-        crate::view::paint::PaintArtifactTarget::RootOpacityGroup { root, .. } => {
-            let Some(plan) = root_effect_plan.filter(|plan| {
-                plan.key == crate::view::base_component::root_effect_stable_key(root)
-            }) else {
-                return PropertyNeutralArtifactAttempt::CompileRejected(
-                    crate::view::paint::ArtifactCompileErrorKind::InvalidStore,
-                );
-            };
-            let Some(stamp) =
-                crate::view::paint::validated_root_effect_raster_stamp(&artifact, plan.target)
-            else {
-                return PropertyNeutralArtifactAttempt::CompileRejected(
-                    crate::view::paint::ArtifactCompileErrorKind::InvalidStore,
-                );
-            };
-            let action = plan
-                .committed
-                .compile_action(&stamp, plan.key, plan.pair_resident);
-            Some((
-                action,
-                PendingRootEffectTransaction::Commit {
-                    stamp,
-                    key: plan.key,
-                    action,
-                },
-            ))
-        }
-        crate::view::paint::PaintArtifactTarget::CurrentTarget => None,
-    };
-    let compiled = match &root_effect {
-        Some((action, _)) => crate::view::paint::try_compile_root_effect_artifact(
-            &artifact,
-            *action,
-            graph,
-            artifact_ctx,
-        ),
-        None => crate::view::paint::try_compile_artifact(&artifact, graph, artifact_ctx),
-    };
-    match compiled {
-        Ok(state) => PropertyNeutralArtifactAttempt::Compiled {
-            state,
-            eligibility,
-            root_effect_transaction: root_effect.map(|(_, transaction)| transaction),
-        },
-        Err(error) => PropertyNeutralArtifactAttempt::CompileRejected(error.kind()),
-    }
 }
 
 fn finish_frame_dirty_lifecycle(
@@ -2768,29 +1623,6 @@ impl Viewport {
                 )
             }));
         }
-        if self.debug_options.retained_auto_reuse_actions {
-            records.extend(telemetry.retained_surfaces.iter().map(|surface| {
-                let color = match surface.action {
-                    crate::view::paint::RetainedSurfaceCompileAction::Reuse => {
-                        [38.0 / 255.0, 242.0 / 255.0, 90.0 / 255.0, 242.0 / 255.0]
-                    }
-                    crate::view::paint::RetainedSurfaceCompileAction::Reraster => {
-                        [1.0, 115.0 / 255.0, 26.0 / 255.0, 242.0 / 255.0]
-                    }
-                };
-                (surface.boundary_root, color, None)
-            }));
-            if telemetry.retained_surfaces.is_empty()
-                && let (Some(scroll), Some(&root)) = (telemetry.scroll_content, roots.first())
-            {
-                let color = if scroll.reraster_count > 0 {
-                    [1.0, 115.0 / 255.0, 26.0 / 255.0, 242.0 / 255.0]
-                } else {
-                    [38.0 / 255.0, 242.0 / 255.0, 90.0 / 255.0, 242.0 / 255.0]
-                };
-                records.push((root, color, None));
-            }
-        }
         if self.debug_options.retained_auto_fallback_reasons
             && telemetry.final_authority_is_legacy()
         {
@@ -2864,7 +1696,6 @@ impl Viewport {
         use crate::view::debug::{
             DebugCoverageKind as Coverage, DebugFallbackCategory as Category,
             DebugFallbackDetail as Detail, DebugFrameDisposition as Disposition,
-            DebugResidentAction as Action, DebugSurfaceKind as SurfaceKind,
         };
 
         let disposition = if !compiled {
@@ -2880,14 +1711,6 @@ impl Viewport {
         let root_coverage = match final_authority {
             PaintAuthorityKind::Legacy => Coverage::LegacyBoundary,
             PaintAuthorityKind::Artifact => Coverage::ArtifactChunk,
-            PaintAuthorityKind::PropertyScene => Coverage::PropertySurface,
-            PaintAuthorityKind::NativeScrollForest => Coverage::RetainedSurface,
-            PaintAuthorityKind::Transform
-            | PaintAuthorityKind::SurfaceTree
-            | PaintAuthorityKind::Isolation
-            | PaintAuthorityKind::EffectTree
-            | PaintAuthorityKind::ScrollHost
-            | PaintAuthorityKind::ScrollScene => Coverage::RetainedSurface,
         };
         let mut nodes = FxHashMap::<
             crate::view::node_arena::NodeKey,
@@ -2911,83 +1734,7 @@ impl Viewport {
             }
         }
 
-        let mut surfaces = Vec::new();
-        for trace in &telemetry.retained_surfaces {
-            let Some((stable_id, element_type, bounds)) =
-                self.retained_auto_debug_identity(trace.boundary_root)
-            else {
-                continue;
-            };
-            let action = match trace.action {
-                crate::view::paint::RetainedSurfaceCompileAction::Reuse => Action::Reuse,
-                crate::view::paint::RetainedSurfaceCompileAction::Reraster => Action::Reraster,
-            };
-            let properties = self
-                .compositor
-                .property_trees
-                .paint_state_for(trace.boundary_root)
-                .unwrap_or_default();
-            let kind = if properties.scroll.is_some() {
-                SurfaceKind::ScrollHost
-            } else if properties.effect.is_some() {
-                SurfaceKind::Effect
-            } else {
-                SurfaceKind::Transform
-            };
-            surfaces.push(crate::view::debug::DebugRetainedAutoSurfaceCaptureInput {
-                owner: Some(trace.boundary_root),
-                stable_id: Some(stable_id),
-                element_type,
-                bounds: Some(bounds),
-                kind,
-                coverage: Coverage::RetainedSurface,
-                resident_action: action,
-            });
-            let node = nodes.entry(trace.boundary_root).or_insert_with(|| {
-                crate::view::debug::DebugRetainedAutoNodeCaptureInput {
-                    owner: Some(trace.boundary_root),
-                    stable_id: Some(stable_id),
-                    element_type,
-                    bounds: Some(bounds),
-                    coverage: Vec::new(),
-                    resident_action: None,
-                    fallbacks: Vec::new(),
-                }
-            });
-            if !node.coverage.contains(&Coverage::RetainedSurface) {
-                node.coverage.push(Coverage::RetainedSurface);
-            }
-            node.resident_action = Some(action);
-        }
-
-        if telemetry.retained_surfaces.is_empty()
-            && let (Some(scroll), Some(&owner)) = (telemetry.scroll_content, roots.first())
-            && let Some((stable_id, element_type, bounds)) =
-                self.retained_auto_debug_identity(owner)
-        {
-            let action = if scroll.reraster_count > 0 {
-                Action::Reraster
-            } else if scroll.reuse_count > 0 {
-                Action::Reuse
-            } else {
-                Action::None
-            };
-            surfaces.push(crate::view::debug::DebugRetainedAutoSurfaceCaptureInput {
-                owner: Some(owner),
-                stable_id: Some(stable_id),
-                element_type,
-                bounds: Some(bounds),
-                kind: SurfaceKind::ScrollContent,
-                coverage: Coverage::RetainedSurface,
-                resident_action: action,
-            });
-            if let Some(node) = nodes.get_mut(&owner) {
-                if !node.coverage.contains(&Coverage::RetainedSurface) {
-                    node.coverage.push(Coverage::RetainedSurface);
-                }
-                node.resident_action = Some(action);
-            }
-        }
+        let surfaces: Vec<crate::view::debug::DebugRetainedAutoSurfaceCaptureInput> = Vec::new();
 
         let fallback_stage = telemetry
             .legacy_fallback_stage
@@ -3178,11 +1925,15 @@ impl Viewport {
 
         let resident_reuses = surfaces
             .iter()
-            .filter(|surface| surface.resident_action == Action::Reuse)
+            .filter(|surface| {
+                surface.resident_action == crate::view::debug::DebugResidentAction::Reuse
+            })
             .count() as u64;
         let resident_rerasterizations = surfaces
             .iter()
-            .filter(|surface| surface.resident_action == Action::Reraster)
+            .filter(|surface| {
+                surface.resident_action == crate::view::debug::DebugResidentAction::Reraster
+            })
             .count() as u64;
         let mut nodes = nodes.into_iter().collect::<Vec<_>>();
         nodes.sort_unstable_by_key(|(owner, _)| *owner);
@@ -3191,11 +1942,7 @@ impl Viewport {
             reachable_nodes: self.scene.node_arena.len() as u64,
             covered_nodes: nodes.len() as u64,
             artifact_chunks: u64::from(final_authority == PaintAuthorityKind::Artifact),
-            property_surfaces: if final_authority == PaintAuthorityKind::PropertyScene {
-                surfaces.len() as u64
-            } else {
-                0
-            },
+            property_surfaces: 0,
             retained_surfaces: surfaces.len() as u64,
             legacy_nodes: if disposition == Disposition::FellBackToLegacy {
                 self.scene.node_arena.len() as u64
@@ -3499,67 +2246,40 @@ impl Viewport {
             .map(|device| device.limits().max_texture_dimension_2d)
             .unwrap_or_else(|| wgpu::Limits::default().max_texture_dimension_2d);
         let retained_auto_terminal_failure = self.retained_auto_terminal_failure;
-        let retained_transform_selection = retained_auto_circuit_breaker_selection(
-            retained_auto_terminal_failure,
-            capture_paint_authority_telemetry,
-        )
-        .unwrap_or_else(|| {
-            select_retained_transform_canary_with_trace_capture(
-                self.paint_renderer_mode,
-                &self.scene.node_arena,
-                &root_keys_for_build,
-                &self.compositor.property_trees,
-                &self.compositor.paint_generations,
-                &ctx,
-                artifact_surface_max_texture_dimension_2d,
-                ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+        let frame_paint_selection = if self.paint_renderer_mode == ViewportPaintRendererMode::Legacy
+        {
+            FramePaintSelection::Inactive
+        } else {
+            retained_auto_circuit_breaker_selection(
+                retained_auto_terminal_failure,
                 capture_paint_authority_telemetry,
             )
-        });
-        let (mut retained_transform_selection, auto_authority_trace) =
-            match retained_transform_selection {
-                RetainedTransformCanarySelection::Auto(decision) => match decision {
-                    RetainedAutoDecision::Artifact { candidate, trace } => (
-                        RetainedTransformCanarySelection::AutoArtifact(candidate),
-                        Some((AutoAuthorityKind::Artifact, trace)),
-                    ),
-                    RetainedAutoDecision::Legacy { trace } => (
-                        RetainedTransformCanarySelection::AutoLegacy,
-                        Some((AutoAuthorityKind::Legacy, trace)),
-                    ),
-                },
-                selection => (selection, None),
-            };
-        let property_scene_plan_owner = if matches!(
-            retained_transform_selection,
-            RetainedTransformCanarySelection::PropertyScenePlanned(_)
-        ) {
-            let selection = std::mem::replace(
-                &mut retained_transform_selection,
-                RetainedTransformCanarySelection::PropertyScenePrepared,
-            );
-            let RetainedTransformCanarySelection::PropertyScenePlanned(plan) = selection else {
-                unreachable!("property-scene preflight extracts only its owned plan")
-            };
-            Some(plan)
-        } else {
-            None
+            .unwrap_or_else(|| {
+                FramePaintSelection::Auto(select_retained_auto_frame(
+                    &self.scene.node_arena,
+                    &root_keys_for_build,
+                    &self.compositor.property_trees,
+                    &self.compositor.paint_generations,
+                    &ctx,
+                    artifact_surface_max_texture_dimension_2d,
+                    ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+                    capture_paint_authority_telemetry,
+                ))
+            })
         };
-        let mut prepared_property_scene = None;
-        if let Some(property_scene_plan) = property_scene_plan_owner.as_ref() {
-            match crate::view::paint::prepare_retained_property_scene_from_pool(
-                self,
-                property_scene_plan,
-                &graph,
-                &ctx,
-            ) {
-                Ok(prepared) => prepared_property_scene = Some(prepared),
-                Err(error) => {
-                    retained_transform_selection =
-                        RetainedTransformCanarySelection::PropertyScenePrepareRejected(error);
-                }
-            }
-        }
+        let (frame_paint_selection, auto_authority_trace) = match frame_paint_selection {
+            FramePaintSelection::Auto(decision) => match decision {
+                RetainedAutoDecision::Artifact { candidate, trace } => (
+                    FramePaintSelection::AutoArtifact(candidate),
+                    Some((AutoAuthorityKind::Artifact, trace)),
+                ),
+                RetainedAutoDecision::Legacy { trace } => (
+                    FramePaintSelection::AutoLegacy,
+                    Some((AutoAuthorityKind::Legacy, trace)),
+                ),
+            },
+            selection => (selection, None),
+        };
         let clear_uses_premultiplied_alpha = matches!(
             self.gpu.surface_config.alpha_mode,
             wgpu::CompositeAlphaMode::PostMultiplied | wgpu::CompositeAlphaMode::PreMultiplied
@@ -3572,442 +2292,17 @@ impl Viewport {
             clear_rgba[2] *= a;
             clear_rgba[3] = a;
         }
-        let native_scroll_forest_owner = if matches!(
-            retained_transform_selection,
-            RetainedTransformCanarySelection::NativeScrollForestPlanned(_)
-        ) {
-            let selection = std::mem::replace(
-                &mut retained_transform_selection,
-                RetainedTransformCanarySelection::NativeScrollForestPrepared,
-            );
-            let RetainedTransformCanarySelection::NativeScrollForestPlanned(plan) = selection
-            else {
-                unreachable!("native forest preflight extracts only its owned plan")
-            };
-            Some(plan)
-        } else {
-            None
-        };
-        let mut pre_emitted_native_scroll_forest = None;
-        if let Some(plan) = native_scroll_forest_owner {
-            if retained_surface_frame_owner.is_none() {
-                retained_transform_selection =
-                    RetainedTransformCanarySelection::NativeScrollForestPrepareRejected(
-                        crate::view::paint::RetainedPropertyScrollScenePrepareError::StageUnavailable,
-                    );
-            } else {
-                match crate::view::paint::prepare_native_scroll_forest_transaction_from_pool(
-                    self,
-                    &plan,
-                    self.offscreen_format(),
-                ) {
-                    Ok(prepared) => {
-                        let mut forest_ctx =
-                            crate::view::base_component::UiBuildContext::from_parts(
-                                ctx.viewport(),
-                                ctx.state_clone(),
-                            );
-                        let output = forest_ctx.allocate_target(&mut graph);
-                        forest_ctx.set_current_target(output);
-                        graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
-                            crate::view::render_pass::clear_pass::ClearParams::new(clear_rgba),
-                            crate::view::render_pass::clear_pass::ClearInput {
-                                pass_context: forest_ctx.graphics_pass_context(),
-                                clear_depth_stencil: true,
-                            },
-                            crate::view::render_pass::clear_pass::ClearOutput {
-                                render_target: output,
-                            },
-                        ));
-                        if let Some(handle) = output.handle() {
-                            forest_ctx.set_color_target(Some(handle));
-                        }
-                        pre_emitted_native_scroll_forest = Some(
-                            crate::view::paint::emit_prepared_native_scroll_forest_transaction(
-                                self, &mut graph, forest_ctx, prepared,
-                            ),
-                        );
-                    }
-                    Err(error) => {
-                        retained_transform_selection =
-                            RetainedTransformCanarySelection::NativeScrollForestPrepareRejected(
-                                error,
-                            );
-                    }
-                }
-            }
-        }
-        let mut property_boundary_dag_nested_scroll_depth = None;
-        let property_boundary_dag_owner = if matches!(
-            retained_transform_selection,
-            RetainedTransformCanarySelection::PropertyBoundaryDagScenePlanned(_)
-        ) {
-            let selection = std::mem::replace(
-                &mut retained_transform_selection,
-                RetainedTransformCanarySelection::PropertyBoundaryDagScenePrepared,
-            );
-            let RetainedTransformCanarySelection::PropertyBoundaryDagScenePlanned(scene) =
-                selection
-            else {
-                unreachable!("boundary-DAG preflight extracts only its owned scene")
-            };
-            property_boundary_dag_nested_scroll_depth = scene.nested_scroll_chain_depth();
-            Some(scene)
-        } else {
-            None
-        };
-        let mut pre_emitted_property_boundary_dag = None;
-        if let Some(scene) = property_boundary_dag_owner {
-            let scroll_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                ctx.viewport(),
-                ctx.state_clone(),
-            );
-            match retained_surface_frame_owner {
-                Some(frame_owner) => {
-                    match crate::view::paint::prepare_property_boundary_dag_scene_from_pool(
-                        self,
-                        scene,
-                        &mut graph,
-                        scroll_ctx,
-                        clear_rgba,
-                        frame_owner,
-                    ) {
-                        Ok(prepared) => {
-                            pre_emitted_property_boundary_dag = Some(
-                                crate::view::paint::emit_prepared_property_boundary_dag_scene(
-                                    prepared,
-                                ),
-                            );
-                        }
-                        Err(error) => {
-                            retained_transform_selection = RetainedTransformCanarySelection::
-                                PropertyBoundaryDagScenePrepareRejected(error);
-                        }
-                    }
-                }
-                None => {
-                    retained_transform_selection = RetainedTransformCanarySelection::
-                        PropertyBoundaryDagScenePrepareRejected(
-                            crate::view::paint::RetainedPropertyScrollScenePrepareError::StageUnavailable,
-                        );
-                }
-            }
-        }
-        let (selection, mut pre_emitted_direct_scroll_transform) = if matches!(
-            retained_transform_selection,
-            RetainedTransformCanarySelection::DirectScrollTransformScenePlanned(_)
-        ) {
-            let selection = std::mem::replace(
-                &mut retained_transform_selection,
-                RetainedTransformCanarySelection::DirectScrollTransformScenePrepared,
-            );
-            let scroll_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                ctx.viewport(),
-                ctx.state_clone(),
-            );
-            preflight_direct_scroll_transform_selection(
-                self,
-                &mut graph,
-                scroll_ctx,
-                clear_rgba,
-                retained_surface_frame_owner,
-                selection,
-            )
-        } else {
-            (retained_transform_selection, None)
-        };
-        retained_transform_selection = selection;
-        let (selection, mut pre_emitted_frame_root_scroll) = if matches!(
-            retained_transform_selection,
-            RetainedTransformCanarySelection::FrameRootScrollScenePlanned(_)
-        ) {
-            let selection = std::mem::replace(
-                &mut retained_transform_selection,
-                RetainedTransformCanarySelection::FrameRootScrollScenePrepared,
-            );
-            let scroll_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                ctx.viewport(),
-                ctx.state_clone(),
-            );
-            preflight_frame_root_scroll_selection(
-                self,
-                &mut graph,
-                scroll_ctx,
-                clear_rgba,
-                retained_surface_frame_owner,
-                selection,
-            )
-        } else {
-            (retained_transform_selection, None)
-        };
-        retained_transform_selection = selection;
-        let property_scroll_scene_owner = if matches!(
-            retained_transform_selection,
-            RetainedTransformCanarySelection::PropertyScrollScenePlanned(_)
-        ) {
-            let selection = std::mem::replace(
-                &mut retained_transform_selection,
-                RetainedTransformCanarySelection::PropertyScrollScenePrepared,
-            );
-            let RetainedTransformCanarySelection::PropertyScrollScenePlanned(scene) = selection
-            else {
-                unreachable!("property-scroll preflight extracts only its owned scene")
-            };
-            Some(scene)
-        } else {
-            None
-        };
-        let mut pre_emitted_property_scroll = None;
-        if let Some(scene) = property_scroll_scene_owner {
-            let scroll_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                ctx.viewport(),
-                ctx.state_clone(),
-            );
-            match retained_surface_frame_owner {
-                Some(frame_owner) => {
-                    match crate::view::paint::prepare_retained_property_scroll_forest_from_pool(
-                        self,
-                        scene,
-                        &mut graph,
-                        scroll_ctx,
-                        clear_rgba,
-                        frame_owner,
-                    ) {
-                        Ok(prepared) => {
-                            pre_emitted_property_scroll = Some(
-                                crate::view::paint::emit_prepared_retained_property_scroll_forest(
-                                    prepared,
-                                ),
-                            );
-                        }
-                        Err(error) => {
-                            retained_transform_selection = RetainedTransformCanarySelection::
-                                PropertyScrollScenePrepareRejected(error);
-                        }
-                    }
-                }
-                None => {
-                    retained_transform_selection =
-                        RetainedTransformCanarySelection::PropertyScrollScenePrepareRejected(
-                            crate::view::paint::RetainedPropertyScrollScenePrepareError::StageUnavailable,
-                        );
-                }
-            }
-        }
-        let transform_scroll_scene_owner = if matches!(
-            retained_transform_selection,
-            RetainedTransformCanarySelection::TransformScrollScenePlanned(_)
-        ) {
-            let selection = std::mem::replace(
-                &mut retained_transform_selection,
-                RetainedTransformCanarySelection::TransformScrollScenePrepared,
-            );
-            let RetainedTransformCanarySelection::TransformScrollScenePlanned(scene) = selection
-            else {
-                unreachable!("transform-scroll preflight extracts only its owned scene")
-            };
-            Some(scene)
-        } else {
-            None
-        };
-        let mut pre_emitted_transform_scroll = None;
-        if let Some(scene) = transform_scroll_scene_owner {
-            let scroll_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                ctx.viewport(),
-                ctx.state_clone(),
-            );
-            match retained_surface_frame_owner {
-                Some(frame_owner) => {
-                    match crate::view::paint::prepare_retained_transform_scroll_scene_from_pool(
-                        self,
-                        scene,
-                        &mut graph,
-                        scroll_ctx,
-                        clear_rgba,
-                        frame_owner,
-                    ) {
-                        Ok(prepared) => {
-                            pre_emitted_transform_scroll = Some(
-                                crate::view::paint::emit_prepared_retained_transform_scroll_scene(
-                                    prepared,
-                                ),
-                            );
-                        }
-                        Err(error) => {
-                            retained_transform_selection = RetainedTransformCanarySelection::
-                                TransformScrollScenePrepareRejected(error);
-                        }
-                    }
-                }
-                None => {
-                    retained_transform_selection =
-                        RetainedTransformCanarySelection::TransformScrollScenePrepareRejected(
-                            crate::view::paint::RetainedPropertyScrollScenePrepareError::StageUnavailable,
-                        );
-                }
-            }
-        }
-        let effect_scroll_scene_owner = if matches!(
-            retained_transform_selection,
-            RetainedTransformCanarySelection::EffectScrollScenePlanned(_)
-        ) {
-            let selection = std::mem::replace(
-                &mut retained_transform_selection,
-                RetainedTransformCanarySelection::EffectScrollScenePrepared,
-            );
-            let RetainedTransformCanarySelection::EffectScrollScenePlanned(scene) = selection
-            else {
-                unreachable!("effect-scroll preflight extracts only its owned scene")
-            };
-            Some(scene)
-        } else {
-            None
-        };
-        let mut pre_emitted_effect_scroll = None;
-        if let Some(scene) = effect_scroll_scene_owner {
-            let scroll_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                ctx.viewport(),
-                ctx.state_clone(),
-            );
-            match retained_surface_frame_owner {
-                Some(frame_owner) => {
-                    match crate::view::paint::prepare_retained_effect_scroll_scene_from_pool(
-                        self,
-                        scene,
-                        &mut graph,
-                        scroll_ctx,
-                        clear_rgba,
-                        frame_owner,
-                    ) {
-                        Ok(prepared) => {
-                            pre_emitted_effect_scroll = Some(
-                                crate::view::paint::emit_prepared_retained_effect_scroll_scene(
-                                    prepared,
-                                ),
-                            );
-                        }
-                        Err(error) => {
-                            retained_transform_selection =
-                                RetainedTransformCanarySelection::EffectScrollScenePrepareRejected(
-                                    error,
-                                );
-                        }
-                    }
-                }
-                None => {
-                    retained_transform_selection =
-                        RetainedTransformCanarySelection::EffectScrollScenePrepareRejected(
-                            crate::view::paint::RetainedPropertyScrollScenePrepareError::StageUnavailable,
-                        );
-                }
-            }
-        }
-        let (selection, mut pre_emitted_transform_effect_scroll) = if matches!(
-            retained_transform_selection,
-            RetainedTransformCanarySelection::TransformEffectScrollScenePlanned(_)
-        ) {
-            let selection = std::mem::replace(
-                &mut retained_transform_selection,
-                RetainedTransformCanarySelection::TransformEffectScrollScenePrepared,
-            );
-            let scroll_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                ctx.viewport(),
-                ctx.state_clone(),
-            );
-            preflight_transform_effect_scroll_selection(
-                self,
-                &mut graph,
-                scroll_ctx,
-                clear_rgba,
-                retained_surface_frame_owner,
-                selection,
-            )
-        } else {
-            (retained_transform_selection, None)
-        };
-        retained_transform_selection = selection;
         let auto_legacy_fallback_stage = auto_authority_trace
             .as_ref()
             .map(|(_, trace)| auto_artifact_legacy_fallback_stage(trace));
         let mut paint_authority_telemetry = capture_paint_authority_telemetry.then(|| {
             PaintAuthorityTelemetry::from_selection(
                 self.paint_renderer_mode,
-                &retained_transform_selection,
+                &frame_paint_selection,
                 auto_authority_trace,
             )
         });
-        let mut dispatch_legacy_fallback_stage =
-            paint_authority_telemetry
-                .as_ref()
-                .and_then(|_| match &retained_transform_selection {
-                    RetainedTransformCanarySelection::Planned(_)
-                    | RetainedTransformCanarySelection::PropertyScenePlanned(_)
-                    | RetainedTransformCanarySelection::PropertyScenePrepared
-                    | RetainedTransformCanarySelection::PropertyScenePrepareRejected(_)
-                    | RetainedTransformCanarySelection::NativeScrollForestPlanned(_)
-                    | RetainedTransformCanarySelection::NativeScrollForestPrepared
-                    | RetainedTransformCanarySelection::PropertyScrollScenePlanned(_)
-                    | RetainedTransformCanarySelection::PropertyScrollScenePrepared
-                    | RetainedTransformCanarySelection::PropertyScrollScenePrepareRejected(_)
-                    | RetainedTransformCanarySelection::PropertyBoundaryDagScenePlanned(_)
-                    | RetainedTransformCanarySelection::PropertyBoundaryDagScenePrepared
-                    | RetainedTransformCanarySelection::FrameRootScrollScenePlanned(_)
-                    | RetainedTransformCanarySelection::FrameRootScrollScenePrepared
-                    | RetainedTransformCanarySelection::FrameRootScrollScenePrepareRejected(_)
-                    | RetainedTransformCanarySelection::DirectScrollTransformScenePlanned(_)
-                    | RetainedTransformCanarySelection::DirectScrollTransformScenePrepared
-                    | RetainedTransformCanarySelection::TransformScrollScenePlanned(_)
-                    | RetainedTransformCanarySelection::TransformScrollScenePrepared
-                    | RetainedTransformCanarySelection::TransformScrollScenePrepareRejected(_)
-                    | RetainedTransformCanarySelection::EffectScrollScenePlanned(_)
-                    | RetainedTransformCanarySelection::EffectScrollScenePrepared
-                    | RetainedTransformCanarySelection::EffectScrollScenePrepareRejected(_)
-                    | RetainedTransformCanarySelection::TransformEffectScrollScenePlanned(_)
-                    | RetainedTransformCanarySelection::TransformEffectScrollScenePrepared
-                    | RetainedTransformCanarySelection::TreePlanned(_)
-                    | RetainedTransformCanarySelection::IsolationPlanned(_)
-                    | RetainedTransformCanarySelection::EffectTreePlanned(_)
-                    | RetainedTransformCanarySelection::ScrollHostPlanned(_)
-                    | RetainedTransformCanarySelection::ScrollSceneActive => {
-                        Some(PaintAuthorityFallbackStage::Prepare)
-                    }
-                    RetainedTransformCanarySelection::NativeScrollForestPrepareRejected(_) => {
-                        Some(PaintAuthorityFallbackStage::Prepare)
-                    }
-                    RetainedTransformCanarySelection::TransformEffectScrollScenePrepareRejected(
-                        _,
-                    ) => Some(transform_effect_scroll_prepare_rejection_fallback_stage()),
-                    RetainedTransformCanarySelection::PropertyBoundaryDagScenePrepareRejected(
-                        _,
-                    ) => Some(PaintAuthorityFallbackStage::Prepare),
-                    RetainedTransformCanarySelection::DirectScrollTransformScenePrepareRejected(
-                        _,
-                    ) => Some(direct_scroll_transform_prepare_rejection_fallback_stage()),
-                    RetainedTransformCanarySelection::NoTransform
-                    | RetainedTransformCanarySelection::SingletonShapeRejected { .. }
-                    | RetainedTransformCanarySelection::PlanRejected(_)
-                    | RetainedTransformCanarySelection::TreeShapeRejected { .. }
-                    | RetainedTransformCanarySelection::TreePlanRejected(_)
-                    | RetainedTransformCanarySelection::IsolationPlanRejected(_)
-                    | RetainedTransformCanarySelection::EffectTreeShapeRejected { .. }
-                    | RetainedTransformCanarySelection::EffectTreePlanRejected(_)
-                    | RetainedTransformCanarySelection::ScrollHostShapeRejected { .. }
-                    | RetainedTransformCanarySelection::ScrollHostPlanRejected(_)
-                    | RetainedTransformCanarySelection::ScrollSceneShapeRejected { .. } => {
-                        Some(PaintAuthorityFallbackStage::Selection)
-                    }
-                    RetainedTransformCanarySelection::AutoLegacy => Some(
-                        auto_legacy_fallback_stage
-                            .unwrap_or(PaintAuthorityFallbackStage::Selection),
-                    ),
-                    RetainedTransformCanarySelection::AutoArtifact(_) => {
-                        Some(PaintAuthorityFallbackStage::Compile)
-                    }
-                    RetainedTransformCanarySelection::Inactive => (self.paint_renderer_mode
-                        == ViewportPaintRendererMode::ArtifactCanary)
-                        .then_some(PaintAuthorityFallbackStage::Selection),
-                    RetainedTransformCanarySelection::Auto(_) => None,
-                });
+        let mut dispatch_legacy_fallback_stage = auto_legacy_fallback_stage;
         if paint_authority_telemetry.is_some()
             && let Some(stage) = retained_auto_terminal_failure
         {
@@ -4017,14 +2312,6 @@ impl Viewport {
         let retained_release_count_before = paint_authority_telemetry
             .as_ref()
             .map(|_| self.retained_surface_release_log_for_test().len());
-        if pre_emitted_property_boundary_dag.is_none()
-            && pre_emitted_native_scroll_forest.is_none()
-            && pre_emitted_direct_scroll_transform.is_none()
-            && pre_emitted_frame_root_scroll.is_none()
-            && pre_emitted_property_scroll.is_none()
-            && pre_emitted_transform_scroll.is_none()
-            && pre_emitted_effect_scroll.is_none()
-            && pre_emitted_transform_effect_scroll.is_none()
         {
             let output = ctx.allocate_target(&mut graph);
             let output_handle = output.handle();
@@ -4056,871 +2343,13 @@ impl Viewport {
         // then seed `ctx`'s deferred list bottom → top so the top of the
         // stack is painted last (on top visually).
         arena.seed_defer_render_with_stack(&mut self.scene.popup_stack, &mut ctx);
-        let root_effect_plan = (!matches!(
-            self.paint_renderer_mode,
-            ViewportPaintRendererMode::RetainedTransformCanary
-                | ViewportPaintRendererMode::RetainedSurfaceTreeCanary
-                | ViewportPaintRendererMode::RetainedIsolationCanary
-                | ViewportPaintRendererMode::RetainedEffectTreeCanary
-                | ViewportPaintRendererMode::RetainedScrollHostCanary
-                | ViewportPaintRendererMode::RetainedScrollSceneCanary
-        ))
-        .then(|| {
-            root_keys_for_build.first().copied().and_then(|root| {
-                (root_keys_for_build.len() == 1).then(|| {
-                    let key = crate::view::base_component::root_effect_stable_key(root);
-                    let desc = ctx.persistent_full_viewport_target_desc(key);
-                    RootEffectBuildPlan {
-                        committed: self.compositor.root_effect_retained.clone(),
-                        key,
-                        target: crate::view::paint::RootEffectRasterInputs {
-                            width: desc.width(),
-                            height: desc.height(),
-                            format: desc.format(),
-                            sample_count: desc.sample_count(),
-                            scale_factor_bits: ctx.viewport().scale_factor().to_bits(),
-                        },
-                        pair_resident: self
-                            .has_compatible_persistent_render_target_pair(key, &desc),
-                    }
-                })
-            })
-        })
-        .flatten();
-        let (build_whole_frame_legacy, mut paint_authority_trace) =
-            match retained_transform_selection {
-                RetainedTransformCanarySelection::Planned(plan) => {
-                    let surface_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                        ctx.viewport(),
-                        ctx.state_clone(),
-                    );
-                    match crate::view::paint::build_retained_surface_from_pool(
-                        self,
-                        &plan,
-                        &mut graph,
-                        surface_ctx,
-                    ) {
-                        Ok(outcome) => {
-                            let (state, trace) = outcome.into_parts();
-                            if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                                telemetry.note_retained_surface(trace);
-                            }
-                            ctx.set_state(state);
-                            self.stage_root_effect_clear();
-                            (
-                                false,
-                                format!(
-                                    "retained-transform-canary authority=retained-transform action={:?} boundary={:?} desc={}x{} chunks={} ops={}",
-                                    trace.action,
-                                    trace.boundary_root,
-                                    trace.descriptor_size[0],
-                                    trace.descriptor_size[1],
-                                    trace.chunk_count,
-                                    trace.op_count,
-                                ),
-                            )
-                        }
-                        Err(error) => {
-                            self.stage_retained_surface_clear();
-                            self.stage_root_effect_clear();
-                            (
-                                true,
-                                format!(
-                                    "retained-transform-canary authority=legacy prepare-rejected={error:?}"
-                                ),
-                            )
-                        }
-                    }
-                }
-                RetainedTransformCanarySelection::PropertyScenePrepared => {
-                    let surface_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                        ctx.viewport(),
-                        ctx.state_clone(),
-                    );
-                    let outcome = crate::view::paint::emit_prepared_retained_property_scene(
-                        self,
-                        prepared_property_scene
-                            .take()
-                            .expect("prepared selection owns one pre-clear property-scene token"),
-                        &mut graph,
-                        surface_ctx,
-                    );
-                    let (state, trace) = outcome.into_parts();
-                    if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                        telemetry.note_retained_surfaces(&trace.surfaces);
-                    }
-                    ctx.set_state(state);
-                    self.stage_root_effect_clear();
-                    let surfaces =
-                        paint_authority_telemetry
-                            .as_ref()
-                            .map_or_else(String::new, |_| {
-                                trace
-                                    .surfaces
-                                    .iter()
-                                    .map(|surface| {
-                                        format!(
-                                            "boundary={:?},action={:?},desc={}x{},chunks={},ops={}",
-                                            surface.boundary_root,
-                                            surface.action,
-                                            surface.descriptor_size[0],
-                                            surface.descriptor_size[1],
-                                            surface.chunk_count,
-                                            surface.op_count,
-                                        )
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("; ")
-                            });
-                    (
-                        false,
-                        format!(
-                            "retained-auto authority=property-scene roots={} surfaces={} reraster={} reuse={} surface-details=[{}]",
-                            trace.root_count,
-                            trace.surface_count,
-                            trace.reraster_count,
-                            trace.reuse_count,
-                            surfaces,
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::NativeScrollForestPrepared => {
-                    let state = pre_emitted_native_scroll_forest
-                        .take()
-                        .expect("prepared native forest emitted under its joint lease");
-                    ctx.set_state(state);
-                    self.stage_root_effect_clear();
-                    (
-                        false,
-                        "retained-auto authority=native-scroll-forest phase=arbitrary-native-scroll-forest"
-                            .to_owned(),
-                    )
-                }
-                RetainedTransformCanarySelection::PropertyBoundaryDagScenePrepared => {
-                    let outcome = pre_emitted_property_boundary_dag
-                        .take()
-                        .expect("prepared boundary-DAG selection emitted under its lease");
-                    let (state, trace) = outcome.into_parts();
-                    ctx.set_state(state);
-                    if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                        telemetry.note_property_scroll_content(&trace);
-                    }
-                    self.stage_root_effect_clear();
-                    let (phase, topology, residency) =
-                        property_boundary_dag_success_telemetry_grammar(
-                            property_boundary_dag_nested_scroll_depth,
-                            trace.generic_surface_count,
-                            trace.scroll_group_count,
-                        );
-                    (
-                        false,
-                        format!(
-                            "retained-auto authority=property-scene phase={phase}{topology} roots={} generic-surfaces={} effect-surfaces={} scroll-groups={} backing={:?} tiles={} pair-bytes={} reraster={} reuse={}{residency}",
-                            trace.root_count,
-                            trace.generic_surface_count,
-                            trace.effect_surface_count,
-                            trace.scroll_group_count,
-                            trace.backing,
-                            trace.tile_count,
-                            trace.content_pair_bytes,
-                            trace.reraster_count,
-                            trace.reuse_count,
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::DirectScrollTransformScenePrepared => {
-                    let outcome = pre_emitted_direct_scroll_transform.take().expect(
-                        "prepared direct scroll-transform selection emitted under its lease",
-                    );
-                    let (state, trace) = outcome.into_parts();
-                    ctx.set_state(state);
-                    if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                        telemetry.note_property_scroll_content(&trace);
-                    }
-                    self.stage_root_effect_clear();
-                    (
-                        false,
-                        format!(
-                            "retained-auto authority=property-scene phase=scroll-transform topology=S->T roots={} generic-surfaces={} scroll-groups={} backing={:?} tiles={} pair-bytes={} reraster={} reuse={}",
-                            trace.root_count,
-                            trace.generic_surface_count,
-                            trace.scroll_group_count,
-                            trace.backing,
-                            trace.tile_count,
-                            trace.content_pair_bytes,
-                            trace.reraster_count,
-                            trace.reuse_count,
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::PropertyScrollScenePrepared => {
-                    let outcome = pre_emitted_property_scroll
-                        .take()
-                        .expect("prepared property-scroll selection emitted under its lease");
-                    let (state, trace) = outcome.into_parts();
-                    ctx.set_state(state);
-                    if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                        telemetry.note_property_scroll_content(&trace);
-                    }
-                    self.stage_root_effect_clear();
-                    (
-                        false,
-                        format!(
-                            "retained-auto authority=property-scene phase=scroll roots={} scroll-groups={} backing={:?} tiles={} pair-bytes={} reraster={} reuse={}",
-                            trace.root_count,
-                            trace.scroll_group_count,
-                            trace.backing,
-                            trace.tile_count,
-                            trace.content_pair_bytes,
-                            trace.reraster_count,
-                            trace.reuse_count,
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::FrameRootScrollScenePrepared => {
-                    let outcome = pre_emitted_frame_root_scroll
-                        .take()
-                        .expect("prepared frame-root scroll selection emitted under its lease");
-                    let (state, trace) = outcome.into_parts();
-                    ctx.set_state(state);
-                    if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                        telemetry.note_property_scroll_content(&trace);
-                    }
-                    self.stage_root_effect_clear();
-                    (
-                        false,
-                        format!(
-                            "retained-auto authority=property-scene phase=frame-root-scroll roots={} scroll-groups={} backing={:?} tiles={} pair-bytes={} reraster={} reuse={}",
-                            trace.root_count,
-                            trace.scroll_group_count,
-                            trace.backing,
-                            trace.tile_count,
-                            trace.content_pair_bytes,
-                            trace.reraster_count,
-                            trace.reuse_count,
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::TransformScrollScenePrepared => {
-                    let outcome = pre_emitted_transform_scroll
-                        .take()
-                        .expect("prepared transform-scroll selection emitted under its lease");
-                    let (state, trace) = outcome.into_parts();
-                    ctx.set_state(state);
-                    if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                        telemetry.note_property_scroll_content(&trace);
-                    }
-                    self.stage_root_effect_clear();
-                    (
-                        false,
-                        format!(
-                            "retained-auto authority=property-scene phase=transform-scroll topology=T->S roots={} generic-surfaces={} scroll-groups={} backing={:?} tiles={} pair-bytes={} reraster={} reuse={}",
-                            trace.root_count,
-                            trace.generic_surface_count,
-                            trace.scroll_group_count,
-                            trace.backing,
-                            trace.tile_count,
-                            trace.content_pair_bytes,
-                            trace.reraster_count,
-                            trace.reuse_count,
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::EffectScrollScenePrepared => {
-                    let outcome = pre_emitted_effect_scroll
-                        .take()
-                        .expect("prepared effect-scroll selection emitted under its lease");
-                    let (state, trace) = outcome.into_parts();
-                    ctx.set_state(state);
-                    if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                        telemetry.note_property_scroll_content(&trace);
-                    }
-                    self.stage_root_effect_clear();
-                    (
-                        false,
-                        format!(
-                            "retained-auto authority=property-scene phase=effect-scroll topology=E->S roots={} generic-surfaces={} effect-surfaces={} scroll-groups={} backing={:?} tiles={} pair-bytes={} reraster={} reuse={}",
-                            trace.root_count,
-                            trace.generic_surface_count,
-                            trace.effect_surface_count,
-                            trace.scroll_group_count,
-                            trace.backing,
-                            trace.tile_count,
-                            trace.content_pair_bytes,
-                            trace.reraster_count,
-                            trace.reuse_count,
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::TransformEffectScrollScenePrepared => {
-                    let outcome = pre_emitted_transform_effect_scroll.take().expect(
-                        "prepared transform-effect-scroll selection emitted under its lease",
-                    );
-                    let (state, trace) = outcome.into_parts();
-                    ctx.set_state(state);
-                    if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                        telemetry.note_property_scroll_content(&trace);
-                    }
-                    self.stage_root_effect_clear();
-                    (
-                        false,
-                        format!(
-                            "retained-auto authority=property-scene phase=transform-effect-scroll topology=T->E->S roots={} generic-surfaces={} effect-surfaces={} scroll-groups={} backing={:?} tiles={} pair-bytes={} reraster={} reuse={}",
-                            trace.root_count,
-                            trace.generic_surface_count,
-                            trace.effect_surface_count,
-                            trace.scroll_group_count,
-                            trace.backing,
-                            trace.tile_count,
-                            trace.content_pair_bytes,
-                            trace.reraster_count,
-                            trace.reuse_count,
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::PropertyScrollScenePrepareRejected(error) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-auto authority=legacy property-scroll-prepare-rejected={error:?}"
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::NativeScrollForestPrepareRejected(error) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-auto authority=legacy native-scroll-forest-prepare-rejected={error:?}"
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::PropertyBoundaryDagScenePrepareRejected(
-                    error,
-                ) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-auto authority=legacy property-boundary-dag-prepare-rejected={error:?}"
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::FrameRootScrollScenePrepareRejected(error) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-auto authority=legacy frame-root-scroll-prepare-rejected={error:?}"
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::DirectScrollTransformScenePrepareRejected(
-                    error,
-                ) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    direct_scroll_transform_prepare_rejection_dispatch(&error)
-                }
-                RetainedTransformCanarySelection::TransformScrollScenePrepareRejected(error) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-auto authority=legacy transform-scroll-prepare-rejected={error:?}"
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::EffectScrollScenePrepareRejected(error) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-auto authority=legacy effect-scroll-prepare-rejected={error:?}"
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::TransformEffectScrollScenePrepareRejected(
-                    error,
-                ) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    transform_effect_scroll_prepare_rejection_dispatch(&error)
-                }
-                RetainedTransformCanarySelection::PropertyScrollScenePlanned(_) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        "retained-auto authority=legacy property-scroll-preflight-missing"
-                            .to_owned(),
-                    )
-                }
-                RetainedTransformCanarySelection::NativeScrollForestPlanned(_) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        "retained-auto authority=legacy native-scroll-forest-preflight-missing"
-                            .to_owned(),
-                    )
-                }
-                RetainedTransformCanarySelection::PropertyBoundaryDagScenePlanned(_) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        "retained-auto authority=legacy property-boundary-dag-preflight-missing"
-                            .to_owned(),
-                    )
-                }
-                RetainedTransformCanarySelection::FrameRootScrollScenePlanned(_) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        "retained-auto authority=legacy frame-root-scroll-preflight-missing"
-                            .to_owned(),
-                    )
-                }
-                RetainedTransformCanarySelection::DirectScrollTransformScenePlanned(_) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        "retained-auto authority=legacy direct-scroll-transform-preflight-missing"
-                            .to_owned(),
-                    )
-                }
-                RetainedTransformCanarySelection::TransformScrollScenePlanned(_) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        "retained-auto authority=legacy transform-scroll-preflight-missing"
-                            .to_owned(),
-                    )
-                }
-                RetainedTransformCanarySelection::EffectScrollScenePlanned(_) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        "retained-auto authority=legacy effect-scroll-preflight-missing".to_owned(),
-                    )
-                }
-                RetainedTransformCanarySelection::TransformEffectScrollScenePlanned(_) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        "retained-auto authority=legacy transform-effect-scroll-preflight-missing"
-                            .to_owned(),
-                    )
-                }
-                RetainedTransformCanarySelection::PropertyScenePrepareRejected(error) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-auto authority=legacy property-scene-prepare-rejected={error:?}"
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::PropertyScenePlanned(_) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        "retained-auto authority=legacy property-scene-preflight-missing"
-                            .to_owned(),
-                    )
-                }
-                RetainedTransformCanarySelection::TreePlanned(plan) => {
-                    let surface_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                        ctx.viewport(),
-                        ctx.state_clone(),
-                    );
-                    match crate::view::paint::build_retained_surface_tree_from_pool(
-                        self,
-                        &plan,
-                        &mut graph,
-                        surface_ctx,
-                    ) {
-                        Ok(outcome) => {
-                            let (state, traces) = outcome.into_parts();
-                            if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                                telemetry.note_retained_surfaces(&traces);
-                            }
-                            assert_eq!(
-                                traces.len(),
-                                2,
-                                "retained effect-tree canary owns exactly two surfaces"
-                            );
-                            ctx.set_state(state);
-                            self.stage_root_effect_clear();
-                            let surfaces = traces
-                                .iter()
-                                .map(|trace| {
-                                    format!(
-                                        "boundary={:?} action={:?} desc={}x{} chunks={} ops={}",
-                                        trace.boundary_root,
-                                        trace.action,
-                                        trace.descriptor_size[0],
-                                        trace.descriptor_size[1],
-                                        trace.chunk_count,
-                                        trace.op_count,
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join("; ");
-                            (
-                                false,
-                                format!(
-                                    "retained-surface-tree-canary authority=retained-tree surfaces=[{surfaces}]"
-                                ),
-                            )
-                        }
-                        Err(error) => {
-                            self.stage_retained_surface_clear();
-                            self.stage_root_effect_clear();
-                            (
-                                true,
-                                format!(
-                                    "retained-surface-tree-canary authority=legacy prepare-rejected={error:?}"
-                                ),
-                            )
-                        }
-                    }
-                }
-                RetainedTransformCanarySelection::IsolationPlanned(plan) => {
-                    let surface_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                        ctx.viewport(),
-                        ctx.state_clone(),
-                    );
-                    match crate::view::paint::build_retained_isolation_surface_from_pool(
-                        self,
-                        &plan,
-                        &mut graph,
-                        surface_ctx,
-                    ) {
-                        Ok(outcome) => {
-                            let (state, trace) = outcome.into_parts();
-                            if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                                telemetry.note_retained_surface(trace);
-                            }
-                            ctx.set_state(state);
-                            self.stage_root_effect_clear();
-                            (
-                                false,
-                                format!(
-                                    "retained-isolation-canary authority=retained-isolation action={:?} boundary={:?} desc={}x{} chunks={} ops={}",
-                                    trace.action,
-                                    trace.boundary_root,
-                                    trace.descriptor_size[0],
-                                    trace.descriptor_size[1],
-                                    trace.chunk_count,
-                                    trace.op_count,
-                                ),
-                            )
-                        }
-                        Err(error) => {
-                            self.stage_retained_surface_clear();
-                            self.stage_root_effect_clear();
-                            (
-                                true,
-                                format!(
-                                    "retained-isolation-canary authority=legacy prepare-rejected={error:?}"
-                                ),
-                            )
-                        }
-                    }
-                }
-                RetainedTransformCanarySelection::EffectTreePlanned(plan) => {
-                    let surface_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                        ctx.viewport(),
-                        ctx.state_clone(),
-                    );
-                    match crate::view::paint::build_retained_effect_tree_from_pool(
-                        self,
-                        &plan,
-                        &mut graph,
-                        surface_ctx,
-                    ) {
-                        Ok(outcome) => {
-                            let (state, traces) = outcome.into_parts();
-                            if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                                telemetry.note_retained_surfaces(&traces);
-                            }
-                            ctx.set_state(state);
-                            self.stage_root_effect_clear();
-                            let surfaces = traces
-                                .iter()
-                                .map(|trace| {
-                                    format!(
-                                        "boundary={:?} action={:?} desc={}x{} chunks={} ops={}",
-                                        trace.boundary_root,
-                                        trace.action,
-                                        trace.descriptor_size[0],
-                                        trace.descriptor_size[1],
-                                        trace.chunk_count,
-                                        trace.op_count,
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join("; ");
-                            (
-                                false,
-                                format!(
-                                    "retained-effect-tree-canary authority=retained-effect-tree surface-count={} surfaces=[{surfaces}]",
-                                    traces.len(),
-                                ),
-                            )
-                        }
-                        Err(error) => {
-                            self.stage_retained_surface_clear();
-                            self.stage_root_effect_clear();
-                            (
-                                true,
-                                format!(
-                                    "retained-effect-tree-canary authority=legacy prepare-rejected={error:?}"
-                                ),
-                            )
-                        }
-                    }
-                }
-                RetainedTransformCanarySelection::ScrollHostPlanned(plan) => {
-                    let surface_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                        ctx.viewport(),
-                        ctx.state_clone(),
-                    );
-                    match crate::view::paint::build_retained_scroll_host_surface_from_pool(
-                        self,
-                        &plan,
-                        &mut graph,
-                        surface_ctx,
-                    ) {
-                        Ok(outcome) => {
-                            let (state, trace) = outcome.into_parts();
-                            if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                                telemetry.note_retained_surface(trace);
-                            }
-                            ctx.set_state(state);
-                            self.stage_root_effect_clear();
-                            (
-                                false,
-                                format!(
-                                    "retained-scroll-host-canary authority=retained-scroll-host action={:?} boundary={:?} desc={}x{} chunks={} ops={}",
-                                    trace.action,
-                                    trace.boundary_root,
-                                    trace.descriptor_size[0],
-                                    trace.descriptor_size[1],
-                                    trace.chunk_count,
-                                    trace.op_count,
-                                ),
-                            )
-                        }
-                        Err(error) => {
-                            self.stage_retained_surface_clear();
-                            self.stage_root_effect_clear();
-                            (
-                                true,
-                                format!(
-                                    "retained-scroll-host-canary authority=legacy prepare-rejected={error:?}"
-                                ),
-                            )
-                        }
-                    }
-                }
-                RetainedTransformCanarySelection::ScrollSceneActive => {
-                    let scene_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                        ctx.viewport(),
-                        ctx.state_clone(),
-                    );
-                    match crate::view::paint::build_scroll_scene_from_pool(
-                        self,
-                        &arena,
-                        &root_keys_for_build,
-                        &mut graph,
-                        scene_ctx,
-                    ) {
-                        Ok(outcome) => {
-                            let (state, trace) = outcome.into_parts();
-                            if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                                telemetry.note_scroll_content(trace);
-                            }
-                            ctx.set_state(state);
-                            self.stage_root_effect_clear();
-                            (
-                                false,
-                                format!(
-                                    "retained-scroll-scene-canary authority=retained-scroll-scene action={:?} content={:?} desc={}x{} chunks={} ops={} pair-bytes={} tiles={} reraster={} reuse={}",
-                                    trace.action,
-                                    trace.content_root,
-                                    trace.descriptor_size[0],
-                                    trace.descriptor_size[1],
-                                    trace.content_chunk_count,
-                                    trace.content_op_count,
-                                    trace.content_pair_bytes,
-                                    trace.tile_count,
-                                    trace.reraster_count,
-                                    trace.reuse_count,
-                                ),
-                            )
-                        }
-                        Err(error) => {
-                            if paint_authority_telemetry.is_some() {
-                                dispatch_legacy_fallback_stage = Some(match &error {
-                                    crate::view::paint::ScrollSceneFromLiveError::LiveSnapshotDrift
-                                    | crate::view::paint::ScrollSceneFromLiveError::Plan(_) => {
-                                        PaintAuthorityFallbackStage::Build
-                                    }
-                                    crate::view::paint::ScrollSceneFromLiveError::Prepare(_) => {
-                                        PaintAuthorityFallbackStage::Prepare
-                                    }
-                                });
-                            }
-                            self.stage_retained_surface_clear();
-                            self.stage_root_effect_clear();
-                            (
-                                true,
-                                format!(
-                                    "retained-scroll-scene-canary authority=legacy prepare-rejected={error:?}"
-                                ),
-                            )
-                        }
-                    }
-                }
-                RetainedTransformCanarySelection::NoTransform => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        "retained-transform-canary authority=legacy reason=no-transform".to_owned(),
-                    )
-                }
-                RetainedTransformCanarySelection::SingletonShapeRejected { transform_count } => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-transform-canary authority=legacy reason=exact-singleton-required transforms={transform_count}"
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::PlanRejected(error) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-transform-canary authority=legacy plan-rejected={:?}",
-                            error.reasons
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::TreeShapeRejected { transform_count } => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-surface-tree-canary authority=legacy reason=exact-depth-two-required transforms={transform_count}"
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::TreePlanRejected(error) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-surface-tree-canary authority=legacy plan-rejected={:?}",
-                            error.reasons
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::IsolationPlanRejected(error) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-isolation-canary authority=legacy plan-rejected={:?}",
-                            error.reasons
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::EffectTreeShapeRejected {
-                    transform_count,
-                    effect_count,
-                } => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-effect-tree-canary authority=legacy reason=exact-one-transform-one-effect-required transforms={transform_count} effects={effect_count}"
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::EffectTreePlanRejected(error) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-effect-tree-canary authority=legacy plan-rejected={:?}",
-                            error.reasons
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::ScrollHostShapeRejected { scroll_count } => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-scroll-host-canary authority=legacy reason=exact-single-scroll-required scrolls={scroll_count}"
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::ScrollHostPlanRejected(error) => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-scroll-host-canary authority=legacy plan-rejected={:?}",
-                            error.reasons
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::ScrollSceneShapeRejected { scroll_count } => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    (
-                        true,
-                        format!(
-                            "retained-scroll-scene-canary authority=legacy reason=exact-single-scroll-required scrolls={scroll_count}"
-                        ),
-                    )
-                }
-                RetainedTransformCanarySelection::AutoArtifact(candidate) => {
-                    let artifact_attempt = retained_surface_frame_owner.map_or_else(
+        let (build_whole_frame_legacy, mut paint_authority_trace) = match frame_paint_selection {
+            FramePaintSelection::AutoArtifact(candidate) => {
+                let artifact_attempt = retained_surface_frame_owner.map_or_else(
                         || {
                             // A missing owner means another transaction owns
                             // the slot. Preserve it rather than staging Clear.
-                            PropertyNeutralArtifactAttempt::CompileRejected(
+                            ArtifactFrameCompileOutcome::CompileRejected(
                                 crate::view::paint::ArtifactCompileErrorKind::SurfaceExecution(
                                     crate::view::paint::ArtifactSurfaceExecutionError::InactiveFrameStageOwner,
                                 ),
@@ -4933,122 +2362,48 @@ impl Viewport {
                                 &mut graph,
                                 candidate,
                                 &ctx,
-                                root_effect_plan.as_ref(),
-                            )
+)
                         },
                     );
-                    match artifact_attempt {
-                        PropertyNeutralArtifactAttempt::Compiled {
-                            state,
-                            eligibility,
-                            root_effect_transaction,
-                        } => {
-                            ctx.set_state(state);
-                            if let Some(transaction) = root_effect_transaction {
-                                self.stage_root_effect_transaction(transaction);
-                            } else {
-                                self.stage_root_effect_clear();
-                            }
-                            (
-                                false,
-                                format!(
-                                    "retained-auto authority=artifact chunks={} ops={}",
-                                    eligibility.chunk_count, eligibility.op_count
-                                ),
-                            )
+                match artifact_attempt {
+                    ArtifactFrameCompileOutcome::Compiled { state, eligibility } => {
+                        ctx.set_state(state);
+                        (
+                            false,
+                            format!(
+                                "retained-auto authority=artifact chunks={} ops={}",
+                                eligibility.chunk_count, eligibility.op_count
+                            ),
+                        )
+                    }
+                    ArtifactFrameCompileOutcome::CompileRejected(kind) => {
+                        if paint_authority_telemetry.is_some() {
+                            dispatch_legacy_fallback_stage =
+                                Some(PaintAuthorityFallbackStage::Compile);
                         }
-                        PropertyNeutralArtifactAttempt::WholeFrameLegacy { .. } => {
-                            unreachable!("auto artifact dispatch never yields whole-frame legacy")
-                        }
-                        PropertyNeutralArtifactAttempt::CompileRejected(kind) => {
-                            if paint_authority_telemetry.is_some() {
-                                dispatch_legacy_fallback_stage =
-                                    Some(PaintAuthorityFallbackStage::Compile);
-                            }
-                            self.stage_root_effect_clear();
-                            (
-                                true,
-                                format!("retained-auto authority=legacy compile-rejected={kind:?}"),
-                            )
-                        }
+                        (
+                            true,
+                            format!("retained-auto authority=legacy compile-rejected={kind:?}"),
+                        )
                     }
                 }
-                RetainedTransformCanarySelection::AutoLegacy => {
-                    self.stage_retained_surface_clear();
-                    self.stage_root_effect_clear();
-                    let reason = retained_auto_terminal_failure.map_or_else(
-                        || "reason=selection-rejected".to_owned(),
-                        |stage| format!("reason=terminal-circuit-breaker prior={stage:?}"),
-                    );
-                    (true, format!("retained-auto authority=legacy {reason}"))
-                }
-                RetainedTransformCanarySelection::Auto(_) => {
-                    unreachable!("automatic decision is flattened before frame-graph mutation")
-                }
-                RetainedTransformCanarySelection::Inactive => {
-                    // Legacy and the existing artifact canary do not own the
-                    // retained-transform set for this frame.
-                    self.stage_retained_surface_clear();
-                    let artifact_attempt = try_build_property_neutral_artifact_frame(
-                        &mut graph,
-                        &arena,
-                        &root_keys_for_build,
-                        &self.compositor.property_trees,
-                        &self.compositor.paint_generations,
-                        self.paint_renderer_mode,
-                        &ctx,
-                        root_effect_plan.as_ref(),
-                    );
-                    match artifact_attempt {
-                        PropertyNeutralArtifactAttempt::Compiled {
-                            state,
-                            eligibility,
-                            root_effect_transaction,
-                        } => {
-                            ctx.set_state(state);
-                            if let Some(transaction) = root_effect_transaction {
-                                self.stage_root_effect_transaction(transaction);
-                            } else {
-                                self.stage_root_effect_clear();
-                            }
-                            (
-                                false,
-                                format!(
-                                    "artifact-canary chunks={} ops={}",
-                                    eligibility.chunk_count, eligibility.op_count
-                                ),
-                            )
-                        }
-                        PropertyNeutralArtifactAttempt::WholeFrameLegacy { eligibility } => {
-                            if self.paint_renderer_mode == ViewportPaintRendererMode::ArtifactCanary
-                            {
-                                if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                                    telemetry.note_artifact_rejection(eligibility.clone());
-                                    dispatch_legacy_fallback_stage =
-                                        Some(PaintAuthorityFallbackStage::Selection);
-                                }
-                            }
-                            self.stage_root_effect_clear();
-                            if self.paint_renderer_mode == ViewportPaintRendererMode::Legacy {
-                                (true, "legacy authority=legacy".to_owned())
-                            } else {
-                                (true, format!("legacy fallback={:?}", eligibility.reasons))
-                            }
-                        }
-                        PropertyNeutralArtifactAttempt::CompileRejected(kind) => {
-                            if self.paint_renderer_mode == ViewportPaintRendererMode::ArtifactCanary
-                            {
-                                if paint_authority_telemetry.is_some() {
-                                    dispatch_legacy_fallback_stage =
-                                        Some(PaintAuthorityFallbackStage::Compile);
-                                }
-                            }
-                            self.stage_root_effect_clear();
-                            (true, format!("legacy compile-rejected={kind:?}"))
-                        }
-                    }
-                }
-            };
+            }
+            FramePaintSelection::AutoLegacy => {
+                self.stage_retained_surface_clear();
+                let reason = retained_auto_terminal_failure.map_or_else(
+                    || "reason=selection-rejected".to_owned(),
+                    |stage| format!("reason=terminal-circuit-breaker prior={stage:?}"),
+                );
+                (true, format!("retained-auto authority=legacy {reason}"))
+            }
+            FramePaintSelection::Auto(_) => {
+                unreachable!("automatic decision is flattened before frame-graph mutation")
+            }
+            FramePaintSelection::Inactive => {
+                self.stage_retained_surface_clear();
+                (true, "legacy authority=legacy".to_owned())
+            }
+        };
         if build_whole_frame_legacy && self.paint_renderer_mode != ViewportPaintRendererMode::Legacy
         {
             if let Some(telemetry) = paint_authority_telemetry.as_mut() {
@@ -5147,7 +2502,6 @@ impl Viewport {
         }
         let root_keys = self.scene.ui_root_keys.clone();
         finish_frame_dirty_lifecycle(&mut self.scene.node_arena, &root_keys, compiled, executed);
-        self.finish_root_effect_transaction(compiled && executed);
         self.finish_retained_surface_transaction_for_frame(
             retained_surface_frame_owner,
             compiled && executed,

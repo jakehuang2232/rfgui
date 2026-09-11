@@ -133,15 +133,15 @@ fn execution_error_name(error: ArtifactSurfaceExecutionError) -> &'static str {
 }
 
 fn prepared_depth_four_surface_frame() -> PreparedArtifactSurfaceFrame {
-    crate::view::paint::frame_plan::tests::prepared_depth_four_surface_frame()
+    crate::view::paint::planning_tests::prepared_depth_four_surface_frame()
 }
 
 fn prepared_co_located_surface_frame() -> PreparedArtifactSurfaceFrame {
-    crate::view::paint::frame_plan::tests::prepared_co_located_surface_frame()
+    crate::view::paint::planning_tests::prepared_co_located_surface_frame()
 }
 
 fn prepared_zero_surface_frame() -> PreparedArtifactSurfaceFrame {
-    let artifact = crate::view::paint::frame_plan::tests::exact_self_clip_shadow_artifact();
+    let artifact = crate::view::paint::planning_tests::exact_self_clip_shadow_artifact();
     let plan = prepare_artifact_surface_raster_plan(artifact, raster_context())
         .expect("zero-surface artifact raster plan");
     assert!(
@@ -155,7 +155,7 @@ fn prepared_zero_surface_frame() -> PreparedArtifactSurfaceFrame {
 }
 
 fn prepared_self_clip_shadow_surface_frame(empty_suffix: bool) -> PreparedArtifactSurfaceFrame {
-    let mut artifact = crate::view::paint::frame_plan::tests::exact_self_clip_shadow_artifact();
+    let mut artifact = crate::view::paint::planning_tests::exact_self_clip_shadow_artifact();
     if empty_suffix {
         artifact
             .clip_nodes

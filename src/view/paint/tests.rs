@@ -1,5 +1,5 @@
-mod retained_acceptance_fixtures;
 mod portable_renderer_tests;
+mod retained_acceptance_fixtures;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod gpu_equivalence_tests;
@@ -85,44 +85,6 @@ pub(super) fn declared_type_names_at_any_depth(source: &str) -> std::collections
                 !character.is_ascii_alphanumeric() && character != '_'
             });
             Some(name.to_string())
-        })
-        .collect()
-}
-
-pub(super) fn module_visible_top_level_type_names(
-    source: &str,
-) -> std::collections::BTreeSet<String> {
-    source
-        .lines()
-        .filter(|line| line.starts_with("pub ") || line.starts_with("pub("))
-        .filter_map(|line| {
-            let mut tokens = line.split_whitespace();
-            let _visibility = tokens.next()?;
-            let declaration = tokens.next()?;
-            if !matches!(declaration, "struct" | "enum" | "type") {
-                return None;
-            }
-            let name = tokens.next()?.trim_end_matches(|character: char| {
-                !character.is_ascii_alphanumeric() && character != '_'
-            });
-            Some(name.to_string())
-        })
-        .collect()
-}
-
-pub(super) fn module_visible_top_level_function_names(
-    source: &str,
-) -> std::collections::BTreeSet<String> {
-    source
-        .lines()
-        .filter(|line| line.starts_with("pub ") || line.starts_with("pub("))
-        .filter_map(|line| {
-            let mut tokens = line.split_whitespace();
-            let _visibility = tokens.next()?;
-            if tokens.next()? != "fn" {
-                return None;
-            }
-            Some(tokens.next()?.split_once('(')?.0.to_string())
         })
         .collect()
 }
@@ -1853,16 +1815,6 @@ fn two_outer_shadows() -> Vec<BoxShadow> {
     ]
 }
 
-fn root_effect_raster_inputs() -> RootEffectRasterInputs {
-    RootEffectRasterInputs {
-        width: 320,
-        height: 240,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        sample_count: 1,
-        scale_factor_bits: 1.0_f32.to_bits(),
-    }
-}
-
 fn compiled_whole_frame_graph(artifact: &PaintArtifact) -> FrameGraph {
     compiled_whole_frame_graph_with_config(artifact, PaintParityConfig::default())
 }
@@ -2448,300 +2400,6 @@ fn prepared_atomic_projection_scroll_shell_fixture(
     arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
     arena.refresh_subtree_dirty_cache(root);
     (arena, root, wrapper, text_area)
-}
-
-fn prepared_atomic_projection_scroll_shell() -> (NodeArena, NodeKey, NodeKey, NodeKey) {
-    prepared_atomic_projection_scroll_shell_with("projected")
-}
-
-fn validated_atomic_projection_scroll_scene_at(
-    projected_content: &'static str,
-    scroll_y: f32,
-) -> super::scroll_scene::ValidatedPropertyScrollScene {
-    validated_atomic_projection_scroll_scene_fixture(AtomicProjectionScrollFixture::baseline(
-        projected_content,
-        scroll_y,
-    ))
-}
-
-fn validated_atomic_projection_scroll_scene_fixture(
-    fixture: AtomicProjectionScrollFixture,
-) -> super::scroll_scene::ValidatedPropertyScrollScene {
-    let (arena, root, _, _) = prepared_atomic_projection_scroll_shell_fixture(fixture);
-    let (properties, generations) = sync_identity(&arena, &[root]);
-    let budget =
-        super::scroll_scene::ScrollSceneSingleTextureBudget::new(8192, 128 * 1024 * 1024).unwrap();
-    super::scroll_scene::plan_and_validate_property_scroll_scene(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        1.0,
-        [0.0; 2],
-        None,
-        crate::time::Instant::now(),
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-        budget,
-    )
-    .expect("valid C3a fixture must compiler-seal one property-scroll scene")
-}
-
-fn validated_atomic_projection_selection_scroll_scene_at(
-    selection_end: usize,
-) -> super::scroll_scene::ValidatedPropertyScrollScene {
-    validated_atomic_projection_selection_scroll_scene_fixture(
-        AtomicProjectionScrollFixture::baseline("projected", 20.0),
-        selection_end,
-    )
-}
-
-fn viewport_with_committed_atomic_projection_selection_resident() -> crate::view::viewport::Viewport
-{
-    let mut viewport = crate::view::viewport::Viewport::new();
-    let frame_owner = viewport.begin_retained_surface_frame_stage().unwrap();
-    let mut graph = FrameGraph::new();
-    let prepared = super::scroll_scene::prepare_retained_property_scroll_forest_from_pool(
-        &mut viewport,
-        validated_atomic_projection_selection_scroll_scene_at(6),
-        &mut graph,
-        UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0),
-        [0.0, 0.0, 0.0, 1.0],
-        frame_owner,
-    )
-    .expect("resident seed scene must prepare");
-    let prepared = super::scroll_scene::emit_prepared_retained_property_scroll_forest(prepared);
-    drop(prepared);
-    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true));
-    viewport
-}
-
-fn validated_atomic_projection_selection_scroll_scene_fixture(
-    fixture: AtomicProjectionScrollFixture,
-    selection_end: usize,
-) -> super::scroll_scene::ValidatedPropertyScrollScene {
-    let (arena, root, _, text_area) = prepared_atomic_projection_scroll_shell_fixture(fixture);
-    {
-        let mut node = arena.get_mut(text_area).unwrap();
-        let text_area = node
-            .element
-            .as_any_mut()
-            .downcast_mut::<TextArea>()
-            .unwrap();
-        text_area.selection_anchor_char = Some(0);
-        text_area.selection_focus_char = Some(selection_end);
-    }
-    let (properties, generations) = sync_identity(&arena, &[root]);
-    let budget =
-        super::scroll_scene::ScrollSceneSingleTextureBudget::new(8192, 128 * 1024 * 1024).unwrap();
-    super::scroll_scene::plan_and_validate_property_scroll_scene(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        1.0,
-        [0.0; 2],
-        None,
-        crate::time::Instant::now(),
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-        budget,
-    )
-    .expect("valid selection grammar must selector-plan-compile one property-scroll scene")
-}
-
-pub(super) fn atomic_projection_content_stamp_for_test(
-    projected_content: &'static str,
-    stable_id: u64,
-) -> Option<RetainedSurfaceRasterStamp> {
-    atomic_projection_emission_fixture_for_test(projected_content, stable_id)
-        .map(|(_, stamp)| stamp)
-}
-
-fn atomic_projection_emission_fixture_for_test(
-    projected_content: &'static str,
-    stable_id: u64,
-) -> Option<(
-    std::sync::Arc<super::compiler::ValidatedScrollSceneAtomicProjectionTextAreaPlanParts>,
-    RetainedSurfaceRasterStamp,
-)> {
-    let (arena, root, wrapper, _) = prepared_atomic_projection_scroll_shell_with(projected_content);
-    let root_node = arena.get(root)?;
-    let root_element = root_node.element.as_any().downcast_ref::<Element>()?;
-    let admission =
-        crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(
-            root_element,
-            root,
-            &arena,
-            1.0,
-        )?;
-    drop(root_node);
-    let (properties, generations) = sync_identity(&arena, &[root]);
-    let scroll = properties
-        .scroll_snapshot_for(crate::view::compositor::property_tree::ScrollNodeId(root))?;
-    let outer_clip = *properties
-        .clip_snapshot_for(Some(ClipNodeId {
-            owner: root,
-            role: ClipNodeRole::ContentsClip,
-        }))?
-        .last()?;
-    let outer = PaintScrollContentWitness::new(root, wrapper, scroll, outer_clip)?;
-    let baked = PaintBakedScrollHostWitness::new(root, wrapper, scroll, outer_clip.id)?;
-    let local = super::legacy_recording::record_scroll_atomic_projection_text_area_subtree_local_artifact_for_plan(
-        &arena,
-        &properties,
-        &generations,
-        &admission,
-        outer,
-    ).ok()?;
-    let host = super::legacy_recording::record_baked_scroll_atomic_projection_text_area_subtree_host_artifact_for_plan(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        &admission,
-        baked,
-    ).ok()?;
-    let plan_parts =
-        super::legacy_recording::validate_recorded_atomic_projection_text_area_plan_parts(
-            host, local,
-        )?;
-    let terminal = plan_parts.content_opaque_order_count()?;
-    let span = plan_parts.content_artifact_span_stamp(0, 0..terminal)?;
-    let [x, y, width, height] = plan_parts
-        .resident()
-        .wrapper_chunk
-        .bounds_bits
-        .map(f32::from_bits);
-    let bounds = crate::view::base_component::RetainedSurfaceBounds {
-        x,
-        y,
-        width,
-        height,
-        corner_radii: [0.0; 4],
-    };
-    let color_key = crate::view::base_component::scroll_content_layer_stable_key(stable_id);
-    let color = crate::view::base_component::texture_desc_for_logical_bounds(
-        bounds,
-        1.0,
-        None,
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-    );
-    let (color, depth) =
-        crate::view::base_component::persistent_target_texture_descriptors(color, color_key);
-    let stamp = super::compiler::validated_scroll_atomic_projection_text_area_content_raster_stamp(
-        wrapper,
-        stable_id,
-        RetainedSurfaceRasterInputs {
-            color,
-            depth,
-            scale_factor_bits: 1.0_f32.to_bits(),
-            source_bounds_bits: [x, y, width, height].map(f32::to_bits),
-        },
-        span,
-        0..terminal,
-        plan_parts.resident().clone(),
-    )?;
-    Some((std::sync::Arc::new(plan_parts), stamp))
-}
-
-fn atomic_projection_selection_content_stamp_for_test(
-    selection_end: usize,
-    stable_id: u64,
-) -> Option<RetainedSurfaceRasterStamp> {
-    atomic_projection_selection_emission_fixture_for_test(selection_end, stable_id)
-        .map(|(_, stamp)| stamp)
-}
-
-fn atomic_projection_selection_emission_fixture_for_test(
-    selection_end: usize,
-    stable_id: u64,
-) -> Option<(
-    std::sync::Arc<super::compiler::ValidatedScrollSceneAtomicProjectionSelectionTextAreaPlanParts>,
-    RetainedSurfaceRasterStamp,
-)> {
-    let (arena, root, wrapper, text_area) = prepared_atomic_projection_scroll_shell();
-    {
-        let mut node = arena.get_mut(text_area)?;
-        let text_area = node.element.as_any_mut().downcast_mut::<TextArea>()?;
-        text_area.selection_anchor_char = Some(0);
-        text_area.selection_focus_char = Some(selection_end);
-    }
-    let root_node = arena.get(root)?;
-    let root_element = root_node.element.as_any().downcast_ref::<Element>()?;
-    let admission = crate::view::paint::exact_retained_scroll_atomic_projection_selection_text_area_subtree_admission(root_element,
-            root, &arena, 1.0,
-        )?;
-    drop(root_node);
-    let (properties, generations) = sync_identity(&arena, &[root]);
-    let scroll = properties
-        .scroll_snapshot_for(crate::view::compositor::property_tree::ScrollNodeId(root))?;
-    let outer_clip = *properties
-        .clip_snapshot_for(Some(ClipNodeId {
-            owner: root,
-            role: ClipNodeRole::ContentsClip,
-        }))?
-        .last()?;
-    let outer = PaintScrollContentWitness::new(root, wrapper, scroll, outer_clip)?;
-    let baked = PaintBakedScrollHostWitness::new(root, wrapper, scroll, outer_clip.id)?;
-    let local = super::legacy_recording::record_scroll_atomic_projection_selection_text_area_subtree_local_artifact_for_plan(
-        &arena,
-        &properties,
-        &generations,
-        &admission,
-        outer,
-    ).ok()?;
-    let host = super::legacy_recording::record_baked_scroll_atomic_projection_selection_text_area_subtree_host_artifact_for_plan(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        &admission,
-        baked,
-    ).ok()?;
-    let authority =
-        super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_authority(
-            host, local,
-        )?;
-    let plan_parts =
-        super::legacy_recording::validate_recorded_atomic_projection_selection_text_area_plan_parts(
-            authority,
-        )?;
-    let terminal = plan_parts.content_opaque_order_count()?;
-    let span = plan_parts.content_artifact_span_stamp(0, 0..terminal)?;
-    let [x, y, width, height] = plan_parts
-        .resident()
-        .wrapper_chunk
-        .bounds_bits
-        .map(f32::from_bits);
-    let bounds = crate::view::base_component::RetainedSurfaceBounds {
-        x,
-        y,
-        width,
-        height,
-        corner_radii: [0.0; 4],
-    };
-    let color_key = crate::view::base_component::scroll_content_layer_stable_key(stable_id);
-    let color = crate::view::base_component::texture_desc_for_logical_bounds(
-        bounds,
-        1.0,
-        None,
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-    );
-    let (color, depth) =
-        crate::view::base_component::persistent_target_texture_descriptors(color, color_key);
-    let stamp = super::compiler::validated_scroll_atomic_projection_selection_text_area_content_raster_stamp(
-        wrapper,
-        stable_id,
-        RetainedSurfaceRasterInputs {
-            color,
-            depth,
-            scale_factor_bits: 1.0_f32.to_bits(),
-            source_bounds_bits: [x, y, width, height].map(f32::to_bits),
-        },
-        span,
-        0..terminal,
-        plan_parts.resident().clone(),
-    )?;
-    Some((std::sync::Arc::new(plan_parts), stamp))
 }
 
 fn prepared_projection_text_area_preedit_tree(
@@ -4012,13 +3670,10 @@ fn hidden_element_subtree(root_id: u64, child_id: u64) -> (NodeArena, NodeKey, N
 }
 
 mod anchor_parent_clip_tests;
+mod artifact_identity_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod subtree_self_clip_tests;
-mod artifact_identity_tests;
-mod atomic_projection_emission_tests;
-mod atomic_projection_property_scroll_tests;
-mod atomic_projection_raster_stamp_tests;
-mod atomic_projection_record_tests;
+
 mod child_mask_and_self_decoration_tests;
 mod chunk_range_tests;
 mod compiler_rect_grammar_tests;
@@ -4029,24 +3684,19 @@ mod custom_leaf_tests;
 mod custom_wrapper_tests;
 mod effect_store_tests;
 mod generic_composite_edge_tests;
-mod generic_contract_fail_closed_tests;
+
 mod inline_span_tests;
-mod legacy_text_area_coverage_authority_tests;
+
+mod generic_recording_capability_tests;
+mod generic_text_area_tests;
 mod metadata_preflight_tests;
 mod outer_shadow_tests;
 mod owning_inline_root_atomic_tests;
 mod owning_inline_root_tests;
 mod plain_text_area_preedit_tests;
 mod plain_text_area_tests;
-mod generic_text_area_tests;
-mod generic_recording_capability_tests;
 mod prepared_image_tests;
-mod property_boundary_forest_branching_executor_tests;
-mod property_boundary_forest_depth_three_executor_tests;
-mod property_boundary_forest_executor_tests;
-mod property_boundary_forest_linear_executor_tests;
-mod property_boundary_forest_multi_root_executor_tests;
-mod property_boundary_forest_plain_root_executor_tests;
+
 mod root_effect_tests;
 mod stage_a_artifact_contract_tests;
 mod stage_a_producer_independence_tests;

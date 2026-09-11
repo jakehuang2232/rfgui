@@ -1,70 +1,46 @@
 use super::*;
+use crate::view::paint::composite_edge::{
+    emit_paint_composite_edges, paint_composite_edge_opaque_delta,
+};
+use crate::view::viewport::Viewport;
 
 fn synthetic_generic_resident_stamp(topology_revision: u64) -> RetainedSurfaceRasterStamp {
     let mut arena = new_test_arena();
-    let root = commit_element(
-        &mut arena,
-        Box::new(Element::new_with_id(0xa2_4300, 0.0, 0.0, 64.0, 32.0)),
-    );
-    let chunk = RetainedSurfaceChunkStamp {
-        id: PaintChunkId {
-            owner: root,
-            scope: PaintPropertyScope::SelfPaint,
-            phase: PaintNodePhase::BeforeChildren,
-            slot: 0,
-            role: PaintChunkRole::SelfDecoration,
-        },
-        owner: root,
-        bounds_bits: [0.0_f32, 0.0_f32, 64.0_f32, 32.0_f32].map(f32::to_bits),
-        clip: None,
-        non_boundary_self_paint_revision: None,
-        topology_revision,
-        non_boundary_composite_revision: None,
-        payload_identity: PaintPayloadIdentity::None,
-        op_count: 1,
+    let mut element = Element::new_with_id(0xa2_4300, 0.0, 0.0, 64.0, 32.0);
+    element.set_background_color_value(Color::rgb(32, 64, 96));
+    element.set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
+        2.0, 0.0, 0.0,
+    ))));
+    let root = commit_element(&mut arena, Box::new(element));
+    let (properties, generations) = sync_identity(&arena, &[root]);
+    let FrameArtifactRecordOutcome::Artifact { mut artifact, .. } =
+        record_surface_dag_frame_artifact(
+            &arena,
+            &[root],
+            &properties,
+            &generations,
+            RendererMode::ForcedForTests,
+        )
+        .unwrap()
+    else {
+        panic!("synthetic complete recording")
     };
-    let span = RetainedSurfaceArtifactSpanStamp {
-        step_index: 0,
-        owner_topology: vec![PaintOwnerSnapshot {
-            owner: root,
-            parent: None,
-        }],
-        clip_nodes: Vec::new(),
-        chunks: vec![chunk],
-        op_count: 1,
-        opaque_order_span: 0..0,
-        scroll_placement_normalized_owners: Vec::new(),
-    };
-    let bounds = crate::view::base_component::RetainedSurfaceBounds {
-        x: 0.0,
-        y: 0.0,
-        width: 64.0,
-        height: 32.0,
-        corner_radii: [0.0; 4],
-    };
-    let stable_id = 0xa2_4301;
-    let color_key = crate::view::base_component::scroll_content_layer_stable_key(stable_id);
-    let color = crate::view::base_component::texture_desc_for_logical_bounds(
-        bounds,
+    for chunk in &mut artifact.chunks {
+        chunk.content_revision.topology_revision = topology_revision;
+    }
+    let context = ArtifactSurfaceRasterContext::new(
         1.0,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [0.0, 0.0],
         None,
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-    );
-    let (color, depth) =
-        crate::view::base_component::persistent_target_texture_descriptors(color, color_key);
-    super::super::compiler::validated_scroll_content_raster_stamp(
-        root,
-        stable_id,
-        RetainedSurfaceRasterInputs {
-            color,
-            depth,
-            scale_factor_bits: 1.0_f32.to_bits(),
-            source_bounds_bits: [0.0_f32, 0.0_f32, 64.0_f32, 32.0_f32].map(f32::to_bits),
-        },
-        span,
-        0..0,
+        8192,
+        u64::MAX,
     )
-    .expect("synthetic generic content must seal one resident raster stamp")
+    .unwrap();
+    let plan = prepare_artifact_surface_raster_plan(artifact, context).unwrap();
+    let frame = seal_prepared_artifact_surface_frame(plan).unwrap();
+    assert!(frame.residents().is_canonical());
+    frame.residents().ordered_entries()[0].stamp().clone()
 }
 
 fn synthetic_composite_edge(
@@ -241,7 +217,16 @@ fn generic_composite_edge_tampers_are_typed_owner_attributed_and_mutation_free()
         Box::new(Element::new_with_id(0xa2_4311, 0.0, 0.0, 64.0, 32.0)),
     );
     let edge = synthetic_composite_edge(owner, PaintChunkRole::Caret, [8.0, 4.0]);
-    let mut viewport = viewport_with_committed_atomic_projection_selection_resident();
+    let mut viewport = Viewport::new();
+    let (_, residents) =
+        crate::view::paint::prepared_depth_four_surface_frame_for_test().into_parts();
+    let residents = viewport
+        .prepare_artifact_surface_pool_emission_for_forced_test(residents)
+        .unwrap()
+        .into_canonical_residents();
+    let original_owner = viewport.begin_retained_surface_frame_stage().unwrap();
+    assert!(viewport.stage_artifact_surface_resident_set(original_owner, residents));
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(original_owner), true));
     let frame_owner = viewport.begin_retained_surface_frame_stage().unwrap();
     let graph = FrameGraph::new();
     let graph_before = graph.build_state_snapshot_for_test();

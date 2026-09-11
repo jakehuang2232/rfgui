@@ -775,6 +775,14 @@ fn tessellate_composite_layer(
         uv_origin_delta,
     );
 
+    // A rectangular layer boundary is a texture extent, not a rounded mask.
+    // An outer AA ring samples clamped edge texels outside that extent and
+    // creates a one-pixel halo. Preserve the exact rectangle (including its
+    // fractional placement); rounded masks still need the coverage ring.
+    if max_outer_radius == 0.0 {
+        return (vertices, indices);
+    }
+
     let aa_width = 1.0_f32;
     let outer_aa_radii = normalize_corner_radii(
         radii.map(|r| r + aa_width),
@@ -1197,54 +1205,4 @@ fn append_debug_quad(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn composite_rounded_points_zero_corner_keeps_fixed_topology() {
-        let segments = 16;
-        let pts = rounded_rect_points(0.0, 0.0, 100.0, 100.0, [0.0, 10.0, 10.0, 10.0], segments);
-        assert_eq!(pts.len(), (segments * 4) as usize);
-    }
-
-    #[test]
-    fn composite_tessellate_asymmetric_radius_produces_geometry() {
-        let (vertices, indices) = tessellate_composite_layer(
-            [0.0, 0.0],
-            [150.0, 150.0],
-            [10.0, 32.0, 10.0, 135.0],
-            1.0,
-            800.0,
-            600.0,
-            800.0,
-            600.0,
-            [0.0, 0.0],
-        );
-        assert!(!vertices.is_empty());
-        assert!(!indices.is_empty());
-        assert_eq!(indices.len() % 3, 0);
-    }
-
-    #[test]
-    fn composite_append_ring_tolerates_mismatched_topology() {
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-        let outer = vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]];
-        let inner = vec![[10.0, 10.0], [90.0, 10.0], [90.0, 90.0]];
-        append_ring(
-            &mut vertices,
-            &mut indices,
-            &outer,
-            &inner,
-            1.0,
-            1.0,
-            800.0,
-            600.0,
-            800.0,
-            600.0,
-            [0.0, 0.0],
-        );
-        assert!(!vertices.is_empty());
-        assert!(!indices.is_empty());
-    }
-}
+mod tests;

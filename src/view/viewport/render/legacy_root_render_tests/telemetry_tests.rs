@@ -48,10 +48,7 @@ fn retained_auto_trace_capture_does_not_change_authority_decision() {
         &ctx,
         false,
     );
-    assert!(matches!(
-        &captured,
-        AutoAuthorityDecision::Artifact { .. }
-    ));
+    assert!(matches!(&captured, AutoAuthorityDecision::Artifact { .. }));
     assert!(matches!(
         &uncaptured,
         AutoAuthorityDecision::Artifact { .. }
@@ -194,7 +191,7 @@ fn true_legacy_unknown_custom_host_has_red_reason_snapshot() {
 }
 
 #[test]
-fn paint_authority_telemetry_keeps_rejections_stages_and_scroll_costs_structured() {
+fn paint_authority_telemetry_keeps_rejections_and_stages_structured() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots) = prepared_mixed_eligibility_roots();
     let mut telemetry = telemetry_for_auto_decision(auto_decision(&arena, &roots, &ctx));
@@ -275,54 +272,13 @@ fn paint_authority_telemetry_keeps_rejections_stages_and_scroll_costs_structured
         Some(PaintAuthorityFallbackStage::Execute)
     );
 
-    let mut scroll = telemetry_for_auto_decision(auto_decision(&arena, &roots, &ctx));
-    scroll.note_scroll_content(crate::view::paint::ScrollSceneBuildTrace {
-        backing: crate::view::paint::ScrollSceneBackingKind::Single,
-        action: crate::view::paint::RetainedSurfaceCompileAction::Reuse,
-        content_root: roots[0],
-        descriptor_size: [64, 128],
-        content_chunk_count: 2,
-        content_op_count: 3,
-        content_pair_bytes: 65_536,
-        tile_count: 1,
-        reraster_count: 0,
-        reuse_count: 1,
-    });
-    let single = scroll.snapshot().scroll_content.expect("single telemetry");
-    assert_eq!(
-        single.backing,
-        crate::view::paint::ScrollSceneBackingKind::Single
-    );
-    assert_eq!(single.tile_count, 1);
-    assert_eq!(single.pair_bytes, 65_536);
+    let scroll = telemetry_for_auto_decision(auto_decision(&arena, &roots, &ctx));
     assert_eq!(scroll.snapshot().resident_release_count, None);
-
-    scroll.note_scroll_content(crate::view::paint::ScrollSceneBuildTrace {
-        backing: crate::view::paint::ScrollSceneBackingKind::Tiled,
-        action: crate::view::paint::RetainedSurfaceCompileAction::Reraster,
-        content_root: roots[0],
-        descriptor_size: [64, 64],
-        content_chunk_count: 2,
-        content_op_count: 3,
-        content_pair_bytes: 131_072,
-        tile_count: 3,
-        reraster_count: 2,
-        reuse_count: 1,
-    });
-    let tiled = scroll.snapshot().scroll_content.expect("tiled telemetry");
-    assert_eq!(
-        tiled.backing,
-        crate::view::paint::ScrollSceneBackingKind::Tiled
+    assert!(
+        scroll
+            .format_debug()
+            .contains("resident-releases=unavailable")
     );
-    assert_eq!(
-        (tiled.tile_count, tiled.reraster_count, tiled.reuse_count),
-        (3, 2, 1)
-    );
-    assert_eq!(tiled.pair_bytes, 131_072);
-    let tiled_debug = scroll.format_debug();
-    assert!(tiled_debug.contains("pair-bytes=131072"));
-    assert!(tiled_debug.contains("resident-releases=unavailable"));
-    assert!(!tiled_debug.contains("resident-bytes"));
 }
 
 #[test]

@@ -95,11 +95,7 @@ fn retained_atomic_projection_source_oracle_rejects_stateful_and_interactive_sta
         let text_area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
         assert!(
             text_area
-                .exact_retained_property_scroll_atomic_projection_subtree(
-                    root,
-                    &arena,
-                    [0.0, 0.0],
-                )
+                .exact_retained_property_scroll_atomic_projection_subtree(root, &arena, [0.0, 0.0],)
                 .is_none(),
             "{case}"
         );
@@ -127,11 +123,7 @@ fn retained_atomic_projection_sources_ignore_paint_neutral_interaction_flags() {
         let text_area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
         assert!(
             text_area
-                .exact_retained_property_scroll_atomic_projection_subtree(
-                    root,
-                    &arena,
-                    [0.0, 0.0],
-                )
+                .exact_retained_property_scroll_atomic_projection_subtree(root, &arena, [0.0, 0.0],)
                 .is_some(),
             "{flag} must not change the realized atomic paint source",
         );
@@ -343,11 +335,7 @@ fn retained_atomic_projection_source_oracle_rejects_package_geometry_and_topolog
         let text_area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
         assert!(
             text_area
-                .exact_retained_property_scroll_atomic_projection_subtree(
-                    root,
-                    &arena,
-                    [0.0, 0.0],
-                )
+                .exact_retained_property_scroll_atomic_projection_subtree(root, &arena, [0.0, 0.0],)
                 .is_none(),
             "{case}"
         );
@@ -356,8 +344,7 @@ fn retained_atomic_projection_source_oracle_rejects_package_geometry_and_topolog
 
 #[test]
 fn retained_atomic_projection_source_oracle_keeps_outside_realized_grammars_legacy() {
-    let (arena, root, ..) =
-        retained_atomic_projection_fixture_with("projected", 0..9, "projected");
+    let (arena, root, ..) = retained_atomic_projection_fixture_with("projected", 0..9, "projected");
     let node = arena.get(root).unwrap();
     assert!(
         node.element
@@ -462,96 +449,9 @@ fn retained_atomic_projection_source_oracle_keeps_outside_realized_grammars_lega
                 .as_any()
                 .downcast_ref::<TextArea>()
                 .unwrap()
-                .exact_retained_property_scroll_atomic_projection_subtree(
-                    root,
-                    &arena,
-                    [0.0, 0.0],
-                )
+                .exact_retained_property_scroll_atomic_projection_subtree(root, &arena, [0.0, 0.0],)
                 .is_none(),
             "{case} projection handler"
         );
     }
-}
-
-#[test]
-fn retained_atomic_projection_scroll_admission_is_graph_inert_and_exact() {
-    let (arena, root, wrapper, text_area) = retained_atomic_projection_scroll_shell();
-    let root_node = arena.get(root).unwrap();
-    let root_element = root_node
-        .element
-        .as_any()
-        .downcast_ref::<Element>()
-        .unwrap();
-    let admission = crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element, root, &arena, 1.0)
-        .expect("C3a source shell must admit the exact sibling snapshot");
-    assert_eq!(admission.boundary_root, root);
-    assert_eq!(admission.content_wrapper, wrapper);
-    assert_eq!(admission.text_area_root, text_area);
-    assert!(admission.paint_grammar_for_test().is_canonical());
-    assert!(
-        crate::view::paint::exact_retained_scroll_text_area_subtree_admission(root_element, root, &arena, 1.0)
-            .is_none(),
-        "C1/C2 admission must not inherit C3a semantics"
-    );
-    let dpr2_admission = crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element, root, &arena, 2.0)
-        .expect("device-aligned DPR2 geometry keeps the exact sibling descriptor");
-    assert!(admission.bitwise_eq(&dpr2_admission));
-    let device_aligned = |value: f32| {
-        let device = value * 2.0;
-        device.is_finite() && device.fract().to_bits() == 0.0_f32.to_bits()
-    };
-    assert!(
-        [
-            dpr2_admission.source_bounds.x,
-            dpr2_admission.source_bounds.y,
-            dpr2_admission.source_bounds.x + dpr2_admission.source_bounds.width,
-            dpr2_admission.source_bounds.y + dpr2_admission.source_bounds.height,
-            dpr2_admission.scroll.scrollport_rect.x,
-            dpr2_admission.scroll.scrollport_rect.y,
-            dpr2_admission.scroll.scrollport_rect.x
-                + dpr2_admission.scroll.scrollport_rect.width,
-            dpr2_admission.scroll.scrollport_rect.y
-                + dpr2_admission.scroll.scrollport_rect.height,
-        ]
-        .into_iter()
-        .all(device_aligned)
-    );
-    assert!(
-        crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element,
-                root, &arena, 0.0,
-            )
-            .is_none()
-    );
-    assert!(
-        crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element,
-                root,
-                &arena,
-                f32::NAN,
-            )
-            .is_none()
-    );
-    drop(root_node);
-
-    arena
-        .get_mut(root)
-        .unwrap()
-        .element
-        .as_any_mut()
-        .downcast_mut::<Element>()
-        .unwrap()
-        .layout_state
-        .layout_position
-        .x += 0.25;
-    let root_node = arena.get(root).unwrap();
-    let root_element = root_node
-        .element
-        .as_any()
-        .downcast_ref::<Element>()
-        .unwrap();
-    assert!(
-        crate::view::paint::exact_retained_scroll_atomic_projection_text_area_subtree_admission(root_element,
-                root, &arena, 2.0,
-            )
-            .is_none()
-    );
 }

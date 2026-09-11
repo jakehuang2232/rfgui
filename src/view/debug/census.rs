@@ -276,13 +276,6 @@ pub fn short_element_type(element_type: &str) -> &str {
 pub fn requested_mode_label(mode: DebugPaintRequestedMode) -> &'static str {
     match mode {
         DebugPaintRequestedMode::Legacy => "legacy",
-        DebugPaintRequestedMode::ArtifactCanary => "artifact-canary",
-        DebugPaintRequestedMode::RetainedTransformCanary => "retained-transform-canary",
-        DebugPaintRequestedMode::RetainedSurfaceTreeCanary => "retained-surface-tree-canary",
-        DebugPaintRequestedMode::RetainedIsolationCanary => "retained-isolation-canary",
-        DebugPaintRequestedMode::RetainedEffectTreeCanary => "retained-effect-tree-canary",
-        DebugPaintRequestedMode::RetainedScrollHostCanary => "retained-scroll-host-canary",
-        DebugPaintRequestedMode::RetainedScrollSceneCanary => "retained-scroll-scene-canary",
         DebugPaintRequestedMode::RetainedAuto => "retained-auto",
     }
 }
@@ -292,12 +285,6 @@ pub fn frame_authority_label(authority: DebugFramePaintAuthority) -> &'static st
         DebugFramePaintAuthority::Unselected => "unselected",
         DebugFramePaintAuthority::Legacy => "legacy",
         DebugFramePaintAuthority::Artifact => "artifact",
-        DebugFramePaintAuthority::PropertyScene => "property-scene",
-        DebugFramePaintAuthority::RetainedTransformSurface => "retained-transform-surface",
-        DebugFramePaintAuthority::RetainedEffectSurface => "retained-effect-surface",
-        DebugFramePaintAuthority::RetainedScrollHost => "retained-scroll-host",
-        DebugFramePaintAuthority::RetainedScrollScene => "retained-scroll-scene",
-        DebugFramePaintAuthority::NativeScrollForest => "native-scroll-forest",
     }
 }
 

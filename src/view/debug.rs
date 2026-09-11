@@ -136,13 +136,6 @@ pub struct DebugViewportSnapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DebugPaintRequestedMode {
     Legacy,
-    ArtifactCanary,
-    RetainedTransformCanary,
-    RetainedSurfaceTreeCanary,
-    RetainedIsolationCanary,
-    RetainedEffectTreeCanary,
-    RetainedScrollHostCanary,
-    RetainedScrollSceneCanary,
     RetainedAuto,
 }
 
@@ -153,12 +146,6 @@ pub enum DebugFramePaintAuthority {
     Unselected,
     Legacy,
     Artifact,
-    PropertyScene,
-    RetainedTransformSurface,
-    RetainedEffectSurface,
-    RetainedScrollHost,
-    RetainedScrollScene,
-    NativeScrollForest,
 }
 
 #[non_exhaustive]

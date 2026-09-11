@@ -10,6 +10,7 @@ use std::task::{Poll, Waker};
 
 mod device_switch_tests;
 mod lifecycle_tests;
+mod scroll_forest_tests;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 struct Gpu {
@@ -266,10 +267,11 @@ async fn run() -> Result<String, String> {
     }
     assert_eq!(frames, 192);
     let lifecycle_frames = lifecycle_tests::run(&gpu).await?;
+    let scroll_forest_frames = scroll_forest_tests::run(&gpu).await?;
     let (device_switch_frames, initialization_adapter) =
         device_switch_tests::run(&instance, &gpu).await?;
     Ok(format!(
-        "adapter={info:?}; corpus_frames={frames}; lifecycle_frames={lifecycle_frames}; device_switch_frames={device_switch_frames}; initialization_adapter={initialization_adapter:?}; renderers=2; dprs=1,2"
+        "adapter={info:?}; corpus_frames={frames}; lifecycle_frames={lifecycle_frames}; device_switch_frames={device_switch_frames}; scroll_forest_frames={scroll_forest_frames}; initialization_adapter={initialization_adapter:?}; renderers=2; dprs=1,2"
     ))
 }
 

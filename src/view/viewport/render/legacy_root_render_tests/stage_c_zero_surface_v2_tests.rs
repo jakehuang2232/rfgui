@@ -208,7 +208,7 @@ fn stage_c_retained_auto_zero_resident_gate_rejects_a_detached_surface_plan() {
 }
 
 #[test]
-fn stage_c_detached_role_gate_accepts_scroll_and_rejects_empty_or_future_roles() {
+fn stage_c_detached_gate_accepts_scroll_and_rejects_empty() {
     let (scroll_arena, scroll_roots, scroll_properties, scroll_generations) =
         prepared_exact_scroll_scene();
     let crate::view::paint::FrameArtifactRecordOutcome::Artifact {
@@ -261,25 +261,6 @@ fn stage_c_detached_role_gate_accepts_scroll_and_rejects_empty_or_future_roles()
         require_detached_artifact_surface_plan(empty)
             .expect_err("detached authority must not accept an empty plan"),
         RecordedArtifactSurfacePrepareError::MissingDetachedSurface,
-    );
-
-    let frame = crate::view::paint::prepared_depth_four_surface_frame_for_test();
-    let mut unsupported = frame.raster_plan().clone();
-    let (surface, previous) = unsupported
-        .force_first_role_for_test(crate::view::paint::RetainedSurfaceRasterRole::RootIsolation)
-        .expect("depth-four plan has one surface");
-    assert_eq!(
-        previous,
-        crate::view::paint::RetainedSurfaceRasterRole::PropertyEffect
-    );
-    assert_eq!(
-        require_detached_artifact_surface_plan(unsupported).expect_err(
-            "a role the current Surface DAG cannot produce must require future admission",
-        ),
-        RecordedArtifactSurfacePrepareError::UnsupportedDetachedSurfaceRole {
-            surface,
-            role: crate::view::paint::RetainedSurfaceRasterRole::RootIsolation,
-        },
     );
 }
 
@@ -364,9 +345,8 @@ fn stage_c_zero_surface_child_mask_depth_seam_accepts_254_and_rejects_255_before
             &mut accepted_graph,
             recorded_zero_surface_child_mask_candidate(),
             &accepted_ctx,
-            None,
         ),
-        PropertyNeutralArtifactAttempt::Compiled { .. }
+        ArtifactFrameCompileOutcome::Compiled { .. }
     ));
     assert_eq!(crate::view::paint::take_artifact_compile_count(), 0);
     assert_eq!(
@@ -403,11 +383,10 @@ fn stage_c_zero_surface_child_mask_depth_seam_accepts_254_and_rejects_255_before
         &mut rejected_graph,
         recorded_zero_surface_child_mask_candidate(),
         &rejected_ctx,
-        None,
     );
     assert!(matches!(
         &rejection,
-        PropertyNeutralArtifactAttempt::CompileRejected(
+        ArtifactFrameCompileOutcome::CompileRejected(
             crate::view::paint::ArtifactCompileErrorKind::SurfaceExecution(
                 crate::view::paint::ArtifactSurfaceExecutionError::ChildMaskDepthOverflow {
                     incoming_depth: u8::MAX,
@@ -417,7 +396,7 @@ fn stage_c_zero_surface_child_mask_depth_seam_accepts_254_and_rejects_255_before
             )
         )
     ));
-    let PropertyNeutralArtifactAttempt::CompileRejected(kind) = rejection else {
+    let ArtifactFrameCompileOutcome::CompileRejected(kind) = rejection else {
         unreachable!()
     };
     assert_eq!(compile_error_label(kind), "surface-execution");
@@ -480,18 +459,8 @@ fn stage_c_zero_surface_retained_auto_emits_once_and_matches_legacy() {
     let target = compile_ctx.allocate_target(&mut graph);
     compile_ctx.set_current_target(target);
     assert!(matches!(
-        try_compile_auto_artifact_frame(
-            &mut viewport,
-            owner,
-            &mut graph,
-            candidate,
-            &compile_ctx,
-            None,
-        ),
-        PropertyNeutralArtifactAttempt::Compiled {
-            root_effect_transaction: None,
-            ..
-        }
+        try_compile_auto_artifact_frame(&mut viewport, owner, &mut graph, candidate, &compile_ctx,),
+        ArtifactFrameCompileOutcome::Compiled { .. }
     ));
     assert_eq!(crate::view::paint::take_artifact_compile_count(), 0);
     assert_eq!(

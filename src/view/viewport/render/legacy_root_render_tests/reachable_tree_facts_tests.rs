@@ -1,26 +1,6 @@
 use super::*;
 
 #[test]
-fn reachable_tree_facts_mark_the_typed_text_area_paint_family() {
-    let (arena, roots, _, _) = prepared_scroll_text_area_scene();
-    let facts = super::super::retained_auto_reachable_tree_facts(&arena, &roots);
-
-    assert!(facts.has_scroll_container);
-    assert!(facts.has_text_area_paint_family);
-}
-
-#[test]
-fn reachable_tree_facts_do_not_misclassify_inline_ifc_owned_text_as_text_area() {
-    let (arena, root, _, _) = crate::view::paint::nested_scroll_unready_text_fixture_for_test(
-        crate::view::paint::NestedTextFallbackKind::InlineIfcOwned,
-    );
-    let facts = super::super::retained_auto_reachable_tree_facts(&arena, &[root]);
-
-    assert!(facts.has_scroll_container);
-    assert!(!facts.has_text_area_paint_family);
-}
-
-#[test]
 fn authored_scroll_without_a_surface_snapshot_fails_closed_at_recording() {
     let mut arena = new_test_arena();
     let mut root_element = Element::new_with_id(0xe2_a330, 0.0, 0.0, 100.0, 80.0);
@@ -43,7 +23,12 @@ fn authored_scroll_without_a_surface_snapshot_fails_closed_at_recording() {
     let (properties, generations) = synced_paint_state(&arena, &roots);
     assert!(properties.scrolls.is_empty());
     assert!(
-        super::super::retained_auto_reachable_tree_facts(&arena, &roots).has_scroll_container
+        arena
+            .get(root)
+            .unwrap()
+            .element
+            .retained_paint_properties()
+            .is_scroll_container
     );
     let decision = select_retained_auto_authority(
         &arena,

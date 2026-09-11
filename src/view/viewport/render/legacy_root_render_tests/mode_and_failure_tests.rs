@@ -1,122 +1,22 @@
 use super::*;
 
 #[test]
-fn retained_auto_is_default_and_named_modes_remain_isolated() {
-    let viewport = Viewport::new();
+fn retained_auto_is_default_and_legacy_remains_explicit() {
     assert_eq!(
-        viewport.paint_renderer_mode(),
+        Viewport::new().paint_renderer_mode(),
         ViewportPaintRendererMode::RetainedAuto
     );
-
-    let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots) = prepared_transform_leaf();
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    assert!(matches!(
-        select_retained_transform_canary(
-            ViewportPaintRendererMode::RetainedAuto,
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &ctx,
-        ),
-        RetainedTransformCanarySelection::Auto(super::super::RetainedAutoDecision::Artifact { .. })
-    ));
-    assert!(matches!(
-        select_retained_transform_canary(
-            ViewportPaintRendererMode::RetainedTransformCanary,
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &ctx,
-        ),
-        RetainedTransformCanarySelection::Planned(_)
-    ));
-    assert!(matches!(
-        select_retained_transform_canary(
-            ViewportPaintRendererMode::RetainedScrollSceneCanary,
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &ctx,
-        ),
-        RetainedTransformCanarySelection::ScrollSceneShapeRejected { scroll_count: 0 }
-    ));
-
-    let (scroll_arena, scroll_roots, scroll_properties, scroll_generations) =
-        prepared_exact_scroll_scene();
-    assert!(matches!(
-        select_retained_transform_canary(
-            ViewportPaintRendererMode::RetainedScrollSceneCanary,
-            &scroll_arena,
-            &scroll_roots,
-            &scroll_properties,
-            &scroll_generations,
-            &ctx,
-        ),
-        RetainedTransformCanarySelection::ScrollSceneActive
-    ));
-
-    let (isolation_arena, isolation_roots) = prepared_safe_leaf();
-    crate::view::test_support::get_element_mut::<Element>(&isolation_arena, isolation_roots[0])
-        .set_opacity(0.5);
-    let (isolation_properties, isolation_generations) =
-        synced_paint_state(&isolation_arena, &isolation_roots);
-    let isolation_selection = select_retained_transform_canary(
-        ViewportPaintRendererMode::RetainedIsolationCanary,
-        &isolation_arena,
-        &isolation_roots,
-        &isolation_properties,
-        &isolation_generations,
-        &ctx,
-    );
-    let isolation_telemetry = PaintAuthorityTelemetry::from_selection(
-        ViewportPaintRendererMode::RetainedIsolationCanary,
-        &isolation_selection,
-        None,
-    );
+    let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     assert_eq!(
-        isolation_telemetry.snapshot().authority_label,
-        "retained-isolation-canary"
+        auto_authority_kind(&auto_decision(&arena, &roots, &ctx)),
+        AutoAuthorityKind::Artifact
     );
+    let mut legacy = Viewport::new();
+    legacy.set_paint_renderer_mode(ViewportPaintRendererMode::Legacy);
     assert_eq!(
-        isolation_telemetry.snapshot().selected,
-        PaintAuthorityKind::Isolation
-    );
-
-    let (neutral_arena, neutral_roots) = prepared_safe_leaf();
-    let (neutral_properties, neutral_generations) =
-        synced_paint_state(&neutral_arena, &neutral_roots);
-    let rejected_isolation = select_retained_transform_canary(
-        ViewportPaintRendererMode::RetainedIsolationCanary,
-        &neutral_arena,
-        &neutral_roots,
-        &neutral_properties,
-        &neutral_generations,
-        &ctx,
-    );
-    let mut rejected_telemetry = PaintAuthorityTelemetry::from_selection(
-        ViewportPaintRendererMode::RetainedIsolationCanary,
-        &rejected_isolation,
-        None,
-    );
-    rejected_telemetry.note_legacy_fallback(PaintAuthorityFallbackStage::Selection);
-    let rejected_snapshot = rejected_telemetry.snapshot();
-    assert_eq!(
-        rejected_snapshot.authority_label,
-        "retained-isolation-canary"
-    );
-    assert_eq!(
-        rejected_snapshot.legacy_fallback_stage,
-        Some(PaintAuthorityFallbackStage::Selection)
-    );
-    assert!(
-        rejected_snapshot
-            .rejection_labels
-            .iter()
-            .any(|label| label.contains("InvalidIsolationEffect"))
+        legacy.paint_renderer_mode(),
+        ViewportPaintRendererMode::Legacy
     );
 }
 
@@ -141,11 +41,7 @@ fn retained_auto_terminal_failure_outcome_is_typed_and_named_modes_do_not_arm() 
     assert!(!should_store_compile_cache(true, false));
     assert!(should_store_compile_cache(true, true));
 
-    for mode in [
-        ViewportPaintRendererMode::Legacy,
-        ViewportPaintRendererMode::ArtifactCanary,
-        ViewportPaintRendererMode::RetainedTransformCanary,
-    ] {
+    for mode in [ViewportPaintRendererMode::Legacy] {
         let mut viewport = Viewport::new();
         viewport.set_paint_renderer_mode(mode);
         viewport.take_redraw_request();
@@ -269,14 +165,15 @@ fn retained_auto_terminal_failure_latches_once_and_same_mode_setter_resets_it() 
         .begin_retained_surface_frame_stage()
         .expect("fresh viewport owns the retained transaction stage");
     assert!(viewport.stage_retained_surface_clear());
-    viewport.stage_root_effect_clear();
-    viewport.finish_root_effect_transaction(false);
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), false));
     assert_eq!(
         viewport.retained_surface_transaction_shape_for_test(),
         (0, None)
     );
-    assert!(viewport.retained_property_scroll_scene_stage_is_available());
+    assert_eq!(
+        viewport.retained_surface_transaction_shape_for_test().1,
+        None
+    );
 
     assert!(viewport.arm_retained_auto_terminal_failure(RetainedAutoTerminalFailureStage::Compile));
     assert_eq!(
@@ -344,19 +241,12 @@ fn retained_auto_open_breaker_forces_auto_legacy_with_capture_invariant_telemetr
     let (properties, generations) = synced_paint_state(&arena, &roots);
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     assert!(matches!(
-        select_retained_transform_canary(
-            ViewportPaintRendererMode::RetainedAuto,
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &ctx,
-        ),
-        RetainedTransformCanarySelection::Auto(super::super::RetainedAutoDecision::Artifact { .. })
+        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true),
+        super::super::RetainedAutoDecision::Artifact { .. }
     ));
 
     for capture_trace in [false, true] {
-        let Some(RetainedTransformCanarySelection::Auto(super::super::RetainedAutoDecision::Legacy { trace })) =
+        let Some(FramePaintSelection::Auto(super::super::RetainedAutoDecision::Legacy { trace })) =
             retained_auto_circuit_breaker_selection(
                 Some(RetainedAutoTerminalFailureStage::Execute),
                 capture_trace,
@@ -367,7 +257,7 @@ fn retained_auto_open_breaker_forces_auto_legacy_with_capture_invariant_telemetr
         assert_eq!(trace.capture_rejections, capture_trace);
         assert!(trace.rejections.is_empty());
 
-        let selection = RetainedTransformCanarySelection::AutoLegacy;
+        let selection = FramePaintSelection::AutoLegacy;
         let mut telemetry = PaintAuthorityTelemetry::from_selection(
             ViewportPaintRendererMode::RetainedAuto,
             &selection,
@@ -387,50 +277,17 @@ fn retained_auto_open_breaker_forces_auto_legacy_with_capture_invariant_telemetr
 }
 
 #[test]
-fn viewport_paint_renderer_rollout_defaults_retained_auto_and_is_runtime_configurable() {
+fn viewport_paint_renderer_defaults_to_auto_and_supports_a_legacy_round_trip() {
     let mut viewport = Viewport::new();
     assert_eq!(
         viewport.paint_renderer_mode(),
         ViewportPaintRendererMode::RetainedAuto
     );
-    viewport.set_paint_renderer_mode(ViewportPaintRendererMode::ArtifactCanary);
-    assert_eq!(
-        viewport.paint_renderer_mode(),
-        ViewportPaintRendererMode::ArtifactCanary
-    );
-    viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedTransformCanary);
-    assert_eq!(
-        viewport.paint_renderer_mode(),
-        ViewportPaintRendererMode::RetainedTransformCanary
-    );
-    viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedSurfaceTreeCanary);
-    assert_eq!(
-        viewport.paint_renderer_mode(),
-        ViewportPaintRendererMode::RetainedSurfaceTreeCanary
-    );
-    viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedIsolationCanary);
-    assert_eq!(
-        viewport.paint_renderer_mode(),
-        ViewportPaintRendererMode::RetainedIsolationCanary
-    );
-    viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedEffectTreeCanary);
-    assert_eq!(
-        viewport.paint_renderer_mode(),
-        ViewportPaintRendererMode::RetainedEffectTreeCanary
-    );
-    viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedScrollHostCanary);
-    assert_eq!(
-        viewport.paint_renderer_mode(),
-        ViewportPaintRendererMode::RetainedScrollHostCanary
-    );
-    viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedScrollSceneCanary);
-    assert_eq!(
-        viewport.paint_renderer_mode(),
-        ViewportPaintRendererMode::RetainedScrollSceneCanary
-    );
-    viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedAuto);
-    assert_eq!(
-        viewport.paint_renderer_mode(),
-        ViewportPaintRendererMode::RetainedAuto
-    );
+    for mode in [
+        ViewportPaintRendererMode::Legacy,
+        ViewportPaintRendererMode::RetainedAuto,
+    ] {
+        viewport.set_paint_renderer_mode(mode);
+        assert_eq!(viewport.paint_renderer_mode(), mode);
+    }
 }

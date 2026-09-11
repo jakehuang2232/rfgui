@@ -19,7 +19,7 @@ pub use frame_graph::{
     register_cache_stats,
 };
 #[cfg(test)]
-pub(crate) use frame_graph::{FrameGraphTestSnapshot, FramePassTestPayload, TopologySignature};
+pub(crate) use frame_graph::{FrameGraphTestSnapshot, FramePassTestPayload};
 pub use texture_resource::TextureDesc;
 
 #[cfg(test)]

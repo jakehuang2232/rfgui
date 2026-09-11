@@ -26,7 +26,6 @@ pub(super) fn zero_offset_single_scroll_content_fixture()
             name: "diagnostic-artifact-single-scroll-content-offset-zero",
             offset_y: 0.0,
             content_height: 300.0,
-            backing: ScrollSceneBackingKind::Single,
             max_dimension_2d: 8192,
             transition_local_y: 33.0,
         },
@@ -41,7 +40,6 @@ pub(super) fn offset_single_scroll_content_fixture()
             name: "artifact-single-scroll-content-offset-thirteen",
             offset_y: 13.0,
             content_height: 300.0,
-            backing: ScrollSceneBackingKind::Single,
             max_dimension_2d: 8192,
             transition_local_y: 33.0,
         },
@@ -81,9 +79,7 @@ pub(super) fn nested_multi_leaf_fixture()
 
 fn nested_inline_ifc_text_fixture() -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
     let (arena, outer, properties, generations) =
-        crate::view::paint::nested_scroll_unready_text_fixture_for_test(
-            crate::view::paint::NestedTextFallbackKind::InlineIfcOwned,
-        );
+        nested_scroll_unready_text_fixture_for_test(NestedTextFallbackKind::InlineIfcOwned);
     let inner = arena.children_of(outer)[0];
     let text = arena.children_of(inner)[0];
     let text_node = arena.get(text).expect("nested IFC-owned Text");
@@ -332,7 +328,7 @@ fn verify_artifact_scroll_fixture(
         ));
     }
 
-    super::native_nested_scroll_segment_tests::compare_nested_segment_pixels_within_one_lsb(
+    compare_nested_segment_pixels_within_one_lsb(
         &legacy_pixels,
         &cold_pixels,
         adapter,
@@ -505,7 +501,7 @@ fn native_production_artifact_scroll_offset_only_reuses_real_pool_and_matches_le
         .set_scroll_offset((0.0, MOVED_OFFSET_Y));
     let _ = relayout_and_sync_single_scroll_fixture(&mut oracle_arena, oracle_root);
     let oracle_pixels = legacy_immediate_scroll_oracle_pixels(gpu, &mut oracle_arena, oracle_root)?;
-    super::native_nested_scroll_segment_tests::compare_nested_segment_pixels_within_one_lsb(
+    compare_nested_segment_pixels_within_one_lsb(
         &oracle_pixels,
         &warm_pixels,
         &adapter,
