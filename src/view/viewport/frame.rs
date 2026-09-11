@@ -2,7 +2,6 @@ use super::*;
 use std::time::Duration;
 
 pub(super) struct BeginFrameProfile {
-    pub total_ms: f64,
     pub acquire_ms: f64,
     pub create_view_ms: f64,
     pub create_encoder_ms: f64,
@@ -10,7 +9,6 @@ pub(super) struct BeginFrameProfile {
 
 #[derive(Default)]
 pub(super) struct EndFrameProfile {
-    pub total_ms: f64,
     pub submit_ms: f64,
     pub present_ms: f64,
 }
@@ -140,6 +138,8 @@ pub(super) struct FrameTimings {
     pub begin_frame_create_view_ms: f64,
     pub begin_frame_create_encoder_ms: f64,
 
+    /// Entire layout phase, including transitions, relayout and profiling setup.
+    pub layout_total_ms: f64,
     pub layout_ms: f64,
     pub layout_measure_ms: f64,
     pub layout_place_ms: f64,
@@ -157,20 +157,30 @@ pub(super) struct FrameTimings {
     pub relayout_traversal_profile: LayoutTraversalProfile,
     pub relayout_place_profile: crate::view::base_component::LayoutPlaceProfile,
 
+    /// Hover/animation updates and resource freezing after final layout.
+    pub prepare_paint_ms: f64,
+    pub sync_properties_ms: f64,
     pub build_graph_ms: f64,
 
     pub compile_ms: f64,
     pub compile_children: Vec<super::debug::TraceRenderNode>,
 
     pub execute_ms: f64,
+    /// Narrower executor profile, available only when execution succeeds.
+    pub execute_profile_ms: Option<f64>,
     pub execute_pass_count: usize,
     pub execute_ordered_passes: Vec<(String, f64, usize)>,
     pub execute_detail_ordered_passes: Vec<(String, f64, usize)>,
 
+    /// Dirty lifecycle, retained transaction, telemetry and compile-cache finalization.
+    pub finish_render_ms: f64,
     pub end_frame_ms: f64,
     pub end_frame_submit_ms: f64,
     pub end_frame_present_ms: f64,
 
+    /// Wall time between the first and final phase boundaries, independent of
+    /// the phase sum. Excludes RSX construction (added separately), earlier
+    /// reconciliation and later trace formatting/printing.
     pub total_ms: f64,
 
     /// Time spent in `App::build()` producing the RSX tree.  Measured in
@@ -179,6 +189,41 @@ pub(super) struct FrameTimings {
 
     pub frame_number: u64,
 }
+
+/// Consecutive wall-clock intervals, sharing the exact same boundary sample.
+/// Caller bookkeeping after a checkpoint belongs to the following phase;
+/// there is no gap between a phase's end and the next phase's start.
+/// Semantic animation/resource time is separate from this profiling clock.
+pub(super) struct FramePhaseClock {
+    start: crate::time::Instant,
+    boundary: crate::time::Instant,
+}
+
+impl FramePhaseClock {
+    pub(super) fn new(start: crate::time::Instant) -> Self {
+        Self {
+            start,
+            boundary: start,
+        }
+    }
+
+    pub(super) fn checkpoint_ms(&mut self) -> f64 {
+        self.checkpoint_at(crate::time::Instant::now())
+    }
+
+    fn checkpoint_at(&mut self, now: crate::time::Instant) -> f64 {
+        let elapsed = now.duration_since(self.boundary);
+        self.boundary = now;
+        elapsed.as_secs_f64() * 1000.0
+    }
+
+    pub(super) fn total_ms(&self) -> f64 {
+        self.boundary.duration_since(self.start).as_secs_f64() * 1000.0
+    }
+}
+
+#[cfg(test)]
+mod timing_tests;
 
 /// Fine-grained traversal timings inside one layout pass.
 #[derive(Clone, Copy, Default)]

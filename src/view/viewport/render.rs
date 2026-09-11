@@ -1973,11 +1973,10 @@ impl Viewport {
     }
 
     /// Build the hierarchical trace tree from collected frame timings.
-    fn build_frame_trace_tree(&self, t: &FrameTimings) -> TraceRenderNode {
-        let opts = &self.debug_options;
+    fn build_frame_trace_tree(t: &FrameTimings, opts: &ViewportDebugOptions) -> TraceRenderNode {
         let any_detail =
             opts.trace_layout_detail || opts.trace_compile_detail || opts.trace_execute_detail;
-        let layout_with_transition_ms = t.layout_ms + t.post_layout_transition_ms + t.relayout_ms;
+        let layout_with_transition_ms = t.layout_total_ms;
 
         // --- begin_frame (expand when any detail flag is on) ---
         let begin_frame = if any_detail {
@@ -2020,7 +2019,7 @@ impl Viewport {
                 vec![
                     TraceRenderNode::with_children(
                         "layout_traversal",
-                        t.layout_measure_ms + t.layout_place_ms + t.layout_collect_box_models_ms,
+                        t.layout_ms,
                         layout_traversal_children,
                     ),
                     TraceRenderNode::new("post_layout_transition", t.post_layout_transition_ms),
@@ -2075,7 +2074,9 @@ impl Viewport {
             TraceRenderNode::with_children(
                 format!("execute (passes={})", t.execute_pass_count),
                 t.execute_ms,
-                execute_children,
+                t.execute_profile_ms
+                    .map(|ms| vec![TraceRenderNode::with_children("execute_graph", ms, execute_children)])
+                    .unwrap_or_default(),
             )
         } else {
             TraceRenderNode::new(
@@ -2098,6 +2099,9 @@ impl Viewport {
             TraceRenderNode::new("end_frame", t.end_frame_ms)
         };
 
+        // Each first-level phase spans consecutive wall-clock boundaries,
+        // including caller bookkeeping and failed attempts. Nested profiles
+        // retain their narrower diagnostic scopes. RSX is outside total_ms.
         TraceRenderNode::with_children(
             format!("render_frame #{}", t.frame_number),
             t.rsx_build_ms + t.total_ms,
@@ -2105,9 +2109,12 @@ impl Viewport {
                 TraceRenderNode::new("rsx_build", t.rsx_build_ms),
                 begin_frame,
                 layout,
+                TraceRenderNode::new("prepare_paint", t.prepare_paint_ms),
+                TraceRenderNode::new("sync_properties", t.sync_properties_ms),
                 TraceRenderNode::new("build_graph", t.build_graph_ms),
                 compile,
                 execute,
+                TraceRenderNode::new("finish_render", t.finish_render_ms),
                 end_frame,
             ],
         )
@@ -2123,6 +2130,7 @@ impl Viewport {
         // elapsed-time diagnostics; retained frame semantics use the sample
         // captured once by `render_rsx`.
         let profile_start = Instant::now();
+        let mut phase_clock = super::frame::FramePhaseClock::new(profile_start);
         self.frame.frame_number = self.frame.frame_number.saturating_add(1);
         let frame_number = self.frame.frame_number;
         // A failed surface acquisition still represents a render attempt.
@@ -2137,7 +2145,7 @@ impl Viewport {
         };
 
         let mut timings = FrameTimings {
-            begin_frame_ms: begin_frame_profile.total_ms,
+            begin_frame_ms: phase_clock.checkpoint_ms(),
             begin_frame_acquire_ms: begin_frame_profile.acquire_ms,
             begin_frame_create_view_ms: begin_frame_profile.create_view_ms,
             begin_frame_create_encoder_ms: begin_frame_profile.create_encoder_ms,
@@ -2182,6 +2190,7 @@ impl Viewport {
         }
         timings.relayout_ms = relayout_started_at.elapsed().as_secs_f64() * 1000.0;
 
+        timings.layout_total_ms = phase_clock.checkpoint_ms();
         // Layout-affecting transitions (scroll, layout) can move elements
         // under a stationary pointer — re-run hover hit-test so
         // PointerEnter/PointerLeave fire without requiring a real PointerMove.
@@ -2219,14 +2228,15 @@ impl Viewport {
 
         #[cfg(test)]
         single_viewport_frame_test_support::run_after_resource_freeze(self);
+        timings.prepare_paint_ms = phase_clock.checkpoint_ms();
 
         // Observe the final resolved frame state after transition sampling
         // and any required relayout.  These shadow trees do not yet drive
         // rendering or dirty classification.
         self.sync_compositor_property_trees();
+        timings.sync_properties_ms = phase_clock.checkpoint_ms();
 
         // --- Build frame graph ---
-        let build_graph_started_at = Instant::now();
         self.clear_debug_overlay_geometry();
         let mut graph = FrameGraph::new();
         let mut ctx = crate::view::base_component::UiBuildContext::new(
@@ -2459,7 +2469,7 @@ impl Viewport {
                 )
                 .expect("surface present sink should register");
         }
-        timings.build_graph_ms = build_graph_started_at.elapsed().as_secs_f64() * 1000.0;
+        timings.build_graph_ms = phase_clock.checkpoint_ms();
 
         // --- Compile ---
         // Take the cache out (moves ownership) so we can pass self mutably to compile.
@@ -2473,7 +2483,6 @@ impl Viewport {
         let mut compiled_topology_key = None;
         let compiled = match graph.compile_with_upload_cached(self, prior_cache) {
             Ok((profile, topology_key)) => {
-                timings.compile_ms = profile.total_ms;
                 timings.compile_children =
                     build_compile_trace_nodes(&profile, self.debug_options.trace_compile_detail);
                 compiled_topology_key = Some(topology_key);
@@ -2486,12 +2495,16 @@ impl Viewport {
             }
         };
 
+        // Include cache transfer, diagnostic construction and errors, even
+        // when compilation fails without returning an internal profile.
+        timings.compile_ms = phase_clock.checkpoint_ms();
+
         // --- Execute ---
         let mut executed = false;
         if compiled {
             match graph.execute_profiled(self, self.debug_options.trace_render_time) {
                 Ok(profile) => {
-                    timings.execute_ms = profile.total_ms;
+                    timings.execute_profile_ms = Some(profile.total_ms);
                     timings.execute_pass_count = profile.pass_count;
                     timings.execute_ordered_passes = profile.ordered_passes;
                     timings.execute_detail_ordered_passes = profile.detail_ordered;
@@ -2500,6 +2513,9 @@ impl Viewport {
                 Err(error) => eprintln!("[warn] frame graph execution failed: {error:?}"),
             }
         }
+        // Failed execution still consumes this phase; a missing profile
+        // must not turn the time spent into a zero-duration attempt.
+        timings.execute_ms = phase_clock.checkpoint_ms();
         let root_keys = self.scene.ui_root_keys.clone();
         finish_frame_dirty_lifecycle(&mut self.scene.node_arena, &root_keys, compiled, executed);
         self.finish_retained_surface_transaction_for_frame(
@@ -2559,23 +2575,28 @@ impl Viewport {
             }
         }
 
+        timings.finish_render_ms = phase_clock.checkpoint_ms();
+
         // --- Complete frame ---
         // Transaction rollback and the retained-auto circuit breaker above
         // must settle before the acquired frame is either submitted or
         // discarded. A terminal compile/execute failure never submits a
         // partially recorded encoder and never presents its surface image.
         let end_frame_profile = self.complete_frame(frame_disposition(compiled, executed));
-        timings.end_frame_ms = end_frame_profile.total_ms;
+        timings.end_frame_ms = phase_clock.checkpoint_ms();
         timings.end_frame_submit_ms = end_frame_profile.submit_ms;
         timings.end_frame_present_ms = end_frame_profile.present_ms;
-        timings.total_ms = profile_start.elapsed().as_secs_f64() * 1000.0;
+        timings.total_ms = phase_clock.total_ms();
+
+        #[cfg(test)]
+        frame_timing_tests::assert_frame_accounting(&timings);
 
         // --- Trace output ---
         if self.debug_options.trace_render_time {
             if let Some(telemetry) = paint_authority_telemetry.as_ref() {
                 println!("paint-authority {}", telemetry.format_debug());
             }
-            let trace_root = self.build_frame_trace_tree(&timings);
+            let trace_root = Self::build_frame_trace_tree(&timings, &self.debug_options);
             println!("{}", format_trace_render_tree(&trace_root));
         }
         crate::view::base_component::set_text_measure_profile_enabled(false);
@@ -3024,13 +3045,11 @@ impl Viewport {
     }
 
     fn begin_frame(&mut self) -> Option<BeginFrameProfile> {
-        let total_started_at = Instant::now();
         // If a frame is already in progress (e.g. recursive render call),
         // return a zero-cost profile so the caller proceeds with the
         // existing encoder rather than skipping the frame entirely.
         if self.frame.frame_state.is_some() {
             return Some(BeginFrameProfile {
-                total_ms: 0.0,
                 acquire_ms: 0.0,
                 create_view_ms: 0.0,
                 create_encoder_ms: 0.0,
@@ -3107,7 +3126,6 @@ impl Viewport {
             depth_view: self.gpu.depth_view.clone(),
         });
         Some(BeginFrameProfile {
-            total_ms: total_started_at.elapsed().as_secs_f64() * 1000.0,
             acquire_ms,
             create_view_ms,
             create_encoder_ms,
@@ -3239,7 +3257,6 @@ impl Viewport {
     }
 
     fn abort_frame(&mut self) -> EndFrameProfile {
-        let total_started_at = Instant::now();
         self.frame.frame_presented = false;
         let Some(frame) = self.frame.frame_state.take() else {
             return EndFrameProfile::default();
@@ -3263,14 +3280,10 @@ impl Viewport {
                 self.frame.completion_counts.aborts.saturating_add(1);
         }
 
-        EndFrameProfile {
-            total_ms: total_started_at.elapsed().as_secs_f64() * 1000.0,
-            ..EndFrameProfile::default()
-        }
+        EndFrameProfile::default()
     }
 
     fn submit_and_present_frame(&mut self) -> EndFrameProfile {
-        let total_started_at = Instant::now();
         let frame = match self.frame.frame_state.take() {
             Some(frame) => frame,
             None => return EndFrameProfile::default(),
@@ -3331,7 +3344,6 @@ impl Viewport {
         }
         self.frame.frame_presented = true;
         EndFrameProfile {
-            total_ms: total_started_at.elapsed().as_secs_f64() * 1000.0,
             submit_ms,
             present_ms,
         }
@@ -3348,6 +3360,8 @@ impl Viewport {
 mod legacy_root_render_tests;
 #[cfg(test)]
 mod selection_rejection_debug_tests;
+#[cfg(test)]
+mod frame_timing_tests;
 
 /// Flatten a Fragment-at-root into its children so multi-root reconcile
 /// sees the same arity as the arena (Fragment root → N arena roots).
