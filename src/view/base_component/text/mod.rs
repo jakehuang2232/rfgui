@@ -721,7 +721,7 @@ impl ElementTrait for Text {
             );
         }
         if let Err(blocker) =
-            self.prepared_shadow_text_payload(recording_context.paint_offset, effective_opacity)
+            self.validate_shadow_text_payload(recording_context.paint_offset, effective_opacity)
         {
             return super::ShadowPaintRecordingCapability::Legacy(blocker);
         }

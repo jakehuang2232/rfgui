@@ -5083,6 +5083,48 @@ enum InlineIfcRootNodeGeometryKind {
     },
 }
 
+/// Re-derive only the atomic placement consumed by the owning-root paint
+/// witness. Layout uses this same calculation when creating its install.
+fn inline_ifc_atomic_install_witness(
+    context: &InlineFormattingContext,
+    snapshot: &InlineIfcTextLayoutSnapshot,
+    node_key: NodeKey,
+    element: &dyn ElementTrait,
+    source: InlineIfcSourceId,
+) -> Option<InlineIfcAtomicInstallWitness> {
+    let package = context.atomic_box_placement_package(source);
+    let placement = exact_inline_ifc_atomic_placement(&package, source)?;
+    // Layout permits the legacy baseline default for opaque hosts. Paint
+    // separately requires the generic vertical-align accessor to return
+    // `Some` before accepting the owning-root witness.
+    let vertical_align = element
+        .inline_atomic_vertical_align()
+        .unwrap_or(VerticalAlign::Baseline);
+    let line = snapshot.lines.get(placement.line_index)?;
+    let mut aligned_rect = placement.rect;
+    let item_height = aligned_rect.height.max(0.0);
+    let align_offset = baseline_cross_offset(
+        line.baseline,
+        line.height,
+        item_height,
+        item_height,
+        vertical_align,
+    );
+    aligned_rect.y = line.y + align_offset;
+    Some(InlineIfcAtomicInstallWitness {
+        node_key,
+        stable_id: element.stable_id(),
+        source,
+        inline_box_id: placement.id,
+        insertion_byte: placement.insertion_byte,
+        line_index: placement.line_index,
+        measurement: placement.measurement.clone(),
+        raw_rect: placement.rect,
+        aligned_rect,
+        vertical_align,
+    })
+}
+
 fn inline_ifc_root_geometry(
     context: Option<&InlineFormattingContext>,
     arena: &NodeArena,
@@ -5090,6 +5132,8 @@ fn inline_ifc_root_geometry(
     node_order: &[NodeKey],
     root_key: NodeKey,
 ) -> Option<InlineIfcRootGeometry> {
+    #[cfg(test)]
+    tests::inline_ifc_preflight_tests::note_geometry_rebuild();
     let context = context?;
     let snapshot = context.text_layout_snapshot_ref();
     let content_top_offset = snapshot
@@ -5202,43 +5246,17 @@ fn inline_ifc_root_geometry(
             continue;
         }
 
-        let package = context.atomic_box_placement_package(source);
-        let placement = exact_inline_ifc_atomic_placement(&package, source)?;
-        // Opaque hosts retain the legacy baseline layout default. Paint
-        // retained paint does not trust this fallback: the owning-root witness
-        // separately requires the generic accessor to return `Some`.
-        let vertical_align = node
-            .element
-            .inline_atomic_vertical_align()
-            .unwrap_or(VerticalAlign::Baseline);
-        let line = snapshot.lines.get(placement.line_index)?;
-        let mut aligned_rect = placement.rect;
-        let item_height = aligned_rect.height.max(0.0);
-        let align_offset = baseline_cross_offset(
-            line.baseline,
-            line.height,
-            item_height,
-            item_height,
-            vertical_align,
-        );
-        aligned_rect.y = line.y + align_offset;
-        merge(aligned_rect, &mut content);
+        let witness = inline_ifc_atomic_install_witness(
+            context,
+            snapshot,
+            node_key,
+            node.element.as_ref(),
+            source,
+        )?;
+        merge(witness.aligned_rect, &mut content);
         nodes.push(InlineIfcRootNodeGeometry {
             node_key,
-            kind: InlineIfcRootNodeGeometryKind::Atomic {
-                witness: InlineIfcAtomicInstallWitness {
-                    node_key,
-                    stable_id: node.element.stable_id(),
-                    source,
-                    inline_box_id: placement.id,
-                    insertion_byte: placement.insertion_byte,
-                    line_index: placement.line_index,
-                    measurement: placement.measurement.clone(),
-                    raw_rect: placement.rect,
-                    aligned_rect,
-                    vertical_align,
-                },
-            },
+            kind: InlineIfcRootNodeGeometryKind::Atomic { witness },
         });
     }
 
@@ -6581,24 +6599,44 @@ impl Element {
         if install.cache_key != collected.root_source.cache_key() {
             return Err(reject());
         }
-        let current_geometry = inline_ifc_root_geometry(
-            self.inline_ifc_layout_call_site
-                .cache
-                .context_for(&install.cache_key),
-            arena,
-            &collected.sources_by_node,
-            &collected.node_order,
-            root_key,
-        )
-        .ok_or_else(reject)?;
-        let mut current_atomic_witnesses = current_geometry
-            .nodes
-            .iter()
-            .filter_map(|node| match &node.kind {
-                InlineIfcRootNodeGeometryKind::Atomic { witness } => Some((node.node_key, witness)),
-                _ => None,
-            })
-            .collect::<FxHashMap<_, _>>();
+        let context = self
+            .inline_ifc_layout_call_site
+            .cache
+            .context_for(&install.cache_key)
+            .ok_or_else(reject)?;
+        let snapshot = context.text_layout_snapshot_ref();
+        // Text and span installs are checked against their live owners below.
+        // Rebuilding their geometry here would create caret lines and glyph
+        // payloads only to discard them. Derive the atomic evidence from the
+        // fresh collector and shaped context, never from the install being
+        // validated; leftover atomics still reject a missing/wrong-kind plan.
+        let mut current_atomic_witnesses = FxHashMap::default();
+        for &node_key in collected.node_order.iter().filter(|&&key| key != root_key) {
+            let source = collected
+                .sources_by_node
+                .get(&node_key)
+                .copied()
+                .ok_or_else(reject)?;
+            let node = arena.get(node_key).ok_or_else(reject)?;
+            if node.element.as_any().is::<Text>()
+                || node
+                    .element
+                    .as_any()
+                    .downcast_ref::<Element>()
+                    .is_some_and(Element::is_fragmentable_inline_element)
+            {
+                continue;
+            }
+            let witness = inline_ifc_atomic_install_witness(
+                context,
+                snapshot,
+                node_key,
+                node.element.as_ref(),
+                source,
+            )
+            .ok_or_else(reject)?;
+            current_atomic_witnesses.insert(node_key, witness);
+        }
         let expected_nodes = collected
             .sources_by_node
             .keys()
@@ -6781,7 +6819,7 @@ impl Element {
                         witness.aligned_rect,
                     );
                     let actual_placement = node.element.last_placement().ok_or_else(reject)?;
-                    if !inline_ifc_atomic_witness_bits_eq(witness, current_witness)
+                    if !inline_ifc_atomic_witness_bits_eq(witness, &current_witness)
                         || witness.stable_id != node.element.stable_id()
                         || current_vertical_align != witness.vertical_align
                         || !inline_ifc_atomic_measurement_bits_eq(

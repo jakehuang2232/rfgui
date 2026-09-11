@@ -19,7 +19,9 @@ use crate::view::render_pass::draw_rect_pass::{
     GradientKindGpu, GradientPaint, RectPassParams, RectRenderMode,
 };
 use crate::view::render_pass::shadow_module::{ShadowMesh, ShadowParams};
-use crate::view::render_pass::text_pass::TextPassPreparedParams;
+use crate::view::render_pass::text_pass::{
+    TextPassPreparedFragment, TextPassPreparedParams, TextPassPreparedStagingGlyphInput,
+};
 use crate::view::render_pass::texture_composite_pass::TextureCompositeParams;
 use crate::view::sampled_texture::{
     SampledTextureAlphaMode, SampledTextureId, SampledTextureUpload, SvgRasterAssetId,
@@ -2718,13 +2720,36 @@ pub(crate) struct PreparedTextOp {
 }
 
 impl PreparedTextOp {
+    /// Validate the unclipped source used by Text capability, with the same
+    /// glyph/fragment rules as `new`, without allocating an op or identity.
+    /// Recorded ops still validate their own scissor through `new`.
+    pub(crate) fn validate_unclipped_glyph_stream(
+        scale_factor: f32,
+        fragments: &[TextPassPreparedFragment],
+        mut glyphs: impl ExactSizeIterator<Item = TextPassPreparedStagingGlyphInput>,
+    ) -> bool {
+        PreparedTextIdentity::valid_header(scale_factor, glyphs.len(), fragments, None)
+            && fragments
+                .iter()
+                .all(|fragment| PreparedTextFragmentIdentity::from_fragment(fragment).is_some())
+            && glyphs
+                .all(|glyph| PreparedTextGlyphIdentity::from_glyph(&glyph, fragments).is_some())
+    }
+
     pub(crate) fn new(params: TextPassPreparedParams) -> Option<Self> {
+        #[cfg(test)]
+        prepared_text_identity_tests::note_construction();
         let identity = PreparedTextIdentity::from_params(&params)?;
         Some(Self { params, identity })
     }
 
     pub(crate) fn has_canonical_identity(&self) -> bool {
-        PreparedTextIdentity::from_params(&self.params).as_ref() == Some(&self.identity)
+        self.identity.matches_params(&self.params)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn construction_count_for_test() -> usize {
+        prepared_text_identity_tests::construction_count()
     }
 
     pub(crate) fn frozen_identity(&self) -> PreparedTextIdentity {
@@ -4020,93 +4045,142 @@ struct PreparedTextFragmentIdentity {
     size_bits: [u32; 2],
 }
 
-impl PreparedTextIdentity {
-    fn from_params(params: &TextPassPreparedParams) -> Option<Self> {
-        let scale_factor = params.staging_input.scale_factor;
-        if !scale_factor.is_finite()
-            || scale_factor <= 0.0
-            || params.staging_input.glyphs.is_empty()
-            || params.fragments.is_empty()
-            || params
-                .scissor_rect
-                .is_some_and(|[_, _, width, height]| width == 0 || height == 0)
+impl PreparedTextFragmentIdentity {
+    fn from_fragment(fragment: &TextPassPreparedFragment) -> Option<Self> {
+        if fragment.origin.iter().any(|value| !value.is_finite())
+            || fragment
+                .size
+                .iter()
+                .any(|value| !value.is_finite() || *value <= 0.0)
         {
             return None;
         }
+        Some(PreparedTextFragmentIdentity {
+            origin_bits: fragment.origin.map(f32::to_bits),
+            size_bits: fragment.size.map(f32::to_bits),
+        })
+    }
+}
 
+impl PreparedTextGlyphIdentity {
+    fn from_glyph(
+        glyph: &TextPassPreparedStagingGlyphInput,
+        fragments: &[TextPassPreparedFragment],
+    ) -> Option<Self> {
+        let font_data = glyph.raster.font_data.as_ref()?;
+        if font_data.data.id() != glyph.raster.font_data_id
+            || font_data.index != glyph.raster.font_index
+            || glyph.raster.glyph_id > u16::MAX as u32
+            || !glyph.raster.font_size.is_finite()
+            || glyph.raster.font_size <= 0.0
+            || glyph.paint.fragment_index as usize >= fragments.len()
+            || glyph.paint.local_pos.iter().any(|value| !value.is_finite())
+            || glyph
+                .paint
+                .color
+                .iter()
+                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+            || !glyph.paint.opacity.is_finite()
+            || !(0.0..=1.0).contains(&glyph.paint.opacity)
+            || glyph.final_paint_pos.iter().any(|value| !value.is_finite())
+        {
+            return None;
+        }
+        let fragment = fragments[glyph.paint.fragment_index as usize];
+        let expected_final = [
+            fragment.origin[0] + glyph.paint.local_pos[0],
+            fragment.origin[1] + glyph.paint.local_pos[1],
+        ];
+        if glyph.final_paint_pos.map(f32::to_bits) != expected_final.map(f32::to_bits) {
+            return None;
+        }
+        Some(PreparedTextGlyphIdentity {
+            glyph_id: glyph.raster.glyph_id,
+            font_size_bits: glyph.raster.font_size.to_bits(),
+            font_data_id: glyph.raster.font_data_id,
+            font_index: glyph.raster.font_index,
+            normalized_coords_hash: glyph.raster.normalized_coords_hash,
+            local_pos_bits: glyph.paint.local_pos.map(f32::to_bits),
+            color_bits: glyph.paint.color.map(f32::to_bits),
+            opacity_bits: glyph.paint.opacity.to_bits(),
+            fragment_index: glyph.paint.fragment_index,
+            final_paint_pos_bits: glyph.final_paint_pos.map(f32::to_bits),
+        })
+    }
+}
+
+impl PreparedTextIdentity {
+    fn valid_header(
+        scale_factor: f32,
+        glyph_count: usize,
+        fragments: &[TextPassPreparedFragment],
+        scissor_rect: Option<[u32; 4]>,
+    ) -> bool {
+        scale_factor.is_finite()
+            && scale_factor > 0.0
+            && glyph_count != 0
+            && !fragments.is_empty()
+            && !scissor_rect.is_some_and(|[_, _, width, height]| width == 0 || height == 0)
+    }
+
+    fn from_params(params: &TextPassPreparedParams) -> Option<Self> {
+        if !Self::valid_header(
+            params.staging_input.scale_factor,
+            params.staging_input.glyphs.len(),
+            &params.fragments,
+            params.scissor_rect,
+        ) {
+            return None;
+        }
         let fragments = params
             .fragments
             .iter()
-            .map(|fragment| {
-                if fragment.origin.iter().any(|value| !value.is_finite())
-                    || fragment
-                        .size
-                        .iter()
-                        .any(|value| !value.is_finite() || *value <= 0.0)
-                {
-                    return None;
-                }
-                Some(PreparedTextFragmentIdentity {
-                    origin_bits: fragment.origin.map(f32::to_bits),
-                    size_bits: fragment.size.map(f32::to_bits),
-                })
-            })
+            .map(PreparedTextFragmentIdentity::from_fragment)
             .collect::<Option<Vec<_>>>()?;
-
-        let glyphs = params
-            .staging_input
-            .glyphs
-            .iter()
-            .map(|glyph| {
-                let font_data = glyph.raster.font_data.as_ref()?;
-                if font_data.data.id() != glyph.raster.font_data_id
-                    || font_data.index != glyph.raster.font_index
-                    || glyph.raster.glyph_id > u16::MAX as u32
-                    || !glyph.raster.font_size.is_finite()
-                    || glyph.raster.font_size <= 0.0
-                    || glyph.paint.fragment_index as usize >= params.fragments.len()
-                    || glyph.paint.local_pos.iter().any(|value| !value.is_finite())
-                    || glyph
-                        .paint
-                        .color
-                        .iter()
-                        .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
-                    || !glyph.paint.opacity.is_finite()
-                    || !(0.0..=1.0).contains(&glyph.paint.opacity)
-                    || glyph.final_paint_pos.iter().any(|value| !value.is_finite())
-                {
-                    return None;
-                }
-                let fragment = params.fragments[glyph.paint.fragment_index as usize];
-                let expected_final = [
-                    fragment.origin[0] + glyph.paint.local_pos[0],
-                    fragment.origin[1] + glyph.paint.local_pos[1],
-                ];
-                if glyph.final_paint_pos.map(f32::to_bits) != expected_final.map(f32::to_bits) {
-                    return None;
-                }
-                Some(PreparedTextGlyphIdentity {
-                    glyph_id: glyph.raster.glyph_id,
-                    font_size_bits: glyph.raster.font_size.to_bits(),
-                    font_data_id: glyph.raster.font_data_id,
-                    font_index: glyph.raster.font_index,
-                    normalized_coords_hash: glyph.raster.normalized_coords_hash,
-                    local_pos_bits: glyph.paint.local_pos.map(f32::to_bits),
-                    color_bits: glyph.paint.color.map(f32::to_bits),
-                    opacity_bits: glyph.paint.opacity.to_bits(),
-                    fragment_index: glyph.paint.fragment_index,
-                    final_paint_pos_bits: glyph.final_paint_pos.map(f32::to_bits),
-                })
-            })
-            .collect::<Option<Vec<_>>>()?;
-
+        // The input length is exact. Avoid repeated growth through an
+        // Option-collect adapter when preparing a long text run.
+        let mut glyphs = Vec::with_capacity(params.staging_input.glyphs.len());
+        for glyph in &params.staging_input.glyphs {
+            glyphs.push(PreparedTextGlyphIdentity::from_glyph(
+                glyph,
+                &params.fragments,
+            )?);
+        }
         Some(Self {
-            scale_factor_bits: scale_factor.to_bits(),
+            scale_factor_bits: params.staging_input.scale_factor.to_bits(),
             glyphs: glyphs.into(),
             fragments: fragments.into(),
             scissor_rect: params.scissor_rect,
             stencil_clip_id: params.stencil_clip_id,
         })
+    }
+
+    fn matches_params(&self, params: &TextPassPreparedParams) -> bool {
+        Self::valid_header(
+            params.staging_input.scale_factor,
+            params.staging_input.glyphs.len(),
+            &params.fragments,
+            params.scissor_rect,
+        ) && self.scale_factor_bits == params.staging_input.scale_factor.to_bits()
+            && self.scissor_rect == params.scissor_rect
+            && self.stencil_clip_id == params.stencil_clip_id
+            && self.fragments.len() == params.fragments.len()
+            && self.glyphs.len() == params.staging_input.glyphs.len()
+            && self
+                .fragments
+                .iter()
+                .zip(&params.fragments)
+                .all(|(expected, actual)| {
+                    PreparedTextFragmentIdentity::from_fragment(actual).as_ref() == Some(expected)
+                })
+            && self
+                .glyphs
+                .iter()
+                .zip(&params.staging_input.glyphs)
+                .all(|(expected, actual)| {
+                    PreparedTextGlyphIdentity::from_glyph(actual, &params.fragments).as_ref()
+                        == Some(expected)
+                })
     }
 }
 
@@ -4199,3 +4273,6 @@ mod paint_artifact_contract_violation_tests;
 mod paint_artifact_space_transition_tests;
 #[cfg(test)]
 mod text_selection_payload_identity_tests;
+
+#[cfg(test)]
+mod prepared_text_identity_tests;
