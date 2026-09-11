@@ -1,6 +1,7 @@
+use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{
-    FrameResourceContext, GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
-    PrepareContext,
+    BufferDesc, BufferReadUsage, BufferResource, FrameResourceContext, GraphicsColorAttachmentOps,
+    GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
@@ -24,6 +25,7 @@ pub(crate) struct TextPreparedInputPass {
     params: TextPassPreparedParams,
     prepared: Option<TextPreparedState>,
     prepared_empty: bool,
+    globals_buffers: TextGlobalsBuffers,
     input: TextInput,
     output: TextOutput,
 }
@@ -62,6 +64,7 @@ impl TextPreparedInputPass {
             params,
             prepared: None,
             prepared_empty: false,
+            globals_buffers: TextGlobalsBuffers::default(),
             input,
             output,
         }
@@ -149,19 +152,23 @@ pub(crate) struct TextPreparedPassTestSnapshot {
 struct TextPreparedState {
     renderer_key: TextRendererKey,
     globals_bind_group: wgpu::BindGroup,
-    screen_buffer: wgpu::Buffer,
-    fragment_buffer: wgpu::Buffer,
     mask_draw: Option<std::rc::Rc<PreparedTextDraw>>,
     color_draw: Option<std::rc::Rc<PreparedTextDraw>>,
     scissor_rect: Option<[u32; 4]>,
     stencil_clip_id: Option<u8>,
 }
 
-impl Drop for TextPreparedState {
-    fn drop(&mut self) {
-        self.screen_buffer.destroy();
-        self.fragment_buffer.destroy();
-    }
+// Each logical pass declares distinct resources: all preparation uploads precede
+// drawing, so sharing a writable range between Text passes would overwrite the
+// earlier text. FrameGraph's buffer allocations do not alias within a frame;
+// Viewport owns/reuses them across frames and uploads via its shared staging belt.
+#[derive(Clone, Copy)]
+struct TextGlobalsBufferTag;
+
+#[derive(Default)]
+struct TextGlobalsBuffers {
+    screen: OutSlot<BufferResource, TextGlobalsBufferTag>,
+    fragments: OutSlot<BufferResource, TextGlobalsBufferTag>,
 }
 
 struct PreparedTextDraw {
@@ -519,6 +526,19 @@ thread_local! {
 impl GraphicsPass for TextPreparedInputPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
+        self.globals_buffers.screen = builder.create_buffer(BufferDesc {
+            size: std::mem::size_of::<ScreenUniform>() as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+            label: Some("Text Screen Uniform Buffer"),
+        });
+        self.globals_buffers.fragments = builder.create_buffer(BufferDesc {
+            size: std::mem::size_of::<FragmentUniform>() as u64
+                * self.params.fragments.len().max(1) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
+            label: Some("Text Fragment Storage Buffer"),
+        });
+        builder.read_buffer(&self.globals_buffers.screen, BufferReadUsage::Uniform);
+        builder.read_storage(&self.globals_buffers.fragments);
         if builder.texture_target(&self.output.render_target).is_some() {
             builder.write_color(
                 &self.output.render_target,
@@ -540,6 +560,7 @@ impl GraphicsPass for TextPreparedInputPass {
             &self.params,
             &self.input,
             &self.output,
+            &self.globals_buffers,
             ctx,
             &mut self.prepared_empty,
         );
@@ -582,6 +603,7 @@ fn prepare_text_prepared_input_pass(
     params: &TextPassPreparedParams,
     input: &TextInput,
     output: &TextOutput,
+    globals_buffers: &TextGlobalsBuffers,
     ctx: &mut PrepareContext<'_, '_>,
     prepared_empty: &mut bool,
 ) -> Option<TextPreparedState> {
@@ -714,22 +736,15 @@ fn prepare_text_prepared_input_pass(
         ],
         _pad: [0.0, 0.0],
     };
-    let screen_buffer = super::create_transient_buffer(
-        &device,
-        &wgpu::util::BufferInitDescriptor {
-            label: Some("Text Screen Uniform Buffer"),
-            contents: bytemuck::bytes_of(&screen_uniform),
-            usage: wgpu::BufferUsages::UNIFORM,
-        },
-    );
-    let fragment_buffer = super::create_transient_buffer(
-        &device,
-        &wgpu::util::BufferInitDescriptor {
-            label: Some("Text Fragment Storage Buffer"),
-            contents: bytemuck::cast_slice(&fragments),
-            usage: wgpu::BufferUsages::STORAGE,
-        },
-    );
+    let screen_handle = globals_buffers.screen.handle()?;
+    let fragment_handle = globals_buffers.fragments.handle()?;
+    if !ctx.upload_buffer(screen_handle, 0, bytemuck::bytes_of(&screen_uniform))
+        || !ctx.upload_buffer(fragment_handle, 0, bytemuck::cast_slice(&fragments))
+    {
+        return None;
+    }
+    let screen_buffer = ctx.acquire_buffer(screen_handle)?;
+    let fragment_buffer = ctx.acquire_buffer(fragment_handle)?;
 
     let (globals_bind_group, mask_draw, color_draw) = TEXT_RESOURCES.with(|slot| {
         let mut resources = slot.borrow_mut();
@@ -804,16 +819,12 @@ fn prepare_text_prepared_input_pass(
     });
 
     if mask_draw.is_none() && color_draw.is_none() {
-        screen_buffer.destroy();
-        fragment_buffer.destroy();
         return None;
     }
 
     Some(TextPreparedState {
         renderer_key,
         globals_bind_group,
-        screen_buffer,
-        fragment_buffer,
         mask_draw,
         color_draw,
         scissor_rect,

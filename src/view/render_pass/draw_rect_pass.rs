@@ -11,7 +11,6 @@ use crate::view::render_pass::render_target::{
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use rustc_hash::FxHashSet;
 use std::num::NonZeroU64;
-use wgpu::util::DeviceExt;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum GradientKindGpu {
@@ -640,6 +639,7 @@ impl DrawRectPass {
             cache_key,
             &bind_group_layout,
             RECT_UNIFORM_SLOT_SIZE,
+            shape.has_gradient || shape.has_border_gradient,
         );
         self.prepared_dynamic_offset = dynamic_offset;
     }
@@ -1076,7 +1076,7 @@ fn encode_draw_rect_into_existing_pass(
         draw.render_mode,
         shape,
     );
-    let (pipeline, bind_group_layout, vertex_buffer, index_buffer, index_count) = {
+    let (pipeline, bind_group_layout) = {
         with_draw_rect_resources_cache(|cache| {
             let resources = cache.get_or_insert_with(cache_key, || {
                 create_draw_rect_resources(
@@ -1112,9 +1112,6 @@ fn encode_draw_rect_into_existing_pass(
             (
                 resources.pipeline.clone(),
                 resources.bind_group_layout.clone(),
-                resources.vertex_buffer.clone(),
-                resources.index_buffer.clone(),
-                resources.index_count,
             )
         })
     };
@@ -1146,31 +1143,33 @@ fn encode_draw_rect_into_existing_pass(
                 usage: wgpu::BufferUsages::UNIFORM,
             },
         );
-        let stops_buffer = ctx
-            .viewport()
-            .ensure_gradient_stops_buffer()
-            .cloned()
-            .unwrap_or_else(|| {
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("Gradient Stops Fallback (empty)"),
-                    size: GRADIENT_STOP_STRIDE,
-                    usage: wgpu::BufferUsages::STORAGE,
-                    mapped_at_creation: false,
+        let stops_buffer = (shape.has_gradient || shape.has_border_gradient).then(|| {
+            ctx.viewport()
+                .ensure_gradient_stops_buffer()
+                .cloned()
+                .unwrap_or_else(|| {
+                    device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("Gradient Stops Fallback (empty)"),
+                        size: GRADIENT_STOP_STRIDE,
+                        usage: wgpu::BufferUsages::STORAGE,
+                        mapped_at_creation: false,
+                    })
                 })
+        });
+        let mut entries = vec![wgpu::BindGroupEntry {
+            binding: 0,
+            resource: fallback_uniform_buffer.as_entire_binding(),
+        }];
+        if let Some(stops_buffer) = &stops_buffer {
+            entries.push(wgpu::BindGroupEntry {
+                binding: 1,
+                resource: stops_buffer.as_entire_binding(),
             });
+        }
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("DrawRect Bind Group Fallback"),
             layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: fallback_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: stops_buffer.as_entire_binding(),
-                },
-            ],
+            entries: &entries,
         })
     };
     let scissor_rect_physical = resolve_graphics_pass_scissor_to_target_physical(
@@ -1181,8 +1180,6 @@ fn encode_draw_rect_into_existing_pass(
         (target_w, target_h),
     );
     ctx.set_pipeline(&pipeline);
-    ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
-    ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
     let dynamic_offset = if pass_def.prepared_bind_group.is_some() {
         pass_def.prepared_dynamic_offset
     } else {
@@ -1197,13 +1194,9 @@ fn encode_draw_rect_into_existing_pass(
     } else {
         ctx.set_scissor_rect(0, 0, target_w, target_h);
     }
-    ctx.draw_indexed(0..index_count, 0, 0..1);
-}
-
-#[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-struct QuadVertex {
-    uv: [f32; 2],
+    // The shader emits the same six indexed corners procedurally. No vertex
+    // input means Metal needs neither a quad buffer nor its sizes metadata.
+    ctx.draw(0..6, 0..1);
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1253,9 +1246,6 @@ struct RectParams {
 pub(crate) struct DrawRectResources {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    index_count: u32,
     pipeline_format: wgpu::TextureFormat,
     pipeline_sample_count: u32,
     variant: RectShaderVariant,
@@ -1263,13 +1253,6 @@ pub(crate) struct DrawRectResources {
     color_write_enabled: bool,
     render_mode: RectRenderMode,
     shape: RectShaderShape,
-}
-
-impl Drop for DrawRectResources {
-    fn drop(&mut self) {
-        self.vertex_buffer.destroy();
-        self.index_buffer.destroy();
-    }
 }
 
 fn create_draw_rect_resources(
@@ -1296,30 +1279,35 @@ fn create_draw_rect_resources(
         },
     );
 
+    // A solid shader never reads gradient stops. Omitting the binding (rather
+    // than binding an unused dummy) prevents Metal from resending that buffer
+    // whenever the per-draw uniform dynamic offset changes. The shape is also
+    // part of the resource/layout cache key, so gradient variants stay distinct.
+    let mut entries = vec![wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: true,
+            min_binding_size: Some(NonZeroU64::new(RECT_UNIFORM_SLOT_SIZE).unwrap()),
+        },
+        count: None,
+    }];
+    if shape.has_gradient || shape.has_border_gradient {
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        });
+    }
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("DrawRect Bind Group Layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: Some(NonZeroU64::new(RECT_UNIFORM_SLOT_SIZE).unwrap()),
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
+        entries: &entries,
     });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1334,15 +1322,7 @@ fn create_draw_rect_resources(
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<QuadVertex>() as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &[wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 0,
-                    shader_location: 0,
-                }],
-            })],
+            buffers: &[],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -1483,31 +1463,9 @@ fn create_draw_rect_resources(
         cache: None,
     });
 
-    let quad_vertices = [
-        QuadVertex { uv: [0.0, 0.0] },
-        QuadVertex { uv: [1.0, 0.0] },
-        QuadVertex { uv: [1.0, 1.0] },
-        QuadVertex { uv: [0.0, 1.0] },
-    ];
-    let quad_indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
-
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("DrawRect Quad Vertex Buffer"),
-        contents: bytemuck::cast_slice(&quad_vertices),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("DrawRect Quad Index Buffer"),
-        contents: bytemuck::cast_slice(&quad_indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
-
     DrawRectResources {
         pipeline,
         bind_group_layout,
-        vertex_buffer,
-        index_buffer,
-        index_count: quad_indices.len() as u32,
         pipeline_format: format,
         pipeline_sample_count: sample_count,
         variant,

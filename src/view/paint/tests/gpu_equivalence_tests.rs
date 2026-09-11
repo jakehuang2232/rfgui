@@ -2313,6 +2313,7 @@ fn transform_effect_scroll_resident_roles_are_exact(
 
 mod native_pixel_oracle_tests;
 mod buffer_binding_tests;
+mod text_buffer_tests;
 mod oracle_tests;
 
 mod artifact_intermediate_coverage_tests;

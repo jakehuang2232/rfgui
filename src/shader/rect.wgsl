@@ -192,7 +192,14 @@ struct VertexOut {
 }
 
 @vertex
-fn vs_main(@location(0) uv: vec2<f32>) -> VertexOut {
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOut {
+    // Preserve the original quad indices [0, 1, 2, 0, 2, 3] exactly, including
+    // winding and diagonal. Fixed corners do not need a vertex/index buffer.
+    let corners = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(0.0, 1.0),
+    );
+    let uv = corners[vertex_index];
     var out: VertexOut;
     let p = mix(u.outer_rect.xy, u.outer_rect.zw, uv);
     let ndc = vec2<f32>(

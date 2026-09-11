@@ -65,6 +65,7 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
     let actual = [
         include_str!("../../render_pass/buffer_bindings/tests.rs"),
         include_str!("gpu_equivalence_tests/buffer_binding_tests.rs"),
+        include_str!("gpu_equivalence_tests/text_buffer_tests.rs"),
         include_str!("../../render_pass/render_target/pending_submission_tests.rs"),
         include_str!("../../../../lib/rfgui-components/tests/retained_controls.rs"),
         include_str!("portable_renderer_tests.rs"),
@@ -102,6 +103,8 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
     let expected = expected_names([
         "native_buffer_bindings_preserve_ranges_formats_and_pass_scope",
         "native_graphics_group_elides_buffers_without_losing_per_draw_uniforms",
+        "native_rect_bindings_preserve_solid_and_gradient_layout_switches",
+        "native_text_globals_reuse_buffers_without_overwriting_other_passes",
         "native_persistent_retirement_preserves_unsubmitted_attachments",
         "native_controls_record_and_reuse_real_component_trees",
         "native_full_window_budget_descriptors_reuse_and_whole_frame_legacy",

@@ -780,6 +780,18 @@ impl Viewport {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn frame_buffers_for_test(&self) -> Vec<(u32, wgpu::Buffer)> {
+        let mut buffers = self
+            .frame
+            .frame_buffer_pool
+            .iter()
+            .map(|(&allocation, entry)| (allocation, entry.buffer.clone()))
+            .collect::<Vec<_>>();
+        buffers.sort_by_key(|(allocation, _)| *allocation);
+        buffers
+    }
+
     pub(crate) fn acquire_frame_buffer(
         &mut self,
         allocation_id: AllocationId,
@@ -1079,6 +1091,11 @@ impl Viewport {
         Some(start_index)
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_gradient_stops_buffer_for_test(&self) -> bool {
+        self.frame.gradient_stops_buffer.is_some()
+    }
+
     pub(crate) fn ensure_gradient_stops_buffer(&mut self) -> Option<&wgpu::Buffer> {
         use crate::view::render_pass::draw_rect_pass::GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY;
         if self.frame.gradient_stops_buffer.is_none() {
@@ -1109,14 +1126,19 @@ impl Viewport {
         layout_cache_key: u64,
         layout: &wgpu::BindGroupLayout,
         slot_size: u64,
+        uses_gradient_stops: bool,
     ) -> Option<wgpu::BindGroup> {
         let entry = self.frame.draw_rect_uniform_pool.get(pool_index)?;
         if let Some(bg) = entry.bind_groups.get(&layout_cache_key) {
             return Some(bg.clone());
         }
-        // Ensure the gradient stops buffer exists so binding 1 can resolve.
-        self.ensure_gradient_stops_buffer();
-        let stops_buffer = self.frame.gradient_stops_buffer.as_ref()?.buffer.clone();
+        // Solid variants have no binding 1; neither allocate nor bind an
+        // unused storage buffer. The layout key includes both gradient flags.
+        let stops_buffer = if uses_gradient_stops {
+            Some(self.ensure_gradient_stops_buffer()?.clone())
+        } else {
+            None
+        };
         let uniform_buffer = self
             .frame
             .draw_rect_uniform_pool
@@ -1124,23 +1146,24 @@ impl Viewport {
             .buffer
             .clone();
         let device = self.gpu.device.as_ref()?;
+        let mut entries = vec![wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &uniform_buffer,
+                offset: 0,
+                size: wgpu::BufferSize::new(slot_size),
+            }),
+        }];
+        if let Some(stops_buffer) = &stops_buffer {
+            entries.push(wgpu::BindGroupEntry {
+                binding: 1,
+                resource: stops_buffer.as_entire_binding(),
+            });
+        }
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("DrawRect Bind Group (Cached)"),
             layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &uniform_buffer,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(slot_size),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: stops_buffer.as_entire_binding(),
-                },
-            ],
+            entries: &entries,
         });
         self.frame
             .draw_rect_uniform_pool
