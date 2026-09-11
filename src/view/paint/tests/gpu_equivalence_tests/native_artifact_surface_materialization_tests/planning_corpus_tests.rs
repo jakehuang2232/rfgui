@@ -132,7 +132,7 @@ fn unlaid_out_fixture(scene: Scene) -> Fixture {
                     // The interior only checks visible fill. The far/right
                     // probes constrain the output extent; none can prove
                     // negative-source content preservation for a uniform fill
-                    // sampled with ClampToEdge (see PLANNING_CAPABILITIES.md).
+                    // sampled with ClampToEdge, hiding the missing source texels.
                     probes.extend([
                         ("visible uniform-fill interior", [4, 28], RED),
                         ("scaled right extent remains filled", [28, 44], RED),
