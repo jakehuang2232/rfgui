@@ -90,8 +90,9 @@ fn window_like_native_showcase_selects_non_legacy_retained_auto_authority() {
     ) {
         panic!("direct FrameRootScrollScene planning failed: {error:?}");
     }
+    assert_generic_primary(&arena, &roots, &properties, &generations, &ctx);
     let decision =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     let (scene, trace) = match decision {
         AutoAuthorityDecision::FrameRootScrollScene { scene, trace } => (scene, trace),
         AutoAuthorityDecision::Legacy { trace } => panic!(
@@ -177,7 +178,7 @@ fn window_like_native_showcase_selects_non_legacy_retained_auto_authority() {
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true));
 
     let second_ctx = UiBuildContext::new(800, 600, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let second_decision = select_retained_auto_authority(
+    let second_decision = compatibility_decision(
         &arena,
         &roots,
         &properties,
@@ -224,7 +225,7 @@ fn window_like_native_showcase_selects_non_legacy_retained_auto_authority() {
     let reversed_roots = roots.iter().copied().rev().collect::<Vec<_>>();
     let (reversed_properties, reversed_generations) = synced_paint_state(&arena, &reversed_roots);
     let reversed_ctx = UiBuildContext::new(800, 600, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let reversed_decision = select_retained_auto_authority(
+    let reversed_decision = compatibility_decision(
         &arena,
         &reversed_roots,
         &reversed_properties,
@@ -260,16 +261,17 @@ fn window_like_native_showcase_selects_non_legacy_retained_auto_authority() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn window_like_retained_final_keeps_candidate_rejection_off_fallback_overlay() {
+fn compatibility_window_like_final_keeps_candidate_rejection_off_fallback_overlay() {
     let (arena, roots) = crate::view::paint::tests::window_like_native_showcase_fixture();
     let ctx = UiBuildContext::new(800, 600, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (properties, generations) = synced_paint_state(&arena, &roots);
+    assert_generic_primary(&arena, &roots, &properties, &generations, &ctx);
     crate::view::paint::take_full_artifact_record_count();
     let captured =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     let captured_artifact_records = crate::view::paint::take_full_artifact_record_count();
     let uncaptured =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, false);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, false);
     let uncaptured_artifact_records = crate::view::paint::take_full_artifact_record_count();
     assert_eq!(
         auto_authority_kind(&captured),

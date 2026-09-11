@@ -1,7 +1,9 @@
+// Existing bridge preflight/dispatch contracts remain protected directly.
+// General Auto selection is asserted in generic_selection_tests.
 use super::*;
 
 #[test]
-fn retained_auto_scroll_text_area_subtree_interaction_and_budget_fail_closed() {
+fn compatibility_scroll_text_area_subtree_interaction_and_budget_fail_closed() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, _, _) = prepared_scroll_text_area_scene_with(
         0.0,
@@ -22,7 +24,7 @@ fn retained_auto_scroll_text_area_subtree_interaction_and_budget_fail_closed() {
     }
     let (properties, generations) = synced_paint_state(&arena, &roots);
     let decision =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     let scene = match decision {
         AutoAuthorityDecision::PropertyScrollScene { scene, trace } => {
             assert!(matches!(
@@ -107,7 +109,7 @@ fn retained_auto_scroll_text_area_subtree_interaction_and_budget_fail_closed() {
     }
     let (properties, generations) = synced_paint_state(&arena, &roots);
     assert!(matches!(
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true,),
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true,),
         AutoAuthorityDecision::Legacy { .. }
     ));
 
@@ -193,7 +195,7 @@ fn retained_auto_scroll_text_area_subtree_interaction_and_budget_fail_closed() {
                 .is_some(),
             "{interactive} fixture must satisfy component admission"
         );
-        let decision = select_retained_auto_authority(
+        let decision = compatibility_decision(
             &arena,
             &roots,
             &properties,
@@ -234,7 +236,7 @@ fn retained_auto_scroll_text_area_subtree_interaction_and_budget_fail_closed() {
             }
         }
         let (properties, generations) = synced_paint_state(&arena, &roots);
-        let decision = select_retained_auto_authority(
+        let decision = compatibility_decision(
             &arena,
             &roots,
             &properties,
@@ -271,7 +273,7 @@ fn retained_auto_scroll_text_area_subtree_interaction_and_budget_fail_closed() {
             }
         }
         let (properties, generations) = synced_paint_state(&arena, &roots);
-        let AutoAuthorityDecision::Legacy { trace } = select_retained_auto_authority(
+        let AutoAuthorityDecision::Legacy { trace } = compatibility_decision(
             &arena,
             &roots,
             &properties,
@@ -321,12 +323,12 @@ fn retained_auto_scroll_text_area_subtree_interaction_and_budget_fail_closed() {
 }
 
 #[test]
-fn retained_auto_scroll_text_area_selection_is_exact_reusable_and_invalidating() {
+fn compatibility_scroll_text_area_selection_is_exact_reusable_and_invalidating() {
     let select = |arena: &NodeArena,
                   roots: &[NodeKey],
                   properties: &PropertyTrees,
                   generations: &PaintGenerationTracker| {
-        match select_retained_auto_authority(
+        match compatibility_decision(
             arena,
             roots,
             properties,

@@ -92,7 +92,7 @@ fn run_single_viewport_frames(mode: ViewportPaintRendererMode) -> Result<(), Str
     Ok(())
 }
 
-fn read_submitted_texture(
+pub(in crate::view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests) fn read_submitted_texture(
     texture: &wgpu::Texture,
     gpu: &NativeGpu,
     [width, height]: [u32; 2],

@@ -3,6 +3,7 @@ use crate::style::{Opacity, Transform, Translate};
 use crate::view::test_support::{commit_child, commit_element, get_element_mut};
 
 mod single_viewport_tests;
+pub(super) use single_viewport_tests::read_submitted_texture;
 
 #[derive(Clone, Copy, Debug)]
 enum StyleScene {
@@ -243,8 +244,8 @@ fn run_style_pipeline_pixels_and_reuse(scene: StyleScene) -> Result<(), String> 
         for (frame, (translation, scroll_y)) in scene.states().into_iter().enumerate() {
             fixture.update(translation, scroll_y);
             let (graph, owner, actions, bytes) = match scene {
-                // Production selection still excludes this scene. Exercise
-                // the common executor without claiming selector coverage.
+                // Preserve the isolated common-executor geometry gate.
+                // Single-Viewport selection is exercised by the C-3 corpus.
                 StyleScene::ScrollingGradient => {
                     materialized_two_boundary_graph(&mut viewport, fixture.artifact(), dpr as f32)?
                 }

@@ -52,7 +52,9 @@ fn transparent_native_text_root_uses_host_generic_root_effect_artifact() {
     ));
 
     let selection_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let AutoAuthorityDecision::Artifact { candidate, trace } = select_retained_auto_authority(
+    assert_generic_primary(&arena, &roots, &properties, &generations, &selection_ctx);
+    // Directly retain the legacy root-effect compiler contract.
+    let AutoAuthorityDecision::Artifact { candidate, trace } = compatibility_decision(
         &arena,
         &roots,
         &properties,
@@ -258,9 +260,10 @@ fn native_root_opacity_contract_rejects_property_resource_and_topology_drift() {
     let root = roots[0];
     let (properties, generations) = synced_paint_state(&arena, &roots);
     let effect = crate::view::compositor::property_tree::EffectNodeId(root);
+    assert_generic_primary(&arena, &roots, &properties, &generations, &ctx);
     let candidate = || {
         let AutoAuthorityDecision::Artifact { candidate, .. } =
-            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true)
+            compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true)
         else {
             panic!("baseline native root opacity must select artifact")
         };

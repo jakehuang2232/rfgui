@@ -1,7 +1,9 @@
+// Existing bridge preflight/dispatch contracts remain protected directly.
+// General Auto selection is asserted in generic_selection_tests.
 use super::*;
 
 #[test]
-fn retained_auto_fully_same_owner_transform_effect_scroll_is_retained_and_not_red() {
+fn compatibility_fully_same_owner_transform_effect_scroll_is_retained_and_not_red() {
     let (arena, roots, _, _) = prepared_same_owner_transform_scroll_scene();
     let root = roots[0];
     crate::view::test_support::get_element_mut::<Element>(&arena, root).set_opacity(0.625);
@@ -10,7 +12,7 @@ fn retained_auto_fully_same_owner_transform_effect_scroll_is_retained_and_not_re
     let ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
 
     let AutoAuthorityDecision::TransformEffectScrollScene { scene, trace } =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true)
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true)
     else {
         panic!("fully same-owner T+E+S must select retained transform-effect-scroll authority")
     };

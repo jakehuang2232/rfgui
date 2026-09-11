@@ -50,13 +50,13 @@ fn retained_auto_trace_capture_does_not_change_authority_decision() {
     );
     assert!(matches!(
         &captured,
-        AutoAuthorityDecision::EffectScrollScene { .. }
+        AutoAuthorityDecision::Artifact { .. }
     ));
     assert!(matches!(
         &uncaptured,
-        AutoAuthorityDecision::EffectScrollScene { .. }
+        AutoAuthorityDecision::Artifact { .. }
     ));
-    assert!(!auto_authority_trace(&captured).rejections.is_empty());
+    assert!(auto_authority_trace(&captured).rejections.is_empty());
     assert!(auto_authority_trace(&uncaptured).rejections.is_empty());
 
     let (arena, roots) = prepared_safe_leaf();

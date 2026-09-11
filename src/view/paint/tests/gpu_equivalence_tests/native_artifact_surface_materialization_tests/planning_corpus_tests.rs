@@ -10,6 +10,7 @@ use crate::view::test_support::{commit_child, commit_element, get_element_mut};
 
 mod contracts_tests;
 mod pixel_tests;
+mod viewport_tests;
 
 const EXTENT: [u32; 2] = [160, 128];
 const RED: [u8; 4] = [255, 0, 0, 255];
@@ -78,7 +79,7 @@ fn element(id: u64, size: [f32; 2], style: Style) -> Element {
     element
 }
 
-fn fixture(scene: Scene) -> Fixture {
+fn unlaid_out_fixture(scene: Scene) -> Fixture {
     let mut arena = new_test_arena();
     let root = commit_element(
         &mut arena,
@@ -364,21 +365,26 @@ fn fixture(scene: Scene) -> Fixture {
             ]);
         }
     }
-    let mut layout = Viewport::new();
-    for &root in &roots {
-        crate::view::viewport::layout_artifact_style_scene_for_test(
-            &mut layout,
-            &mut arena,
-            root,
-            EXTENT.map(|v| v as f32),
-        );
-    }
     Fixture {
         arena,
         roots,
         paint_owners,
         probes,
     }
+}
+
+fn fixture(scene: Scene) -> Fixture {
+    let mut fixture = unlaid_out_fixture(scene);
+    let mut layout = Viewport::new();
+    for &root in &fixture.roots {
+        crate::view::viewport::layout_artifact_style_scene_for_test(
+            &mut layout,
+            &mut fixture.arena,
+            root,
+            EXTENT.map(|v| v as f32),
+        );
+    }
+    fixture
 }
 
 fn record(fixture: &Fixture) -> PaintArtifact {

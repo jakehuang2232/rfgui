@@ -513,19 +513,9 @@ fn stage_c_zero_surface_retained_auto_emits_once_and_matches_legacy() {
 }
 
 #[test]
-fn stage_c_zero_surface_keeps_root_opacity_on_the_existing_artifact_path() {
+fn stage_c_general_surface_takes_root_opacity_through_the_common_executor() {
     let (arena, roots) = prepared_native_text_with_opacity(0.5);
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let AutoAuthorityDecision::Artifact { candidate, trace } = auto_decision(&arena, &roots, &ctx)
-    else {
-        panic!("native root opacity must retain artifact authority")
-    };
-    assert!(trace.rejections.is_empty());
-    let RecordedArtifactPayload::ExistingArtifact(artifact) = candidate.payload else {
-        panic!("root opacity is excluded from current-target artifact-surface authority")
-    };
-    assert!(matches!(
-        artifact.target,
-        crate::view::paint::PaintArtifactTarget::RootOpacityGroup { .. }
-    ));
+    let (properties, generations) = synced_paint_state(&arena, &roots);
+    assert_generic_primary(&arena, &roots, &properties, &generations, &ctx);
 }

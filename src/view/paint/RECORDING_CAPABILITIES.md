@@ -88,10 +88,11 @@ guard against silently removing tests.
   opacity 0.5/0.25, and nonempty descendants, for both renderers at DPR 1/2.
   Ready leaf or transform-only gates are not its evidence. Arbitrary rotation/
   scale and inline/deferred transformed clips remain C-2/C-5/C-7 obligations.
-- The production selector still excludes the outer-scroll TextArea family
-  pending its dedicated authority-transfer acceptance (C-3/C-6). The C-1
-  hardware tests call the common generic executor; they do not claim that
-  selector cutover or single-Viewport TextArea layout/paint coupling is done.
+- At the C-1 checkpoint, production selection still excluded outer-scroll
+  TextArea. The C-1 hardware tests call the common generic executor and do not
+  themselves prove selector takeover. The subsequent C-3 general-primary
+  integration and single-Viewport TextArea evidence, including its remaining
+  fallback limits, are tracked in `EXECUTION_INTEGRATION.md`.
 
 Keep these limits visible when reporting C-1 completion. They remain work in
 the named later stages; neither a green recording inventory nor a localized

@@ -1622,6 +1622,75 @@ fn synced_paint_state(
     (properties, generations)
 }
 
+fn assert_generic_primary(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    properties: &PropertyTrees,
+    generations: &PaintGenerationTracker,
+    ctx: &UiBuildContext,
+) {
+    let decision = select_retained_auto_authority(arena, roots, properties, generations, ctx, true);
+    let AutoAuthorityDecision::Artifact { candidate, trace } = decision else {
+        panic!(
+            "valid complete recording must select generic Artifact: {:?}",
+            auto_authority_trace(&decision).rejections
+        );
+    };
+    assert!(trace.rejections.is_empty());
+    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
+        panic!("must bypass the old root-effect artifact compiler");
+    };
+    let count = frame.raster_plan().nodes().len();
+    let mut viewport = Viewport::new();
+    assert_eq!(
+        emit_selected_artifact_surface(
+            "generic primary",
+            &mut viewport,
+            candidate,
+            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone())
+        ),
+        count
+    );
+}
+
+// Direct coverage of the compatibility cascade retained until C-6. Callers
+// use this name explicitly; the actual Auto primary is covered separately by
+// generic_selection_tests and the native single-Viewport corpus.
+fn compatibility_decision(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    properties: &PropertyTrees,
+    generations: &PaintGenerationTracker,
+    ctx: &UiBuildContext,
+    capture_trace: bool,
+) -> AutoAuthorityDecision {
+    super::select_retained_auto_compatibility_authority_with_semantics(
+        arena,
+        roots,
+        properties,
+        generations,
+        ctx,
+        crate::time::Instant::now(),
+        crate::view::paint::ScrollSceneSingleTextureBudget::new(
+            wgpu::Limits::default().max_texture_dimension_2d,
+            128 * 1024 * 1024,
+        )
+        .unwrap(),
+        wgpu::Limits::default().max_texture_dimension_2d,
+        PROVISIONAL_ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+        AutoAuthorityTrace::new(capture_trace),
+    )
+}
+
+fn compatibility_auto_decision(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    ctx: &UiBuildContext,
+) -> AutoAuthorityDecision {
+    let (properties, generations) = synced_paint_state(arena, roots);
+    compatibility_decision(arena, roots, &properties, &generations, ctx, true)
+}
+
 fn auto_decision(
     arena: &NodeArena,
     roots: &[NodeKey],
@@ -1826,7 +1895,9 @@ fn assert_native_root_opacity_artifact(
     );
 
     let selection_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let AutoAuthorityDecision::Artifact { candidate, trace } = select_retained_auto_authority(
+    assert_generic_primary(arena, roots, &properties, &generations, &selection_ctx);
+    // Keep the old root-effect compiler assertions as compatibility coverage.
+    let AutoAuthorityDecision::Artifact { candidate, trace } = compatibility_decision(
         arena,
         roots,
         &properties,
@@ -2416,3 +2487,5 @@ mod text_area_interaction_tests;
 mod text_area_scene_tests;
 mod text_transform_tests;
 mod window_showcase_tests;
+
+mod generic_selection_tests;

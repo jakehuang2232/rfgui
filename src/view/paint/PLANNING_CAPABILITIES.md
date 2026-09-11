@@ -88,6 +88,11 @@ whole corpus (C-3/C-6), aggregate full-window budgets, multi-target failure
 recovery, perspective/3D raster quality, or arbitrary transformed IFC/deferred
 scopes. Those are not closed by successful Reraster/Reuse accounting here.
 
+The subsequent C-3 checkpoint reuses these scene definitions through the
+production selector and a single Viewport. Its separate evidence and remaining
+integration obligations are recorded in `EXECUTION_INTEGRATION.md`; it does
+not change the scope of the C-2 harness described above.
+
 No legacy path, native gate, pixel expectation or tolerance was removed.
 The two new native gates are in the deletion inventory, which guards their
 presence and is not execution evidence. The three known C-1 shadow/older

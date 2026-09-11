@@ -1,14 +1,16 @@
+// Existing bridge preflight/dispatch contracts remain protected directly.
+// General Auto selection is asserted in generic_selection_tests.
 use super::*;
 
 #[test]
-fn retained_auto_native_scroll_forest_is_final_retained_authority_without_red_fallbacks() {
+fn compatibility_native_scroll_forest_is_final_retained_authority_without_red_fallbacks() {
     let (arena, roots, properties, generations) =
         crate::view::paint::native_scroll_forest_plan_fixture();
     let ctx = UiBuildContext::new(700, 700, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let captured =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     let uncaptured =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, false);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, false);
     assert_eq!(
         auto_authority_kind(&captured),
         AutoAuthorityKind::NativeScrollForest
@@ -98,7 +100,7 @@ fn retained_auto_native_scroll_forest_is_final_retained_authority_without_red_fa
 }
 
 #[test]
-fn retained_auto_malformed_native_scroll_forests_stay_atomic_legacy() {
+fn compatibility_malformed_native_scroll_forests_stay_atomic_legacy() {
     for tamper in [
         "custom",
         "transform",
@@ -198,9 +200,9 @@ fn retained_auto_malformed_native_scroll_forests_stay_atomic_legacy() {
         let viewport = Viewport::new();
         let pool_before = viewport.retained_surface_transaction_shape_for_test();
         let captured =
-            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+            compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
         let uncaptured =
-            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, false);
+            compatibility_decision(&arena, &roots, &properties, &generations, &ctx, false);
         assert!(
             matches!(&captured, AutoAuthorityDecision::Legacy { .. }),
             "{tamper} must fail closed before forest preparation"
@@ -242,12 +244,12 @@ fn retained_auto_malformed_native_scroll_forests_stay_atomic_legacy() {
 }
 
 #[test]
-fn retained_auto_native_scroll_forest_prepare_tamper_preserves_warm_pool_atomically() {
+fn compatibility_native_scroll_forest_prepare_tamper_preserves_warm_pool_atomically() {
     let (arena, roots, properties, generations) =
         crate::view::paint::native_scroll_forest_plan_fixture();
     let ctx = UiBuildContext::new(700, 700, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let base_plan =
-        match select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true)
+        match compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true)
         {
             AutoAuthorityDecision::NativeScrollForest { plan, .. } => plan,
             _ => panic!("native forest baseline selection"),
@@ -329,7 +331,7 @@ fn retained_auto_native_scroll_forest_prepare_tamper_preserves_warm_pool_atomica
 }
 
 #[test]
-fn retained_auto_scroll_content_effect_final_authority_is_retained_and_not_red() {
+fn compatibility_scroll_content_effect_final_authority_is_retained_and_not_red() {
     for (outer_transform, neutral_wrapper) in
         [(false, false), (false, true), (true, false), (true, true)]
     {
@@ -341,7 +343,7 @@ fn retained_auto_scroll_content_effect_final_authority_is_retained_and_not_red()
         let roots = vec![root];
         let ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
         let decision =
-            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+            compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
         assert!(
             matches!(
                 decision,
@@ -378,7 +380,7 @@ fn retained_auto_scroll_content_effect_final_authority_is_retained_and_not_red()
 }
 
 #[test]
-fn retained_auto_scroll_content_effect_tamper_and_custom_fail_closed_atomically() {
+fn compatibility_scroll_content_effect_tamper_and_custom_fail_closed_atomically() {
     for tamper in ["custom", "property", "clip", "generation"] {
         let (mut arena, root, mut properties, generations) =
             crate::view::paint::retained_auto_scroll_content_effect_fixture(true, true);
@@ -437,9 +439,9 @@ fn retained_auto_scroll_content_effect_tamper_and_custom_fail_closed_atomically(
         let graph = FrameGraph::new();
         let graph_before = graph.build_state_snapshot_for_test();
         let captured =
-            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+            compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
         let uncaptured =
-            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, false);
+            compatibility_decision(&arena, &roots, &properties, &generations, &ctx, false);
         assert!(
             matches!(captured, AutoAuthorityDecision::Legacy { .. }),
             "{tamper}"

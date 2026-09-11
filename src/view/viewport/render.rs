@@ -1823,6 +1823,7 @@ fn require_detached_artifact_surface_plan(
 
 #[derive(Clone, Copy)]
 enum RecordedArtifactSurfaceRequirement {
+    General,
     ZeroResident,
     Detached,
     ScrollContentOnly,
@@ -1847,6 +1848,12 @@ fn prepare_recorded_artifact_candidate(
                     .map_err(RecordedArtifactSurfacePrepareError::RasterPlan)
                     .map_err(RecordedArtifactCandidateRejection::Prepare)?;
                     let plan = match requirement {
+                        RecordedArtifactSurfaceRequirement::General if plan.nodes().is_empty() => {
+                            Ok(plan)
+                        }
+                        RecordedArtifactSurfaceRequirement::General => {
+                            require_detached_artifact_surface_plan(plan)
+                        }
                         RecordedArtifactSurfaceRequirement::ZeroResident => {
                             require_zero_resident_artifact_surface_plan(plan)
                         }
@@ -2121,19 +2128,67 @@ fn select_retained_auto_authority_with_semantics(
     artifact_surface_max_texture_bytes: u64,
     capture_trace: bool,
 ) -> AutoAuthorityDecision {
+    let mut trace = AutoAuthorityTrace::new(capture_trace);
+    // Complete recording and the common plan/seal decide whether this frame
+    // can execute. Property counts, host families and topology do not gate
+    // this attempt. The older rejection cascade remains during C-3; its
+    // final removal and fallback convergence are tracked separately in C-6.
+    if let Some(candidate) = try_select_auto_detached_surface_candidate(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        artifact_surface_raster_context(
+            ctx,
+            artifact_surface_max_texture_dimension_2d,
+            artifact_surface_max_texture_bytes,
+        ),
+        RecordedArtifactSurfaceRequirement::General,
+        &mut trace,
+    ) {
+        return AutoAuthorityDecision::Artifact { candidate, trace };
+    }
+    select_retained_auto_compatibility_authority_with_semantics(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        ctx,
+        semantic_frame_time,
+        scroll_budget,
+        artifact_surface_max_texture_dimension_2d,
+        artifact_surface_max_texture_bytes,
+        trace,
+    )
+}
+
+// Historical retained planners remain reachable only after the general
+// attempt rejects. Keep this entry explicit so their existing mutation and
+// atomicity tests do not pretend that a valid frame still selects a bridge.
+fn select_retained_auto_compatibility_authority_with_semantics(
+    arena: &crate::view::node_arena::NodeArena,
+    roots: &[crate::view::node_arena::NodeKey],
+    property_trees: &crate::view::compositor::PropertyTrees,
+    paint_generations: &crate::view::compositor::PaintGenerationTracker,
+    ctx: &crate::view::base_component::UiBuildContext,
+    semantic_frame_time: crate::time::Instant,
+    scroll_budget: crate::view::paint::ScrollSceneSingleTextureBudget,
+    artifact_surface_max_texture_dimension_2d: u32,
+    artifact_surface_max_texture_bytes: u64,
+    mut trace: AutoAuthorityTrace,
+) -> AutoAuthorityDecision {
     let transforms = property_trees.transforms.len();
     let effects = property_trees.effects.len();
     let scrolls = property_trees.scrolls.len();
-    let mut trace = AutoAuthorityTrace::new(capture_trace);
     let reachable_tree_facts = retained_auto_reachable_tree_facts(arena, roots);
 
     if scrolls != 0 || reachable_tree_facts.has_scroll_container {
         let viewport = ctx.viewport();
-        // TextArea projection, caret, and selection authority remains on the
-        // existing retained path until a named TextArea authority-transfer
-        // batch runs and passes its Metal pixel and reuse gates. That batch may
-        // delete this exclusion only when every named gate actually executes
-        // and passes; merely adding ignored gates is not sufficient.
+        // Compatibility-only admission: successful complete recordings have
+        // already selected the generic executor. Preserve these historical
+        // restrictions for rejected inputs until C-6 removes this cascade.
+        // General TextArea authority is exercised by the native single-
+        // Viewport caret/selection/IME gates, including an outer scroll scope.
         let scroll_content_artifact_admitted = transforms == 0
             && effects == 0
             && !reachable_tree_facts.has_text_area_paint_family

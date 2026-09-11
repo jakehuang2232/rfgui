@@ -1,7 +1,9 @@
+// Existing bridge preflight/dispatch contracts remain protected directly.
+// General Auto selection is asserted in generic_selection_tests.
 use super::*;
 
 #[test]
-fn retained_auto_scroll_text_area_subtree_selects_typed_property_scene() {
+fn compatibility_scroll_text_area_subtree_selects_typed_property_scene() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, properties, generations) = prepared_scroll_text_area_scene();
     assert_eq!(properties.scrolls.len(), 1);
@@ -88,7 +90,7 @@ fn retained_auto_scroll_text_area_subtree_selects_typed_property_scene() {
     }
 
     let decision =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     let (scene, trace) = match decision {
         AutoAuthorityDecision::PropertyScrollScene { scene, trace } => (scene, trace),
         AutoAuthorityDecision::Legacy { trace } => panic!(
@@ -150,7 +152,7 @@ fn retained_auto_scroll_text_area_subtree_selects_typed_property_scene() {
 }
 
 #[test]
-fn retained_auto_focused_atomic_projection_text_area_selects_property_scene() {
+fn compatibility_focused_atomic_projection_text_area_selects_property_scene() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, properties, generations) =
         prepared_focused_atomic_projection_scroll_text_area_scene();
@@ -171,7 +173,7 @@ fn retained_auto_focused_atomic_projection_text_area_selects_property_scene() {
     );
 
     let decision =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     let (scene, trace) = match decision {
         AutoAuthorityDecision::PropertyScrollScene { scene, trace } => (scene, trace),
         AutoAuthorityDecision::Legacy { trace } => panic!(
@@ -243,7 +245,7 @@ fn retained_auto_focused_atomic_projection_text_area_selects_property_scene() {
 }
 
 #[test]
-fn retained_auto_focused_atomic_projection_preedit_selects_property_scene() {
+fn compatibility_focused_atomic_projection_preedit_selects_property_scene() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, properties, generations) =
         prepared_focused_atomic_projection_scroll_text_area_scene_with_preedit(Some((
@@ -267,7 +269,7 @@ fn retained_auto_focused_atomic_projection_preedit_selects_property_scene() {
     );
 
     let decision =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     let (scene, trace) = match decision {
         AutoAuthorityDecision::PropertyScrollScene { scene, trace } => (scene, trace),
         AutoAuthorityDecision::Legacy { trace } => panic!(
@@ -394,14 +396,14 @@ fn rejected_frame_root_scroll_candidate_is_observationally_pure_for_text_area_sc
 }
 
 #[test]
-fn retained_auto_scroll_text_area_normalized_identity_reuses_outer_scroll_only() {
+fn compatibility_scroll_text_area_normalized_identity_reuses_outer_scroll_only() {
     let select = |stage: &str,
                   arena: &NodeArena,
                   roots: &[NodeKey],
                   properties: &PropertyTrees,
                   generations: &PaintGenerationTracker| {
         let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-        match select_retained_auto_authority(arena, roots, properties, generations, &ctx, true)
+        match compatibility_decision(arena, roots, properties, generations, &ctx, true)
         {
             AutoAuthorityDecision::PropertyScrollScene { scene, .. } => scene,
             AutoAuthorityDecision::Legacy { trace } => panic!(
@@ -551,7 +553,7 @@ fn retained_auto_scroll_text_area_normalized_identity_reuses_outer_scroll_only()
 }
 
 #[test]
-fn retained_auto_scroll_text_area_selection_noncanonical_states_fail_closed() {
+fn compatibility_scroll_text_area_selection_noncanonical_states_fail_closed() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let graph = FrameGraph::new();
     let graph_before = graph.build_state_snapshot_for_test();
@@ -572,7 +574,7 @@ fn retained_auto_scroll_text_area_selection_noncanonical_states_fail_closed() {
             selection,
             None,
         );
-        let AutoAuthorityDecision::Legacy { trace } = select_retained_auto_authority(
+        let AutoAuthorityDecision::Legacy { trace } = compatibility_decision(
             &arena,
             &roots,
             &properties,
@@ -592,7 +594,7 @@ fn retained_auto_scroll_text_area_selection_noncanonical_states_fail_closed() {
 }
 
 #[test]
-fn retained_auto_scroll_text_area_forest_rejects_nonexact_owner_sets_and_stable_ids() {
+fn compatibility_scroll_text_area_forest_rejects_nonexact_owner_sets_and_stable_ids() {
     let plan = |arena: &NodeArena,
                 roots: &[NodeKey],
                 properties: &PropertyTrees,

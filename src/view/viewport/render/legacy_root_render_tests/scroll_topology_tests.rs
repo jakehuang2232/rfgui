@@ -1,13 +1,15 @@
+// Existing bridge preflight/dispatch contracts remain protected directly.
+// General Auto selection is asserted in generic_selection_tests.
 use super::*;
 
 #[test]
-fn retained_auto_transform_scroll_selects_and_emits_one_atomic_scene() {
+fn compatibility_transform_scroll_selects_and_emits_one_atomic_scene() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, properties, generations) = prepared_transform_scroll_scene(
         glam::Mat4::from_translation(glam::Vec3::new(7.0, 5.0, 0.0)),
     );
     let decision =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     let AutoAuthorityDecision::TransformScrollScene { scene, trace } = decision else {
         panic!("exact T->S must select the transform-scroll property scene")
     };
@@ -50,11 +52,11 @@ fn retained_auto_transform_scroll_selects_and_emits_one_atomic_scene() {
 }
 
 #[test]
-fn retained_auto_same_owner_transform_scroll_is_final_retained_and_not_red() {
+fn compatibility_same_owner_transform_scroll_is_final_retained_and_not_red() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, properties, generations) = prepared_same_owner_transform_scroll_scene();
     let decision =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     assert!(
         matches!(decision, AutoAuthorityDecision::TransformScrollScene { .. }),
         "same-owner native T+S must select the production transform-scroll authority"
@@ -84,11 +86,11 @@ fn retained_auto_same_owner_transform_scroll_is_final_retained_and_not_red() {
 }
 
 #[test]
-fn retained_auto_same_owner_effect_scroll_is_final_retained_and_not_red() {
+fn compatibility_same_owner_effect_scroll_is_final_retained_and_not_red() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, properties, generations) = prepared_same_owner_effect_scroll_scene();
     let decision =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     assert!(
         matches!(decision, AutoAuthorityDecision::EffectScrollScene { .. }),
         "same-owner native E+S must select the production effect-scroll authority"
@@ -118,7 +120,7 @@ fn retained_auto_same_owner_effect_scroll_is_final_retained_and_not_red() {
 }
 
 #[test]
-fn retained_auto_effect_scroll_selects_and_emits_one_atomic_scene() {
+fn compatibility_effect_scroll_selects_and_emits_one_atomic_scene() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, _, _) = prepared_transform_scroll_scene(glam::Mat4::IDENTITY);
     crate::view::test_support::get_element_mut::<Element>(&arena, roots[0])
@@ -127,7 +129,7 @@ fn retained_auto_effect_scroll_selects_and_emits_one_atomic_scene() {
     arena.refresh_subtree_dirty_cache(roots[0]);
     let (properties, generations) = synced_paint_state(&arena, &roots);
     let decision =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     let AutoAuthorityDecision::EffectScrollScene { scene, trace } = decision else {
         panic!("exact E->S must select the effect-scroll property scene")
     };
@@ -180,11 +182,11 @@ fn retained_auto_effect_scroll_selects_and_emits_one_atomic_scene() {
 }
 
 #[test]
-fn retained_auto_exact_multi_scroll_selects_one_atomic_scene() {
+fn compatibility_exact_multi_scroll_selects_one_atomic_scene() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, properties, generations) = prepared_exact_multi_scroll_scene();
     let decision =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     let AutoAuthorityDecision::PropertyScrollScene { scene, trace } = decision else {
         panic!("two exact top-level scroll roots must select one property scene")
     };
@@ -197,11 +199,11 @@ fn retained_auto_exact_multi_scroll_selects_one_atomic_scene() {
 }
 
 #[test]
-fn retained_auto_occupied_pending_falls_back_without_finishing_foreign_owner() {
+fn compatibility_occupied_pending_falls_back_without_finishing_foreign_owner() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, properties, generations) = prepared_exact_scroll_scene();
     let AutoAuthorityDecision::Artifact { .. } =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true)
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true)
     else {
         panic!("exact scroll must select Artifact before dispatch")
     };
@@ -251,12 +253,12 @@ fn retained_auto_occupied_pending_falls_back_without_finishing_foreign_owner() {
 }
 
 #[test]
-fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
+fn compatibility_selects_supported_scroll_topologies_and_rejects_the_rest() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let assert_typed_rejection = |arena: &NodeArena, roots: &[NodeKey]| {
         let (properties, generations) = synced_paint_state(arena, roots);
         let AutoAuthorityDecision::Legacy { trace } =
-            select_retained_auto_authority(arena, roots, &properties, &generations, &ctx, true)
+            compatibility_decision(arena, roots, &properties, &generations, &ctx, true)
         else {
             panic!("unsupported scroll topology must remain whole-frame legacy")
         };
@@ -287,7 +289,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
 
     let (transform_arena, transform_roots, transform_properties, transform_generations) =
         prepared_same_owner_transform_scroll_scene();
-    let transform_decision = select_retained_auto_authority(
+    let transform_decision = compatibility_decision(
         &transform_arena,
         &transform_roots,
         &transform_properties,
@@ -305,7 +307,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
 
     let (effect_arena, effect_roots, effect_properties, effect_generations) =
         prepared_same_owner_effect_scroll_scene();
-    let effect_decision = select_retained_auto_authority(
+    let effect_decision = compatibility_decision(
         &effect_arena,
         &effect_roots,
         &effect_properties,
@@ -340,7 +342,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
     nested_generations.sync(&nested_arena, &nested_roots, &nested_properties);
     assert_eq!(nested_roots.len(), 1);
     assert_eq!(nested_properties.scrolls.len(), 2);
-    let captured = select_retained_auto_authority(
+    let captured = compatibility_decision(
         &nested_arena,
         &nested_roots,
         &nested_properties,
@@ -348,7 +350,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
         &ctx,
         true,
     );
-    let uncaptured = select_retained_auto_authority(
+    let uncaptured = compatibility_decision(
         &nested_arena,
         &nested_roots,
         &nested_properties,
@@ -415,7 +417,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
     let (scroll_effect_arena, scroll_effect_root, properties, generations) =
         crate::view::paint::retained_auto_scroll_content_effect_fixture(false, false);
     assert!(matches!(
-        select_retained_auto_authority(
+        compatibility_decision(
             &scroll_effect_arena,
             &[scroll_effect_root],
             &properties,
@@ -439,7 +441,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
     let (scroll_transform_properties, scroll_transform_generations) =
         synced_paint_state(&scroll_transform_arena, &scroll_transform_roots);
     let AutoAuthorityDecision::DirectScrollTransformScene { scene, trace } =
-        select_retained_auto_authority(
+        compatibility_decision(
             &scroll_transform_arena,
             &scroll_transform_roots,
             &scroll_transform_properties,
@@ -499,7 +501,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
     effect_scroll_arena.refresh_subtree_dirty_cache(effect_scroll_roots[0]);
     let (effect_scroll_properties, effect_scroll_generations) =
         synced_paint_state(&effect_scroll_arena, &effect_scroll_roots);
-    let AutoAuthorityDecision::EffectScrollScene { scene, trace } = select_retained_auto_authority(
+    let AutoAuthorityDecision::EffectScrollScene { scene, trace } = compatibility_decision(
         &effect_scroll_arena,
         &effect_scroll_roots,
         &effect_scroll_properties,
@@ -541,7 +543,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
         &transform_effect_scroll_roots,
     );
     let AutoAuthorityDecision::TransformEffectScrollScene { scene, trace } =
-        select_retained_auto_authority(
+        compatibility_decision(
             &transform_effect_scroll_arena,
             &transform_effect_scroll_roots,
             &properties,
@@ -588,7 +590,7 @@ fn retained_auto_selects_supported_scroll_topologies_and_rejects_the_rest() {
 }
 
 #[test]
-fn retained_auto_selects_and_executes_effect_transform_scroll_boundary_dag() {
+fn compatibility_selects_and_executes_effect_transform_scroll_boundary_dag() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     for with_neutral_wrappers in [false, true] {
         let (mut arena, transform_roots, _, _) = prepared_transform_scroll_scene(
@@ -636,7 +638,7 @@ fn retained_auto_selects_and_executes_effect_transform_scroll_boundary_dag() {
         let roots = vec![effect];
         let (properties, generations) = synced_paint_state(&arena, &roots);
         let decision =
-            select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+            compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
         let AutoAuthorityDecision::PropertyBoundaryDagScene { scene, .. } = decision else {
             panic!(
                 "exact E->T->S (neutral_wrappers={with_neutral_wrappers}) must select the production BoundaryDag authority"
@@ -680,7 +682,7 @@ fn retained_auto_selects_and_executes_effect_transform_scroll_boundary_dag() {
 }
 
 #[test]
-fn retained_auto_same_owner_transform_effect_scroll_is_retained_and_not_red() {
+fn compatibility_same_owner_transform_effect_scroll_is_retained_and_not_red() {
     let (arena, roots, _, _) = prepared_transform_scroll_scene(glam::Mat4::from_translation(
         glam::Vec3::new(3.0, 5.0, 0.0),
     ));
@@ -690,7 +692,7 @@ fn retained_auto_same_owner_transform_effect_scroll_is_retained_and_not_red() {
     let (properties, generations) = synced_paint_state(&arena, &roots);
     let ctx = UiBuildContext::new(640, 480, wgpu::TextureFormat::Bgra8UnormSrgb, 1.0);
     let decision =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true);
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
     assert!(
         matches!(
             decision,
@@ -723,7 +725,7 @@ fn retained_auto_same_owner_transform_effect_scroll_is_retained_and_not_red() {
 }
 
 #[test]
-fn retained_auto_does_not_treat_plain_overflow_as_an_authored_scroll_boundary() {
+fn compatibility_does_not_treat_plain_overflow_as_an_authored_scroll_boundary() {
     let mut arena = new_test_arena();
     let mut root_element = colored_element(0xe2_a320, 0.0, Color::rgb(20, 40, 80));
     let mut layout_style = Style::new();
@@ -742,7 +744,7 @@ fn retained_auto_does_not_treat_plain_overflow_as_an_authored_scroll_boundary() 
         !super::super::retained_auto_reachable_tree_facts(&arena, &[root]).has_scroll_container
     );
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let decision = auto_decision(&arena, &[root], &ctx);
+    let decision = compatibility_auto_decision(&arena, &[root], &ctx);
     assert!(!matches!(
         decision,
         AutoAuthorityDecision::PropertyScrollScene { .. }

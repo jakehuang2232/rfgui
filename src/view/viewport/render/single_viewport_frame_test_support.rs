@@ -27,8 +27,16 @@ impl Viewport {
         arena: crate::view::node_arena::NodeArena,
         root: crate::view::node_arena::NodeKey,
     ) {
+        self.install_single_viewport_forest_for_test(arena, vec![root]);
+    }
+
+    pub(crate) fn install_single_viewport_forest_for_test(
+        &mut self,
+        arena: crate::view::node_arena::NodeArena,
+        roots: Vec<crate::view::node_arena::NodeKey>,
+    ) {
         self.scene.node_arena = arena;
-        self.scene.ui_root_keys = vec![root];
+        self.scene.ui_root_keys = roots;
         self.clear_color = Box::new(crate::style::Color::rgba(0, 0, 0, 0));
     }
 

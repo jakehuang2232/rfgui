@@ -1,3 +1,5 @@
+// Existing bridge preflight/dispatch contracts remain protected directly.
+// General Auto selection is asserted in generic_selection_tests.
 use super::*;
 
 #[test]
@@ -28,7 +30,7 @@ fn retained_auto_scroll_content_budget_overflow_is_a_typed_preparation_rejection
 }
 
 #[test]
-fn retained_auto_direct_scroll_transform_production_preflight_and_rejection_dispatch() {
+fn compatibility_direct_scroll_transform_production_preflight_and_rejection_dispatch() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, _, _) = prepared_exact_scroll_scene();
     let child = arena.children_of(roots[0])[0];
@@ -38,9 +40,7 @@ fn retained_auto_direct_scroll_transform_production_preflight_and_rejection_disp
         ))));
     arena.refresh_subtree_dirty_cache(roots[0]);
     let (properties, generations) = synced_paint_state(&arena, &roots);
-    let select = || {
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true)
-    };
+    let select = || compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
 
     let AutoAuthorityDecision::DirectScrollTransformScene { scene, trace } = select() else {
         panic!("exact S->T must reach the production direct preflight")
@@ -124,12 +124,10 @@ fn retained_auto_direct_scroll_transform_production_preflight_and_rejection_disp
 }
 
 #[test]
-fn retained_auto_transform_effect_scroll_production_preflight_and_rejection_dispatch() {
+fn compatibility_transform_effect_scroll_production_preflight_and_rejection_dispatch() {
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots, properties, generations) = prepared_transform_effect_scroll_scene();
-    let select = || {
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true)
-    };
+    let select = || compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true);
 
     let AutoAuthorityDecision::TransformEffectScrollScene { scene, trace } = select() else {
         panic!("exact T->E->S must reach the production joint preflight")
@@ -188,8 +186,7 @@ fn retained_auto_transform_effect_scroll_production_preflight_and_rejection_disp
         &crate::view::paint::RetainedPropertyScrollScenePrepareError::StageUnavailable
     );
     assert_eq!(rejected_graph.build_state_snapshot_for_test(), graph_before);
-    let (whole_frame_legacy, detail) =
-        transform_effect_scroll_prepare_rejection_dispatch(error);
+    let (whole_frame_legacy, detail) = transform_effect_scroll_prepare_rejection_dispatch(error);
     assert!(whole_frame_legacy);
     assert!(detail.contains("authority=legacy"));
     let fallback_stage = transform_effect_scroll_prepare_rejection_fallback_stage();
@@ -236,8 +233,7 @@ fn retained_auto_authority_accepts_deferred_viewport_root() {
 
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (arena, roots) = prepared_safe_leaf();
-    let AutoAuthorityDecision::Artifact { candidate, trace } =
-        auto_decision(&arena, &roots, &ctx)
+    let AutoAuthorityDecision::Artifact { candidate, trace } = auto_decision(&arena, &roots, &ctx)
     else {
         panic!("property-neutral Element must select Artifact")
     };
@@ -288,8 +284,10 @@ fn retained_auto_authority_accepts_deferred_viewport_root() {
         crate::view::paint::PaintCoverageItem::LegacyBoundary { .. }
     )));
 
+    assert_generic_primary(&arena, &roots, &properties, &generations, &ctx);
+    // Preserve the old compiler contract as separate compatibility coverage.
     let AutoAuthorityDecision::Artifact { candidate, trace } =
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true)
+        compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true)
     else {
         panic!("exact deferred viewport root must select Artifact")
     };
@@ -312,15 +310,25 @@ fn retained_auto_authority_accepts_deferred_viewport_root() {
             "generation" => clip.generation = 0,
             _ => unreachable!(),
         }
+        assert!(
+            matches!(
+                select_retained_auto_authority(
+                    &arena,
+                    &roots,
+                    &properties,
+                    &generations,
+                    &ctx,
+                    true
+                ),
+                AutoAuthorityDecision::Legacy { .. }
+            ),
+            "primary selection must reject the tampered deferred witness: {tamper}"
+        );
+        // The counter below specifically protects the old metadata preflight.
         crate::view::paint::take_full_artifact_record_count();
-        let AutoAuthorityDecision::Legacy { trace } = select_retained_auto_authority(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &ctx,
-            true,
-        ) else {
+        let AutoAuthorityDecision::Legacy { trace } =
+            compatibility_decision(&arena, &roots, &properties, &generations, &ctx, true)
+        else {
             panic!("tampered deferred viewport witness must fail closed: {tamper}")
         };
         assert!(

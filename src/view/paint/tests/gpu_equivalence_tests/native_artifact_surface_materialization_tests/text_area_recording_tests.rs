@@ -1,6 +1,8 @@
 use super::*;
 use crate::style::Opacity;
 
+mod viewport_tests;
+
 const EXTENT: [u32; 2] = [320, 240];
 
 struct TextGpuCleanup;
@@ -11,7 +13,7 @@ impl Drop for TextGpuCleanup {
 }
 
 // These gates exercise generic recording/planning/execution, independently of
-// the production selector's still separate TextArea cutover (C-3/C-6).
+// the production selector. viewport_tests separately exercises C-3 takeover.
 // Expected caret coordinates come from layout's navigation geometry, not a
 // recorded op or a Legacy readback. Glyph shapes remain font-dependent.
 fn fixture(case: u8) -> (NodeArena, Vec<NodeKey>, [f32; 2]) {
