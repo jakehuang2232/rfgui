@@ -88,6 +88,7 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests/resource_lifecycle_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests/single_viewport_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/style_pipeline_tests.rs"),
+        include_str!("gpu_equivalence_tests/native_artifact_surface_materialization_tests/text_recovery_tests.rs"),
     ]
     .into_iter()
     .flat_map(declared_test_function_names)
@@ -152,6 +153,7 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         "native_single_viewport_sampled_idle_eviction_and_active_legacy_protection",
         "native_single_viewport_svg_raster_generation_and_freeze",
         "native_single_viewport_resource_sources_stay_retained_through_preparation",
+        "native_text_preparation_loss_recovers_without_changing_content",
         "native_single_viewport_text_area_caret_selection_ime_artifact",
         "native_single_viewport_text_area_caret_selection_ime_legacy",
         "native_zero_surface_v2_matches_legacy_pixels",

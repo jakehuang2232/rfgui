@@ -449,6 +449,18 @@ impl Text {
             .map(|owned| owned.paint_bounds)
     }
 
+    /// Loss after an established standalone measure is layout work even when
+    /// text/constraints are unchanged. Never-measured Text relies on ordinary
+    /// initial dirtiness: an IFC owner can clear that dirtiness during measure
+    /// before installing its authoritative payload during placement.
+    fn needs_standalone_preparation(&self) -> bool {
+        self.inline_ifc_owned.is_none()
+            && self.last_layout_constraints.is_some()
+            && self.shaped_context.as_ref().is_none_or(|context| {
+                context.prepared_text_pass_paint_input_ref().is_none()
+            })
+    }
+
     #[cfg(test)]
     pub(crate) fn inline_ifc_owned_paint_geometry_for_test(
         &self,
@@ -1252,7 +1264,11 @@ impl ElementTrait for Text {
     }
 
     fn local_dirty_flags(&self) -> super::DirtyFlags {
-        self.dirty_flags
+        if self.needs_standalone_preparation() {
+            self.dirty_flags.union(super::DirtyFlags::LAYOUT)
+        } else {
+            self.dirty_flags
+        }
     }
 
     fn clear_local_dirty_flags(&mut self, flags: super::DirtyFlags) {

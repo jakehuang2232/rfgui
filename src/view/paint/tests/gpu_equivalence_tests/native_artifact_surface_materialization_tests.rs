@@ -2,6 +2,7 @@ use super::*;
 
 mod style_pipeline_tests;
 mod text_area_recording_tests;
+mod text_recovery_tests;
 mod recording_overlay_tests;
 mod planning_corpus_tests;
 

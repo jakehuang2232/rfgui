@@ -69,3 +69,4 @@ mod wrap_tests;
 mod measure_cache_tests;
 mod auto_size_tests;
 mod render_tests;
+mod preparation_recovery_tests;

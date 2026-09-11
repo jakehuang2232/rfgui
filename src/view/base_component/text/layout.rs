@@ -57,6 +57,7 @@ impl Layoutable for Text {
     fn measure(&mut self, constraints: LayoutConstraints, _arena: &mut NodeArena) {
         if !self.dirty_flags.intersects(DirtyFlags::LAYOUT)
             && self.last_layout_constraints == Some(constraints)
+            && !self.needs_standalone_preparation()
         {
             return;
         }
