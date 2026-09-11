@@ -62,6 +62,7 @@ mod nested {
 #[test]
 fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
     let actual = [
+        include_str!("portable_renderer_tests.rs"),
         include_str!("gpu_equivalence_tests/native_transform_surface_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_scroll_content_tests.rs"),
@@ -163,6 +164,7 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         "native_single_viewport_resource_completion_and_generation_invalidation",
         "native_single_viewport_legacy_resource_completion_and_generation_pixels",
         "native_single_viewport_completion_after_freeze_waits_until_next_frame",
+        "native_portable_renderer_acceptance",
         "native_single_viewport_artifact_layout_paint_and_pool_reuse",
         "native_single_viewport_legacy_layout_and_paint",
         "native_materialization_style_pipeline_scroll_executor_pixels_and_reuse",

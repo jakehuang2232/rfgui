@@ -1115,7 +1115,7 @@ impl Svg {
         }
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
     pub(crate) fn prepare_content_paint_for_test(
         &mut self,
         svg_text: &str,

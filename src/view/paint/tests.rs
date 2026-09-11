@@ -1,3 +1,6 @@
+mod retained_acceptance_fixtures;
+mod portable_renderer_tests;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod gpu_equivalence_tests;
 
@@ -3429,7 +3432,6 @@ fn prepared_owning_inline_root_with_image_atomic()
     (arena, vec![root], root, before, image, after)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn prepared_owning_inline_root_with_svg_atomic()
 -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey, NodeKey, NodeKey) {
     const SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='16'><rect width='20' height='16' fill='#16a34a'/></svg>";
@@ -3768,7 +3770,6 @@ fn prepared_zero_opacity_tree() -> (NodeArena, Vec<NodeKey>) {
     (arena, vec![empty, visible])
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn window_like_native_showcase_fixture() -> (NodeArena, Vec<NodeKey>) {
     const SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' width='96' height='64'><rect width='96' height='64' rx='12' fill='#22c55e'/></svg>";
 

@@ -14,9 +14,9 @@ use super::*;
 #[cfg(test)]
 use crate::view::paint::PropertyBoundaryDagCompiler;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod single_viewport_frame_test_support;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 pub(crate) use single_viewport_frame_test_support::SingleViewportFrameObservation;
 
 fn build_root_legacy(
@@ -3470,7 +3470,7 @@ impl Viewport {
             },
         );
 
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
         single_viewport_frame_test_support::run_after_resource_freeze(self);
 
         // Observe the final resolved frame state after transition sampling
@@ -5760,7 +5760,7 @@ impl Viewport {
         })
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
     pub(crate) fn begin_offscreen_test_frame(
         &mut self,
         device: wgpu::Device,
@@ -5827,7 +5827,7 @@ impl Viewport {
         Ok(())
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
     pub(crate) fn encode_offscreen_test_readback(
         &mut self,
         buffer: &wgpu::Buffer,
@@ -5868,7 +5868,7 @@ impl Viewport {
         Ok(())
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
     pub(crate) fn end_offscreen_test_frame(&mut self) -> Result<(), String> {
         if self.frame.frame_state.is_none() {
             return Err("no active offscreen test frame".to_string());
