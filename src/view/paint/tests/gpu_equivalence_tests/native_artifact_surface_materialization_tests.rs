@@ -3,6 +3,7 @@ use super::*;
 mod style_pipeline_tests;
 mod text_area_recording_tests;
 mod recording_overlay_tests;
+mod planning_corpus_tests;
 
 // Admission gap for the selector-transfer batch: both the direct S->T fixture
 // and the T->E fixture below install resolved transforms through a test hook.

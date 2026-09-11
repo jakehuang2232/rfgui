@@ -4865,6 +4865,11 @@ pub(crate) enum ArtifactSurfaceCompositeGeometryStamp {
         source_bounds_bits: [u32; 4],
         destination_bounds_bits: [u32; 4],
         receiver_transform_bits: [u32; 16],
+        /// Projected corners relative to the destination AABB, in texture UV
+        /// order. Freeze from the original source coordinates once: moving
+        /// raster pixels to a normalized origin must not re-evaluate a matrix
+        /// against different coordinates (or change perspective division).
+        quad_offset_bits: [[u32; 2]; 4],
         receiver_clip: Option<ClipNodeId>,
         /// Sealed receiver result; the executor must not re-resolve the id.
         resolved_receiver_clip: ArtifactSurfaceResolvedClip,
@@ -4892,6 +4897,58 @@ pub(crate) enum ArtifactSurfaceCompositeGeometryStamp {
 }
 
 impl ArtifactSurfaceCompositeGeometryStamp {
+    fn transform_quad(self) -> Option<[[f32; 2]; 4]> {
+        let Self::Transform {
+            source_bounds_bits,
+            destination_bounds_bits,
+            receiver_transform_bits,
+            quad_offset_bits,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let source = source_bounds_bits.map(f32::from_bits);
+        let destination = destination_bounds_bits.map(f32::from_bits);
+        if source
+            .into_iter()
+            .chain(destination)
+            .any(|v| !v.is_finite())
+            || source[2] <= 0.0
+            || source[3] <= 0.0
+            || destination[2] <= 0.0
+            || destination[3] <= 0.0
+            || receiver_transform_bits
+                .into_iter()
+                .map(f32::from_bits)
+                .any(|v| !v.is_finite())
+        {
+            return None;
+        }
+        let offsets = quad_offset_bits.map(|p| p.map(f32::from_bits));
+        for axis in 0..2 {
+            if offsets
+                .iter()
+                .any(|p| !p[axis].is_finite() || p[axis] < 0.0)
+            {
+                return None;
+            }
+            let min = offsets
+                .iter()
+                .map(|p| p[axis])
+                .fold(f32::INFINITY, f32::min);
+            let max = offsets
+                .iter()
+                .map(|p| p[axis])
+                .fold(f32::NEG_INFINITY, f32::max);
+            if min != 0.0 || max.to_bits() != destination[axis + 2].to_bits() {
+                return None;
+            }
+        }
+        let quad = offsets.map(|p| [p[0] + destination[0], p[1] + destination[1]]);
+        quad.iter().flatten().all(|v| v.is_finite()).then_some(quad)
+    }
+
     fn destination_bounds_bits(self) -> [u32; 4] {
         match self {
             Self::Transform {
@@ -5004,12 +5061,14 @@ impl ArtifactSurfaceCompositeGeometryStamp {
                 source_bounds_bits,
                 destination_bounds_bits,
                 receiver_transform_bits,
+                quad_offset_bits,
                 receiver_clip,
                 ..
             } => Self::Transform {
                 source_bounds_bits,
                 destination_bounds_bits,
                 receiver_transform_bits,
+                quad_offset_bits,
                 receiver_clip,
                 resolved_receiver_clip,
             },
@@ -6223,37 +6282,51 @@ fn materialized_surface_raster_translation(
     Ok(translation)
 }
 
-fn transform_destination_bounds(
+fn transform_destination_projection(
     source_bounds_bits: [u32; 4],
     matrix: glam::Mat4,
     offset: [f32; 2],
-) -> Option<[u32; 4]> {
+) -> Option<([u32; 4], [[u32; 2]; 4])> {
     let [x, y, width, height] = source_bounds_bits.map(f32::from_bits);
+    // Match texture UV order: bottom-left, bottom-right, top-right, top-left.
     let corners = [
-        glam::Vec3::new(x, y, 0.0),
-        glam::Vec3::new(x + width, y, 0.0),
-        glam::Vec3::new(x + width, y + height, 0.0),
         glam::Vec3::new(x, y + height, 0.0),
+        glam::Vec3::new(x + width, y + height, 0.0),
+        glam::Vec3::new(x + width, y, 0.0),
+        glam::Vec3::new(x, y, 0.0),
     ];
-    let mut min_x = f32::INFINITY;
-    let mut min_y = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
-    for corner in corners {
+    let mut points = [[0.0; 2]; 4];
+    let mut min = [f32::INFINITY; 2];
+    let mut max = [f32::NEG_INFINITY; 2];
+    for (index, corner) in corners.into_iter().enumerate() {
         let projected = matrix * corner.extend(1.0);
         if !projected.is_finite() || projected.w.abs() <= 0.000_001 {
             return None;
         }
-        let px = projected.x / projected.w + offset[0];
-        let py = projected.y / projected.w + offset[1];
-        min_x = min_x.min(px);
-        min_y = min_y.min(py);
-        max_x = max_x.max(px);
-        max_y = max_y.max(py);
+        let point = [projected.x / projected.w, projected.y / projected.w];
+        if point.into_iter().any(|value| !value.is_finite()) {
+            return None;
+        }
+        for axis in 0..2 {
+            min[axis] = min[axis].min(point[axis]);
+            max[axis] = max[axis].max(point[axis]);
+        }
+        points[index] = point;
     }
-    let bounds = [min_x, min_y, max_x - min_x, max_y - min_y];
-    (bounds.into_iter().all(f32::is_finite) && bounds[2] > 0.0 && bounds[3] > 0.0)
-        .then(|| bounds.map(f32::to_bits))
+    // Placement translates the AABB origin only. Subtracting two translated
+    // endpoints could change its width by rounding; normalized raster origins
+    // must likewise never change the projected shape.
+    let bounds = [
+        min[0] + offset[0],
+        min[1] + offset[1],
+        max[0] - min[0],
+        max[1] - min[1],
+    ];
+    if bounds.into_iter().any(|value| !value.is_finite()) || bounds[2] <= 0.0 || bounds[3] <= 0.0 {
+        return None;
+    }
+    let relative = points.map(|point| [point[0] - min[0], point[1] - min[1]].map(f32::to_bits));
+    Some((bounds.map(f32::to_bits), relative))
 }
 
 fn surface_identity(
@@ -6313,13 +6386,15 @@ fn artifact_surface_receiver_clip(
 #[cfg(test)]
 mod subtree_receiver_clip_tests;
 
+#[cfg(test)]
+mod transform_projection_tests;
+
 fn surface_composite_geometry(
     node: &super::SurfaceDagNode,
     owner_clip: Option<ClipNodeId>,
     raster_source_bounds_bits: [u32; 4],
     receiver_source_bounds_bits: [u32; 4],
     receiver: SurfaceDagExecutionTargetId,
-    receiver_transform: Option<TransformNodeId>,
     receiver_paint_offset: [f32; 2],
     context: ArtifactSurfaceRasterContext,
     transforms: &FxHashMap<TransformNodeId, TransformNodeSnapshot>,
@@ -6376,27 +6451,20 @@ fn surface_composite_geometry(
             let snapshot = transforms.get(&transform).copied().ok_or(
                 ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(node.id()),
             )?;
-            let receiver_transform = match receiver_transform {
-                Some(receiver) => {
-                    let receiver = transforms.get(&receiver).copied().ok_or(
-                        ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(node.id()),
-                    )?;
-                    let determinant = receiver.owner_viewport_transform.determinant();
-                    if !determinant.is_finite() || determinant.abs() <= 0.000_001 {
-                        return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
-                            node.id(),
-                        ));
-                    }
-                    receiver.owner_viewport_transform.inverse() * snapshot.owner_viewport_transform
-                }
-                None => snapshot.owner_viewport_transform,
-            };
+            // This snapshot is owner-only, not ancestor-composed (see
+            // DerivedSpatialProjection). Receiver rasters share the logical
+            // layout coordinate space before their own transform is applied.
+            // Dividing by a receiver transform here would cancel an ancestor
+            // that has not yet been applied. Each retained boundary applies
+            // its authored matrix exactly once; raster-origin rebasing is
+            // handled separately by the frozen quad and destination origin.
+            let receiver_transform = snapshot.owner_viewport_transform;
             if !receiver_transform.is_finite() {
                 return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
                     node.id(),
                 ));
             }
-            let destination_bounds_bits = transform_destination_bounds(
+            let (destination_bounds_bits, quad_offset_bits) = transform_destination_projection(
                 receiver_source_bounds_bits,
                 receiver_transform,
                 receiver_paint_offset,
@@ -6408,6 +6476,7 @@ fn surface_composite_geometry(
                 source_bounds_bits: raster_source_bounds_bits,
                 destination_bounds_bits,
                 receiver_transform_bits: receiver_transform.to_cols_array().map(f32::to_bits),
+                quad_offset_bits,
                 receiver_clip,
                 resolved_receiver_clip,
             })
@@ -6806,42 +6875,32 @@ fn prepare_artifact_surface_raster_plan_from_program(
                         node.target(),
                     )),
                 ))?;
+        // Receiver closure remains a structural obligation even though its
+        // owner-only matrix is not an inverse for the child's projection.
+        if let SurfaceDagExecutionTargetId::Surface(receiver) = execution.receiver() {
+            let receiver_source = program.execution_order.source_node_id(receiver).ok_or(
+                ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(source),
+            )?;
+            let receiver = program
+                .surface_dag
+                .nodes()
+                .get(receiver_source.index())
+                .filter(|candidate| candidate.id() == receiver_source)
+                .ok_or(ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(
+                    source,
+                ))?;
+            if !matches!(receiver.kind(), SurfaceDagNodeKind::Transform(_))
+                && receiver.transition().transform.from != receiver.transition().transform.to
+            {
+                return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(source));
+            }
+        }
         let geometry = surface_composite_geometry(
             node,
             owner_state.clip,
             source_bounds_bits,
             raw_source_bounds_bits,
             execution.receiver(),
-            match execution.receiver() {
-                SurfaceDagExecutionTargetId::SceneRoot(_) => None,
-                SurfaceDagExecutionTargetId::Surface(receiver) => {
-                    let receiver_source = program.execution_order.source_node_id(receiver).ok_or(
-                        ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(source),
-                    )?;
-                    let receiver = program
-                        .surface_dag
-                        .nodes()
-                        .get(receiver_source.index())
-                        .filter(|candidate| candidate.id() == receiver_source)
-                        .ok_or(ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(
-                            source,
-                        ))?;
-                    match receiver.kind() {
-                        SurfaceDagNodeKind::Transform(transform) => Some(transform),
-                        SurfaceDagNodeKind::Effect(_)
-                        | SurfaceDagNodeKind::ScrollContent { .. } => {
-                            if receiver.transition().transform.from
-                                != receiver.transition().transform.to
-                            {
-                                return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
-                                    source,
-                                ));
-                            }
-                            receiver.transition().transform.from
-                        }
-                    }
-                }
-            },
             receiver_paint_offset,
             context,
             &transforms,
@@ -7255,6 +7314,10 @@ fn artifact_surface_geometry_matches(
     identity.scroll_content_tile.is_none()
         && source_bounds_bits == target.source_bounds_bits
         && target.has_canonical_descriptor_pair_for(identity)
+        && (!matches!(
+            geometry,
+            ArtifactSurfaceCompositeGeometryStamp::Transform { .. }
+        ) || geometry.transform_quad().is_some())
 }
 
 fn artifact_surface_nested_parent_opaque_after(

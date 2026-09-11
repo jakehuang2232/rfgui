@@ -370,6 +370,7 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
                 "materialization-coverage-count"
             }
             SurfaceDagError::MissingMaterializedDescendant(_) => "missing-materialized-descendant",
+            SurfaceDagError::InvalidScrollMaskScope { .. } => "invalid-scroll-mask-scope",
         }
     }
 

@@ -1079,8 +1079,9 @@ fn derive_surface_dag_scene_roots(
 /// One artifact-derived surface boundary before receiver reconstruction.
 ///
 /// `target` is always the generic artifact owner identity. Candidate order is
-/// owner-store order, then Transform -> Effect -> ScrollContent for boundaries
-/// co-located on one owner. No arena lookup or planner grammar is available.
+/// paint-cursor order; ties preserve owner-store order and the local Transform
+/// -> Effect -> ScrollContent boundary order. A cursor is not a topological
+/// ordinal. No arena lookup or planner grammar is available.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ArtifactSurfaceCandidate {
     scene_target: ArtifactSceneTarget,
@@ -1117,6 +1118,9 @@ impl ArtifactSurfaceCandidate {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SurfaceDagError {
+    InvalidScrollMaskScope {
+        owner: NodeKey,
+    },
     MissingMaterializationSnapshot(SurfaceDagNodeKind),
     Transition(TransitionError),
     MissingScrollContentsClip {
@@ -1283,6 +1287,10 @@ fn derive_artifact_surface_candidates_from_validated(
             });
         }
     }
+    // A registry's discovery order need not follow paint (e.g. transparent
+    // ancestor snapshots may arrive after descendants). Both the classifier
+    // and reconstruction consume this same command-cursor sequence.
+    candidates.sort_by_key(|candidate| candidate.cursor.chunk_index());
     Ok(candidates)
 }
 
@@ -1304,6 +1312,65 @@ struct ArtifactSurfaceWalk {
     matched: Vec<SurfaceDagNodeKind>,
     localized_state: PropertyTreeState,
     local_clips: Vec<(SurfaceDagNodeKind, Vec<ClipNodeSnapshot>)>,
+}
+
+/// Command scopes, not ancestry alone, determine membership in a detached
+/// scroll raster. Overflow-late paint after a closed mask stays in the
+/// receiver (including an owner's other effect/transform boundaries).
+struct ArtifactScrollMaskScopes {
+    ranges: FxHashMap<NodeKey, Range<usize>>,
+}
+
+impl ArtifactScrollMaskScopes {
+    fn from_artifact(artifact: &PaintArtifact) -> Result<Self, SurfaceDagError> {
+        let owners = artifact
+            .scroll_nodes
+            .iter()
+            .map(|s| s.owner)
+            .collect::<FxHashSet<_>>();
+        let mut starts = FxHashMap::default();
+        let mut ranges = FxHashMap::default();
+        let mut stack = Vec::new();
+        for (index, chunk) in artifact.chunks.iter().enumerate() {
+            let owner = chunk.owner;
+            if chunk.id.slot != RETAINED_CHILD_MASK_SLOT || !owners.contains(&owner) {
+                continue;
+            }
+            match chunk.id.phase {
+                PaintNodePhase::BeforeChildren => {
+                    if starts.insert(owner, index).is_some() || ranges.contains_key(&owner) {
+                        return Err(SurfaceDagError::InvalidScrollMaskScope { owner });
+                    }
+                    stack.push(owner);
+                }
+                PaintNodePhase::AfterChildren => {
+                    if stack.pop() != Some(owner) {
+                        return Err(SurfaceDagError::InvalidScrollMaskScope { owner });
+                    }
+                    let start = starts
+                        .remove(&owner)
+                        .ok_or(SurfaceDagError::InvalidScrollMaskScope { owner })?;
+                    ranges.insert(owner, start..index + 1);
+                }
+            }
+        }
+        if let Some(owner) = stack.pop() {
+            return Err(SurfaceDagError::InvalidScrollMaskScope { owner });
+        }
+        Ok(Self { ranges })
+    }
+
+    fn excluded_at(
+        &self,
+        index: usize,
+        boundary_owner: Option<NodeKey>,
+    ) -> FxHashSet<ScrollNodeId> {
+        self.ranges
+            .iter()
+            .filter(|(owner, range)| Some(**owner) != boundary_owner && !range.contains(&index))
+            .map(|(owner, _)| ScrollNodeId(*owner))
+            .collect()
+    }
 }
 
 fn artifact_owner_path(
@@ -1354,6 +1421,7 @@ fn walk_artifact_surface_path(
     snapshots: &PropertySnapshotGraph,
     artifact_clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
     mode: ArtifactSurfaceWalkMode,
+    excluded_scrolls: &FxHashSet<ScrollNodeId>,
 ) -> Result<ArtifactSurfaceWalk, SurfaceDagError> {
     // Boundary transitions describe only dimensions actually consumed by a
     // surface edge. Chunk coverage additionally includes ancestor membership:
@@ -1380,6 +1448,10 @@ fn walk_artifact_surface_path(
             .filter(|candidate| candidate.target() == *path_owner)
         {
             let kind = candidate.kind();
+            if matches!(kind,SurfaceDagNodeKind::ScrollContent {scroll,..} if excluded_scrolls.contains(&scroll))
+            {
+                continue;
+            }
             let is_member = membership.as_ref().is_some_and(|membership| match kind {
                 SurfaceDagNodeKind::Transform(transform) => {
                     membership.contains_transform(transform)
@@ -1509,12 +1581,10 @@ pub(crate) fn derive_artifact_surface_transition_requests(
 ) -> Result<Vec<ArtifactTransitionRequest>, SurfaceDagError> {
     let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
     let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
+    let scroll_scopes = ArtifactScrollMaskScopes::from_artifact(artifact)?;
+    let cursors = artifact_cursors(artifact)?;
     let candidates = derive_artifact_surface_candidates_from_validated(
-        artifact,
-        policy,
-        &snapshots,
-        &owners,
-        &artifact_cursors(artifact)?,
+        artifact, policy, &snapshots, &owners, &cursors,
     )?;
     let artifact_clips = artifact
         .clip_nodes
@@ -1545,6 +1615,8 @@ pub(crate) fn derive_artifact_surface_transition_requests(
             .copied()
             .ok_or(TransitionError::MissingOwnerPropertyState(witness))?;
         let owner_path = artifact_owner_path(&owners, witness)?;
+        let cursor = owners.cursor_for_target(witness, &cursors)?;
+        let excluded_scrolls = scroll_scopes.excluded_at(cursor.chunk_index(), Some(witness));
         let walk = walk_artifact_surface_path(
             endpoint.descendants,
             &owner_path,
@@ -1552,6 +1624,7 @@ pub(crate) fn derive_artifact_surface_transition_requests(
             &snapshots,
             &artifact_clips,
             ArtifactSurfaceWalkMode::BoundaryTransition,
+            &excluded_scrolls,
         )?;
         let cursor = walk
             .edges
@@ -1573,6 +1646,10 @@ pub(crate) fn derive_artifact_surface_transition_requests(
                 .copied()
                 .filter(|candidate| candidate.target() == *path_owner)
             {
+                if matches!(candidate.kind(), SurfaceDagNodeKind::ScrollContent {scroll,..} if excluded_scrolls.contains(&scroll))
+                {
+                    continue;
+                }
                 match candidate.kind() {
                     SurfaceDagNodeKind::Transform(transform)
                         if projected_paint.transform == Some(transform) =>
@@ -1791,6 +1868,7 @@ pub(crate) fn derive_artifact_surface_coverage_forest(
 ) -> Result<ArtifactSurfaceCoverageForest, SurfaceDagError> {
     let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
     let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
+    let scroll_scopes = ArtifactScrollMaskScopes::from_artifact(artifact)?;
     let cursors = artifact_cursors(artifact)?;
     let candidates = derive_artifact_surface_candidates_from_validated(
         artifact, policy, &snapshots, &owners, &cursors,
@@ -1862,6 +1940,7 @@ pub(crate) fn derive_artifact_surface_coverage_forest(
 
     for (chunk_index, chunk) in artifact.chunks.iter().enumerate() {
         let owner_path = artifact_owner_path(&owners, chunk.owner)?;
+        let excluded_scrolls = scroll_scopes.excluded_at(chunk_index, None);
         let walk = walk_artifact_surface_path(
             chunk.properties,
             &owner_path,
@@ -1869,6 +1948,7 @@ pub(crate) fn derive_artifact_surface_coverage_forest(
             &snapshots,
             &artifact_clips,
             ArtifactSurfaceWalkMode::ChunkCoverage,
+            &excluded_scrolls,
         )?;
         let matched_ids = walk
             .matched
@@ -2077,7 +2157,7 @@ fn transition_states(
 /// Reconstructs the ordered C2 surface graph without planner grammar or arena
 /// access. Consumption classification and compositing receiver derivation are
 /// deliberately separate: events supply the former, the artifact owner forest
-/// supplies the latter. Candidate and event order remains artifact store order;
+/// supplies the latter. Candidates and events share command-cursor order;
 /// receiver resolution is a separate pass and therefore accepts both
 /// ancestor-first fixtures and the production recorder's leaf-first owner
 /// snapshots.
@@ -2088,6 +2168,7 @@ pub(crate) fn reconstruct_surface_dag(
 ) -> Result<SurfaceDag, SurfaceDagError> {
     let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
     let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
+    let scroll_scopes = ArtifactScrollMaskScopes::from_artifact(artifact)?;
     let cursors = artifact_cursors(artifact)?;
     let candidates = derive_artifact_surface_candidates_from_validated(
         artifact, policy, &snapshots, &owners, &cursors,
@@ -2099,18 +2180,22 @@ pub(crate) fn reconstruct_surface_dag(
             events: events.len(),
         });
     }
-    // The final candidate for one owner is its canonical innermost surface:
-    // candidate derivation fixes the local order as Transform -> Effect ->
-    // ScrollContent. This complete map makes ancestor lookup independent of
-    // whether owner snapshots are ancestor-first or leaf-first.
+    // Keep every co-located boundary, in canonical outer-to-inner order. A
+    // closed scroll mask can exclude the innermost scroll surface while its
+    // owner's transform/effect still receives overflow-late paint. Building
+    // this complete map first also permits leaf-first owner snapshots.
     let mut ids = Vec::with_capacity(candidates.len());
-    let mut innermost_id_by_owner = FxHashMap::default();
+    let mut surfaces_by_owner =
+        FxHashMap::<NodeKey, Vec<(SurfaceDagNodeId, SurfaceDagNodeKind)>>::default();
     for (index, candidate) in candidates.iter().enumerate() {
         let id = SurfaceDagNodeId(
             u32::try_from(index).map_err(|_| SurfaceDagError::SurfaceNodeOrdinalOverflow(index))?,
         );
         ids.push(id);
-        innermost_id_by_owner.insert(candidate.target(), id);
+        surfaces_by_owner
+            .entry(candidate.target())
+            .or_default()
+            .push((id, candidate.kind()));
     }
 
     let transforms = artifact
@@ -2161,11 +2246,19 @@ pub(crate) fn reconstruct_surface_dag(
         let receiver = if let Some(id) = previous_id_by_owner.get(&owner).copied() {
             SurfaceDagTargetId::Surface(id)
         } else {
+            let excluded_scrolls =
+                scroll_scopes.excluded_at(candidate.cursor().chunk_index(), Some(owner));
             let mut cursor = owners.parent(owner)?;
             let mut found = None;
             while let Some(ancestor) = cursor {
-                if let Some(id) = innermost_id_by_owner.get(&ancestor).copied() {
-                    found = Some(id);
+                let eligible = surfaces_by_owner.get(&ancestor).and_then(|surfaces| {
+                    surfaces.iter().rev().find(|(_, kind)| {
+                        !matches!(kind, SurfaceDagNodeKind::ScrollContent { scroll, .. }
+                            if excluded_scrolls.contains(scroll))
+                    })
+                });
+                if let Some((id, _)) = eligible {
+                    found = Some(*id);
                     break;
                 }
                 cursor = owners.parent(ancestor)?;

@@ -21,7 +21,6 @@ use crate::view::render_pass::texture_composite_pass::{
 };
 use crate::view::render_pass::{ClearPass, TextureCompositePass};
 use crate::view::viewport::{RetainedSurfaceFrameStageOwner, Viewport};
-use glam::{Mat4, Vec3};
 use rustc_hash::FxHashSet;
 
 #[cfg(test)]
@@ -275,65 +274,12 @@ fn prepare_composite_geometry(
         ArtifactSurfaceCompositeGeometryStamp::Transform {
             source_bounds_bits,
             destination_bounds_bits,
-            receiver_transform_bits,
             resolved_receiver_clip,
             ..
         } => {
             let source = source_bounds_bits.map(f32::from_bits);
             let destination = destination_bounds_bits.map(f32::from_bits);
-            let transform = Mat4::from_cols_array(&receiver_transform_bits.map(f32::from_bits));
-            if source
-                .into_iter()
-                .chain(destination)
-                .any(|value| !value.is_finite())
-                || source[2] <= 0.0
-                || source[3] <= 0.0
-                || destination[2] <= 0.0
-                || destination[3] <= 0.0
-                || !transform.is_finite()
-            {
-                return None;
-            }
-            let corners = [
-                Vec3::new(source[0], source[1] + source[3], 0.0),
-                Vec3::new(source[0] + source[2], source[1] + source[3], 0.0),
-                Vec3::new(source[0] + source[2], source[1], 0.0),
-                Vec3::new(source[0], source[1], 0.0),
-            ];
-            let mut projected = [[0.0; 2]; 4];
-            let mut min_x = f32::INFINITY;
-            let mut min_y = f32::INFINITY;
-            let mut max_x = f32::NEG_INFINITY;
-            let mut max_y = f32::NEG_INFINITY;
-            for (index, corner) in corners.into_iter().enumerate() {
-                let point = transform * corner.extend(1.0);
-                if !point.is_finite() || point.w.abs() <= 0.000_001 {
-                    return None;
-                }
-                let point = [point.x / point.w, point.y / point.w];
-                if point.into_iter().any(|value| !value.is_finite()) {
-                    return None;
-                }
-                min_x = min_x.min(point[0]);
-                min_y = min_y.min(point[1]);
-                max_x = max_x.max(point[0]);
-                max_y = max_y.max(point[1]);
-                projected[index] = point;
-            }
-            let raw_bounds = [min_x, min_y, max_x - min_x, max_y - min_y];
-            if raw_bounds[2].to_bits() != destination[2].to_bits()
-                || raw_bounds[3].to_bits() != destination[3].to_bits()
-            {
-                return None;
-            }
-            let delta = [destination[0] - min_x, destination[1] - min_y];
-            if delta.into_iter().any(|value| !value.is_finite()) {
-                return None;
-            }
-            for point in &mut projected {
-                point[0] += delta[0];
-                point[1] += delta[1];
-            }
+            let projected = geometry.transform_quad()?;
             Some(PreparedArtifactSurfaceComposite::Transform {
                 params: TextureCompositeParams {
                     bounds: destination,
@@ -843,11 +789,10 @@ fn emit_prepared_artifact_surface_frame(
         .nodes()
         .iter()
         .map(|node| {
-            // Raster-plan construction makes this projection total: Transform
-            // destinations pass `transform_destination_bounds`, which rejects
-            // a non-positive projected AABB, while Effect and ScrollContent
-            // preserve source extents already rejected when
-            // `has_canonical_descriptor_pair_for` seals their target.
+            // The sealer validates this same frozen quad projection for
+            // Transform nodes. Do not re-evaluate a matrix against normalized
+            // source coordinates here. Layer source extents are checked by
+            // `has_canonical_descriptor_pair_for`.
             prepare_composite_geometry(node.geometry(), node.raster_origin)
                 .expect("prepared artifact geometry has a typed render-pass projection")
         })
