@@ -3,6 +3,7 @@ use crate::style::Opacity;
 
 mod viewport_tests;
 mod ime_lifecycle_tests;
+mod alignment_tests;
 
 const EXTENT: [u32; 2] = [320, 240];
 

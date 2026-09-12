@@ -304,9 +304,9 @@ impl TextAreaUnifiedIfcRootPackage {
                     self.ifc
                         .source_text_line_rects(segment.source)
                         .into_iter()
-                        .map(|(line_index, rect)| Rect {
+                        .map(|(_, rect)| Rect {
                             x: rect.x,
-                            y: rect.y + self.text_vertical_align_delta(line_index) - top_offset,
+                            y: rect.y - top_offset,
                             width: rect.width.max(0.0),
                             height: rect.height.max(1.0),
                         })
@@ -441,17 +441,12 @@ impl TextAreaUnifiedIfcRootPackage {
             scale_factor,
         );
         let top_offset = self.content_top_offset();
-        // The prepared pass positions glyphs from `paint.local_pos` plus the
-        // fragment origin; `final_paint_pos` only feeds probes. Shift both so
-        // the painted glyphs match the aligned geometry.
-        for (staged, glyph) in staging_input
-            .glyphs
-            .iter_mut()
-            .zip(paint_input.glyphs.iter())
-        {
-            let delta = self.text_vertical_align_delta(glyph.line_index) - top_offset;
-            staged.paint.local_pos[1] += delta;
-            staged.final_paint_pos[1] += delta;
+        // IFC already aligns glyphs and source text rectangles using the
+        // shaped font metrics. Only normalize the shared content origin here;
+        // applying vertical-align again moves wrapped text out of its line.
+        for staged in &mut staging_input.glyphs {
+            staged.paint.local_pos[1] -= top_offset;
+            staged.final_paint_pos[1] -= top_offset;
         }
         staging_input
     }
@@ -523,12 +518,7 @@ impl TextAreaUnifiedIfcRootPackage {
                     text_line_rects
                         .iter()
                         .find(|(line_index, _)| *line_index == line.line_index)
-                        .map(|(line_index, rect)| {
-                            (
-                                rect.y + self.text_vertical_align_delta(*line_index) - top_offset,
-                                rect.height.max(1.0),
-                            )
-                        })
+                        .map(|(_, rect)| (rect.y - top_offset, rect.height.max(1.0)))
                 };
                 let Some((band_y, band_height)) = band else {
                     continue;
@@ -658,8 +648,7 @@ impl TextAreaUnifiedIfcRootPackage {
             }) else {
                 continue;
             };
-            let y_top = line.y + self.text_vertical_align_delta(line.line_index)
-                - self.content_top_offset();
+            let y_top = line.y - self.content_top_offset();
             if lines
                 .iter()
                 .any(|indexed| (indexed.line.y_top - y_top).abs() <= 0.5)
@@ -848,7 +837,7 @@ impl TextAreaUnifiedIfcRootPackage {
         let snapshot = self.ifc.text_layout_snapshot_ref();
         let line = snapshot.lines.get(line_index)?;
         Some((
-            line.y + self.text_vertical_align_delta(line_index) - self.content_top_offset(),
+            line.y - self.content_top_offset(),
             line.height.max(1.0),
         ))
     }
@@ -1002,6 +991,7 @@ impl TextAreaUnifiedIfcRootPackage {
         for line in &paint_input.lines {
             let mut left: Option<f32> = None;
             let mut right: Option<f32> = None;
+            let mut baseline_y: Option<f32> = None;
             for glyph in paint_input.glyphs.iter().filter(|glyph| {
                 glyph.line_index == line.line_index
                     && glyph.cluster_range.start < range.end
@@ -1011,6 +1001,7 @@ impl TextAreaUnifiedIfcRootPackage {
                 left = Some(left.map_or(x, |current| current.min(x)));
                 right =
                     Some(right.map_or(x + glyph.advance, |current| current.max(x + glyph.advance)));
+                baseline_y.get_or_insert(glyph.baseline_y + glyph.glyph_y);
             }
             let (Some(left), Some(right)) = (left, right) else {
                 continue;
@@ -1018,15 +1009,12 @@ impl TextAreaUnifiedIfcRootPackage {
             if right <= left {
                 continue;
             }
-            let line_top = line.y + self.text_vertical_align_delta(line.line_index) - top_offset;
             out.push(Rect {
                 x: left,
-                // `line.baseline` incorporates any tall inline content
-                // (for example, a projection). The preedit glyphs paint
-                // from that same baseline, whereas `line_top +
-                // text_height` incorrectly leaves the underline behind
-                // when the visual line is expanded.
-                y: line_top + line.baseline + (text_height - text_baseline) - 1.0,
+                // Follow the already-aligned glyph baseline, including tall
+                // projection lines, rather than applying alignment again.
+                y: baseline_y.unwrap_or(line.y + line.baseline) - top_offset
+                    + (text_height - text_baseline) - 1.0,
                 width: (right - left).max(1.0),
                 height: 1.0,
             });
@@ -1069,33 +1057,6 @@ impl TextAreaUnifiedIfcRootPackage {
             placement.rect.y = line.y + align_offset - top_offset;
         }
         package
-    }
-
-    fn text_vertical_align_delta(&self, line_index: usize) -> f32 {
-        let snapshot = self.ifc.text_layout_snapshot_ref();
-        let Some(line) = snapshot.lines.get(line_index) else {
-            return 0.0;
-        };
-        let style = &self.default_style;
-        let text_height = (style.font_size.max(1.0) * style.line_height.max(0.8)).max(1.0);
-        let font_size = style.font_size.max(1.0);
-        let leading = (text_height - font_size).max(0.0);
-        let text_baseline = (font_size * 0.8779297 + leading / 2.0).max(0.0);
-        let baseline_offset = baseline_cross_offset(
-            line.baseline,
-            line.height,
-            text_baseline,
-            text_height,
-            crate::style::VerticalAlign::Baseline,
-        );
-        let aligned_offset = baseline_cross_offset(
-            line.baseline,
-            line.height,
-            text_baseline,
-            text_height,
-            self.vertical_align,
-        );
-        aligned_offset - baseline_offset
     }
 
     fn text_line_height(&self) -> f32 {

@@ -576,9 +576,9 @@ impl GraphicsPass for TextPreparedInputPass {
         if let Some(scissor) = prepared.scissor_rect {
             ctx.set_scissor_rect(scissor[0], scissor[1], scissor[2], scissor[3]);
         }
-        if let Some(reference) = prepared.stencil_clip_id {
-            ctx.set_stencil_reference(reference as u32);
-        }
+        // Merged graphics passes retain dynamic stencil state. Text outside
+        // a clip must restore the base reference after an earlier clip pass.
+        ctx.set_stencil_reference(u32::from(prepared.stencil_clip_id.unwrap_or(0)));
 
         draw_prepared_text(
             ctx,

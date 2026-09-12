@@ -450,6 +450,7 @@ fn arrow_right_traverses_projection_in_reading_order_at(width: f32) {
 mod dirty_flag_tests;
 mod projection_wrap_tests;
 mod projection_alignment_tests;
+mod projection_line_geometry_tests;
 mod projection_newline_tests;
 mod auto_height_tests;
 mod caret_follow_tests;
