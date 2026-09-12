@@ -1086,7 +1086,7 @@ fn record_auto_detached_surface_candidate(
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
     requirement: RecordedArtifactSurfaceRequirement,
     recording_cache: Option<&mut crate::view::paint::RecordingCache>,
-    planning_cache: Option<&mut crate::view::paint::PlanningCache>,
+    mut planning_cache: Option<&mut crate::view::paint::PlanningCache>,
 ) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
     #[cfg(test)]
     attempts::record("generic-record");
@@ -1108,6 +1108,10 @@ fn record_auto_detached_surface_candidate(
         )
     }
     .expect("automatic production selection never forces artifact recording");
+    if let Some(cache) = planning_cache.as_deref_mut() {
+        cache.observe_property_changes(property_trees);
+        cache.observe_recording_changes(arena);
+    }
     prepare_recorded_artifact_candidate(outcome, raster_context, requirement, planning_cache)
 }
 
@@ -1389,8 +1393,7 @@ fn finish_frame_dirty_lifecycle(
         return;
     }
 
-    let consumed = crate::view::base_component::DirtyFlags::PAINT
-        .union(crate::view::base_component::DirtyFlags::COMPOSITE);
+    let consumed = crate::view::node_arena::NodeArena::render_consumption_mask();
     for &root_key in root_keys {
         crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
             arena, root_key, consumed,
@@ -2265,10 +2268,11 @@ impl Viewport {
         self.prune_gpu_paint_sources();
         timings.prepare_paint_ms = phase_clock.checkpoint_ms();
 
-        // Observe the final resolved frame state after transition sampling
-        // and any required relayout.  These shadow trees do not yet drive
-        // rendering or dirty classification.
+        // Freeze the final state after transition sampling and relayout.
+        // Property changes survive layout dirty consumption and select CPU
+        // planning work; complete recorded inputs still certify cache reuse.
         self.sync_compositor_property_trees();
+        let render_changes = self.scene.node_arena.capture_render_changes();
         timings.sync_properties_ms = phase_clock.checkpoint_ms();
 
         // --- Build frame graph ---
@@ -2509,6 +2513,10 @@ impl Viewport {
                 )
                 .expect("surface present sink should register");
         }
+        crate::view::paint::work_profile::count("owner_scope_replays", self.compositor.recording_cache.scope_hits);
+        crate::view::paint::work_profile::count("scope_store_replays", self.compositor.recording_cache.scope_store_hits);
+        crate::view::paint::work_profile::count("scope_store_effect_updates", self.compositor.recording_cache.scope_store_effect_updates);
+        crate::view::paint::work_profile::count("property_closure_replays", self.compositor.recording_cache.property_closure_hits);
         crate::view::paint::work_profile::count(
             "record_replays",
             self.compositor.recording_cache.hits,
@@ -2517,6 +2525,11 @@ impl Viewport {
             "record_misses",
             self.compositor.recording_cache.misses,
         );
+        crate::view::paint::work_profile::count("relation_replays", self.compositor.planning_cache.relation_hits);
+        crate::view::paint::work_profile::count("graph_replays", self.compositor.planning_cache.graph_hits);
+        crate::view::paint::work_profile::count("coverage_replays", self.compositor.planning_cache.coverage_hits);
+        crate::view::paint::work_profile::count("placement_replays", self.compositor.planning_cache.placement_hits);
+        crate::view::paint::work_profile::count("raster_span_replays", self.compositor.planning_cache.raster_span_hits());
         crate::view::paint::work_profile::count(
             "geometry_replays",
             self.compositor.planning_cache.geometry_hits,
@@ -2579,6 +2592,9 @@ impl Viewport {
         timings.execute_ms = phase_clock.checkpoint_ms();
         let root_keys = self.scene.ui_root_keys.clone();
         finish_frame_dirty_lifecycle(&mut self.scene.node_arena, &root_keys, compiled, executed);
+        if compiled && executed {
+            self.scene.node_arena.commit_render_changes(render_changes);
+        }
         self.finish_retained_surface_transaction_for_frame(
             retained_surface_frame_owner,
             compiled && executed,

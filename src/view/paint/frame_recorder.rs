@@ -1,3 +1,4 @@
+pub(super) mod property_closure_cache;
 use std::collections::hash_map::Entry;
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -120,7 +121,7 @@ pub(crate) fn record_closed_single_target_frame_artifact(
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
     let outcome =
         record_clip_enabled_frame_artifact(arena, roots, property_trees, paint_generations, mode)?;
-    close_recorded_artifact_property_snapshots(outcome, property_trees, mode)
+    close_recorded_artifact_property_snapshots(outcome, property_trees, mode, None)
 }
 
 /// Generic current-target Surface DAG producer.
@@ -148,7 +149,7 @@ pub(crate) fn record_surface_dag_frame_artifact(
         None,
         None,
     )?;
-    close_recorded_artifact_property_snapshots(outcome, property_trees, mode)
+    close_recorded_artifact_property_snapshots(outcome, property_trees, mode, None)
 }
 
 pub(crate) fn record_surface_dag_frame_artifact_cached(
@@ -173,7 +174,12 @@ pub(crate) fn record_surface_dag_frame_artifact_cached(
         Some(cache),
     )
     .and_then(|outcome| {
-        close_recorded_artifact_property_snapshots(outcome, property_trees, RendererMode::Auto)
+        close_recorded_artifact_property_snapshots(
+            outcome,
+            property_trees,
+            RendererMode::Auto,
+            Some(cache),
+        )
     });
     cache.finish(matches!(
         &outcome,
@@ -186,6 +192,7 @@ fn close_recorded_artifact_property_snapshots(
     outcome: FrameArtifactRecordOutcome,
     property_trees: &PropertyTrees,
     mode: RendererMode,
+    cache: Option<&mut super::RecordingCache>,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
     let FrameArtifactRecordOutcome::Artifact {
         mut artifact,
@@ -194,7 +201,11 @@ fn close_recorded_artifact_property_snapshots(
     else {
         return Ok(outcome);
     };
-    if let Err(reasons) = populate_referenced_property_snapshots(&mut artifact, property_trees) {
+    let closed = match cache {
+        Some(cache) => property_closure_cache::populate(&mut artifact, property_trees, cache),
+        None => populate_referenced_property_snapshots(&mut artifact, property_trees),
+    };
+    if let Err(reasons) = closed {
         eligibility.eligible = false;
         for reason in reasons {
             if !eligibility.reasons.contains(&reason) {
@@ -338,40 +349,57 @@ pub(super) fn populate_referenced_property_snapshots(
             )]);
         }
     }
+    // The property trees are immutable for this call. After one complete
+    // chain has been checked against the artifact's supplied observations,
+    // another reference to the same leaf cannot introduce a new snapshot.
+    // Do not seed these sets from the artifact: supplied data still needs the
+    // first live-tree comparison, including ancestors and bounded termination.
+    let mut checked_clip_leaves = FxHashSet::default();
+    let mut checked_effect_leaves = FxHashSet::default();
     let mut transforms = FxHashMap::<TransformNodeId, TransformNodeSnapshot>::default();
     let mut positions = FxHashMap::<LayoutPositionNodeId, LayoutPositionNodeSnapshot>::default();
     let mut visuals = FxHashMap::<VisualOffsetNodeId, VisualOffsetNodeSnapshot>::default();
     let mut scrolls = FxHashMap::<ScrollNodeId, ScrollNodeSnapshot>::default();
+    let mut transform_scratch = snapshot_closure::ChainScratch::default();
+    let mut position_scratch = snapshot_closure::ChainScratch::default();
+    let mut visual_scratch = snapshot_closure::ChainScratch::default();
+    let mut scroll_scratch = snapshot_closure::ChainScratch::default();
+    let mut anchor_visual_roots = Vec::new();
     for (owner, state) in referenced_states {
         let invalid = || vec![FrameArtifactFallbackReason::PropertyBoundary(owner)];
-        for snapshot in property_trees
-            .clip_snapshot_for(state.clip)
-            .ok_or_else(invalid)?
-        {
-            match merge_snapshot(&mut clips, snapshot.id, snapshot) {
-                SnapshotMerge::Inserted => artifact.clip_nodes.push(snapshot),
-                SnapshotMerge::Identical => {}
-                SnapshotMerge::Conflict => return Err(invalid()),
+        if checked_clip_leaves.insert(state.clip) {
+            for snapshot in property_trees
+                .clip_snapshot_for(state.clip)
+                .ok_or_else(invalid)?
+            {
+                match merge_snapshot(&mut clips, snapshot.id, snapshot) {
+                    SnapshotMerge::Inserted => artifact.clip_nodes.push(snapshot),
+                    SnapshotMerge::Identical => {}
+                    SnapshotMerge::Conflict => return Err(invalid()),
+                }
             }
         }
-        for snapshot in property_trees
-            .effect_snapshot_for(state.effect)
-            .ok_or_else(invalid)?
-        {
-            match merge_snapshot(&mut effects, snapshot.id, snapshot) {
-                SnapshotMerge::Inserted => artifact.effect_nodes.push(snapshot),
-                SnapshotMerge::Identical => {}
-                SnapshotMerge::Conflict => return Err(invalid()),
+        if checked_effect_leaves.insert(state.effect) {
+            for snapshot in property_trees
+                .effect_snapshot_for(state.effect)
+                .ok_or_else(invalid)?
+            {
+                match merge_snapshot(&mut effects, snapshot.id, snapshot) {
+                    SnapshotMerge::Inserted => artifact.effect_nodes.push(snapshot),
+                    SnapshotMerge::Identical => {}
+                    SnapshotMerge::Conflict => return Err(invalid()),
+                }
             }
         }
-        let mut anchor_visual_roots = Vec::new();
-        for snapshot in snapshot_closure::unseen_chain(
-            state.transform,
-            &transforms,
-            |id| property_trees.transform_snapshot_for(id),
-            |s| s.parent,
-        )
-        .ok_or_else(invalid)?
+        anchor_visual_roots.clear();
+        for snapshot in transform_scratch
+            .unseen_chain(
+                state.transform,
+                &transforms,
+                |id| property_trees.transform_snapshot_for(id),
+                |s| s.parent,
+            )
+            .ok_or_else(invalid)?
         {
             match merge_snapshot(&mut transforms, snapshot.id, snapshot) {
                 SnapshotMerge::Inserted => artifact.transform_nodes.push(snapshot),
@@ -379,30 +407,34 @@ pub(super) fn populate_referenced_property_snapshots(
                 SnapshotMerge::Conflict => return Err(invalid()),
             }
         }
-        for snapshot in snapshot_closure::unseen_chain(
-            state.layout_position,
-            &positions,
-            |id| property_trees.layout_position_snapshot_for(id),
-            |s| match s.reference {
-                SpatialPositionReference::Viewport
-                | SpatialPositionReference::LayoutParent(None) => None,
-                SpatialPositionReference::LayoutParent(Some(parent))
-                | SpatialPositionReference::Anchor(parent) => Some(LayoutPositionNodeId(parent)),
-            },
-        )
-        .ok_or_else(invalid)?
+        for snapshot in position_scratch
+            .unseen_chain(
+                state.layout_position,
+                &positions,
+                |id| property_trees.layout_position_snapshot_for(id),
+                |s| match s.reference {
+                    SpatialPositionReference::Viewport
+                    | SpatialPositionReference::LayoutParent(None) => None,
+                    SpatialPositionReference::LayoutParent(Some(parent))
+                    | SpatialPositionReference::Anchor(parent) => {
+                        Some(LayoutPositionNodeId(parent))
+                    }
+                },
+            )
+            .ok_or_else(invalid)?
         {
             if let SpatialPositionReference::Anchor(anchor) = snapshot.reference {
                 anchor_visual_roots.push(VisualOffsetNodeId(anchor));
             }
             if let Some(scroll) = snapshot.reference_scroll {
-                for scroll_snapshot in snapshot_closure::unseen_chain(
-                    Some(scroll),
-                    &scrolls,
-                    |id| property_trees.scroll_snapshot_for(id),
-                    |s| s.parent,
-                )
-                .ok_or_else(invalid)?
+                for scroll_snapshot in scroll_scratch
+                    .unseen_chain(
+                        Some(scroll),
+                        &scrolls,
+                        |id| property_trees.scroll_snapshot_for(id),
+                        |s| s.parent,
+                    )
+                    .ok_or_else(invalid)?
                 {
                     match merge_snapshot(&mut scrolls, scroll_snapshot.id, scroll_snapshot) {
                         SnapshotMerge::Inserted => artifact.scroll_nodes.push(scroll_snapshot),
@@ -417,13 +449,14 @@ pub(super) fn populate_referenced_property_snapshots(
                 SnapshotMerge::Conflict => return Err(invalid()),
             }
         }
-        for snapshot in snapshot_closure::unseen_chain(
-            state.visual_offset,
-            &visuals,
-            |id| property_trees.visual_offset_snapshot_for(id),
-            |s| s.parent,
-        )
-        .ok_or_else(invalid)?
+        for snapshot in visual_scratch
+            .unseen_chain(
+                state.visual_offset,
+                &visuals,
+                |id| property_trees.visual_offset_snapshot_for(id),
+                |s| s.parent,
+            )
+            .ok_or_else(invalid)?
         {
             match merge_snapshot(&mut visuals, snapshot.id, snapshot) {
                 SnapshotMerge::Inserted => artifact.visual_offset_nodes.push(snapshot),
@@ -431,14 +464,15 @@ pub(super) fn populate_referenced_property_snapshots(
                 SnapshotMerge::Conflict => return Err(invalid()),
             }
         }
-        for anchor in anchor_visual_roots {
-            for snapshot in snapshot_closure::unseen_chain(
-                Some(anchor),
-                &visuals,
-                |id| property_trees.visual_offset_snapshot_for(id),
-                |s| s.parent,
-            )
-            .ok_or_else(invalid)?
+        for anchor in anchor_visual_roots.drain(..) {
+            for snapshot in visual_scratch
+                .unseen_chain(
+                    Some(anchor),
+                    &visuals,
+                    |id| property_trees.visual_offset_snapshot_for(id),
+                    |s| s.parent,
+                )
+                .ok_or_else(invalid)?
             {
                 match merge_snapshot(&mut visuals, snapshot.id, snapshot) {
                     SnapshotMerge::Inserted => artifact.visual_offset_nodes.push(snapshot),
@@ -447,13 +481,14 @@ pub(super) fn populate_referenced_property_snapshots(
                 }
             }
         }
-        for snapshot in snapshot_closure::unseen_chain(
-            state.scroll,
-            &scrolls,
-            |id| property_trees.scroll_snapshot_for(id),
-            |s| s.parent,
-        )
-        .ok_or_else(invalid)?
+        for snapshot in scroll_scratch
+            .unseen_chain(
+                state.scroll,
+                &scrolls,
+                |id| property_trees.scroll_snapshot_for(id),
+                |s| s.parent,
+            )
+            .ok_or_else(invalid)?
         {
             match merge_snapshot(&mut scrolls, snapshot.id, snapshot) {
                 SnapshotMerge::Inserted => artifact.scroll_nodes.push(snapshot),
@@ -620,7 +655,7 @@ fn record_frame_artifact_with_policy_and_stack(
         | FrameArtifactAuthorityPolicy::PropertyScene
         | FrameArtifactAuthorityPolicy::SurfaceDag => PaintArtifactTarget::CurrentTarget,
     };
-    materialize_frame_artifact(manifest, target, mode, eligibility)
+    materialize_frame_artifact_with_cache(manifest, target, mode, eligibility, recording_cache)
 }
 
 /// Turn an already-assessed coverage manifest into the artifact.
@@ -632,24 +667,54 @@ pub(super) fn materialize_frame_artifact(
     manifest: super::PaintCoverageManifest,
     target: PaintArtifactTarget,
     mode: RendererMode,
+    eligibility: FrameArtifactEligibility,
+) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
+    materialize_frame_artifact_with_cache(manifest, target, mode, eligibility, None)
+}
+
+fn materialize_frame_artifact_with_cache(
+    manifest: super::PaintCoverageManifest,
+    target: PaintArtifactTarget,
+    mode: RendererMode,
     mut eligibility: FrameArtifactEligibility,
+    mut cache: Option<&mut super::RecordingCache>,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
     let _profile = crate::view::paint::work_profile::scope("materialize_frame_artifact");
+    let (chunk_count, op_count) =
+        manifest
+            .items
+            .iter()
+            .fold((0usize, 0usize), |(chunks, ops), item| match item {
+                PaintCoverageItem::ArtifactChunk {
+                    ops: Some(recorded),
+                    ..
+                } => (chunks + 1, ops + recorded.len()),
+                _ => (chunks, ops),
+            });
     let mut artifact = PaintArtifact {
         target,
+        chunks: Vec::with_capacity(chunk_count),
+        ops: Vec::with_capacity(op_count),
         ..PaintArtifact::default()
     };
+    let replayed_store = cache
+        .as_deref_mut()
+        .is_some_and(|cache| cache.replay_scope_store(&manifest, &mut artifact));
+    let pending_key = (!replayed_store && cache.is_some())
+        .then(|| super::RecordingCache::scope_store_key(&manifest));
     let mut seen_clip_nodes = FxHashMap::default();
     let mut seen_effect_nodes = FxHashMap::default();
     let mut seen_owner_nodes = FxHashMap::default();
     let mut seen_owner_property_states = FxHashMap::default();
+    let mut merged_scopes = rustc_hash::FxHashSet::default();
+    let mut merged_clip_chains = rustc_hash::FxHashSet::default();
+    let mut merged_effect_chains = rustc_hash::FxHashSet::default();
     for item in manifest.items {
         let PaintCoverageItem::ArtifactChunk {
             chunk,
             clip_snapshot,
             effect_snapshot,
-            owner_snapshot,
-            owner_property_state_snapshot,
+            owner_scope,
             ops: Some(ops),
             ..
         } = item
@@ -665,7 +730,7 @@ pub(super) fn materialize_frame_artifact(
             unreachable!("eligibility rejects all paint boundaries")
         };
         let start = artifact.ops.len();
-        artifact.ops.extend(ops);
+        artifact.ops.extend(ops.iter().cloned());
         let end = artifact.ops.len();
         artifact.chunks.push(PaintChunk {
             id: chunk.id,
@@ -676,7 +741,27 @@ pub(super) fn materialize_frame_artifact(
             content_revision: chunk.content_revision,
             payload_identity: chunk.payload_identity,
         });
-        for snapshot in clip_snapshot {
+        if replayed_store {
+            continue;
+        }
+        let mut scopes = Vec::new();
+        let mut cursor = Some(&owner_scope);
+        while let Some(scope) = cursor {
+            // Pointer identity is used only for the same immutable allocation
+            // in this manifest, never as a cross-frame content identity. A
+            // separately allocated observation of the same owner is merged and
+            // compared, so conflicting snapshots still fail closed.
+            if !merged_scopes.insert(std::sync::Arc::as_ptr(scope)) {
+                break;
+            }
+            scopes.push(scope.as_ref());
+            cursor = scope.parent.as_ref();
+        }
+        for snapshot in std::iter::once(&clip_snapshot)
+            .chain(scopes.iter().flat_map(|scope| &scope.clips))
+            .filter(|chain| merged_clip_chains.insert(std::sync::Arc::as_ptr(chain)))
+            .flat_map(|chain| chain.iter().copied())
+        {
             match merge_snapshot(&mut seen_clip_nodes, snapshot.id, snapshot) {
                 SnapshotMerge::Inserted => {
                     artifact.clip_nodes.push(snapshot);
@@ -693,7 +778,11 @@ pub(super) fn materialize_frame_artifact(
                 SnapshotMerge::Identical => {}
             }
         }
-        for snapshot in effect_snapshot {
+        for snapshot in std::iter::once(&effect_snapshot)
+            .chain(scopes.iter().flat_map(|scope| &scope.effects))
+            .filter(|chain| merged_effect_chains.insert(std::sync::Arc::as_ptr(chain)))
+            .flat_map(|chain| chain.iter().copied())
+        {
             match merge_snapshot(&mut seen_effect_nodes, snapshot.id, snapshot) {
                 SnapshotMerge::Inserted => {
                     artifact.effect_nodes.push(snapshot);
@@ -710,7 +799,7 @@ pub(super) fn materialize_frame_artifact(
                 SnapshotMerge::Identical => {}
             }
         }
-        for snapshot in owner_snapshot {
+        for snapshot in scopes.iter().map(|scope| scope.topology) {
             match merge_snapshot(&mut seen_owner_nodes, snapshot.owner, snapshot) {
                 SnapshotMerge::Inserted => {
                     artifact.owner_nodes.push(snapshot);
@@ -727,7 +816,7 @@ pub(super) fn materialize_frame_artifact(
                 SnapshotMerge::Identical => {}
             }
         }
-        for snapshot in owner_property_state_snapshot {
+        for snapshot in scopes.iter().map(|scope| scope.state) {
             match merge_snapshot(&mut seen_owner_property_states, snapshot.owner, snapshot) {
                 SnapshotMerge::Inserted => {
                     artifact.owner_property_states.push(snapshot);
@@ -746,6 +835,9 @@ pub(super) fn materialize_frame_artifact(
                 SnapshotMerge::Identical => {}
             }
         }
+    }
+    if let (Some(cache), Some(key)) = (cache, pending_key) {
+        cache.remember_scope_store(key, &artifact);
     }
     Ok(FrameArtifactRecordOutcome::Artifact {
         artifact,
@@ -773,7 +865,7 @@ fn assess_manifest(
         match item {
             PaintCoverageItem::ArtifactChunk { chunk, ops, .. } => {
                 chunk_count = chunk_count.saturating_add(1);
-                op_count = op_count.saturating_add(ops.as_ref().map_or(0, Vec::len));
+                op_count = op_count.saturating_add(ops.as_ref().map_or(0, |ops| ops.len()));
                 if policy == FrameArtifactAuthorityPolicy::PropertyNeutral
                     && chunk.properties.legacy_boundary_dimensions() != Default::default()
                 {
@@ -1091,8 +1183,7 @@ pub(super) fn canonical_manifest_matches(
                     chunk: left_chunk,
                     clip_snapshot: left_clip_snapshot,
                     effect_snapshot: left_effect_snapshot,
-                    owner_snapshot: left_owner_snapshot,
-                    owner_property_state_snapshot: left_owner_property_state_snapshot,
+                    owner_scope: left_owner_scope,
                     ops: None,
                 },
                 PaintCoverageItem::ArtifactChunk {
@@ -1100,8 +1191,7 @@ pub(super) fn canonical_manifest_matches(
                     chunk: right_chunk,
                     clip_snapshot: right_clip_snapshot,
                     effect_snapshot: right_effect_snapshot,
-                    owner_snapshot: right_owner_snapshot,
-                    owner_property_state_snapshot: right_owner_property_state_snapshot,
+                    owner_scope: right_owner_scope,
                     ops: Some(_),
                 },
             ) => {
@@ -1117,8 +1207,7 @@ pub(super) fn canonical_manifest_matches(
                     && left_chunk.payload_identity == right_chunk.payload_identity
                     && left_clip_snapshot == right_clip_snapshot
                     && left_effect_snapshot == right_effect_snapshot
-                    && left_owner_snapshot == right_owner_snapshot
-                    && left_owner_property_state_snapshot == right_owner_property_state_snapshot
+                    && left_owner_scope == right_owner_scope
             }
             (
                 PaintCoverageItem::TransparentNode {

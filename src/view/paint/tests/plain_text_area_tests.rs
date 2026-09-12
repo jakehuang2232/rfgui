@@ -533,7 +533,7 @@ fn plain_text_area_selection_metadata_and_full_hooks_reread_live_color_and_range
             state.descendants,
             revision,
             &arena,
-            PaintRecordingContext::default(),
+            &PaintRecordingContext::default(),
         )
         .unwrap();
     assert_eq!(metadata.before_children.len(), 2);
@@ -557,7 +557,7 @@ fn plain_text_area_selection_metadata_and_full_hooks_reread_live_color_and_range
             state.descendants,
             revision,
             &arena,
-            PaintRecordingContext::default(),
+            &PaintRecordingContext::default(),
         )
         .unwrap();
     assert_eq!(full.before_children.len(), 2);
@@ -586,7 +586,7 @@ fn plain_text_area_selection_metadata_and_full_hooks_reread_live_color_and_range
             state.descendants,
             revision,
             &arena,
-            PaintRecordingContext::default(),
+            &PaintRecordingContext::default(),
         )
         .unwrap();
     assert_eq!(collapsed.before_children.len(), 1);

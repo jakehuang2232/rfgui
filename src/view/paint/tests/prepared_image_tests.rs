@@ -371,7 +371,7 @@ fn image_accepts_property_clip_but_rejects_transform_and_scroll_properties() {
                     properties,
                     revision,
                     &arena,
-                    PaintRecordingContext::default(),
+                    &PaintRecordingContext::default(),
                 )
                 .is_none()
         );
@@ -391,7 +391,7 @@ fn image_accepts_property_clip_but_rejects_transform_and_scroll_properties() {
                 properties,
                 revision,
                 &arena,
-                PaintRecordingContext::default(),
+                &PaintRecordingContext::default(),
             )
             .expect("property-tree clip is compiler-owned")
             .properties
@@ -572,7 +572,7 @@ fn effect_snapshot_drift_between_metadata_and_full_is_not_canonical() {
         panic!("effect fixture must be an artifact chunk")
     };
     assert_eq!(effect_snapshot[0].opacity.to_bits(), 0.5_f32.to_bits());
-    effect_snapshot[0].opacity = 0.25;
+    std::sync::Arc::make_mut(effect_snapshot)[0].opacity = 0.25;
     assert!(!super::super::frame_recorder::canonical_manifest_matches(
         &preflight, &full
     ));
@@ -600,14 +600,11 @@ fn owner_topology_drift_between_metadata_and_full_is_not_canonical() {
         &properties,
         &generations,
     );
-    let PaintCoverageItem::ArtifactChunk { owner_snapshot, .. } = &mut full.items[1] else {
+    let PaintCoverageItem::ArtifactChunk { owner_scope, .. } = &mut full.items[1] else {
         panic!("child fixture must be an artifact chunk")
     };
-    owner_snapshot
-        .iter_mut()
-        .find(|snapshot| snapshot.owner == child)
-        .expect("child owner snapshot")
-        .parent = None;
+    assert_eq!(owner_scope.topology.owner, child);
+    std::sync::Arc::make_mut(owner_scope).topology.parent = None;
     assert!(!super::super::frame_recorder::canonical_manifest_matches(
         &preflight, &full
     ));

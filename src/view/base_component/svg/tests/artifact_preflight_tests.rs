@@ -40,7 +40,7 @@ fn actual_svg_artifact_compiles_after_arena_drop_and_forced_registry_removal() {
                 topology_revision: 2,
             },
             &arena,
-            crate::view::paint::PaintRecordingContext::default(),
+            &crate::view::paint::PaintRecordingContext::default(),
         )
         .expect("actual frozen SVG hook should record");
     drop(node);

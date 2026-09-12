@@ -117,7 +117,7 @@ fn image_recording_context(
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context(Default::default())
+        .shadow_paint_recording_context(&Default::default())
 }
 
 fn record_image_metadata_and_artifact(
@@ -136,16 +136,16 @@ fn record_image_metadata_and_artifact(
     let node = arena.get(root).unwrap();
     assert_eq!(
         node.element
-            .shadow_paint_recording_capability(arena, false, context),
+            .shadow_paint_recording_capability(arena, false, &context),
         ShadowPaintRecordingCapability::Recordable
     );
     let metadata = node
         .element
-        .record_shadow_paint_metadata(root, Default::default(), revision, arena, context)
+        .record_shadow_paint_metadata(root, Default::default(), revision, arena, &context)
         .expect("ready Image metadata");
     let artifact = node
         .element
-        .record_shadow_paint_artifact(root, Default::default(), revision, arena, context)
+        .record_shadow_paint_artifact(root, Default::default(), revision, arena, &context)
         .expect("ready Image artifact");
     (metadata, artifact)
 }
@@ -160,17 +160,17 @@ fn assert_missing_prepared_image_fallback(arena: &NodeArena, root: NodeKey) {
     let node = arena.get(root).unwrap();
     assert_eq!(
         node.element
-            .shadow_paint_recording_capability(arena, false, context),
+            .shadow_paint_recording_capability(arena, false, &context),
         ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::MissingPreparedImage)
     );
     assert!(
         node.element
-            .record_shadow_paint_metadata(root, Default::default(), revision, arena, context)
+            .record_shadow_paint_metadata(root, Default::default(), revision, arena, &context)
             .is_none()
     );
     assert!(
         node.element
-            .record_shadow_paint_artifact(root, Default::default(), revision, arena, context)
+            .record_shadow_paint_artifact(root, Default::default(), revision, arena, &context)
             .is_none()
     );
 }

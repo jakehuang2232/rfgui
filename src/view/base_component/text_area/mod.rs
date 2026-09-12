@@ -1222,8 +1222,9 @@ impl ElementTrait for TextArea {
     #[allow(private_interfaces)]
     fn shadow_paint_recording_context(
         &self,
-        mut parent: crate::view::paint::PaintRecordingContext,
+        parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
+            let mut parent = *parent;
         let paint_x = self.layout_state.layout_position.x + parent.paint_offset[0];
         let paint_y = self.layout_state.layout_position.y + parent.paint_offset[1];
         parent.paint_offset[0] += round_layout_value(paint_x) - paint_x;
@@ -1237,7 +1238,7 @@ impl ElementTrait for TextArea {
         &self,
         child: NodeKey,
         arena: &NodeArena,
-        parent: crate::view::paint::PaintRecordingContext,
+        parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
         let mut child_context = parent.without_text_area_child_authority();
         child_context.text_area_selection =
@@ -1251,7 +1252,7 @@ impl ElementTrait for TextArea {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         deferred_phase_root: bool,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::base_component::ShadowPaintRecordingCapability {
         let Some(owner) = self.self_node_key else {
             return crate::view::base_component::ShadowPaintRecordingCapability::Unsupported;
@@ -1288,7 +1289,7 @@ impl ElementTrait for TextArea {
         contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintChunkMetadata>> {
         let mut payload = self
             .prepared_plain_shadow_text_payload(owner, arena, false, recording_context.paint_offset)
@@ -1384,7 +1385,7 @@ impl ElementTrait for TextArea {
         contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintArtifact>> {
         let mut payload = self
             .prepared_plain_shadow_text_payload(owner, arena, false, recording_context.paint_offset)

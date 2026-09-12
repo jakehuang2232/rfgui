@@ -249,3 +249,5 @@ mod text_pass_adapter_tests;
 mod atomic_inline_box_tests;
 mod hit_test_and_caret_tests;
 mod selection_tests;
+
+mod borrowed_key_tests;

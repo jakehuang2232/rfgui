@@ -404,7 +404,7 @@ fn neutral_element_text_and_image_direct_artifacts_compile_after_arena_drop() {
                     topology_revision: 1,
                 },
                 arena,
-                PaintRecordingContext::default(),
+                &PaintRecordingContext::default(),
             )
             .expect("neutral direct host must record")
     }

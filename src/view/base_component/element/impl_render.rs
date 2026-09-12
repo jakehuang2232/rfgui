@@ -1,3 +1,4 @@
+#[derive(Clone)]
 pub(super) struct SelfDecorationPaintOps {
     fill: Option<crate::view::paint::DrawRectOp>,
     border: Option<crate::view::paint::DrawRectOp>,
@@ -6,13 +7,12 @@ pub(super) struct SelfDecorationPaintOps {
 #[derive(Clone, Copy)]
 struct SelfPaintRecordingGeometry {
     bounds: crate::view::base_component::Rect,
-    context: crate::view::paint::PaintRecordingContext,
 }
 
 struct PreparedSelfPaintRecord {
     geometry: SelfPaintRecordingGeometry,
-    shadows: Vec<crate::view::paint::PreparedShadowOp>,
-    decoration: Vec<crate::view::paint::DrawRectOp>,
+    shadows: std::sync::Arc<[crate::view::paint::PreparedShadowOp]>,
+    decoration: SelfDecorationPaintOps,
     payload_identity: crate::view::paint::PaintPayloadIdentity,
 }
 
@@ -298,7 +298,7 @@ impl Element {
     pub(super) fn prepared_retained_child_mask_plan(
         &self,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::RetainedChildMaskPlan> {
         if (self.scroll_direction != ScrollDirection::None
             && !(recording_context.authorizes_frame_root_scroll_host_child_mask(self.stable_id())
@@ -339,6 +339,22 @@ impl Element {
             params,
             mode: crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
         };
+        // Capability above and ordered child classification below are live
+        // observations, including changes without dirty notification. Only the
+        // immutable mask payload and partition storage survive between calls.
+        if let Some(previous) = self.child_mask_recording_inputs.borrow().as_ref() {
+            if previous.matches_live_inputs(
+                bounds,
+                logical_scissor,
+                &op,
+                self.children.iter().enumerate().map(|(index, &child)| {
+                    (child, self.child_renders_outside_inner_clip(index, arena))
+                }),
+            ) {
+                crate::view::paint::work_profile::count("child_mask_input_replays", 1);
+                return Some(previous.clone());
+            }
+        }
         let mut in_scope_children = Vec::new();
         let mut overflow_children = Vec::new();
         for (index, &child) in self.children.iter().enumerate() {
@@ -348,14 +364,16 @@ impl Element {
                 in_scope_children.push(child);
             }
         }
-        crate::view::paint::RetainedChildMaskPlan::new(
+        let plan = crate::view::paint::RetainedChildMaskPlan::new(
             bounds,
             logical_scissor,
             op,
             &self.children,
             in_scope_children,
             overflow_children,
-        )
+        )?;
+        *self.child_mask_recording_inputs.borrow_mut() = Some(plan.clone());
+        Some(plan)
     }
 
     fn build_base_descendants_only(
@@ -856,20 +874,21 @@ impl Element {
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Result<crate::view::paint::PaintArtifact, crate::view::paint::LegacyPaintReason> {
         use crate::view::paint::{PaintArtifact, PaintChunk, PaintOp};
-        let prepared = self.prepared_self_paint_record(owner, recording_context)?;
+        let prepared = self.prepared_self_paint_record(owner, &recording_context)?;
         let mut metadata = self.record_shadow_node_paint_metadata(
             owner,
             properties,
             content_revision,
             Some(arena),
-            recording_context,
+            &recording_context,
         )?;
         let mut ops = prepared
             .shadows
-            .into_iter()
+            .iter()
+            .cloned()
             .map(PaintOp::PreparedShadow)
             .collect::<Vec<_>>();
         ops.extend(prepared.decoration.into_iter().map(PaintOp::DrawRect));
@@ -921,13 +940,13 @@ impl Element {
             properties,
             content_revision,
             None,
-            crate::view::paint::PaintRecordingContext::default(),
+            &crate::view::paint::PaintRecordingContext::default(),
         )
     }
 
     fn recording_context_authorizes_exact_self_clip(
         &self,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> bool {
         (self.anchor_parent_leaf_self_clip_scissor_rect().is_some()
             && recording_context.authorizes_self_clip_for(self.stable_id()))
@@ -973,7 +992,7 @@ impl Element {
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: Option<&crate::view::node_arena::NodeArena>,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Result<crate::view::paint::PaintChunkMetadata, crate::view::paint::LegacyPaintReason> {
         use crate::view::paint::{
             LegacyPaintReason, PaintChunkId, PaintChunkMetadata, PaintChunkRole,
@@ -987,6 +1006,9 @@ impl Element {
             return Err(LegacyPaintReason::InlineIfc);
         }
         if self.is_owning_inline_ifc_root_role()
+            && !recording_context
+                .inline_root_recording
+                .is_some_and(|w| w.matches(recording_context.recording_owner, self.stable_id()))
             && arena.is_none_or(|arena| self.owning_inline_ifc_root_paint_witness(arena).is_err())
         {
             return Err(LegacyPaintReason::MissingPreparedInlineRoot);
@@ -999,7 +1021,7 @@ impl Element {
             return Err(LegacyPaintReason::ScrollContainer);
         }
         if self.absolute_clip_scissor_rect().is_some() {
-            if !self.recording_context_authorizes_exact_self_clip(recording_context) {
+            if !self.recording_context_authorizes_exact_self_clip(&recording_context) {
                 return Err(LegacyPaintReason::SelfClip);
             }
         }
@@ -1017,7 +1039,7 @@ impl Element {
             && !recording_context.authorizes_generic_scroll_host_root(self.stable_id())
             && !recording_context.authorizes_descendant_contents_clip(self.stable_id())
             && arena.is_none_or(|arena| {
-                self.prepared_retained_child_mask_plan(arena, recording_context)
+                self.prepared_retained_child_mask_plan(arena, &recording_context)
                     .is_none()
             })
         {
@@ -1027,7 +1049,7 @@ impl Element {
             return Err(LegacyPaintReason::StatefulPaint);
         }
 
-        let prepared = self.prepared_self_paint_record(owner, recording_context)?;
+        let prepared = self.prepared_self_paint_record(owner, &recording_context)?;
 
         Ok(PaintChunkMetadata {
             id: PaintChunkId {
@@ -1048,33 +1070,10 @@ impl Element {
     fn prepared_self_paint_record(
         &self,
         owner: crate::view::node_arena::NodeKey,
-        context: crate::view::paint::PaintRecordingContext,
+        context: &crate::view::paint::PaintRecordingContext,
     ) -> Result<PreparedSelfPaintRecord, crate::view::paint::LegacyPaintReason> {
-        use crate::view::paint::LegacyPaintReason;
-
-        let geometry = self.self_paint_recording_geometry(owner, context);
-        let shadows = self
-            .prepared_outer_shadow_ops(geometry.context)
-            .ok_or(LegacyPaintReason::BoxShadow)?;
-        let decoration = self
-            .self_decoration_paint_ops(
-                geometry.context.paint_opacity(self.opacity),
-                geometry.context.paint_offset,
-            )
-            .into_iter()
-            .collect::<Vec<_>>();
-        let payload_identity =
-            crate::view::paint::PaintPayloadIdentity::prepared_shadows_with_decoration(
-                shadows.iter(),
-                decoration.iter(),
-            )
-            .ok_or(LegacyPaintReason::StatefulPaint)?;
-        Ok(PreparedSelfPaintRecord {
-            geometry,
-            shadows,
-            decoration,
-            payload_identity,
-        })
+        let geometry = self.self_paint_recording_geometry(owner, &context);
+        self.prepared_self_paint_from_inputs(geometry, &context)
     }
 
     /// Produces the one geometry input shared by metadata-only and full
@@ -1085,7 +1084,7 @@ impl Element {
     fn self_paint_recording_geometry(
         &self,
         owner: crate::view::node_arena::NodeKey,
-        context: crate::view::paint::PaintRecordingContext,
+        context: &crate::view::paint::PaintRecordingContext,
     ) -> SelfPaintRecordingGeometry {
         let bounds_offset = if context.authorizes_scroll_content_local_owner(owner) {
             context.paint_offset
@@ -1099,7 +1098,6 @@ impl Element {
                 width: self.layout_state.layout_size.width.max(0.0),
                 height: self.layout_state.layout_size.height.max(0.0),
             },
-            context,
         }
     }
 
@@ -1109,7 +1107,7 @@ impl Element {
         deferred_phase_root: bool,
         authoritative_self_clip: bool,
         allow_outer_shadow_artifact: bool,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::base_component::element::ShadowPaintBlocker> {
         use crate::view::base_component::element::ShadowPaintBlocker;
         if !self.layout_state.should_render {
@@ -1135,7 +1133,7 @@ impl Element {
         }
         if !self.box_shadows.is_empty()
             && (!allow_outer_shadow_artifact
-                || self.prepared_outer_shadow_ops(recording_context).is_none())
+                || self.prepared_outer_shadow_ops(&recording_context).is_none())
         {
             return Some(ShadowPaintBlocker::BoxShadow);
         }
@@ -1156,7 +1154,7 @@ impl Element {
         }
         if self.absolute_clip_scissor_rect().is_some()
             && (!authoritative_self_clip
-                || !self.recording_context_authorizes_exact_self_clip(recording_context))
+                || !self.recording_context_authorizes_exact_self_clip(&recording_context))
         {
             return Some(ShadowPaintBlocker::SelfClip);
         }
@@ -1178,7 +1176,7 @@ impl Element {
                 && !recording_context.authorizes_generic_scroll_host_root(self.stable_id())
                 && !recording_context.authorizes_descendant_contents_clip(self.stable_id())
                 && self
-                    .prepared_retained_child_mask_plan(arena, recording_context)
+                    .prepared_retained_child_mask_plan(arena, &recording_context)
                     .is_none()
             {
                 return Some(ShadowPaintBlocker::ChildClip);
@@ -1189,10 +1187,13 @@ impl Element {
 
     pub(super) fn prepared_outer_shadow_ops(
         &self,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<Vec<crate::view::paint::PreparedShadowOp>> {
         if !self.core.should_paint || self.box_shadows.is_empty() {
             return Some(Vec::new());
+        }
+        if let Some(prepared) = self.replay_prepared_outer_shadow_ops(recording_context) {
+            return Some(prepared);
         }
         let fragment_rects =
             if self.is_fragmentable_inline_element() && !self.inline_paint_fragments.is_empty() {
@@ -1368,7 +1369,7 @@ impl Element {
 
     pub(super) fn prepared_inline_ifc_decoration_payload(
         &self,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Result<PreparedElementInlineIfcDecorationPayload, ShadowPaintBlocker> {
         if recording_context.inside_text_area {
             return Err(ShadowPaintBlocker::TextAreaSelection);
@@ -1412,7 +1413,7 @@ impl Element {
         }
 
         let shadows = self
-            .prepared_outer_shadow_ops(recording_context)
+            .prepared_outer_shadow_ops(&recording_context)
             .ok_or(ShadowPaintBlocker::BoxShadow)?;
 
         let package = self
@@ -1592,7 +1593,7 @@ impl Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         _deferred_phase_root: bool,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<ShadowPaintBlocker> {
         if !self.layout_state.should_render {
             return Some(ShadowPaintBlocker::StatefulPaint);
@@ -1618,11 +1619,13 @@ impl Element {
         // can use the same child-mask command scope as an ordinary owner.
         // Fragmented spans still never acquire one box around all fragments.
         if self.requires_child_mask_surface(arena)
-            && self.prepared_retained_child_mask_plan(arena, recording_context).is_none()
+            && self
+                .prepared_retained_child_mask_plan(arena, &recording_context)
+                .is_none()
         {
             return Some(ShadowPaintBlocker::ChildClip);
         }
-        self.prepared_inline_ifc_decoration_payload(recording_context)
+        self.prepared_inline_ifc_decoration_payload(&recording_context)
             .err()
     }
 

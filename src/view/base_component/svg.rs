@@ -403,7 +403,7 @@ impl Svg {
         if document_changed || slot_changed {
             self.element.mark_layout_dirty();
         } else if raster_changed {
-            self.element.mark_paint_dirty();
+            self.element.mark_resource_dirty();
         }
     }
 
@@ -811,7 +811,7 @@ impl Svg {
         expected_owner: Option<crate::view::node_arena::NodeKey>,
         properties: Option<crate::view::compositor::property_tree::PropertyTreeState>,
         deferred_phase_root: bool,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Result<SvgShadowPaintClass, super::ShadowPaintBlocker> {
         let indexed_owner = arena
             .find_by_stable_id(self.stable_id())
@@ -833,7 +833,7 @@ impl Svg {
                         || recording_context
                             .authorizes_deferred_viewport_self_clip_for(self.stable_id()),
                     true,
-                    recording_context,
+                    &recording_context,
                 ) {
                     return Err(blocker);
                 }
@@ -913,7 +913,7 @@ impl Svg {
                         || recording_context
                             .authorizes_deferred_viewport_self_clip_for(self.stable_id()),
                     true,
-                    recording_context,
+                    &recording_context,
                 ) {
                     return Err(blocker);
                 }
@@ -1432,7 +1432,7 @@ impl ElementTrait for Svg {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         deferred_phase_root: bool,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> super::ShadowPaintRecordingCapability {
         if !self.element.layout_state.should_render {
             let paint = self.element.retained_paint_properties();
@@ -1467,7 +1467,7 @@ impl ElementTrait for Svg {
                 )
             };
         }
-        match self.classify_shadow_paint(arena, None, None, deferred_phase_root, recording_context)
+        match self.classify_shadow_paint(arena, None, None, deferred_phase_root, &recording_context)
         {
             Ok(_) => super::ShadowPaintRecordingCapability::Recordable,
             Err(blocker) => super::ShadowPaintRecordingCapability::Legacy(blocker),
@@ -1478,10 +1478,10 @@ impl ElementTrait for Svg {
     fn retained_child_mask_plan(
         &self,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::RetainedChildMaskPlan> {
         self.element
-            .prepared_retained_child_mask_plan(arena, recording_context)
+            .prepared_retained_child_mask_plan(arena, &recording_context)
     }
 
     #[allow(private_interfaces)]
@@ -1491,7 +1491,7 @@ impl ElementTrait for Svg {
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintChunkMetadata> {
         match self
             .classify_shadow_paint(
@@ -1499,7 +1499,7 @@ impl ElementTrait for Svg {
                 Some(owner),
                 Some(properties),
                 recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id()),
-                recording_context,
+                &recording_context,
             )
             .ok()?
         {
@@ -1512,7 +1512,7 @@ impl ElementTrait for Svg {
                         properties,
                         content_revision,
                         Some(arena),
-                        recording_context,
+                        &recording_context,
                     )
                     .ok()?;
                 metadata.id.role = crate::view::paint::PaintChunkRole::SvgContent;
@@ -1524,7 +1524,7 @@ impl ElementTrait for Svg {
                     )
                     .into_iter()
                     .collect::<Vec<_>>();
-                let shadows = self.element.prepared_outer_shadow_ops(recording_context)?;
+                let shadows = self.element.prepared_outer_shadow_ops(&recording_context)?;
                 metadata.payload_identity =
                     crate::view::paint::PaintPayloadIdentity::svg_with_shadows_and_decoration(
                         identity,
@@ -1540,7 +1540,7 @@ impl ElementTrait for Svg {
                     properties,
                     content_revision,
                     Some(arena),
-                    recording_context,
+                    &recording_context,
                 )
                 .ok(),
         }
@@ -1553,7 +1553,7 @@ impl ElementTrait for Svg {
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintArtifact> {
         let classification = self
             .classify_shadow_paint(
@@ -1561,7 +1561,7 @@ impl ElementTrait for Svg {
                 Some(owner),
                 Some(properties),
                 recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id()),
-                recording_context,
+                &recording_context,
             )
             .ok()?;
         let artifact = match classification {
@@ -1574,13 +1574,13 @@ impl ElementTrait for Svg {
                         properties,
                         content_revision,
                         Some(arena),
-                        recording_context,
+                        &recording_context,
                     )
                     .ok()?;
                 metadata.id.role = crate::view::paint::PaintChunkRole::SvgContent;
                 let mut ops = self
                     .element
-                    .prepared_outer_shadow_ops(recording_context)?
+                    .prepared_outer_shadow_ops(&recording_context)?
                     .into_iter()
                     .map(crate::view::paint::PaintOp::PreparedShadow)
                     .collect::<Vec<_>>();
@@ -1642,7 +1642,7 @@ impl ElementTrait for Svg {
                     properties,
                     content_revision,
                     arena,
-                    recording_context,
+                    &recording_context,
                 )
                 .ok()?,
         };
@@ -1654,9 +1654,9 @@ impl ElementTrait for Svg {
     #[allow(private_interfaces)]
     fn shadow_paint_recording_context(
         &self,
-        parent: crate::view::paint::PaintRecordingContext,
+        parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
-        self.element.shadow_paint_recording_context(parent)
+        self.element.shadow_paint_recording_context(&parent)
     }
 
     fn intercepts_pointer_at(&self, viewport_x: f32, viewport_y: f32) -> bool {

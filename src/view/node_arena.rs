@@ -19,6 +19,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::SlotMap;
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::ops::Deref;
+use std::sync::Arc;
+
+mod render_changes;
 
 use crate::view::base_component::{DirtyFlags, ElementTrait, PlacementSkipFailureReason};
 
@@ -100,6 +103,9 @@ slotmap::new_key_type! {
 /// and custom components don't grow boilerplate fields.
 pub struct Node {
     element: RefCell<Box<dyn ElementTrait>>,
+    mutation_revision: Cell<u64>,
+    pending_render_changes: Cell<DirtyFlags>,
+    render_change_versions: Cell<[u64; 8]>,
     pub(crate) parent: Option<NodeKey>,
     pub(crate) children: Vec<NodeKey>,
     /// Arena-owned local dirty bits for the node itself.
@@ -133,6 +139,9 @@ impl Node {
     pub fn new(element: Box<dyn ElementTrait>) -> Self {
         Self {
             element: RefCell::new(element),
+            mutation_revision: Cell::new(0),
+            pending_render_changes: Cell::new(DirtyFlags::ALL),
+            render_change_versions: Cell::new([0; 8]),
             parent: None,
             children: Vec::new(),
             arena_local_dirty: Cell::new(DirtyFlags::NONE),
@@ -144,6 +153,9 @@ impl Node {
     pub fn with_parent(element: Box<dyn ElementTrait>, parent: Option<NodeKey>) -> Self {
         Self {
             element: RefCell::new(element),
+            mutation_revision: Cell::new(0),
+            pending_render_changes: Cell::new(DirtyFlags::ALL),
+            render_change_versions: Cell::new([0; 8]),
             parent,
             children: Vec::new(),
             arena_local_dirty: Cell::new(DirtyFlags::NONE),
@@ -341,6 +353,8 @@ impl std::fmt::Debug for Node {
 #[derive(Default)]
 pub struct NodeArena {
     slots: SlotMap<NodeKey, Node>,
+    mutation_clock: Cell<u64>,
+    mutation_identity: Arc<()>,
     /// Top-level nodes (one per RSX root). Kept here rather than on
     /// individual elements so the arena itself is enough to traverse.
     roots: Vec<NodeKey>,
@@ -711,14 +725,18 @@ impl NodeArena {
     }
 
     pub fn get_mut(&self, key: NodeKey) -> Option<NodeMutGuard<'_>> {
-        self.slots.get(key).map(Node::borrow_mut)
+        let guard = self.slots.get(key)?.borrow_mut();
+        self.note_mutation(key);
+        Some(guard)
     }
 
     /// Fallible mutable borrow — returns `None` when the slot is already
     /// borrowed. Use inside dispatch when a handler may recursively query
     /// its own element so the call returns gracefully instead of panicking.
     pub fn try_get_mut(&self, key: NodeKey) -> Option<NodeMutGuard<'_>> {
-        self.slots.get(key).and_then(Node::try_borrow_mut)
+        let guard = self.slots.get(key)?.try_borrow_mut()?;
+        self.note_mutation(key);
+        Some(guard)
     }
 
     pub fn contains_key(&self, key: NodeKey) -> bool {
@@ -763,12 +781,14 @@ impl NodeArena {
     }
 
     pub fn set_parent(&mut self, key: NodeKey, parent: Option<NodeKey>) {
+        self.note_topology_change(key);
         if let Some(node) = self.slots.get_mut(key) {
             node.parent = parent;
         }
     }
 
     pub fn set_children(&mut self, key: NodeKey, children: Vec<NodeKey>) {
+        self.note_topology_change(key);
         if let Some(node) = self.slots.get_mut(key) {
             node.children = children.clone();
             node.element.get_mut().sync_children_mirror(&children);
@@ -781,12 +801,14 @@ impl NodeArena {
         key: NodeKey,
         children: Vec<NodeKey>,
     ) {
+        self.note_topology_change(key);
         if let Some(node) = self.slots.get_mut(key) {
             node.children = children;
         }
     }
 
     pub fn push_child(&mut self, parent: NodeKey, child: NodeKey) {
+        self.note_topology_change(parent);
         if let Some(node) = self.slots.get_mut(parent) {
             node.children.push(child);
             node.element.get_mut().sync_children_mirror(&node.children);
@@ -855,6 +877,9 @@ impl NodeArena {
                 element.placement_eligibility_metadata(),
             )
         };
+        // Preserve local causes before layout consumes its own work flags.
+        // Descendant causes remain owned by their nodes, not copied to parents.
+        self.observe_render_causes(key, aggregate);
         for index in 0..child_count {
             if let Some(child) = self.child_key_at(key, index) {
                 aggregate = aggregate.union(self.refresh_subtree_dirty_cache(child));
@@ -897,6 +922,8 @@ impl NodeArena {
         let Some(node) = self.slots.get(key) else {
             return;
         };
+        self.note_mutation(key);
+        node.record_render_causes(flags, self.mutation_clock.get());
         node.arena_local_dirty
             .set(node.arena_local_dirty.get().union(flags));
         self.bubble_cached_subtree_dirty(key, flags);
@@ -1214,6 +1241,7 @@ impl NodeArena {
         key: NodeKey,
         f: impl FnOnce(&mut Box<dyn ElementTrait>, &mut NodeArena) -> R,
     ) -> Option<R> {
+        self.note_mutation(key);
         // Phase 1: swap the real element out for a placeholder. Mutable arena
         // access reaches the element RefCell through `get_mut()` without a
         // runtime borrow check.
@@ -1314,6 +1342,7 @@ impl NodeArena {
         key: NodeKey,
         f: impl FnOnce(&mut Box<dyn ElementTrait>, &NodeArena) -> R,
     ) -> Option<R> {
+        self.note_mutation(key);
         let node = self.slots.get(key)?;
         let taken: Box<dyn ElementTrait> = {
             let mut element = node.element.borrow_mut();

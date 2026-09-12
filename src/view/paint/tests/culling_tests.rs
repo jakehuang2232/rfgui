@@ -9,7 +9,7 @@ fn whole_frame_should_render_false_culls_the_complete_subtree() {
             .get(root)
             .unwrap()
             .element
-            .shadow_paint_recording_capability(&arena, false, PaintRecordingContext::default(),),
+            .shadow_paint_recording_capability(&arena, false, &PaintRecordingContext::default(),),
         ShadowPaintRecordingCapability::CulledSubtree
     );
     let FrameArtifactRecordOutcome::Artifact {
@@ -196,7 +196,7 @@ fn culled_subtree_keeps_root_effect_and_deferred_fail_closed() {
             .get(root)
             .unwrap()
             .element
-            .shadow_paint_recording_capability(&arena, false, PaintRecordingContext::default(),),
+            .shadow_paint_recording_capability(&arena, false, &PaintRecordingContext::default(),),
         ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::Transform)
     );
 
@@ -219,7 +219,7 @@ fn culled_subtree_keeps_root_effect_and_deferred_fail_closed() {
             .get(root)
             .unwrap()
             .element
-            .shadow_paint_recording_capability(&arena, false, PaintRecordingContext::default(),),
+            .shadow_paint_recording_capability(&arena, false, &PaintRecordingContext::default(),),
         ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::ScrollContainer)
     );
 

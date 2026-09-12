@@ -29,12 +29,12 @@ fn text_area_projection_selection_is_path_scoped_ordered_and_matches_legacy() {
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context(PaintRecordingContext::default());
+        .shadow_paint_recording_context(&PaintRecordingContext::default());
     let projection_context = arena
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context_for_child(projection, &arena, root_context);
+        .shadow_paint_recording_context_for_child(projection, &arena, &root_context);
     let witness = projection_context
         .text_area_selection
         .expect("selected projection edge must own a witness");
@@ -53,7 +53,7 @@ fn text_area_projection_selection_is_path_scoped_ordered_and_matches_legacy() {
             .get(root)
             .unwrap()
             .element
-            .shadow_paint_recording_context_for_child(sibling, &arena, root_context);
+            .shadow_paint_recording_context_for_child(sibling, &arena, &root_context);
         assert_eq!(
             sibling_context.text_area_selection, None,
             "selection authority must not leak to a TextArea sibling"
@@ -63,12 +63,12 @@ fn text_area_projection_selection_is_path_scoped_ordered_and_matches_legacy() {
         .get(projection)
         .unwrap()
         .element
-        .shadow_paint_recording_context(projection_context);
+        .shadow_paint_recording_context(&projection_context);
     let text_context = arena
         .get(projection)
         .unwrap()
         .element
-        .shadow_paint_recording_context_for_child(projected_text, &arena, wrapper_context);
+        .shadow_paint_recording_context_for_child(projected_text, &arena, &wrapper_context);
     assert_eq!(text_context.text_area_selection, Some(witness));
 
     let (properties, generations) = sync_identity(&arena, &roots);
@@ -187,12 +187,12 @@ fn text_area_atomic_projection_disjoint_root_selection_is_ordered_and_matches_le
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context(PaintRecordingContext::default());
+        .shadow_paint_recording_context(&PaintRecordingContext::default());
     let projection_context = arena
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context_for_child(projection, &arena, root_context);
+        .shadow_paint_recording_context_for_child(projection, &arena, &root_context);
     assert_eq!(
         projection_context.text_area_selection, None,
         "disjoint root selection must not mint projection-owned authority",
@@ -238,12 +238,12 @@ fn text_area_selection_crossing_projection_is_split_between_root_and_child() {
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context(PaintRecordingContext::default());
+        .shadow_paint_recording_context(&PaintRecordingContext::default());
     let projection_context = arena
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context_for_child(projection, &arena, root_context);
+        .shadow_paint_recording_context_for_child(projection, &arena, &root_context);
     let witness = projection_context
         .text_area_selection
         .expect("crossing selection must mint projection-local authority");
@@ -280,12 +280,12 @@ fn text_area_projection_selection_utf8_local_range_and_metadata_full_identity_ar
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context(PaintRecordingContext::default());
+        .shadow_paint_recording_context(&PaintRecordingContext::default());
     let witness = arena
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context_for_child(projection, &arena, root_context)
+        .shadow_paint_recording_context_for_child(projection, &arena, &root_context)
         .text_area_selection
         .unwrap();
     assert_eq!((witness.local_start, witness.local_end), (1, 3));
@@ -379,22 +379,22 @@ fn text_area_projection_selection_ambiguous_owner_and_witness_tamper_fail_closed
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context(PaintRecordingContext::default());
+        .shadow_paint_recording_context(&PaintRecordingContext::default());
     let projection_context = arena
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context_for_child(projection, &arena, root_context);
+        .shadow_paint_recording_context_for_child(projection, &arena, &root_context);
     let wrapper_context = arena
         .get(projection)
         .unwrap()
         .element
-        .shadow_paint_recording_context(projection_context);
+        .shadow_paint_recording_context(&projection_context);
     let text_context = arena
         .get(projection)
         .unwrap()
         .element
-        .shadow_paint_recording_context_for_child(projected_text, &arena, wrapper_context);
+        .shadow_paint_recording_context_for_child(projected_text, &arena, &wrapper_context);
     for tamper_stable_id in [false, true] {
         let mut tampered = text_context;
         let witness = tampered.text_area_selection.as_mut().unwrap();
@@ -418,7 +418,7 @@ fn text_area_projection_selection_ambiguous_owner_and_witness_tamper_fail_closed
                         topology_revision: 1,
                     },
                     &arena,
-                    tampered,
+                    &tampered,
                 )
                 .is_none(),
             "tampered projection selection witness must fail closed"
@@ -487,7 +487,7 @@ fn text_area_projection_selection_visibility_gate_prevents_artifact_only_underla
             .get(standalone_text)
             .unwrap()
             .element
-            .shadow_paint_recording_capability(&arena, false, PaintRecordingContext::default(),),
+            .shadow_paint_recording_capability(&arena, false, &PaintRecordingContext::default(),),
         ShadowPaintRecordingCapability::Transparent,
         "standalone invisible Text must close as transparent coverage"
     );
@@ -514,22 +514,22 @@ fn text_area_projection_selection_visibility_gate_prevents_artifact_only_underla
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context(PaintRecordingContext::default());
+        .shadow_paint_recording_context(&PaintRecordingContext::default());
     let projection_context = arena
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context_for_child(projection, &arena, root_context);
+        .shadow_paint_recording_context_for_child(projection, &arena, &root_context);
     let wrapper_context = arena
         .get(projection)
         .unwrap()
         .element
-        .shadow_paint_recording_context(projection_context);
+        .shadow_paint_recording_context(&projection_context);
     let text_context = arena
         .get(projection)
         .unwrap()
         .element
-        .shadow_paint_recording_context_for_child(projected_text, &arena, wrapper_context);
+        .shadow_paint_recording_context_for_child(projected_text, &arena, &wrapper_context);
     arena
         .get_mut(projected_text)
         .unwrap()
@@ -543,7 +543,7 @@ fn text_area_projection_selection_visibility_gate_prevents_artifact_only_underla
             .get(projected_text)
             .unwrap()
             .element
-            .shadow_paint_recording_capability(&arena, false, text_context),
+            .shadow_paint_recording_capability(&arena, false, &text_context),
         ShadowPaintRecordingCapability::Transparent,
         "empty content must close the shared Text paint gate before selection"
     );
@@ -568,7 +568,7 @@ fn text_area_projection_deferred_and_invalid_scroll_boundaries_remain_fail_close
         node.element.shadow_paint_recording_capability(
             &arena,
             true,
-            PaintRecordingContext {
+            &PaintRecordingContext {
                 inside_text_area: true,
                 ..Default::default()
             },

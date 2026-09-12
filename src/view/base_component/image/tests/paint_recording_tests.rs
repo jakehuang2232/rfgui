@@ -23,15 +23,15 @@ fn rounded_loading_and_error_image_wrappers_record_exact_child_mask_scope() {
     let node = arena.get(owner).unwrap();
     let context = node
         .element
-        .shadow_paint_recording_context(Default::default());
+        .shadow_paint_recording_context(&Default::default());
     assert_eq!(
         node.element
-            .shadow_paint_recording_capability(&arena, false, context),
+            .shadow_paint_recording_capability(&arena, false, &context),
         ShadowPaintRecordingCapability::Recordable
     );
     assert!(
         node.element
-            .retained_child_mask_plan(&arena, context)
+            .retained_child_mask_plan(&arena, &context)
             .is_none(),
         "ready Image has no active slot children, so no child-mask scope is required"
     );
@@ -99,10 +99,10 @@ fn canonical_hidden_image_wrappers_cull_but_visible_active_slots_do_not() {
         let node = arena.get(owner).unwrap();
         let context = node
             .element
-            .shadow_paint_recording_context(Default::default());
+            .shadow_paint_recording_context(&Default::default());
         assert_eq!(
             node.element
-                .shadow_paint_recording_capability(&arena, false, context),
+                .shadow_paint_recording_capability(&arena, false, &context),
             ShadowPaintRecordingCapability::Recordable,
             "visible {state:?} child subtree must remain traversable"
         );
@@ -118,10 +118,10 @@ fn canonical_hidden_image_wrappers_cull_but_visible_active_slots_do_not() {
         let node = arena.get(owner).unwrap();
         let context = node
             .element
-            .shadow_paint_recording_context(Default::default());
+            .shadow_paint_recording_context(&Default::default());
         assert_eq!(
             node.element
-                .shadow_paint_recording_capability(&arena, false, context),
+                .shadow_paint_recording_capability(&arena, false, &context),
             ShadowPaintRecordingCapability::CulledSubtree,
             "zero-area {state:?} wrapper culls its complete subtree"
         );
@@ -143,8 +143,8 @@ fn canonical_hidden_image_wrappers_cull_but_visible_active_slots_do_not() {
         node.element.shadow_paint_recording_capability(
             &arena,
             false,
-            node.element
-                .shadow_paint_recording_context(Default::default()),
+            &node.element
+                .shadow_paint_recording_context(&Default::default()),
         ),
         ShadowPaintRecordingCapability::CulledSubtree
     );
@@ -475,7 +475,7 @@ fn path_loading_and_error_wrappers_record_canonical_decoration_while_invalid_rea
             .get(invalid_root)
             .unwrap()
             .element
-            .shadow_paint_recording_capability(&invalid_arena, false, invalid_context),
+            .shadow_paint_recording_capability(&invalid_arena, false, &invalid_context),
         ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::MissingPreparedImage)
     );
 

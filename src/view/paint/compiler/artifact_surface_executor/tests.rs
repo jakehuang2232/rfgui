@@ -197,7 +197,7 @@ fn prepared_whole_chunk_clip_surface_frame(
                 continue;
             };
             let mut changed_span = false;
-            for chunk in &mut span.chunks {
+            for chunk in std::sync::Arc::make_mut(&mut span.chunks) {
                 if chunk.source.id.slot != RETAINED_CHILD_MASK_SLOT
                     && !chunk.localized_ops.is_empty()
                     && chunk

@@ -5,9 +5,10 @@ use slotmap::Key;
 
 use crate::view::{
     compositor::property_tree::{
-        ClipBehavior, ClipNodeId, ClipNodeRole, EffectNodeId, LayoutPositionNodeId,
-        PropertyStateTransition, PropertyTreeState, ScrollNodeId, SpatialPositionReference,
-        SpatialProjectionError, SpatialProjectionGraph, TransformNodeId, VisualOffsetNodeId,
+        ClipBehavior, ClipNodeId, ClipNodeRole, EffectNodeId, EffectNodeSnapshot,
+        LayoutPositionNodeId, PropertyStateTransition, PropertyTreeState, ScrollNodeId,
+        SpatialPositionReference, SpatialProjectionError, SpatialProjectionGraph, TransformNodeId,
+        VisualOffsetNodeId,
     },
     node_arena::NodeKey,
 };
@@ -191,7 +192,71 @@ impl PropertySurfaceMembership {
     }
 }
 
+fn validate_clip_value(
+    snapshot: &crate::view::compositor::property_tree::ClipNodeSnapshot,
+) -> Result<(), TransitionError> {
+    let canonical_role = matches!(
+        (snapshot.id.role, snapshot.behavior),
+        (ClipNodeRole::SelfClip, ClipBehavior::Replace)
+            | (ClipNodeRole::ContentsClip, ClipBehavior::Intersect)
+    );
+    if snapshot.id.owner != snapshot.owner
+        || snapshot.owner.is_null()
+        || snapshot.generation == 0
+        || !canonical_role
+    {
+        return Err(TransitionError::InvalidClip(snapshot.id));
+    }
+    Ok(())
+}
+fn validate_effect_value(snapshot: &EffectNodeSnapshot) -> Result<(), TransitionError> {
+    if snapshot.id.0 != snapshot.owner
+        || snapshot.owner.is_null()
+        || snapshot.generation == 0
+        || !snapshot.opacity.is_finite()
+        || !(0.0..=1.0).contains(&snapshot.opacity)
+    {
+        return Err(TransitionError::InvalidEffect(snapshot.id));
+    }
+    Ok(())
+}
+
 impl PropertySnapshotGraph {
+    /// Used only with an exact proof that all remaining graph inputs match a
+    /// previously validated artifact. Numeric geometry, offset and opacity values
+    /// do not belong to parent maps, but must still satisfy live validity.
+    pub(super) fn validate_changed_snapshot_values(
+        artifact: &PaintArtifact,
+    ) -> Result<(), TransitionError> {
+        for snapshot in &artifact.transform_nodes {
+            snapshot
+                .validate_projection_value()
+                .map_err(TransitionError::SpatialSnapshot)?;
+        }
+        for snapshot in &artifact.layout_position_nodes {
+            snapshot
+                .validate_projection_value()
+                .map_err(TransitionError::SpatialSnapshot)?;
+        }
+        for snapshot in &artifact.visual_offset_nodes {
+            snapshot
+                .validate_projection_value()
+                .map_err(TransitionError::SpatialSnapshot)?;
+        }
+        for snapshot in &artifact.scroll_nodes {
+            snapshot
+                .validate_projection_value()
+                .map_err(TransitionError::SpatialSnapshot)?;
+        }
+        for snapshot in &artifact.clip_nodes {
+            validate_clip_value(snapshot)?;
+        }
+        for snapshot in &artifact.effect_nodes {
+            validate_effect_value(snapshot)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn try_from_artifact(artifact: &PaintArtifact) -> Result<Self, TransitionError> {
         SpatialProjectionGraph::try_new(
             &artifact.transform_nodes,
@@ -237,18 +302,7 @@ impl PropertySnapshotGraph {
             if clip_parents.insert(snapshot.id, snapshot.parent).is_some() {
                 return Err(TransitionError::DuplicateClip(snapshot.id));
             }
-            let canonical_role = matches!(
-                (snapshot.id.role, snapshot.behavior),
-                (ClipNodeRole::SelfClip, ClipBehavior::Replace)
-                    | (ClipNodeRole::ContentsClip, ClipBehavior::Intersect)
-            );
-            if snapshot.id.owner != snapshot.owner
-                || snapshot.owner.is_null()
-                || snapshot.generation == 0
-                || !canonical_role
-            {
-                return Err(TransitionError::InvalidClip(snapshot.id));
-            }
+            validate_clip_value(snapshot)?;
         }
         validate_parent_store(
             &clip_parents,
@@ -265,14 +319,7 @@ impl PropertySnapshotGraph {
             {
                 return Err(TransitionError::DuplicateEffect(snapshot.id));
             }
-            if snapshot.id.0 != snapshot.owner
-                || snapshot.owner.is_null()
-                || snapshot.generation == 0
-                || !snapshot.opacity.is_finite()
-                || !(0.0..=1.0).contains(&snapshot.opacity)
-            {
-                return Err(TransitionError::InvalidEffect(snapshot.id));
-            }
+            validate_effect_value(snapshot)?;
         }
         validate_parent_store(
             &effect_parents,
@@ -475,13 +522,13 @@ fn validate_parent_store<Id: Copy + Eq + std::hash::Hash>(
             return Err(missing(parent));
         }
     }
-    let mut complete = FxHashSet::default();
+    let mut complete = FxHashSet::with_capacity_and_hasher(parents.len(), Default::default());
+    let mut seen = FxHashSet::default();
     for start in starts {
         if complete.contains(&start) {
             continue;
         }
-        let mut seen = FxHashSet::default();
-        let mut path = Vec::new();
+        seen.clear();
         let mut cursor = Some(start);
         while let Some(id) = cursor {
             if complete.contains(&id) {
@@ -490,10 +537,9 @@ fn validate_parent_store<Id: Copy + Eq + std::hash::Hash>(
             if !seen.insert(id) {
                 return Err(cyclic(id));
             }
-            path.push(id);
             cursor = parents.get(&id).copied().flatten();
         }
-        complete.extend(path);
+        complete.extend(seen.drain());
     }
     Ok(())
 }

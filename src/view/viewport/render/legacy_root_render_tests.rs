@@ -1615,7 +1615,7 @@ impl ElementTrait for TransparentContentsClipParent {
         &self,
         _arena: &NodeArena,
         _deferred_phase_root: bool,
-        _recording_context: crate::view::paint::PaintRecordingContext,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
         ShadowPaintRecordingCapability::Transparent
     }

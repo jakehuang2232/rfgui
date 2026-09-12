@@ -2,6 +2,7 @@ use super::*;
 use std::cell::Cell;
 
 thread_local! {
+    static WITNESS_CHECKS: Cell<usize> = const { Cell::new(0) };
     static GEOMETRY_REBUILDS: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -88,4 +89,11 @@ fn owning_inline_text_preflight_does_not_rebuild_layout_geometry() {
 #[test]
 fn owning_inline_atomic_preflight_does_not_rebuild_text_geometry() {
     assert_preflight_does_not_rebuild_geometry(true);
+}
+
+pub(crate) fn note_witness_check() {
+    WITNESS_CHECKS.with(|n| n.set(n.get() + 1));
+}
+pub(crate) fn witness_checks() -> usize {
+    WITNESS_CHECKS.with(Cell::get)
 }

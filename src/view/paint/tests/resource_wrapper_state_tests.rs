@@ -161,7 +161,7 @@ fn generic_resource_wrapper_state_preserves_effects_and_rejects_wrong_authority(
                     state,
                     chunk.content_revision,
                     &arena,
-                    ctx,
+                    &ctx,
                 )
             };
             assert!(record(context).is_some());

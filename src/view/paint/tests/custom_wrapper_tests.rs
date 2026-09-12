@@ -186,7 +186,7 @@ fn custom_wrapper_topology_properties_and_unknown_child_fail_closed() {
             .shadow_paint_recording_capability(
                 &topology_arena,
                 false,
-                PaintRecordingContext::default(),
+                &PaintRecordingContext::default(),
             ),
         ShadowPaintRecordingCapability::Unsupported
     );

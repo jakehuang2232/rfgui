@@ -270,3 +270,120 @@ fn reused_parent_still_materializes_one_evicted_reraster_child() {
     assert_eq!(graph.test_graphics_passes::<ClearPass>().len(), 1);
     assert_eq!(graph.test_graphics_passes::<CompositeLayerPass>().len(), 1);
 }
+
+#[test]
+fn resident_stream_validation_rejects_missing_and_extra_snapshot_entries() {
+    use crate::view::paint::compiler::artifact_surface_resident_set_is_canonical;
+    let frame = prepared_child_mask_surface_frame();
+    let entries = frame.residents().ordered_entries();
+    assert!(artifact_surface_resident_set_is_canonical(entries));
+    for kind in 0..4 {
+        let mut damaged = entries.to_vec();
+        let stamp = &mut damaged
+            .iter_mut()
+            .find(|entry| !entry.stamp.owner_topology.is_empty() && !entry.stamp.chunks.is_empty())
+            .expect("fixture must exercise every streamed store")
+            .stamp;
+        match kind {
+            0 => {
+                stamp.owner_topology.pop();
+            }
+            1 => stamp.owner_topology.push(stamp.owner_topology[0]),
+            2 => {
+                stamp.chunks.pop();
+            }
+            3 => stamp.chunks.push(stamp.chunks[0].clone()),
+            _ => unreachable!(),
+        }
+        assert!(
+            !artifact_surface_resident_set_is_canonical(&damaged),
+            "mutation {kind}"
+        );
+    }
+    let mut damaged = entries.to_vec();
+    let owner = damaged[0].stamp.identity.boundary_root;
+    damaged[0]
+        .stamp
+        .clip_nodes
+        .push(crate::view::compositor::property_tree::ClipNodeSnapshot {
+            id: crate::view::compositor::property_tree::ClipNodeId {
+                owner,
+                role: crate::view::compositor::property_tree::ClipNodeRole::SelfClip,
+            },
+            owner,
+            parent: None,
+            logical_scissor: [0, 0, 8, 8],
+            behavior: ClipBehavior::Intersect,
+            generation: 1,
+        });
+    assert!(
+        !artifact_surface_resident_set_is_canonical(&damaged),
+        "extra valid clip must not be ignored"
+    );
+}
+
+#[test]
+fn unchanged_span_reuses_its_seal_but_mutated_inputs_are_revalidated() {
+    use crate::view::paint::compiler::ArtifactSurfaceRasterProgramStepStamp;
+    let (plan, _) = prepared_child_mask_surface_frame().into_parts();
+    let first = seal_prepared_artifact_surface_frame(plan.clone()).unwrap();
+    let warm = seal_prepared_artifact_surface_frame(plan.clone()).unwrap();
+    assert_eq!(first.residents(), warm.residents());
+    let mut shared = 0;
+    for (a, b) in first
+        .residents()
+        .ordered_entries()
+        .iter()
+        .zip(warm.residents().ordered_entries())
+    {
+        for (a, b) in a
+            .stamp
+            .artifact_surface_program
+            .as_ref()
+            .unwrap()
+            .steps
+            .iter()
+            .zip(&b.stamp.artifact_surface_program.as_ref().unwrap().steps)
+        {
+            if let (
+                ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(a),
+                ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(b),
+            ) = (a, b)
+            {
+                assert!(a.shares_seal(b));
+                shared += 1;
+            }
+        }
+    }
+    assert!(shared > 0);
+    for change in 0..3 {
+        let mut damaged = plan.clone();
+        let span = damaged
+            .nodes
+            .iter_mut()
+            .flat_map(|node| &mut node.steps)
+            .find_map(|step| match step {
+                PreparedArtifactSurfaceRasterStep::ArtifactSpan(span)
+                    if !span.chunks.is_empty() =>
+                {
+                    Some(span)
+                }
+                _ => None,
+            })
+            .expect("fixture resident span");
+        match change {
+            0 => {
+                std::sync::Arc::make_mut(&mut span.chunks)[0]
+                    .content_revision
+                    .topology_revision = 0
+            }
+            1 => span.owner_topology.clear(),
+            2 => span.opaque_order_count += 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            seal_prepared_artifact_surface_frame(damaged).is_err(),
+            "change {change}"
+        );
+    }
+}

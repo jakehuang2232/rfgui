@@ -268,6 +268,21 @@ pub fn has_animation_frame_request(
     visit(arena, root_key, &mut FxHashSet::default())
 }
 
+// Exact native defaults have no side effects. Avoid acquiring mutable access
+// for those no-op calls: it would invalidate every retained input each frame.
+// Unknown/custom implementations always receive both original hooks.
+fn native_noop_tick_children(
+    arena: &crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    post_layout: bool,
+) -> Option<Vec<crate::view::node_arena::NodeKey>> {
+    let node = arena.get(key)?;
+    let host = node.element.as_any();
+    let noop = host.is::<Text>() || host.downcast_ref::<Element>()
+        .is_some_and(|element| !post_layout || element.post_layout_animation_is_noop());
+    noop.then(|| node.element.children().to_vec())
+}
+
 /// Advance retained animation state using one viewport-owned time sample.
 ///
 /// The generic hook keeps the viewport independent of concrete components.
@@ -287,14 +302,16 @@ pub(crate) fn tick_animation_frames(
         if !seen.insert(key) {
             return false;
         }
-        let Some((children, dirty)) = arena.mutate_element_with_invalidation(key, |element, cx| {
+        let Some((children, dirty)) = native_noop_tick_children(arena, key, false)
+            .map(|children| (children, DirtyFlags::NONE))
+            .or_else(|| arena.mutate_element_with_invalidation(key, |element, cx| {
             let children = element.children().to_vec();
             let dirty = element.tick_animation_frame(now);
             if !dirty.is_empty() {
                 cx.invalidate(dirty);
             }
             (children, dirty)
-        }) else {
+        })) else {
             return false;
         };
         let mut changed = !dirty.is_empty();
@@ -326,14 +343,16 @@ pub(crate) fn tick_post_layout_animation_frames(
         if !seen.insert(key) {
             return false;
         }
-        let Some((children, dirty)) = arena.mutate_element_with_invalidation(key, |element, cx| {
+        let Some((children, dirty)) = native_noop_tick_children(arena, key, true)
+            .map(|children| (children, DirtyFlags::NONE))
+            .or_else(|| arena.mutate_element_with_invalidation(key, |element, cx| {
             let children = element.children().to_vec();
             let dirty = element.tick_post_layout_animation_frame(now);
             if !dirty.is_empty() {
                 cx.invalidate(dirty);
             }
             (children, dirty)
-        }) else {
+        })) else {
             return false;
         };
         let mut changed = !dirty.is_empty();

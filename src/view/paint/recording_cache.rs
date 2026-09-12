@@ -1,6 +1,8 @@
 //! Native command replay is opt-in: a host must guarantee that its complete
 //! metadata determines its command payload. Unknown/custom hosts keep running
 //! both hooks. Revision counters alone are never a replay key.
+mod order_cache;
+mod scope_cache;
 use super::{
     PaintArtifact, PaintChunkMetadata, PaintContentRevision, PaintCoverageItem,
     PaintCoverageManifest, PaintNodePlan, PaintRecordingContext,
@@ -9,12 +11,22 @@ use crate::view::compositor::property_tree::PropertyTreeState;
 use crate::view::node_arena::NodeArena;
 use crate::view::node_arena::NodeKey;
 use rustc_hash::FxHashMap;
+use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct RecordingCache {
     entries: FxHashMap<NodeKey, Entry>,
+    order_paths: FxHashMap<NodeKey, (Arc<[usize]>, bool)>,
+    pub(super) property_closure:
+        Option<super::frame_recorder::property_closure_cache::PropertyClosureCache>,
+    pub(crate) property_closure_hits: usize,
+    scope_store: Option<scope_cache::ScopedSnapshotStore>,
+    pub(crate) scope_store_hits: usize,
+    pub(crate) scope_store_effect_updates: usize,
+    scopes: FxHashMap<NodeKey, (Arc<super::coverage_manifest::PaintOwnerScope>, bool)>,
+    pub(crate) scope_hits: usize,
     requires_full_walk: bool,
-    metadata: FxHashMap<NodeKey, (u64, PaintNodePlan<PaintChunkMetadata>)>,
+    metadata: FxHashMap<NodeKey, (u64, Arc<PaintNodePlan<PaintChunkMetadata>>)>,
     requests: FxHashMap<NodeKey, Request>,
     pub(crate) hits: usize,
     pub(crate) misses: usize,
@@ -27,8 +39,9 @@ struct Request {
 }
 struct Entry {
     stable_id: u64,
-    metadata: PaintNodePlan<PaintChunkMetadata>,
+    metadata: Arc<PaintNodePlan<PaintChunkMetadata>>,
     commands: PaintNodePlan<PaintArtifact>,
+    shared_ops: Vec<(super::PaintChunkId, Arc<[super::PaintOp]>)>,
     seen: bool,
 }
 fn metadata_eq(
@@ -60,10 +73,47 @@ impl RecordingCache {
         self.requests.clear();
         self.hits = 0;
         self.misses = 0;
+        self.scope_hits = 0;
+        self.scope_store_hits = 0;
+        self.scope_store_effect_updates = 0;
+        self.property_closure_hits = 0;
+        for (_, seen) in self.order_paths.values_mut() {
+            *seen = false;
+        }
+        for (_, seen) in self.scopes.values_mut() {
+            *seen = false;
+        }
         for entry in self.entries.values_mut() {
             entry.seen = false;
         }
     }
+    /// Fresh scope construction has already read current canonical topology,
+    /// owner endpoints and complete clip/effect chains. Reuse immutable storage
+    /// only after exact comparison; a changed parent rebuilds its descendants.
+    pub(super) fn intern_scope(
+        &mut self,
+        fresh: super::coverage_manifest::PaintOwnerScope,
+    ) -> Arc<super::coverage_manifest::PaintOwnerScope> {
+        let owner = fresh.topology.owner;
+        if let Some((old, seen)) = self.scopes.get_mut(&owner) {
+            if old.same_live_inputs(&fresh) {
+                *seen = true;
+                self.scope_hits += 1;
+                return old.clone();
+            }
+        }
+        super::work_profile::count("owner_scope_updates", 1);
+        let scope = Arc::new(fresh);
+        self.scopes.insert(owner, (scope.clone(), true));
+        scope
+    }
+
+    /// Allocation hint only. Every current owner/edge is still walked and
+    /// validated; accepted-frame pruning keeps this tied to the last frame.
+    pub(super) fn owner_capacity_hint(&self) -> usize {
+        self.scopes.len()
+    }
+
     pub(crate) fn require_full_walk(&mut self) {
         self.requires_full_walk = true;
     }
@@ -72,22 +122,40 @@ impl RecordingCache {
         &mut self,
         owner: NodeKey,
         stable: u64,
-        plan: PaintNodePlan<PaintChunkMetadata>,
+        plan: &PaintNodePlan<PaintChunkMetadata>,
         properties: PropertyTreeState,
         contents: PropertyTreeState,
         revision: PaintContentRevision,
-        context: PaintRecordingContext,
+        context: &PaintRecordingContext,
     ) {
-        self.metadata.insert(owner, (stable, plan));
-        self.requests.insert(
+        // Warm command replay consumes only this frame's complete metadata.
+        // Avoid storing the large recording context when no full hook is needed.
+        let matching_metadata = self.entries.get(&owner).and_then(|entry| {
+            (entry.stable_id == stable && metadata_eq(&entry.metadata, plan))
+                .then(|| entry.metadata.clone())
+        });
+        let replayable = matching_metadata.is_some();
+        // A shared allocation is minted only after comparing this invocation's
+        // complete live metadata. It avoids copying the two command schedules
+        // for warm owners; it is not a dirty/generation shortcut.
+        self.metadata.insert(
             owner,
-            Request {
-                properties,
-                contents,
-                revision,
-                context,
-            },
+            (
+                stable,
+                matching_metadata.unwrap_or_else(|| Arc::new(plan.clone())),
+            ),
         );
+        if !replayable {
+            self.requests.insert(
+                owner,
+                Request {
+                    properties,
+                    contents,
+                    revision,
+                    context: *context,
+                },
+            );
+        }
     }
     /// Once every node has passed preflight, immutable native hooks can fill
     /// exactly that schedule. An unknown host keeps the original second walk.
@@ -101,11 +169,14 @@ impl RecordingCache {
         if self.requires_full_walk {
             return None;
         }
-        let mut owners = Vec::new();
-        let mut seen = rustc_hash::FxHashSet::default();
+        let mut owners = Vec::with_capacity(self.metadata.len());
+        let mut seen = rustc_hash::FxHashSet::with_capacity_and_hasher(
+            self.metadata.len(),
+            Default::default(),
+        );
         for item in &preflight.items {
             if let PaintCoverageItem::ArtifactChunk { chunk, .. } = item {
-                if !self.requests.contains_key(&chunk.owner) {
+                if !self.metadata.contains_key(&chunk.owner) {
                     return None;
                 }
                 if seen.insert(chunk.owner) {
@@ -113,11 +184,21 @@ impl RecordingCache {
                 }
             }
         }
-        let mut all_ops = FxHashMap::default();
+        let mut all_ops =
+            FxHashMap::with_capacity_and_hasher(preflight.items.len(), Default::default());
         for owner in owners {
-            let commands = if let Some(commands) = self.replay(owner) {
-                commands
-            } else {
+            if let Some(entry) = self.replay_entry(owner) {
+                // Immutable command storage avoids allocating and copying each
+                // chunk into an intermediate Vec on every warm frame. The final
+                // artifact still owns the current contiguous command schedule.
+                for (id, ops) in &entry.shared_ops {
+                    if all_ops.insert(*id, ops.clone()).is_some() {
+                        return None;
+                    }
+                }
+                continue;
+            }
+            let commands = {
                 let request = self.requests.get(&owner)?;
                 let node = arena.get(owner)?;
                 let commands = node.element.record_shadow_paint_artifact_plan(
@@ -126,7 +207,7 @@ impl RecordingCache {
                     request.contents,
                     request.revision,
                     arena,
-                    request.context,
+                    &request.context,
                 )?;
                 let as_metadata =
                     |artifacts: &Vec<PaintArtifact>| -> Option<Vec<PaintChunkMetadata>> {
@@ -168,7 +249,7 @@ impl RecordingCache {
                 let [chunk] = artifact.chunks.as_slice() else {
                     return None;
                 };
-                if all_ops.insert(chunk.id, artifact.ops).is_some() {
+                if all_ops.insert(chunk.id, Arc::from(artifact.ops)).is_some() {
                     return None;
                 }
             }
@@ -199,6 +280,10 @@ impl RecordingCache {
         Some(())
     }
     pub(crate) fn replay(&mut self, owner: NodeKey) -> Option<PaintNodePlan<PaintArtifact>> {
+        self.replay_entry(owner).map(|entry| entry.commands.clone())
+    }
+
+    fn replay_entry(&mut self, owner: NodeKey) -> Option<&Entry> {
         // An unknown hook may change a child's context between passes. The
         // original full walk must therefore execute native child hooks too;
         // metadata captured during preflight is not proof of that later context.
@@ -207,10 +292,13 @@ impl RecordingCache {
         }
         let (stable, metadata) = self.metadata.get(&owner)?;
         if let Some(entry) = self.entries.get_mut(&owner) {
-            if entry.stable_id == *stable && metadata_eq(&entry.metadata, metadata) {
+            if entry.stable_id == *stable
+                && (Arc::ptr_eq(&entry.metadata, metadata)
+                    || metadata_eq(&entry.metadata, metadata))
+            {
                 entry.seen = true;
                 self.hits += 1;
-                return Some(entry.commands.clone());
+                return Some(entry);
             }
         }
         self.misses += 1;
@@ -218,12 +306,24 @@ impl RecordingCache {
     }
     pub(crate) fn insert(&mut self, owner: NodeKey, commands: PaintNodePlan<PaintArtifact>) {
         if let Some((stable_id, metadata)) = self.metadata.get(&owner) {
+            let shared_ops = commands
+                .before_children
+                .iter()
+                .chain(&commands.after_children)
+                .filter_map(|artifact| {
+                    let [chunk] = artifact.chunks.as_slice() else {
+                        return None;
+                    };
+                    Some((chunk.id, Arc::from(artifact.ops.clone())))
+                })
+                .collect();
             self.entries.insert(
                 owner,
                 Entry {
                     stable_id: *stable_id,
                     metadata: metadata.clone(),
                     commands,
+                    shared_ops,
                     seen: true,
                 },
             );
@@ -233,6 +333,12 @@ impl RecordingCache {
         // Hidden, removed, rejected and no-longer-recordable owners lose their
         // strong resource references at this frame boundary, not at a high-water mark.
         self.entries.retain(|_, entry| accepted && entry.seen);
+        self.scopes.retain(|_, (_, seen)| accepted && *seen);
+        self.order_paths.retain(|_, (_, seen)| accepted && *seen);
+        if !accepted {
+            self.scope_store = None;
+            self.property_closure = None;
+        }
         self.metadata.clear();
         self.requests.clear();
     }

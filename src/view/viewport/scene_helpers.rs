@@ -455,11 +455,9 @@ fn clear_subtree_dirty_flags_by_key(
     flags: DirtyFlags,
 ) -> bool {
     let children = arena.children_of(root_key);
-    let Some(mut root_node) = arena.get_mut(root_key) else {
+    if !arena.clear_element_dirty_flags(root_key, flags) {
         return false;
-    };
-    root_node.element.clear_local_dirty_flags(flags);
-    drop(root_node);
+    }
 
     for child_key in children {
         clear_subtree_dirty_flags_by_key(arena, child_key, flags);

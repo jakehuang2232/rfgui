@@ -63,10 +63,10 @@ fn loading_and_error_wrappers_record_active_subtree_in_canonical_order() {
         assert_eq!(node.element.children(), &[active_root]);
         let context = node
             .element
-            .shadow_paint_recording_context(Default::default());
+            .shadow_paint_recording_context(&Default::default());
         assert_eq!(
             node.element
-                .shadow_paint_recording_capability(&arena, false, context),
+                .shadow_paint_recording_capability(&arena, false, &context),
             ShadowPaintRecordingCapability::Recordable
         );
         let revision = crate::view::paint::PaintContentRevision {
@@ -76,11 +76,11 @@ fn loading_and_error_wrappers_record_active_subtree_in_canonical_order() {
         };
         let metadata = node
             .element
-            .record_shadow_paint_metadata(owner, Default::default(), revision, &arena, context)
+            .record_shadow_paint_metadata(owner, Default::default(), revision, &arena, &context)
             .unwrap();
         let artifact = node
             .element
-            .record_shadow_paint_artifact(owner, Default::default(), revision, &arena, context)
+            .record_shadow_paint_artifact(owner, Default::default(), revision, &arena, &context)
             .unwrap();
         assert_eq!(metadata.id.scope, PaintPropertyScope::SelfPaint);
         assert_eq!(metadata.id.phase, PaintNodePhase::BeforeChildren);
@@ -223,10 +223,10 @@ fn active_wrapper_topology_alias_and_resource_key_drift_fail_closed() {
         let node = arena.get(owner).unwrap();
         let context = node
             .element
-            .shadow_paint_recording_context(Default::default());
+            .shadow_paint_recording_context(&Default::default());
         assert_eq!(
             node.element
-                .shadow_paint_recording_capability(&arena, false, context),
+                .shadow_paint_recording_capability(&arena, false, &context),
             ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::MissingPreparedSvg)
         );
         let revision = crate::view::paint::PaintContentRevision {
@@ -241,7 +241,7 @@ fn active_wrapper_topology_alias_and_resource_key_drift_fail_closed() {
                     Default::default(),
                     revision,
                     &arena,
-                    context,
+                    &context,
                 )
                 .is_none()
         );
@@ -252,7 +252,7 @@ fn active_wrapper_topology_alias_and_resource_key_drift_fail_closed() {
                     Default::default(),
                     revision,
                     &arena,
-                    context,
+                    &context,
                 )
                 .is_none()
         );
@@ -275,7 +275,7 @@ fn active_wrapper_accepts_inherited_clip_and_rejects_unproven_property_boundarie
     let node = arena.get(owner).unwrap();
     let context = node
         .element
-        .shadow_paint_recording_context(Default::default());
+        .shadow_paint_recording_context(&Default::default());
     for properties in [
         PropertyTreeState {
             transform: Some(TransformNodeId(owner)),
@@ -296,12 +296,12 @@ fn active_wrapper_accepts_inherited_clip_and_rejects_unproven_property_boundarie
     ] {
         assert!(
             node.element
-                .record_shadow_paint_metadata(owner, properties, revision, &arena, context,)
+                .record_shadow_paint_metadata(owner, properties, revision, &arena, &context,)
                 .is_none()
         );
         assert!(
             node.element
-                .record_shadow_paint_artifact(owner, properties, revision, &arena, context,)
+                .record_shadow_paint_artifact(owner, properties, revision, &arena, &context,)
                 .is_none()
         );
     }
@@ -316,11 +316,11 @@ fn active_wrapper_accepts_inherited_clip_and_rejects_unproven_property_boundarie
     };
     let clipped_metadata = node
         .element
-        .record_shadow_paint_metadata(owner, clipped_properties, revision, &arena, context)
+        .record_shadow_paint_metadata(owner, clipped_properties, revision, &arena, &context)
         .expect("active wrapper may inherit a canonical clip property");
     let clipped_artifact = node
         .element
-        .record_shadow_paint_artifact(owner, clipped_properties, revision, &arena, context)
+        .record_shadow_paint_artifact(owner, clipped_properties, revision, &arena, &context)
         .expect("clipped active-wrapper artifact");
     assert_eq!(clipped_metadata.properties.clip, Some(clip));
     assert_eq!(
@@ -339,11 +339,11 @@ fn active_wrapper_accepts_inherited_clip_and_rejects_unproven_property_boundarie
     };
     let metadata = node
         .element
-        .record_shadow_paint_metadata(owner, properties, revision, &arena, root_opacity_context)
+        .record_shadow_paint_metadata(owner, properties, revision, &arena, &root_opacity_context)
         .expect("matching root-opacity authority");
     let artifact = node
         .element
-        .record_shadow_paint_artifact(owner, properties, revision, &arena, root_opacity_context)
+        .record_shadow_paint_artifact(owner, properties, revision, &arena, &root_opacity_context)
         .expect("matching root-opacity artifact");
     assert_eq!(
         metadata.id.role,

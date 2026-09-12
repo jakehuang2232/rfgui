@@ -36,10 +36,10 @@ fn ready_svg_media_with_outer_shadow_records_typed_shadow_prefix() {
     let node = arena.get(owner).unwrap();
     let context = node
         .element
-        .shadow_paint_recording_context(Default::default());
+        .shadow_paint_recording_context(&Default::default());
     assert_eq!(
         node.element
-            .shadow_paint_recording_capability(&arena, false, context),
+            .shadow_paint_recording_capability(&arena, false, &context),
         ShadowPaintRecordingCapability::Recordable
     );
     let revision = crate::view::paint::PaintContentRevision {
@@ -49,11 +49,11 @@ fn ready_svg_media_with_outer_shadow_records_typed_shadow_prefix() {
     };
     let metadata = node
         .element
-        .record_shadow_paint_metadata(owner, Default::default(), revision, &arena, context)
+        .record_shadow_paint_metadata(owner, Default::default(), revision, &arena, &context)
         .expect("ready shadow SVG metadata");
     let artifact = node
         .element
-        .record_shadow_paint_artifact(owner, Default::default(), revision, &arena, context)
+        .record_shadow_paint_artifact(owner, Default::default(), revision, &arena, &context)
         .expect("ready shadow SVG artifact");
     assert_eq!(
         artifact.chunks[0].payload_identity,
@@ -135,7 +135,7 @@ fn ready_svg_media_with_outer_shadow_records_typed_shadow_prefix() {
     let node = arena.get(owner).unwrap();
     let changed_context = node
         .element
-        .shadow_paint_recording_context(Default::default());
+        .shadow_paint_recording_context(&Default::default());
     let changed = node
         .element
         .record_shadow_paint_metadata(
@@ -143,7 +143,7 @@ fn ready_svg_media_with_outer_shadow_records_typed_shadow_prefix() {
             Default::default(),
             revision,
             &arena,
-            changed_context,
+            &changed_context,
         )
         .expect("shadow-mutated SVG metadata");
     let crate::view::paint::PaintPayloadIdentity::SvgWithShadows(
@@ -253,7 +253,7 @@ fn ready_svg_exact_self_clip_shadow_metadata_and_full_are_canonical() {
         ops.last(),
         Some(crate::view::paint::PaintOp::PreparedSvg(_))
     ));
-    let [clip] = clip_snapshot.as_slice() else {
+    let [clip] = clip_snapshot.as_ref() else {
         panic!("exact clipped Svg must carry one complete self-clip snapshot")
     };
     assert_eq!(clip.id, full_chunk.properties.clip.unwrap());
@@ -336,11 +336,11 @@ fn shadow_svg_root_group_records_neutral_opacity_and_matching_identity() {
     let node = arena.get(root).unwrap();
     let metadata = node
         .element
-        .record_shadow_paint_metadata(root, properties, revision, &arena, context)
+        .record_shadow_paint_metadata(root, properties, revision, &arena, &context)
         .expect("neutral SVG metadata");
     let artifact = node
         .element
-        .record_shadow_paint_artifact(root, properties, revision, &arena, context)
+        .record_shadow_paint_artifact(root, properties, revision, &arena, &context)
         .expect("neutral SVG artifact");
     let Some(crate::view::paint::PaintOp::PreparedSvg(prepared)) = artifact.ops.last() else {
         panic!("neutral SVG must retain PreparedSvg")

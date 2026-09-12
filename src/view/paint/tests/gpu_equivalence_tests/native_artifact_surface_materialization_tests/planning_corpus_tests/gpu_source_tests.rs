@@ -244,7 +244,7 @@ fn gpu_source_recording_freezes_owner_payload_and_budget() {
                 chunk.properties,
                 chunk.content_revision,
                 &arena,
-                ctx
+                &ctx
             )
             .is_some()
     );
@@ -256,7 +256,7 @@ fn gpu_source_recording_freezes_owner_payload_and_budget() {
                 chunk.properties,
                 chunk.content_revision,
                 &arena,
-                ctx
+                &ctx
             )
             .is_none(),
         "GPU source cannot authorize a different live owner"

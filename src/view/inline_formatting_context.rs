@@ -597,8 +597,14 @@ impl InlineIfcCache {
     }
 
     pub(crate) fn lookup_key(&self, cache_key: &InlineIfcCacheKey) -> InlineIfcCacheLookup<'_> {
-        let shape_key = InlineIfcShapeCacheKey::from_cache_key(cache_key);
-        let Some(entry) = self.entries.get(&shape_key) else {
+        // At most four resident shapes: compare borrowed exact keys instead
+        // of allocating/cloning the complete content and hashing it for every
+        // paint witness. Eviction still owns the entries; no stale handle or
+        // extra strong reference can keep an evicted context alive.
+        let Some(entry) = self.entries.iter().find_map(|(shape, entry)| {
+            (shape.layout == cache_key.layout && shape.content == cache_key.content)
+                .then_some(entry)
+        }) else {
             return InlineIfcCacheLookup::Miss {
                 invalidation: InlineIfcInvalidation::Reshape,
             };
@@ -1096,6 +1102,19 @@ impl InlineIfcElementRootSource {
     pub(crate) fn cache_key(&self) -> InlineIfcCacheKey {
         self.input
             .cache_key_with_layout_options(self.layout_options)
+    }
+
+    /// Compare the live collector input without constructing a second owned
+    /// content/paint tree. Scalar normalization is shared with key creation;
+    /// sources, item order, inherited styles and every child remain observable.
+    pub(crate) fn matches_cache_key(&self, key: &InlineIfcCacheKey) -> bool {
+        InlineIfcLayoutKey::from_options(self.layout_options) == key.layout
+            && cache_key_matches::items_match(
+                &self.input.items,
+                &self.input.default_style,
+                &key.content.items,
+                &key.paint.items,
+            )
     }
 
     pub(crate) fn with_package_distribution(
@@ -3533,6 +3552,8 @@ fn parley_font_family(font_families: &[String]) -> FontFamily<'_> {
         .collect::<Vec<_>>();
     FontFamily::List(Cow::Owned(names))
 }
+
+mod cache_key_matches;
 
 #[cfg(test)]
 mod tests;

@@ -68,6 +68,8 @@ include!("render_trait.rs");
 include!("impl_core.rs");
 include!("impl_scroll.rs");
 include!("impl_render.rs");
+mod paint_recording_inputs;
+mod inline_witness_inputs;
 include!("impl_layout.rs");
 include!("helpers.rs");
 include!("event_handler_props.rs");
@@ -1764,8 +1766,15 @@ impl DirtyFlags {
     pub const HIT_TEST: Self = Self(1 << 3);
     pub const PAINT: Self = Self(1 << 4);
     pub const COMPOSITE: Self = Self(1 << 5);
+    /// Child membership, paint order or recording-scope structure changed.
+    /// This schedules recording/planning validation, not unconditional raster work.
+    pub const RECORDING_TOPOLOGY: Self = Self(1 << 6);
+    /// A sampled resource or its CPU preparation state needs fresh observation.
+    /// Rebuilding an identical payload can still reuse its resident raster.
+    pub const RESOURCE: Self = Self(1 << 7);
     pub const RUNTIME: Self = Self(
-        Self::PLACE.0 | Self::BOX_MODEL.0 | Self::HIT_TEST.0 | Self::PAINT.0 | Self::COMPOSITE.0,
+        Self::PLACE.0 | Self::BOX_MODEL.0 | Self::HIT_TEST.0 | Self::PAINT.0 | Self::COMPOSITE.0
+            | Self::RECORDING_TOPOLOGY.0 | Self::RESOURCE.0,
     );
     pub const ALL: Self = Self(Self::LAYOUT.0 | Self::RUNTIME.0);
 
@@ -1792,10 +1801,10 @@ impl DirtyFlags {
 
 /// Dirty masks consumed by each retained-engine pass.
 ///
-/// These masks document pass dependencies before Phase 4 starts using
-/// them for finer-grained traversal gating. They intentionally do not
-/// change ownership: `Element::local_dirty_flags()` remains part of the
-/// formal dirty truth while arena dirty is being migrated in.
+/// Layout and placement consume their own work bits. Rendering observes final
+/// properties and complete command inputs after those passes; an empty dirty
+/// mask alone cannot certify command reuse or GPU backing residency.
+/// `Element::local_dirty_flags()` and arena-local bits both remain inputs.
 pub(crate) struct DirtyPassMask;
 
 impl DirtyPassMask {
@@ -1812,8 +1821,12 @@ impl DirtyPassMask {
     pub const HIT_TEST: DirtyFlags = DirtyFlags::HIT_TEST;
     /// Render/damage dependency.
     pub const PAINT: DirtyFlags = DirtyFlags::PAINT;
-    /// Compositor-property update dependency. No retained pass consumes this
-    /// shadow classification yet.
+    /// Recorder inputs; each cause keeps its own meaning in the pending journal.
+    pub const RECORDING: DirtyFlags = DirtyFlags::PAINT
+        .union(DirtyFlags::RECORDING_TOPOLOGY)
+        .union(DirtyFlags::RESOURCE);
+    /// Compositor-property update dependency. PAINT/COMPOSITE are consumed only
+    /// after successful compile and execution, separately from layout bits.
     pub const COMPOSITE: DirtyFlags = DirtyFlags::COMPOSITE;
     /// Runtime-only update dependency.
     pub const RUNTIME: DirtyFlags = DirtyFlags::RUNTIME;
@@ -2815,7 +2828,7 @@ pub trait ElementTrait:
         &self,
         arena: &crate::view::node_arena::NodeArena,
         deferred_phase_root: bool,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
         // Hidden custom leaves have no paint work. Their live geometry remains
         // validated, and becoming visible must re-enter complete recording;
@@ -2836,9 +2849,9 @@ pub trait ElementTrait:
             return ShadowPaintRecordingCapability::CulledSubtree;
         }
         let prepared = if self.children().is_empty() {
-            prepare_custom_leaf_paint(self, deferred_phase_root, recording_context).is_some()
+            prepare_custom_leaf_paint(self, deferred_phase_root, &recording_context).is_some()
         } else {
-            prepare_custom_wrapper_paint(self, None, arena, deferred_phase_root, recording_context)
+            prepare_custom_wrapper_paint(self, None, arena, deferred_phase_root, &recording_context)
                 .is_some()
         };
         if prepared {
@@ -2856,10 +2869,10 @@ pub trait ElementTrait:
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintChunkMetadata> {
         let prepared =
-            prepare_owned_custom_leaf_paint(self, owner, properties, arena, recording_context)?;
+            prepare_owned_custom_leaf_paint(self, owner, properties, arena, &recording_context)?;
         Some(prepared.metadata(owner, properties, content_revision))
     }
 
@@ -2871,10 +2884,10 @@ pub trait ElementTrait:
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintArtifact> {
         let prepared =
-            prepare_owned_custom_leaf_paint(self, owner, properties, arena, recording_context)?;
+            prepare_owned_custom_leaf_paint(self, owner, properties, arena, &recording_context)?;
         #[cfg(test)]
         crate::view::paint::note_full_artifact_record();
         Some(prepared.artifact(owner, properties, content_revision))
@@ -2885,7 +2898,7 @@ pub trait ElementTrait:
     fn retained_child_mask_plan(
         &self,
         _arena: &crate::view::node_arena::NodeArena,
-        _recording_context: crate::view::paint::PaintRecordingContext,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::RetainedChildMaskPlan> {
         None
     }
@@ -2899,14 +2912,14 @@ pub trait ElementTrait:
         contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintChunkMetadata>> {
         if let Some(metadata) = self.record_shadow_paint_metadata(
             owner,
             properties,
             content_revision,
             arena,
-            recording_context,
+            &recording_context,
         ) {
             let mut plan = crate::view::paint::PaintNodePlan::single_before(metadata);
             if let Some(scroll) =
@@ -2951,7 +2964,7 @@ pub trait ElementTrait:
                         payload_identity,
                     });
             }
-            if let Some(mask) = self.retained_child_mask_plan(arena, recording_context) {
+            if let Some(mask) = self.retained_child_mask_plan(arena, &recording_context) {
                 plan.before_children.push(mask.metadata(
                     owner,
                     crate::view::paint::PaintNodePhase::BeforeChildren,
@@ -2977,7 +2990,7 @@ pub trait ElementTrait:
                 properties,
                 contents_properties,
                 arena,
-                recording_context,
+                &recording_context,
             )
         {
             return Some(prepared.metadata_plan(owner, properties, content_revision));
@@ -3002,14 +3015,14 @@ pub trait ElementTrait:
         contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintArtifact>> {
         if let Some(artifact) = self.record_shadow_paint_artifact(
             owner,
             properties,
             content_revision,
             arena,
-            recording_context,
+            &recording_context,
         ) {
             let mut plan = crate::view::paint::PaintNodePlan::single_before(artifact);
             if let Some(scroll) =
@@ -3076,7 +3089,7 @@ pub trait ElementTrait:
                     }],
                 });
             }
-            if let Some(mask) = self.retained_child_mask_plan(arena, recording_context) {
+            if let Some(mask) = self.retained_child_mask_plan(arena, &recording_context) {
                 plan.before_children.push(mask.artifact(
                     owner,
                     crate::view::paint::PaintNodePhase::BeforeChildren,
@@ -3102,7 +3115,7 @@ pub trait ElementTrait:
                 properties,
                 contents_properties,
                 arena,
-                recording_context,
+                &recording_context,
             )
         {
             #[cfg(test)]
@@ -3137,9 +3150,9 @@ pub trait ElementTrait:
     #[doc(hidden)]
     fn shadow_paint_recording_context(
         &self,
-        parent: crate::view::paint::PaintRecordingContext,
+        parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
-        parent
+        *parent
     }
 
     /// Derive path-specific recording authority for one direct child.
@@ -3153,7 +3166,7 @@ pub trait ElementTrait:
         &self,
         _child: crate::view::node_arena::NodeKey,
         _arena: &crate::view::node_arena::NodeArena,
-        parent: crate::view::paint::PaintRecordingContext,
+        parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
         parent.without_text_area_child_authority()
     }
@@ -3642,7 +3655,7 @@ impl PreparedCustomLeafPaint {
 fn prepare_custom_leaf_paint<T: ElementTrait + ?Sized>(
     element: &T,
     deferred_phase_root: bool,
-    recording_context: crate::view::paint::PaintRecordingContext,
+    recording_context: &crate::view::paint::PaintRecordingContext,
 ) -> Option<PreparedCustomLeafPaint> {
     if let Some(source) = element.prepared_gpu_paint_source() {
         let snapshot = element.box_model_snapshot();
@@ -3783,7 +3796,7 @@ fn prepare_owned_custom_leaf_paint<T: ElementTrait + ?Sized>(
     owner: NodeKey,
     properties: crate::view::compositor::property_tree::PropertyTreeState,
     arena: &NodeArena,
-    recording_context: crate::view::paint::PaintRecordingContext,
+    recording_context: &crate::view::paint::PaintRecordingContext,
 ) -> Option<PreparedCustomLeafPaint> {
     if properties != Default::default()
         && !(recording_context.surface_dag && element.prepared_gpu_paint_source().is_some())
@@ -3797,7 +3810,7 @@ fn prepare_owned_custom_leaf_paint<T: ElementTrait + ?Sized>(
     {
         return None;
     }
-    prepare_custom_leaf_paint(element, false, recording_context)
+    prepare_custom_leaf_paint(element, false, &recording_context)
 }
 
 struct PreparedCustomWrapperFill {
@@ -4046,7 +4059,7 @@ fn prepare_custom_wrapper_paint<T: ElementTrait + ?Sized>(
     expected_owner: Option<NodeKey>,
     arena: &NodeArena,
     deferred_phase_root: bool,
-    recording_context: crate::view::paint::PaintRecordingContext,
+    recording_context: &crate::view::paint::PaintRecordingContext,
 ) -> Option<PreparedCustomWrapperPaint> {
     if element.children().is_empty()
         || deferred_phase_root
@@ -4116,12 +4129,12 @@ fn prepare_owned_custom_wrapper_paint<T: ElementTrait + ?Sized>(
     properties: crate::view::compositor::property_tree::PropertyTreeState,
     contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
     arena: &NodeArena,
-    recording_context: crate::view::paint::PaintRecordingContext,
+    recording_context: &crate::view::paint::PaintRecordingContext,
 ) -> Option<PreparedCustomWrapperPaint> {
     if properties != Default::default() || contents_properties != Default::default() {
         return None;
     }
-    prepare_custom_wrapper_paint(element, Some(owner), arena, false, recording_context)
+    prepare_custom_wrapper_paint(element, Some(owner), arena, false, &recording_context)
 }
 
 fn has_canonical_custom_leaf_bounds(rect: Rect) -> bool {
@@ -4497,7 +4510,7 @@ enum InlineIfcNodeInstallOp {
     Text {
         node_key: NodeKey,
         /// Content-coord owned lines (shifted to absolute at apply time).
-        lines: Vec<TextIfcOwnedLine>,
+        lines: Arc<[TextIfcOwnedLine]>,
         /// Source-filtered glyph payload rebased to this Text shell.
         paint_input: Arc<InlineIfcTextPassPaintInput>,
         /// Content-coordinate glyph bounds used only by TextPass clipping.
@@ -4735,7 +4748,11 @@ fn inline_ifc_atomic_subtree_layout_placement_clean(arena: &NodeArena, root: Nod
 
 /// Union of absolute rects; zero rect when empty.
 fn bounding_rect(rects: &[crate::ui::Rect]) -> crate::ui::Rect {
-    let mut iter = rects.iter();
+    bounding_rect_iter(rects.iter().copied())
+}
+
+fn bounding_rect_iter(rects: impl IntoIterator<Item = crate::ui::Rect>) -> crate::ui::Rect {
+    let mut iter = rects.into_iter();
     let Some(first) = iter.next() else {
         return crate::ui::Rect {
             x: 0.0,
@@ -5047,7 +5064,7 @@ fn build_inline_ifc_install_plan(
                 }
                 plan.push(InlineIfcNodeInstallOp::Text {
                     node_key,
-                    lines,
+                    lines: lines.into(),
                     paint_input: Arc::new(paint_input),
                     paint_bounds,
                 });
@@ -5551,6 +5568,9 @@ pub struct Element {
     computed_style: ComputedStyle,
     padding: EdgeInsets,
     background_color: Box<dyn ColorLike>,
+    paint_recording_inputs: RefCell<Option<paint_recording_inputs::NativeSelfPaintInputs>>,
+    inline_witness_inputs: RefCell<Option<inline_witness_inputs::NativeInlineWitnessInputs>>,
+    child_mask_recording_inputs: RefCell<Option<crate::view::paint::RetainedChildMaskPlan>>,
     border_colors: EdgeColors,
     border_widths: EdgeInsets,
     border_radii: CornerRadii,
@@ -5612,6 +5632,20 @@ pub struct Element {
     hit_test_clip_rect: Option<Rect>,
     last_child_hit_test_clip_rect: Option<Rect>,
     children: Vec<crate::view::node_arena::NodeKey>,
+}
+
+/// A synchronous native preflight proof. Only `record_inline_root_preflight`
+/// constructs it; it never leaves the capability/metadata pair or enters the
+/// recording cache. It proves layout ownership, not paint/property authority.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct InlineRootRecordingWitness {
+    owner: crate::view::node_arena::NodeKey,
+    stable_id: u64,
+}
+impl InlineRootRecordingWitness {
+    fn matches(self, owner: Option<crate::view::node_arena::NodeKey>, stable_id: u64) -> bool {
+        owner == Some(self.owner) && stable_id == self.stable_id
+    }
 }
 
 impl Element {
@@ -5776,6 +5810,73 @@ impl Element {
         ))
     }
 
+    #[cfg(test)]
+    pub(crate) fn inline_root_witness_checks_for_test() -> usize {
+        tests::inline_ifc_preflight_tests::witness_checks()
+    }
+
+    /// Fuse only the known native IFC root's synchronous preflight calls.
+    /// Public/custom hooks retain their original invocation order. Unknown
+    /// descendants can have interior mutable getters, so their roots cannot
+    /// share this proof even if they opt into command replay.
+    pub(crate) fn record_inline_root_preflight(
+        &self,
+        owner: crate::view::node_arena::NodeKey,
+        properties: crate::view::compositor::property_tree::PropertyTreeState,
+        contents: crate::view::compositor::property_tree::PropertyTreeState,
+        revision: crate::view::paint::PaintContentRevision,
+        arena: &NodeArena,
+        deferred_phase_root: bool,
+        context: &crate::view::paint::PaintRecordingContext,
+    ) -> Option<(
+        ShadowPaintRecordingCapability,
+        Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintChunkMetadata>>,
+    )> {
+        if !self.is_owning_inline_ifc_root_role()
+            || context.recording_owner != Some(owner)
+            || context.recording_owner_stable_id != Some(self.stable_id())
+        {
+            return None;
+        }
+        let mut pending = self.children.clone();
+        let mut seen = FxHashSet::default();
+        while let Some(key) = pending.pop() {
+            if !seen.insert(key) {
+                return None;
+            }
+            let node = arena.get(key)?;
+            let host = node.element.as_any();
+            if !(host.is::<Element>()
+                || host.is::<Text>()
+                || host.is::<crate::view::base_component::image::Image>()
+                || host.is::<crate::view::base_component::svg::Svg>()
+                || host.is::<crate::view::base_component::text_area::TextArea>())
+            {
+                return None;
+            }
+            pending.extend_from_slice(node.element.children());
+        }
+        let mut context = *context;
+        context.inline_root_recording = None;
+        // Preserve the original capability call and rejection precedence. For
+        // an owning IFC root, Recordable implies its full live layout witness
+        // just succeeded. Only the immediately following metadata call shares it.
+        let capability =
+            self.shadow_paint_recording_capability(arena, deferred_phase_root, &context);
+        let plan = if matches!(capability, ShadowPaintRecordingCapability::Recordable) {
+            context.inline_root_recording = Some(InlineRootRecordingWitness {
+                owner,
+                stable_id: self.stable_id(),
+            });
+            self.record_shadow_paint_metadata_plan(
+                owner, properties, contents, revision, arena, &context,
+            )
+        } else {
+            None
+        };
+        Some((capability, plan))
+    }
+
     /// Pure paint-preflight proof that this fragmentable `Element` is the
     /// live owner of a fully-installed, non-atomic IFC.  This deliberately
     /// derives authority from the current install plus a fresh collector
@@ -5785,6 +5886,30 @@ impl Element {
         &self,
         arena: &NodeArena,
     ) -> Result<(), ShadowPaintBlocker> {
+        let observed = inline_witness_inputs::NativeInlineWitnessInputs::observe(self, arena);
+        if observed.as_ref().is_some_and(|current| self.inline_witness_inputs.borrow()
+            .as_ref().is_some_and(|old| old.same_inputs(current))) {
+            crate::view::paint::work_profile::count("inline_install_replays", 1);
+            return Ok(());
+        }
+        self.inline_witness_inputs.borrow_mut().take();
+        let result = self.validate_owning_inline_ifc_root_install(arena);
+        if result.is_ok() && observed.as_ref().is_some_and(|before| {
+            inline_witness_inputs::NativeInlineWitnessInputs::observe(self, arena)
+                .as_ref().is_some_and(|after| before.same_inputs(after))
+        }) {
+            *self.inline_witness_inputs.borrow_mut() = observed;
+        }
+        result
+    }
+
+    fn validate_owning_inline_ifc_root_install(
+        &self,
+        arena: &NodeArena,
+    ) -> Result<(), ShadowPaintBlocker> {
+        let _profile = crate::view::paint::work_profile::scope("validate_inline_root_install");
+        #[cfg(test)]
+        tests::inline_ifc_preflight_tests::note_witness_check();
         let reject = || ShadowPaintBlocker::MissingPreparedInlineRoot;
         if !self.is_owning_inline_ifc_root_role()
             || self.layout_dirty
@@ -5822,17 +5947,19 @@ impl Element {
             return Err(reject());
         }
 
-        let collected = ElementInlineIfcMetadataCollector::collect(
-            arena,
-            ElementInlineIfcMetadataCollectorInput::new(
-                root_key,
-                install.build_inner_width,
-                install.viewport_width,
-                install.viewport_height,
-            ),
-        )
-        .ok_or_else(reject)?;
-        if install.cache_key != collected.root_source.cache_key() {
+        let collected = {
+            let _profile = crate::view::paint::work_profile::scope("collect_live_inline_root_inputs");
+            ElementInlineIfcMetadataCollector::collect(
+                arena,
+                ElementInlineIfcMetadataCollectorInput::new(
+                    root_key,
+                    install.build_inner_width,
+                    install.viewport_width,
+                    install.viewport_height,
+                ),
+            ).ok_or_else(reject)?
+        };
+        if !collected.root_source.matches_cache_key(&install.cache_key) {
             return Err(reject());
         }
         let context = self
@@ -5873,16 +6000,19 @@ impl Element {
             .ok_or_else(reject)?;
             current_atomic_witnesses.insert(node_key, witness);
         }
-        let expected_nodes = collected
-            .sources_by_node
-            .keys()
-            .copied()
-            .filter(|&key| key != root_key)
-            .collect::<FxHashSet<_>>();
-        let mut plan_nodes = FxHashSet::default();
+        // The fresh collector already owns the expected source-key set. Check
+        // membership/cardinality against it directly, then consume the unique
+        // plan keys when checking installed owners. No second/third hash set
+        // is needed to prove these three sets are exactly equal.
+        let expected_node_count = collected.sources_by_node.len()
+            - usize::from(collected.sources_by_node.contains_key(&root_key));
+        let mut plan_nodes =
+            FxHashSet::with_capacity_and_hasher(install.plan.len(), Default::default());
         for op in &install.plan {
             let node_key = op.node_key();
-            if !plan_nodes.insert(node_key)
+            if node_key == root_key
+                || !collected.sources_by_node.contains_key(&node_key)
+                || !plan_nodes.insert(node_key)
                 || arena
                     .arena_local_dirty(node_key)
                     .intersects(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT))
@@ -5996,23 +6126,18 @@ impl Element {
                     };
                     let origin_x = install.applied_origins.0;
                     let origin_y = install.applied_origins.1 - install.content_top_offset;
-                    let absolute_lines = lines
-                        .iter()
-                        .cloned()
-                        .map(|line| line.shifted(origin_x, origin_y))
-                        .collect::<Vec<_>>();
                     let expected_paint_bounds = crate::ui::Rect {
                         x: origin_x + paint_bounds.x,
                         y: origin_y + paint_bounds.y,
                         width: paint_bounds.width,
                         height: paint_bounds.height,
                     };
-                    let mut expected_shell_bounds = bounding_rect(
-                        &absolute_lines
-                            .iter()
-                            .map(|line| line.rect)
-                            .collect::<Vec<_>>(),
-                    );
+                    let mut expected_shell_bounds = bounding_rect_iter(lines.iter().map(|line| {
+                        let mut rect = line.rect;
+                        rect.x += origin_x;
+                        rect.y += origin_y;
+                        rect
+                    }));
                     if (expected_shell_bounds.width <= 0.0 || expected_shell_bounds.height <= 0.0)
                         && paint_bounds.width > 0.0
                         && paint_bounds.height > 0.0
@@ -6020,7 +6145,8 @@ impl Element {
                         expected_shell_bounds = expected_paint_bounds;
                     }
                     if !text.matches_inline_ifc_owned_install(
-                        &absolute_lines,
+                        lines,
+                        [origin_x, origin_y],
                         paint_input,
                         expected_paint_bounds,
                         expected_shell_bounds,
@@ -6069,15 +6195,14 @@ impl Element {
                 }
             }
         }
-        let installed_nodes = install
-            .installed_nodes
-            .iter()
-            .copied()
-            .collect::<FxHashSet<_>>();
         if !current_atomic_witnesses.is_empty()
-            || plan_nodes != expected_nodes
-            || installed_nodes != plan_nodes
-            || install.installed_nodes.len() != installed_nodes.len()
+            || plan_nodes.len() != expected_node_count
+            || install.installed_nodes.len() != plan_nodes.len()
+            || install
+                .installed_nodes
+                .iter()
+                .any(|node| !plan_nodes.remove(node))
+            || !plan_nodes.is_empty()
         {
             return Err(reject());
         }
@@ -7662,7 +7787,7 @@ impl ElementTrait for Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         deferred_phase_root: bool,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
         if !self.layout_state.should_render {
             let blocker = if self.resolved_transform.is_some()
@@ -7701,7 +7826,7 @@ impl ElementTrait for Element {
             return match self.inline_ifc_owned_shadow_paint_blocker(
                 arena,
                 deferred_phase_root,
-                recording_context,
+                &recording_context,
             ) {
                 Some(blocker) => ShadowPaintRecordingCapability::Legacy(blocker),
                 None => ShadowPaintRecordingCapability::Recordable,
@@ -7710,9 +7835,9 @@ impl ElementTrait for Element {
         match self.shadow_paint_blocker(
             arena,
             deferred_phase_root,
-            self.recording_context_authorizes_exact_self_clip(recording_context),
+            self.recording_context_authorizes_exact_self_clip(&recording_context),
             true,
-            recording_context,
+            &recording_context,
         ) {
             Some(blocker) => ShadowPaintRecordingCapability::Legacy(blocker),
             None => ShadowPaintRecordingCapability::Recordable,
@@ -7726,11 +7851,11 @@ impl ElementTrait for Element {
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintChunkMetadata> {
         if self.inline_ifc_owned_by_root {
             let payload = self
-                .prepared_inline_ifc_decoration_payload(recording_context)
+                .prepared_inline_ifc_decoration_payload(&recording_context)
                 .ok()?;
             return Some(crate::view::paint::PaintChunkMetadata {
                 id: crate::view::paint::PaintChunkId {
@@ -7756,7 +7881,7 @@ impl ElementTrait for Element {
             properties,
             content_revision,
             Some(arena),
-            recording_context,
+            &recording_context,
         )
         .ok()
     }
@@ -7768,11 +7893,11 @@ impl ElementTrait for Element {
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintArtifact> {
         if self.inline_ifc_owned_by_root {
             let payload = self
-                .prepared_inline_ifc_decoration_payload(recording_context)
+                .prepared_inline_ifc_decoration_payload(&recording_context)
                 .ok()?;
             #[cfg(test)]
             crate::view::paint::note_full_artifact_record();
@@ -7829,7 +7954,7 @@ impl ElementTrait for Element {
                 properties,
                 content_revision,
                 arena,
-                recording_context,
+                &recording_context,
             )
             .ok()?;
         #[cfg(test)]
@@ -7841,16 +7966,17 @@ impl ElementTrait for Element {
     fn retained_child_mask_plan(
         &self,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::RetainedChildMaskPlan> {
-        self.prepared_retained_child_mask_plan(arena, recording_context)
+        self.prepared_retained_child_mask_plan(arena, &recording_context)
     }
 
     #[allow(private_interfaces)]
     fn shadow_paint_recording_context(
         &self,
-        mut parent: crate::view::paint::PaintRecordingContext,
+        parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
+            let mut parent = *parent;
         let paint_x = self.layout_state.layout_position.x + parent.paint_offset[0];
         let paint_y = self.layout_state.layout_position.y + parent.paint_offset[1];
         parent.paint_offset[0] += round_layout_value(paint_x) - paint_x;

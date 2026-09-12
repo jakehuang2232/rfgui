@@ -228,7 +228,7 @@ fn sync_identity(arena: &NodeArena, roots: &[NodeKey]) -> (PropertyTrees, PaintG
     (properties, generations)
 }
 
-fn prepared_leaf(
+pub(super) fn prepared_leaf(
     id: u64,
     color: Color,
     opacity: f32,
@@ -676,7 +676,7 @@ impl ElementTrait for TransparentContentsClipParent {
         &self,
         _arena: &NodeArena,
         _deferred_phase_root: bool,
-        _recording_context: PaintRecordingContext,
+        _recording_context: &PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
         ShadowPaintRecordingCapability::Transparent
     }
@@ -1257,7 +1257,7 @@ impl ElementTrait for MalformedRecordingHost {
         &self,
         _arena: &NodeArena,
         _deferred_phase_root: bool,
-        _recording_context: PaintRecordingContext,
+        _recording_context: &PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
         self.capability_calls.fetch_add(1, Ordering::Relaxed);
         if matches!(self.malformed, MalformedChunk::Transparent) {
@@ -1272,7 +1272,7 @@ impl ElementTrait for MalformedRecordingHost {
         properties: PropertyTreeState,
         revision: PaintContentRevision,
         _arena: &NodeArena,
-        _recording_context: PaintRecordingContext,
+        _recording_context: &PaintRecordingContext,
     ) -> Option<PaintChunkMetadata> {
         Some(self.metadata(owner, properties, revision))
     }
@@ -1282,7 +1282,7 @@ impl ElementTrait for MalformedRecordingHost {
         properties: PropertyTreeState,
         revision: PaintContentRevision,
         _arena: &NodeArena,
-        _recording_context: PaintRecordingContext,
+        _recording_context: &PaintRecordingContext,
     ) -> Option<PaintArtifact> {
         self.full_records.fetch_add(1, Ordering::Relaxed);
         let mut chunk = self.metadata(owner, properties, revision);
@@ -3729,3 +3729,5 @@ mod legacy_group_opacity_tests;
 mod legacy_native_scope_tests;
 
 mod incremental_cache_tests;
+
+mod normalized_scope_tests;

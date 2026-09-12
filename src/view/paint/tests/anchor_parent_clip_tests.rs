@@ -433,7 +433,7 @@ fn nested_self_clip_metadata_and_full_hooks_require_owner_bound_witness() {
                 state,
                 revision,
                 &arena,
-                PaintRecordingContext::default(),
+                &PaintRecordingContext::default(),
             )
             .is_none()
     );
@@ -444,7 +444,7 @@ fn nested_self_clip_metadata_and_full_hooks_require_owner_bound_witness() {
                 state,
                 revision,
                 &arena,
-                PaintRecordingContext::default(),
+                &PaintRecordingContext::default(),
             )
             .is_none()
     );
@@ -460,7 +460,7 @@ fn nested_self_clip_metadata_and_full_hooks_require_owner_bound_witness() {
     assert!(!leaked.authorizes_self_clip_for(node.element.stable_id()));
     assert_eq!(
         node.element
-            .shadow_paint_recording_capability(&arena, false, leaked),
+            .shadow_paint_recording_capability(&arena, false, &leaked),
         ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::SelfClip)
     );
 }

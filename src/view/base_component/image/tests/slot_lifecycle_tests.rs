@@ -95,7 +95,7 @@ fn error_wrapper_rejects_wrong_parent_in_inactive_loading_slot() {
     let node = arena.get(root).unwrap();
     assert_eq!(
         node.element
-            .shadow_paint_recording_capability(&arena, false, context),
+            .shadow_paint_recording_capability(&arena, false, &context),
         ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::MissingPreparedImage)
     );
     let revision = crate::view::paint::PaintContentRevision {
@@ -105,12 +105,12 @@ fn error_wrapper_rejects_wrong_parent_in_inactive_loading_slot() {
     };
     assert!(
         node.element
-            .record_shadow_paint_metadata(root, Default::default(), revision, &arena, context)
+            .record_shadow_paint_metadata(root, Default::default(), revision, &arena, &context)
             .is_none()
     );
     assert!(
         node.element
-            .record_shadow_paint_artifact(root, Default::default(), revision, &arena, context)
+            .record_shadow_paint_artifact(root, Default::default(), revision, &arena, &context)
             .is_none()
     );
 }
@@ -192,7 +192,7 @@ fn loading_wrapper_rejects_inactive_root_aliasing_an_active_grandchild_and_topol
         let node = arena.get(owner).unwrap();
         assert_eq!(
             node.element
-                .shadow_paint_recording_capability(&arena, false, context),
+                .shadow_paint_recording_capability(&arena, false, &context),
             ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::MissingPreparedImage)
         );
         let revision = crate::view::paint::PaintContentRevision {
@@ -207,7 +207,7 @@ fn loading_wrapper_rejects_inactive_root_aliasing_an_active_grandchild_and_topol
                     Default::default(),
                     revision,
                     &arena,
-                    context,
+                    &context,
                 )
                 .is_none()
         );
@@ -218,7 +218,7 @@ fn loading_wrapper_rejects_inactive_root_aliasing_an_active_grandchild_and_topol
                     Default::default(),
                     revision,
                     &arena,
-                    context,
+                    &context,
                 )
                 .is_none()
         );

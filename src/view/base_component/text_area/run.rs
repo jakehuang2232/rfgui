@@ -594,7 +594,7 @@ impl ElementTrait for TextAreaTextRun {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         deferred_phase_root: bool,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
         if !recording_context.inside_text_area {
             return ShadowPaintRecordingCapability::Unsupported;
@@ -755,7 +755,7 @@ impl ElementTrait for TextAreaLineBreak {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         deferred_phase_root: bool,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
         if !recording_context.inside_text_area {
             return ShadowPaintRecordingCapability::Unsupported;

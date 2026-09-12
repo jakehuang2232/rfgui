@@ -98,3 +98,58 @@ impl TextInstallMemo {
         equal
     }
 }
+
+/// Line/caret equality belongs to two immutable geometry allocations and the
+/// exact translation, not to Text dirtiness. Installation, shifting and clear
+/// drop this entry; a caller retaining a removed Text retains at most one pair.
+pub(super) struct TextLineInstallMemo {
+    installed: Arc<[super::TextIfcOwnedLine]>,
+    expected: Arc<[super::TextIfcOwnedLine]>,
+    translation: [u32; 2],
+    equal: bool,
+}
+impl TextLineInstallMemo {
+    pub(super) fn matches(
+        slot: &RefCell<Option<Self>>,
+        installed: &Arc<[super::TextIfcOwnedLine]>,
+        expected: &Arc<[super::TextIfcOwnedLine]>,
+        translation: [f32; 2],
+    ) -> bool {
+        let bits = translation.map(f32::to_bits);
+        if let Some(memo) = slot.borrow().as_ref().filter(|memo| {
+            Arc::ptr_eq(&memo.installed, installed)
+                && Arc::ptr_eq(&memo.expected, expected)
+                && memo.translation == bits
+        }) {
+            return memo.equal;
+        }
+        let rect_eq = |a: crate::ui::Rect, mut b: crate::ui::Rect| {
+            // Preserve the original shifted() addition order and bit equality.
+            b.x += translation[0];
+            b.y += translation[1];
+            [a.x, a.y, a.width, a.height].map(f32::to_bits)
+                == [b.x, b.y, b.width, b.height].map(f32::to_bits)
+        };
+        let equal = installed.len() == expected.len()
+            && installed.iter().zip(expected.iter()).all(|(a, b)| {
+                rect_eq(a.rect, b.rect)
+                    && rect_eq(a.text_rect, b.text_rect)
+                    && a.char_range == b.char_range
+                    && a.caret_xs.len() == b.caret_xs.len()
+                    && a.caret_xs
+                        .iter()
+                        .zip(&b.caret_xs)
+                        .all(|(a, b)| a.to_bits() == (b + translation[0]).to_bits())
+            });
+        *slot.borrow_mut() = Some(Self {
+            installed: installed.clone(),
+            expected: expected.clone(),
+            translation: bits,
+            equal,
+        });
+        equal
+    }
+}
+
+#[cfg(test)]
+mod line_install_tests;

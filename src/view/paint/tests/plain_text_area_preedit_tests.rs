@@ -237,7 +237,7 @@ fn plain_text_area_bounded_baked_scroll_is_canonical_and_matches_legacy() {
         text_area.shadow_paint_recording_capability(
             &arena,
             false,
-            PaintRecordingContext::default(),
+            &PaintRecordingContext::default(),
         ),
         ShadowPaintRecordingCapability::Recordable
     );
@@ -596,7 +596,7 @@ fn plain_text_area_preedit_metadata_full_drift_and_boundaries_fail_closed() {
     let text_area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
     assert_eq!(
         text_area
-            .shadow_paint_recording_capability(&arena, true, PaintRecordingContext::default(),),
+            .shadow_paint_recording_capability(&arena, true, &PaintRecordingContext::default(),),
         ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::Deferred)
     );
     drop(node);

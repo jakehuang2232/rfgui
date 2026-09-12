@@ -27,7 +27,10 @@ fn hover_style_updates_color_opacity_and_reverts() {
     assert_eq!(hovered_state.background_rgba, hover_color.to_rgba_u8());
     assert!((hovered_state.opacity - 0.75).abs() < 0.001);
     assert!(!el.layout_dirty);
-    assert!(el.local_dirty_flags().contains(DirtyFlags::RUNTIME));
+    // Color/opacity hover changes keep the original placement/paint work,
+    // without inventing resource or child-order changes.
+    assert_eq!(el.local_dirty_flags(), DirtyFlags::RUNTIME
+        .without(DirtyFlags::RESOURCE.union(DirtyFlags::RECORDING_TOPOLOGY)));
 
     el.clear_local_dirty_flags(DirtyFlags::ALL);
     el.layout_dirty = false;
@@ -36,7 +39,10 @@ fn hover_style_updates_color_opacity_and_reverts() {
     assert_eq!(base_state.background_rgba, base_color.to_rgba_u8());
     assert!((base_state.opacity - 0.25).abs() < 0.001);
     assert!(!el.layout_dirty);
-    assert!(el.local_dirty_flags().contains(DirtyFlags::RUNTIME));
+    // Color/opacity hover changes keep the original placement/paint work,
+    // without inventing resource or child-order changes.
+    assert_eq!(el.local_dirty_flags(), DirtyFlags::RUNTIME
+        .without(DirtyFlags::RESOURCE.union(DirtyFlags::RECORDING_TOPOLOGY)));
 }
 
 #[test]

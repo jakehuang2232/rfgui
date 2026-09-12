@@ -252,6 +252,25 @@ impl PartialEq for TransformNodeSnapshot {
 impl Eq for TransformNodeSnapshot {}
 
 impl TransformNodeSnapshot {
+    /// Scalar validity shared by fresh graph construction and replay of an
+    /// already validated parent graph. Parent membership is a separate proof.
+    pub(crate) fn validate_projection_value(&self) -> Result<(), SpatialProjectionError> {
+        if self.id.0 != self.owner
+            || self.owner.is_null()
+            || self.local_generation == 0
+            || self.generation == 0
+            || self
+                .local_matrix
+                .to_cols_array()
+                .into_iter()
+                .chain(self.local_origin.to_array())
+                .any(|value| !value.is_finite())
+        {
+            return Err(SpatialProjectionError::InvalidSnapshot(self.owner));
+        }
+        Ok(())
+    }
+
     pub(crate) fn has_canonical_derived_projection(self) -> bool {
         let origin = glam::Vec3::new(
             self.owner_viewport_position.x + self.local_origin.x,
@@ -361,6 +380,31 @@ pub(crate) struct SpatialProjectionGraph<'a> {
     positions: FxHashMap<LayoutPositionNodeId, &'a LayoutPositionNodeSnapshot>,
     visuals: FxHashMap<VisualOffsetNodeId, &'a VisualOffsetNodeSnapshot>,
     scrolls: FxHashMap<ScrollNodeId, &'a ScrollNodeSnapshot>,
+    // Successful prefixes belong to these immutable snapshots only. Preserve
+    // root-to-leaf floating-point addition order when extending a prefix.
+    resolved_positions: std::cell::RefCell<
+        ProjectionPrefixCache<'a, LayoutPositionNodeId, LayoutPositionNodeSnapshot>,
+    >,
+    resolved_visuals:
+        std::cell::RefCell<ProjectionPrefixCache<'a, VisualOffsetNodeId, VisualOffsetNodeSnapshot>>,
+}
+
+// Scratch sets/vectors are reused across roots of the same immutable graph.
+// This retains the exact cycle checks and arithmetic order without allocating
+// one transient hash set for every owner on every resolution.
+struct ProjectionPrefixCache<'a, Id, Snapshot> {
+    resolved: FxHashMap<Id, Vec2>,
+    chain: Vec<&'a Snapshot>,
+    seen: FxHashSet<Id>,
+}
+impl<Id, Snapshot> Default for ProjectionPrefixCache<'_, Id, Snapshot> {
+    fn default() -> Self {
+        Self {
+            resolved: FxHashMap::default(),
+            chain: Vec::new(),
+            seen: FxHashSet::default(),
+        }
+    }
 }
 
 impl<'a> SpatialProjectionGraph<'a> {
@@ -371,78 +415,37 @@ impl<'a> SpatialProjectionGraph<'a> {
         scrolls: &'a [ScrollNodeSnapshot],
     ) -> Result<Self, SpatialProjectionError> {
         let mut graph = Self {
-            transforms: FxHashMap::default(),
-            positions: FxHashMap::default(),
-            visuals: FxHashMap::default(),
-            scrolls: FxHashMap::default(),
+            transforms: FxHashMap::with_capacity_and_hasher(transforms.len(), Default::default()),
+            positions: FxHashMap::with_capacity_and_hasher(positions.len(), Default::default()),
+            visuals: FxHashMap::with_capacity_and_hasher(visuals.len(), Default::default()),
+            scrolls: FxHashMap::with_capacity_and_hasher(scrolls.len(), Default::default()),
+            resolved_positions: Default::default(),
+            resolved_visuals: Default::default(),
         };
 
         for snapshot in transforms {
             if graph.transforms.insert(snapshot.id, snapshot).is_some() {
                 return Err(SpatialProjectionError::DuplicateTransform(snapshot.id));
             }
-            if snapshot.id.0 != snapshot.owner
-                || snapshot.owner.is_null()
-                || snapshot.local_generation == 0
-                || snapshot.generation == 0
-                || snapshot
-                    .local_matrix
-                    .to_cols_array()
-                    .into_iter()
-                    .chain(snapshot.local_origin.to_array())
-                    .any(|value| !value.is_finite())
-            {
-                return Err(SpatialProjectionError::InvalidSnapshot(snapshot.owner));
-            }
+            snapshot.validate_projection_value()?;
         }
         for snapshot in positions {
             if graph.positions.insert(snapshot.id, snapshot).is_some() {
                 return Err(SpatialProjectionError::DuplicateLayoutPosition(snapshot.id));
             }
-            if snapshot.id.0 != snapshot.owner
-                || snapshot.owner.is_null()
-                || snapshot.generation == 0
-                || snapshot
-                    .translation_at_scroll_zero
-                    .to_array()
-                    .into_iter()
-                    .chain(snapshot.child_reference_offset_at_scroll_zero.to_array())
-                    .any(|value| !value.is_finite())
-            {
-                return Err(SpatialProjectionError::InvalidSnapshot(snapshot.owner));
-            }
+            snapshot.validate_projection_value()?;
         }
         for snapshot in visuals {
             if graph.visuals.insert(snapshot.id, snapshot).is_some() {
                 return Err(SpatialProjectionError::DuplicateVisualOffset(snapshot.id));
             }
-            if snapshot.id.0 != snapshot.owner
-                || snapshot.owner.is_null()
-                || snapshot.generation == 0
-                || snapshot
-                    .offset
-                    .to_array()
-                    .into_iter()
-                    .any(|value| !value.is_finite())
-            {
-                return Err(SpatialProjectionError::InvalidSnapshot(snapshot.owner));
-            }
+            snapshot.validate_projection_value()?;
         }
         for snapshot in scrolls {
             if graph.scrolls.insert(snapshot.id, snapshot).is_some() {
                 return Err(SpatialProjectionError::DuplicateScroll(snapshot.id));
             }
-            if snapshot.id.0 != snapshot.owner
-                || snapshot.owner.is_null()
-                || snapshot.generation == 0
-                || snapshot
-                    .offset
-                    .to_array()
-                    .into_iter()
-                    .any(|value| !value.is_finite())
-            {
-                return Err(SpatialProjectionError::InvalidSnapshot(snapshot.owner));
-            }
+            snapshot.validate_projection_value()?;
         }
 
         for snapshot in transforms {
@@ -572,11 +575,19 @@ impl<'a> SpatialProjectionGraph<'a> {
     }
 
     fn layout_flow_position(&self, owner: NodeKey) -> Result<Vec2, SpatialProjectionError> {
-        let leaf = LayoutPositionNodeId(owner);
-        let mut chain = Vec::new();
-        let mut seen = FxHashSet::default();
-        let mut cursor = leaf;
-        loop {
+        let mut cache = self.resolved_positions.borrow_mut();
+        let ProjectionPrefixCache {
+            resolved,
+            chain,
+            seen,
+        } = &mut *cache;
+        chain.clear();
+        seen.clear();
+        let mut cursor = LayoutPositionNodeId(owner);
+        let mut position = loop {
+            if let Some(position) = resolved.get(&cursor) {
+                break *position;
+            }
             if !seen.insert(cursor) {
                 return Err(SpatialProjectionError::CyclicLayoutPosition(cursor));
             }
@@ -588,32 +599,27 @@ impl<'a> SpatialProjectionGraph<'a> {
             chain.push(snapshot);
             cursor = match snapshot.reference {
                 SpatialPositionReference::Viewport
-                | SpatialPositionReference::LayoutParent(None) => break,
+                | SpatialPositionReference::LayoutParent(None) => break Vec2::ZERO,
                 SpatialPositionReference::LayoutParent(Some(parent)) => {
                     LayoutPositionNodeId(parent)
                 }
                 SpatialPositionReference::Anchor(anchor) => LayoutPositionNodeId(anchor),
             };
-        }
-        chain.reverse();
-
-        let mut position = Vec2::ZERO;
-        for (index, snapshot) in chain.iter().copied().enumerate() {
+        };
+        for snapshot in chain.drain(..).rev() {
             match snapshot.reference {
                 SpatialPositionReference::Viewport
                 | SpatialPositionReference::LayoutParent(None) => {
-                    if index != 0 || snapshot.reference_scroll.is_some() {
+                    if snapshot.reference_scroll.is_some() {
                         return Err(SpatialProjectionError::InvalidLayoutReference(snapshot.id));
                     }
                     position = snapshot.translation_at_scroll_zero;
                 }
                 SpatialPositionReference::LayoutParent(Some(parent)) => {
-                    let Some(reference) = index.checked_sub(1).and_then(|i| chain.get(i)) else {
-                        return Err(SpatialProjectionError::InvalidLayoutReference(snapshot.id));
-                    };
-                    if reference.owner != parent {
-                        return Err(SpatialProjectionError::InvalidLayoutReference(snapshot.id));
-                    }
+                    let reference = self
+                        .positions
+                        .get(&LayoutPositionNodeId(parent))
+                        .ok_or(SpatialProjectionError::InvalidLayoutReference(snapshot.id))?;
                     position += reference.child_reference_offset_at_scroll_zero;
                     if let Some(scroll_id) = snapshot.reference_scroll {
                         if scroll_id.0 != parent {
@@ -631,29 +637,34 @@ impl<'a> SpatialProjectionGraph<'a> {
                     position += snapshot.translation_at_scroll_zero;
                 }
                 SpatialPositionReference::Anchor(anchor) => {
-                    let Some(reference) = index.checked_sub(1).and_then(|i| chain.get(i)) else {
-                        return Err(SpatialProjectionError::InvalidLayoutReference(snapshot.id));
-                    };
-                    if reference.owner != anchor || snapshot.reference_scroll.is_some() {
+                    if snapshot.reference_scroll.is_some() {
                         return Err(SpatialProjectionError::InvalidLayoutReference(snapshot.id));
                     }
-                    // Placement freezes this edge relative to the anchor's
-                    // visual border-box origin. Rebuild that origin from the
-                    // anchor's own position and visual snapshot chains; never
-                    // read the flattened compatibility viewport position.
+                    // Keep the authored anchor edge and its visual origin;
+                    // cached layout prefixes never substitute flattened host geometry.
                     position += self.cumulative_visual_offset(anchor)?;
                     position += snapshot.translation_at_scroll_zero;
                 }
             }
+            resolved.insert(snapshot.id, position);
         }
         Ok(position)
     }
 
     fn cumulative_visual_offset(&self, owner: NodeKey) -> Result<Vec2, SpatialProjectionError> {
-        let mut chain = Vec::new();
-        let mut seen = FxHashSet::default();
+        let mut cache = self.resolved_visuals.borrow_mut();
+        let ProjectionPrefixCache {
+            resolved,
+            chain,
+            seen,
+        } = &mut *cache;
+        chain.clear();
+        seen.clear();
         let mut cursor = VisualOffsetNodeId(owner);
-        loop {
+        let mut offset = loop {
+            if let Some(offset) = resolved.get(&cursor) {
+                break *offset;
+            }
             if !seen.insert(cursor) {
                 return Err(SpatialProjectionError::CyclicVisualOffset(cursor));
             }
@@ -662,16 +673,17 @@ impl<'a> SpatialProjectionGraph<'a> {
                 .get(&cursor)
                 .copied()
                 .ok_or(SpatialProjectionError::MissingVisualOffset(cursor))?;
-            chain.push(snapshot.offset);
+            chain.push(snapshot);
             let Some(parent) = snapshot.parent else {
-                break;
+                break Vec2::ZERO;
             };
             cursor = parent;
+        };
+        for snapshot in chain.drain(..).rev() {
+            offset += snapshot.offset;
+            resolved.insert(snapshot.id, offset);
         }
-        chain.reverse();
-        Ok(chain
-            .into_iter()
-            .fold(Vec2::ZERO, |sum, offset| sum + offset))
+        Ok(offset)
     }
 }
 
@@ -684,12 +696,13 @@ where
     K: Copy + Eq + std::hash::Hash,
     F: Fn(&V) -> Option<K>,
 {
-    let mut complete = FxHashSet::default();
+    let mut complete = FxHashSet::with_capacity_and_hasher(nodes.len(), Default::default());
+    let mut path = FxHashSet::default();
     for start in starts {
         if complete.contains(&start) {
             continue;
         }
-        let mut path = FxHashSet::default();
+        path.clear();
         let mut cursor = Some(start);
         while let Some(id) = cursor {
             if complete.contains(&id) {
@@ -700,7 +713,7 @@ where
             }
             cursor = nodes.get(&id).and_then(|snapshot| parent(snapshot));
         }
-        complete.extend(path);
+        complete.extend(path.drain());
     }
     Ok(())
 }
@@ -1081,6 +1094,10 @@ impl PropertyChangeFlags {
         (self.0 & other.0) == other.0
     }
 
+    pub(crate) const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
     const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
@@ -1325,6 +1342,32 @@ impl PropertyTrees {
         self.states.get(&owner).copied()
     }
 
+    pub(crate) fn clip_node_snapshot_for(&self, id: ClipNodeId) -> Option<ClipNodeSnapshot> {
+        let node = self.clips.get(&id)?;
+        let ClipGeometry::LogicalScissor(logical_scissor) = node.geometry else {
+            return None;
+        };
+        Some(ClipNodeSnapshot {
+            id,
+            owner: node.owner,
+            parent: node.parent,
+            logical_scissor,
+            behavior: node.behavior,
+            generation: node.generation,
+        })
+    }
+
+    pub(crate) fn effect_node_snapshot_for(&self, id: EffectNodeId) -> Option<EffectNodeSnapshot> {
+        let node = self.effects.get(&id)?;
+        Some(EffectNodeSnapshot {
+            id,
+            owner: node.owner,
+            parent: node.parent,
+            opacity: node.opacity,
+            generation: node.generation,
+        })
+    }
+
     pub(crate) fn clip_snapshot_for(
         &self,
         leaf: Option<ClipNodeId>,
@@ -1336,19 +1379,9 @@ impl PropertyTrees {
             if !seen.insert(id) || snapshots.len() >= usize::from(u8::MAX) {
                 return None;
             }
-            let node = self.clips.get(&id)?;
-            let ClipGeometry::LogicalScissor(logical_scissor) = node.geometry else {
-                return None;
-            };
-            snapshots.push(ClipNodeSnapshot {
-                id,
-                owner: node.owner,
-                parent: node.parent,
-                logical_scissor,
-                behavior: node.behavior,
-                generation: node.generation,
-            });
-            cursor = node.parent;
+            let snapshot = self.clip_node_snapshot_for(id)?;
+            cursor = snapshot.parent;
+            snapshots.push(snapshot);
         }
         Some(snapshots)
     }
@@ -1367,15 +1400,9 @@ impl PropertyTrees {
             if !seen.insert(id) || snapshots.len() >= usize::from(u8::MAX) {
                 return None;
             }
-            let node = self.effects.get(&id)?;
-            snapshots.push(EffectNodeSnapshot {
-                id,
-                owner: node.owner,
-                parent: node.parent,
-                opacity: node.opacity,
-                generation: node.generation,
-            });
-            cursor = node.parent;
+            let snapshot = self.effect_node_snapshot_for(id)?;
+            cursor = snapshot.parent;
+            snapshots.push(snapshot);
         }
         Some(snapshots)
     }
@@ -2172,8 +2199,10 @@ impl PropertyTrees {
         self.states.retain(|key, _| seen.contains(key));
     }
 
-    #[cfg(test)]
-    fn changes_for(&self, key: NodeKey) -> PropertyChangeFlags {
+    /// Final observed changes survive layout's consumption of LAYOUT/PLACE.
+    /// These are work-selection hints, not evidence that an absent flag proves
+    /// a complete native command payload or a resident GPU allocation valid.
+    pub(crate) fn changes_for(&self, key: NodeKey) -> PropertyChangeFlags {
         self.changes
             .get(&key)
             .copied()
@@ -2393,3 +2422,58 @@ mod tests;
 
 #[cfg(test)]
 mod spatial_projection_tests;
+
+#[cfg(test)]
+mod spatial_prefix_tests;
+
+impl LayoutPositionNodeSnapshot {
+    pub(crate) fn validate_projection_value(&self) -> Result<(), SpatialProjectionError> {
+        if self.id.0 != self.owner
+            || self.owner.is_null()
+            || self.generation == 0
+            || self
+                .translation_at_scroll_zero
+                .to_array()
+                .into_iter()
+                .chain(self.child_reference_offset_at_scroll_zero.to_array())
+                .any(|value| !value.is_finite())
+        {
+            return Err(SpatialProjectionError::InvalidSnapshot(self.owner));
+        }
+        Ok(())
+    }
+}
+
+impl VisualOffsetNodeSnapshot {
+    pub(crate) fn validate_projection_value(&self) -> Result<(), SpatialProjectionError> {
+        if self.id.0 != self.owner
+            || self.owner.is_null()
+            || self.generation == 0
+            || self
+                .offset
+                .to_array()
+                .into_iter()
+                .any(|value| !value.is_finite())
+        {
+            return Err(SpatialProjectionError::InvalidSnapshot(self.owner));
+        }
+        Ok(())
+    }
+}
+
+impl ScrollNodeSnapshot {
+    pub(crate) fn validate_projection_value(&self) -> Result<(), SpatialProjectionError> {
+        if self.id.0 != self.owner
+            || self.owner.is_null()
+            || self.generation == 0
+            || self
+                .offset
+                .to_array()
+                .into_iter()
+                .any(|value| !value.is_finite())
+        {
+            return Err(SpatialProjectionError::InvalidSnapshot(self.owner));
+        }
+        Ok(())
+    }
+}

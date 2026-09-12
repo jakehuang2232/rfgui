@@ -16,15 +16,15 @@ fn rounded_loading_and_error_svg_wrappers_record_exact_child_mask_scope() {
     let node = arena.get(owner).unwrap();
     let context = node
         .element
-        .shadow_paint_recording_context(Default::default());
+        .shadow_paint_recording_context(&Default::default());
     assert_eq!(
         node.element
-            .shadow_paint_recording_capability(&arena, false, context),
+            .shadow_paint_recording_capability(&arena, false, &context),
         ShadowPaintRecordingCapability::Recordable
     );
     assert!(
         node.element
-            .retained_child_mask_plan(&arena, context)
+            .retained_child_mask_plan(&arena, &context)
             .is_none(),
         "ready Svg has no active slot children, so no child-mask scope is required"
     );
@@ -97,10 +97,10 @@ fn canonical_hidden_svg_wrappers_cull_but_visible_active_slots_do_not() {
         let node = arena.get(owner).unwrap();
         let context = node
             .element
-            .shadow_paint_recording_context(Default::default());
+            .shadow_paint_recording_context(&Default::default());
         assert_eq!(
             node.element
-                .shadow_paint_recording_capability(&arena, false, context),
+                .shadow_paint_recording_capability(&arena, false, &context),
             ShadowPaintRecordingCapability::Recordable,
             "visible {state:?} child subtree must remain traversable"
         );
@@ -116,10 +116,10 @@ fn canonical_hidden_svg_wrappers_cull_but_visible_active_slots_do_not() {
         let node = arena.get(owner).unwrap();
         let context = node
             .element
-            .shadow_paint_recording_context(Default::default());
+            .shadow_paint_recording_context(&Default::default());
         assert_eq!(
             node.element
-                .shadow_paint_recording_capability(&arena, false, context),
+                .shadow_paint_recording_capability(&arena, false, &context),
             ShadowPaintRecordingCapability::CulledSubtree,
             "zero-area {state:?} wrapper culls its complete subtree"
         );
@@ -137,8 +137,8 @@ fn canonical_hidden_svg_wrappers_cull_but_visible_active_slots_do_not() {
         node.element.shadow_paint_recording_capability(
             &arena,
             false,
-            node.element
-                .shadow_paint_recording_context(Default::default()),
+            &node.element
+                .shadow_paint_recording_context(&Default::default()),
         ),
         ShadowPaintRecordingCapability::CulledSubtree
     );
@@ -334,7 +334,7 @@ fn content_and_path_ready_record_matching_typed_owning_artifacts() {
         node.element.shadow_paint_recording_capability(
             &arena,
             false,
-            crate::view::paint::PaintRecordingContext::default(),
+            &crate::view::paint::PaintRecordingContext::default(),
         ),
         ShadowPaintRecordingCapability::Recordable
     );
@@ -349,7 +349,7 @@ fn content_and_path_ready_record_matching_typed_owning_artifacts() {
                 topology_revision: 1,
             },
             &arena,
-            crate::view::paint::PaintRecordingContext::default(),
+            &crate::view::paint::PaintRecordingContext::default(),
         )
         .expect("eligible Content SVG should record");
     assert_eq!(
@@ -401,7 +401,7 @@ fn content_and_path_ready_record_matching_typed_owning_artifacts() {
         path_node.element.shadow_paint_recording_capability(
             &path_arena,
             false,
-            crate::view::paint::PaintRecordingContext::default(),
+            &crate::view::paint::PaintRecordingContext::default(),
         ),
         ShadowPaintRecordingCapability::Recordable
     );
@@ -417,7 +417,7 @@ fn content_and_path_ready_record_matching_typed_owning_artifacts() {
             Default::default(),
             revision,
             &path_arena,
-            Default::default(),
+            &Default::default(),
         )
         .expect("eligible Path SVG metadata");
     let path_artifact = path_node
@@ -427,7 +427,7 @@ fn content_and_path_ready_record_matching_typed_owning_artifacts() {
             Default::default(),
             revision,
             &path_arena,
-            Default::default(),
+            &Default::default(),
         )
         .expect("eligible Path SVG artifact");
     let Some(crate::view::paint::PaintOp::PreparedSvg(prepared)) = path_artifact.ops.last()
@@ -487,7 +487,7 @@ fn path_generation_and_pixel_arc_are_frozen_across_metadata_and_full_recording()
             Default::default(),
             revision,
             &arena,
-            Default::default(),
+            &Default::default(),
         )
         .expect("Path metadata");
     let new_pixels: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![
@@ -510,7 +510,7 @@ fn path_generation_and_pixel_arc_are_frozen_across_metadata_and_full_recording()
             Default::default(),
             revision,
             &arena,
-            Default::default(),
+            &Default::default(),
         )
         .expect("same-frame Path artifact");
     let Some(crate::view::paint::PaintOp::PreparedSvg(prepared)) = artifact.ops.last() else {
@@ -550,7 +550,7 @@ fn path_generation_and_pixel_arc_are_frozen_across_metadata_and_full_recording()
             Default::default(),
             revision,
             &arena,
-            Default::default(),
+            &Default::default(),
         )
         .expect("next-frame Path artifact");
     let Some(crate::view::paint::PaintOp::PreparedSvg(next)) = next_artifact.ops.last() else {
@@ -569,7 +569,7 @@ fn path_document_and_raster_loading_error_record_wrappers_but_invalid_ready_fail
         let node = arena.get(root).unwrap();
         assert_eq!(
             node.element
-                .shadow_paint_recording_capability(&arena, false, Default::default()),
+                .shadow_paint_recording_capability(&arena, false, &Default::default()),
             ShadowPaintRecordingCapability::Recordable
         );
         let revision = crate::view::paint::PaintContentRevision {
@@ -584,7 +584,7 @@ fn path_document_and_raster_loading_error_record_wrappers_but_invalid_ready_fail
                 Default::default(),
                 revision,
                 &arena,
-                Default::default(),
+                &Default::default(),
             )
             .unwrap();
         let artifact = node
@@ -594,7 +594,7 @@ fn path_document_and_raster_loading_error_record_wrappers_but_invalid_ready_fail
                 Default::default(),
                 revision,
                 &arena,
-                Default::default(),
+                &Default::default(),
             )
             .unwrap();
         assert_eq!(
@@ -617,7 +617,7 @@ fn path_document_and_raster_loading_error_record_wrappers_but_invalid_ready_fail
                 .get(root)
                 .unwrap()
                 .element
-                .shadow_paint_recording_capability(&arena, false, Default::default()),
+                .shadow_paint_recording_capability(&arena, false, &Default::default()),
             ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::MissingPreparedSvg)
         );
     }

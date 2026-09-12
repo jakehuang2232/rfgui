@@ -401,7 +401,7 @@ impl ElementTrait for TextAreaProjectionSegment {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         deferred_phase_root: bool,
-        _recording_context: crate::view::paint::PaintRecordingContext,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::base_component::ShadowPaintRecordingCapability {
         let Some(self_key) = unique_projection_segment_key(arena, self) else {
             return crate::view::base_component::ShadowPaintRecordingCapability::Unsupported;
@@ -427,9 +427,9 @@ impl ElementTrait for TextAreaProjectionSegment {
     #[allow(private_interfaces)]
     fn shadow_paint_recording_context(
         &self,
-        parent: crate::view::paint::PaintRecordingContext,
+        parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
-        parent
+        *parent
     }
 
     #[allow(private_interfaces)]
@@ -437,7 +437,7 @@ impl ElementTrait for TextAreaProjectionSegment {
         &self,
         child: NodeKey,
         arena: &NodeArena,
-        parent: crate::view::paint::PaintRecordingContext,
+        parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
         let mut child_context = parent.without_text_area_child_authority();
         let Some(self_key) = unique_projection_segment_key(arena, self) else {

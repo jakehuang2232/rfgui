@@ -162,6 +162,7 @@ impl Image {
         self.frozen_snapshot = None;
         self.prepared_by_arena_sync = false;
         self.element.mark_layout_dirty();
+        self.element.mark_resource_dirty();
     }
 
     pub fn apply_style(&mut self, style: crate::style::Style) {
@@ -258,6 +259,7 @@ impl Image {
         self.frozen_snapshot = Some(next);
         if resource_changed || slot_changed {
             self.element.mark_layout_dirty();
+            self.element.mark_resource_dirty();
         }
     }
 
@@ -323,7 +325,7 @@ impl Image {
         expected_owner: Option<NodeKey>,
         properties: Option<crate::view::compositor::property_tree::PropertyTreeState>,
         deferred_phase_root: bool,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Result<ImageShadowPaintClass, super::ShadowPaintBlocker> {
         let indexed_owner = arena
             .find_by_stable_id(self.stable_id())
@@ -345,7 +347,7 @@ impl Image {
                         || recording_context
                             .authorizes_deferred_viewport_self_clip_for(self.stable_id()),
                     true,
-                    recording_context,
+                    &recording_context,
                 ) {
                     return Err(blocker);
                 }
@@ -400,7 +402,7 @@ impl Image {
                         || recording_context
                             .authorizes_deferred_viewport_self_clip_for(self.stable_id()),
                     true,
-                    recording_context,
+                    &recording_context,
                 ) {
                     return Err(blocker);
                 }
@@ -791,7 +793,7 @@ impl ElementTrait for Image {
         &self,
         arena: &NodeArena,
         deferred_phase_root: bool,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> super::ShadowPaintRecordingCapability {
         if !self.element.layout_state.should_render {
             let paint = self.element.retained_paint_properties();
@@ -826,7 +828,7 @@ impl ElementTrait for Image {
                 )
             };
         }
-        match self.classify_shadow_paint(arena, None, None, deferred_phase_root, recording_context)
+        match self.classify_shadow_paint(arena, None, None, deferred_phase_root, &recording_context)
         {
             Ok(_) => super::ShadowPaintRecordingCapability::Recordable,
             Err(blocker) => super::ShadowPaintRecordingCapability::Legacy(blocker),
@@ -837,10 +839,10 @@ impl ElementTrait for Image {
     fn retained_child_mask_plan(
         &self,
         arena: &NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::RetainedChildMaskPlan> {
         self.element
-            .prepared_retained_child_mask_plan(arena, recording_context)
+            .prepared_retained_child_mask_plan(arena, &recording_context)
     }
 
     #[allow(private_interfaces)]
@@ -850,7 +852,7 @@ impl ElementTrait for Image {
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintChunkMetadata> {
         match self
             .classify_shadow_paint(
@@ -858,7 +860,7 @@ impl ElementTrait for Image {
                 Some(owner),
                 Some(properties),
                 recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id()),
-                recording_context,
+                &recording_context,
             )
             .ok()?
         {
@@ -870,7 +872,7 @@ impl ElementTrait for Image {
                         properties,
                         content_revision,
                         Some(arena),
-                        recording_context,
+                        &recording_context,
                     )
                     .ok()?;
                 metadata.id.role = crate::view::paint::PaintChunkRole::ImageContent;
@@ -882,7 +884,7 @@ impl ElementTrait for Image {
                     )
                     .into_iter()
                     .collect::<Vec<_>>();
-                let shadows = self.element.prepared_outer_shadow_ops(recording_context)?;
+                let shadows = self.element.prepared_outer_shadow_ops(&recording_context)?;
                 metadata.payload_identity =
                     crate::view::paint::PaintPayloadIdentity::image_with_shadows_and_decoration(
                         crate::view::paint::PreparedImageIdentity::from_op(&prepared),
@@ -898,7 +900,7 @@ impl ElementTrait for Image {
                     properties,
                     content_revision,
                     Some(arena),
-                    recording_context,
+                    &recording_context,
                 )
                 .ok(),
         }
@@ -911,7 +913,7 @@ impl ElementTrait for Image {
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &NodeArena,
-        recording_context: crate::view::paint::PaintRecordingContext,
+        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintArtifact> {
         let classification = self
             .classify_shadow_paint(
@@ -919,7 +921,7 @@ impl ElementTrait for Image {
                 Some(owner),
                 Some(properties),
                 recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id()),
-                recording_context,
+                &recording_context,
             )
             .ok()?;
         let artifact = match classification {
@@ -931,13 +933,13 @@ impl ElementTrait for Image {
                         properties,
                         content_revision,
                         Some(arena),
-                        recording_context,
+                        &recording_context,
                     )
                     .ok()?;
                 metadata.id.role = crate::view::paint::PaintChunkRole::ImageContent;
                 let mut ops = self
                     .element
-                    .prepared_outer_shadow_ops(recording_context)?
+                    .prepared_outer_shadow_ops(&recording_context)?
                     .into_iter()
                     .map(crate::view::paint::PaintOp::PreparedShadow)
                     .collect::<Vec<_>>();
@@ -999,7 +1001,7 @@ impl ElementTrait for Image {
                     properties,
                     content_revision,
                     arena,
-                    recording_context,
+                    &recording_context,
                 )
                 .ok()?,
         };
@@ -1011,9 +1013,9 @@ impl ElementTrait for Image {
     #[allow(private_interfaces)]
     fn shadow_paint_recording_context(
         &self,
-        parent: crate::view::paint::PaintRecordingContext,
+        parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
-        self.element.shadow_paint_recording_context(parent)
+        self.element.shadow_paint_recording_context(&parent)
     }
 
     fn intercepts_pointer_at(&self, viewport_x: f32, viewport_y: f32) -> bool {

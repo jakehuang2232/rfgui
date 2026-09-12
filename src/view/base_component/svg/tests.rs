@@ -325,10 +325,10 @@ fn assert_missing_prepared_svg_hooks(arena: &NodeArena, owner: NodeKey) {
     let node = arena.get(owner).unwrap();
     let context = node
         .element
-        .shadow_paint_recording_context(Default::default());
+        .shadow_paint_recording_context(&Default::default());
     assert!(matches!(
         node.element
-            .shadow_paint_recording_capability(arena, false, context),
+            .shadow_paint_recording_capability(arena, false, &context),
         ShadowPaintRecordingCapability::Legacy(
             ShadowPaintBlocker::MissingPreparedSvg
                 | ShadowPaintBlocker::MissingPreparedInlineRoot
@@ -341,12 +341,12 @@ fn assert_missing_prepared_svg_hooks(arena: &NodeArena, owner: NodeKey) {
     };
     assert!(
         node.element
-            .record_shadow_paint_metadata(owner, Default::default(), revision, arena, context,)
+            .record_shadow_paint_metadata(owner, Default::default(), revision, arena, &context,)
             .is_none()
     );
     assert!(
         node.element
-            .record_shadow_paint_artifact(owner, Default::default(), revision, arena, context,)
+            .record_shadow_paint_artifact(owner, Default::default(), revision, arena, &context,)
             .is_none()
     );
 }

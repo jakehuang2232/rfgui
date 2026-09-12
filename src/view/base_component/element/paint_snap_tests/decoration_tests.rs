@@ -82,7 +82,7 @@ fn fragmented_inline_outer_shadow_prepares_one_op_per_fragment_in_order() {
     ];
 
     let prepared = element
-        .prepared_outer_shadow_ops(crate::view::paint::PaintRecordingContext::default())
+        .prepared_outer_shadow_ops(&crate::view::paint::PaintRecordingContext::default())
         .expect("finite inline fragments use the typed shadow grammar");
     assert_eq!(prepared.len(), 2);
     let min_y = prepared

@@ -260,7 +260,7 @@ fn native_inventory_element_inline_clip_and_deferred_states() {
                         .get(scene.root)
                         .unwrap()
                         .element
-                        .retained_child_mask_plan(&scene.arena, Default::default())
+                        .retained_child_mask_plan(&scene.arena, &Default::default())
                         .is_some(),
                     "mask fixture must require a recorded child mask"
                 );

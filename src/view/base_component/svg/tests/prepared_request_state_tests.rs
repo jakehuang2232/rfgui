@@ -36,10 +36,10 @@ fn failed_active_svg_promotes_ready_replacement_before_selecting_slot_topology()
     let node = arena.get(owner).unwrap();
     let context = node
         .element
-        .shadow_paint_recording_context(Default::default());
+        .shadow_paint_recording_context(&Default::default());
     let svg = node.element.as_any().downcast_ref::<Svg>().unwrap();
     assert!(
-        svg.classify_shadow_paint(&arena, Some(owner), None, false, context)
+        svg.classify_shadow_paint(&arena, Some(owner), None, false, &context)
             .is_ok()
     );
 }
@@ -71,10 +71,10 @@ fn changing_svg_raster_mode_preserves_the_ready_frame_until_replacement() {
     let node = arena.get(owner).unwrap();
     let context = node
         .element
-        .shadow_paint_recording_context(Default::default());
+        .shadow_paint_recording_context(&Default::default());
     let svg = node.element.as_any().downcast_ref::<Svg>().unwrap();
     assert!(
-        svg.classify_shadow_paint(&arena, Some(owner), None, false, context)
+        svg.classify_shadow_paint(&arena, Some(owner), None, false, &context)
             .is_ok()
     );
 }
@@ -116,15 +116,15 @@ fn first_raster_request_records_loading_without_observing_late_completion() {
     let node = arena.get(owner).unwrap();
     let context = node
         .element
-        .shadow_paint_recording_context(Default::default());
+        .shadow_paint_recording_context(&Default::default());
     assert!(
         node.element
-            .record_shadow_paint_metadata(owner, Default::default(), revision, &arena, context)
+            .record_shadow_paint_metadata(owner, Default::default(), revision, &arena, &context)
             .is_some()
     );
     assert!(
         node.element
-            .record_shadow_paint_artifact(owner, Default::default(), revision, &arena, context)
+            .record_shadow_paint_artifact(owner, Default::default(), revision, &arena, &context)
             .is_some()
     );
     drop(node);
@@ -169,10 +169,10 @@ fn prepared_svg_pending_resolution_is_valid_but_postprepare_drift_is_rejected() 
             let node = arena.get(owner).unwrap();
             let context = node
                 .element
-                .shadow_paint_recording_context(Default::default());
+                .shadow_paint_recording_context(&Default::default());
             let svg = node.element.as_any().downcast_ref::<Svg>().unwrap();
             assert!(
-                svg.classify_shadow_paint(&arena, Some(owner), None, false, context)
+                svg.classify_shadow_paint(&arena, Some(owner), None, false, &context)
                     .is_ok()
             );
         }

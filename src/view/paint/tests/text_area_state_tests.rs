@@ -190,7 +190,7 @@ fn plain_text_area_live_empty_ignores_stale_package_and_apply_authority() {
     let capability = text_area.shadow_paint_recording_capability(
         &arena,
         false,
-        PaintRecordingContext::default(),
+        &PaintRecordingContext::default(),
     );
     assert_eq!(
         capability,
@@ -224,7 +224,7 @@ fn text_area_leaf_deferred_or_wrong_context_never_turns_transparent() {
         .unwrap();
     assert_eq!(
         text_area
-            .shadow_paint_recording_capability(&arena, true, PaintRecordingContext::default(),),
+            .shadow_paint_recording_capability(&arena, true, &PaintRecordingContext::default(),),
         ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::Deferred)
     );
     drop(root_node);
@@ -239,7 +239,7 @@ fn text_area_leaf_deferred_or_wrong_context_never_turns_transparent() {
         run_node.element.shadow_paint_recording_capability(
             &standalone,
             false,
-            PaintRecordingContext::default(),
+            &PaintRecordingContext::default(),
         ),
         ShadowPaintRecordingCapability::Unsupported
     );

@@ -1,4 +1,11 @@
 impl Element {
+    pub(crate) fn post_layout_animation_is_noop(&self) -> bool {
+        self.scroll_direction == ScrollDirection::None
+            && !self.scrollbar_interaction_pending
+            && self.last_scrollbar_interaction.is_none()
+            && self.sampled_scrollbar_alpha.to_bits() == 0.0_f32.to_bits()
+    }
+
     fn note_scrollbar_interaction(&mut self) {
         // Event dispatch must not sample time independently from the frame.
         // Keep an immediate interaction visible to same-turn hit testing,

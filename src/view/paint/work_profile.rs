@@ -16,7 +16,8 @@ thread_local! {
     static PROFILE: RefCell<Profile> = RefCell::new(Profile::default());
 }
 
-pub(crate) fn begin() {
+#[inline]
+fn enabled() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     let enabled = *{
         static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -24,9 +25,16 @@ pub(crate) fn begin() {
     };
     #[cfg(target_arch = "wasm32")]
     let enabled = false;
+    enabled
+}
+
+pub(crate) fn begin() {
+    if !enabled() {
+        return;
+    }
     PROFILE.with(|p| {
         let mut p = p.borrow_mut();
-        p.active = enabled;
+        p.active = true;
         p.stack.clear();
         p.phases.clear();
     });
@@ -34,6 +42,11 @@ pub(crate) fn begin() {
 
 pub(crate) struct Scope(Option<(&'static str, Instant)>);
 pub(crate) fn scope(name: &'static str) -> Scope {
+    // The disabled hot path avoids thread-local lookup and RefCell traffic.
+    // Enabling remains fixed for the process, as it was at frame begin.
+    if !enabled() {
+        return Scope(None);
+    }
     Scope(PROFILE.with(|p| {
         let mut p = p.borrow_mut();
         p.active.then(|| {
@@ -56,6 +69,9 @@ impl Drop for Scope {
 }
 
 pub(crate) fn finish(frame: u64, build_ms: f64) {
+    if !enabled() {
+        return;
+    }
     PROFILE.with(|p| {
         let mut p = p.borrow_mut();
         if !p.active {
@@ -75,6 +91,9 @@ pub(crate) fn finish(frame: u64, build_ms: f64) {
 }
 
 pub(crate) fn count(name: &'static str, count: usize) {
+    if !enabled() {
+        return;
+    }
     PROFILE.with(|p| {
         let mut p = p.borrow_mut();
         if p.active {

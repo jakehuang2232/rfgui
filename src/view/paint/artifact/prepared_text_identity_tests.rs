@@ -170,3 +170,27 @@ fn immutable_text_replay_shares_input_but_changed_input_must_revalidate() {
     assert!(!replay.has_canonical_identity());
     assert!(source.has_canonical_identity());
 }
+
+#[test]
+fn baked_opacity_summary_is_bound_to_the_validated_glyph_allocation() {
+    let original = PreparedTextOp::new(params()).unwrap();
+    assert!(original.has_baked_opacity(0.65_f32.to_bits()));
+    assert!(!original.has_baked_opacity(0.5_f32.to_bits()));
+    let mut changed = original.clone();
+    let replacement = Arc::make_mut(&mut changed.params);
+    for glyph in &mut replacement.staging_input.glyphs {
+        glyph.paint.opacity = 0.5;
+    }
+    assert!(changed.has_baked_opacity(0.5_f32.to_bits()));
+    assert!(!changed.has_baked_opacity(0.65_f32.to_bits()));
+    assert!(!changed.has_canonical_identity());
+    let rebuilt = PreparedTextOp::new(changed.params.clone()).unwrap();
+    assert!(rebuilt.has_baked_opacity(0.5_f32.to_bits()));
+    Arc::make_mut(&mut changed.params).staging_input.glyphs[0]
+        .paint
+        .opacity = 0.25;
+    let mixed = PreparedTextOp::new(changed.params.clone()).unwrap();
+    assert!(!mixed.has_baked_opacity(0.5_f32.to_bits()));
+    assert!(!mixed.has_baked_opacity(0.25_f32.to_bits()));
+    assert!(original.has_baked_opacity(0.65_f32.to_bits()));
+}

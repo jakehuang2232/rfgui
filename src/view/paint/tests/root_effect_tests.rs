@@ -99,7 +99,7 @@ fn root_opacity_group_records_contents_clip_neutrally_and_metadata_matches_full(
             _ => None,
         })
         .expect("child chunk carries the root contents clip snapshot");
-    clip_snapshot[0].logical_scissor[0] += 1;
+    std::sync::Arc::make_mut(clip_snapshot)[0].logical_scissor[0] += 1;
     assert!(
         !super::super::frame_recorder::canonical_manifest_matches(&metadata, &full),
         "clip snapshot drift must fail metadata/full parity"

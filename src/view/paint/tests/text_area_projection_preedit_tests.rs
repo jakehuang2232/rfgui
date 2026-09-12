@@ -62,12 +62,12 @@ fn text_area_projection_preedit_direct_text_is_path_scoped_ordered_and_matches_l
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context(PaintRecordingContext::default());
+        .shadow_paint_recording_context(&PaintRecordingContext::default());
     let projection_context = arena
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context_for_child(projection, &arena, root_context);
+        .shadow_paint_recording_context_for_child(projection, &arena, &root_context);
     let witness = projection_context
         .text_area_preedit
         .expect("target projection edge must carry preedit authority");
@@ -76,7 +76,7 @@ fn text_area_projection_preedit_direct_text_is_path_scoped_ordered_and_matches_l
         .get(projection)
         .unwrap()
         .element
-        .shadow_paint_recording_context_for_child(projected_text, &arena, projection_context);
+        .shadow_paint_recording_context_for_child(projected_text, &arena, &projection_context);
     assert_eq!(text_context.text_area_preedit, Some(witness));
     for sibling in arena
         .children_of(root)
@@ -88,7 +88,7 @@ fn text_area_projection_preedit_direct_text_is_path_scoped_ordered_and_matches_l
                 .get(root)
                 .unwrap()
                 .element
-                .shadow_paint_recording_context_for_child(sibling, &arena, root_context,)
+                .shadow_paint_recording_context_for_child(sibling, &arena, &root_context,)
                 .text_area_preedit,
             None
         );
@@ -175,13 +175,13 @@ fn mixed_projection_with_plain_transient_preedit_remains_eligible() {
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context(PaintRecordingContext::default());
+        .shadow_paint_recording_context(&PaintRecordingContext::default());
     assert_eq!(
         arena
             .get(root)
             .unwrap()
             .element
-            .shadow_paint_recording_context_for_child(projection, &arena, root_context,)
+            .shadow_paint_recording_context_for_child(projection, &arena, &root_context,)
             .text_area_preedit,
         None
     );
@@ -363,17 +363,17 @@ fn text_area_projection_preedit_topology_and_witness_tamper_fail_closed() {
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context(PaintRecordingContext::default());
+        .shadow_paint_recording_context(&PaintRecordingContext::default());
     let projection_context = arena
         .get(root)
         .unwrap()
         .element
-        .shadow_paint_recording_context_for_child(projection, &arena, root_context);
+        .shadow_paint_recording_context_for_child(projection, &arena, &root_context);
     let mut text_context = arena
         .get(projection)
         .unwrap()
         .element
-        .shadow_paint_recording_context_for_child(projected_text, &arena, projection_context);
+        .shadow_paint_recording_context_for_child(projected_text, &arena, &projection_context);
     text_context
         .text_area_preedit
         .as_mut()
@@ -394,7 +394,7 @@ fn text_area_projection_preedit_topology_and_witness_tamper_fail_closed() {
                     topology_revision: 1,
                 },
                 &arena,
-                text_context,
+                &text_context,
             )
             .is_none()
     );
@@ -480,7 +480,7 @@ fn text_area_projection_preedit_state_boundaries_fail_closed() {
         projection_node.element.shadow_paint_recording_capability(
             &arena,
             true,
-            PaintRecordingContext {
+            &PaintRecordingContext {
                 inside_text_area: true,
                 ..Default::default()
             },

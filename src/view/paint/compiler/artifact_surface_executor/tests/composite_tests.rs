@@ -16,7 +16,7 @@ fn owner_scoped_host_placement_replays_parent_then_child_snapping() {
         root,
         Box::new(Element::new_with_id(0xc3_e101, 0.0, 0.0, 1.0, 1.0)),
     );
-    let projection = ArtifactSurfaceHostPlacementProjection {
+    let mut projection = ArtifactSurfaceHostPlacementProjection {
         owners: vec![
             ArtifactSurfaceOwnerPlacement {
                 owner: child,
@@ -28,7 +28,9 @@ fn owner_scoped_host_placement_replays_parent_then_child_snapping() {
                 parent: None,
                 viewport_position_bits: [5.25_f32.to_bits(), 5.0_f32.to_bits()],
             },
-        ],
+        ]
+        .into(),
+        resolved: Default::default(),
     };
     let resolved = projection
         .resolve([0.0, 0.0])
@@ -47,6 +49,23 @@ fn owner_scoped_host_placement_replays_parent_then_child_snapping() {
         Some([(-0.5_f32).to_bits(), 0.0_f32.to_bits()]),
         "child snapping must inherit the parent's correction instead of recomputing directly from the frame offset"
     );
+    let warm = projection.clone().resolve([0.0, 0.0]).unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        &resolved.owner_paint_offset_bits,
+        &warm.owner_paint_offset_bits
+    ));
+    let shifted = projection.resolve([2.0, 3.0]).unwrap();
+    assert_eq!(shifted.owner_paint_offset(child), Some([1.5, 3.0]));
+    assert!(!std::sync::Arc::ptr_eq(
+        &warm.owner_paint_offset_bits,
+        &shifted.owner_paint_offset_bits
+    ));
+    assert!(projection.resolve([f32::NAN, 0.0]).is_err());
+    // Replacing a same-id owner observation cannot inherit another allocation's proof.
+    std::sync::Arc::make_mut(&mut projection.owners)[0].viewport_position_bits[0] =
+        17.75_f32.to_bits();
+    let changed = projection.resolve([2.0, 3.0]).unwrap();
+    assert_eq!(changed.owner_paint_offset(child), Some([2.25, 3.0]));
 }
 
 #[test]

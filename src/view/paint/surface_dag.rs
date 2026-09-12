@@ -662,6 +662,33 @@ pub(crate) struct SurfaceDag {
 }
 
 impl SurfaceDag {
+    /// Exact projection of the fields read by coverage reconstruction. Numeric
+    /// boundary transfer is deliberately absent: materialization is rebuilt
+    /// from the current transfer even when chunk membership can be reused.
+    pub(super) fn coverage_topology_matches(&self, other: &Self) -> bool {
+        let key = |node: &SurfaceDagNode| {
+            let SurfaceDagNode {
+                id,
+                target,
+                stable_id,
+                cursor,
+                kind,
+                receiver,
+                transition: _,
+                clip_rebase,
+                transfer: _,
+            } = *node;
+            (id, target, stable_id, cursor, kind, receiver, clip_rebase)
+        };
+        self.roots == other.roots
+            && self.nodes.len() == other.nodes.len()
+            && self
+                .nodes
+                .iter()
+                .zip(&other.nodes)
+                .all(|(a, b)| key(a) == key(b))
+    }
+
     /// Complete admitted scene-root registry, including roots with no surface.
     /// This is complete only for the artifact owner set, not for the arena.
     #[cfg(test)]
@@ -1576,10 +1603,16 @@ fn consumed_dimensions_match(
 /// the existing artifact compiler; this function does not establish it.
 /// One immutable artifact binds the graph proofs used by every planning phase.
 /// Rebuilding the same owner/spatial graphs at each phase adds no validation.
+#[derive(Clone)]
+pub(super) struct ArtifactSurfaceInputGraphs {
+    snapshots: std::sync::Arc<PropertySnapshotGraph>,
+    owners: std::sync::Arc<ArtifactOwnerGraph>,
+}
+
 pub(super) struct ArtifactSurfaceInputs<'a> {
     artifact: &'a PaintArtifact,
-    snapshots: PropertySnapshotGraph,
-    owners: ArtifactOwnerGraph,
+    snapshots: std::sync::Arc<PropertySnapshotGraph>,
+    owners: std::sync::Arc<ArtifactOwnerGraph>,
     cursors: Vec<ArtifactCursor>,
     scroll_scopes: ArtifactScrollMaskScopes,
     candidates: Vec<ArtifactSurfaceCandidate>,
@@ -1590,8 +1623,21 @@ impl<'a> ArtifactSurfaceInputs<'a> {
         artifact: &'a PaintArtifact,
         policy: LayerizationPolicy,
     ) -> Result<Self, SurfaceDagError> {
-        let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
-        let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
+        Self::with_graphs(artifact, policy, None)
+    }
+
+    pub(super) fn with_graphs(
+        artifact: &'a PaintArtifact,
+        policy: LayerizationPolicy,
+        graphs: Option<ArtifactSurfaceInputGraphs>,
+    ) -> Result<Self, SurfaceDagError> {
+        let ArtifactSurfaceInputGraphs { snapshots, owners } = match graphs {
+            Some(graphs) => graphs,
+            None => ArtifactSurfaceInputGraphs {
+                snapshots: std::sync::Arc::new(PropertySnapshotGraph::try_from_artifact(artifact)?),
+                owners: std::sync::Arc::new(ArtifactOwnerGraph::try_from_artifact(artifact)?),
+            },
+        };
         let scroll_scopes = ArtifactScrollMaskScopes::from_artifact(artifact)?;
         let cursors = artifact_cursors(artifact)?;
         let candidates = derive_artifact_surface_candidates_from_validated(
@@ -1613,6 +1659,12 @@ impl<'a> ArtifactSurfaceInputs<'a> {
             candidates,
             candidates_by_owner,
         })
+    }
+    pub(super) fn graphs(&self) -> ArtifactSurfaceInputGraphs {
+        ArtifactSurfaceInputGraphs {
+            snapshots: self.snapshots.clone(),
+            owners: self.owners.clone(),
+        }
     }
     pub(super) fn requests(&self) -> Result<Vec<ArtifactTransitionRequest>, SurfaceDagError> {
         derive_surface_requests_from_inputs(self)

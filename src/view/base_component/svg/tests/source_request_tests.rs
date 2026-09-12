@@ -66,7 +66,7 @@ fn path_source_request_and_device_scale_drift_fail_closed() {
             .get(root)
             .unwrap()
             .element
-            .shadow_paint_recording_capability(&arena, false, Default::default()),
+            .shadow_paint_recording_capability(&arena, false, &Default::default()),
         ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::MissingPreparedSvg)
     );
     drop(arena);
@@ -99,7 +99,7 @@ fn path_source_request_and_device_scale_drift_fail_closed() {
                 .get(root)
                 .unwrap()
                 .element
-                .shadow_paint_recording_capability(&arena, false, Default::default()),
+                .shadow_paint_recording_capability(&arena, false, &Default::default()),
             ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::MissingPreparedSvg)
         );
     }

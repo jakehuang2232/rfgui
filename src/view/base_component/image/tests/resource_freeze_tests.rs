@@ -156,17 +156,17 @@ fn path_source_swap_rejects_stale_frozen_snapshot_by_current_handle_identity() {
     let node = arena.get(root).unwrap();
     assert_eq!(
         node.element
-            .shadow_paint_recording_capability(&arena, false, context),
+            .shadow_paint_recording_capability(&arena, false, &context),
         ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::MissingPreparedImage)
     );
     assert!(
         node.element
-            .record_shadow_paint_metadata(root, Default::default(), revision, &arena, context,)
+            .record_shadow_paint_metadata(root, Default::default(), revision, &arena, &context,)
             .is_none()
     );
     assert!(
         node.element
-            .record_shadow_paint_artifact(root, Default::default(), revision, &arena, context,)
+            .record_shadow_paint_artifact(root, Default::default(), revision, &arena, &context,)
             .is_none()
     );
 }

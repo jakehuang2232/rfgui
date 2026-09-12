@@ -548,7 +548,7 @@ fn outer_shadow_artifact_compiler_fails_closed() {
     else {
         unreachable!()
     };
-    late.mesh.indices[0] = u32::MAX;
+    std::sync::Arc::make_mut(&mut late.mesh).indices[0] = u32::MAX;
     assert_eq!(
         compiled_whole_frame_graph(&artifact)
             .pass_descriptors()

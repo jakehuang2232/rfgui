@@ -180,7 +180,7 @@ fn custom_leaf_structural_and_property_boundaries_fail_closed_before_full_record
             .shadow_paint_recording_capability(
                 &arena_only,
                 false,
-                PaintRecordingContext::default()
+                &PaintRecordingContext::default()
             ),
         ShadowPaintRecordingCapability::Recordable
     );
@@ -279,7 +279,7 @@ fn custom_leaf_deferred_animating_and_root_opacity_stay_legacy() {
             .get(opacity_root)
             .unwrap()
             .element
-            .shadow_paint_recording_capability(&opacity_arena, false, opacity_context),
+            .shadow_paint_recording_capability(&opacity_arena, false, &opacity_context),
         ShadowPaintRecordingCapability::Unsupported
     );
     let _ = take_full_artifact_record_count();
@@ -314,7 +314,7 @@ fn custom_leaf_owner_pointer_mismatch_rejects_duplicate_stable_id() {
                     topology_revision: 1,
                 },
                 &arena,
-                PaintRecordingContext::default(),
+                &PaintRecordingContext::default(),
             )
             .is_none()
     );

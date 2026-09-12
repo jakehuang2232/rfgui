@@ -60,7 +60,7 @@ fn wrapping_inline_span_shadows_preserve_fragment_order_and_match_legacy() {
             .unwrap();
         (
             span.inline_fragment_rects().to_vec(),
-            span.shadow_paint_recording_context(PaintRecordingContext::default())
+            span.shadow_paint_recording_context(&PaintRecordingContext::default())
                 .paint_offset,
         )
     };

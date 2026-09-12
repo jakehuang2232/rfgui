@@ -90,7 +90,7 @@ mod census_coverage_dedupe {
         PaintCoverageItem::LegacyBoundary {
             order: CoverageOrder {
                 root_index: 0,
-                child_path: Vec::new(),
+                child_path: Vec::new().into(),
                 phase: PaintNodePhase::BeforeChildren,
                 slot: 0,
             },
@@ -166,7 +166,7 @@ mod census_coverage_dedupe {
         let items = vec![PaintCoverageItem::TransparentNode {
             order: CoverageOrder {
                 root_index: 0,
-                child_path: Vec::new(),
+                child_path: Vec::new().into(),
                 phase: PaintNodePhase::BeforeChildren,
                 slot: 0,
             },

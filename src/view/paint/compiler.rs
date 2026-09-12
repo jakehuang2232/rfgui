@@ -76,6 +76,7 @@ impl ArtifactSurfaceResolvedClip {
 
 mod artifact_surface_executor;
 mod planning_cache;
+mod span_seal_cache;
 #[cfg(any(test, feature = "renderer-test-support"))]
 pub(crate) use artifact_surface_executor::take_last_production_actions_for_test;
 pub(crate) use artifact_surface_executor::{
@@ -302,7 +303,7 @@ struct ArtifactSurfaceRasterProgramStamp {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ArtifactSurfaceRasterProgramStepStamp {
-    ArtifactSpan(ArtifactSurfaceRasterProgramSpanStamp),
+    ArtifactSpan(span_seal_cache::SealedProgramSpan),
     NestedSurface(ArtifactSurfaceNestedRasterDependency),
 }
 
@@ -330,7 +331,7 @@ struct ArtifactSurfaceRasterProgramChunkStamp {
 struct ArtifactSurfaceNestedRasterDependency {
     step_index: usize,
     child_execution_id: SurfaceDagExecutionNodeId,
-    child_stamp: Box<RetainedSurfaceRasterStamp>,
+    child_stamp: std::sync::Arc<RetainedSurfaceRasterStamp>,
     /// Composite placement is an edge property. Keeping it on the receiver's
     /// dependency invalidates that receiver when a nested child moves without
     /// invalidating the child's unchanged raster content.
@@ -582,6 +583,7 @@ impl PreparedArtifactSurfaceRasterChunk {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedArtifactSurfaceRasterSpan {
+    seal_cache: std::sync::Arc<span_seal_cache::SpanSealCache>,
     chunk_range: Range<usize>,
     op_range: Range<usize>,
     owner_topology: Vec<PaintOwnerSnapshot>,
@@ -589,7 +591,7 @@ pub(crate) struct PreparedArtifactSurfaceRasterSpan {
     /// The single-construction closure emitted by the shared Surface DAG walk;
     /// preparation may resolve through it but never recomputes or merges it.
     local_clips: Vec<ClipNodeSnapshot>,
-    chunks: Vec<PreparedArtifactSurfaceRasterChunk>,
+    chunks: std::sync::Arc<[PreparedArtifactSurfaceRasterChunk]>,
 }
 
 impl PreparedArtifactSurfaceRasterSpan {
@@ -1106,9 +1108,11 @@ fn validate_artifact_surface_dag_program(
     mut cache: Option<&mut PlanningCache>,
 ) -> Result<ValidatedArtifactSurfaceDagProgram, SingleTargetSurfaceDagPrepareError> {
     let _profile = crate::view::paint::work_profile::scope("validate_artifact_surface_dag_program");
-    let Some(validated) =
-        validate_artifact_store_with_policy(&artifact, ArtifactStoreValidationPolicy::SurfaceDag)
-    else {
+    let Some(validated) = validate_artifact_store_with_cache(
+        &artifact,
+        ArtifactStoreValidationPolicy::SurfaceDag,
+        cache.as_deref_mut(),
+    ) else {
         return Err(SingleTargetSurfaceDagPrepareError::InvalidArtifactStore);
     };
     if !matches!(validated.target, ValidatedArtifactTarget::CurrentTarget) {
@@ -1126,9 +1130,17 @@ fn validate_artifact_surface_dag_program(
         return Ok(cached);
     }
 
-    let inputs = super::surface_dag::ArtifactSurfaceInputs::new(
+    let graphs = cache
+        .as_deref_mut()
+        .map(|cache| cache.graphs(&artifact))
+        .transpose()
+        .map_err(SurfaceDagError::Transition)
+        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?
+        .flatten();
+    let inputs = super::surface_dag::ArtifactSurfaceInputs::with_graphs(
         &artifact,
         LayerizationPolicy::ResolveMaterializedTargets,
+        graphs,
     )
     .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
     let requests = inputs
@@ -1141,20 +1153,33 @@ fn validate_artifact_surface_dag_program(
     let surface_dag = inputs
         .reconstruct(&events)
         .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-    let coverage = inputs
-        .coverage(&surface_dag)
-        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+    let coverage = match cache
+        .as_deref_mut()
+        .and_then(|cache| cache.coverage(&artifact, &surface_dag))
+    {
+        Some(coverage) => coverage,
+        None => inputs
+            .coverage(&surface_dag)
+            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?,
+    };
     let execution_order = surface_dag
         .derive_materialized_execution_order(
             &coverage,
             LayerizationPolicy::ResolveMaterializedTargets,
         )
         .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-    let host_placement = ArtifactSurfaceHostPlacementProjection::try_new(&artifact)
-        .map_err(TransitionError::SpatialSnapshot)
-        .map_err(SurfaceDagError::Transition)
-        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+    let host_placement = match cache
+        .as_deref_mut()
+        .and_then(|cache| cache.host_placement(&artifact))
+    {
+        Some(placement) => placement,
+        None => ArtifactSurfaceHostPlacementProjection::try_new(&artifact)
+            .map_err(TransitionError::SpatialSnapshot)
+            .map_err(SurfaceDagError::Transition)
+            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?,
+    };
 
+    let graphs = inputs.graphs();
     let program = ValidatedArtifactSurfaceDagProgram {
         artifact,
         resolved_clips: validated.resolved_clips,
@@ -1164,6 +1189,7 @@ fn validate_artifact_surface_dag_program(
         host_placement,
     };
     if let Some(cache) = cache {
+        cache.remember_graphs(graphs);
         cache.remember_geometry(&program);
     }
     Ok(program)
@@ -1215,7 +1241,17 @@ fn append_bounds(accumulated: &mut Option<[u32; 4]>, next: [u32; 4]) -> Option<(
 /// detached raster content remains host-independent.
 #[derive(Clone, Debug)]
 struct ArtifactSurfaceHostPlacementProjection {
-    owners: Vec<ArtifactSurfaceOwnerPlacement>,
+    owners: std::sync::Arc<[ArtifactSurfaceOwnerPlacement]>,
+    // Shared only by clones of this exact immutable owner-position program.
+    // Host offset is the remaining input; successful resolution is cached once.
+    resolved: std::sync::Arc<std::sync::Mutex<Option<HostPlacementResolutionMemo>>>,
+}
+
+#[derive(Clone, Debug)]
+struct HostPlacementResolutionMemo {
+    owners: std::sync::Arc<[ArtifactSurfaceOwnerPlacement]>,
+    offset_bits: [u32; 2],
+    resolved: ResolvedArtifactSurfaceHostPlacement,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1225,9 +1261,9 @@ struct ArtifactSurfaceOwnerPlacement {
     viewport_position_bits: [u32; 2],
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ResolvedArtifactSurfaceHostPlacement {
-    owner_paint_offset_bits: FxHashMap<NodeKey, [u32; 2]>,
+    owner_paint_offset_bits: std::sync::Arc<FxHashMap<NodeKey, [u32; 2]>>,
 }
 
 impl ArtifactSurfaceHostPlacementProjection {
@@ -1249,26 +1285,46 @@ impl ArtifactSurfaceHostPlacementProjection {
                     .map(f32::to_bits),
             });
         }
-        Ok(Self { owners })
+        Ok(Self {
+            owners: owners.into(),
+            resolved: Default::default(),
+        })
     }
 
     fn resolve(
         &self,
         host_paint_offset: [f32; 2],
     ) -> Result<ResolvedArtifactSurfaceHostPlacement, SpatialProjectionError> {
-        let mut placements = FxHashMap::default();
-        for placement in &self.owners {
+        let offset_bits = host_paint_offset.map(f32::to_bits);
+        if let Some(memo) = self
+            .resolved
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .filter(|memo| {
+                std::sync::Arc::ptr_eq(&memo.owners, &self.owners)
+                    && memo.offset_bits == offset_bits
+            })
+        {
+            return Ok(memo.resolved.clone());
+        }
+        let mut placements =
+            FxHashMap::with_capacity_and_hasher(self.owners.len(), Default::default());
+        for placement in self.owners.iter() {
             if placements.insert(placement.owner, *placement).is_some() {
                 return Err(SpatialProjectionError::InvalidSnapshot(placement.owner));
             }
         }
-        let mut owner_paint_offset_bits: FxHashMap<NodeKey, [u32; 2]> = FxHashMap::default();
-        for placement in &self.owners {
+        let mut owner_paint_offset_bits: FxHashMap<NodeKey, [u32; 2]> =
+            FxHashMap::with_capacity_and_hasher(self.owners.len(), Default::default());
+        let mut chain = Vec::new();
+        let mut seen = FxHashSet::default();
+        for placement in self.owners.iter() {
             if owner_paint_offset_bits.contains_key(&placement.owner) {
                 continue;
             }
-            let mut chain = Vec::new();
-            let mut seen = FxHashSet::default();
+            chain.clear();
+            seen.clear();
             let mut cursor = placement.owner;
             // Artifact owner stores preserve canonical traversal order, not a
             // parent-first topological order. Resolve the bounded ancestry
@@ -1290,7 +1346,7 @@ impl ArtifactSurfaceHostPlacementProjection {
                     None => break host_paint_offset,
                 }
             };
-            for current in chain.into_iter().rev() {
+            for current in chain.drain(..).rev() {
                 parent_paint_offset = paint_offset_after_owner_snap(
                     current.viewport_position_bits.map(f32::from_bits),
                     parent_paint_offset,
@@ -1300,9 +1356,18 @@ impl ArtifactSurfaceHostPlacementProjection {
                     .insert(current.owner, parent_paint_offset.map(f32::to_bits));
             }
         }
-        Ok(ResolvedArtifactSurfaceHostPlacement {
-            owner_paint_offset_bits,
-        })
+        let resolved = ResolvedArtifactSurfaceHostPlacement {
+            owner_paint_offset_bits: std::sync::Arc::new(owner_paint_offset_bits),
+        };
+        *self
+            .resolved
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(HostPlacementResolutionMemo {
+            owners: self.owners.clone(),
+            offset_bits,
+            resolved: resolved.clone(),
+        });
+        Ok(resolved)
     }
 }
 
@@ -1870,6 +1935,19 @@ fn prepare_artifact_surface_span(
     let chunk_range = span.chunk_range();
     let op_range = span.op_range();
     let chunks = artifact_surface_span_chunks(artifact, target, span)?;
+    if let Some(prepared) = cache.as_deref_mut().and_then(|cache| {
+        cache.raster_span(
+            target,
+            span,
+            chunks,
+            placement,
+            composite_effect,
+            incoming_scissor,
+        )
+    }) {
+        return Ok(prepared);
+    }
+
     let owner_topology = artifact_surface_span_owner_topology(
         artifact,
         target,
@@ -2008,14 +2086,27 @@ fn prepare_artifact_surface_span(
             clip_schedule,
         });
     }
-    Ok(PreparedArtifactSurfaceRasterSpan {
+    let prepared = PreparedArtifactSurfaceRasterSpan {
+        seal_cache: Default::default(),
         chunk_range,
         op_range,
         owner_topology,
         opaque_order_count,
         local_clips: span.local_clips().to_vec(),
-        chunks: prepared,
-    })
+        chunks: prepared.into(),
+    };
+    if let Some(cache) = cache {
+        cache.remember_raster_span(
+            target,
+            span,
+            chunks,
+            placement,
+            composite_effect,
+            incoming_scissor,
+            &prepared,
+        );
+    }
+    Ok(prepared)
 }
 
 fn surface_raster_translation(
@@ -2397,6 +2488,9 @@ fn prepare_artifact_surface_raster_plan_from_program(
     context: ArtifactSurfaceRasterContext,
     mut cache: Option<&mut PlanningCache>,
 ) -> Result<PreparedArtifactSurfaceRasterPlan, ArtifactSurfaceRasterPlanError> {
+    if let Some(cache) = cache.as_deref_mut() {
+        cache.set_raster_environment(&program.artifact);
+    }
     let host_placement = program
         .host_placement
         .resolve(context.paint_offset())
@@ -3194,19 +3288,23 @@ fn artifact_surface_owner_topology_is_canonical(
     if topology.is_empty() || chunks.is_empty() {
         return false;
     }
-    let mut owners = FxHashMap::default();
-    let mut ordinals = FxHashMap::default();
+    let mut owners = FxHashMap::with_capacity_and_hasher(topology.len(), Default::default());
     for (ordinal, snapshot) in topology.iter().copied().enumerate() {
         if snapshot.owner.is_null()
-            || owners.insert(snapshot.owner, snapshot.parent).is_some()
-            || ordinals.insert(snapshot.owner, ordinal).is_some()
+            || owners
+                .insert(snapshot.owner, (snapshot.parent, ordinal))
+                .is_some()
             || snapshot.owner == boundary_root && snapshot.parent.is_some()
         {
             return false;
         }
     }
-    if owners.get(&boundary_root) != Some(&None)
-        || owners.values().filter(|parent| parent.is_none()).count() != 1
+    if owners.get(&boundary_root).map(|entry| entry.0) != Some(None)
+        || owners
+            .values()
+            .filter(|(parent, _)| parent.is_none())
+            .count()
+            != 1
     {
         return false;
     }
@@ -3217,9 +3315,9 @@ fn artifact_surface_owner_topology_is_canonical(
         let Some(parent) = snapshot.parent else {
             return false;
         };
-        if ordinals
+        if owners
             .get(&parent)
-            .is_none_or(|parent_ordinal| *parent_ordinal >= ordinals[&snapshot.owner])
+            .is_none_or(|(_, parent_ordinal)| *parent_ordinal >= owners[&snapshot.owner].1)
         {
             return false;
         }
@@ -3229,12 +3327,13 @@ fn artifact_surface_owner_topology_is_canonical(
         let mut cursor = chunk.raster.owner;
         let mut reached_boundary = false;
         for _ in 0..=topology.len() {
-            referenced.insert(cursor);
-            if cursor == boundary_root {
+            // Every prior chain reached the boundary or this function returned
+            // false. Its completed suffix can therefore be shared by later chunks.
+            if !referenced.insert(cursor) || cursor == boundary_root {
                 reached_boundary = true;
                 break;
             }
-            let Some(parent) = owners.get(&cursor).copied().flatten() else {
+            let Some(parent) = owners.get(&cursor).and_then(|entry| entry.0) else {
                 return false;
             };
             cursor = parent;
@@ -3365,30 +3464,37 @@ fn artifact_surface_resident_set_is_canonical(
         }
 
         let mut cursor = 0_u32;
-        let mut owner_topology = Vec::new();
-        let mut span_clips = Vec::new();
+        let mut owner_topology = stamp.owner_topology.iter();
+        let mut span_clips = stamp.clip_nodes.iter();
         let mut seen_span_clips = FxHashSet::default();
-        let mut chunks = Vec::new();
+        let mut chunks = stamp.chunks.iter();
         let mut op_count = 0_usize;
         for (step_index, step) in program.steps.iter().enumerate() {
             match step {
                 ArtifactSurfaceRasterProgramStepStamp::ArtifactSpan(span) => {
-                    if !artifact_surface_program_span_is_canonical(
-                        span,
-                        stamp.identity.boundary_root,
-                        step_index,
-                        cursor,
-                    ) {
+                    if !span.is_canonical(stamp.identity.boundary_root, step_index, cursor) {
                         return false;
                     }
                     cursor = span.opaque_order_span.end;
-                    owner_topology.extend(span.owner_topology.iter().copied());
+                    if !span
+                        .owner_topology
+                        .iter()
+                        .all(|owner| owner_topology.next() == Some(owner))
+                    {
+                        return false;
+                    }
                     for clip in &span.clip_nodes {
-                        if seen_span_clips.insert(clip.id) {
-                            span_clips.push(*clip);
+                        if seen_span_clips.insert(clip.id) && span_clips.next() != Some(clip) {
+                            return false;
                         }
                     }
-                    chunks.extend(span.chunks.iter().map(|chunk| chunk.raster.clone()));
+                    if !span
+                        .chunks
+                        .iter()
+                        .all(|chunk| chunks.next() == Some(&chunk.raster))
+                    {
+                        return false;
+                    }
                     op_count = match op_count.checked_add(span.op_count) {
                         Some(count) => count,
                         None => return false,
@@ -3431,9 +3537,9 @@ fn artifact_surface_resident_set_is_canonical(
             }
         }
         if stamp.opaque_order_span != (0..cursor)
-            || stamp.owner_topology != owner_topology
-            || stamp.clip_nodes != span_clips
-            || stamp.chunks != chunks
+            || owner_topology.next().is_some()
+            || span_clips.next().is_some()
+            || chunks.next().is_some()
             || stamp.op_count != op_count
         {
             return false;
@@ -3537,7 +3643,7 @@ fn seal_artifact_surface_resident_set(
         for (step_index, step) in node.steps.iter().enumerate() {
             match step {
                 PreparedArtifactSurfaceRasterStep::ArtifactSpan(span) => {
-                    let stamp = seal_artifact_surface_program_span(
+                    let stamp = span.seal_cache.seal(
                         node.source,
                         node.identity.boundary_root,
                         step_index,
@@ -3595,7 +3701,10 @@ fn seal_artifact_surface_resident_set(
                         ArtifactSurfaceNestedRasterDependency {
                             step_index,
                             child_execution_id: *child_execution_id,
-                            child_stamp: Box::new(child_stamp.clone()),
+                            // Child stamps are immutable after sealing. Sharing nested
+                            // dependencies prevents recursive subtree copies when a
+                            // parent stamp is retained; equality still compares values.
+                            child_stamp: std::sync::Arc::new(child_stamp.clone()),
                             child_composite_geometry: child_node.geometry(),
                             parent_opaque_order_before: cursor,
                             parent_opaque_order_after: parent_after,
@@ -3858,7 +3967,7 @@ fn emit_artifact_surface_paint_op(op: &PaintOp, graph: &mut FrameGraph, ctx: &mu
             if build_shadow_module(
                 graph,
                 ShadowModuleSpec {
-                    mesh: op.mesh.clone(),
+                    mesh: op.mesh.as_ref().clone(),
                     params: op.params,
                     viewport_width: viewport.target_width(),
                     viewport_height: viewport.target_height(),
@@ -4181,7 +4290,7 @@ pub(crate) fn localize_artifact_surface_op(
                 .ok_or_else(invalid)
         }
         PaintOp::PreparedShadow(shadow) => {
-            let mut mesh = shadow.mesh.clone();
+            let mut mesh = shadow.mesh.as_ref().clone();
             for vertex in &mut mesh.vertices {
                 translate_nested_scroll_position(vertex, delta).ok_or_else(invalid)?;
             }
@@ -4414,19 +4523,29 @@ fn validate_artifact_store_with_policy(
     artifact: &PaintArtifact,
     policy: ArtifactStoreValidationPolicy,
 ) -> Option<ValidatedArtifact> {
+    validate_artifact_store_with_cache(artifact, policy, None)
+}
+
+fn validate_artifact_store_with_cache(
+    artifact: &PaintArtifact,
+    policy: ArtifactStoreValidationPolicy,
+    cache: Option<&mut PlanningCache>,
+) -> Option<ValidatedArtifact> {
     let _profile = crate::view::paint::work_profile::scope("validate_artifact_store");
     let mut cursor = 0usize;
-    let mut seen_ids = FxHashSet::default();
-    let mut seen_slots = FxHashSet::default();
+    // A unique (owner, phase, slot) also proves unique chunk ids after the
+    // owner check below; role/scope variants may not share the same slot.
+    let mut seen_slots = FxHashSet::with_capacity_and_hasher(
+        artifact.chunks.len(), Default::default(),
+    );
     let mut child_mask_stack = Vec::<(
         crate::view::node_arena::NodeKey,
         [u32; 4],
-        PaintPayloadIdentity,
+        &PaintPayloadIdentity,
     )>::new();
     for chunk in &artifact.chunks {
         if !super::has_canonical_paint_bounds(chunk.bounds)
             || chunk.id.owner != chunk.owner
-            || !seen_ids.insert(chunk.id)
             || !seen_slots.insert((chunk.owner, chunk.id.phase, chunk.id.slot))
             || chunk.op_range.start != cursor
             || chunk.op_range.start > chunk.op_range.end
@@ -4470,7 +4589,7 @@ fn validate_artifact_store_with_policy(
                 && child_mask_radii_fit_bounds(mask.params.border_radii, mask.params.size)
                 && mask.params.gradient.is_none()
                 && mask.params.border_gradient.is_none()
-                && chunk.payload_identity == PaintPayloadIdentity::prepared_rects([mask])?;
+                && chunk.payload_identity.matches_rects([mask]);
             if !canonical {
                 return None;
             }
@@ -4482,12 +4601,12 @@ fn validate_artifact_store_with_policy(
                     child_mask_stack.push((
                         chunk.owner,
                         logical_scissor,
-                        chunk.payload_identity.clone(),
+                        &chunk.payload_identity,
                     ));
                 }
                 super::PaintNodePhase::AfterChildren => {
                     if child_mask_stack.pop()
-                        != Some((chunk.owner, logical_scissor, chunk.payload_identity.clone()))
+                        != Some((chunk.owner, logical_scissor, &chunk.payload_identity))
                     {
                         return None;
                     }
@@ -4587,6 +4706,40 @@ fn validate_artifact_store_with_policy(
     }
     if cursor != artifact.ops.len() {
         return None;
+    }
+
+    if policy == ArtifactStoreValidationPolicy::SurfaceDag
+        && let Some(validated) = cache.and_then(|cache| cache.relations(artifact))
+    {
+        // Relationships cannot prove that newly recorded ops carry the current
+        // local opacity or keep the exact shadow-prefix grammar. Those checks
+        // always consume this frame's commands, even after a cache hit.
+        let effects = validate_effect_store(artifact)?;
+        for chunk in &artifact.chunks {
+            let opacity = match chunk.properties.effect {
+                Some(id) => {
+                    let effect = effects.get(&id)?;
+                    if effect.owner == chunk.owner {
+                        effect.opacity
+                    } else {
+                        1.0
+                    }
+                }
+                None => 1.0,
+            };
+            if validated_artifact_chunk_carries_baked_color_opacity(chunk)
+                && !ops_have_baked_local_opacity(
+                    &artifact.ops[chunk.op_range.clone()],
+                    opacity.to_bits(),
+                )
+            {
+                return None;
+            }
+            if !chunk_has_valid_self_clip_shadow_prefix(artifact, chunk) {
+                return None;
+            }
+        }
+        return Some(validated);
     }
 
     let owner_nodes = validate_owner_store(artifact)?;
@@ -4815,12 +4968,7 @@ fn validate_artifact_store_with_policy(
         // single-owner grammar above is allowed to request that split; all
         // fragmented/multi-owner variants fail closed instead of clipping the
         // shadow or leaking unclipped decoration/media.
-        if chunk.properties.clip == Some(own_self)
-            && artifact.ops[chunk.op_range.clone()]
-                .iter()
-                .any(|op| matches!(op, PaintOp::PreparedShadow(_)))
-            && exact_self_clip_shadow_prefix_len(artifact, chunk).is_none()
-        {
+        if !chunk_has_valid_self_clip_shadow_prefix(artifact, chunk) {
             return None;
         }
         let Some(mut cursor) = expected_leaf else {
@@ -4886,6 +5034,21 @@ fn validate_artifact_store_with_policy(
     })
 }
 
+fn chunk_has_valid_self_clip_shadow_prefix(
+    artifact: &PaintArtifact,
+    chunk: &super::PaintChunk,
+) -> bool {
+    let own_self = ClipNodeId {
+        owner: chunk.owner,
+        role: ClipNodeRole::SelfClip,
+    };
+    chunk.properties.clip != Some(own_self)
+        || !artifact.ops[chunk.op_range.clone()]
+            .iter()
+            .any(|op| matches!(op, PaintOp::PreparedShadow(_)))
+        || exact_self_clip_shadow_prefix_len(artifact, chunk).is_some()
+}
+
 fn validate_owner_store(
     artifact: &PaintArtifact,
 ) -> Option<FxHashMap<crate::view::node_arena::NodeKey, PaintOwnerSnapshot>> {
@@ -4927,12 +5090,7 @@ fn ops_have_baked_local_opacity(ops: &[PaintOp], expected_bits: u32) -> bool {
         }
         PaintOp::PreparedShadow(op) => op.params.opacity.to_bits() == expected_bits,
         PaintOp::PreparedScrollbarOverlay(op) => op.has_baked_opacity(expected_bits),
-        PaintOp::PreparedText(op) => op
-            .params
-            .staging_input
-            .glyphs
-            .iter()
-            .all(|glyph| glyph.paint.opacity.to_bits() == expected_bits),
+        PaintOp::PreparedText(op) => op.has_baked_opacity(expected_bits),
         PaintOp::PreparedImage(op) => op.params.opacity.to_bits() == expected_bits,
         PaintOp::PreparedSvg(op) => op.params.opacity.to_bits() == expected_bits,
         PaintOp::PreparedGpu(op) => op.params.opacity.to_bits() == expected_bits,
@@ -5000,7 +5158,7 @@ fn validate_self_decoration_ops(ops: &[PaintOp], payload_identity: &PaintPayload
             }
             previous_order = Some(order);
         }
-        let expected = PaintPayloadIdentity::inline_ifc_decorations_with_shadows(
+        return payload_identity.matches_inline_decorations(
             ops[..shadow_count].iter().filter_map(|op| match op {
                 PaintOp::PreparedShadow(shadow) => Some(shadow),
                 _ => None,
@@ -5010,14 +5168,14 @@ fn validate_self_decoration_ops(ops: &[PaintOp], payload_identity: &PaintPayload
                 _ => None,
             }),
         );
-        return payload_identity == &expected;
     }
 
     // A non-rendering Element still owns a canonical empty decoration chunk.
     // This exemption is deliberately before shadow-prefix parsing so a
     // shadow-only chunk remains invalid.
     if ops.is_empty() {
-        return payload_identity == &PaintPayloadIdentity::prepared_shadows(std::iter::empty());
+        return payload_identity
+            .matches_shadows_with_decoration(std::iter::empty(), std::iter::empty());
     }
     let shadow_count = ops
         .iter()
@@ -5029,7 +5187,7 @@ fn validate_self_decoration_ops(ops: &[PaintOp], payload_identity: &PaintPayload
     {
         return false;
     }
-    let Some(expected_identity) = PaintPayloadIdentity::prepared_shadows_with_decoration(
+    if !payload_identity.matches_shadows_with_decoration(
         ops[..shadow_count].iter().filter_map(|op| match op {
             PaintOp::PreparedShadow(shadow) => Some(shadow),
             _ => None,
@@ -5038,10 +5196,7 @@ fn validate_self_decoration_ops(ops: &[PaintOp], payload_identity: &PaintPayload
             PaintOp::DrawRect(rect) => Some(rect),
             _ => None,
         }),
-    ) else {
-        return false;
-    };
-    if payload_identity != &expected_identity {
+    ) {
         return false;
     }
     match &ops[shadow_count..] {
@@ -5063,11 +5218,10 @@ fn validate_text_glyph_ops(ops: &[PaintOp], payload_identity: &PaintPayloadIdent
     }) {
         return false;
     }
-    let expected = PaintPayloadIdentity::prepared_texts(ops.iter().filter_map(|op| match op {
+    payload_identity.matches_texts(ops.iter().filter_map(|op| match op {
         PaintOp::PreparedText(prepared) => Some(prepared),
         _ => None,
-    }));
-    payload_identity == &expected
+    }))
 }
 
 fn validate_rect_phase_ops(
@@ -5088,11 +5242,10 @@ fn validate_rect_phase_ops(
     {
         return false;
     }
-    let expected = PaintPayloadIdentity::prepared_rects(ops.iter().filter_map(|op| match op {
+    payload_identity.matches_rects(ops.iter().filter_map(|op| match op {
         PaintOp::DrawRect(rect) => Some(rect),
         _ => None,
-    }));
-    expected.as_ref() == Some(payload_identity)
+    }))
 }
 
 fn validate_svg_content_ops(ops: &[PaintOp], payload_identity: &PaintPayloadIdentity) -> bool {

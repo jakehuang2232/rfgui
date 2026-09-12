@@ -157,7 +157,7 @@ fn ready_image_media_with_outer_shadow_records_typed_shadow_prefix() {
     let context = image_recording_context(&arena, owner);
     assert_eq!(
         node.element
-            .shadow_paint_recording_capability(&arena, false, context),
+            .shadow_paint_recording_capability(&arena, false, &context),
         ShadowPaintRecordingCapability::Recordable
     );
     let revision = crate::view::paint::PaintContentRevision {
@@ -167,11 +167,11 @@ fn ready_image_media_with_outer_shadow_records_typed_shadow_prefix() {
     };
     let metadata = node
         .element
-        .record_shadow_paint_metadata(owner, Default::default(), revision, &arena, context)
+        .record_shadow_paint_metadata(owner, Default::default(), revision, &arena, &context)
         .expect("ready shadow Image metadata");
     let artifact = node
         .element
-        .record_shadow_paint_artifact(owner, Default::default(), revision, &arena, context)
+        .record_shadow_paint_artifact(owner, Default::default(), revision, &arena, &context)
         .expect("ready shadow Image artifact");
     assert_eq!(
         artifact.chunks[0].payload_identity,
@@ -259,7 +259,7 @@ fn ready_image_media_with_outer_shadow_records_typed_shadow_prefix() {
             Default::default(),
             revision,
             &arena,
-            changed_context,
+            &changed_context,
         )
         .expect("shadow-mutated Image metadata");
     let crate::view::paint::PaintPayloadIdentity::ImageWithShadows(
@@ -339,7 +339,7 @@ fn ready_image_exact_self_clip_shadow_metadata_and_full_are_canonical() {
     let node = arena.get(owner).unwrap();
     let mut direct_context = node
         .element
-        .shadow_paint_recording_context(Default::default());
+        .shadow_paint_recording_context(&Default::default());
     direct_context.is_frame_root = true;
     direct_context.recording_owner = Some(owner);
     direct_context.recording_owner_stable_id = Some(node.element.stable_id());
@@ -347,7 +347,7 @@ fn ready_image_exact_self_clip_shadow_metadata_and_full_are_canonical() {
         properties.authoritative_self_clip_for_owner(owner, state);
     assert_eq!(
         node.element
-            .shadow_paint_recording_capability(&arena, false, direct_context),
+            .shadow_paint_recording_capability(&arena, false, &direct_context),
         ShadowPaintRecordingCapability::Recordable,
         "state={state:?} context={direct_context:?}"
     );
@@ -394,7 +394,7 @@ fn ready_image_exact_self_clip_shadow_metadata_and_full_are_canonical() {
         ops.last(),
         Some(crate::view::paint::PaintOp::PreparedImage(_))
     ));
-    let [clip] = clip_snapshot.as_slice() else {
+    let [clip] = clip_snapshot.as_ref() else {
         panic!("exact clipped Image must carry one complete self-clip snapshot")
     };
     assert_eq!(clip.id, full_chunk.properties.clip.unwrap());

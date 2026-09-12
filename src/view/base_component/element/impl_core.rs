@@ -746,6 +746,9 @@ impl Element {
                 bottom: 0.0,
             },
             background_color: Box::new(Color::hex("#FFFFFF")),
+            paint_recording_inputs: RefCell::default(),
+            inline_witness_inputs: RefCell::default(),
+            child_mask_recording_inputs: RefCell::default(),
             border_colors: EdgeColors {
                 left: Box::new(Color::hex("#000000")),
                 right: Box::new(Color::hex("#000000")),
@@ -936,17 +939,25 @@ impl Element {
     }
 
     pub(crate) fn mark_place_dirty(&mut self) {
-        self.mark_local_dirty(DirtyPassMask::RUNTIME);
+        // Placement does not by itself change resource identity or child order.
+        self.mark_local_dirty(DirtyPassMask::PLACEMENT
+            .union(DirtyFlags::PAINT).union(DirtyFlags::COMPOSITE));
     }
 
     #[allow(dead_code)]
     pub(crate) fn mark_place_dirty_with(&mut self, cx: &mut InvalidationContext<'_>) {
         self.mark_place_dirty();
-        cx.invalidate(DirtyPassMask::RUNTIME);
+        cx.invalidate(DirtyPassMask::PLACEMENT
+            .union(DirtyFlags::PAINT).union(DirtyFlags::COMPOSITE));
     }
 
     pub(crate) fn mark_paint_dirty(&mut self) {
         self.mark_local_dirty(DirtyPassMask::PAINT);
+    }
+
+    pub(crate) fn mark_resource_dirty(&mut self) {
+        // PAINT preserves redraw scheduling for Legacy and existing consumers.
+        self.mark_local_dirty(DirtyFlags::RESOURCE.union(DirtyFlags::PAINT));
     }
 
     pub(crate) fn mark_paint_dirty_with(&mut self, cx: &mut InvalidationContext<'_>) {

@@ -1786,6 +1786,44 @@ pub(crate) struct RetainedChildMaskPlan {
 }
 
 impl RetainedChildMaskPlan {
+    /// Compare the current complete mask geometry and ordered partition without
+    /// allocating another pair of child lists. Eligibility is checked by the
+    /// caller on every invocation; this does not certify a host's capability.
+    pub(crate) fn matches_live_inputs(
+        &self,
+        bounds: Rect,
+        logical_scissor: [u32; 4],
+        op: &DrawRectOp,
+        children: impl IntoIterator<Item = (NodeKey, bool)>,
+    ) -> bool {
+        if [bounds.x, bounds.y, bounds.width, bounds.height].map(f32::to_bits)
+            != [
+                self.bounds.x,
+                self.bounds.y,
+                self.bounds.width,
+                self.bounds.height,
+            ]
+            .map(f32::to_bits)
+            || self.logical_scissor != logical_scissor
+            || !self.payload_identity.matches_rects([op])
+        {
+            return false;
+        }
+        let mut inside = self.in_scope_children.iter();
+        let mut outside = self.overflow_children.iter();
+        for (child, overflow) in children {
+            let next = if overflow {
+                outside.next()
+            } else {
+                inside.next()
+            };
+            if next != Some(&child) {
+                return false;
+            }
+        }
+        inside.next().is_none() && outside.next().is_none()
+    }
+
     pub(crate) fn new(
         bounds: Rect,
         logical_scissor: [u32; 4],
@@ -2177,13 +2215,14 @@ impl PreparedInlineIfcRectIdentity {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedShadowOp {
-    pub(crate) mesh: ShadowMesh,
+    pub(crate) mesh: Arc<ShadowMesh>,
     pub(crate) params: ShadowParams,
     pub(crate) identity: PreparedShadowIdentity,
 }
 
 impl PreparedShadowOp {
-    pub(crate) fn new(mesh: ShadowMesh, params: ShadowParams) -> Option<Self> {
+    pub(crate) fn new(mesh: impl Into<Arc<ShadowMesh>>, params: ShadowParams) -> Option<Self> {
+        let mesh = mesh.into();
         let identity = PreparedShadowIdentity::from_parts(&mesh, params)?;
         Some(Self {
             mesh,
@@ -2193,7 +2232,7 @@ impl PreparedShadowOp {
     }
 
     pub(crate) fn has_canonical_identity(&self) -> bool {
-        PreparedShadowIdentity::from_parts(&self.mesh, self.params).as_ref() == Some(&self.identity)
+        self.identity.matches_parts(&self.mesh, self.params)
     }
 
     pub(crate) fn frozen_identity(&self) -> PreparedShadowIdentity {
@@ -2203,8 +2242,8 @@ impl PreparedShadowOp {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PreparedShadowIdentity {
-    vertices_bits: Vec<[u32; 2]>,
-    indices: Vec<u32>,
+    vertices_bits: Arc<[[u32; 2]]>,
+    indices: Arc<[u32]>,
     offset_bits: [u32; 2],
     blur_radius_bits: u32,
     color_bits: [u32; 4],
@@ -2681,6 +2720,45 @@ impl PreparedScrollbarShadowIdentity {
 
 impl PreparedShadowIdentity {
     fn from_parts(mesh: &ShadowMesh, params: ShadowParams) -> Option<Self> {
+        if !Self::valid_parts(mesh, params) {
+            return None;
+        }
+        Some(Self {
+            vertices_bits: mesh
+                .vertices
+                .iter()
+                .map(|vertex| vertex.map(f32::to_bits))
+                .collect::<Vec<_>>()
+                .into(),
+            indices: mesh.indices.clone().into(),
+            offset_bits: [params.offset_x.to_bits(), params.offset_y.to_bits()],
+            blur_radius_bits: params.blur_radius.to_bits(),
+            color_bits: params.color.map(f32::to_bits),
+            opacity_bits: params.opacity.to_bits(),
+            spread_bits: params.spread.to_bits(),
+            clip_to_geometry: params.clip_to_geometry,
+        })
+    }
+    // Identity checks borrow mesh storage. Rebuilding the same vertex/index
+    // vectors during replay would undo immutable command sharing.
+    fn matches_parts(&self, mesh: &ShadowMesh, params: ShadowParams) -> bool {
+        Self::valid_parts(mesh, params)
+            && self.vertices_bits.len() == mesh.vertices.len()
+            && self
+                .vertices_bits
+                .iter()
+                .zip(&mesh.vertices)
+                .all(|(bits, vertex)| *bits == vertex.map(f32::to_bits))
+            && self.indices.as_ref() == mesh.indices
+            && self.offset_bits == [params.offset_x.to_bits(), params.offset_y.to_bits()]
+            && self.blur_radius_bits == params.blur_radius.to_bits()
+            && self.color_bits == params.color.map(f32::to_bits)
+            && self.opacity_bits == params.opacity.to_bits()
+            && self.spread_bits == params.spread.to_bits()
+            && self.clip_to_geometry == params.clip_to_geometry
+    }
+
+    fn valid_parts(mesh: &ShadowMesh, params: ShadowParams) -> bool {
         if mesh.vertices.is_empty()
             || mesh.indices.is_empty()
             || mesh.indices.len() % 3 != 0
@@ -2705,22 +2783,9 @@ impl PreparedShadowIdentity {
             || !(0.0..=1.0).contains(&params.opacity)
             || params.spread.to_bits() != 0.0_f32.to_bits()
         {
-            return None;
+            return false;
         }
-        Some(Self {
-            vertices_bits: mesh
-                .vertices
-                .iter()
-                .map(|vertex| vertex.map(f32::to_bits))
-                .collect(),
-            indices: mesh.indices.clone(),
-            offset_bits: [params.offset_x.to_bits(), params.offset_y.to_bits()],
-            blur_radius_bits: params.blur_radius.to_bits(),
-            color_bits: params.color.map(f32::to_bits),
-            opacity_bits: params.opacity.to_bits(),
-            spread_bits: params.spread.to_bits(),
-            clip_to_geometry: params.clip_to_geometry,
-        })
+        true
     }
 }
 
@@ -2730,6 +2795,7 @@ pub(crate) struct PreparedTextOp {
     // Sharing immutable validated input makes clone/replay and revalidation
     // constant-time. A changed allocation still goes through full validation.
     validated_params: Arc<TextPassPreparedParams>,
+    uniform_opacity_bits: Option<u32>,
     identity: PreparedTextIdentity,
 }
 
@@ -2755,8 +2821,18 @@ impl PreparedTextOp {
         #[cfg(test)]
         prepared_text_identity_tests::note_construction();
         let identity = PreparedTextIdentity::from_params(&params)?;
+        let uniform_opacity_bits = params.staging_input.glyphs.first().and_then(|first| {
+            let bits = first.paint.opacity.to_bits();
+            params
+                .staging_input
+                .glyphs
+                .iter()
+                .all(|glyph| glyph.paint.opacity.to_bits() == bits)
+                .then_some(bits)
+        });
         Some(Self {
             validated_params: params.clone(),
+            uniform_opacity_bits,
             params,
             identity,
         })
@@ -2765,6 +2841,21 @@ impl PreparedTextOp {
     pub(crate) fn has_canonical_identity(&self) -> bool {
         Arc::ptr_eq(&self.params, &self.validated_params)
             || self.identity.matches_params(&self.params)
+    }
+
+    pub(crate) fn has_baked_opacity(&self, expected_bits: u32) -> bool {
+        if Arc::ptr_eq(&self.params, &self.validated_params) {
+            // The summary belongs to the same immutable, nonempty glyph
+            // allocation validated by new. Replacing params must inspect the
+            // replacement, even if the old frozen identity was left intact.
+            self.uniform_opacity_bits == Some(expected_bits)
+        } else {
+            self.params
+                .staging_input
+                .glyphs
+                .iter()
+                .all(|glyph| glyph.paint.opacity.to_bits() == expected_bits)
+        }
     }
 
     #[cfg(test)]
@@ -4340,3 +4431,5 @@ impl PreparedGpuOp {
         })
     }
 }
+
+mod identity_matches;
