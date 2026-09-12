@@ -72,9 +72,18 @@ impl ArtifactSurfaceChildMaskAction {
         match id.phase {
             PaintNodePhase::BeforeChildren => {
                 let scissor = match raster_origin {
+                    // A mask outside a finite raster window still opens a stencil
+                    // scope. Its geometry writes no stencil pixels, so descendants
+                    // fail the incremented reference until Pop restores the owner.
+                    // A full-target scissor is safe here; it does not enlarge the mask.
                     Some(projection) => projection
                         .target_physical_scissor_for_projected_bounds(chunk.localized_bounds_bits())
-                        .expect("prepared child mask has a non-empty target-physical scissor"),
+                        .unwrap_or(GraphicsPassScissor::TargetPhysical([
+                            0,
+                            0,
+                            projection.target_size[0],
+                            projection.target_size[1],
+                        ])),
                     None => {
                         let [x, y, width, height] =
                             chunk.localized_bounds_bits().map(f32::from_bits);
@@ -860,6 +869,22 @@ fn emit_prepared_artifact_surface_frame(
     // already carried by the linear capability, so this assertion now guards
     // only that the owner stayed active and the pending slot stayed empty.
     let residents = pool_emission.into_canonical_residents();
+    if viewport.debug_options().trace_render_time {
+        viewport.record_retained_raster_diagnostics(
+            plan.nodes()
+                .iter()
+                .zip(&actions)
+                .map(|(node, action)| {
+                    (
+                        node.identity().color_key,
+                        node.target().color.clone(),
+                        *action,
+                    )
+                })
+                .collect(),
+        );
+    }
+
     assert!(
         viewport.stage_artifact_surface_resident_set(owner, residents),
         "preflighted artifact resident transaction must stage after emission"

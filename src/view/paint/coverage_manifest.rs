@@ -352,23 +352,31 @@ pub(super) fn exact_deferred_viewport_self_clip_witness(
             .is_some_and(|chain| {
                 // Descendants may tighten this owner's scope, but cannot
                 // replace it or borrow another owner's contents clip.
-                chain.last().is_some_and(|clip| clip.id == id)
-                    && chain[..chain.len().saturating_sub(1)].iter().all(|clip| {
+                chain.iter().position(|clip| clip.id == id).is_some_and(|at| {
+                    chain[at].behavior == crate::view::compositor::property_tree::ClipBehavior::Replace
+                    && chain[..at].iter().all(|clip| {
                         clip.owner == owner
                             && clip.id.owner == owner
                             && clip.id.role == crate::view::compositor::property_tree::ClipNodeRole::ContentsClip
                             && clip.behavior == crate::view::compositor::property_tree::ClipBehavior::Intersect
                             && clip.generation != 0
                     })
+                })
             });
     if !generic_clip_scope && !state_is_exact {
         return None;
     }
     let clip_chain = property_trees.clip_snapshot_for(Some(id))?;
-    let [clip] = clip_chain.as_slice() else {
+    let mut clip = *clip_chain.first()?;
+    if generic_clip_scope {
+        // A Replace self clip supersedes its inherited ancestors. The scope
+        // token describes that replacement, while the artifact still freezes
+        // the original complete chain for graph/coordinate validation.
+        clip.parent = None;
+    } else if clip_chain.len() != 1 {
         return None;
-    };
-    super::PaintDeferredViewportSelfClipWitness::new(owner, stable_id, *clip, logical_scissor)
+    }
+    super::PaintDeferredViewportSelfClipWitness::new(owner, stable_id, clip, logical_scissor)
 }
 
 pub(crate) fn record_coverage_manifest(
@@ -646,7 +654,14 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     continue;
                 }
                 if self.deferred_roots.contains(&key) {
-                    return Some(CulledSubtreeBoundary::Deferred);
+                    if !self.surface_dag {
+                        return Some(CulledSubtreeBoundary::Deferred);
+                    }
+                    // Generic recording independently walks every collected
+                    // deferred root in the late phase, even when its authored
+                    // ancestor is culled. Do not erase that separate work or
+                    // reject the ancestor for containing it.
+                    continue;
                 }
                 let Some(node) = self.arena.get(key) else {
                     continue;

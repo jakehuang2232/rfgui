@@ -72,9 +72,9 @@ include!("impl_layout.rs");
 include!("helpers.rs");
 include!("event_handler_props.rs");
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod inactive_scroll_paint_tests;
+#[cfg(test)]
+mod tests;
 
 use crate::time::{Duration, Instant};
 
@@ -2010,6 +2010,11 @@ pub trait Layoutable {
     /// loading/error slot is committed by the next frame's pre-layout
     /// `sync_arena` instead.
     fn prepare_paint_resources(&mut self, _context: PaintResourcePreparationContext) {}
+    /// Paint-only producers can register without claiming to mutate the arena.
+    /// Existing resource hosts that require arena sync retain their registration.
+    fn requires_paint_resource_preparation(&self) -> bool {
+        self.requires_arena_sync()
+    }
     fn measure(
         &mut self,
         constraints: LayoutConstraints,
@@ -2773,6 +2778,13 @@ pub trait ElementTrait:
     ) {
     }
 
+    /// Return the immutable output description frozen by paint preparation.
+    /// This is a pure read. The engine compares the full bytes across metadata
+    /// and recording, validates the live owner and owns every scene property.
+    fn prepared_gpu_paint_source(&self) -> Option<&crate::view::gpu_paint::GpuPaintSource> {
+        None
+    }
+
     #[doc(hidden)]
     #[allow(private_interfaces)]
     fn shadow_paint_recording_capability(
@@ -2781,6 +2793,24 @@ pub trait ElementTrait:
         deferred_phase_root: bool,
         recording_context: crate::view::paint::PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
+        // Hidden custom leaves have no paint work. Their live geometry remains
+        // validated, and becoming visible must re-enter complete recording;
+        // absence of a prepared GPU payload while hidden is not UnknownHost.
+        let snapshot = self.box_model_snapshot();
+        if recording_context.surface_dag
+            && !snapshot.should_render
+            && !deferred_phase_root
+            && !self.is_deferred_to_root_viewport_render()
+            && self.children().is_empty()
+            && snapshot.node_id == self.stable_id()
+            && [snapshot.x, snapshot.y, snapshot.width, snapshot.height]
+                .into_iter()
+                .all(f32::is_finite)
+            && snapshot.width >= 0.0
+            && snapshot.height >= 0.0
+        {
+            return ShadowPaintRecordingCapability::CulledSubtree;
+        }
         let prepared = if self.children().is_empty() {
             prepare_custom_leaf_paint(self, deferred_phase_root, recording_context).is_some()
         } else {
@@ -3511,18 +3541,22 @@ pub(crate) fn exact_native_nested_isolation_render_output_bounds(
 
 struct PreparedCustomLeafPaint {
     bounds: Rect,
-    op: crate::view::paint::DrawRectOp,
+    op: crate::view::paint::PaintOp,
     payload_identity: crate::view::paint::PaintPayloadIdentity,
 }
 
 impl PreparedCustomLeafPaint {
-    fn chunk_id(owner: NodeKey) -> crate::view::paint::PaintChunkId {
+    fn chunk_id(&self, owner: NodeKey) -> crate::view::paint::PaintChunkId {
         crate::view::paint::PaintChunkId {
             owner,
             scope: crate::view::paint::PaintPropertyScope::SelfPaint,
             phase: crate::view::paint::PaintNodePhase::BeforeChildren,
             slot: 0,
-            role: crate::view::paint::PaintChunkRole::SelfDecoration,
+            role: if matches!(self.op, crate::view::paint::PaintOp::PreparedGpu(_)) {
+                crate::view::paint::PaintChunkRole::GpuContent
+            } else {
+                crate::view::paint::PaintChunkRole::SelfDecoration
+            },
         }
     }
 
@@ -3533,7 +3567,7 @@ impl PreparedCustomLeafPaint {
         content_revision: crate::view::paint::PaintContentRevision,
     ) -> crate::view::paint::PaintChunkMetadata {
         crate::view::paint::PaintChunkMetadata {
-            id: Self::chunk_id(owner),
+            id: self.chunk_id(owner),
             owner,
             bounds: self.bounds,
             properties,
@@ -3551,7 +3585,7 @@ impl PreparedCustomLeafPaint {
         crate::view::paint::PaintArtifact {
             target: Default::default(),
             chunks: vec![crate::view::paint::PaintChunk {
-                id: Self::chunk_id(owner),
+                id: self.chunk_id(owner),
                 owner,
                 op_range: 0..1,
                 bounds: self.bounds,
@@ -3559,7 +3593,7 @@ impl PreparedCustomLeafPaint {
                 content_revision,
                 payload_identity: self.payload_identity,
             }],
-            ops: vec![crate::view::paint::PaintOp::DrawRect(self.op)],
+            ops: vec![self.op],
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
             transform_nodes: Vec::new(),
@@ -3580,6 +3614,46 @@ fn prepare_custom_leaf_paint<T: ElementTrait + ?Sized>(
     deferred_phase_root: bool,
     recording_context: crate::view::paint::PaintRecordingContext,
 ) -> Option<PreparedCustomLeafPaint> {
+    if let Some(source) = element.prepared_gpu_paint_source() {
+        let snapshot = element.box_model_snapshot();
+        let props = element.retained_paint_properties();
+        if !recording_context.surface_dag
+            || deferred_phase_root
+            || element.is_deferred_to_root_viewport_render()
+            || !element.children().is_empty()
+            || !snapshot.should_render
+            || snapshot.node_id != element.stable_id()
+            || snapshot.border_radius != 0.0
+            || props.opacity != 1.0
+            || props.has_rounded_clip
+            || props.has_box_shadow
+            || props.has_border
+            || props.is_scroll_container
+            || !source.matches_size([snapshot.width, snapshot.height])
+        {
+            return None;
+        }
+        let bounds = Rect {
+            x: snapshot.x + recording_context.paint_offset[0],
+            y: snapshot.y + recording_context.paint_offset[1],
+            width: snapshot.width,
+            height: snapshot.height,
+        };
+        let op = crate::view::paint::PreparedGpuOp {
+            params: crate::view::render_pass::texture_composite_pass::TextureCompositeParams {
+                bounds: [bounds.x, bounds.y, bounds.width, bounds.height],
+                source_is_premultiplied: true,
+                ..Default::default()
+            },
+            source: source.clone(),
+        };
+        let payload_identity = crate::view::paint::PaintPayloadIdentity::Gpu(op.identity()?);
+        return Some(PreparedCustomLeafPaint {
+            bounds,
+            op: crate::view::paint::PaintOp::PreparedGpu(op),
+            payload_identity,
+        });
+    }
     if deferred_phase_root
         || element.is_deferred_to_root_viewport_render()
         || element.has_active_animator()
@@ -3669,7 +3743,7 @@ fn prepare_custom_leaf_paint<T: ElementTrait + ?Sized>(
         )?;
     Some(PreparedCustomLeafPaint {
         bounds,
-        op,
+        op: crate::view::paint::PaintOp::DrawRect(op),
         payload_identity,
     })
 }
@@ -3681,7 +3755,9 @@ fn prepare_owned_custom_leaf_paint<T: ElementTrait + ?Sized>(
     arena: &NodeArena,
     recording_context: crate::view::paint::PaintRecordingContext,
 ) -> Option<PreparedCustomLeafPaint> {
-    if properties != Default::default() {
+    if properties != Default::default()
+        && !(recording_context.surface_dag && element.prepared_gpu_paint_source().is_some())
+    {
         return None;
     }
     let owner_node = arena.get(owner)?;
@@ -7560,10 +7636,16 @@ impl ElementTrait for Element {
                 && !recording_context.authorizes_transform_surface_root(self.stable_id())
             {
                 Some(ShadowPaintBlocker::Transform)
-            } else if self.should_append_to_root_viewport_render() || deferred_phase_root {
+            } else if (self.should_append_to_root_viewport_render() || deferred_phase_root)
+                && !(recording_context.surface_dag
+                    && deferred_phase_root
+                    && recording_context
+                        .authorizes_deferred_viewport_self_clip_for(self.stable_id()))
+            {
                 Some(ShadowPaintBlocker::Deferred)
             } else if self.scroll_direction != ScrollDirection::None
                 && !self.has_exact_inactive_scroll_paint(arena)
+                && !recording_context.authorizes_generic_scroll_host_root(self.stable_id())
             {
                 Some(ShadowPaintBlocker::ScrollContainer)
             } else if !recording_context.surface_dag

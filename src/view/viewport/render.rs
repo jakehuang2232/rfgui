@@ -2075,7 +2075,13 @@ impl Viewport {
                 format!("execute (passes={})", t.execute_pass_count),
                 t.execute_ms,
                 t.execute_profile_ms
-                    .map(|ms| vec![TraceRenderNode::with_children("execute_graph", ms, execute_children)])
+                    .map(|ms| {
+                        vec![TraceRenderNode::with_children(
+                            "execute_graph",
+                            ms,
+                            execute_children,
+                        )]
+                    })
                     .unwrap_or_default(),
             )
         } else {
@@ -2228,6 +2234,7 @@ impl Viewport {
 
         #[cfg(test)]
         single_viewport_frame_test_support::run_after_resource_freeze(self);
+        self.prune_gpu_paint_sources();
         timings.prepare_paint_ms = phase_clock.checkpoint_ms();
 
         // Observe the final resolved frame state after transition sampling
@@ -2595,6 +2602,14 @@ impl Viewport {
         if self.debug_options.trace_render_time {
             if let Some(telemetry) = paint_authority_telemetry.as_ref() {
                 println!("paint-authority {}", telemetry.format_debug());
+            }
+            if !self.frame.gpu_paint_sources.is_empty() {
+                println!(
+                    "gpu-paint frame={} sources={:?}",
+                    frame_number,
+                    self.gpu_paint_observations()
+                );
+                self.print_retained_raster_diagnostics(frame_number);
             }
             let trace_root = Self::build_frame_trace_tree(&timings, &self.debug_options);
             println!("{}", format_trace_render_tree(&trace_root));
@@ -3270,6 +3285,8 @@ impl Viewport {
         };
 
         frame.discard_unsubmitted();
+        self.finish_gpu_paint_frame(false);
+        self.frame.offscreen_render_target_pool.finish_frame();
 
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -3314,6 +3331,7 @@ impl Viewport {
         }
         #[cfg(target_arch = "wasm32")]
         crate::view::render_pass::destroy_frame_transient_buffers();
+        self.frame.offscreen_render_target_pool.finish_frame();
         let submit_ms = submit_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let present_started_at = Instant::now();
@@ -3326,6 +3344,7 @@ impl Viewport {
                 self.frame.completion_counts.presents.saturating_add(1);
         }
         let present_ms = present_started_at.elapsed().as_secs_f64() * 1000.0;
+        self.finish_gpu_paint_frame(true);
         #[cfg(not(target_arch = "wasm32"))]
         {
             // Surface latency limits acquired swapchain images, but it does not
@@ -3364,11 +3383,11 @@ impl Viewport {
 }
 
 #[cfg(test)]
+mod frame_timing_tests;
+#[cfg(test)]
 mod legacy_root_render_tests;
 #[cfg(test)]
 mod selection_rejection_debug_tests;
-#[cfg(test)]
-mod frame_timing_tests;
 
 /// Flatten a Fragment-at-root into its children so multi-root reconcile
 /// sees the same arity as the arena (Fragment root → N arena roots).

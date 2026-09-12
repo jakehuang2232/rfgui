@@ -1773,6 +1773,7 @@ fn root_group_artifact(
 
 fn assert_neutral_opacity(op: &PaintOp) {
     match op {
+        PaintOp::PreparedGpu(op) => assert_eq!(op.params.opacity.to_bits(), 1.0_f32.to_bits()),
         PaintOp::DrawRect(op) => assert_eq!(op.params.opacity.to_bits(), 1.0_f32.to_bits()),
         PaintOp::PreparedInlineIfcDecoration(op) => {
             assert_eq!(op.fill.opacity.to_bits(), 1.0_f32.to_bits());
@@ -3344,7 +3345,8 @@ fn first_text_color_bits(artifact: &PaintArtifact) -> [u32; 4] {
             | PaintOp::PreparedShadow(_)
             | PaintOp::PreparedScrollbarOverlay(_)
             | PaintOp::PreparedImage(_)
-            | PaintOp::PreparedSvg(_) => None,
+            | PaintOp::PreparedSvg(_)
+            | PaintOp::PreparedGpu(_) => None,
         })
         .expect("fixture must retain at least one prepared glyph")
 }

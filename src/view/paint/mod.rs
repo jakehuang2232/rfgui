@@ -126,3 +126,5 @@ pub(crate) use planning_tests::{
     native_scroll_forest_plan_fixture, nested_scroll_plan_fixture,
     prepared_depth_four_surface_frame as prepared_depth_four_surface_frame_for_test,
 };
+
+pub(crate) use artifact::PreparedGpuOp;

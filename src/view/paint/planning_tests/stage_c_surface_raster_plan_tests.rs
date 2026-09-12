@@ -582,7 +582,7 @@ fn scroll_content_surface_seals_typed_offset_generation_and_receiver_clip_geomet
 }
 
 #[test]
-fn artifact_surface_paint_op_taxonomy_is_a_closed_seven_variant_set() {
+fn artifact_surface_paint_op_taxonomy_is_a_closed_eight_variant_set() {
     fn label(kind: ArtifactSurfacePaintOpKind) -> &'static str {
         match kind {
             ArtifactSurfacePaintOpKind::DrawRect => "draw-rect",
@@ -592,6 +592,7 @@ fn artifact_surface_paint_op_taxonomy_is_a_closed_seven_variant_set() {
             ArtifactSurfacePaintOpKind::Text => "text",
             ArtifactSurfacePaintOpKind::Image => "image",
             ArtifactSurfacePaintOpKind::Svg => "svg",
+            ArtifactSurfacePaintOpKind::Gpu => "gpu",
         }
     }
     let _ = label as fn(ArtifactSurfacePaintOpKind) -> &'static str;
@@ -780,6 +781,8 @@ fn artifact_surface_raster_plan_error_taxonomy_is_exhaustive() {
             ArtifactSurfaceRasterPlanError::LocalizedPayload { .. } => "payload",
             ArtifactSurfaceRasterPlanError::InvalidNestedSurface { .. } => "nested-surface",
             ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(_) => "raster-origin",
+            ArtifactSurfaceRasterPlanError::GpuSourceBudgetExceeded => "gpu-source-budget",
+            ArtifactSurfaceRasterPlanError::InvalidGpuSource => "gpu-source-descriptor",
         }
     }
     let _ = label as fn(ArtifactSurfaceRasterPlanError) -> &'static str;

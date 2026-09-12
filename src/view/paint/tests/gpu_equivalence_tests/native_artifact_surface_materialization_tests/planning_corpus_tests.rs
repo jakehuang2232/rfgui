@@ -8,8 +8,11 @@ use crate::view::test_support::{commit_child, commit_element};
 
 mod budget_tests;
 mod contracts_tests;
+mod culling_reentry_tests;
+mod gpu_source_tests;
 mod multi_target_tests;
 mod pixel_tests;
+mod raster_window_tests;
 mod viewport_tests;
 
 use crate::view::paint::tests::retained_acceptance_fixtures::*;

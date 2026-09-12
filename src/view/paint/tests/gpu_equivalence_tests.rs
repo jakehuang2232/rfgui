@@ -1452,7 +1452,8 @@ fn artifact_image_graph(
         | PaintOp::PreparedShadow(_)
         | PaintOp::PreparedScrollbarOverlay(_)
         | PaintOp::PreparedText(_)
-        | PaintOp::PreparedSvg(_) => None,
+        | PaintOp::PreparedSvg(_)
+        | PaintOp::PreparedGpu(_) => None,
     });
     drop(arena);
     if let Some(asset_id) = image_asset_id {
@@ -2311,10 +2312,10 @@ fn transform_effect_scroll_resident_roles_are_exact(
         && residents.len() == if include_scroll_content { 3 } else { 2 }
 }
 
-mod native_pixel_oracle_tests;
 mod buffer_binding_tests;
-mod text_buffer_tests;
+mod native_pixel_oracle_tests;
 mod oracle_tests;
+mod text_buffer_tests;
 
 mod artifact_intermediate_coverage_tests;
 mod artifact_scroll_content_contract_tests;

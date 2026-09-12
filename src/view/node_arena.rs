@@ -359,7 +359,8 @@ pub struct NodeArena {
     ///   refresh via [`Self::refresh_stable_id_index`].
     stable_id_index: FxHashMap<u64, NodeKey>,
     /// Deterministic insertion-order list of hosts that explicitly opted into
-    /// the pre-layout `sync_arena` hook.
+    /// pre-layout sync or post-layout paint preparation. Each dispatch checks
+    /// its own opt-in; paint-only producers never require a topology mutation.
     arena_sync_nodes: Vec<NodeKey>,
     /// Nesting depth for slots temporarily holding `Placeholder` during an
     /// element callback. Stable-id lookup may trust the wrapper index only for
@@ -455,7 +456,8 @@ impl NodeArena {
     /// node's own storage needs to reference its key.
     pub fn insert(&mut self, mut node: Node) -> NodeKey {
         let sid = node.element.get_mut().stable_id();
-        let requires_arena_sync = node.element.get_mut().requires_arena_sync();
+        let requires_arena_sync = node.element.get_mut().requires_arena_sync()
+            || node.element.get_mut().requires_paint_resource_preparation();
         let key = self.slots.insert(node);
         if sid != 0 {
             self.stable_id_index.insert(sid, key);
@@ -480,7 +482,7 @@ impl NodeArena {
             if sid != 0 {
                 self.stable_id_index.insert(sid, key);
             }
-            if element.requires_arena_sync() {
+            if element.requires_arena_sync() || element.requires_paint_resource_preparation() {
                 self.arena_sync_nodes.push(key);
             }
         }
@@ -798,7 +800,11 @@ impl NodeArena {
         // snapshot rather than borrowing the registration list across calls.
         let registered = self.arena_sync_nodes.clone();
         for key in registered {
-            self.with_element_taken(key, |element, arena| element.sync_arena(arena));
+            self.with_element_taken(key, |element, arena| {
+                if element.requires_arena_sync() {
+                    element.sync_arena(arena);
+                }
+            });
         }
     }
 
@@ -812,7 +818,9 @@ impl NodeArena {
         let registered = self.arena_sync_nodes.clone();
         for key in registered {
             self.with_element_taken(key, |element, _arena| {
-                element.prepare_paint_resources(context)
+                if element.requires_paint_resource_preparation() {
+                    element.prepare_paint_resources(context);
+                }
             });
         }
     }

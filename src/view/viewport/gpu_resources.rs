@@ -251,7 +251,7 @@ impl Viewport {
             .has_canonical_descriptor_pair_for(stamp.identity)
             && (self.has_compatible_persistent_render_target_pair(color_key, &stamp.target.color)
                 || forced_pair_witness);
-        if pair_compatible && resident == Some(stamp) {
+        if pair_compatible && resident.is_some_and(|resident| stamp.raster_content_eq(resident)) {
             crate::view::paint::RetainedSurfaceCompileAction::Reuse
         } else {
             crate::view::paint::RetainedSurfaceCompileAction::Reraster
@@ -1174,6 +1174,7 @@ impl Viewport {
     }
 
     pub fn release_render_resource_caches(&mut self) {
+        self.frame.gpu_paint_sources.clear();
         self.invalidate_retained_surfaces();
         crate::view::render_pass::draw_rect_pass::clear_draw_rect_resources_cache();
         crate::view::render_pass::shadow_module::clear_shadow_resources_cache();

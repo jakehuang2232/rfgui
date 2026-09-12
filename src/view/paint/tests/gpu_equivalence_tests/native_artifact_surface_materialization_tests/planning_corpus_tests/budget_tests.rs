@@ -5,6 +5,20 @@ use crate::view::viewport::ViewportPaintRendererMode;
 const WINDOW: [u32; 2] = [1280, 720];
 const LIMIT: u64 = 128 * 1024 * 1024;
 
+// The large DPR 2 scroll source keeps its full 1280x1440 logical envelope,
+// while its 720px receiver reads only the first guarded 256px-grid window.
+// Ordinary opacity layers have no finite receiver-clip proof and stay whole.
+fn expected_physical_size(tall: bool, dpr: u32) -> [u32; 2] {
+    [
+        WINDOW[0] * dpr,
+        if tall && dpr == 2 {
+            1536
+        } else {
+            WINDOW[1] * dpr * if tall { 2 } else { 1 }
+        },
+    ]
+}
+
 fn window_fixture(layers: usize, tall: bool) -> Fixture {
     let mut arena = new_test_arena();
     let mut roots = Vec::new();
@@ -60,12 +74,8 @@ fn full_window_budget_uses_exact_aggregate_bytes_and_physical_dimensions() {
     for (layers, tall) in [(1, false), (3, false), (4, false), (1, true)] {
         let artifact = record(&laid_out(layers, tall));
         for dpr in [1_u32, 2] {
-            let height = WINDOW[1] * if tall { 2 } else { 1 };
-            let bytes = u64::from(WINDOW[0])
-                * u64::from(height)
-                * 12
-                * u64::from(dpr * dpr)
-                * layers as u64;
+            let [physical_width, physical_height] = expected_physical_size(tall, dpr);
+            let bytes = u64::from(physical_width) * u64::from(physical_height) * 12 * layers as u64;
             let context = |limit, max_dimension| {
                 ArtifactSurfaceRasterContext::new(
                     dpr as f32,
@@ -83,14 +93,14 @@ fn full_window_budget_uses_exact_aggregate_bytes_and_physical_dimensions() {
             for node in plan.nodes() {
                 assert_eq!(
                     (node.target().color.width(), node.target().color.height()),
-                    (WINDOW[0] * dpr, height * dpr)
+                    (physical_width, physical_height)
                 );
             }
             assert!(matches!(
                 prepare_artifact_surface_raster_plan(artifact.clone(), context(bytes - 1, 8192)),
                 Err(crate::view::paint::ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_))
             ));
-            let dimension = (WINDOW[0] * dpr).max(height * dpr);
+            let dimension = physical_width.max(physical_height);
             assert!(
                 prepare_artifact_surface_raster_plan(artifact.clone(), context(bytes, dimension))
                     .is_ok()
@@ -129,7 +139,6 @@ fn native_full_window_budget_descriptors_reuse_and_whole_frame_legacy() -> Resul
                 let mut viewport = Viewport::new();
                 viewport.set_paint_renderer_mode(mode);
                 viewport.install_single_viewport_forest_for_test(f.arena, f.roots);
-                let height = WINDOW[1] * if tall { 2 } else { 1 };
                 let mut first: Option<
                     Vec<(
                         crate::view::frame_graph::PersistentTextureKey,
@@ -145,11 +154,9 @@ fn native_full_window_budget_descriptors_reuse_and_whole_frame_legacy() -> Resul
                     vec![initial_dpr; 3]
                 };
                 for (frame, dpr) in sequence.iter().copied().enumerate() {
-                    let bytes = u64::from(WINDOW[0])
-                        * u64::from(height)
-                        * 12
-                        * u64::from(dpr * dpr)
-                        * layers as u64;
+                    let [physical_width, physical_height] = expected_physical_size(tall, dpr);
+                    let bytes =
+                        u64::from(physical_width) * u64::from(physical_height) * 12 * layers as u64;
                     viewport.begin_offscreen_test_frame(
                         gpu.device.clone(),
                         gpu.queue.clone(),
@@ -218,7 +225,7 @@ fn native_full_window_budget_descriptors_reuse_and_whole_frame_legacy() -> Resul
                     for (key, desc) in &observed.color_targets {
                         assert_eq!(
                             (desc.width(), desc.height()),
-                            (WINDOW[0] * dpr, height * dpr)
+                            (physical_width, physical_height)
                         );
                         assert!(viewport.has_compatible_persistent_render_target_pair(*key, desc));
                     }

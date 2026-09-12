@@ -241,7 +241,23 @@ impl OffscreenRenderTargetPool {
         self.persistent_bindings.retain(|_, binding| {
             frame_epoch.saturating_sub(binding.last_used_epoch) < Self::EVICT_UNUSED_AFTER_FRAMES
         });
-        self.evict();
+        self.evict_stale();
+    }
+
+    /// Apply cache pressure only after this frame's working set is known.
+    /// Evicting at begin/acquire deletes last frame's targets before they can
+    /// be requested again, causing allocation churn for an unchanged scene.
+    /// The limits remain soft: current-frame and persistent entries were already
+    /// protected. Unused entries are trimmed here; idle expiry still runs at begin.
+    /// Call after the frame encoder has been submitted or discarded.
+    pub fn finish_frame(&mut self) {
+        while self.entries.len() > Self::MAX_ENTRIES || self.total_pixels() > Self::MAX_TOTAL_PIXELS
+        {
+            let Some(entry_id) = self.pick_lru_evictable() else {
+                break;
+            };
+            self.remove_entry(entry_id);
+        }
     }
 
     pub fn touch_persistent(&mut self, stable_key: PersistentTextureKey) {
@@ -344,7 +360,11 @@ impl OffscreenRenderTargetPool {
     }
 
     pub fn clear(&mut self) {
-        for entry in self.entries.values().chain(self.retired_frame_entries.iter()) {
+        for entry in self
+            .entries
+            .values()
+            .chain(self.retired_frame_entries.iter())
+        {
             entry.texture.destroy();
             if let Some(msaa) = entry.msaa_texture.as_ref() {
                 msaa.destroy();
@@ -415,7 +435,6 @@ impl OffscreenRenderTargetPool {
             entry.last_used_epoch = self.frame_epoch;
         }
         self.frame_bindings.insert(allocation_id.0, entry_id);
-        self.evict();
         self.bundle_for_entry(entry_id, &desc)
     }
 
@@ -575,7 +594,7 @@ impl OffscreenRenderTargetPool {
         }
     }
 
-    fn evict(&mut self) {
+    fn evict_stale(&mut self) {
         if self.entries.is_empty() {
             return;
         }
@@ -604,14 +623,6 @@ impl OffscreenRenderTargetPool {
             })
             .collect();
         for entry_id in stale_ids {
-            self.remove_entry(entry_id);
-        }
-
-        while self.entries.len() > Self::MAX_ENTRIES || self.total_pixels() > Self::MAX_TOTAL_PIXELS
-        {
-            let Some(entry_id) = self.pick_lru_evictable() else {
-                break;
-            };
             self.remove_entry(entry_id);
         }
     }
@@ -910,3 +921,6 @@ mod tests;
 
 #[cfg(test)]
 mod pending_submission_tests;
+
+#[cfg(test)]
+mod working_set_tests;

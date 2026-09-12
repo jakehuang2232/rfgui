@@ -203,7 +203,9 @@ fn run_ready_owner_scope(
                 &viewport,
                 &observed,
                 dpr,
-                if frame == 0 || frame == 3 || frame == 6 {
+                // Adding the pure-translation boundary changes graph ordinals,
+                // not owner pixels. Reuse now ignores only those frame-local IDs.
+                if frame == 0 || frame == 6 {
                     RetainedSurfaceCompileAction::Reraster
                 } else {
                     RetainedSurfaceCompileAction::Reuse

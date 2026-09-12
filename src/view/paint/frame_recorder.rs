@@ -755,7 +755,12 @@ fn assess_manifest(
                 owner, properties, ..
             } => {
                 let invalid = if policy == FrameArtifactAuthorityPolicy::SurfaceDag {
-                    properties.scroll.is_some()
+                    // Culling is the absence of paint, not a property-family
+                    // restriction. Generic recording validates the complete
+                    // live property graph before assessing this manifest.
+                    // Re-entry creates chunks again and invalidates their
+                    // raster coverage; an inherited scroll is not a fallback.
+                    false
                 } else {
                     properties.transform.is_some()
                         || properties.effect.is_some()

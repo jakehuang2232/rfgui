@@ -51,6 +51,7 @@ pub enum ResourceLifetime {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RetainedTextureRole {
+    GpuSourceColor,
     RootEffectColor,
     RootEffectDepthStencil,
     TransformedColor,
@@ -138,7 +139,8 @@ fn is_failed_execution_retained_color_key(key: PersistentTextureKey) -> bool {
     matches!(
         key,
         PersistentTextureKey::Retained {
-            role: RetainedTextureRole::RootEffectColor
+            role: RetainedTextureRole::GpuSourceColor
+                | RetainedTextureRole::RootEffectColor
                 | RetainedTextureRole::TransformedColor
                 | RetainedTextureRole::ScrollHostColor
                 | RetainedTextureRole::ScrollContentColor,
@@ -1001,6 +1003,8 @@ enum ExecuteStep {
 }
 
 pub struct FrameGraph {
+    pub(crate) gpu_paint_sources:
+        FxHashMap<u64, (crate::view::gpu_paint::GpuPaintSource, TextureHandle)>,
     passes: Vec<PassNode>,
     textures: Vec<TextureDesc>,
     texture_attachment_pairs: FxHashMap<TextureHandle, AttachmentTarget>,
@@ -1146,6 +1150,7 @@ impl FrameGraph {
 
     pub fn new() -> Self {
         Self {
+            gpu_paint_sources: FxHashMap::default(),
             passes: Vec::new(),
             textures: Vec::new(),
             texture_attachment_pairs: FxHashMap::default(),
@@ -3096,6 +3101,7 @@ impl FrameGraph {
             }
         }
         if execution_error.is_some() {
+            ctx.viewport.finish_gpu_paint_frame(false);
             let failed_retained_color_keys = compiled_graph
                 .texture_stable_keys
                 .values()

@@ -58,3 +58,6 @@ web-sys = { version = "0.3.85", features = [
     "WheelEvent",
     "Window",
 ] }
+
+[dev-dependencies]
+rfgui = { path = "..", features = ["renderer-test-support"] }

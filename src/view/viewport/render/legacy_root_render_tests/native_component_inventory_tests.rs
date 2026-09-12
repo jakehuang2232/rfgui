@@ -124,6 +124,9 @@ impl Scene {
                             PaintOp::PreparedText(_) => 4,
                             PaintOp::PreparedImage(_) => 5,
                             PaintOp::PreparedSvg(_) => 6,
+                            PaintOp::PreparedGpu(_) => {
+                                panic!("native inventory must not include custom GPU hosts")
+                            }
                         }] += 1;
                     }
                 }
@@ -271,20 +274,8 @@ fn native_inventory_element_scroll_states() {
     for dpr in [1.0, 2.0] {
         for (name, child_height, scroll, status, reason) in [
             ("plain", None, false, Status::Supported, None),
-            (
-                "scroll-empty",
-                None,
-                true,
-                Status::Supported,
-                None,
-            ),
-            (
-                "scroll-fitting",
-                Some(20.0),
-                true,
-                Status::Supported,
-                None,
-            ),
+            ("scroll-empty", None, true, Status::Supported, None),
+            ("scroll-fitting", Some(20.0), true, Status::Supported, None),
             (
                 "scroll-overflowing",
                 Some(120.0),
@@ -463,11 +454,7 @@ fn native_inventory_svg_resource_states() {
             let mut scene = Scene::new(Box::new(svg), dpr);
             scene.layout();
             if state == "ready" {
-                scene.observe(
-                    "raster-acquired-after-freeze",
-                    Status::Supported,
-                    None,
-                );
+                scene.observe("raster-acquired-after-freeze", Status::Supported, None);
                 // Deterministic resource completion using the existing raster
                 // fixture; subsequent recording still passes production layout.
                 get_element_mut::<Svg>(&scene.arena, scene.root)

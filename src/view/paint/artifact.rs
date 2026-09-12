@@ -1957,6 +1957,7 @@ pub(crate) enum PaintChunkRole {
     TextGlyphs,
     ImageContent,
     SvgContent,
+    GpuContent,
     SelectionUnderlay,
     TextDecoration,
     Caret,
@@ -1972,6 +1973,7 @@ pub(crate) enum PaintOp {
     PreparedText(PreparedTextOp),
     PreparedImage(PreparedImageOp),
     PreparedSvg(PreparedSvgOp),
+    PreparedGpu(PreparedGpuOp),
 }
 
 #[derive(Clone, Debug)]
@@ -3145,6 +3147,7 @@ pub(crate) enum PaintPayloadIdentity {
         Arc<[PreparedShadowIdentity]>,
         Arc<[PreparedDrawRectIdentity]>,
     ),
+    Gpu(PreparedGpuIdentity),
     Svg(PreparedSvgIdentity, Arc<[PreparedDrawRectIdentity]>),
     SvgWithShadows(
         PreparedSvgIdentity,
@@ -3578,6 +3581,14 @@ impl PaintPayloadIdentity {
     /// must remain the variant and cardinality frozen by `self`.
     pub(crate) fn rebuild_from_localized_ops(&self, ops: &[PaintOp]) -> Option<Self> {
         match self {
+            Self::Gpu(expected) => {
+                let [PaintOp::PreparedGpu(op)] = ops else {
+                    return None;
+                };
+                let identity = op.identity()?;
+                (identity.source == expected.source).then_some(Self::Gpu(identity))
+            }
+
             Self::None => ops.is_empty().then_some(Self::None),
             Self::PreparedRects(expected) => {
                 let rects = ops
@@ -4276,3 +4287,36 @@ mod text_selection_payload_identity_tests;
 
 #[cfg(test)]
 mod prepared_text_identity_tests;
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedGpuOp {
+    pub(crate) params: TextureCompositeParams,
+    pub(crate) source: crate::view::gpu_paint::GpuPaintSource,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PreparedGpuIdentity {
+    source: crate::view::gpu_paint::GpuPaintSource,
+    bounds: [u32; 4],
+    opacity: u32,
+}
+impl PreparedGpuOp {
+    pub(crate) fn identity(&self) -> Option<PreparedGpuIdentity> {
+        let p = &self.params;
+        (p.bounds.iter().all(|v| v.is_finite())
+            && p.bounds[2] > 0.0
+            && p.bounds[3] > 0.0
+            && p.opacity.is_finite()
+            && (0.0..=1.0).contains(&p.opacity)
+            && p.source_is_premultiplied
+            && !p.use_mask
+            && p.quad_positions.is_none()
+            && p.uv_bounds.is_none()
+            && p.mask_uv_bounds.is_none()
+            && p.scissor_rect.is_none())
+        .then(|| PreparedGpuIdentity {
+            source: self.source.clone(),
+            bounds: p.bounds.map(f32::to_bits),
+            opacity: p.opacity.to_bits(),
+        })
+    }
+}

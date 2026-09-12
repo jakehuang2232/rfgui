@@ -46,3 +46,5 @@ pub use renderer_adapter::{
 };
 pub use tags::*;
 pub use viewport::*;
+
+pub mod gpu_paint;

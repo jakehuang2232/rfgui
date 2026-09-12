@@ -316,6 +316,8 @@ impl SceneState {
 /// overlay geometry buffers. Non-pub; the viewport re-exposes whatever the
 /// outside world needs through existing accessor methods.
 struct FrameRuntime {
+    gpu_paint_sources: FxHashMap<u64, gpu_paint::CachedSource>,
+    retained_raster_diagnostics: Vec<gpu_paint::RasterDiagnostic>,
     frame_state: Option<FrameState>,
     offscreen_render_target_pool: OffscreenRenderTargetPool,
     sampled_texture_cache:
@@ -358,6 +360,8 @@ impl FrameRuntime {
             offscreen_render_target_pool: OffscreenRenderTargetPool::new(),
             sampled_texture_cache: FxHashMap::default(),
             sampled_texture_upload_count: 0,
+            gpu_paint_sources: FxHashMap::default(),
+            retained_raster_diagnostics: Vec::new(),
             frame_buffer_pool: FxHashMap::default(),
             draw_rect_uniform_pool: Vec::new(),
             draw_rect_uniform_cursor: 0,
@@ -1069,3 +1073,5 @@ pub(crate) use render::SingleViewportFrameObservation;
 #[cfg(feature = "renderer-test-support")]
 #[doc(hidden)]
 pub use render::downstream_test_support::RendererTestFrame;
+
+mod gpu_paint;

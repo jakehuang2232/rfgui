@@ -3,28 +3,20 @@ use crate::rfgui::ui::{
     PointerButton, PointerDownEvent, PointerMoveEvent, PointerUpEvent, RsxElementNode, RsxNode,
     ViewportHandle, component, use_viewport,
 };
+use crate::rfgui::view::base_component::PaintResourcePreparationContext;
 use crate::rfgui::view::base_component::{
     BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, LayoutConstraints,
     LayoutPlacement, Layoutable, Renderable, UiBuildContext,
 };
-use crate::rfgui::view::frame_graph::slot::{InSlot, OutSlot};
-use crate::rfgui::view::frame_graph::texture_resource::{TextureDesc, TextureResource};
-use crate::rfgui::view::frame_graph::{
-    FrameGraph, FrameResourceContext, GraphicsColorAttachmentOps, GraphicsPassBuilder,
-    GraphicsPassMergePolicy, PrepareContext,
-};
-use crate::rfgui::view::render_pass::draw_rect_pass::{RenderTargetOut, RenderTargetTag};
-use crate::rfgui::view::render_pass::texture_composite_pass::{
-    TextureCompositeInput, TextureCompositeOutput, TextureCompositeParams, TextureCompositePass,
-};
-use crate::rfgui::view::render_pass::{GraphicsCtx, GraphicsPass};
+use crate::rfgui::view::frame_graph::FrameGraph;
+use crate::rfgui::view::gpu_paint::{GpuPaintProgram, GpuPaintSource, GpuPaintSourceId};
 use crate::rfgui::view::viewport::ViewportControl;
 use crate::rfgui::view::{BuildCtx, ElementDescriptor, HostBuilder, host_builder_node};
+use std::sync::Arc;
 
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use wgpu::util::DeviceExt;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Particle System (CPU simulation)
@@ -121,8 +113,7 @@ impl ParticleSystemInner {
         self.mass_boost = v;
     }
 
-    fn update(&mut self) {
-        let now = Instant::now();
+    fn update(&mut self, now: Instant) {
         let dt = now.duration_since(self.last_update).as_secs_f32().min(0.05);
         self.last_update = now;
         self.elapsed += dt;
@@ -273,222 +264,35 @@ struct ParticleUniforms {
     _pad: f32,
 }
 
-struct ParticlePassResources {
-    pipeline: wgpu::RenderPipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
-    format: wgpu::TextureFormat,
-    sample_count: u32,
-}
-
-thread_local! {
-    static PIPELINE_CACHE: RefCell<Option<ParticlePassResources>> = const { RefCell::new(None) };
-}
-
-fn get_or_create_resources(
-    device: &wgpu::Device,
-    format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
-    PIPELINE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some(res) = cache.as_ref() {
-            if res.format == format && res.sample_count == sample_count {
-                return (res.bind_group_layout.clone(), res.pipeline.clone());
-            }
-        }
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Particle Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/particle.wgsl").into()),
-        });
-
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Particle BGL"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Particle Pipeline Layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
-
-        let vertex_layout = wgpu::VertexBufferLayout {
-            array_stride: (8 * size_of::<f32>()) as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 8,
-                    shader_location: 1,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 24,
-                    shader_location: 2,
-                },
-            ],
-        };
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Particle Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Some(vertex_layout)],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: sample_count,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: None,
-            cache: None,
-        });
-
-        let bgl_clone = bind_group_layout.clone();
-        let pipeline_clone = pipeline.clone();
-        *cache = Some(ParticlePassResources {
-            pipeline,
-            bind_group_layout,
-            format,
-            sample_count,
-        });
-        (bgl_clone, pipeline_clone)
-    })
-}
-
-/// Renders particles into an offscreen texture (clear + draw).
-struct ParticlePass {
-    uniforms: ParticleUniforms,
-    vertex_data: Vec<f32>,
-    particle_count: u32,
-    offscreen_target: RenderTargetOut,
-    surface_format: wgpu::TextureFormat,
-    // Prepared GPU resources
-    uniform_buffer: Option<wgpu::Buffer>,
-    vertex_buffer: Option<wgpu::Buffer>,
-    bind_group: Option<wgpu::BindGroup>,
-}
-
-impl Drop for ParticlePass {
-    fn drop(&mut self) {
-        if let Some(buf) = self.uniform_buffer.take() {
-            buf.destroy();
-        }
-        if let Some(buf) = self.vertex_buffer.take() {
-            buf.destroy();
-        }
-    }
-}
-
-impl GraphicsPass for ParticlePass {
-    fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
-        builder.set_graphics_merge_policy(GraphicsPassMergePolicy::RequiresOwnPass);
-        // Clear the offscreen texture then render particles into it.
-        builder.write_color(
-            &self.offscreen_target,
-            GraphicsColorAttachmentOps::clear([0.0, 0.0, 0.0, 0.0]),
-        );
-    }
-
-    fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
-        if self.particle_count == 0 {
-            return;
-        }
-        let viewport = ctx.viewport();
-        let device = viewport.device().expect("no GPU device");
-        let format = self.surface_format;
-
-        let (bgl, _) = get_or_create_resources(device, format, 1);
-
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Particle Uniforms"),
-            contents: bytemuck::bytes_of(&self.uniforms),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Particle BG"),
-            layout: &bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
-        });
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Particle Vertices"),
-            contents: bytemuck::cast_slice(&self.vertex_data),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        self.uniform_buffer = Some(uniform_buffer);
-        self.vertex_buffer = Some(vertex_buffer);
-        self.bind_group = Some(bind_group);
-    }
-
-    fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
-        if self.particle_count == 0 {
-            return;
-        }
-        let Some(bind_group) = &self.bind_group else {
-            return;
-        };
-        let Some(vertex_buffer) = &self.vertex_buffer else {
-            return;
-        };
-
-        let device = ctx.viewport().device().expect("no GPU device");
-        let (_, pipeline) = get_or_create_resources(device, self.surface_format, 1);
-
-        ctx.set_pipeline(&pipeline);
-        ctx.set_bind_group(0, bind_group, &[]);
-        ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
-        ctx.draw(0..6, 0..self.particle_count);
-    }
+fn particle_program() -> Arc<GpuPaintProgram> {
+    static PROGRAM: std::sync::OnceLock<Arc<GpuPaintProgram>> = std::sync::OnceLock::new();
+    PROGRAM
+        .get_or_init(|| {
+            GpuPaintProgram::new(
+                include_str!("../shaders/particle.wgsl").into(),
+                32,
+                wgpu::VertexStepMode::Instance,
+                Arc::from([
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 0,
+                        shader_location: 0,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 8,
+                        shader_location: 1,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 24,
+                        shader_location: 2,
+                    },
+                ]),
+            )
+            .expect("particle shader obeys the declared source interface")
+        })
+        .clone()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -517,6 +321,11 @@ pub struct ParticleCanvas {
     target_w: f32,
     target_h: f32,
     should_render: bool,
+    dirty: DirtyFlags,
+    prepared_frame: Option<u64>,
+    content_revision: u64,
+    source_id: GpuPaintSourceId,
+    source: Option<GpuPaintSource>,
 }
 
 impl ParticleCanvas {
@@ -535,11 +344,68 @@ impl ParticleCanvas {
             target_w: 0.0,
             target_h: 0.0,
             should_render: true,
+            dirty: DirtyFlags::ALL,
+            prepared_frame: None,
+            content_revision: 0,
+            source_id: GpuPaintSourceId::new(),
+            source: None,
         }
     }
 }
 
 impl Layoutable for ParticleCanvas {
+    fn requires_paint_resource_preparation(&self) -> bool {
+        true
+    }
+    fn prepare_paint_resources(&mut self, context: PaintResourcePreparationContext) {
+        if self.prepared_frame == Some(context.frame_number) {
+            return;
+        }
+        self.prepared_frame = Some(context.frame_number);
+        ViewportHandle.request_redraw();
+        if !self.should_render {
+            self.source = None;
+            return;
+        }
+        let extent = [
+            (self.layout_w * context.device_scale).ceil() as u32,
+            (self.layout_h * context.device_scale).ceil() as u32,
+        ];
+        self.content_revision = self
+            .content_revision
+            .checked_add(1)
+            .expect("source revision exhausted");
+        self.source = PARTICLE_SYSTEM.with(|system| {
+            let mut system = system.borrow_mut();
+            system.update(context.now);
+            let vertices = system.to_vertex_data(extent[0] as f32, extent[1] as f32);
+            let uniforms = ParticleUniforms {
+                screen_size: extent.map(|n| n as f32),
+                canvas_pos: [0.0; 2],
+                canvas_size: extent.map(|n| n as f32),
+                time: system.elapsed,
+                _pad: 0.0,
+            };
+            Some(
+                GpuPaintSource::new(
+                    self.source_id,
+                    self.content_revision,
+                    extent,
+                    context.device_scale,
+                    particle_program(),
+                    Arc::from(bytemuck::bytes_of(&uniforms)),
+                    Arc::from(bytemuck::cast_slice(&vertices)),
+                    6,
+                    system.particles.len() as u32,
+                )
+                .expect("finite particle preparation"),
+            )
+        });
+        // Simulation changes pixels only. Layout dirty must be clearable so
+        // the containing scrollport can certify its final geometry.
+        self.dirty = self.dirty.union(DirtyFlags::PAINT);
+    }
+
     fn measure(&mut self, constraints: LayoutConstraints, _arena: &mut rfgui::view::NodeArena) {
         // width:100%, height:100% — use percent base (parent content size).
         if let Some(w) = constraints.percent_base_width {
@@ -548,6 +414,7 @@ impl Layoutable for ParticleCanvas {
         if let Some(h) = constraints.percent_base_height {
             self.target_h = h;
         }
+        self.dirty = self.dirty.without(DirtyFlags::LAYOUT);
     }
 
     fn place(&mut self, placement: LayoutPlacement, _arena: &mut rfgui::view::NodeArena) {
@@ -556,6 +423,11 @@ impl Layoutable for ParticleCanvas {
         self.layout_w = self.target_w;
         self.layout_h = self.target_h;
         self.should_render = self.layout_w > 0.0 && self.layout_h > 0.0;
+        self.dirty = self.dirty.without(
+            DirtyFlags::PLACE
+                .union(DirtyFlags::BOX_MODEL)
+                .union(DirtyFlags::HIT_TEST),
+        );
     }
 
     fn measured_size(&self) -> (f32, f32) {
@@ -563,10 +435,16 @@ impl Layoutable for ParticleCanvas {
     }
 
     fn set_layout_width(&mut self, w: f32) {
-        self.target_w = w;
+        if self.target_w != w {
+            self.target_w = w;
+            self.dirty = self.dirty.union(DirtyFlags::PLACE);
+        }
     }
     fn set_layout_height(&mut self, h: f32) {
-        self.target_h = h;
+        if self.target_h != h {
+            self.target_h = h;
+            self.dirty = self.dirty.union(DirtyFlags::PLACE);
+        }
     }
 
     fn flex_props(&self) -> rfgui::view::base_component::FlexProps {
@@ -589,8 +467,11 @@ impl Layoutable for ParticleCanvas {
         (self.offset_x, self.offset_y)
     }
     fn set_layout_offset(&mut self, x: f32, y: f32) {
-        self.offset_x = x;
-        self.offset_y = y;
+        if [self.offset_x, self.offset_y] != [x, y] {
+            self.offset_x = x;
+            self.offset_y = y;
+            self.dirty = self.dirty.union(DirtyFlags::PLACE);
+        }
     }
 }
 
@@ -657,89 +538,17 @@ impl Renderable for ParticleCanvas {
         &mut self,
         graph: &mut FrameGraph,
         _arena: &mut rfgui::view::NodeArena,
-        ctx: UiBuildContext,
+        mut ctx: UiBuildContext,
     ) -> BuildState {
-        if !self.should_render {
-            return ctx.into_state();
+        if self.should_render {
+            if let Some(source) = &self.source {
+                source.paint(
+                    graph,
+                    &mut ctx,
+                    [self.layout_x, self.layout_y, self.layout_w, self.layout_h],
+                );
+            }
         }
-
-        // Keep animating.
-        ViewportHandle.request_redraw();
-
-        let viewport = ctx.viewport();
-        let format = viewport.target_format();
-        let scale = viewport.scale_factor();
-        let canvas_w = self.layout_w;
-        let canvas_h = self.layout_h;
-        let canvas_x = self.layout_x;
-        let canvas_y = self.layout_y;
-
-        // 1. Declare an offscreen texture at physical pixel resolution.
-        let tex_w = (canvas_w * scale).ceil() as u32;
-        let tex_h = (canvas_h * scale).ceil() as u32;
-
-        let offscreen: OutSlot<TextureResource, RenderTargetTag> = graph.declare_texture(
-            TextureDesc::new(tex_w, tex_h, format, wgpu::TextureDimension::D2)
-                .with_label("ParticleCanvas Offscreen"),
-        );
-
-        // 2. Update particle state and add particle render pass.
-        //    Particle system works in physical pixels so rendering is crisp.
-        let phys_w = tex_w as f32;
-        let phys_h = tex_h as f32;
-        PARTICLE_SYSTEM.with(|sys| {
-            let mut sys = sys.borrow_mut();
-            sys.update();
-            let vertex_data = sys.to_vertex_data(phys_w, phys_h);
-            let count = sys.particles.len() as u32;
-            let time = sys.elapsed;
-
-            graph.add_graphics_pass(ParticlePass {
-                uniforms: ParticleUniforms {
-                    screen_size: [phys_w, phys_h],
-                    canvas_pos: [0.0, 0.0],
-                    canvas_size: [phys_w, phys_h],
-                    time,
-                    _pad: 0.0,
-                },
-                vertex_data,
-                particle_count: count,
-                offscreen_target: offscreen,
-                surface_format: format,
-                uniform_buffer: None,
-                vertex_buffer: None,
-                bind_group: None,
-            });
-        });
-
-        // 3. Composite the offscreen texture onto the output target.
-        let output_target = ctx.current_target().unwrap_or_default();
-
-        // Connect the offscreen OutSlot → composite input InSlot.
-        let source_handle = offscreen.handle().expect("offscreen has no handle");
-        let source_in: InSlot<TextureResource, _> = InSlot::with_handle(source_handle);
-
-        graph.add_graphics_pass(TextureCompositePass::new(
-            TextureCompositeParams {
-                bounds: [canvas_x, canvas_y, canvas_w, canvas_h],
-                quad_positions: None,
-                uv_bounds: None,
-                mask_uv_bounds: None,
-                use_mask: false,
-                source_is_premultiplied: true,
-                opacity: 1.0,
-                scissor_rect: None,
-            },
-            TextureCompositeInput::from_render_target(
-                source_in,
-                Default::default(),
-                Default::default(),
-            ),
-            TextureCompositeOutput {
-                render_target: output_target,
-            },
-        ));
-
         ctx.into_state()
     }
 }
@@ -775,26 +584,21 @@ impl ElementTrait for ParticleCanvas {
         self
     }
 
+    fn prepared_gpu_paint_source(&self) -> Option<&GpuPaintSource> {
+        self.source.as_ref()
+    }
     fn retained_paint_signature(&self) -> u64 {
-        // Constant on purpose. The engine samples this more than once per
-        // frame — once when observing paint generations, again when a planner
-        // checks that its snapshot still describes the live arena — and the
-        // retained contract requires the same semantic frame to read the same
-        // value. A counter that advances per call fails that whole-tree check
-        // at this node, which returns the planner before it validates anything
-        // else and so denies retained authority to the entire scene.
-        //
-        // Repainting every frame does not need a changing signature: this host
-        // reports `DirtyFlags::ALL` and leaves
-        // `retained_paint_signature_is_complete()` at its default `false`,
-        // which already marks it untracked for retained generation purposes.
-        0
+        self.source.as_ref().map_or(0, GpuPaintSource::revision)
     }
-
+    fn retained_paint_signature_is_complete(&self) -> bool {
+        self.source.is_some() || !self.should_render
+    }
     fn local_dirty_flags(&self) -> DirtyFlags {
-        DirtyFlags::ALL
+        self.dirty
     }
-    fn clear_local_dirty_flags(&mut self, _: DirtyFlags) {}
+    fn clear_local_dirty_flags(&mut self, flags: DirtyFlags) {
+        self.dirty = self.dirty.without(flags);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -820,3 +624,8 @@ pub fn ParticleDemo() -> RsxNode {
     viewport.request_redraw();
     host_builder_node::<ParticleCanvas>("ParticleCanvas")
 }
+
+#[cfg(test)]
+mod native_tests;
+#[cfg(test)]
+mod preparation_tests;

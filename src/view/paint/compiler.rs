@@ -294,6 +294,7 @@ impl RetainedSurfaceRasterStamp {
 /// dependencies cannot be represented here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ArtifactSurfaceRasterProgramStamp {
+    window: Option<raster_window::RasterWindow>,
     execution_id: SurfaceDagExecutionNodeId,
     source: SurfaceDagNodeId,
     receiver: SurfaceDagExecutionTargetId,
@@ -441,6 +442,8 @@ pub(crate) enum ArtifactSurfaceRasterPlanError {
     InvalidRasterOrigin(SurfaceDagNodeId),
     InvalidDescriptor(SurfaceDagNodeId),
     TextureBudgetExceeded(SurfaceDagNodeId),
+    GpuSourceBudgetExceeded,
+    InvalidGpuSource,
     InvalidCoverageSpan(ArtifactSurfaceRasterTargetId),
     InvalidOwnerTopology {
         target: ArtifactSurfaceRasterTargetId,
@@ -914,6 +917,7 @@ pub(crate) enum PreparedArtifactSurfaceRasterStep {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedArtifactSurfaceRasterNode {
+    window: Option<raster_window::RasterWindow>,
     execution_id: SurfaceDagExecutionNodeId,
     source: SurfaceDagNodeId,
     receiver: SurfaceDagExecutionTargetId,
@@ -928,6 +932,16 @@ pub(crate) struct PreparedArtifactSurfaceRasterNode {
 }
 
 impl PreparedArtifactSurfaceRasterNode {
+    #[cfg(test)]
+    pub(crate) fn raster_window_bounds_for_test(&self) -> Option<([f32; 4], [f32; 4])> {
+        self.window.map(|w| {
+            (
+                w.content_bounds_bits.map(f32::from_bits),
+                w.raster_bounds_bits.map(f32::from_bits),
+            )
+        })
+    }
+
     pub(crate) fn execution_id(&self) -> SurfaceDagExecutionNodeId {
         self.execution_id
     }
@@ -2399,7 +2413,36 @@ fn prepare_artifact_surface_raster_plan_from_program(
         .collect::<FxHashMap<_, _>>();
     let mut prepared_nodes: Vec<Option<PreparedArtifactSurfaceRasterNode>> =
         vec![None; program.execution_order.nodes().len()];
+    // Source output and declared upload buffers share the aggregate limit
+    // with materialized native targets, including warm sources. Shader/pipeline
+    // driver allocations and sampled assets are not GPU-residency accounting.
+    let mut gpu_sources = FxHashMap::default();
     let mut total_texture_bytes = 0_u64;
+    for op in &program.artifact.ops {
+        if let PaintOp::PreparedGpu(op) = op {
+            let source = &op.source;
+            if source.scale_bits != context.scale_factor_bits
+                || source
+                    .extent
+                    .iter()
+                    .any(|n| *n > context.max_texture_dimension_2d)
+                || !source.matches_size([op.params.bounds[2], op.params.bounds[3]])
+            {
+                return Err(ArtifactSurfaceRasterPlanError::InvalidGpuSource);
+            }
+            if let Some(previous) = gpu_sources.insert(source.id, source) {
+                if previous != source {
+                    return Err(ArtifactSurfaceRasterPlanError::InvalidGpuSource);
+                }
+            } else {
+                total_texture_bytes = total_texture_bytes
+                    .checked_add(source.allocated_bytes())
+                    .filter(|b| *b <= context.max_texture_bytes)
+                    .ok_or(ArtifactSurfaceRasterPlanError::GpuSourceBudgetExceeded)?;
+            }
+        }
+    }
+
     for execution in program.execution_order.nodes().iter().rev().copied() {
         let source = execution.source();
         let node = program
@@ -2501,8 +2544,73 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 }
             }
         }
-        let raw_source_bounds_bits =
+        let content_bounds_bits =
             raw_bounds.ok_or(ArtifactSurfaceRasterPlanError::EmptySurfaceBounds(source))?;
+        let receiver_paint_offset = host_placement
+            .receiver_paint_offset(node.target(), execution.receiver())
+            .ok_or(ArtifactSurfaceRasterPlanError::InvalidOwnerTopology {
+                target: target_id,
+                owner: node.target(),
+            })?;
+        let owner_state =
+            owner_states
+                .get(&node.target())
+                .ok_or(ArtifactSurfaceRasterPlanError::SurfaceDag(
+                    SurfaceDagError::Transition(TransitionError::MissingOwnerPropertyState(
+                        node.target(),
+                    )),
+                ))?;
+        let geometry_for_bounds = |raw_source_bounds_bits, source_bounds_bits| {
+            let geometry = surface_composite_geometry(
+                node,
+                owner_state.clip,
+                source_bounds_bits,
+                raw_source_bounds_bits,
+                execution.receiver(),
+                receiver_paint_offset,
+                context,
+                &transforms,
+                &effects,
+                &scrolls,
+                &clips,
+                coverage.clip_closure(),
+            )?;
+            fold_materialized_composite_boundaries(
+                geometry,
+                folded_boundaries,
+                &program.surface_dag,
+                execution.receiver(),
+                receiver_paint_offset,
+                context,
+                &clips,
+            )
+        };
+        let full_origin = ArtifactSurfaceRasterOriginProjection::new(
+            content_bounds_bits,
+            context.scale_factor_bits,
+        )
+        .ok_or(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(source))?;
+        // A fixed working-set threshold makes raster geometry independent of
+        // the caller's aggregate budget. Lowering that budget cannot silently
+        // choose smaller windows to evade an otherwise exact-byte rejection.
+        // The complete envelope survives in the stamp; only a proved finite
+        // receiver read can restrict the allocated raster region.
+        const MAX_UNWINDOWED_BYTES: u64 = 32 * 1024 * 1024;
+        let full_bytes =
+            u64::from(full_origin.target_size[0]) * u64::from(full_origin.target_size[1]) * 12;
+        let window = if full_origin.target_size.iter().any(|n| *n > 8192)
+            || full_bytes > MAX_UNWINDOWED_BYTES
+        {
+            let geometry = geometry_for_bounds(
+                content_bounds_bits,
+                full_origin.normalized_source_bounds_bits,
+            )?;
+            raster_window::select(content_bounds_bits, geometry, context)
+        } else {
+            None
+        };
+        let raw_source_bounds_bits =
+            window.map_or(content_bounds_bits, |window| window.raster_bounds_bits);
         let raster_origin = ArtifactSurfaceRasterOriginProjection::new(
             raw_source_bounds_bits,
             context.scale_factor_bits,
@@ -2617,20 +2725,6 @@ fn prepare_artifact_surface_raster_plan_from_program(
         {
             return Err(ArtifactSurfaceRasterPlanError::InvalidDescriptor(source));
         }
-        let receiver_paint_offset = host_placement
-            .receiver_paint_offset(node.target(), execution.receiver())
-            .ok_or(ArtifactSurfaceRasterPlanError::InvalidOwnerTopology {
-                target: target_id,
-                owner: node.target(),
-            })?;
-        let owner_state =
-            owner_states
-                .get(&node.target())
-                .ok_or(ArtifactSurfaceRasterPlanError::SurfaceDag(
-                    SurfaceDagError::Transition(TransitionError::MissingOwnerPropertyState(
-                        node.target(),
-                    )),
-                ))?;
         // Receiver closure remains a structural obligation even though its
         // owner-only matrix is not an inverse for the child's projection.
         if let SurfaceDagExecutionTargetId::Surface(receiver) = execution.receiver() {
@@ -2651,30 +2745,9 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(source));
             }
         }
-        let geometry = surface_composite_geometry(
-            node,
-            owner_state.clip,
-            source_bounds_bits,
-            raw_source_bounds_bits,
-            execution.receiver(),
-            receiver_paint_offset,
-            context,
-            &transforms,
-            &effects,
-            &scrolls,
-            &clips,
-            coverage.clip_closure(),
-        )?;
-        let geometry = fold_materialized_composite_boundaries(
-            geometry,
-            folded_boundaries,
-            &program.surface_dag,
-            execution.receiver(),
-            receiver_paint_offset,
-            context,
-            &clips,
-        )?;
+        let geometry = geometry_for_bounds(raw_source_bounds_bits, source_bounds_bits)?;
         prepared_nodes[execution.id().index()] = Some(PreparedArtifactSurfaceRasterNode {
+            window,
             execution_id: execution.id(),
             source,
             receiver: execution.receiver(),
@@ -3146,7 +3219,8 @@ fn artifact_surface_clip_schedule_is_canonical(
                     | PaintPayloadIdentity::SvgWithShadows(_, shadows, _) => {
                         shadows.len() == prefix_op_count
                     }
-                    PaintPayloadIdentity::None
+                    PaintPayloadIdentity::Gpu(_)
+                    | PaintPayloadIdentity::None
                     | PaintPayloadIdentity::Image(_, _)
                     | PaintPayloadIdentity::Svg(_, _)
                     | PaintPayloadIdentity::PreparedTexts(_)
@@ -3221,7 +3295,10 @@ fn artifact_surface_resident_set_is_canonical(
         let Some(program) = stamp.artifact_surface_program.as_ref() else {
             return false;
         };
-        if program.execution_id.index() != ordinal
+        if program
+            .window
+            .is_some_and(|window| !window.matches_target(&stamp.target))
+            || program.execution_id.index() != ordinal
             || entry.resident_key != stamp.identity.artifact_surface_resident_key()
             || !resident_keys.insert(entry.resident_key)
             || stamp.clip_nodes.iter().any(|clip| clip.generation == 0)
@@ -3509,6 +3586,7 @@ fn seal_artifact_surface_resident_set(
             opaque_order_span: 0..cursor,
             local_clip_generation_semantics,
             artifact_surface_program: Some(ArtifactSurfaceRasterProgramStamp {
+                window: node.window,
                 execution_id: node.execution_id,
                 source: node.source,
                 receiver: node.receiver,
@@ -3560,7 +3638,8 @@ fn artifact_surface_frame_is_canonical(
                 let Some(program) = stamp.artifact_surface_program.as_ref() else {
                     return false;
                 };
-                node.execution_id == program.execution_id
+                node.window == program.window
+                    && node.execution_id == program.execution_id
                     && node.source == program.source
                     && node.receiver == program.receiver
                     && node.identity == stamp.identity
@@ -3661,7 +3740,8 @@ fn retained_surface_op_opaque_order_count(op: &PaintOp) -> u32 {
         | PaintOp::PreparedScrollbarOverlay(_)
         | PaintOp::PreparedText(_)
         | PaintOp::PreparedImage(_)
-        | PaintOp::PreparedSvg(_) => 0,
+        | PaintOp::PreparedSvg(_)
+        | PaintOp::PreparedGpu(_) => 0,
     }
 }
 
@@ -3680,6 +3760,7 @@ fn retained_surface_rect_is_opaque(
 /// behavior cannot drift while their sealed scheduling remains independent.
 fn emit_artifact_surface_paint_op(op: &PaintOp, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
     match op {
+        PaintOp::PreparedGpu(op) => op.source.emit(graph, ctx, op.params),
         PaintOp::DrawRect(op) => {
             let mut pass = DrawRectPass::new(
                 op.params.clone(),
@@ -3951,6 +4032,7 @@ pub(crate) enum ArtifactSurfacePaintOpKind {
     Text,
     Image,
     Svg,
+    Gpu,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3970,6 +4052,7 @@ fn artifact_surface_paint_op_kind(op: &PaintOp) -> ArtifactSurfacePaintOpKind {
         PaintOp::PreparedText(_) => ArtifactSurfacePaintOpKind::Text,
         PaintOp::PreparedImage(_) => ArtifactSurfacePaintOpKind::Image,
         PaintOp::PreparedSvg(_) => ArtifactSurfacePaintOpKind::Svg,
+        PaintOp::PreparedGpu(_) => ArtifactSurfacePaintOpKind::Gpu,
     }
 }
 
@@ -4013,6 +4096,12 @@ pub(crate) fn localize_artifact_surface_op(
     let kind = artifact_surface_paint_op_kind(op);
     let invalid = || ArtifactSurfaceLocalizationError::InvalidLocalizedOp(kind);
     match op {
+        PaintOp::PreparedGpu(gpu) => {
+            let mut localized = gpu.clone();
+            translate_artifact_surface_texture_params(&mut localized.params, delta, kind)?;
+            Ok(PaintOp::PreparedGpu(localized))
+        }
+
         PaintOp::DrawRect(rect) => {
             let mut localized = rect.clone();
             translate_nested_scroll_position(&mut localized.params.position, delta)
@@ -4101,6 +4190,10 @@ fn neutralize_artifact_surface_opacity(
     }
     let neutral = 1.0_f32;
     let rebuilt = match op {
+        PaintOp::PreparedGpu(mut gpu) => {
+            gpu.params.opacity = neutral;
+            PaintOp::PreparedGpu(gpu)
+        }
         PaintOp::DrawRect(mut rect) => {
             rect.params.opacity = neutral;
             PaintOp::DrawRect(rect)
@@ -4156,6 +4249,10 @@ fn neutralize_artifact_surface_opacity(
 
 fn artifact_surface_op_identity_eq(left: &PaintOp, right: &PaintOp) -> bool {
     match left {
+        PaintOp::PreparedGpu(left) => {
+            matches!(right, PaintOp::PreparedGpu(right) if left.identity().is_some() && left.identity() == right.identity())
+        }
+
         PaintOp::DrawRect(left) => {
             let PaintOp::DrawRect(right) = right else {
                 return false;
@@ -4244,6 +4341,18 @@ pub(crate) fn artifact_surface_op_has_baked_opacity_for_test(
     ops_have_baked_local_opacity(std::slice::from_ref(op), expected_bits)
 }
 
+fn child_mask_radii_fit_bounds(radii: [[f32; 2]; 4], [width, height]: [f32; 2]) -> bool {
+    // CSS constrains sums of adjacent corners on each edge, not each corner
+    // to half the short side. An asymmetric 135px corner on a 150px square
+    // is valid when its neighbors are 8px. Keep exact finite/nonnegative and
+    // non-overlap checks; do not silently clamp malformed recorded geometry.
+    radii.iter().flatten().all(|r| r.is_finite() && *r >= 0.0)
+        && radii[0][0] + radii[1][0] <= width
+        && radii[3][0] + radii[2][0] <= width
+        && radii[0][1] + radii[3][1] <= height
+        && radii[1][1] + radii[2][1] <= height
+}
+
 fn validate_artifact_store_with_policy(
     artifact: &PaintArtifact,
     policy: ArtifactStoreValidationPolicy,
@@ -4300,11 +4409,7 @@ fn validate_artifact_store_with_policy(
                 && mask.params.fill_color == [0.0; 4]
                 && mask.params.opacity.to_bits() == 1.0_f32.to_bits()
                 && mask.params.border_widths == [0.0; 4]
-                && mask.params.border_radii.iter().flatten().all(|radius| {
-                    radius.is_finite()
-                        && *radius >= 0.0
-                        && *radius <= chunk.bounds.width.min(chunk.bounds.height) * 0.5
-                })
+                && child_mask_radii_fit_bounds(mask.params.border_radii, mask.params.size)
                 && mask.params.gradient.is_none()
                 && mask.params.border_gradient.is_none()
                 && chunk.payload_identity == PaintPayloadIdentity::prepared_rects([mask])?;
@@ -4334,6 +4439,26 @@ fn validate_artifact_store_with_policy(
             continue;
         }
         match chunk.id.role {
+            PaintChunkRole::GpuContent => {
+                let [PaintOp::PreparedGpu(op)] = ops else {
+                    return None;
+                };
+                if chunk.payload_identity != PaintPayloadIdentity::Gpu(op.identity()?)
+                    || op.params.bounds
+                        != [
+                            chunk.bounds.x,
+                            chunk.bounds.y,
+                            chunk.bounds.width,
+                            chunk.bounds.height,
+                        ]
+                    || chunk.id.scope != PaintPropertyScope::SelfPaint
+                    || chunk.id.phase != super::PaintNodePhase::BeforeChildren
+                    || chunk.id.slot != 0
+                {
+                    return None;
+                }
+            }
+
             PaintChunkRole::ImageContent => {
                 if !validate_image_content_ops(ops, &chunk.payload_identity) {
                     return None;
@@ -4733,6 +4858,7 @@ fn ops_have_baked_local_opacity(ops: &[PaintOp], expected_bits: u32) -> bool {
             .all(|glyph| glyph.paint.opacity.to_bits() == expected_bits),
         PaintOp::PreparedImage(op) => op.params.opacity.to_bits() == expected_bits,
         PaintOp::PreparedSvg(op) => op.params.opacity.to_bits() == expected_bits,
+        PaintOp::PreparedGpu(op) => op.params.opacity.to_bits() == expected_bits,
     })
 }
 
@@ -5071,3 +5197,9 @@ fn intersect_resolved_clip(current: ResolvedClip, next: [u32; 4]) -> ResolvedCli
 mod direct_command_test_support;
 #[cfg(test)]
 pub(crate) use direct_command_test_support::{compile_artifact, try_compile_artifact};
+
+#[cfg(test)]
+mod child_mask_tests;
+
+mod raster_equivalence;
+mod raster_window;
