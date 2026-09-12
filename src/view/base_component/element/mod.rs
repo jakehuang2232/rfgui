@@ -5006,22 +5006,24 @@ fn build_inline_ifc_install_plan(
             }
             InlineIfcRootNodeGeometryKind::Text {
                 lines,
-                paint_input,
+                mut paint_input,
                 paint_bounds,
             } => {
-                let mut paint_input = (*paint_input).clone();
-                for line in &mut paint_input.lines {
+                // Source-filtered payloads are normally uniquely owned here.
+                // Translate in place; only copy if another owner retained it.
+                let local_input = Arc::make_mut(&mut paint_input);
+                for line in &mut local_input.lines {
                     line.x -= paint_bounds.x;
                     line.y -= paint_bounds.y;
                 }
-                for glyph in &mut paint_input.glyphs {
+                for glyph in &mut local_input.glyphs {
                     glyph.x -= paint_bounds.x;
                     glyph.baseline_y -= paint_bounds.y;
                 }
                 plan.push(InlineIfcNodeInstallOp::Text {
                     node_key,
                     lines: lines.into(),
-                    paint_input: Arc::new(paint_input),
+                    paint_input,
                     paint_bounds,
                 });
             }
@@ -5050,6 +5052,13 @@ fn text_ifc_owned_lines_for_source(
         return Vec::new();
     };
     let text = &context.backing_text()[byte_range.clone()];
+    // Caret stops use byte offsets. Index UTF-8 boundaries once instead of
+    // counting the entire text prefix again for every stop after reflow.
+    let char_boundaries: Vec<usize> = text
+        .char_indices()
+        .map(|(byte, _)| byte)
+        .chain(std::iter::once(text.len()))
+        .collect();
 
     let mut lines: Vec<(usize, Vec<(usize, f32)>, TextIfcOwnedLine)> = Vec::new();
     for stop in context
@@ -5060,9 +5069,9 @@ fn text_ifc_owned_lines_for_source(
         if stop.byte_index < byte_range.start || stop.byte_index > byte_range.end {
             continue;
         }
-        let local_char = text[..stop.byte_index.saturating_sub(byte_range.start)]
-            .chars()
-            .count();
+        let local_char = char_boundaries
+            .binary_search(&stop.byte_index.saturating_sub(byte_range.start))
+            .expect("IFC caret stop must be on a UTF-8 boundary");
         let line_rect = snapshot
             .lines
             .get(stop.line_index)
@@ -5079,8 +5088,9 @@ fn text_ifc_owned_lines_for_source(
                 height: stop.height,
             });
         match lines
-            .iter_mut()
-            .find(|(line_index, _, _)| *line_index == stop.line_index)
+            .binary_search_by_key(&stop.line_index, |(line_index, _, _)| *line_index)
+            .ok()
+            .map(|index| &mut lines[index])
         {
             Some((_, stops, line)) => {
                 stops.push((local_char, stop.x));

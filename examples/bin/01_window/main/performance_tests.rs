@@ -2,6 +2,9 @@ use super::*;
 use rfgui::time::Instant;
 use rfgui::view::Viewport;
 
+#[path = "performance_tests/about_resize.rs"]
+mod about_resize;
+
 /// The real demo tree through the production layout/paint entry. Window
 /// acquisition is offscreen; this does not measure host presentation latency.
 #[test]

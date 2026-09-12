@@ -251,3 +251,6 @@ mod hit_test_and_caret_tests;
 mod selection_tests;
 
 mod borrowed_key_tests;
+mod reflow_index_tests;
+mod reflow_cache_tests;
+mod caret_index_tests;

@@ -17,6 +17,8 @@ use parley::{
 use crate::style::srgb_to_linear;
 use crate::view::font_system::with_shared_parley_context;
 
+mod caret_index;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct InlineIfcSourceId(pub(crate) u64);
 
@@ -669,7 +671,15 @@ impl InlineIfcCache {
             };
         }
 
-        let context = InlineFormattingContext::build_with_options(input, layout_options);
+        // Width/alignment changes need new line geometry, but not new font
+        // matching and shaping. Keep the existing bounded cache ownership;
+        // only reuse runs when every shaping and paint input is identical.
+        let context = self
+            .entries
+            .values()
+            .find(|entry| entry.context.can_reflow(&cache_key))
+            .map(|entry| entry.context.reflow(cache_key, layout_options))
+            .unwrap_or_else(|| InlineFormattingContext::build_with_options(input, layout_options));
         let shape_key = InlineIfcShapeCacheKey::from_cache_key(context.cache_key());
         self.entries.insert(
             shape_key.clone(),
@@ -1580,6 +1590,38 @@ pub(crate) struct InlineIfcCaretStop {
     pub(crate) is_soft_wrap_boundary: bool,
 }
 
+// Keep visual order while deduplicating stops in constant expected time.
+// Line/box edges historically ignore the soft-wrap marker in their identity.
+#[derive(Default)]
+struct InlineIfcCaretStopBuffer {
+    values: Vec<InlineIfcCaretStop>,
+    seen: rustc_hash::FxHashMap<(usize, usize, InlineIfcCaretAffinity, bool, bool), u8>,
+}
+
+impl InlineIfcCaretStopBuffer {
+    fn push(&mut self, stop: InlineIfcCaretStop, distinguish_soft_wrap: bool) {
+        let key = (
+            stop.line_index,
+            stop.byte_index,
+            stop.affinity,
+            stop.is_line_head,
+            stop.is_line_tail,
+        );
+        let bit = 1 << u8::from(stop.is_soft_wrap_boundary);
+        let seen = self.seen.entry(key).or_default();
+        let duplicate = if distinguish_soft_wrap {
+            *seen & bit != 0
+        } else {
+            *seen != 0
+        };
+        if duplicate {
+            return;
+        }
+        *seen |= bit;
+        self.values.push(stop);
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineIfcSelectionRect {
     pub(crate) line_index: usize,
@@ -1606,10 +1648,10 @@ pub(crate) struct InlineFormattingContext {
     // list and the snapshot are computed lazily once and reused.
     glyph_items_cache: std::cell::OnceCell<Vec<InlineIfcGlyphItem>>,
     snapshot_cache: std::cell::OnceCell<InlineIfcTextLayoutSnapshot>,
-    // Visual caret stops run two parley cursor queries per glyph, and the
-    // geometry builder asks for them once per text source. Memoize so the
-    // whole-layout stop set is built once and filtered per source.
+    // Build the indexed cluster geometry and whole-layout stop set once;
+    // the geometry installer then filters the stops per text source.
     caret_stops_cache: std::cell::OnceCell<Vec<InlineIfcCaretStop>>,
+    caret_index_cache: std::cell::OnceCell<caret_index::CaretIndex>,
     // The full text-pass paint payload is memoized once. Inline-root install
     // plans retain their source-filtered payloads, so the context does not
     // also keep a duplicate per-source copy.
@@ -1624,10 +1666,48 @@ pub(crate) struct InlineFormattingContext {
 }
 
 impl InlineFormattingContext {
+    fn can_reflow(&self, key: &InlineIfcCacheKey) -> bool {
+        self.cache_key.content == key.content
+            && self.cache_key.paint == key.paint
+            // Parley encodes wrapping policy in the shaped styles.
+            && self.cache_key.layout.allow_wrap == key.layout.allow_wrap
+    }
+
+    fn reflow(&self, cache_key: InlineIfcCacheKey, options: InlineIfcLayoutOptions) -> Self {
+        let mut layout = self.layout.clone();
+        layout.break_all_lines(
+            options
+                .max_width
+                .map(|width| width + INLINE_IFC_WRAP_EPSILON),
+        );
+        layout.align(
+            to_parley_alignment(options.align),
+            AlignmentOptions::default(),
+        );
+        Self {
+            backing_text: self.backing_text.clone(),
+            layout,
+            source_ranges: self.source_ranges.clone(),
+            style_ranges: self.style_ranges.clone(),
+            inline_boxes: self.inline_boxes.clone(),
+            span_inline_box_ids: self.span_inline_box_ids.clone(),
+            cache_key,
+            // Every derived value contains line positions and must be rebuilt.
+            glyph_items_cache: std::cell::OnceCell::new(),
+            snapshot_cache: std::cell::OnceCell::new(),
+            caret_stops_cache: std::cell::OnceCell::new(),
+            caret_index_cache: std::cell::OnceCell::new(),
+            paint_input_cache: std::cell::OnceCell::new(),
+            source_line_rects_cache: std::cell::OnceCell::new(),
+            source_text_line_rects_cache: std::cell::OnceCell::new(),
+        }
+    }
+
     fn clear_derived_caches(&mut self) {
         self.glyph_items_cache.take();
         self.snapshot_cache.take();
         self.caret_stops_cache.take();
+        self.caret_index_cache.take();
         self.paint_input_cache.take();
         self.source_line_rects_cache.take();
         self.source_text_line_rects_cache.take();
@@ -1665,6 +1745,7 @@ impl InlineFormattingContext {
             glyph_items_cache: std::cell::OnceCell::new(),
             snapshot_cache: std::cell::OnceCell::new(),
             caret_stops_cache: std::cell::OnceCell::new(),
+            caret_index_cache: std::cell::OnceCell::new(),
             paint_input_cache: std::cell::OnceCell::new(),
             source_line_rects_cache: std::cell::OnceCell::new(),
             source_text_line_rects_cache: std::cell::OnceCell::new(),
@@ -1992,9 +2073,10 @@ impl InlineFormattingContext {
         for (line_index, line) in self.layout.lines().enumerate() {
             let metrics = line.metrics();
             let range = line.text_range();
-            let glyphs = glyph_items
+            let first_glyph = glyph_items.partition_point(|glyph| glyph.line_index < line_index);
+            let glyphs = glyph_items[first_glyph..]
                 .iter()
-                .filter(|glyph| glyph.line_index == line_index)
+                .take_while(|glyph| glyph.line_index == line_index)
                 .map(|glyph| InlineIfcTextGlyph {
                     source: glyph.source,
                     cluster_range: glyph.cluster_range.clone(),
@@ -2509,23 +2591,29 @@ impl InlineFormattingContext {
         affinity: InlineIfcCaretAffinity,
     ) -> Option<InlineIfcCaretGeometry> {
         let byte_index = clamp_utf8_boundary(&self.backing_text, byte_index);
-        let cursor = ParleyCursor::from_byte_index(&self.layout, byte_index, affinity.to_parley());
-        let rect = cursor.geometry(&self.layout, 0.0);
-        let line_index = self.line_index_for_cursor_y(rect.y0 as f32)?;
+        let rect = self
+            .caret_index_cache
+            .get_or_init(|| caret_index::CaretIndex::new(&self.layout, self.backing_text.len()))
+            .rect(byte_index, affinity);
+        let line_index = self.line_index_for_cursor_y(rect.y)?;
         let source = self.source_for_caret_byte(byte_index)?;
         let style = self.style_for_caret_byte(byte_index).cloned();
         let (y, height) = self
-            .source_text_line_rects(source)
-            .into_iter()
-            .find(|(index, _)| *index == line_index)
+            .source_text_line_rects_map()
+            .get(&source)
+            .and_then(|rects| {
+                rects.binary_search_by_key(&line_index, |(index, _)| *index)
+                    .ok()
+                    .map(|index| &rects[index])
+            })
             .map(|(_, rect)| (rect.y, rect.height))
-            .unwrap_or((rect.y0 as f32, (rect.y1 - rect.y0).max(1.0) as f32));
+            .unwrap_or((rect.y, rect.height.max(1.0)));
         Some(InlineIfcCaretGeometry {
             source,
             byte_index,
             affinity,
             line_index,
-            x: rect.x0 as f32,
+            x: rect.x,
             y,
             height,
             style,
@@ -2543,7 +2631,7 @@ impl InlineFormattingContext {
     }
 
     fn compute_visual_caret_stops(&self) -> Vec<InlineIfcCaretStop> {
-        let mut stops = Vec::<InlineIfcCaretStop>::new();
+        let mut stops = InlineIfcCaretStopBuffer::default();
         let glyphs = self.glyph_items_ref();
         let inline_box_placements = self
             .inline_box_placements()
@@ -2587,7 +2675,11 @@ impl InlineFormattingContext {
                 false,
             );
 
-            for glyph in glyphs.iter().filter(|glyph| glyph.line_index == line_index) {
+            let first_glyph = glyphs.partition_point(|glyph| glyph.line_index < line_index);
+            for glyph in glyphs[first_glyph..]
+                .iter()
+                .take_while(|glyph| glyph.line_index == line_index)
+            {
                 self.push_visual_caret_stop(
                     &mut stops,
                     line_index,
@@ -2642,28 +2734,32 @@ impl InlineFormattingContext {
             }
         }
         let line_count = line_text_ranges.len();
+        let mut heads = vec![None; line_count];
+        let mut has_tail = vec![false; line_count];
+        for (index, stop) in stops.values.iter().enumerate() {
+            if stop.is_line_head && heads[stop.line_index].is_none() {
+                heads[stop.line_index] = Some(index);
+            }
+            has_tail[stop.line_index] |= stop.is_line_tail;
+        }
         for line_index in 0..line_count {
-            if stops
-                .iter()
-                .any(|stop| stop.line_index == line_index && stop.is_line_tail)
-            {
+            if has_tail[line_index] {
                 continue;
             }
-            if let Some(head) = stops
-                .iter()
-                .find(|stop| stop.line_index == line_index && stop.is_line_head)
-                .cloned()
-            {
-                stops.push(InlineIfcCaretStop {
-                    affinity: InlineIfcCaretAffinity::Upstream,
-                    is_line_head: false,
-                    is_line_tail: true,
-                    is_soft_wrap_boundary: false,
-                    ..head
-                });
+            if let Some(head) = heads[line_index].map(|index| stops.values[index].clone()) {
+                stops.push(
+                    InlineIfcCaretStop {
+                        affinity: InlineIfcCaretAffinity::Upstream,
+                        is_line_head: false,
+                        is_line_tail: true,
+                        is_soft_wrap_boundary: false,
+                        ..head
+                    },
+                    false,
+                );
             }
         }
-        stops
+        stops.values
     }
 
     /// Returns the byte position before whitespace that Parley consumed at
@@ -2805,7 +2901,7 @@ impl InlineFormattingContext {
 
     fn push_visual_caret_stop(
         &self,
-        stops: &mut Vec<InlineIfcCaretStop>,
+        stops: &mut InlineIfcCaretStopBuffer,
         expected_line_index: usize,
         byte_index: usize,
         affinity: InlineIfcCaretAffinity,
@@ -2824,34 +2920,27 @@ impl InlineFormattingContext {
         if !is_soft_wrap_boundary && line_index != expected_line_index {
             return;
         }
-        if stops.iter().any(|stop| {
-            stop.byte_index == caret.byte_index
-                && stop.affinity == affinity
-                && stop.line_index == line_index
-                && stop.is_line_head == is_line_head
-                && stop.is_line_tail == is_line_tail
-                && stop.is_soft_wrap_boundary == is_soft_wrap_boundary
-        }) {
-            return;
-        }
-        stops.push(InlineIfcCaretStop {
-            source: caret.source,
-            byte_index: caret.byte_index,
-            affinity,
-            line_index,
-            x: caret.x,
-            y: caret.y,
-            height: caret.height,
-            style: caret.style,
-            is_line_head,
-            is_line_tail,
-            is_soft_wrap_boundary,
-        });
+        stops.push(
+            InlineIfcCaretStop {
+                source: caret.source,
+                byte_index: caret.byte_index,
+                affinity,
+                line_index,
+                x: caret.x,
+                y: caret.y,
+                height: caret.height,
+                style: caret.style,
+                is_line_head,
+                is_line_tail,
+                is_soft_wrap_boundary,
+            },
+            true,
+        );
     }
 
     fn push_empty_line_visual_caret_stops(
         &self,
-        stops: &mut Vec<InlineIfcCaretStop>,
+        stops: &mut InlineIfcCaretStopBuffer,
         line_index: usize,
         byte_index: usize,
     ) {
@@ -2878,34 +2967,28 @@ impl InlineFormattingContext {
                 metrics.inline_max_coord,
             ),
         ] {
-            if stops.iter().any(|stop| {
-                stop.byte_index == byte_index
-                    && stop.affinity == affinity
-                    && stop.line_index == line_index
-                    && stop.is_line_head == is_line_head
-                    && stop.is_line_tail == is_line_tail
-            }) {
-                continue;
-            }
-            stops.push(InlineIfcCaretStop {
-                source,
-                byte_index,
-                affinity,
-                line_index,
-                x,
-                y: metrics.block_min_coord,
-                height: metrics.line_height.max(1.0),
-                style: style.clone(),
-                is_line_head,
-                is_line_tail,
-                is_soft_wrap_boundary: false,
-            });
+            stops.push(
+                InlineIfcCaretStop {
+                    source,
+                    byte_index,
+                    affinity,
+                    line_index,
+                    x,
+                    y: metrics.block_min_coord,
+                    height: metrics.line_height.max(1.0),
+                    style: style.clone(),
+                    is_line_head,
+                    is_line_tail,
+                    is_soft_wrap_boundary: false,
+                },
+                false,
+            );
         }
     }
 
     fn push_inline_box_visual_caret_stop(
         &self,
-        stops: &mut Vec<InlineIfcCaretStop>,
+        stops: &mut InlineIfcCaretStopBuffer,
         placement: &InlineIfcInlineBoxPlacement,
         is_line_head: bool,
         is_line_tail: bool,
@@ -2922,32 +3005,26 @@ impl InlineFormattingContext {
         } else {
             InlineIfcCaretAffinity::Upstream
         };
-        if stops.iter().any(|stop| {
-            stop.byte_index == mapping.insertion_byte
-                && stop.affinity == affinity
-                && stop.line_index == placement.line_index
-                && stop.is_line_head == is_line_head
-                && stop.is_line_tail == is_line_tail
-        }) {
-            return;
-        }
-        stops.push(InlineIfcCaretStop {
-            source: mapping.source,
-            byte_index: mapping.insertion_byte,
-            affinity,
-            line_index: placement.line_index,
-            x: if is_line_head {
-                placement.x
-            } else {
-                placement.x + placement.width
+        stops.push(
+            InlineIfcCaretStop {
+                source: mapping.source,
+                byte_index: mapping.insertion_byte,
+                affinity,
+                line_index: placement.line_index,
+                x: if is_line_head {
+                    placement.x
+                } else {
+                    placement.x + placement.width
+                },
+                y: placement.y,
+                height: placement.height.max(1.0),
+                style: self.style_for_caret_byte(mapping.insertion_byte).cloned(),
+                is_line_head,
+                is_line_tail,
+                is_soft_wrap_boundary: false,
             },
-            y: placement.y,
-            height: placement.height.max(1.0),
-            style: self.style_for_caret_byte(mapping.insertion_byte).cloned(),
-            is_line_head,
-            is_line_tail,
-            is_soft_wrap_boundary: false,
-        });
+            false,
+        );
     }
 
     fn source_for_caret_byte(&self, byte_index: usize) -> Option<InlineIfcSourceId> {
@@ -2972,15 +3049,24 @@ impl InlineFormattingContext {
     }
 
     fn line_index_for_cursor_y(&self, y: f32) -> Option<usize> {
-        self.layout
-            .lines()
-            .enumerate()
-            .find_map(|(line_index, line)| {
-                let metrics = line.metrics();
-                let y0 = metrics.block_min_coord;
-                let y1 = metrics.block_min_coord + metrics.line_height;
-                (y0 <= y && y <= y1).then_some(line_index)
-            })
+        // Line boxes are stacked vertically. Find the first whose bottom
+        // reaches y, preserving the previous-line choice at a shared edge.
+        let mut low = 0;
+        let mut high = self.layout.len();
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let line = self.layout.get(mid)?;
+            let metrics = line.metrics();
+            if metrics.block_min_coord + metrics.line_height < y {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        let line = self.layout.get(low)?;
+        let metrics = line.metrics();
+        (metrics.block_min_coord <= y && y <= metrics.block_min_coord + metrics.line_height)
+            .then_some(low)
     }
 }
 

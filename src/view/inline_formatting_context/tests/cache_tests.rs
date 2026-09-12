@@ -53,7 +53,9 @@ fn cache_drops_derived_data_from_cold_entries() {
     let first_shape_key = InlineIfcShapeCacheKey::from_cache_key(&first_key);
     let first = cache.entries.get(&first_shape_key).expect("first shape");
     let _ = first.context.glyph_items_ref();
+    let _ = first.context.caret_geometry_for_byte(1, InlineIfcCaretAffinity::Downstream);
     assert!(first.context.glyph_items_cache.get().is_some());
+    assert!(first.context.caret_index_cache.get().is_some());
 
     let _ = cache.update_with_options(
         plain_text_input("cold derived data"),
@@ -65,6 +67,7 @@ fn cache_drops_derived_data_from_cold_entries() {
         .get(&first_shape_key)
         .expect("retained cold shape");
     assert!(first.context.glyph_items_cache.get().is_none());
+    assert!(first.context.caret_index_cache.get().is_none());
 }
 
 #[test]
