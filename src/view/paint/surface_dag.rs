@@ -1417,7 +1417,7 @@ fn local_clip_chain(
 fn walk_artifact_surface_path(
     state: PropertyTreeState,
     owner_path: &[NodeKey],
-    candidates: &[ArtifactSurfaceCandidate],
+    candidates: &FxHashMap<NodeKey, Vec<ArtifactSurfaceCandidate>>,
     snapshots: &PropertySnapshotGraph,
     artifact_clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
     mode: ArtifactSurfaceWalkMode,
@@ -1442,11 +1442,10 @@ fn walk_artifact_surface_path(
     let mut local_clips = Vec::new();
 
     for path_owner in owner_path {
-        for candidate in candidates
-            .iter()
-            .copied()
-            .filter(|candidate| candidate.target() == *path_owner)
-        {
+        // Indexing retains the original order within each owner. The outer
+        // path still supplies root-to-leaf order, without rescanning every
+        // unrelated candidate for every ancestor of every chunk.
+        for candidate in candidates.get(path_owner).into_iter().flatten().copied() {
             let kind = candidate.kind();
             if matches!(kind,SurfaceDagNodeKind::ScrollContent {scroll,..} if excluded_scrolls.contains(&scroll))
             {
@@ -1575,17 +1574,90 @@ fn consumed_dimensions_match(
 /// Owners without a surface candidate emit no edge and carry no terminal
 /// closure obligation. Their inline property handling remains a dependency on
 /// the existing artifact compiler; this function does not establish it.
+/// One immutable artifact binds the graph proofs used by every planning phase.
+/// Rebuilding the same owner/spatial graphs at each phase adds no validation.
+pub(super) struct ArtifactSurfaceInputs<'a> {
+    artifact: &'a PaintArtifact,
+    snapshots: PropertySnapshotGraph,
+    owners: ArtifactOwnerGraph,
+    cursors: Vec<ArtifactCursor>,
+    scroll_scopes: ArtifactScrollMaskScopes,
+    candidates: Vec<ArtifactSurfaceCandidate>,
+    candidates_by_owner: FxHashMap<NodeKey, Vec<ArtifactSurfaceCandidate>>,
+}
+impl<'a> ArtifactSurfaceInputs<'a> {
+    pub(super) fn new(
+        artifact: &'a PaintArtifact,
+        policy: LayerizationPolicy,
+    ) -> Result<Self, SurfaceDagError> {
+        let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
+        let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
+        let scroll_scopes = ArtifactScrollMaskScopes::from_artifact(artifact)?;
+        let cursors = artifact_cursors(artifact)?;
+        let candidates = derive_artifact_surface_candidates_from_validated(
+            artifact, policy, &snapshots, &owners, &cursors,
+        )?;
+        let mut candidates_by_owner = FxHashMap::<_, Vec<_>>::default();
+        for candidate in &candidates {
+            candidates_by_owner
+                .entry(candidate.target())
+                .or_default()
+                .push(*candidate);
+        }
+        Ok(Self {
+            artifact,
+            snapshots,
+            owners,
+            cursors,
+            scroll_scopes,
+            candidates,
+            candidates_by_owner,
+        })
+    }
+    pub(super) fn requests(&self) -> Result<Vec<ArtifactTransitionRequest>, SurfaceDagError> {
+        derive_surface_requests_from_inputs(self)
+    }
+    pub(super) fn classify(
+        &self,
+        requests: &[ArtifactTransitionRequest],
+    ) -> Result<Vec<ClassifiedTransitionEvent>, TransitionError> {
+        super::property_transition::classify_prevalidated_artifact_transitions(
+            requests,
+            &self.snapshots,
+            &self.owners,
+            &self.cursors,
+        )
+    }
+    pub(super) fn reconstruct(
+        &self,
+        events: &[ClassifiedTransitionEvent],
+    ) -> Result<SurfaceDag, SurfaceDagError> {
+        reconstruct_surface_from_inputs(self, events)
+    }
+    pub(super) fn coverage(
+        &self,
+        dag: &SurfaceDag,
+    ) -> Result<ArtifactSurfaceCoverageForest, SurfaceDagError> {
+        derive_surface_coverage_from_inputs(self, dag)
+    }
+}
+
 pub(crate) fn derive_artifact_surface_transition_requests(
     artifact: &PaintArtifact,
     policy: LayerizationPolicy,
 ) -> Result<Vec<ArtifactTransitionRequest>, SurfaceDagError> {
-    let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
-    let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
-    let scroll_scopes = ArtifactScrollMaskScopes::from_artifact(artifact)?;
-    let cursors = artifact_cursors(artifact)?;
-    let candidates = derive_artifact_surface_candidates_from_validated(
-        artifact, policy, &snapshots, &owners, &cursors,
-    )?;
+    let inputs = ArtifactSurfaceInputs::new(artifact, policy)?;
+    derive_surface_requests_from_inputs(&inputs)
+}
+fn derive_surface_requests_from_inputs(
+    inputs: &ArtifactSurfaceInputs<'_>,
+) -> Result<Vec<ArtifactTransitionRequest>, SurfaceDagError> {
+    let artifact = inputs.artifact;
+    let snapshots = &inputs.snapshots;
+    let owners = &inputs.owners;
+    let cursors = &inputs.cursors;
+    let scroll_scopes = &inputs.scroll_scopes;
+    let candidates = &inputs.candidates;
     let artifact_clips = artifact
         .clip_nodes
         .iter()
@@ -1603,7 +1675,7 @@ pub(crate) fn derive_artifact_surface_transition_requests(
     let mut observed = FxHashMap::<SurfaceDagNodeKind, Vec<DerivedArtifactTransition>>::default();
 
     let mut witness_owners = Vec::new();
-    for candidate in &candidates {
+    for candidate in candidates.iter() {
         if witness_owners.last().copied() != Some(candidate.target()) {
             witness_owners.push(candidate.target());
         }
@@ -1620,7 +1692,7 @@ pub(crate) fn derive_artifact_surface_transition_requests(
         let walk = walk_artifact_surface_path(
             endpoint.descendants,
             &owner_path,
-            &candidates,
+            &inputs.candidates_by_owner,
             &snapshots,
             &artifact_clips,
             ArtifactSurfaceWalkMode::BoundaryTransition,
@@ -1701,7 +1773,7 @@ pub(crate) fn derive_artifact_surface_transition_requests(
     }
 
     let mut derived = FxHashMap::<SurfaceDagNodeKind, DerivedArtifactTransition>::default();
-    for candidate in &candidates {
+    for candidate in candidates.iter() {
         let kind = candidate.kind();
         let observations = observed
             .get(&kind)
@@ -1866,13 +1938,18 @@ pub(crate) fn derive_artifact_surface_coverage_forest(
     surface_dag: &SurfaceDag,
     policy: LayerizationPolicy,
 ) -> Result<ArtifactSurfaceCoverageForest, SurfaceDagError> {
-    let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
-    let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
-    let scroll_scopes = ArtifactScrollMaskScopes::from_artifact(artifact)?;
-    let cursors = artifact_cursors(artifact)?;
-    let candidates = derive_artifact_surface_candidates_from_validated(
-        artifact, policy, &snapshots, &owners, &cursors,
-    )?;
+    let inputs = ArtifactSurfaceInputs::new(artifact, policy)?;
+    derive_surface_coverage_from_inputs(&inputs, surface_dag)
+}
+fn derive_surface_coverage_from_inputs(
+    inputs: &ArtifactSurfaceInputs<'_>,
+    surface_dag: &SurfaceDag,
+) -> Result<ArtifactSurfaceCoverageForest, SurfaceDagError> {
+    let artifact = inputs.artifact;
+    let snapshots = &inputs.snapshots;
+    let owners = &inputs.owners;
+    let scroll_scopes = &inputs.scroll_scopes;
+    let candidates = &inputs.candidates;
     if candidates.len() != surface_dag.nodes.len() {
         return Err(SurfaceDagError::TransitionCount {
             candidates: candidates.len(),
@@ -1944,7 +2021,7 @@ pub(crate) fn derive_artifact_surface_coverage_forest(
         let walk = walk_artifact_surface_path(
             chunk.properties,
             &owner_path,
-            &candidates,
+            &inputs.candidates_by_owner,
             &snapshots,
             &artifact_clips,
             ArtifactSurfaceWalkMode::ChunkCoverage,
@@ -2166,13 +2243,18 @@ pub(crate) fn reconstruct_surface_dag(
     events: &[ClassifiedTransitionEvent],
     policy: LayerizationPolicy,
 ) -> Result<SurfaceDag, SurfaceDagError> {
-    let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
-    let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
-    let scroll_scopes = ArtifactScrollMaskScopes::from_artifact(artifact)?;
-    let cursors = artifact_cursors(artifact)?;
-    let candidates = derive_artifact_surface_candidates_from_validated(
-        artifact, policy, &snapshots, &owners, &cursors,
-    )?;
+    let inputs = ArtifactSurfaceInputs::new(artifact, policy)?;
+    reconstruct_surface_from_inputs(&inputs, events)
+}
+fn reconstruct_surface_from_inputs(
+    inputs: &ArtifactSurfaceInputs<'_>,
+    events: &[ClassifiedTransitionEvent],
+) -> Result<SurfaceDag, SurfaceDagError> {
+    let artifact = inputs.artifact;
+    let snapshots = &inputs.snapshots;
+    let owners = &inputs.owners;
+    let scroll_scopes = &inputs.scroll_scopes;
+    let candidates = &inputs.candidates;
     let roots = derive_surface_dag_scene_roots(&owners)?;
     if candidates.len() != events.len() {
         return Err(SurfaceDagError::TransitionCount {

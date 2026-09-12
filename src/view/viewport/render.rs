@@ -966,6 +966,7 @@ fn prepare_recorded_artifact_candidate(
     outcome: crate::view::paint::FrameArtifactRecordOutcome,
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
     requirement: RecordedArtifactSurfaceRequirement,
+    planning_cache: Option<&mut crate::view::paint::PlanningCache>,
 ) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
     match outcome {
         crate::view::paint::FrameArtifactRecordOutcome::Artifact {
@@ -976,10 +977,19 @@ fn prepare_recorded_artifact_candidate(
                 crate::view::paint::PaintArtifactTarget::CurrentTarget => {
                     #[cfg(test)]
                     attempts::record("raster-plan");
-                    let plan = crate::view::paint::prepare_artifact_surface_raster_plan(
-                        artifact,
-                        raster_context,
-                    )
+                    let plan = match planning_cache {
+                        Some(cache) => {
+                            crate::view::paint::prepare_artifact_surface_raster_plan_cached(
+                                artifact,
+                                raster_context,
+                                cache,
+                            )
+                        }
+                        None => crate::view::paint::prepare_artifact_surface_raster_plan(
+                            artifact,
+                            raster_context,
+                        ),
+                    }
                     .map_err(RecordedArtifactSurfacePrepareError::RasterPlan)
                     .map_err(RecordedArtifactCandidateRejection::Prepare)?;
                     let plan = match requirement {
@@ -1075,18 +1085,30 @@ fn record_auto_detached_surface_candidate(
     paint_generations: &crate::view::compositor::PaintGenerationTracker,
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
     requirement: RecordedArtifactSurfaceRequirement,
+    recording_cache: Option<&mut crate::view::paint::RecordingCache>,
+    planning_cache: Option<&mut crate::view::paint::PlanningCache>,
 ) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
     #[cfg(test)]
     attempts::record("generic-record");
-    let outcome = crate::view::paint::record_surface_dag_frame_artifact(
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        crate::view::paint::RendererMode::Auto,
-    )
+    let outcome = if let Some(cache) = recording_cache {
+        crate::view::paint::record_surface_dag_frame_artifact_cached(
+            arena,
+            roots,
+            property_trees,
+            paint_generations,
+            cache,
+        )
+    } else {
+        crate::view::paint::record_surface_dag_frame_artifact(
+            arena,
+            roots,
+            property_trees,
+            paint_generations,
+            crate::view::paint::RendererMode::Auto,
+        )
+    }
     .expect("automatic production selection never forces artifact recording");
-    prepare_recorded_artifact_candidate(outcome, raster_context, requirement)
+    prepare_recorded_artifact_candidate(outcome, raster_context, requirement, planning_cache)
 }
 
 fn select_retained_auto_frame(
@@ -1098,6 +1120,8 @@ fn select_retained_auto_frame(
     artifact_surface_max_texture_dimension_2d: u32,
     artifact_surface_max_texture_bytes: u64,
     capture_trace: bool,
+    recording_cache: Option<&mut crate::view::paint::RecordingCache>,
+    planning_cache: Option<&mut crate::view::paint::PlanningCache>,
 ) -> RetainedAutoDecision {
     let mut trace = AutoAuthorityTrace::new(capture_trace);
     // Complete recording and the common plan/seal decide whether this frame
@@ -1115,6 +1139,8 @@ fn select_retained_auto_frame(
             artifact_surface_max_texture_bytes,
         ),
         RecordedArtifactSurfaceRequirement::General,
+        recording_cache,
+        planning_cache,
     ) {
         Ok(candidate) => return RetainedAutoDecision::Artifact { candidate, trace },
         Err(RecordedArtifactCandidateRejection::Eligibility(eligibility)) => {
@@ -1166,6 +1192,8 @@ fn select_retained_auto_authority_with_artifact_budget_for_test(
         wgpu::Limits::default().max_texture_dimension_2d,
         artifact_surface_max_texture_bytes,
         capture_trace,
+        None,
+        None,
     )
 }
 
@@ -2244,6 +2272,7 @@ impl Viewport {
         timings.sync_properties_ms = phase_clock.checkpoint_ms();
 
         // --- Build frame graph ---
+        crate::view::paint::work_profile::begin();
         self.clear_debug_overlay_geometry();
         let mut graph = FrameGraph::new();
         let mut ctx = crate::view::base_component::UiBuildContext::new(
@@ -2281,6 +2310,8 @@ impl Viewport {
                     artifact_surface_max_texture_dimension_2d,
                     ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
                     capture_paint_authority_telemetry,
+                    Some(&mut self.compositor.recording_cache),
+                    Some(&mut self.compositor.planning_cache),
                 ))
             })
         };
@@ -2430,6 +2461,8 @@ impl Viewport {
             }
         }
         if build_whole_frame_legacy {
+            self.compositor.recording_cache.finish(false);
+            self.compositor.planning_cache.finish(false);
             for &root_key in &root_keys_for_build {
                 let child_ctx = crate::view::base_component::UiBuildContext::from_parts(
                     ctx.viewport(),
@@ -2476,7 +2509,28 @@ impl Viewport {
                 )
                 .expect("surface present sink should register");
         }
+        crate::view::paint::work_profile::count(
+            "record_replays",
+            self.compositor.recording_cache.hits,
+        );
+        crate::view::paint::work_profile::count(
+            "record_misses",
+            self.compositor.recording_cache.misses,
+        );
+        crate::view::paint::work_profile::count(
+            "geometry_replays",
+            self.compositor.planning_cache.geometry_hits,
+        );
+        crate::view::paint::work_profile::count(
+            "localized_replays",
+            self.compositor.planning_cache.localized_hits,
+        );
+        crate::view::paint::work_profile::count(
+            "localized_misses",
+            self.compositor.planning_cache.localized_misses,
+        );
         timings.build_graph_ms = phase_clock.checkpoint_ms();
+        crate::view::paint::work_profile::finish(frame_number as u64, timings.build_graph_ms);
 
         // --- Compile ---
         // Take the cache out (moves ownership) so we can pass self mutably to compile.
@@ -2594,6 +2648,21 @@ impl Viewport {
         timings.end_frame_submit_ms = end_frame_profile.submit_ms;
         timings.end_frame_present_ms = end_frame_profile.present_ms;
         timings.total_ms = phase_clock.total_ms();
+        #[cfg(any(test, feature = "renderer-test-support"))]
+        {
+            self.frame.last_cpu_phases = [
+                timings.total_ms,
+                timings.begin_frame_ms,
+                timings.layout_total_ms,
+                timings.prepare_paint_ms,
+                timings.sync_properties_ms,
+                timings.build_graph_ms,
+                timings.compile_ms,
+                timings.execute_ms,
+                timings.finish_render_ms,
+                timings.end_frame_ms,
+            ];
+        }
 
         #[cfg(test)]
         frame_timing_tests::assert_frame_accounting(&timings);

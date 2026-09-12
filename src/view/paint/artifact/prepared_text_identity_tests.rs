@@ -97,7 +97,7 @@ fn text_stream_validation_and_identity_recheck_preserve_field_rejections() {
     assert!(op.has_canonical_identity());
     for &(label, mutate) in mutations {
         let mut broken = op.clone();
-        mutate(&mut broken.params);
+        mutate(Arc::make_mut(&mut broken.params));
         assert!(!broken.has_canonical_identity(), "{label}");
         assert!(
             !PreparedTextOp::validate_unclipped_glyph_stream(
@@ -146,13 +146,27 @@ fn text_identity_recheck_detects_valid_payload_changes_and_lengths() {
     let op = PreparedTextOp::new(params()).unwrap();
     for &(label, mutate) in mutations {
         let mut changed = op.clone();
-        mutate(&mut changed.params);
+        mutate(Arc::make_mut(&mut changed.params));
         assert!(!changed.has_canonical_identity(), "{label}");
         let rebuilt = PreparedTextOp::new(changed.params).expect(label);
         assert!(rebuilt.has_canonical_identity(), "{label}");
     }
     let mut zero_scissor = op.clone();
-    zero_scissor.params.scissor_rect = Some([0, 0, 0, 20]);
+    Arc::make_mut(&mut zero_scissor.params).scissor_rect = Some([0, 0, 0, 20]);
     assert!(!zero_scissor.has_canonical_identity());
     assert!(PreparedTextOp::new(zero_scissor.params).is_none());
+}
+
+#[test]
+fn immutable_text_replay_shares_input_but_changed_input_must_revalidate() {
+    let source = PreparedTextOp::new(params()).unwrap();
+    let mut replay = source.clone();
+    assert!(Arc::ptr_eq(&source.params, &replay.params));
+    assert!(replay.has_canonical_identity());
+    Arc::make_mut(&mut replay.params).staging_input.glyphs[0]
+        .paint
+        .opacity = 0.125;
+    assert!(!Arc::ptr_eq(&source.params, &replay.params));
+    assert!(!replay.has_canonical_identity());
+    assert!(source.has_canonical_identity());
 }

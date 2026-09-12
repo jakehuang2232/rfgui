@@ -638,7 +638,7 @@ fn inline_ifc_decoration_localization_translates_fill_and_border_and_rebuilds_id
         .expect("canonical inline IFC decoration");
     let delta = [3.5, -2.25];
     let PaintOp::PreparedInlineIfcDecoration(localized) =
-        localize_artifact_surface_op(&PaintOp::PreparedInlineIfcDecoration(op), delta)
+        localize_artifact_surface_op(&PaintOp::inline_decoration(op), delta)
             .expect("inline IFC localization")
     else {
         unreachable!()
@@ -713,7 +713,7 @@ fn scrollbar_overlay_localization_translates_both_axes_and_rebuilds_identity() {
     let original_secondary_thumb_position = original_secondary_thumb.params.position;
     let delta = [-6.5, 4.25];
     let PaintOp::PreparedScrollbarOverlay(localized) =
-        localize_artifact_surface_op(&PaintOp::PreparedScrollbarOverlay(original), delta)
+        localize_artifact_surface_op(&PaintOp::scrollbar_overlay(original), delta)
             .expect("scrollbar overlay localization")
     else {
         unreachable!()

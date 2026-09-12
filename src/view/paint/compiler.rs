@@ -28,14 +28,11 @@ use super::surface_dag::{
     LayerizationPolicy, SurfaceDag, SurfaceDagClipClosureProjection, SurfaceDagError,
     SurfaceDagExecutionNodeId, SurfaceDagExecutionOrder, SurfaceDagExecutionTargetId,
     SurfaceDagNodeId, SurfaceDagNodeKind, SurfaceMaterializationDecision,
-    derive_artifact_surface_coverage_forest, derive_artifact_surface_transition_requests,
-    reconstruct_surface_dag,
 };
 use super::{
     PaintArtifact, PaintArtifactTarget, PaintChunkRole, PaintContentRevision, PaintOp,
     PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope, PreparedImageIdentity,
     PreparedShadowOp, PreparedSvgIdentity, PreparedTextOp, TransitionError,
-    classify_artifact_transition_sequence,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,11 +75,13 @@ impl ArtifactSurfaceResolvedClip {
 }
 
 mod artifact_surface_executor;
+mod planning_cache;
 #[cfg(any(test, feature = "renderer-test-support"))]
 pub(crate) use artifact_surface_executor::take_last_production_actions_for_test;
 pub(crate) use artifact_surface_executor::{
     ArtifactSurfaceExecutionError, emit_prepared_artifact_surface_frame_from_pool,
 };
+pub(crate) use planning_cache::PlanningCache;
 #[cfg(test)]
 mod tests;
 
@@ -487,7 +486,7 @@ impl From<SurfaceDagError> for ArtifactSurfaceRasterPlanError {
 
 /// Pure artifact-stage program. This is the only input accepted by the later
 /// graph-inert raster descriptor stage; it contains no viewport facts.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ValidatedArtifactSurfaceDagProgram {
     artifact: PaintArtifact,
     resolved_clips: Vec<ResolvedClip>,
@@ -544,7 +543,7 @@ pub(crate) struct PreparedArtifactSurfaceRasterChunk {
     localized_bounds_bits: [u32; 4],
     localized_state: PropertyTreeState,
     localized_payload: PaintPayloadIdentity,
-    localized_ops: Vec<PaintOp>,
+    localized_ops: std::sync::Arc<[PaintOp]>,
     /// Embedded rather than index-aligned beside the chunk, so preparation
     /// cannot seal a clip schedule for a different chunk.
     clip_schedule: ArtifactSurfaceChunkClipSchedule,
@@ -1104,7 +1103,9 @@ pub(crate) enum SingleTargetSurfaceDagPrepareError {
 
 fn validate_artifact_surface_dag_program(
     artifact: PaintArtifact,
+    mut cache: Option<&mut PlanningCache>,
 ) -> Result<ValidatedArtifactSurfaceDagProgram, SingleTargetSurfaceDagPrepareError> {
+    let _profile = crate::view::paint::work_profile::scope("validate_artifact_surface_dag_program");
     let Some(validated) =
         validate_artifact_store_with_policy(&artifact, ArtifactStoreValidationPolicy::SurfaceDag)
     else {
@@ -1116,26 +1117,33 @@ fn validate_artifact_surface_dag_program(
         ));
     }
 
-    let requests = derive_artifact_surface_transition_requests(
+    if let Some(mut cached) = cache
+        .as_deref_mut()
+        .and_then(|cache| cache.geometry(&artifact))
+    {
+        cached.artifact = artifact;
+        cached.resolved_clips = validated.resolved_clips;
+        return Ok(cached);
+    }
+
+    let inputs = super::surface_dag::ArtifactSurfaceInputs::new(
         &artifact,
         LayerizationPolicy::ResolveMaterializedTargets,
     )
     .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-    let events = classify_artifact_transition_sequence(&artifact, &requests)
+    let requests = inputs
+        .requests()
+        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+    let events = inputs
+        .classify(&requests)
         .map_err(SurfaceDagError::Transition)
         .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-    let surface_dag = reconstruct_surface_dag(
-        &artifact,
-        &events,
-        LayerizationPolicy::ResolveMaterializedTargets,
-    )
-    .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-    let coverage = derive_artifact_surface_coverage_forest(
-        &artifact,
-        &surface_dag,
-        LayerizationPolicy::ResolveMaterializedTargets,
-    )
-    .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+    let surface_dag = inputs
+        .reconstruct(&events)
+        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+    let coverage = inputs
+        .coverage(&surface_dag)
+        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
     let execution_order = surface_dag
         .derive_materialized_execution_order(
             &coverage,
@@ -1147,14 +1155,18 @@ fn validate_artifact_surface_dag_program(
         .map_err(SurfaceDagError::Transition)
         .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
 
-    Ok(ValidatedArtifactSurfaceDagProgram {
+    let program = ValidatedArtifactSurfaceDagProgram {
         artifact,
         resolved_clips: validated.resolved_clips,
         surface_dag,
         execution_order,
         coverage,
         host_placement,
-    })
+    };
+    if let Some(cache) = cache {
+        cache.remember_geometry(&program);
+    }
+    Ok(program)
 }
 
 fn translated_chunk_bounds_bits(
@@ -1201,7 +1213,7 @@ fn append_bounds(accumulated: &mut Option<[u32; 4]>, next: [u32; 4]) -> Option<(
 /// Artifact owner placement sealed before raster preparation. The raster plan
 /// applies it only to paint and composite edges landing in the scene root;
 /// detached raster content remains host-independent.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ArtifactSurfaceHostPlacementProjection {
     owners: Vec<ArtifactSurfaceOwnerPlacement>,
 }
@@ -1853,6 +1865,7 @@ fn prepare_artifact_surface_span(
     placement: ArtifactSurfaceSpanPlacement<'_>,
     composite_effect: Option<EffectNodeSnapshot>,
     incoming_scissor: Option<[u32; 4]>,
+    mut cache: Option<&mut PlanningCache>,
 ) -> Result<PreparedArtifactSurfaceRasterSpan, ArtifactSurfaceRasterPlanError> {
     let chunk_range = span.chunk_range();
     let op_range = span.op_range();
@@ -1891,48 +1904,63 @@ fn prepare_artifact_surface_span(
                     && chunk.owner == effect.owner
             })
             .map(|effect| effect.opacity.to_bits());
-        let localized_ops = ops
-            .iter()
-            .enumerate()
-            .map(|(op_offset, op)| {
-                let op_index = chunk.op_range.start + op_offset;
-                let localized = localize_artifact_surface_op(op, delta).map_err(|reason| {
-                    ArtifactSurfaceRasterPlanError::Localization {
-                        target,
-                        chunk_index,
-                        op_index,
-                        reason,
+        let cached = cache
+            .as_deref_mut()
+            .and_then(|cache| cache.localized(chunk, delta, neutralized_opacity_bits));
+        let (localized_ops, localized_payload) = if let Some(cached) = cached {
+            cached
+        } else {
+            let localized_ops = ops
+                .iter()
+                .enumerate()
+                .map(|(op_offset, op)| {
+                    let op_index = chunk.op_range.start + op_offset;
+                    let localized = localize_artifact_surface_op(op, delta).map_err(|reason| {
+                        ArtifactSurfaceRasterPlanError::Localization {
+                            target,
+                            chunk_index,
+                            op_index,
+                            reason,
+                        }
+                    })?;
+                    let raster = match neutralized_opacity_bits {
+                        Some(opacity_bits) => {
+                            neutralize_artifact_surface_opacity(localized, opacity_bits)
+                        }
+                        None => Ok(localized),
                     }
+                    .map_err(|reason| {
+                        ArtifactSurfaceRasterPlanError::Localization {
+                            target,
+                            chunk_index,
+                            op_index,
+                            reason,
+                        }
+                    })?;
+                    // The immutable result comes directly from the checked localizer;
+                    // re-running that same function is not an independent proof.
+                    Ok::<_, ArtifactSurfaceRasterPlanError>(raster)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let payload = chunk
+                .payload_identity
+                .rebuild_from_localized_ops(&localized_ops)
+                .ok_or(ArtifactSurfaceRasterPlanError::LocalizedPayload {
+                    target,
+                    chunk_index,
                 })?;
-                let raster = match neutralized_opacity_bits {
-                    Some(opacity_bits) => {
-                        neutralize_artifact_surface_opacity(localized, opacity_bits)
-                    }
-                    None => Ok(localized),
-                }
-                .map_err(|reason| {
-                    ArtifactSurfaceRasterPlanError::Localization {
-                        target,
-                        chunk_index,
-                        op_index,
-                        reason,
-                    }
-                })?;
-                if !artifact_surface_op_corresponds_to_source(
-                    op,
-                    &raster,
+            let localized_ops: std::sync::Arc<[PaintOp]> = localized_ops.into();
+            if let Some(cache) = cache.as_deref_mut() {
+                cache.remember_localized(
+                    chunk,
                     delta,
                     neutralized_opacity_bits,
-                ) {
-                    return Err(ArtifactSurfaceRasterPlanError::SourceCorrespondence {
-                        target,
-                        chunk_index,
-                        op_index,
-                    });
-                }
-                Ok(raster)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+                    &localized_ops,
+                    &payload,
+                );
+            }
+            (localized_ops, payload)
+        };
         let (resolved_clip, clip_chain) =
             resolve_artifact_surface_clip(localized_state.clip, &clip_map).ok_or(
                 ArtifactSurfaceRasterPlanError::InvalidResolvedClip {
@@ -1954,13 +1982,6 @@ fn prepare_artifact_surface_span(
                     .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?,
             )
             .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?;
-        let localized_payload = chunk
-            .payload_identity
-            .rebuild_from_localized_ops(&localized_ops)
-            .ok_or(ArtifactSurfaceRasterPlanError::LocalizedPayload {
-                target,
-                chunk_index,
-            })?;
         let localized_bounds_bits = translated_chunk_bounds_bits(chunk.bounds, delta).ok_or(
             ArtifactSurfaceRasterPlanError::InvalidChunkBounds {
                 target,
@@ -2374,6 +2395,7 @@ fn fold_materialized_composite_boundaries(
 fn prepare_artifact_surface_raster_plan_from_program(
     program: ValidatedArtifactSurfaceDagProgram,
     context: ArtifactSurfaceRasterContext,
+    mut cache: Option<&mut PlanningCache>,
 ) -> Result<PreparedArtifactSurfaceRasterPlan, ArtifactSurfaceRasterPlanError> {
     let host_placement = program
         .host_placement
@@ -2636,6 +2658,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                                 | SurfaceDagNodeKind::ScrollContent { .. } => None,
                             },
                             None,
+                            cache.as_deref_mut(),
                         )?,
                     ));
                 }
@@ -2800,6 +2823,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                         ArtifactSurfaceSpanPlacement::SceneRoot(&host_placement),
                         None,
                         context.incoming_scissor,
+                        cache.as_deref_mut(),
                     )?),
                 ),
                 ArtifactSurfaceCoverageStep::NestedSurface(child_source) => {
@@ -2854,9 +2878,26 @@ pub(crate) fn prepare_artifact_surface_raster_plan(
     artifact: PaintArtifact,
     context: ArtifactSurfaceRasterContext,
 ) -> Result<PreparedArtifactSurfaceRasterPlan, ArtifactSurfaceRasterPlanError> {
-    let program = validate_artifact_surface_dag_program(artifact)
+    let _profile = crate::view::paint::work_profile::scope("prepare_artifact_surface_raster_plan");
+    let program = validate_artifact_surface_dag_program(artifact, None)
         .map_err(ArtifactSurfaceRasterPlanError::ArtifactProgram)?;
-    prepare_artifact_surface_raster_plan_from_program(program, context)
+    prepare_artifact_surface_raster_plan_from_program(program, context, None)
+}
+
+pub(crate) fn prepare_artifact_surface_raster_plan_cached(
+    artifact: PaintArtifact,
+    context: ArtifactSurfaceRasterContext,
+    cache: &mut PlanningCache,
+) -> Result<PreparedArtifactSurfaceRasterPlan, ArtifactSurfaceRasterPlanError> {
+    let _profile = crate::view::paint::work_profile::scope("prepare_artifact_surface_raster_plan");
+    cache.begin();
+    let result = validate_artifact_surface_dag_program(artifact, Some(cache))
+        .map_err(ArtifactSurfaceRasterPlanError::ArtifactProgram)
+        .and_then(|program| {
+            prepare_artifact_surface_raster_plan_from_program(program, context, Some(cache))
+        });
+    cache.finish(result.is_ok());
+    result
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2903,7 +2944,10 @@ impl SealedArtifactSurfaceResidentEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SealedArtifactSurfaceResidentSet {
-    ordered_entries: Vec<SealedArtifactSurfaceResidentEntry>,
+    ordered_entries: std::sync::Arc<Vec<SealedArtifactSurfaceResidentEntry>>,
+    // Private immutable allocation validated by the sealer. A changed allocation
+    // (including test corruption via make_mut) must pass the full validator again.
+    validated_entries: std::sync::Arc<Vec<SealedArtifactSurfaceResidentEntry>>,
 }
 
 impl SealedArtifactSurfaceResidentSet {
@@ -2920,11 +2964,13 @@ impl SealedArtifactSurfaceResidentSet {
     }
 
     pub(crate) fn into_ordered_entries(self) -> Vec<SealedArtifactSurfaceResidentEntry> {
-        self.ordered_entries
+        drop(self.validated_entries);
+        std::sync::Arc::unwrap_or_clone(self.ordered_entries)
     }
 
     pub(crate) fn is_canonical(&self) -> bool {
-        artifact_surface_resident_set_is_canonical(&self.ordered_entries)
+        std::sync::Arc::ptr_eq(&self.ordered_entries, &self.validated_entries)
+            || artifact_surface_resident_set_is_canonical(&self.ordered_entries)
     }
 
     #[cfg(test)]
@@ -2969,7 +3015,7 @@ impl SealedArtifactSurfaceResidentSet {
 
     #[cfg(test)]
     pub(crate) fn remove_first_span_boundary_owner_for_test(&mut self) -> bool {
-        for entry in &mut self.ordered_entries {
+        for entry in std::sync::Arc::make_mut(&mut self.ordered_entries) {
             let stamp = &mut entry.stamp;
             let Some(program) = stamp.artifact_surface_program.as_mut() else {
                 continue;
@@ -2990,7 +3036,7 @@ impl SealedArtifactSurfaceResidentSet {
 
     #[cfg(test)]
     pub(crate) fn zero_first_span_topology_revision_for_test(&mut self) -> bool {
-        for entry in &mut self.ordered_entries {
+        for entry in std::sync::Arc::make_mut(&mut self.ordered_entries) {
             let stamp = &mut entry.stamp;
             let Some(program) = stamp.artifact_surface_program.as_mut() else {
                 continue;
@@ -3011,7 +3057,7 @@ impl SealedArtifactSurfaceResidentSet {
 
     #[cfg(test)]
     pub(crate) fn redirect_first_nested_surface_to_parent_for_test(&mut self) -> bool {
-        for entry in &mut self.ordered_entries {
+        for entry in std::sync::Arc::make_mut(&mut self.ordered_entries) {
             let stamp = &mut entry.stamp;
             let Some(program) = stamp.artifact_surface_program.as_mut() else {
                 continue;
@@ -3029,7 +3075,7 @@ impl SealedArtifactSurfaceResidentSet {
 
     #[cfg(test)]
     pub(crate) fn force_first_resolved_clip_empty_without_cursor_for_test(&mut self) -> bool {
-        for entry in &mut self.ordered_entries {
+        for entry in std::sync::Arc::make_mut(&mut self.ordered_entries) {
             let Some(program) = entry.stamp.artifact_surface_program.as_mut() else {
                 continue;
             };
@@ -3054,7 +3100,7 @@ impl SealedArtifactSurfaceResidentSet {
 
     #[cfg(test)]
     pub(crate) fn force_first_clip_prefix_out_of_range_for_test(&mut self) -> bool {
-        for entry in &mut self.ordered_entries {
+        for entry in std::sync::Arc::make_mut(&mut self.ordered_entries) {
             let Some(program) = entry.stamp.artifact_surface_program.as_mut() else {
                 continue;
             };
@@ -3288,6 +3334,8 @@ fn artifact_surface_program_span_is_canonical(
 fn artifact_surface_resident_set_is_canonical(
     entries: &[SealedArtifactSurfaceResidentEntry],
 ) -> bool {
+    let _profile =
+        crate::view::paint::work_profile::scope("artifact_surface_resident_set_is_canonical");
     let mut resident_keys = FxHashSet::default();
     let mut references = vec![0_usize; entries.len()];
     for (ordinal, entry) in entries.iter().enumerate() {
@@ -3619,7 +3667,13 @@ fn seal_artifact_surface_resident_set(
         .collect::<Option<Vec<_>>>()
         .ok_or(ArtifactSurfaceResidentSealError::NonCanonicalSet)?;
     artifact_surface_resident_set_is_canonical(&ordered_entries)
-        .then_some(SealedArtifactSurfaceResidentSet { ordered_entries })
+        .then(|| {
+            let ordered_entries = std::sync::Arc::new(ordered_entries);
+            SealedArtifactSurfaceResidentSet {
+                validated_entries: ordered_entries.clone(),
+                ordered_entries,
+            }
+        })
         .ok_or(ArtifactSurfaceResidentSealError::NonCanonicalSet)
 }
 
@@ -3627,6 +3681,7 @@ fn artifact_surface_frame_is_canonical(
     plan: &PreparedArtifactSurfaceRasterPlan,
     residents: &SealedArtifactSurfaceResidentSet,
 ) -> bool {
+    let _profile = crate::view::paint::work_profile::scope("artifact_surface_frame_is_canonical");
     residents.is_canonical()
         && plan.nodes.len() == residents.len()
         && plan
@@ -3710,6 +3765,7 @@ impl PreparedArtifactSurfaceFrame {
 pub(crate) fn seal_prepared_artifact_surface_frame(
     raster_plan: PreparedArtifactSurfaceRasterPlan,
 ) -> Result<PreparedArtifactSurfaceFrame, ArtifactSurfaceResidentSealError> {
+    let _profile = crate::view::paint::work_profile::scope("seal_prepared_artifact_surface_frame");
     let residents = seal_artifact_surface_resident_set(&raster_plan)?;
     artifact_surface_frame_is_canonical(&raster_plan, &residents)
         .then_some(PreparedArtifactSurfaceFrame {
@@ -4121,7 +4177,7 @@ pub(crate) fn localize_artifact_surface_op(
                 None => None,
             };
             super::PreparedInlineIfcDecorationOp::new(decoration.descriptor.clone(), fill, border)
-                .map(PaintOp::PreparedInlineIfcDecoration)
+                .map(PaintOp::inline_decoration)
                 .ok_or_else(invalid)
         }
         PaintOp::PreparedShadow(shadow) => {
@@ -4135,10 +4191,10 @@ pub(crate) fn localize_artifact_surface_op(
         }
         PaintOp::PreparedScrollbarOverlay(overlay) => overlay
             .translated_by(delta)
-            .map(PaintOp::PreparedScrollbarOverlay)
+            .map(PaintOp::scrollbar_overlay)
             .ok_or_else(invalid),
         PaintOp::PreparedText(text) => {
-            let mut params = text.params.clone();
+            let mut params = text.params.as_ref().clone();
             if params.scissor_rect.is_some() || params.stencil_clip_id.is_some() {
                 return Err(ArtifactSurfaceLocalizationError::EmbeddedClip(kind));
             }
@@ -4199,6 +4255,7 @@ fn neutralize_artifact_surface_opacity(
             PaintOp::DrawRect(rect)
         }
         PaintOp::PreparedInlineIfcDecoration(decoration) => {
+            let decoration = std::sync::Arc::unwrap_or_clone(decoration);
             let mut fill = decoration.fill;
             fill.opacity = neutral;
             let border = decoration.border.map(|mut border| {
@@ -4206,7 +4263,7 @@ fn neutralize_artifact_surface_opacity(
                 border
             });
             super::PreparedInlineIfcDecorationOp::new(decoration.descriptor, fill, border)
-                .map(PaintOp::PreparedInlineIfcDecoration)
+                .map(PaintOp::inline_decoration)
                 .ok_or(ArtifactSurfaceLocalizationError::InvalidLocalizedOp(kind))?
         }
         PaintOp::PreparedShadow(shadow) => {
@@ -4218,10 +4275,10 @@ fn neutralize_artifact_surface_opacity(
         }
         PaintOp::PreparedScrollbarOverlay(overlay) => overlay
             .with_baked_opacity(neutral)
-            .map(PaintOp::PreparedScrollbarOverlay)
+            .map(PaintOp::scrollbar_overlay)
             .ok_or(ArtifactSurfaceLocalizationError::InvalidLocalizedOp(kind))?,
         PaintOp::PreparedText(text) => {
-            let mut params = text.params;
+            let mut params = std::sync::Arc::unwrap_or_clone(text.params);
             for glyph in &mut params.staging_input.glyphs {
                 glyph.paint.opacity = neutral;
             }
@@ -4357,6 +4414,7 @@ fn validate_artifact_store_with_policy(
     artifact: &PaintArtifact,
     policy: ArtifactStoreValidationPolicy,
 ) -> Option<ValidatedArtifact> {
+    let _profile = crate::view::paint::work_profile::scope("validate_artifact_store");
     let mut cursor = 0usize;
     let mut seen_ids = FxHashSet::default();
     let mut seen_slots = FxHashSet::default();
@@ -4534,7 +4592,12 @@ fn validate_artifact_store_with_policy(
     let owner_nodes = validate_owner_store(artifact)?;
     let mut owner_ancestries = Vec::with_capacity(artifact.chunks.len());
     let mut referenced_owners = FxHashSet::default();
+    let mut owner_ancestry_cache = FxHashMap::default();
     for chunk in &artifact.chunks {
+        if let Some(ancestry) = owner_ancestry_cache.get(&chunk.owner) {
+            owner_ancestries.push(std::sync::Arc::clone(ancestry));
+            continue;
+        }
         let mut ancestry = FxHashMap::default();
         let mut cursor = chunk.owner;
         let mut depth = 0usize;
@@ -4550,6 +4613,8 @@ fn validate_artifact_store_with_policy(
             };
             cursor = parent;
         }
+        let ancestry = std::sync::Arc::new(ancestry);
+        owner_ancestry_cache.insert(chunk.owner, ancestry.clone());
         owner_ancestries.push(ancestry);
     }
     if referenced_owners.len() != owner_nodes.len() {
@@ -4604,15 +4669,27 @@ fn validate_artifact_store_with_policy(
         .iter()
         .map(|snapshot| snapshot.id)
         .collect::<FxHashSet<_>>();
+    let mut effects_by_owner = FxHashMap::<_, Vec<_>>::default();
+    for snapshot in effect_nodes
+        .values()
+        .filter(|s| raster_effect_ids.contains(&s.id))
+    {
+        effects_by_owner
+            .entry(snapshot.owner)
+            .or_default()
+            .push(snapshot.id);
+    }
     for (chunk, owner_ancestry) in artifact.chunks.iter().zip(&owner_ancestries) {
-        let mut expected_effect_chain = effect_nodes
-            .values()
-            .filter(|snapshot| raster_effect_ids.contains(&snapshot.id))
-            .filter_map(|snapshot| {
-                owner_ancestry
-                    .get(&snapshot.owner)
-                    .copied()
-                    .map(|owner_depth| (owner_depth, snapshot.id))
+        // Enumerate the same complete owner/effect relation from its index.
+        // Depth sorting below preserves the original validation order.
+        let mut expected_effect_chain = owner_ancestry
+            .iter()
+            .flat_map(|(owner, depth)| {
+                effects_by_owner
+                    .get(owner)
+                    .into_iter()
+                    .flatten()
+                    .map(move |id| (*depth, *id))
             })
             .collect::<Vec<_>>();
         expected_effect_chain.sort_unstable_by_key(|(owner_depth, _)| *owner_depth);
@@ -4929,7 +5006,7 @@ fn validate_self_decoration_ops(ops: &[PaintOp], payload_identity: &PaintPayload
                 _ => None,
             }),
             decorations.iter().filter_map(|op| match op {
-                PaintOp::PreparedInlineIfcDecoration(prepared) => Some(prepared),
+                PaintOp::PreparedInlineIfcDecoration(prepared) => Some(prepared.as_ref()),
                 _ => None,
             }),
         );

@@ -194,12 +194,12 @@ pub(super) async fn run(gpu: &Gpu) -> Result<usize, String> {
                     // Every target has four color and eight depth bytes.
                     assert_eq!(
                         observed.texture_bytes,
-                        (48 * 104 + 2 * 20 * 96 + 20 * 80) * 12 * u64::from(dpr * dpr),
+                        (48 * 104 + 2 * 20 * 96 + 20 * 80) * 4 * u64::from(dpr * dpr),
                         "{label}: descriptors={:?}",
                         observed.color_targets
                     );
                     for (key, desc) in &observed.color_targets {
-                        assert!(viewport.has_compatible_persistent_render_target_pair(*key, desc));
+                        assert!(viewport.has_compatible_persistent_render_target(*key, desc));
                     }
                     if let Some(first) = &first_targets {
                         assert_eq!(&observed.color_targets, first);

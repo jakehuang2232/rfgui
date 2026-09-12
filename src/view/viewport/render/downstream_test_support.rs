@@ -3,12 +3,20 @@
 use super::*;
 
 pub struct RendererTestFrame {
+    /// CPU milliseconds: total, begin, layout, prepare, property sync, build,
+    /// compile, execute, finish, end. Offscreen acquisition excludes host present.
+    pub cpu_ms: [f64; 10],
+    pub command_replays: usize,
+    pub localized_replays: usize,
+    pub geometry_replays: usize,
     pub texture: wgpu::Texture,
     pub artifact_selected: bool,
     pub rerasterizations: usize,
     pub reuses: usize,
-    pub resident_pairs: usize,
+    pub resident_rasters: usize,
     pub texture_bytes: u64,
+    /// Actual offscreen pool texture creations; excludes the harness output texture.
+    pub target_allocations: u64,
     pub persistent_targets: Vec<(String, [u32; 2])>,
 }
 
@@ -29,6 +37,10 @@ impl Viewport {
         if !dpr.is_finite() || dpr <= 0.0 || size.contains(&0) {
             return Err("invalid test viewport".into());
         }
+        let allocations_before = self
+            .frame
+            .offscreen_render_target_pool
+            .created_texture_count();
         self.begin_offscreen_test_frame(
             device,
             queue,
@@ -68,7 +80,7 @@ impl Viewport {
             return Err(format!("unexpected authority: {snapshot:?}"));
         }
         let actions = crate::view::paint::take_last_production_actions_for_test();
-        let mut resident_pairs = 0;
+        let mut resident_rasters = 0;
         let mut texture_bytes = 0;
         let mut persistent_targets = Vec::new();
         let graph = self
@@ -76,21 +88,41 @@ impl Viewport {
             .last_frame_graph
             .as_ref()
             .ok_or("missing executed graph")?;
+        let compiled = &self
+            .frame
+            .compile_cache
+            .as_ref()
+            .ok_or("missing compiled graph")?
+            .graph;
         for (key, desc) in graph.declared_persistent_textures() {
+            // A declared target can be culled with its enclosing raster. Only
+            // resources in the executed graph require physical residency.
+            if !compiled.uses_persistent_texture(key) {
+                continue;
+            }
             texture_bytes += crate::view::raster_cost::texture_desc_payload_bytes(desc).bytes;
             if key.depth_stencil().is_some() {
-                if !self.has_compatible_persistent_render_target_pair(key, desc) {
-                    return Err("missing resident pair".into());
+                if !self.has_compatible_persistent_render_target(key, desc) {
+                    return Err("missing resident color".into());
                 }
-                resident_pairs += 1;
+                resident_rasters += 1;
                 persistent_targets.push((format!("{key:?}"), [desc.width(), desc.height()]));
             }
         }
         persistent_targets.sort();
         Ok(RendererTestFrame {
+            cpu_ms: self.frame.last_cpu_phases,
+            target_allocations: self
+                .frame
+                .offscreen_render_target_pool
+                .created_texture_count()
+                - allocations_before,
+            command_replays: self.compositor.recording_cache.hits,
+            localized_replays: self.compositor.planning_cache.localized_hits,
+            geometry_replays: self.compositor.planning_cache.geometry_hits,
             texture,
             artifact_selected,
-            resident_pairs,
+            resident_rasters,
             texture_bytes,
             persistent_targets,
             rerasterizations: actions

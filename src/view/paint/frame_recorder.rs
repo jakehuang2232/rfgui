@@ -10,9 +10,7 @@ use crate::view::compositor::property_tree::{
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
-use super::coverage_manifest::{
-    exact_deferred_viewport_self_clip_witness, record_retained_coverage_manifest_with_context,
-};
+use super::coverage_manifest::exact_deferred_viewport_self_clip_witness;
 
 use super::{
     CoverageRecordingMode, LegacyPaintReason, PaintArtifact, PaintArtifactTarget, PaintChunk,
@@ -139,6 +137,7 @@ pub(crate) fn record_surface_dag_frame_artifact(
     paint_generations: &PaintGenerationTracker,
     mode: RendererMode,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
+    let _profile = crate::view::paint::work_profile::scope("record_surface_dag_frame_artifact");
     let outcome = record_frame_artifact_with_policy(
         arena,
         roots,
@@ -150,6 +149,37 @@ pub(crate) fn record_surface_dag_frame_artifact(
         None,
     )?;
     close_recorded_artifact_property_snapshots(outcome, property_trees, mode)
+}
+
+pub(crate) fn record_surface_dag_frame_artifact_cached(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    cache: &mut super::RecordingCache,
+) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
+    cache.begin();
+    let outcome = record_frame_artifact_with_policy_and_stack(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        RendererMode::Auto,
+        FrameArtifactAuthorityPolicy::SurfaceDag,
+        None,
+        None,
+        None,
+        None,
+        Some(cache),
+    )
+    .and_then(|outcome| {
+        close_recorded_artifact_property_snapshots(outcome, property_trees, RendererMode::Auto)
+    });
+    cache.finish(matches!(
+        &outcome,
+        Ok(FrameArtifactRecordOutcome::Artifact { .. })
+    ));
+    outcome
 }
 
 fn close_recorded_artifact_property_snapshots(
@@ -273,6 +303,8 @@ pub(super) fn populate_referenced_property_snapshots(
     artifact: &mut PaintArtifact,
     property_trees: &PropertyTrees,
 ) -> Result<(), Vec<FrameArtifactFallbackReason>> {
+    let _profile =
+        crate::view::paint::work_profile::scope("populate_referenced_property_snapshots");
     artifact.transform_nodes.clear();
     artifact.layout_position_nodes.clear();
     artifact.visual_offset_nodes.clear();
@@ -333,9 +365,13 @@ pub(super) fn populate_referenced_property_snapshots(
             }
         }
         let mut anchor_visual_roots = Vec::new();
-        for snapshot in property_trees
-            .transform_snapshot_chain_for(state.transform)
-            .ok_or_else(invalid)?
+        for snapshot in snapshot_closure::unseen_chain(
+            state.transform,
+            &transforms,
+            |id| property_trees.transform_snapshot_for(id),
+            |s| s.parent,
+        )
+        .ok_or_else(invalid)?
         {
             match merge_snapshot(&mut transforms, snapshot.id, snapshot) {
                 SnapshotMerge::Inserted => artifact.transform_nodes.push(snapshot),
@@ -343,17 +379,30 @@ pub(super) fn populate_referenced_property_snapshots(
                 SnapshotMerge::Conflict => return Err(invalid()),
             }
         }
-        for snapshot in property_trees
-            .layout_position_snapshot_chain_for(state.layout_position)
-            .ok_or_else(invalid)?
+        for snapshot in snapshot_closure::unseen_chain(
+            state.layout_position,
+            &positions,
+            |id| property_trees.layout_position_snapshot_for(id),
+            |s| match s.reference {
+                SpatialPositionReference::Viewport
+                | SpatialPositionReference::LayoutParent(None) => None,
+                SpatialPositionReference::LayoutParent(Some(parent))
+                | SpatialPositionReference::Anchor(parent) => Some(LayoutPositionNodeId(parent)),
+            },
+        )
+        .ok_or_else(invalid)?
         {
             if let SpatialPositionReference::Anchor(anchor) = snapshot.reference {
                 anchor_visual_roots.push(VisualOffsetNodeId(anchor));
             }
             if let Some(scroll) = snapshot.reference_scroll {
-                for scroll_snapshot in property_trees
-                    .scroll_snapshot_chain_for(Some(scroll))
-                    .ok_or_else(invalid)?
+                for scroll_snapshot in snapshot_closure::unseen_chain(
+                    Some(scroll),
+                    &scrolls,
+                    |id| property_trees.scroll_snapshot_for(id),
+                    |s| s.parent,
+                )
+                .ok_or_else(invalid)?
                 {
                     match merge_snapshot(&mut scrolls, scroll_snapshot.id, scroll_snapshot) {
                         SnapshotMerge::Inserted => artifact.scroll_nodes.push(scroll_snapshot),
@@ -368,9 +417,13 @@ pub(super) fn populate_referenced_property_snapshots(
                 SnapshotMerge::Conflict => return Err(invalid()),
             }
         }
-        for snapshot in property_trees
-            .visual_offset_snapshot_chain_for(state.visual_offset)
-            .ok_or_else(invalid)?
+        for snapshot in snapshot_closure::unseen_chain(
+            state.visual_offset,
+            &visuals,
+            |id| property_trees.visual_offset_snapshot_for(id),
+            |s| s.parent,
+        )
+        .ok_or_else(invalid)?
         {
             match merge_snapshot(&mut visuals, snapshot.id, snapshot) {
                 SnapshotMerge::Inserted => artifact.visual_offset_nodes.push(snapshot),
@@ -379,9 +432,13 @@ pub(super) fn populate_referenced_property_snapshots(
             }
         }
         for anchor in anchor_visual_roots {
-            for snapshot in property_trees
-                .visual_offset_snapshot_chain_for(Some(anchor))
-                .ok_or_else(invalid)?
+            for snapshot in snapshot_closure::unseen_chain(
+                Some(anchor),
+                &visuals,
+                |id| property_trees.visual_offset_snapshot_for(id),
+                |s| s.parent,
+            )
+            .ok_or_else(invalid)?
             {
                 match merge_snapshot(&mut visuals, snapshot.id, snapshot) {
                     SnapshotMerge::Inserted => artifact.visual_offset_nodes.push(snapshot),
@@ -390,9 +447,13 @@ pub(super) fn populate_referenced_property_snapshots(
                 }
             }
         }
-        for snapshot in property_trees
-            .scroll_snapshot_chain_for(state.scroll)
-            .ok_or_else(invalid)?
+        for snapshot in snapshot_closure::unseen_chain(
+            state.scroll,
+            &scrolls,
+            |id| property_trees.scroll_snapshot_for(id),
+            |s| s.parent,
+        )
+        .ok_or_else(invalid)?
         {
             match merge_snapshot(&mut scrolls, snapshot.id, snapshot) {
                 SnapshotMerge::Inserted => artifact.scroll_nodes.push(snapshot),
@@ -433,6 +494,7 @@ fn record_frame_artifact_with_policy(
         None,
         None,
         required_scroll_content_paint_offset_bits,
+        None,
     )
 }
 
@@ -448,7 +510,10 @@ fn record_frame_artifact_with_policy_and_stack(
     consumed_ancestor_property_stack: Option<super::ConsumedAncestorPropertyStackWitness>,
     neutral_effect_authority: Option<EffectNodeId>,
     required_scroll_content_paint_offset_bits: Option<[u32; 2]>,
+    mut recording_cache: Option<&mut super::RecordingCache>,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
+    let _profile =
+        crate::view::paint::work_profile::scope("record_frame_artifact_with_policy_and_stack");
     if mode == RendererMode::Legacy {
         return Ok(FrameArtifactRecordOutcome::WholeFrameLegacyFallback(
             FrameArtifactEligibility {
@@ -473,7 +538,7 @@ fn record_frame_artifact_with_policy_and_stack(
         ..PaintRecordingContext::default()
     };
     let planned_boundary_cutouts = super::PlannedBoundaryCutoutSet::default();
-    let preflight = record_retained_coverage_manifest_with_context(
+    let mut preflight = super::coverage_manifest::record_cached_coverage_manifest(
         arena,
         roots,
         false,
@@ -484,6 +549,7 @@ fn record_frame_artifact_with_policy_and_stack(
         initial_recording_context,
         None,
         &planned_boundary_cutouts,
+        recording_cache.as_deref_mut(),
     );
     let mut preflight_eligibility = assess_manifest(&preflight, policy);
     if matches!(
@@ -503,27 +569,40 @@ fn record_frame_artifact_with_policy_and_stack(
         return fallback_or_forced(mode, preflight_eligibility);
     }
 
-    let manifest = record_retained_coverage_manifest_with_context(
-        arena,
-        roots,
-        false,
-        true,
-        CoverageRecordingMode::FullArtifact,
-        property_trees,
-        paint_generations,
-        initial_recording_context,
-        None,
-        &planned_boundary_cutouts,
-    );
-    let mut eligibility = assess_manifest(&manifest, policy);
-    if eligibility.eligible && !canonical_manifest_matches(&preflight, &manifest) {
-        eligibility.eligible = false;
-        eligibility
-            .reasons
-            .push(FrameArtifactFallbackReason::Validation(
-                PaintCoverageValidationError::RecordingPassMismatch,
-            ));
-    }
+    let filled_preflight = recording_cache
+        .as_deref_mut()
+        .and_then(|cache| cache.materialize(arena, &mut preflight))
+        .is_some();
+    let (manifest, eligibility) = if filled_preflight {
+        // The cache replaces ops only, after matching every native hook's exact
+        // metadata. Metadata/ordering equality is guaranteed by construction.
+        let eligibility = assess_manifest(&preflight, policy);
+        (preflight, eligibility)
+    } else {
+        let manifest = super::coverage_manifest::record_cached_coverage_manifest(
+            arena,
+            roots,
+            false,
+            true,
+            CoverageRecordingMode::FullArtifact,
+            property_trees,
+            paint_generations,
+            initial_recording_context,
+            None,
+            &planned_boundary_cutouts,
+            recording_cache.as_deref_mut(),
+        );
+        let mut eligibility = assess_manifest(&manifest, policy);
+        if eligibility.eligible && !canonical_manifest_matches(&preflight, &manifest) {
+            eligibility.eligible = false;
+            eligibility
+                .reasons
+                .push(FrameArtifactFallbackReason::Validation(
+                    PaintCoverageValidationError::RecordingPassMismatch,
+                ));
+        }
+        (manifest, eligibility)
+    };
     if !eligibility.eligible {
         return fallback_or_forced(mode, eligibility);
     }
@@ -555,6 +634,7 @@ pub(super) fn materialize_frame_artifact(
     mode: RendererMode,
     mut eligibility: FrameArtifactEligibility,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
+    let _profile = crate::view::paint::work_profile::scope("materialize_frame_artifact");
     let mut artifact = PaintArtifact {
         target,
         ..PaintArtifact::default()
@@ -1208,3 +1288,5 @@ pub(super) fn sampled_layout_transition_is_exact(
         && element.retained_paint_signature_is_complete()
         && witness.paint_signature == element.retained_paint_signature()
 }
+
+mod snapshot_closure;

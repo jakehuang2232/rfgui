@@ -189,6 +189,8 @@ pub(crate) struct OffscreenRenderTargetPool {
     persistent_bindings: FxHashMap<PersistentTextureKey, PersistentRenderTargetBinding>,
     frame_epoch: u64,
     next_entry_id: u32,
+    #[cfg(any(test, feature = "renderer-test-support"))]
+    created_textures: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -223,6 +225,8 @@ impl OffscreenRenderTargetPool {
             persistent_bindings: FxHashMap::default(),
             frame_epoch: 0,
             next_entry_id: 0,
+            #[cfg(any(test, feature = "renderer-test-support"))]
+            created_textures: 0,
         }
     }
 
@@ -391,8 +395,16 @@ impl OffscreenRenderTargetPool {
 
         let logical_width = desc.width().max(1);
         let logical_height = desc.height().max(1);
-        let physical_width = round_up_to_power_of_two(logical_width);
-        let physical_height = round_up_to_power_of_two(logical_height);
+        let physical_width = if desc.requires_exact_extent() {
+            logical_width
+        } else {
+            round_up_to_power_of_two(logical_width)
+        };
+        let physical_height = if desc.requires_exact_extent() {
+            logical_height
+        } else {
+            round_up_to_power_of_two(logical_height)
+        };
         let format = desc.format();
         let dimension = desc.dimension();
         let label = color_texture_label(&desc);
@@ -423,6 +435,7 @@ impl OffscreenRenderTargetPool {
             let entry_id = self.next_entry_id;
             self.next_entry_id = self.next_entry_id.saturating_add(1);
             let physical_desc = desc.clone().with_size(physical_width, physical_height);
+            self.note_texture_creation(msaa_sample_count);
             self.entries.insert(
                 entry_id,
                 Self::create_entry(device, &physical_desc, msaa_sample_count),
@@ -462,6 +475,7 @@ impl OffscreenRenderTargetPool {
                     self.remove_entry(entry_id);
                     let new_entry_id = self.next_entry_id;
                     self.next_entry_id = self.next_entry_id.saturating_add(1);
+                    self.note_texture_creation(msaa_sample_count);
                     self.entries.insert(
                         new_entry_id,
                         Self::create_entry(device, &desc, msaa_sample_count),
@@ -481,6 +495,7 @@ impl OffscreenRenderTargetPool {
             None => {
                 let new_entry_id = self.next_entry_id;
                 self.next_entry_id = self.next_entry_id.saturating_add(1);
+                self.note_texture_creation(msaa_sample_count);
                 self.entries.insert(
                     new_entry_id,
                     Self::create_entry(device, &desc, msaa_sample_count),
@@ -527,6 +542,18 @@ impl OffscreenRenderTargetPool {
             view: entry.view.clone(),
             msaa_view: entry.msaa_view.clone(),
         })
+    }
+
+    fn note_texture_creation(&mut self, _samples: u32) {
+        #[cfg(any(test, feature = "renderer-test-support"))]
+        {
+            self.created_textures += 1 + u64::from(_samples > 1);
+        }
+    }
+
+    #[cfg(any(test, feature = "renderer-test-support"))]
+    pub(crate) fn created_texture_count(&self) -> u64 {
+        self.created_textures
     }
 
     fn create_entry(

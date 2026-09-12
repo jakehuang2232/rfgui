@@ -90,7 +90,7 @@ fn run_frames(mode: ViewportPaintRendererMode) -> Result<(), String> {
                     );
                     assert_eq!(observed.actions.len(), observed.color_targets.len());
                     for (key, desc) in &observed.color_targets {
-                        assert!(viewport.has_compatible_persistent_render_target_pair(*key, desc));
+                        assert!(viewport.has_compatible_persistent_render_target(*key, desc));
                     }
                     if let Some(first) = &targets {
                         assert_eq!(first, &observed.color_targets);

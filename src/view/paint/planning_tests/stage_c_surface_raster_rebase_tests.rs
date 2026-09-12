@@ -168,9 +168,9 @@ fn seven_opacity_carriers() -> Vec<PaintOp> {
 
     vec![
         draw,
-        PaintOp::PreparedInlineIfcDecoration(inline),
+        PaintOp::inline_decoration(inline),
         PaintOp::PreparedShadow(shadow),
-        PaintOp::PreparedScrollbarOverlay(overlay),
+        PaintOp::scrollbar_overlay(overlay),
         plain_host_op("text", |op| matches!(op, PaintOp::PreparedText(_))),
         plain_host_op("image", |op| matches!(op, PaintOp::PreparedImage(_))),
         plain_host_op("svg", |op| matches!(op, PaintOp::PreparedSvg(_))),
@@ -178,7 +178,10 @@ fn seven_opacity_carriers() -> Vec<PaintOp> {
     .into_iter()
     .map(|op| match op {
         PaintOp::PreparedText(mut text) => {
-            for glyph in &mut text.params.staging_input.glyphs {
+            for glyph in &mut std::sync::Arc::make_mut(&mut text.params)
+                .staging_input
+                .glyphs
+            {
                 glyph.paint.opacity = 0.5;
             }
             PaintOp::PreparedText(

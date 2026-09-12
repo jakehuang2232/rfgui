@@ -46,7 +46,7 @@ pub(crate) use compiler::{
     ArtifactCompileErrorKind, ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceExecutionError,
     ArtifactSurfaceLocalizationError, ArtifactSurfacePaintOpKind, ArtifactSurfaceRasterContext,
     ArtifactSurfaceRasterPlanError, ArtifactSurfaceRasterTargetId,
-    ArtifactSurfaceResidentSealError, PreparedArtifactSurfaceFrame,
+    ArtifactSurfaceResidentSealError, PlanningCache, PreparedArtifactSurfaceFrame,
     PreparedArtifactSurfaceRasterChunk, PreparedArtifactSurfaceRasterNode,
     PreparedArtifactSurfaceRasterPlan, PreparedArtifactSurfaceRasterRoot,
     PreparedArtifactSurfaceRasterSpan, PreparedArtifactSurfaceRasterStep, ResolvedClip,
@@ -55,7 +55,8 @@ pub(crate) use compiler::{
     RetainedSurfaceResidentKey, SealedArtifactSurfaceResidentEntry,
     SealedArtifactSurfaceResidentSet, SingleTargetSurfaceDagPrepareError,
     emit_prepared_artifact_surface_frame_from_pool, localize_artifact_surface_op,
-    prepare_artifact_surface_raster_plan, seal_prepared_artifact_surface_frame,
+    prepare_artifact_surface_raster_plan, prepare_artifact_surface_raster_plan_cached,
+    seal_prepared_artifact_surface_frame,
 };
 #[cfg(test)]
 pub(crate) use compiler::{
@@ -80,6 +81,7 @@ pub(crate) use frame_recorder::{
     RendererMode, record_clip_enabled_frame_artifact, record_closed_single_target_frame_artifact,
     record_frame_artifact, record_property_neutral_frame_artifact,
     record_root_group_opacity_frame_artifact, record_surface_dag_frame_artifact,
+    record_surface_dag_frame_artifact_cached,
 };
 
 #[allow(unused_imports)]
@@ -128,3 +130,8 @@ pub(crate) use planning_tests::{
 };
 
 pub(crate) use artifact::PreparedGpuOp;
+
+pub(crate) mod work_profile;
+
+mod recording_cache;
+pub(crate) use recording_cache::RecordingCache;

@@ -82,8 +82,8 @@ fn run(mode: ViewportPaintRendererMode) -> Result<(), String> {
                 );
                 let mut bytes = 0;
                 for (key, desc) in &observed.color_targets {
-                    assert!(viewport.has_compatible_persistent_render_target_pair(*key, desc));
-                    bytes += u64::from(desc.width()) * u64::from(desc.height()) * 12;
+                    assert!(viewport.has_compatible_persistent_render_target(*key, desc));
+                    bytes += u64::from(desc.width()) * u64::from(desc.height()) * 4;
                 }
                 assert_eq!(
                     observed.texture_bytes, bytes,

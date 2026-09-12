@@ -375,6 +375,13 @@ impl EventTarget for TextAreaProjectionSegment {
 }
 
 impl ElementTrait for TextAreaProjectionSegment {
+    fn supports_retained_command_replay(&self) -> bool {
+        // This native projection wrapper emits no commands. Preflight still
+        // proves its live TextArea ownership/scope. Glyph commands belong to
+        // the TextArea's prepared Text projection, not this source wrapper.
+        true
+    }
+
     fn compositor_spatial_placement_snapshot(
         &self,
     ) -> Option<crate::view::base_component::SpatialPlacementSnapshot> {

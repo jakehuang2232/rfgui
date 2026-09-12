@@ -554,6 +554,12 @@ impl Renderable for ParticleCanvas {
 }
 
 impl ElementTrait for ParticleCanvas {
+    fn supports_retained_command_replay(&self) -> bool {
+        // PreparedGpuIdentity includes the frozen source revision and exact
+        // immutable payload. A new simulation frame therefore misses replay.
+        true
+    }
+
     fn stable_id(&self) -> u64 {
         self.id
     }

@@ -200,8 +200,7 @@ fn native_full_window_budget_descriptors_reuse_and_whole_frame_legacy() -> Resul
                                 first.as_ref().expect("DPR 1 populated the prior pairs")
                             {
                                 assert!(
-                                    !viewport
-                                        .has_compatible_persistent_render_target_pair(*key, desc),
+                                    !viewport.has_compatible_persistent_render_target(*key, desc),
                                     "budget fallback must release the displaced generic pairs"
                                 );
                             }
@@ -210,7 +209,9 @@ fn native_full_window_budget_descriptors_reuse_and_whole_frame_legacy() -> Resul
                     }
                     assert!(observed.artifact_selected);
                     assert_eq!(observed.color_targets.len(), layers);
-                    assert_eq!(observed.texture_bytes, bytes);
+                    // Admission reserves color + potential depth (12 B/px); only color
+                    // is persistent now (4 B/px), even on cold raster frames.
+                    assert_eq!(observed.texture_bytes, bytes / 3);
                     assert_eq!(
                         observed.actions,
                         vec![
@@ -227,7 +228,7 @@ fn native_full_window_budget_descriptors_reuse_and_whole_frame_legacy() -> Resul
                             (desc.width(), desc.height()),
                             (physical_width, physical_height)
                         );
-                        assert!(viewport.has_compatible_persistent_render_target_pair(*key, desc));
+                        assert!(viewport.has_compatible_persistent_render_target(*key, desc));
                     }
                     if let Some(first) = &first {
                         assert_eq!(&observed.color_targets, first);

@@ -346,9 +346,9 @@ fn native_text_area_ime_event_lifecycle_stays_retained() -> Result<(), String> {
                         assert!((80 * dpr..=SIZE[1] * dpr).contains(&desc.height()));
                         assert_eq!(
                             observed.texture_bytes,
-                            u64::from(desc.width()) * u64::from(desc.height()) * 12
+                            u64::from(desc.width()) * u64::from(desc.height()) * 4
                         );
-                        assert!(viewport.has_compatible_persistent_render_target_pair(*key, desc));
+                        assert!(viewport.has_compatible_persistent_render_target(*key, desc));
                     }
                     if let Some(first) = &targets {
                         assert_eq!(first, &observed.color_targets);

@@ -113,10 +113,10 @@ fn native_text_preparation_loss_recovers_without_changing_content() -> Result<()
                         RetainedSurfaceCompileAction::Reuse
                     };
                     assert_eq!(observed.actions, [expected], "{mode:?}/{dpr}/{frame}");
-                    assert_eq!(observed.texture_bytes, 200 * 64 * 12 * u64::from(dpr * dpr));
+                    assert_eq!(observed.texture_bytes, 200 * 64 * 4 * u64::from(dpr * dpr));
                     assert_eq!(observed.color_targets.len(), 1);
                     for (key, desc) in &observed.color_targets {
-                        assert!(viewport.has_compatible_persistent_render_target_pair(*key, desc));
+                        assert!(viewport.has_compatible_persistent_render_target(*key, desc));
                     }
                     if let Some(first) = &targets {
                         assert_eq!(first, &observed.color_targets);

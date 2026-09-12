@@ -612,10 +612,11 @@ impl ArtifactSurfaceEmitter<'_> {
             parent_ctx.viewport(),
             parent_ctx.layer_subtree_state_with_ancestor_clip(AncestorClipContext::default()),
         );
-        let layer_target = layer_ctx.allocate_persistent_target_with_desc(
+        let layer_target = layer_ctx.allocate_retained_raster_target(
             graph,
             node.target().color.clone(),
             node.identity().color_key,
+            action == RetainedSurfaceCompileAction::Reraster,
         );
         layer_ctx.set_current_target(layer_target);
         if action == RetainedSurfaceCompileAction::Reraster {
@@ -751,6 +752,7 @@ fn emit_prepared_artifact_surface_frame(
     mut ctx: UiBuildContext,
     allow_forced_pair_witness: bool,
 ) -> Result<(BuildState, Vec<RetainedSurfaceCompileAction>), ArtifactSurfaceExecutionError> {
+    let _profile = crate::view::paint::work_profile::scope("emit_prepared_artifact_surface_frame");
     if !viewport.retained_surface_frame_stage_owner_is_active(owner) {
         return Err(ArtifactSurfaceExecutionError::InactiveFrameStageOwner);
     }

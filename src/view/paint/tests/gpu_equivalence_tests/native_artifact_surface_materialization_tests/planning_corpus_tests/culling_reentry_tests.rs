@@ -177,7 +177,7 @@ fn native_scroll_culling_reentry_and_deferred_pixels() -> Result<(), String> {
                         );
                     }
                     for (key, desc) in &observed.color_targets {
-                        assert!(viewport.has_compatible_persistent_render_target_pair(*key, desc));
+                        assert!(viewport.has_compatible_persistent_render_target(*key, desc));
                     }
                 } else {
                     assert!(observed.legacy_selected);

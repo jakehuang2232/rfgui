@@ -324,7 +324,7 @@ fn native_controls_record_and_reuse_real_component_trees() -> Result<(), String>
                         if o.artifact_selected {
                             assert_eq!(o.rerasterizations, 0, "{case} warm must reuse");
                             assert!(
-                                o.reuses > 0 && o.resident_pairs > 0,
+                                o.reuses > 0 && o.resident_rasters > 0,
                                 "{case} must reuse real backing"
                             );
                             assert_eq!(
@@ -378,7 +378,7 @@ fn native_controls_record_and_reuse_real_component_trees() -> Result<(), String>
                     previous_resources = Some((o.texture_bytes, o.persistent_targets));
                     eprintln!(
                         "control {case} {mode:?} DPR={dpr} frame={frame} pairs={} reuse={} raster={}",
-                        o.resident_pairs, o.reuses, o.rerasterizations
+                        o.resident_rasters, o.reuses, o.rerasterizations
                     );
                 }
             }

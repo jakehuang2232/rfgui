@@ -148,10 +148,10 @@ pub(super) async fn run(gpu: &Gpu) -> Result<usize, String> {
                             "{label}"
                         );
                         let (key, desc) = &observed.color_targets[0];
-                        assert!(viewport.has_compatible_persistent_render_target_pair(*key, desc));
+                        assert!(viewport.has_compatible_persistent_render_target(*key, desc));
                         // Envelope includes the 48px scrollport width and the
                         // complete 80px content height, never just the 40px port.
-                        assert_eq!(observed.texture_bytes, 48 * 80 * 12 * u64::from(dpr * dpr));
+                        assert_eq!(observed.texture_bytes, 48 * 80 * 4 * u64::from(dpr * dpr));
                         if [3, 4, 5, 11].contains(&frame) {
                             assert_eq!(last_target.as_ref(), Some(&observed.color_targets));
                         }

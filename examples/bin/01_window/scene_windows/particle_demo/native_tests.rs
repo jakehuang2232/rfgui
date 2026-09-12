@@ -94,7 +94,7 @@ fn native_particle_canvas_changes_pixels_while_native_raster_reuses() -> Result<
                     assert_eq!(sources[0].revision, frame + 1);
                     if mode == ViewportPaintRendererMode::RetainedAuto {
                         assert!(o.artifact_selected);
-                        assert_eq!(o.resident_pairs, 1);
+                        assert_eq!(o.resident_rasters, 1);
                         assert_eq!(o.rerasterizations, usize::from(frame == 0));
                         assert_eq!(o.reuses, usize::from(frame > 0));
                     }

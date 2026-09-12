@@ -217,14 +217,14 @@ fn compiler_rejects_empty_or_tampered_prepared_text_before_emit() {
     let PaintOp::PreparedText(op) = &mut empty.ops[0] else {
         panic!("fixture must contain prepared text")
     };
-    op.params.staging_input.glyphs.clear();
+    Arc::make_mut(&mut op.params).staging_input.glyphs.clear();
     assert_compiler_rejects_before_emit(&empty, "empty prepared text op");
 
     let mut op_scissor = artifact.clone();
     let PaintOp::PreparedText(op) = &op_scissor.ops[0] else {
         panic!("fixture must contain prepared text")
     };
-    let mut params = op.params.clone();
+    let mut params = op.params.as_ref().clone();
     params.scissor_rect = Some([0, 0, 10, 10]);
     op_scissor.ops[0] = PaintOp::PreparedText(
         PreparedTextOp::new(params).expect("non-empty op scissor remains canonical payload"),
@@ -242,7 +242,7 @@ fn compiler_rejects_empty_or_tampered_prepared_text_before_emit() {
     let PaintOp::PreparedText(op) = &mut tampered.ops[0] else {
         panic!("fixture must contain prepared text")
     };
-    op.params.fragments[0].origin[0] += 1.0;
+    Arc::make_mut(&mut op.params).fragments[0].origin[0] += 1.0;
     assert_compiler_rejects_before_emit(&tampered, "tampered prepared text fragment");
 }
 

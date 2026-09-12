@@ -71,10 +71,10 @@ pub(super) async fn run(gpu: &Gpu) -> Result<usize, String> {
                             RetainedSurfaceCompileAction::Reuse
                         }]
                     );
-                    assert_eq!(observed.texture_bytes, 20 * 16 * 12 * u64::from(dpr * dpr));
+                    assert_eq!(observed.texture_bytes, 20 * 16 * 4 * u64::from(dpr * dpr));
                     assert_eq!(observed.color_targets.len(), 1);
                     let (key, desc) = &observed.color_targets[0];
-                    assert!(viewport.has_compatible_persistent_render_target_pair(*key, desc));
+                    assert!(viewport.has_compatible_persistent_render_target(*key, desc));
                 } else {
                     assert!(observed.legacy_selected);
                 }

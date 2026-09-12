@@ -2,6 +2,7 @@ use super::slot::ResourceType;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextureDesc {
+    exact_extent: bool,
     width: u32,
     height: u32,
     origin_x: u32,
@@ -31,6 +32,7 @@ impl TextureDesc {
         dimension: wgpu::TextureDimension,
     ) -> Self {
         Self {
+            exact_extent: false,
             width,
             height,
             origin_x: 0,
@@ -44,6 +46,16 @@ impl TextureDesc {
                 | wgpu::TextureUsages::COPY_DST,
             sample_count: 1,
         }
+    }
+
+    /// Attachments paired with an exact persistent color cannot be enlarged
+    /// by the transient allocator. Included in descriptor/cache equality.
+    pub(crate) fn with_exact_extent(mut self) -> Self {
+        self.exact_extent = true;
+        self
+    }
+    pub(crate) fn requires_exact_extent(&self) -> bool {
+        self.exact_extent
     }
 
     pub fn with_usage(mut self, usage: wgpu::TextureUsages) -> Self {

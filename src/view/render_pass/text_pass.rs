@@ -22,7 +22,7 @@ use swash::zeno::{Format as SwashFormat, Vector as SwashVector};
 use wgpu::util::DeviceExt;
 
 pub(crate) struct TextPreparedInputPass {
-    params: TextPassPreparedParams,
+    params: std::sync::Arc<TextPassPreparedParams>,
     prepared: Option<TextPreparedState>,
     prepared_empty: bool,
     globals_buffers: TextGlobalsBuffers,
@@ -56,12 +56,12 @@ pub struct TextOutput {
 
 impl TextPreparedInputPass {
     pub(crate) fn new(
-        params: TextPassPreparedParams,
+        params: impl Into<std::sync::Arc<TextPassPreparedParams>>,
         input: TextInput,
         output: TextOutput,
     ) -> Self {
         Self {
-            params,
+            params: params.into(),
             prepared: None,
             prepared_empty: false,
             globals_buffers: TextGlobalsBuffers::default(),
@@ -838,7 +838,11 @@ fn prepared_text_raster_sources_are_valid(params: &TextPassPreparedParams) -> bo
             && glyph.raster.font_size.is_finite()
             && glyph.raster.font_size > 0.0
             && text_raster_key_for_raster_input(&glyph.raster, 1.0).is_some()
-            && glyph.raster.font_data.as_ref().and_then(swash_font_ref)
+            && glyph
+                .raster
+                .font_data
+                .as_ref()
+                .and_then(swash_font_ref)
                 .is_some_and(|font| {
                     glyph.raster.glyph_id < u32::from(font.glyph_metrics(&[]).glyph_count())
                 })

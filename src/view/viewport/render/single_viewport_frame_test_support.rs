@@ -10,6 +10,7 @@ pub(crate) struct SingleViewportFrameObservation {
         crate::view::frame_graph::PersistentTextureKey,
         crate::view::frame_graph::TextureDesc,
     )>,
+    /// Declared persistent payload only; scratch raster depth is not retained.
     pub(crate) texture_bytes: u64,
     pub(crate) frame_number: u64,
 }

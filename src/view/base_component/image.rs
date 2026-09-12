@@ -7,12 +7,12 @@ use crate::view::render_pass::texture_composite_pass::TextureCompositeParams;
 use crate::view::sampled_texture::{SampledTextureAlphaMode, SampledTextureUpload};
 use crate::view::{ImageFit, ImageSampling, ImageSource};
 
+#[cfg(test)]
+use super::round_layout_value;
 use super::{
     BoxModelSnapshot, ComputedStyleConsumer, Element, ElementStyleSnapshot, ElementTrait,
     EventTarget, LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
 };
-#[cfg(test)]
-use super::round_layout_value;
 use crate::view::node_arena::{NodeArena, NodeKey};
 use rustc_hash::FxHashSet;
 use std::collections::hash_map::DefaultHasher;
@@ -663,6 +663,9 @@ impl ComputedStyleConsumer for Image {
 }
 
 impl ElementTrait for Image {
+    fn supports_retained_command_replay(&self) -> bool {
+        true
+    }
     fn stable_id(&self) -> u64 {
         self.element.stable_id()
     }

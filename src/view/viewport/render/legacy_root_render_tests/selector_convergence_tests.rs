@@ -67,6 +67,8 @@ fn select(
         8192,
         *budget,
         capture,
+        None,
+        None,
     )
 }
 
@@ -85,7 +87,7 @@ fn retained_auto_rejects_once_with_capture_independent_stage() {
                 // can be returned even if a historical planner would accept it.
                 let (decision, counts) = attempts::observe(|| {
                     super::super::select_retained_auto_frame(
-                        &f.0, &f.1, &f.2, &f.3, &f.4, 8192, f.5, capture,
+                        &f.0, &f.1, &f.2, &f.3, &f.4, 8192, f.5, capture, None, None,
                     )
                 });
                 let trace = match decision {
@@ -168,6 +170,8 @@ fn retained_auto_incomplete_recording_cannot_gain_compatibility_authority() {
                 8192,
                 ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
                 capture,
+                None,
+                None,
             )
         });
         let RetainedAutoDecision::Legacy { trace } = after else {

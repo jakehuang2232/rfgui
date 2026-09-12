@@ -295,7 +295,7 @@ fn run_ancestor_slots(mode: ViewportPaintRendererMode, svg: bool, dpr: u32) -> R
             }
             assert!(!observed.color_targets.is_empty());
             for (key, desc) in &observed.color_targets {
-                assert!(viewport.has_compatible_persistent_render_target_pair(*key, desc));
+                assert!(viewport.has_compatible_persistent_render_target(*key, desc));
             }
         } else {
             assert!(observed.legacy_selected);

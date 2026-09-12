@@ -824,6 +824,15 @@ pub(crate) fn classify_artifact_transition_sequence(
     let snapshots = PropertySnapshotGraph::try_from_artifact(artifact)?;
     let owners = ArtifactOwnerGraph::try_from_artifact(artifact)?;
     let cursors = artifact_cursors(artifact)?;
+    classify_prevalidated_artifact_transitions(requests, &snapshots, &owners, &cursors)
+}
+
+pub(super) fn classify_prevalidated_artifact_transitions(
+    requests: &[ArtifactTransitionRequest],
+    snapshots: &PropertySnapshotGraph,
+    owners: &ArtifactOwnerGraph,
+    cursors: &[ArtifactCursor],
+) -> Result<Vec<ClassifiedTransitionEvent>, TransitionError> {
     let mut events = Vec::with_capacity(requests.len());
     let mut previous = None;
     for request in requests {

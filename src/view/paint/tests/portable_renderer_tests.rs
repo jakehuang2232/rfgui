@@ -9,9 +9,9 @@ use std::sync::Mutex;
 use std::task::{Poll, Waker};
 
 mod device_switch_tests;
+mod inactive_scroll_tests;
 mod lifecycle_tests;
 mod scroll_forest_tests;
-mod inactive_scroll_tests;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 struct Gpu {
@@ -247,10 +247,9 @@ async fn run() -> Result<String, String> {
                             }));
                         let mut bytes = 0;
                         for (key, desc) in &observed.color_targets {
-                            assert!(
-                                viewport.has_compatible_persistent_render_target_pair(*key, desc)
-                            );
-                            bytes += u64::from(desc.width()) * u64::from(desc.height()) * 12;
+                            assert!(viewport.has_compatible_persistent_render_target(*key, desc));
+                            // Only color survives across frames; raster depth is transient.
+                            bytes += u64::from(desc.width()) * u64::from(desc.height()) * 4;
                         }
                         assert_eq!(observed.texture_bytes, bytes);
                         if let Some(first) = &first_targets {

@@ -1129,6 +1129,9 @@ impl TextArea {
 }
 
 impl ElementTrait for TextArea {
+    fn supports_retained_command_replay(&self) -> bool {
+        true
+    }
     #[allow(private_interfaces)]
     fn inline_atomic_measurement_snapshot(
         &self,

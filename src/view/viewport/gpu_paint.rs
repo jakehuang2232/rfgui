@@ -29,7 +29,7 @@ impl Viewport {
                 "retained-raster frame={frame} key={key:?} extent={}x{} planned_action={action:?} resident={}",
                 desc.width(),
                 desc.height(),
-                self.has_compatible_persistent_render_target_pair(*key, desc)
+                self.has_compatible_persistent_render_target(*key, desc)
             );
         }
     }

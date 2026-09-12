@@ -2,7 +2,7 @@ use super::*;
 use crate::view::render_pass::draw_rect_pass::RectStencilModeTestSnapshot;
 
 #[test]
-fn depth_four_execution_declares_one_pair_and_one_raster_per_surface() {
+fn depth_four_execution_declares_one_retained_color_and_one_raster_per_surface() {
     let prepared = prepared_depth_four_surface_frame();
     assert_eq!(prepared.raster_plan().nodes().len(), 4);
     let mut viewport = Viewport::new();
@@ -20,7 +20,7 @@ fn depth_four_execution_declares_one_pair_and_one_raster_per_surface() {
     .expect("depth-four emission");
 
     assert_eq!(actions.len(), 4);
-    assert_eq!(graph.declared_persistent_texture_keys().count(), 8);
+    assert_eq!(graph.declared_persistent_texture_keys().count(), 4);
     assert_eq!(graph.test_graphics_passes::<ClearPass>().len(), 4);
     assert_eq!(graph.test_graphics_passes::<CompositeLayerPass>().len(), 4);
 }

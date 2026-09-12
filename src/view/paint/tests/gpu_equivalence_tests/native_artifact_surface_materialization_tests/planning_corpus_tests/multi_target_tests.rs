@@ -282,7 +282,7 @@ fn native_multi_target_failure_at_every_execution_step_recovers_the_whole_forest
                 );
                 assert!(baseline.finish_retained_surface_transaction_for_frame(Some(owner), false));
                 for (key, desc) in &targets {
-                    assert!(baseline.has_compatible_persistent_render_target_pair(*key, desc));
+                    assert!(baseline.has_compatible_persistent_render_target(*key, desc));
                 }
             }
         }
@@ -313,7 +313,7 @@ fn native_multi_target_failure_at_every_execution_step_recovers_the_whole_forest
                 );
                 for (key, desc) in &targets {
                     assert!(
-                        !viewport.has_compatible_persistent_render_target_pair(*key, desc),
+                        !viewport.has_compatible_persistent_render_target(*key, desc),
                         "every physical pair must be discarded, including unexecuted targets"
                     );
                 }
@@ -350,9 +350,7 @@ fn native_multi_target_failure_at_every_execution_step_recovers_the_whole_forest
                         );
                         assert_eq!(observed.color_targets, targets);
                         for (key, desc) in &observed.color_targets {
-                            assert!(
-                                viewport.has_compatible_persistent_render_target_pair(*key, desc)
-                            );
+                            assert!(viewport.has_compatible_persistent_render_target(*key, desc));
                         }
                     }
                 }

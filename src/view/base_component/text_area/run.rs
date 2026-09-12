@@ -572,6 +572,13 @@ impl EventTarget for TextAreaTextRun {
 impl EventTarget for TextAreaLineBreak {}
 
 impl ElementTrait for TextAreaTextRun {
+    fn supports_retained_command_replay(&self) -> bool {
+        // This native projection wrapper emits no commands. Preflight still
+        // proves its live TextArea ownership/scope. Glyph commands belong to
+        // the TextArea's prepared Text projection, not this source wrapper.
+        true
+    }
+
     fn retained_scroll_normalized_paint_capability(
         &self,
     ) -> Option<crate::view::base_component::RetainedScrollNormalizedPaintCapability> {
@@ -726,6 +733,13 @@ impl ElementTrait for TextAreaTextRun {
 }
 
 impl ElementTrait for TextAreaLineBreak {
+    fn supports_retained_command_replay(&self) -> bool {
+        // This native projection wrapper emits no commands. Preflight still
+        // proves its live TextArea ownership/scope. Glyph commands belong to
+        // the TextArea's prepared Text projection, not this source wrapper.
+        true
+    }
+
     fn retained_scroll_normalized_paint_capability(
         &self,
     ) -> Option<crate::view::base_component::RetainedScrollNormalizedPaintCapability> {

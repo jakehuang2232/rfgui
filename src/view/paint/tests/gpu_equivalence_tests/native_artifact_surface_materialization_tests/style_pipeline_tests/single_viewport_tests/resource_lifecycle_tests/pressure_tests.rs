@@ -105,7 +105,7 @@ fn run_pressure(mode: ViewportPaintRendererMode) -> Result<(), String> {
                     assert_eq!(uploads, count + 1);
                     let (key, desc) = &observed.color_targets[0];
                     assert!(viewport.release_persistent_render_target_pair(*key));
-                    assert!(!viewport.has_compatible_persistent_render_target_pair(*key, desc));
+                    assert!(!viewport.has_compatible_persistent_render_target(*key, desc));
                 }
                 if let Some(first) = &target {
                     assert_eq!(&observed.color_targets[0], first);

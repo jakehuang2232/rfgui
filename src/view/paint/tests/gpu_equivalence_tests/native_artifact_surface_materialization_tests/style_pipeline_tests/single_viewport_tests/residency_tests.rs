@@ -27,6 +27,7 @@ fn native_single_viewport_missing_backing_rerasterizes_then_reuses() -> Result<(
         .into_iter()
         .enumerate()
         {
+            let allocations_before = viewport.offscreen_pool_texture_creation_count_for_test();
             viewport.begin_offscreen_test_frame(
                 gpu.device.clone(),
                 gpu.queue.clone(),
@@ -52,17 +53,35 @@ fn native_single_viewport_missing_backing_rerasterizes_then_reuses() -> Result<(
                 frame,
             )?;
             assert!(observed.artifact_selected);
+            if expected_action == RetainedSurfaceCompileAction::Reuse {
+                assert_eq!(
+                    viewport.offscreen_pool_texture_creation_count_for_test(),
+                    allocations_before,
+                    "warm composite must not allocate color or raster depth"
+                );
+            }
             assert_eq!(observed.frame_number, frame as u64 + 1);
             assert_eq!(
                 observed.actions,
                 [expected_action],
                 "DPR {dpr} frame {frame}"
             );
-            assert_eq!(observed.texture_bytes, 20 * 16 * 12 * u64::from(dpr * dpr));
+            assert_eq!(observed.texture_bytes, 20 * 16 * 4 * u64::from(dpr * dpr));
             assert_eq!(observed.color_targets.len(), 1);
             let target = &observed.color_targets[0];
             assert_eq!((target.1.width(), target.1.height()), (20 * dpr, 16 * dpr));
-            assert!(viewport.has_compatible_persistent_render_target_pair(target.0, &target.1));
+            assert!(viewport.has_compatible_persistent_render_target(target.0, &target.1));
+            let (_, depth) = crate::view::base_component::persistent_target_texture_descriptors(
+                target.1.clone(),
+                target.0,
+            );
+            assert!(
+                !viewport.has_compatible_persistent_render_target(
+                    target.0.depth_stencil().unwrap(),
+                    &depth
+                ),
+                "raster depth is transient; warm Reuse must depend only on valid color pixels"
+            );
             if let Some(first) = &stable_target {
                 // Stable logical identity is intentional across reallocation;
                 // it is not evidence that the physical GPU texture survived.
@@ -74,7 +93,7 @@ fn native_single_viewport_missing_backing_rerasterizes_then_reuses() -> Result<(
                 // Exercise genuine backing loss via the pool API, not a fake
                 // residency witness. This does not test pressure-policy choice.
                 assert!(viewport.release_persistent_render_target_pair(target.0));
-                assert!(!viewport.has_compatible_persistent_render_target_pair(target.0, &target.1));
+                assert!(!viewport.has_compatible_persistent_render_target(target.0, &target.1));
                 assert!(!viewport.release_persistent_render_target_pair(target.0));
             }
         }

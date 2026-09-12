@@ -578,7 +578,7 @@ fn inline_decoration_constructor_and_compiler_reject_link_or_identity_drift() {
     let PaintOp::PreparedInlineIfcDecoration(op) = &mut tampered_params.ops[0] else {
         unreachable!()
     };
-    op.fill.position[0] += 1.0;
+    Arc::make_mut(op).fill.position[0] += 1.0;
     assert_compiler_rejects_before_emit(&tampered_params, "inline fill param drift");
 
     let mut nan_bounds = artifact.clone();
@@ -592,7 +592,7 @@ fn inline_decoration_constructor_and_compiler_reject_link_or_identity_drift() {
     let PaintOp::PreparedInlineIfcDecoration(op) = &mut tampered_descriptor.ops[0] else {
         unreachable!()
     };
-    op.descriptor.source = op.descriptor.source.wrapping_add(1);
+    Arc::make_mut(op).descriptor.source = op.descriptor.source.wrapping_add(1);
     assert_compiler_rejects_before_emit(&tampered_descriptor, "inline descriptor drift");
 
     let mut missing_fragment = artifact;
@@ -619,9 +619,10 @@ fn inline_decoration_constructor_and_compiler_reject_link_or_identity_drift() {
     let PaintOp::PreparedInlineIfcDecoration(op) = endpoint_drift.ops[0].clone() else {
         unreachable!()
     };
+    let op = Arc::unwrap_or_clone(op);
     let mut descriptor = op.descriptor;
     descriptor.is_first_for_source = false;
-    endpoint_drift.ops[0] = PaintOp::PreparedInlineIfcDecoration(
+    endpoint_drift.ops[0] = PaintOp::inline_decoration(
         PreparedInlineIfcDecorationOp::new(descriptor, op.fill, op.border).unwrap(),
     );
     refresh_inline_decoration_payload_identity(&mut endpoint_drift);
@@ -634,9 +635,10 @@ fn inline_decoration_constructor_and_compiler_reject_link_or_identity_drift() {
     let PaintOp::PreparedInlineIfcDecoration(op) = cross_source.ops[1].clone() else {
         unreachable!()
     };
+    let op = Arc::unwrap_or_clone(op);
     let mut descriptor = op.descriptor;
     descriptor.source = descriptor.source.wrapping_add(1);
-    cross_source.ops[1] = PaintOp::PreparedInlineIfcDecoration(
+    cross_source.ops[1] = PaintOp::inline_decoration(
         PreparedInlineIfcDecorationOp::new(descriptor, op.fill, op.border).unwrap(),
     );
     refresh_inline_decoration_payload_identity(&mut cross_source);

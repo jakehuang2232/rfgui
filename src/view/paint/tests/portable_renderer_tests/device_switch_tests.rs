@@ -54,9 +54,7 @@ pub(super) async fn run(
                                 .all(|a| *a == RetainedSurfaceCompileAction::Reraster)
                         );
                         for (key, desc) in &observed.color_targets {
-                            assert!(
-                                viewport.has_compatible_persistent_render_target_pair(*key, desc)
-                            );
+                            assert!(viewport.has_compatible_persistent_render_target(*key, desc));
                         }
                     } else {
                         assert!(observed.legacy_selected);

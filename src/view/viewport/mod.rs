@@ -333,6 +333,8 @@ struct FrameRuntime {
     frame_presented: bool,
     #[cfg(any(test, feature = "renderer-test-support"))]
     completion_counts: FrameCompletionCounts,
+    #[cfg(any(test, feature = "renderer-test-support"))]
+    last_cpu_phases: [f64; 10],
     last_frame_graph: Option<FrameGraph>,
     compile_cache: Option<CachedCompiledGraph>,
     debug_overlay_vertices: Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
@@ -372,6 +374,8 @@ impl FrameRuntime {
             frame_presented: false,
             #[cfg(any(test, feature = "renderer-test-support"))]
             completion_counts: FrameCompletionCounts::default(),
+            #[cfg(any(test, feature = "renderer-test-support"))]
+            last_cpu_phases: [0.; 10],
             last_frame_graph: None,
             compile_cache: None,
             debug_overlay_vertices: Vec::new(),
@@ -575,6 +579,8 @@ pub(crate) struct RetainedSurfaceFrameStageOwner {
 }
 
 struct CompositorState {
+    planning_cache: crate::view::paint::PlanningCache,
+    recording_cache: crate::view::paint::RecordingCache,
     property_trees: crate::view::compositor::PropertyTrees,
     paint_generations: crate::view::compositor::PaintGenerationTracker,
     frame_box_models: Vec<super::base_component::BoxModelSnapshot>,
@@ -609,6 +615,8 @@ struct BoxModelRefreshStats {
 impl CompositorState {
     fn new() -> Self {
         Self {
+            planning_cache: Default::default(),
+            recording_cache: Default::default(),
             property_trees: crate::view::compositor::PropertyTrees::default(),
             paint_generations: crate::view::compositor::PaintGenerationTracker::default(),
             frame_box_models: Vec::new(),

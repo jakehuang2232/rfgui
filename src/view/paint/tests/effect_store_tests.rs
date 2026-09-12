@@ -307,7 +307,9 @@ fn compiler_checks_baked_opacity_for_text_image_svg_and_decorations() {
     let PaintOp::PreparedText(text_op) = &mut text.ops[0] else {
         panic!("text fixture must record PreparedText")
     };
-    text_op.params.staging_input.glyphs[0].paint.opacity = 1.0;
+    Arc::make_mut(&mut text_op.params).staging_input.glyphs[0]
+        .paint
+        .opacity = 1.0;
     assert_compiler_rejects_before_emit(&text, "prepared text glyph opacity mismatch");
 
     let pixels: Arc<[u8]> = Arc::from([255_u8; 16]);

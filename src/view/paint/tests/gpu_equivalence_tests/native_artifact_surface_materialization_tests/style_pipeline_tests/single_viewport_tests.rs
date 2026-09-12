@@ -1,10 +1,10 @@
 use super::*;
 use crate::view::viewport::ViewportPaintRendererMode;
 
+mod execution_failure_tests;
 mod invalidation_tests;
 mod residency_tests;
 mod resource_lifecycle_tests;
-mod execution_failure_tests;
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
@@ -61,10 +61,10 @@ fn run_single_viewport_frames(mode: ViewportPaintRendererMode) -> Result<(), Str
                     RetainedSurfaceCompileAction::Reuse
                 };
                 assert_eq!(observed.actions, [expected]);
-                assert_eq!(observed.texture_bytes, 20 * 16 * 12 * u64::from(dpr * dpr));
+                assert_eq!(observed.texture_bytes, 20 * 16 * 4 * u64::from(dpr * dpr));
                 assert_eq!(observed.color_targets.len(), 1);
                 let target = &observed.color_targets[0];
-                assert!(viewport.has_compatible_persistent_render_target_pair(target.0, &target.1));
+                assert!(viewport.has_compatible_persistent_render_target(target.0, &target.1));
                 if let Some(first) = &first_target {
                     assert_eq!(target, first);
                 } else {

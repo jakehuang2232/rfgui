@@ -1413,6 +1413,30 @@ impl UiBuildContext {
         color
     }
 
+    /// Retained pixels own only color backing. Depth/stencil is scratch space
+    /// for an actual raster pass and must not become a cross-frame reuse dependency.
+    pub(crate) fn allocate_retained_raster_target(
+        &mut self,
+        graph: &mut FrameGraph,
+        desc: TextureDesc,
+        stable_key: PersistentTextureKey,
+        rasterize: bool,
+    ) -> RenderTargetOut {
+        let (color_desc, depth_desc) = persistent_target_texture_descriptors(desc, stable_key);
+        let color =
+            graph.declare_persistent_texture_internal::<RenderTargetTag>(color_desc, stable_key);
+        if rasterize {
+            let depth = graph.declare_texture::<RenderTargetTag>(depth_desc.with_exact_extent());
+            if let (Some(color), Some(depth)) = (color.handle(), depth.handle()) {
+                self.state
+                    .target_pairs
+                    .insert(color.0, AttachmentTarget::Texture(depth));
+                graph.pair_texture_attachment(color, AttachmentTarget::Texture(depth));
+            }
+        }
+        color
+    }
+
     fn next_persistent_target_with_desc(
         &mut self,
         graph: &mut FrameGraph,
@@ -2961,6 +2985,14 @@ pub trait ElementTrait:
         None
     }
 
+    /// Opt in only when complete metadata uniquely determines immutable commands.
+    /// The recorder still checks current topology, properties, geometry and
+    /// payload identity. Unknown hosts execute both hooks on every frame.
+    #[doc(hidden)]
+    fn supports_retained_command_replay(&self) -> bool {
+        false
+    }
+
     #[allow(private_interfaces)]
     #[doc(hidden)]
     fn record_shadow_paint_artifact_plan(
@@ -3002,9 +3034,7 @@ pub trait ElementTrait:
                                 &overlay,
                             );
                         (
-                            vec![crate::view::paint::PaintOp::PreparedScrollbarOverlay(
-                                overlay,
-                            )],
+                            vec![crate::view::paint::PaintOp::scrollbar_overlay(overlay)],
                             identity,
                         )
                     }
@@ -7449,6 +7479,9 @@ impl ElementStyleSnapshot {
 }
 
 impl ElementTrait for Element {
+    fn supports_retained_command_replay(&self) -> bool {
+        true
+    }
     fn stable_id(&self) -> u64 {
         self.core.id
     }
@@ -7757,7 +7790,7 @@ impl ElementTrait for Element {
                 payload
                     .ops
                     .into_iter()
-                    .map(crate::view::paint::PaintOp::PreparedInlineIfcDecoration),
+                    .map(crate::view::paint::PaintOp::inline_decoration),
             );
             return Some(crate::view::paint::PaintArtifact {
                 target: Default::default(),

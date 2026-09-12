@@ -1090,6 +1090,13 @@ pub struct CompileProfile {
     pub graph: CompileGraphProfile,
 }
 
+impl CompiledGraph {
+    #[cfg(any(test, feature = "renderer-test-support"))]
+    pub(crate) fn uses_persistent_texture(&self, key: PersistentTextureKey) -> bool {
+        self.texture_stable_keys.values().any(|used| *used == key)
+    }
+}
+
 impl FrameGraph {
     #[cfg(test)]
     pub(crate) fn build_state_snapshot_for_test(&self) -> TopologySignature {
@@ -4596,8 +4603,12 @@ fn build_allocation_plan(
                     && slot.desc.usage() == desc.usage()
                     && slot.desc.sample_count() == desc.sample_count()
                     && slot.desc.label() == desc.label()
-                    && slot.desc.width() >= desc.width()
-                    && slot.desc.height() >= desc.height()
+                    && slot.desc.requires_exact_extent() == desc.requires_exact_extent()
+                    && if desc.requires_exact_extent() {
+                        slot.desc.width() == desc.width() && slot.desc.height() == desc.height()
+                    } else {
+                        slot.desc.width() >= desc.width() && slot.desc.height() >= desc.height()
+                    }
             })
             .min_by(|(_, a), (_, b)| {
                 let a_area = a.desc.width() as u64 * a.desc.height() as u64;
@@ -6879,3 +6890,6 @@ mod tests {
         assert_eq!(compiled.allocation_plan.buffer_allocations.len(), 2);
     }
 }
+
+#[cfg(test)]
+mod exact_attachment_tests;

@@ -17,8 +17,8 @@ mod cache;
 mod events;
 mod hit_test;
 mod layout;
-mod paint_cache;
 mod measure;
+mod paint_cache;
 mod profile;
 mod props;
 mod render;
@@ -267,7 +267,10 @@ impl Text {
             self.layout_state.layout_position.y + origin.y,
             origin.z,
         );
-        Some(super::compose_transform_about_origin(transform, origin_world))
+        Some(super::compose_transform_about_origin(
+            transform,
+            origin_world,
+        ))
     }
 
     fn untransformed_retained_paint_bounds(&self) -> super::RetainedSurfaceBounds {
@@ -456,9 +459,10 @@ impl Text {
     fn needs_standalone_preparation(&self) -> bool {
         self.inline_ifc_owned.is_none()
             && self.last_layout_constraints.is_some()
-            && self.shaped_context.as_ref().is_none_or(|context| {
-                context.prepared_text_pass_paint_input_ref().is_none()
-            })
+            && self
+                .shaped_context
+                .as_ref()
+                .is_none_or(|context| context.prepared_text_pass_paint_input_ref().is_none())
     }
 
     #[cfg(test)]
@@ -692,6 +696,9 @@ impl Text {
 }
 
 impl ElementTrait for Text {
+    fn supports_retained_command_replay(&self) -> bool {
+        true
+    }
     fn stable_id(&self) -> u64 {
         self.node_id
     }

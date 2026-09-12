@@ -1304,6 +1304,9 @@ impl ComputedStyleConsumer for Svg {
 }
 
 impl ElementTrait for Svg {
+    fn supports_retained_command_replay(&self) -> bool {
+        true
+    }
     fn stable_id(&self) -> u64 {
         self.element.stable_id()
     }

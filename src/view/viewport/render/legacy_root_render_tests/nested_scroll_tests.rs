@@ -85,7 +85,7 @@ fn retained_auto_nested_scroll_hard_cutover_selects_artifact_and_emits_two_surfa
             crate::view::paint::RetainedSurfaceCompileAction::Reraster,
         ]
     );
-    assert_eq!(graph.declared_persistent_texture_keys().count(), 4);
+    assert_eq!(graph.declared_persistent_texture_keys().count(), 2);
     assert_eq!(
         graph
             .test_graphics_passes::<crate::view::frame_graph::ClearPass>()

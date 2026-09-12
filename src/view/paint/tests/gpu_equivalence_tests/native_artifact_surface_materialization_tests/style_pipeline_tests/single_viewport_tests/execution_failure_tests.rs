@@ -38,7 +38,7 @@ fn native_single_viewport_execute_failure_legacy_recovery_and_explicit_retry() -
                 viewport.render_single_viewport_execution_failure_for_test()?;
                 assert!(fault.fired(), "must fail after a real execution step");
                 let (key, desc) = target.as_ref().expect("cold target");
-                assert!(!viewport.has_compatible_persistent_render_target_pair(*key, desc));
+                assert!(!viewport.has_compatible_persistent_render_target(*key, desc));
                 continue;
             }
             let observed = if frame == 3 || frame == 4 {
@@ -75,10 +75,10 @@ fn native_single_viewport_execute_failure_legacy_recovery_and_explicit_retry() -
                     RetainedSurfaceCompileAction::Reuse
                 }]
             );
-            assert_eq!(observed.texture_bytes, 20 * 16 * 12 * u64::from(dpr * dpr));
+            assert_eq!(observed.texture_bytes, 20 * 16 * 4 * u64::from(dpr * dpr));
             assert_eq!(observed.color_targets.len(), 1);
             let current = &observed.color_targets[0];
-            assert!(viewport.has_compatible_persistent_render_target_pair(current.0, &current.1));
+            assert!(viewport.has_compatible_persistent_render_target(current.0, &current.1));
             if let Some(first) = &target {
                 assert_eq!(
                     current, first,

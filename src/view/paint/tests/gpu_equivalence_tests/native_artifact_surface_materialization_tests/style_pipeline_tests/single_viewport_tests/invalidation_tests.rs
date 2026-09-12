@@ -218,7 +218,7 @@ fn run_changes(changes: &[FrameChange]) -> Result<(), String> {
             );
             assert_eq!(
                 observed.texture_bytes,
-                20 * 16 * 12 * u64::from(change.dpr * change.dpr),
+                20 * 16 * 4 * u64::from(change.dpr * change.dpr),
                 "{}",
                 change.label
             );
@@ -230,7 +230,7 @@ fn run_changes(changes: &[FrameChange]) -> Result<(), String> {
                 "{}",
                 change.label
             );
-            assert!(viewport.has_compatible_persistent_render_target_pair(*key, desc));
+            assert!(viewport.has_compatible_persistent_render_target(*key, desc));
         } else {
             assert!(observed.legacy_selected, "{}", change.label);
         }

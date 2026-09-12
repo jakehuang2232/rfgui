@@ -192,3 +192,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "main/performance_tests.rs"]
+mod performance_tests;

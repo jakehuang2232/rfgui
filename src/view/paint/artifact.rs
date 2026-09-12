@@ -1967,13 +1967,22 @@ pub(crate) enum PaintChunkRole {
 #[derive(Clone, Debug)]
 pub(crate) enum PaintOp {
     DrawRect(DrawRectOp),
-    PreparedInlineIfcDecoration(PreparedInlineIfcDecorationOp),
+    PreparedInlineIfcDecoration(Arc<PreparedInlineIfcDecorationOp>),
     PreparedShadow(PreparedShadowOp),
-    PreparedScrollbarOverlay(PreparedScrollbarOverlayOp),
+    PreparedScrollbarOverlay(Arc<PreparedScrollbarOverlayOp>),
     PreparedText(PreparedTextOp),
     PreparedImage(PreparedImageOp),
     PreparedSvg(PreparedSvgOp),
     PreparedGpu(PreparedGpuOp),
+}
+
+impl PaintOp {
+    pub(crate) fn inline_decoration(op: PreparedInlineIfcDecorationOp) -> Self {
+        Self::PreparedInlineIfcDecoration(Arc::new(op))
+    }
+    pub(crate) fn scrollbar_overlay(op: PreparedScrollbarOverlayOp) -> Self {
+        Self::PreparedScrollbarOverlay(Arc::new(op))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2717,7 +2726,10 @@ impl PreparedShadowIdentity {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedTextOp {
-    pub(crate) params: TextPassPreparedParams,
+    pub(crate) params: Arc<TextPassPreparedParams>,
+    // Sharing immutable validated input makes clone/replay and revalidation
+    // constant-time. A changed allocation still goes through full validation.
+    validated_params: Arc<TextPassPreparedParams>,
     identity: PreparedTextIdentity,
 }
 
@@ -2738,15 +2750,21 @@ impl PreparedTextOp {
                 .all(|glyph| PreparedTextGlyphIdentity::from_glyph(&glyph, fragments).is_some())
     }
 
-    pub(crate) fn new(params: TextPassPreparedParams) -> Option<Self> {
+    pub(crate) fn new(params: impl Into<Arc<TextPassPreparedParams>>) -> Option<Self> {
+        let params = params.into();
         #[cfg(test)]
         prepared_text_identity_tests::note_construction();
         let identity = PreparedTextIdentity::from_params(&params)?;
-        Some(Self { params, identity })
+        Some(Self {
+            validated_params: params.clone(),
+            params,
+            identity,
+        })
     }
 
     pub(crate) fn has_canonical_identity(&self) -> bool {
-        self.identity.matches_params(&self.params)
+        Arc::ptr_eq(&self.params, &self.validated_params)
+            || self.identity.matches_params(&self.params)
     }
 
     #[cfg(test)]
@@ -3161,7 +3179,7 @@ pub(crate) enum PaintPayloadIdentity {
     PreparedTexts(Arc<[PreparedTextIdentity]>),
     PreparedRects(Arc<[PreparedDrawRectIdentity]>),
     TextSelection(TextSelectionPayloadIdentity),
-    PreparedScrollbarOverlay(PreparedScrollbarOverlayIdentity),
+    PreparedScrollbarOverlay(Arc<PreparedScrollbarOverlayIdentity>),
     InlineIfcDecorations(
         Arc<[PreparedShadowIdentity]>,
         Arc<[PreparedInlineIfcDecorationIdentity]>,
@@ -3669,7 +3687,9 @@ impl PaintPayloadIdentity {
                 let decorations = decorations
                     .iter()
                     .map(|op| match op {
-                        PaintOp::PreparedInlineIfcDecoration(decoration) => Some(decoration),
+                        PaintOp::PreparedInlineIfcDecoration(decoration) => {
+                            Some(decoration.as_ref())
+                        }
                         _ => None,
                     })
                     .collect::<Option<Vec<_>>>()?;
@@ -3915,7 +3935,7 @@ impl PaintPayloadIdentity {
     }
 
     pub(crate) fn prepared_scrollbar_overlay(op: &PreparedScrollbarOverlayOp) -> Self {
-        Self::PreparedScrollbarOverlay(op.frozen_identity())
+        Self::PreparedScrollbarOverlay(Arc::new(op.frozen_identity()))
     }
 
     pub(crate) fn prepared_shadows_with_decoration<'a, 'b>(

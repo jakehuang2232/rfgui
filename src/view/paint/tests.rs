@@ -1126,6 +1126,8 @@ impl ElementTrait for CustomLeafPaintHost {
 
 #[derive(Clone, Copy)]
 enum MalformedChunk {
+    Valid,
+    Transparent,
     MetadataNaNBounds,
     MetadataNegativeBounds,
     MetadataProperties,
@@ -1141,6 +1143,7 @@ enum MalformedChunk {
 struct MalformedRecordingHost {
     id: u64,
     malformed: MalformedChunk,
+    capability_calls: Arc<AtomicUsize>,
     full_records: Arc<AtomicUsize>,
 }
 
@@ -1256,7 +1259,12 @@ impl ElementTrait for MalformedRecordingHost {
         _deferred_phase_root: bool,
         _recording_context: PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
-        ShadowPaintRecordingCapability::Recordable
+        self.capability_calls.fetch_add(1, Ordering::Relaxed);
+        if matches!(self.malformed, MalformedChunk::Transparent) {
+            ShadowPaintRecordingCapability::Transparent
+        } else {
+            ShadowPaintRecordingCapability::Recordable
+        }
     }
     fn record_shadow_paint_metadata(
         &self,
@@ -1429,6 +1437,7 @@ fn malformed_host(
         Box::new(MalformedRecordingHost {
             id: 45,
             malformed,
+            capability_calls: Arc::new(AtomicUsize::new(0)),
             full_records: full_records.clone(),
         }),
     );
@@ -1712,7 +1721,7 @@ fn refresh_inline_decoration_payload_identity(artifact: &mut PaintArtifact) {
     let identity =
         PaintPayloadIdentity::inline_ifc_decorations(artifact.ops[range].iter().filter_map(|op| {
             match op {
-                PaintOp::PreparedInlineIfcDecoration(prepared) => Some(prepared),
+                PaintOp::PreparedInlineIfcDecoration(prepared) => Some(prepared.as_ref()),
                 _ => None,
             }
         }));
@@ -3718,3 +3727,5 @@ mod legacy_group_opacity_tests;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod legacy_native_scope_tests;
+
+mod incremental_cache_tests;

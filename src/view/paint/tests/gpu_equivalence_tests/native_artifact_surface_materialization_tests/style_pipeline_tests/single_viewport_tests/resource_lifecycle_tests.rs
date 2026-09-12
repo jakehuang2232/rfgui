@@ -9,9 +9,9 @@ use crate::view::{ImageSampling, ImageSource};
 use std::sync::Arc;
 
 mod pressure_tests;
-mod svg_resource_tests;
 mod slot_content_tests;
 mod source_transition_tests;
+mod svg_resource_tests;
 
 struct ResourceScene {
     _handle: crate::view::image_resource::ImageHandle,
@@ -108,11 +108,11 @@ fn check_resource_retention(
 ) {
     assert!(observed.artifact_selected);
     assert_eq!(observed.actions, [action]);
-    assert_eq!(observed.texture_bytes, 20 * 32 * 12 * u64::from(dpr * dpr));
+    assert_eq!(observed.texture_bytes, 20 * 32 * 4 * u64::from(dpr * dpr));
     assert_eq!(observed.color_targets.len(), 1);
     let (key, desc) = &observed.color_targets[0];
     assert_eq!((desc.width(), desc.height()), (20 * dpr, 32 * dpr));
-    assert!(viewport.has_compatible_persistent_render_target_pair(*key, desc));
+    assert!(viewport.has_compatible_persistent_render_target(*key, desc));
 }
 
 #[test]

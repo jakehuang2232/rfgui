@@ -93,7 +93,7 @@ fn co_located_roles_keep_three_keys_and_cold_warm_actions_through_staging() {
         execution_context(),
     )
     .expect("cold artifact emission");
-    assert_eq!(cold_graph.declared_persistent_texture_keys().count(), 6);
+    assert_eq!(cold_graph.declared_persistent_texture_keys().count(), 3);
     assert!(
         cold_actions
             .iter()
@@ -118,7 +118,7 @@ fn co_located_roles_keep_three_keys_and_cold_warm_actions_through_staging() {
         execution_context(),
     )
     .expect("warm artifact emission");
-    assert_eq!(warm_graph.declared_persistent_texture_keys().count(), 6);
+    assert_eq!(warm_graph.declared_persistent_texture_keys().count(), 3);
     assert!(
         warm_actions
             .iter()

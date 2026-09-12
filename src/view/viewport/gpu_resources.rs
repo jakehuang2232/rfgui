@@ -100,6 +100,13 @@ fn artifact_surface_resident_set_is_pool_canonical(
 
 impl Viewport {
     #[cfg(test)]
+    pub(crate) fn offscreen_pool_texture_creation_count_for_test(&self) -> u64 {
+        self.frame
+            .offscreen_render_target_pool
+            .created_texture_count()
+    }
+
+    #[cfg(test)]
     pub(crate) fn retained_surface_transaction_shape_for_test(&self) -> (usize, Option<usize>) {
         (
             self.compositor.retained_surfaces.entries.len(),
@@ -180,6 +187,8 @@ impl Viewport {
         residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
         allow_forced_pair_witness: bool,
     ) -> Option<PreparedArtifactSurfacePoolEmission<'_>> {
+        let _profile =
+            crate::view::paint::work_profile::scope("prepare_artifact_surface_pool_emission");
         if !artifact_surface_resident_set_is_pool_canonical(&residents) {
             return None;
         }
@@ -246,12 +255,12 @@ impl Viewport {
                 false
             }
         };
-        let pair_compatible = stamp
+        let color_compatible = stamp
             .target
             .has_canonical_descriptor_pair_for(stamp.identity)
-            && (self.has_compatible_persistent_render_target_pair(color_key, &stamp.target.color)
+            && (self.has_compatible_persistent_render_target(color_key, &stamp.target.color)
                 || forced_pair_witness);
-        if pair_compatible && resident.is_some_and(|resident| stamp.raster_content_eq(resident)) {
+        if color_compatible && resident.is_some_and(|resident| stamp.raster_content_eq(resident)) {
             crate::view::paint::RetainedSurfaceCompileAction::Reuse
         } else {
             crate::view::paint::RetainedSurfaceCompileAction::Reraster

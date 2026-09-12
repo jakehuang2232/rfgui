@@ -148,7 +148,7 @@ fn native_long_content_windows_scroll_across_color_boundary() -> Result<(), Stri
                     }
                     for (key, desc) in &observed.color_targets {
                         assert!(desc.height() <= 512);
-                        assert!(v.has_compatible_persistent_render_target_pair(*key, desc));
+                        assert!(v.has_compatible_persistent_render_target(*key, desc));
                     }
                 }
             }
