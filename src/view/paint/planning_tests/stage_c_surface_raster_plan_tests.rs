@@ -776,7 +776,6 @@ fn artifact_surface_raster_plan_error_taxonomy_is_exhaustive() {
             ArtifactSurfaceRasterPlanError::InvalidChunkBounds { .. } => "chunk-bounds",
             ArtifactSurfaceRasterPlanError::InvalidResolvedClip { .. } => "resolved-clip",
             ArtifactSurfaceRasterPlanError::InvalidReceiverClip(_) => "receiver-clip",
-            ArtifactSurfaceRasterPlanError::SourceCorrespondence { .. } => "source-correspondence",
             ArtifactSurfaceRasterPlanError::Localization { .. } => "localization",
             ArtifactSurfaceRasterPlanError::LocalizedPayload { .. } => "payload",
             ArtifactSurfaceRasterPlanError::InvalidNestedSurface { .. } => "nested-surface",

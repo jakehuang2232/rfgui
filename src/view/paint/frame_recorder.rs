@@ -22,6 +22,7 @@ use super::{
 pub(crate) enum RendererMode {
     Legacy,
     Auto,
+    #[cfg(test)]
     StrictPlan,
     #[cfg(test)]
     ForcedForTests,
@@ -35,93 +36,19 @@ pub(crate) enum FrameArtifactFallbackReason {
     /// identity is completely neutral. Later milestones will make each
     /// property family authoritative one at a time.
     PropertyBoundary(NodeKey),
+    #[cfg(test)]
     RootCount(usize),
+    #[cfg(test)]
     MissingRootEffect(NodeKey),
+    #[cfg(test)]
     InvalidRootEffect(NodeKey),
+    #[cfg(test)]
     NestedEffect(NodeKey),
+    #[cfg(test)]
     NonEffectProperty(NodeKey),
+    #[cfg(test)]
     DeferredBoundary(NodeKey),
     Validation(PaintCoverageValidationError),
-}
-
-/// B1 typed compiler bridge. The validated pair is consumed in one step and
-/// only an opaque fixed H/content/O plan authority can escape.
-pub(crate) fn record_frame_artifact(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    mode: RendererMode,
-) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    record_frame_artifact_with_policy(
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        mode,
-        FrameArtifactAuthorityPolicy::ExistingBakedProperties,
-        None,
-        None,
-    )
-}
-
-/// M6A production entry point. This is intentionally stricter than the
-/// compatibility recorder above: the whole frame must be deferred-free and
-/// property-neutral before full artifact hooks run.
-pub(crate) fn record_property_neutral_frame_artifact(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    mode: RendererMode,
-) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    record_frame_artifact_with_policy(
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        mode,
-        FrameArtifactAuthorityPolicy::PropertyNeutral,
-        None,
-        None,
-    )
-}
-
-/// Production baked-opacity authority that admits validated property-tree
-/// clips while keeping every other property family on legacy.
-pub(crate) fn record_clip_enabled_frame_artifact(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    mode: RendererMode,
-) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    record_frame_artifact_with_policy(
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        mode,
-        FrameArtifactAuthorityPolicy::ClipEnabled,
-        None,
-        None,
-    )
-}
-
-/// C3a current-target producer entry point. It is the only pre-cutover
-/// production path allowed to close the artifact's transitive spatial
-/// snapshots; existing retained and ArtifactCanary recorders deliberately
-/// keep their frozen stores unchanged.
-pub(crate) fn record_closed_single_target_frame_artifact(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    mode: RendererMode,
-) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    let outcome =
-        record_clip_enabled_frame_artifact(arena, roots, property_trees, paint_generations, mode)?;
-    close_recorded_artifact_property_snapshots(outcome, property_trees, mode, None)
 }
 
 /// Generic current-target Surface DAG producer.
@@ -220,49 +147,7 @@ fn close_recorded_artifact_property_snapshots(
     })
 }
 
-/// M6C1 production entry point. One frame root and one root-owned effect become
-/// the sole opacity authority; every recorded paint op is neutralized and the
-/// compiler applies the owning effect exactly once at the group composite.
-pub(crate) fn record_root_group_opacity_frame_artifact(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    mode: RendererMode,
-) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    if mode == RendererMode::Legacy {
-        return fallback_or_forced(
-            mode,
-            FrameArtifactEligibility {
-                reasons: vec![FrameArtifactFallbackReason::RendererLegacy],
-                ..FrameArtifactEligibility::default()
-            },
-        );
-    }
-    let plan = match root_opacity_group_plan(arena, roots, property_trees) {
-        Ok(plan) => plan,
-        Err(reasons) => {
-            return fallback_or_forced(
-                mode,
-                FrameArtifactEligibility {
-                    reasons,
-                    ..FrameArtifactEligibility::default()
-                },
-            );
-        }
-    };
-    record_frame_artifact_with_policy(
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        mode,
-        FrameArtifactAuthorityPolicy::RootOpacityGroup(plan),
-        None,
-        None,
-    )
-}
-
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RootOpacityGroupPlan {
     root: NodeKey,
@@ -270,13 +155,17 @@ struct RootOpacityGroupPlan {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// Historical recorder policies remain available to regression fixtures;
+// production recording enters through the generic SurfaceDag policy.
 enum FrameArtifactAuthorityPolicy {
+    #[cfg(test)]
     ExistingBakedProperties,
     PropertyNeutral,
     ClipEnabled,
     PropertyScene,
     /// Complete recording for the production generic Surface DAG.
     SurfaceDag,
+    #[cfg(test)]
     RootOpacityGroup(RootOpacityGroupPlan),
 }
 
@@ -564,6 +453,7 @@ fn record_frame_artifact_with_policy_and_stack(
         required_scroll_content_paint_offset_bits,
         opacity_authority: match (neutral_effect_authority, policy) {
             (Some(effect), _) => PaintOpacityAuthority::NeutralRootEffect(effect),
+            #[cfg(test)]
             (_, FrameArtifactAuthorityPolicy::RootOpacityGroup(plan)) => {
                 PaintOpacityAuthority::NeutralRootEffect(plan.effect)
             }
@@ -643,33 +533,21 @@ fn record_frame_artifact_with_policy_and_stack(
     }
 
     let target = match policy {
+        #[cfg(test)]
         FrameArtifactAuthorityPolicy::RootOpacityGroup(plan) => {
             PaintArtifactTarget::RootOpacityGroup {
                 root: plan.root,
                 effect: plan.effect,
             }
         }
-        FrameArtifactAuthorityPolicy::ExistingBakedProperties
-        | FrameArtifactAuthorityPolicy::PropertyNeutral
+        #[cfg(test)]
+        FrameArtifactAuthorityPolicy::ExistingBakedProperties => PaintArtifactTarget::CurrentTarget,
+        FrameArtifactAuthorityPolicy::PropertyNeutral
         | FrameArtifactAuthorityPolicy::ClipEnabled
         | FrameArtifactAuthorityPolicy::PropertyScene
         | FrameArtifactAuthorityPolicy::SurfaceDag => PaintArtifactTarget::CurrentTarget,
     };
     materialize_frame_artifact_with_cache(manifest, target, mode, eligibility, recording_cache)
-}
-
-/// Turn an already-assessed coverage manifest into the artifact.
-///
-/// Policy-free by construction: every property assertion has run by the time
-/// this is called, so the only failures left are snapshot conflicts between
-/// two chunks that claim the same node or owner endpoint pair.
-pub(super) fn materialize_frame_artifact(
-    manifest: super::PaintCoverageManifest,
-    target: PaintArtifactTarget,
-    mode: RendererMode,
-    eligibility: FrameArtifactEligibility,
-) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    materialize_frame_artifact_with_cache(manifest, target, mode, eligibility, None)
 }
 
 fn materialize_frame_artifact_with_cache(
@@ -894,6 +772,7 @@ fn assess_manifest(
                         reasons.push(reason);
                     }
                 }
+                #[cfg(test)]
                 if let FrameArtifactAuthorityPolicy::RootOpacityGroup(plan) = policy {
                     if chunk.properties.effect != Some(plan.effect) {
                         let reason = FrameArtifactFallbackReason::NestedEffect(chunk.owner);
@@ -987,94 +866,6 @@ fn assess_manifest(
     }
 }
 
-fn root_opacity_group_plan(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    property_trees: &PropertyTrees,
-) -> Result<RootOpacityGroupPlan, Vec<FrameArtifactFallbackReason>> {
-    let [root] = roots else {
-        return Err(vec![FrameArtifactFallbackReason::RootCount(roots.len())]);
-    };
-    if arena.get(*root).is_none() {
-        return Err(vec![FrameArtifactFallbackReason::MissingRootEffect(*root)]);
-    }
-    let effect = EffectNodeId(*root);
-    let Some(root_effect) = property_trees.effects.get(&effect) else {
-        return Err(vec![FrameArtifactFallbackReason::MissingRootEffect(*root)]);
-    };
-    let mut reasons = Vec::new();
-    if root_effect.owner != *root
-        || root_effect.parent.is_some()
-        || root_effect.generation == 0
-        || !root_effect.opacity.is_finite()
-        || !(0.0..=1.0).contains(&root_effect.opacity)
-    {
-        reasons.push(FrameArtifactFallbackReason::InvalidRootEffect(*root));
-    }
-    for (&id, snapshot) in &property_trees.effects {
-        if id != effect {
-            let reason = FrameArtifactFallbackReason::NestedEffect(snapshot.owner);
-            if !reasons.contains(&reason) {
-                reasons.push(reason);
-            }
-        }
-    }
-
-    let mut stack = vec![*root];
-    let mut seen = FxHashSet::default();
-    while let Some(key) = stack.pop() {
-        if !seen.insert(key) {
-            continue;
-        }
-        let Some(node) = arena.get(key) else {
-            continue;
-        };
-        if node.element.children() != node.children()
-            || node
-                .children()
-                .iter()
-                .any(|child| arena.parent_of(*child) != Some(key))
-        {
-            reasons.push(FrameArtifactFallbackReason::Validation(
-                PaintCoverageValidationError::InvalidOwnerSnapshot(key),
-            ));
-        }
-        if node.element.is_deferred_to_root_viewport_render() {
-            reasons.push(FrameArtifactFallbackReason::DeferredBoundary(key));
-        }
-        match property_trees.states.get(&key) {
-            Some(state) => {
-                for properties in [state.paint, state.descendants] {
-                    if properties.effect != Some(effect) {
-                        let reason = FrameArtifactFallbackReason::NestedEffect(key);
-                        if !reasons.contains(&reason) {
-                            reasons.push(reason);
-                        }
-                    }
-                    if properties.transform.is_some() || properties.scroll.is_some() {
-                        let reason = FrameArtifactFallbackReason::NonEffectProperty(key);
-                        if !reasons.contains(&reason) {
-                            reasons.push(reason);
-                        }
-                    }
-                }
-            }
-            None => reasons.push(FrameArtifactFallbackReason::MissingRootEffect(key)),
-        }
-        stack.extend(node.children().iter().copied());
-    }
-    reasons.sort_by_key(|reason| format!("{reason:?}"));
-    reasons.dedup();
-    if reasons.is_empty() {
-        Ok(RootOpacityGroupPlan {
-            root: *root,
-            effect,
-        })
-    } else {
-        Err(reasons)
-    }
-}
-
 fn production_property_boundary_reasons(
     arena: &NodeArena,
     roots: &[NodeKey],
@@ -1133,6 +924,7 @@ fn production_property_boundary_reasons(
                             || properties.scroll.is_some()
                     }
                     FrameArtifactAuthorityPolicy::SurfaceDag => false,
+                    #[cfg(test)]
                     FrameArtifactAuthorityPolicy::ExistingBakedProperties
                     | FrameArtifactAuthorityPolicy::RootOpacityGroup(_) => false,
                 })
@@ -1150,6 +942,7 @@ fn fallback_or_forced(
     eligibility: FrameArtifactEligibility,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
     match mode {
+        #[cfg(test)]
         RendererMode::StrictPlan => Err(ForcedFrameArtifactError {
             reasons: eligibility.reasons,
         }),
@@ -1331,51 +1124,19 @@ pub(crate) struct ForcedFrameArtifactError {
     pub(crate) reasons: Vec<FrameArtifactFallbackReason>,
 }
 
-pub(super) fn sampled_layout_transition_is_exact(
-    element: &dyn crate::view::base_component::ElementTrait,
-) -> bool {
-    if !element
-        .placement_eligibility_metadata()
-        .contains_runtime_layout_state
-    {
-        return true;
-    }
-    let Some(witness) = element.retained_sampled_layout_transition_snapshot() else {
-        return false;
-    };
-    let bounds = element.box_model_snapshot();
-    let option_bits_are_finite = |values: [Option<u32>; 2]| {
-        values
-            .into_iter()
-            .flatten()
-            .all(|bits| f32::from_bits(bits).is_finite())
-    };
-    witness.stable_id != 0
-        && witness.stable_id == element.stable_id()
-        && witness.stable_id == bounds.node_id
-        && witness.bounds_bits
-            == [bounds.x, bounds.y, bounds.width, bounds.height].map(f32::to_bits)
-        && witness
-            .bounds_bits
-            .iter()
-            .all(|bits| f32::from_bits(*bits).is_finite())
-        && f32::from_bits(witness.bounds_bits[2]) >= 0.0
-        && f32::from_bits(witness.bounds_bits[3]) >= 0.0
-        && witness
-            .visual_offset_bits
-            .iter()
-            .all(|bits| f32::from_bits(*bits).is_finite())
-        && option_bits_are_finite(witness.override_size_bits)
-        && option_bits_are_finite(witness.target_position_bits)
-        && option_bits_are_finite(witness.target_size_bits)
-        && witness
-            .override_size_bits
-            .into_iter()
-            .chain(witness.target_size_bits)
-            .flatten()
-            .all(|bits| f32::from_bits(bits) >= 0.0)
-        && element.retained_paint_signature_is_complete()
-        && witness.paint_signature == element.retained_paint_signature()
-}
-
 mod snapshot_closure;
+
+#[cfg(test)]
+mod recording_test_support;
+#[cfg(test)]
+pub(super) use recording_test_support::materialize_frame_artifact;
+#[cfg(test)]
+pub(crate) use recording_test_support::record_clip_enabled_frame_artifact;
+#[cfg(test)]
+pub(crate) use recording_test_support::record_closed_single_target_frame_artifact;
+#[cfg(test)]
+pub(crate) use recording_test_support::record_frame_artifact;
+#[cfg(test)]
+pub(crate) use recording_test_support::record_property_neutral_frame_artifact;
+#[cfg(test)]
+pub(crate) use recording_test_support::record_root_group_opacity_frame_artifact;

@@ -51,10 +51,6 @@ js-sys = "0.3"
 web-time = "1"
 web-sys = { version = "0.3.85", features = ["HtmlCanvasElement", "HtmlElement", "CssStyleDeclaration", "Document", "FontFace", "FontFaceSet", "Response", "Window"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-cocoa = "0.26.1"
-objc = "0.2"
-
 [patch.crates-io]
 icu_segmenter = { path = "vendor/icu_segmenter_rfgui_shim" }
 

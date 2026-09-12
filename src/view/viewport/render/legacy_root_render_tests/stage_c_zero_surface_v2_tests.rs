@@ -125,7 +125,6 @@ fn compile_error_label(error: crate::view::paint::ArtifactCompileErrorKind) -> &
     use crate::view::paint::ArtifactCompileErrorKind;
     match error {
         ArtifactCompileErrorKind::InvalidStore => "invalid-store",
-        ArtifactCompileErrorKind::ChildMaskDepthOverflow { .. } => "child-mask-depth-overflow",
         ArtifactCompileErrorKind::SurfaceExecution(_) => "surface-execution",
     }
 }

@@ -1,8 +1,6 @@
-use crate::view::base_component::{Rect, UiBuildContext};
+use crate::view::base_component::Rect;
 use crate::view::compositor::property_tree::{ClipBehavior, ClipNodeId, PropertyTreeState};
-use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::NodeKey;
-use crate::view::render_pass::draw_rect_pass::{DrawRectInput, DrawRectOutput, DrawRectPass};
 
 use super::{
     DrawRectOp, PaintArtifact, PaintArtifactContractRejection, PaintArtifactContractViolation,
@@ -141,75 +139,6 @@ impl PaintCompositeEdge {
         }
         Ok(())
     }
-
-    pub(crate) fn validate_schedule(
-        &self,
-        owner: NodeKey,
-        phase: super::PaintNodePhase,
-        slot: u16,
-        role: super::PaintChunkRole,
-    ) -> Result<(), PaintArtifactContractRejection> {
-        self.validate()?;
-        if self.owner != owner
-            || self.id.owner != owner
-            || self.id.phase != phase
-            || self.id.slot != slot
-            || self.id.role != role
-        {
-            return Err(PaintArtifactContractRejection {
-                owner,
-                violation: PaintArtifactContractViolation::CompositePhaseOrder,
-            });
-        }
-        Ok(())
-    }
-
-    pub(crate) fn validate_source_parity(
-        &self,
-        expected: &Self,
-    ) -> Result<(), PaintArtifactContractRejection> {
-        self.validate()?;
-        expected.validate()?;
-        (self == expected)
-            .then_some(())
-            .ok_or(PaintArtifactContractRejection {
-                owner: expected.owner,
-                violation: PaintArtifactContractViolation::CompositeSourceParity,
-            })
-    }
-
-    fn draw_pass(&self) -> Option<DrawRectPass> {
-        self.is_canonical().then(|| {
-            let mut pass = DrawRectPass::new(
-                self.op.params.clone(),
-                DrawRectInput::default(),
-                DrawRectOutput::default(),
-            );
-            pass.set_render_mode(self.op.mode);
-            pass
-        })
-    }
-}
-
-pub(crate) fn paint_composite_edge_opaque_delta(edges: &[PaintCompositeEdge]) -> Option<u32> {
-    edges.iter().try_fold(0u32, |count, edge| {
-        count.checked_add(u32::from(edge.draw_pass()?.is_opaque_candidate()))
-    })
-}
-
-pub(crate) fn emit_paint_composite_edges(
-    edges: &[PaintCompositeEdge],
-    graph: &mut FrameGraph,
-    ctx: &mut UiBuildContext,
-) {
-    for edge in edges {
-        let pass = edge
-            .draw_pass()
-            .expect("prepared composite edge must remain canonical");
-        let previous = ctx.replace_scissor_rect(edge.logical_scissor);
-        ctx.emit_draw_rect_pass(graph, pass);
-        ctx.replace_scissor_rect(previous);
-    }
 }
 
 fn resolved_artifact_scissor(
@@ -249,3 +178,10 @@ pub(crate) fn intersect_logical_scissors(a: [u32; 4], b: [u32; 4]) -> Option<[u3
     let bottom = a[1].checked_add(a[3])?.min(b[1].checked_add(b[3])?);
     (right > left && bottom > top).then_some([left, top, right - left, bottom - top])
 }
+
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+pub(crate) use test_support::emit_paint_composite_edges;
+#[cfg(test)]
+pub(crate) use test_support::paint_composite_edge_opaque_delta;

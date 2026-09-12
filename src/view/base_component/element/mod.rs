@@ -56,7 +56,6 @@ use crate::view::render_pass::{
 };
 use crate::view::viewport::ViewportControl;
 use glam::{Mat4, Vec3, Vec4};
-use slotmap::Key;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -68,8 +67,8 @@ include!("render_trait.rs");
 include!("impl_core.rs");
 include!("impl_scroll.rs");
 include!("impl_render.rs");
-mod paint_recording_inputs;
 mod inline_witness_inputs;
+mod paint_recording_inputs;
 include!("impl_layout.rs");
 include!("helpers.rs");
 include!("event_handler_props.rs");
@@ -524,10 +523,6 @@ fn round_layout_size(width: f32, height: f32) -> Size {
         width: round_layout_value(width.max(0.0)),
         height: round_layout_value(height.max(0.0)),
     }
-}
-
-pub(crate) fn root_effect_stable_key(root: NodeKey) -> PersistentTextureKey {
-    PersistentTextureKey::retained(RetainedTextureRole::RootEffectColor, root.data().as_ffi())
 }
 
 pub(crate) fn transformed_layer_stable_key(node_id: u64) -> PersistentTextureKey {
@@ -1332,37 +1327,6 @@ impl UiBuildContext {
         self.next_persistent_target_with_desc(graph, desc, stable_key)
     }
 
-    pub(crate) fn allocate_persistent_target_with_desc(
-        &mut self,
-        graph: &mut FrameGraph,
-        desc: TextureDesc,
-        stable_key: PersistentTextureKey,
-    ) -> RenderTargetOut {
-        self.next_persistent_target_with_desc(graph, desc, stable_key)
-    }
-
-    pub(crate) fn allocate_persistent_full_viewport_target(
-        &mut self,
-        graph: &mut FrameGraph,
-        stable_key: PersistentTextureKey,
-    ) -> RenderTargetOut {
-        let desc = self.persistent_full_viewport_target_desc(stable_key);
-        self.next_persistent_target_with_desc(graph, desc, stable_key)
-    }
-
-    pub(crate) fn persistent_full_viewport_target_desc(
-        &self,
-        stable_key: PersistentTextureKey,
-    ) -> TextureDesc {
-        let desc = TextureDesc::new(
-            self.viewport.target_width,
-            self.viewport.target_height,
-            self.viewport.target_format,
-            wgpu::TextureDimension::D2,
-        );
-        persistent_target_texture_descriptors(desc, stable_key).0
-    }
-
     pub fn set_current_target(&mut self, target: RenderTargetOut) {
         self.state.depth_stencil_target = match target.handle() {
             Some(handle) => self.state.target_pairs.get(&handle.0).copied(),
@@ -1688,10 +1652,6 @@ impl UiBuildContext {
             stencil_clip_id: self.active_clip_id(),
             uses_depth_stencil: self.depth_stencil_target().is_some(),
         }
-    }
-
-    pub(crate) fn merge_child_render_state(&mut self, child: &BuildState) {
-        self.state.merge_child_render_state(child);
     }
 
     pub(crate) fn merge_child_target_pairs(&mut self, child: &BuildState) {
@@ -2615,10 +2575,6 @@ pub struct RetainedScrollNormalizedPaintCapability {
 impl RetainedScrollNormalizedPaintCapability {
     pub(crate) const fn native(kind: RetainedScrollNormalizedPaintKind) -> Self {
         Self { kind }
-    }
-
-    pub(crate) const fn kind(self) -> RetainedScrollNormalizedPaintKind {
-        self.kind
     }
 }
 
@@ -5649,91 +5605,6 @@ impl InlineRootRecordingWitness {
 }
 
 impl Element {
-    /// Offset-zero recorder oracle for a generalized native content subtree.
-    ///
-    /// Unlike the original direct-leaf and TextArea-wrapper admissions, this
-    /// helper deliberately permits children and absolute positioning. The
-    /// typed subtree recorder remains responsible for each descendant's paint
-    /// grammar; this oracle only proves that the content root itself has a
-    /// stable, property-neutral placement from which the complete 2D scroll
-    /// offset can be normalized.
-    pub(crate) fn exact_retained_scroll_content_subtree_recording_offset(
-        &self,
-        parent_offset: [f32; 2],
-    ) -> Option<[f32; 2]> {
-        if !self.layout_state.should_render
-            || ![
-                self.layout_state.layout_position.x,
-                self.layout_state.layout_position.y,
-                self.layout_state.layout_size.width,
-                self.layout_state.layout_size.height,
-            ]
-            .into_iter()
-            .all(f32::is_finite)
-            || self.layout_state.layout_size.width <= 0.0
-            || self.layout_state.layout_size.height <= 0.0
-            || self.scroll_direction != ScrollDirection::None
-            || self.resolved_transform.is_some()
-            || self.has_active_layout_transition()
-            || self.has_active_animator()
-            || self.should_append_to_root_viewport_render()
-            || parent_offset.iter().any(|value| !value.is_finite())
-        {
-            return None;
-        }
-        let paint_x = self.layout_state.layout_position.x + parent_offset[0];
-        let paint_y = self.layout_state.layout_position.y + parent_offset[1];
-        Some([
-            parent_offset[0] + round_layout_value(paint_x) - paint_x,
-            parent_offset[1] + round_layout_value(paint_y) - paint_y,
-        ])
-    }
-
-    pub(crate) fn exact_retained_scroll_content_wrapper_recording_offset(
-        &self,
-        parent_offset: [f32; 2],
-    ) -> Option<[f32; 2]> {
-        // The direct-leaf helper includes `children.is_empty()`. Spell the
-        // otherwise identical wrapper contract here instead of weakening that
-        // established oracle.
-        if self.children.len() != 1
-            || !self.layout_state.should_render
-            || !self.core.should_paint
-            || ![
-                self.layout_state.layout_position.x,
-                self.layout_state.layout_position.y,
-                self.layout_state.layout_size.width,
-                self.layout_state.layout_size.height,
-            ]
-            .into_iter()
-            .all(f32::is_finite)
-            || self.layout_state.layout_size.width <= 0.0
-            || self.layout_state.layout_size.height <= 0.0
-            || self.opacity.to_bits() != 1.0_f32.to_bits()
-            || self.scroll_direction != ScrollDirection::None
-            || self.resolved_transform.is_some()
-            || !self.box_shadows.is_empty()
-            || self.has_active_layout_transition()
-            || self.has_active_animator()
-            || self.inline_ifc_owned_by_root
-            || self.is_owning_inline_ifc_root_role()
-            || self.is_fragmentable_inline_element()
-            || self.should_append_to_root_viewport_render()
-            || self.absolute_clip_scissor_rect().is_some()
-            || self.retained_paint_properties().has_rounded_clip
-            || self.computed_style.position.mode() == PositionMode::Absolute
-            || parent_offset.iter().any(|value| !value.is_finite())
-        {
-            return None;
-        }
-        let paint_x = self.layout_state.layout_position.x + parent_offset[0];
-        let paint_y = self.layout_state.layout_position.y + parent_offset[1];
-        Some([
-            parent_offset[0] + round_layout_value(paint_x) - paint_x,
-            parent_offset[1] + round_layout_value(paint_y) - paint_y,
-        ])
-    }
-
     #[cfg(test)]
     pub(crate) fn set_resolved_transform_for_test(&mut self, transform: Option<Mat4>) {
         self.resolved_transform = transform;
@@ -5887,8 +5758,12 @@ impl Element {
         arena: &NodeArena,
     ) -> Result<(), ShadowPaintBlocker> {
         let observed = inline_witness_inputs::NativeInlineWitnessInputs::observe(self, arena);
-        if observed.as_ref().is_some_and(|current| self.inline_witness_inputs.borrow()
-            .as_ref().is_some_and(|old| old.same_inputs(current))) {
+        if observed.as_ref().is_some_and(|current| {
+            self.inline_witness_inputs
+                .borrow()
+                .as_ref()
+                .is_some_and(|old| old.same_inputs(current))
+        }) {
             crate::view::paint::work_profile::count("inline_install_replays", 1);
             return Ok(());
         }
@@ -6235,7 +6110,7 @@ impl Element {
                     .as_mut()
                     .unwrap()
                     .children_snapshot
-                    .push(NodeKey::null());
+                    .push(<NodeKey as slotmap::Key>::null());
             }
             OwningInlineIfcRootWitnessDamage::PlanMissing => {
                 self.inline_ifc_layout_call_site
@@ -8551,3 +8426,8 @@ impl Element {
         &self.transform
     }
 }
+
+#[cfg(test)]
+mod retained_test_support;
+#[cfg(test)]
+pub(crate) use retained_test_support::root_effect_stable_key;

@@ -27,7 +27,7 @@ use super::surface_dag::{
     ArtifactSurfaceCoverageForest, ArtifactSurfaceCoverageSpan, ArtifactSurfaceCoverageStep,
     LayerizationPolicy, SurfaceDag, SurfaceDagClipClosureProjection, SurfaceDagError,
     SurfaceDagExecutionNodeId, SurfaceDagExecutionOrder, SurfaceDagExecutionTargetId,
-    SurfaceDagNodeId, SurfaceDagNodeKind, SurfaceMaterializationDecision,
+    SurfaceDagNodeId, SurfaceDagNodeKind,
 };
 use super::{
     PaintArtifact, PaintArtifactTarget, PaintChunkRole, PaintContentRevision, PaintOp,
@@ -90,7 +90,10 @@ mod tests;
 enum ValidatedArtifactTarget {
     CurrentTarget,
     RootOpacityGroup {
+        // Only the direct-command test compiler consumes these validated facts.
+        #[cfg(test)]
         root: crate::view::node_arena::NodeKey,
+        #[cfg(test)]
         effect: EffectNodeSnapshot,
     },
 }
@@ -359,11 +362,9 @@ pub(crate) enum RetainedSurfaceCompileAction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ArtifactCompileErrorKind {
+    #[cfg(test)]
     InvalidStore,
-    ChildMaskDepthOverflow {
-        incoming_depth: u8,
-        max_mask_depth: usize,
-    },
+
     SurfaceExecution(ArtifactSurfaceExecutionError),
 }
 
@@ -458,11 +459,7 @@ pub(crate) enum ArtifactSurfaceRasterPlanError {
         chunk_index: usize,
     },
     InvalidReceiverClip(SurfaceDagNodeId),
-    SourceCorrespondence {
-        target: ArtifactSurfaceRasterTargetId,
-        chunk_index: usize,
-        op_index: usize,
-    },
+
     Localization {
         target: ArtifactSurfaceRasterTargetId,
         chunk_index: usize,
@@ -555,20 +552,8 @@ impl PreparedArtifactSurfaceRasterChunk {
         &self.source
     }
 
-    pub(crate) fn content_revision(&self) -> PaintContentRevision {
-        self.content_revision
-    }
-
     pub(crate) fn localized_bounds_bits(&self) -> [u32; 4] {
         self.localized_bounds_bits
-    }
-
-    pub(crate) fn localized_state(&self) -> PropertyTreeState {
-        self.localized_state
-    }
-
-    pub(crate) fn localized_payload(&self) -> &PaintPayloadIdentity {
-        &self.localized_payload
     }
 
     pub(crate) fn localized_ops(&self) -> &[PaintOp] {
@@ -584,7 +569,8 @@ impl PreparedArtifactSurfaceRasterChunk {
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedArtifactSurfaceRasterSpan {
     seal_cache: std::sync::Arc<span_seal_cache::SpanSealCache>,
-    chunk_range: Range<usize>,
+    // Source range retained only for regression-test inspection.
+    #[cfg(test)]
     op_range: Range<usize>,
     owner_topology: Vec<PaintOwnerSnapshot>,
     opaque_order_count: u32,
@@ -595,24 +581,8 @@ pub(crate) struct PreparedArtifactSurfaceRasterSpan {
 }
 
 impl PreparedArtifactSurfaceRasterSpan {
-    pub(crate) fn chunk_range(&self) -> Range<usize> {
-        self.chunk_range.clone()
-    }
-
-    pub(crate) fn op_range(&self) -> Range<usize> {
-        self.op_range.clone()
-    }
-
-    pub(crate) fn owner_topology(&self) -> &[PaintOwnerSnapshot] {
-        &self.owner_topology
-    }
-
     pub(crate) fn opaque_order_count(&self) -> u32 {
         self.opaque_order_count
-    }
-
-    pub(crate) fn local_clips(&self) -> &[ClipNodeSnapshot] {
-        &self.local_clips
     }
 
     pub(crate) fn chunks(&self) -> &[PreparedArtifactSurfaceRasterChunk] {
@@ -951,10 +921,6 @@ impl PreparedArtifactSurfaceRasterNode {
         self.source
     }
 
-    pub(crate) fn receiver(&self) -> SurfaceDagExecutionTargetId {
-        self.receiver
-    }
-
     pub(crate) fn identity(&self) -> RetainedSurfaceRasterIdentity {
         self.identity
     }
@@ -967,10 +933,6 @@ impl PreparedArtifactSurfaceRasterNode {
         self.geometry
             .finalized()
             .expect("prepared artifact node geometry is finalized")
-    }
-
-    pub(crate) fn clip_closure(&self) -> Option<&SurfaceDagClipClosureProjection> {
-        self.clip_closure.as_ref()
     }
 
     pub(crate) fn steps(&self) -> &[PreparedArtifactSurfaceRasterStep] {
@@ -1025,31 +987,26 @@ impl PreparedArtifactSurfaceRasterRoot {
     }
 }
 
-/// Graph-inert descriptor and localization seal. It is intentionally not an
-/// emit capability and has no production consumer in this prerequisite batch.
+/// Graph-inert descriptor and localization seal, consumed by resident sealing
+/// before graph execution. Host inputs and logical decisions are retained only
+/// for test inspection after preparation has validated and applied them.
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedArtifactSurfaceRasterPlan {
+    #[cfg(test)]
     context: ArtifactSurfaceRasterContext,
     roots: Vec<PreparedArtifactSurfaceRasterRoot>,
     nodes: Vec<PreparedArtifactSurfaceRasterNode>,
+    #[cfg(test)]
     materialization_decisions: Vec<SurfaceMaterializationDecision>,
 }
 
 impl PreparedArtifactSurfaceRasterPlan {
-    pub(crate) fn context(&self) -> ArtifactSurfaceRasterContext {
-        self.context
-    }
-
     pub(crate) fn roots(&self) -> &[PreparedArtifactSurfaceRasterRoot] {
         &self.roots
     }
 
     pub(crate) fn nodes(&self) -> &[PreparedArtifactSurfaceRasterNode] {
         &self.nodes
-    }
-
-    pub(crate) fn materialization_decisions(&self) -> &[SurfaceMaterializationDecision] {
-        &self.materialization_decisions
     }
 
     #[cfg(test)]
@@ -1933,6 +1890,7 @@ fn prepare_artifact_surface_span(
     mut cache: Option<&mut PlanningCache>,
 ) -> Result<PreparedArtifactSurfaceRasterSpan, ArtifactSurfaceRasterPlanError> {
     let chunk_range = span.chunk_range();
+    #[cfg(test)]
     let op_range = span.op_range();
     let chunks = artifact_surface_span_chunks(artifact, target, span)?;
     if let Some(prepared) = cache.as_deref_mut().and_then(|cache| {
@@ -2088,7 +2046,7 @@ fn prepare_artifact_surface_span(
     }
     let prepared = PreparedArtifactSurfaceRasterSpan {
         seal_cache: Default::default(),
-        chunk_range,
+        #[cfg(test)]
         op_range,
         owner_topology,
         opaque_order_count,
@@ -2961,9 +2919,11 @@ fn prepare_artifact_surface_raster_plan_from_program(
     }
 
     Ok(PreparedArtifactSurfaceRasterPlan {
+        #[cfg(test)]
         context,
         roots,
         nodes,
+        #[cfg(test)]
         materialization_decisions: program.execution_order.decisions().to_vec(),
     })
 }
@@ -3045,6 +3005,11 @@ pub(crate) struct SealedArtifactSurfaceResidentSet {
 }
 
 impl SealedArtifactSurfaceResidentSet {
+    pub(crate) fn is_canonical(&self) -> bool {
+        std::sync::Arc::ptr_eq(&self.ordered_entries, &self.validated_entries)
+            || artifact_surface_resident_set_is_canonical(&self.ordered_entries)
+    }
+
     pub(crate) fn ordered_entries(&self) -> &[SealedArtifactSurfaceResidentEntry] {
         &self.ordered_entries
     }
@@ -3053,18 +3018,9 @@ impl SealedArtifactSurfaceResidentSet {
         self.ordered_entries.len()
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.ordered_entries.is_empty()
-    }
-
     pub(crate) fn into_ordered_entries(self) -> Vec<SealedArtifactSurfaceResidentEntry> {
         drop(self.validated_entries);
         std::sync::Arc::unwrap_or_clone(self.ordered_entries)
-    }
-
-    pub(crate) fn is_canonical(&self) -> bool {
-        std::sync::Arc::ptr_eq(&self.ordered_entries, &self.validated_entries)
-            || artifact_surface_resident_set_is_canonical(&self.ordered_entries)
     }
 
     #[cfg(test)]
@@ -3853,14 +3809,6 @@ impl PreparedArtifactSurfaceFrame {
         &self.raster_plan
     }
 
-    pub(crate) fn residents(&self) -> &SealedArtifactSurfaceResidentSet {
-        &self.residents
-    }
-
-    pub(crate) fn is_canonical(&self) -> bool {
-        artifact_surface_frame_is_canonical(&self.raster_plan, &self.residents)
-    }
-
     pub(crate) fn into_parts(
         self,
     ) -> (
@@ -4413,74 +4361,6 @@ fn neutralize_artifact_surface_opacity(
     Ok(rebuilt)
 }
 
-fn artifact_surface_op_identity_eq(left: &PaintOp, right: &PaintOp) -> bool {
-    match left {
-        PaintOp::PreparedGpu(left) => {
-            matches!(right, PaintOp::PreparedGpu(right) if left.identity().is_some() && left.identity() == right.identity())
-        }
-
-        PaintOp::DrawRect(left) => {
-            let PaintOp::DrawRect(right) = right else {
-                return false;
-            };
-            let left = PaintPayloadIdentity::prepared_rects([left]);
-            left.is_some() && left == PaintPayloadIdentity::prepared_rects([right])
-        }
-        PaintOp::PreparedInlineIfcDecoration(left) => {
-            let PaintOp::PreparedInlineIfcDecoration(right) = right else {
-                return false;
-            };
-            left.frozen_identity() == right.frozen_identity()
-        }
-        PaintOp::PreparedShadow(left) => {
-            let PaintOp::PreparedShadow(right) = right else {
-                return false;
-            };
-            left.frozen_identity() == right.frozen_identity()
-        }
-        PaintOp::PreparedScrollbarOverlay(left) => {
-            let PaintOp::PreparedScrollbarOverlay(right) = right else {
-                return false;
-            };
-            left.frozen_identity() == right.frozen_identity()
-        }
-        PaintOp::PreparedText(left) => {
-            let PaintOp::PreparedText(right) = right else {
-                return false;
-            };
-            left.frozen_identity() == right.frozen_identity()
-        }
-        PaintOp::PreparedImage(left) => {
-            let PaintOp::PreparedImage(right) = right else {
-                return false;
-            };
-            PreparedImageIdentity::from_op(left) == PreparedImageIdentity::from_op(right)
-        }
-        PaintOp::PreparedSvg(left) => {
-            let PaintOp::PreparedSvg(right) = right else {
-                return false;
-            };
-            let left = PreparedSvgIdentity::from_op(left);
-            left.is_some() && left == PreparedSvgIdentity::from_op(right)
-        }
-    }
-}
-
-fn artifact_surface_op_corresponds_to_source(
-    source: &PaintOp,
-    raster: &PaintOp,
-    delta: [f32; 2],
-    neutralized_opacity_bits: Option<u32>,
-) -> bool {
-    let expected = localize_artifact_surface_op(source, delta).and_then(|localized| {
-        match neutralized_opacity_bits {
-            Some(opacity_bits) => neutralize_artifact_surface_opacity(localized, opacity_bits),
-            None => Ok(localized),
-        }
-    });
-    expected.is_ok_and(|expected| artifact_surface_op_identity_eq(&expected, raster))
-}
-
 #[cfg(test)]
 pub(crate) fn artifact_surface_op_corresponds_to_source_for_test(
     source: &PaintOp,
@@ -4519,13 +4399,6 @@ fn child_mask_radii_fit_bounds(radii: [[f32; 2]; 4], [width, height]: [f32; 2]) 
         && radii[1][1] + radii[2][1] <= height
 }
 
-fn validate_artifact_store_with_policy(
-    artifact: &PaintArtifact,
-    policy: ArtifactStoreValidationPolicy,
-) -> Option<ValidatedArtifact> {
-    validate_artifact_store_with_cache(artifact, policy, None)
-}
-
 fn validate_artifact_store_with_cache(
     artifact: &PaintArtifact,
     policy: ArtifactStoreValidationPolicy,
@@ -4535,9 +4408,8 @@ fn validate_artifact_store_with_cache(
     let mut cursor = 0usize;
     // A unique (owner, phase, slot) also proves unique chunk ids after the
     // owner check below; role/scope variants may not share the same slot.
-    let mut seen_slots = FxHashSet::with_capacity_and_hasher(
-        artifact.chunks.len(), Default::default(),
-    );
+    let mut seen_slots =
+        FxHashSet::with_capacity_and_hasher(artifact.chunks.len(), Default::default());
     let mut child_mask_stack = Vec::<(
         crate::view::node_arena::NodeKey,
         [u32; 4],
@@ -4598,11 +4470,7 @@ fn validate_artifact_store_with_cache(
                     if child_mask_stack.len() >= u8::MAX as usize {
                         return None;
                     }
-                    child_mask_stack.push((
-                        chunk.owner,
-                        logical_scissor,
-                        &chunk.payload_identity,
-                    ));
+                    child_mask_stack.push((chunk.owner, logical_scissor, &chunk.payload_identity));
                 }
                 super::PaintNodePhase::AfterChildren => {
                     if child_mask_stack.pop()
@@ -4692,7 +4560,8 @@ fn validate_artifact_store_with_cache(
                                             )
                             )
                     }
-                    _ => false,
+                    #[cfg(test)]
+                    ArtifactStoreValidationPolicy::General => false,
                 };
                 if !allowed {
                     return None;
@@ -4806,7 +4675,9 @@ fn validate_artifact_store_with_cache(
                 }
             }
             ValidatedArtifactTarget::RootOpacityGroup {
+                #[cfg(test)]
                 root,
+                #[cfg(test)]
                 effect: snapshot,
             }
         }
@@ -5433,3 +5304,13 @@ mod child_mask_tests;
 
 mod raster_equivalence;
 mod raster_window;
+
+#[cfg(test)]
+mod raster_test_support;
+#[cfg(test)]
+use raster_test_support::artifact_surface_op_corresponds_to_source;
+#[cfg(test)]
+use raster_test_support::validate_artifact_store_with_policy;
+
+#[cfg(test)]
+use super::surface_dag::SurfaceMaterializationDecision;

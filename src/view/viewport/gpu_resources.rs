@@ -55,10 +55,6 @@ impl PreparedArtifactSurfacePoolEmission<'_> {
     }
 }
 
-fn complete_persistent_pair_witness(color_compatible: bool, depth_compatible: bool) -> bool {
-    color_compatible && depth_compatible
-}
-
 fn canonical_retained_surface_pair_bytes(
     stamp: &crate::view::paint::RetainedSurfaceRasterStamp,
 ) -> Option<u64> {
@@ -585,22 +581,6 @@ impl Viewport {
         self.frame
             .offscreen_render_target_pool
             .has_compatible_persistent(stable_key, desc, desc.sample_count().max(1))
-    }
-
-    pub(crate) fn has_compatible_persistent_render_target_pair(
-        &self,
-        color_key: crate::view::frame_graph::PersistentTextureKey,
-        color_desc: &TextureDesc,
-    ) -> bool {
-        let (_, depth_desc) = crate::view::base_component::persistent_target_texture_descriptors(
-            color_desc.clone(),
-            color_key,
-        );
-        let color_compatible = self.has_compatible_persistent_render_target(color_key, color_desc);
-        let depth_compatible = color_key.depth_stencil().is_some_and(|depth_key| {
-            self.has_compatible_persistent_render_target(depth_key, &depth_desc)
-        });
-        complete_persistent_pair_witness(color_compatible, depth_compatible)
     }
 
     pub(crate) fn release_persistent_render_target_pair(
@@ -1224,3 +1204,8 @@ mod persistent_pair_witness_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod sampled_texture_tests;
+
+#[cfg(test)]
+mod pair_test_support;
+#[cfg(test)]
+use pair_test_support::complete_persistent_pair_witness;

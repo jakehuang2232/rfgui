@@ -1264,12 +1264,8 @@ pub fn Build(theme: Theme) -> RsxNode {
 
     <Element>Used by:</Element>
 
-    <Element>cocoa-foundation 0.2.1</Element>
-    <Element>cocoa 0.26.1</Element>
     <Element>core-foundation-sys 0.8.7</Element>
     <Element>core-foundation 0.10.1</Element>
-    <Element>core-graphics-types 0.2.0</Element>
-    <Element>core-graphics 0.24.0</Element>
     <Element>euclid 0.22.13</Element>
 
     <Element>
@@ -3130,20 +3126,18 @@ pub fn Build(theme: Theme) -> RsxNode {
 
     <Element>Used by:</Element>
 
-    <Element>block 0.1.6</Element>
     <Element>fax 0.2.6</Element>
     <Element>fax_derive 0.2.0</Element>
     <Element>gpu-descriptor-types 0.2.0</Element>
     <Element>gpu-descriptor 0.3.2</Element>
     <Element>libm 0.2.15</Element>
-    <Element>malloc_buf 0.0.6</Element>
     <Element>ndk-sys 0.6.0+11769913</Element>
     <Element>objc2-app-kit 0.3.2</Element>
     <Element>objc2-core-foundation 0.3.2</Element>
     <Element>objc2-core-graphics 0.3.2</Element>
     <Element>objc2-encode 4.1.0</Element>
     <Element>objc2-foundation 0.3.2</Element>
-    <Element>objc2 0.6.3</Element>
+    <Element>objc2 0.6.4</Element>
     <Element>profiling 1.0.17</Element>
     <Element>svg_fmt 0.4.5</Element>
     <Element>windows-collections 0.3.2</Element>
@@ -3190,38 +3184,6 @@ pub fn Build(theme: Theme) -> RsxNode {
     EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
     IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
     USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-    </Element>
-    <Element>
-        MIT License
-    </Element>
-
-    <Element>Used by:</Element>
-
-    <Element>objc 0.2.7</Element>
-
-    <Element>
-        MIT License
-
-    Copyright (c) Steven Sheldon
-
-    Permission is hereby granted, free of charge, to any person obtaining a copy
-    of this software and associated documentation files (the &quot;Software&quot;), to deal
-    in the Software without restriction, including without limitation the rights
-    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-    copies of the Software, and to permit persons to whom the Software is
-    furnished to do so, subject to the following conditions:
-
-    The above copyright notice and this permission notice shall be included in all
-    copies or substantial portions of the Software.
-
-    THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-    SOFTWARE.
 
     </Element>
     <Element>

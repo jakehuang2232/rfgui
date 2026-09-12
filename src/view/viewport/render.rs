@@ -92,15 +92,6 @@ impl AutoAuthorityRejection {
     }
 }
 
-impl AutoAuthorityKind {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Artifact => "artifact",
-            Self::Legacy => "legacy",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaintAuthorityKind {
     Legacy,
@@ -154,6 +145,7 @@ impl PaintAuthorityFallbackStage {
 #[derive(Clone, Debug)]
 enum PaintAuthoritySelectionRejection {
     Auto(AutoAuthorityRejection),
+    #[cfg(test)]
     Artifact(crate::view::paint::FrameArtifactEligibility),
 }
 
@@ -161,6 +153,7 @@ impl PaintAuthoritySelectionRejection {
     fn debug_label(&self) -> String {
         match self {
             Self::Auto(r) => r.debug_label(),
+            #[cfg(test)]
             Self::Artifact(e) => format!("artifact:{:?}", e.reasons),
         }
     }
@@ -257,33 +250,6 @@ impl PaintAuthorityTelemetry {
             resident_release_count: None,
             detail: String::new(),
         }
-    }
-
-    fn note_artifact_rejection(
-        &mut self,
-        eligibility: crate::view::paint::FrameArtifactEligibility,
-    ) {
-        self.legacy_debug_boundaries
-            .extend(eligibility.debug_boundaries.iter().copied());
-        self.legacy_debug_boundaries
-            .sort_unstable_by_key(|boundary| boundary.owner);
-        self.legacy_debug_boundaries.dedup();
-        self.legacy_boundary_owners.extend(
-            eligibility
-                .reasons
-                .iter()
-                .filter_map(artifact_fallback_reason_owner),
-        );
-        self.legacy_boundary_owners.extend(
-            eligibility
-                .debug_boundaries
-                .iter()
-                .map(|boundary| boundary.owner),
-        );
-        self.legacy_boundary_owners.sort_unstable();
-        self.legacy_boundary_owners.dedup();
-        self.selection_rejections
-            .push(PaintAuthoritySelectionRejection::Artifact(eligibility));
     }
 
     fn note_legacy_fallback(&mut self, stage: PaintAuthorityFallbackStage) {
@@ -392,16 +358,18 @@ fn artifact_fallback_reason_owner(
     use crate::view::paint::FrameArtifactFallbackReason;
 
     match reason {
-        FrameArtifactFallbackReason::PropertyBoundary(owner)
+        FrameArtifactFallbackReason::PropertyBoundary(owner) => Some(*owner),
+        #[cfg(test)]
+        FrameArtifactFallbackReason::NestedEffect(owner)
+        | FrameArtifactFallbackReason::NonEffectProperty(owner)
         | FrameArtifactFallbackReason::MissingRootEffect(owner)
         | FrameArtifactFallbackReason::InvalidRootEffect(owner)
-        | FrameArtifactFallbackReason::NestedEffect(owner)
-        | FrameArtifactFallbackReason::NonEffectProperty(owner)
         | FrameArtifactFallbackReason::DeferredBoundary(owner) => Some(*owner),
         FrameArtifactFallbackReason::RendererLegacy
         | FrameArtifactFallbackReason::LegacyBoundary(_)
-        | FrameArtifactFallbackReason::RootCount(_)
         | FrameArtifactFallbackReason::Validation(_) => None,
+        #[cfg(test)]
+        FrameArtifactFallbackReason::RootCount(_) => None,
     }
 }
 
@@ -419,11 +387,17 @@ fn debug_artifact_fallback(
         Reason::RendererLegacy => (Category::Coverage, code("renderer-legacy")),
         Reason::LegacyBoundary(reason) => debug_legacy_fallback(*reason),
         Reason::PropertyBoundary(_) => (Category::PropertyTopology, code("property-boundary")),
+        #[cfg(test)]
         Reason::RootCount(_) => (Category::Coverage, code("root-count")),
+        #[cfg(test)]
         Reason::MissingRootEffect(_) => (Category::PropertyTopology, code("missing-root-effect")),
+        #[cfg(test)]
         Reason::InvalidRootEffect(_) => (Category::PropertyTopology, code("invalid-root-effect")),
+        #[cfg(test)]
         Reason::NestedEffect(_) => (Category::PropertyTopology, code("nested-effect")),
+        #[cfg(test)]
         Reason::NonEffectProperty(_) => (Category::PropertyTopology, code("non-effect-property")),
+        #[cfg(test)]
         Reason::DeferredBoundary(_) => (Category::DeferredPaint, code("deferred-boundary")),
         Reason::Validation(_) => (Category::Validation, code("coverage-validation")),
     }
@@ -638,10 +612,14 @@ fn selection_rejection_debug_records(
 ) -> Vec<SelectionRejectionDebugRecord> {
     use crate::view::debug::DebugFallbackStage;
     let (stage, records) = match rejection {
+        #[cfg(test)]
+        PaintAuthoritySelectionRejection::Artifact(eligibility) => (
+            DebugFallbackStage::Selection,
+            artifact_rejection_debug_records(eligibility),
+        ),
         PaintAuthoritySelectionRejection::Auto(AutoAuthorityRejection::Artifact {
             eligibility,
-        })
-        | PaintAuthoritySelectionRejection::Artifact(eligibility) => (
+        }) => (
             DebugFallbackStage::Selection,
             artifact_rejection_debug_records(eligibility),
         ),
@@ -828,14 +806,11 @@ enum RecordedArtifactSurfacePrepareError {
     UnexpectedArtifactTarget,
     RasterPlan(crate::view::paint::ArtifactSurfaceRasterPlanError),
     ResidentSeal(crate::view::paint::ArtifactSurfaceResidentSealError),
+    #[cfg(test)]
     DetachedSurfacesUnsupported {
         candidates: usize,
     },
     MissingDetachedSurface,
-    UnsupportedScrollContentSurfaceRole {
-        surface: crate::view::paint::SurfaceDagNodeId,
-        role: crate::view::paint::RetainedSurfaceRasterRole,
-    },
 }
 
 enum RecordedArtifactCandidateRejection {
@@ -954,18 +929,9 @@ fn require_detached_artifact_surface_plan(
     Ok(plan)
 }
 
-#[derive(Clone, Copy)]
-enum RecordedArtifactSurfaceRequirement {
-    General,
-    ZeroResident,
-    Detached,
-    ScrollContentOnly,
-}
-
 fn prepare_recorded_artifact_candidate(
     outcome: crate::view::paint::FrameArtifactRecordOutcome,
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
-    requirement: RecordedArtifactSurfaceRequirement,
     planning_cache: Option<&mut crate::view::paint::PlanningCache>,
 ) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
     match outcome {
@@ -992,22 +958,10 @@ fn prepare_recorded_artifact_candidate(
                     }
                     .map_err(RecordedArtifactSurfacePrepareError::RasterPlan)
                     .map_err(RecordedArtifactCandidateRejection::Prepare)?;
-                    let plan = match requirement {
-                        RecordedArtifactSurfaceRequirement::General if plan.nodes().is_empty() => {
-                            Ok(plan)
-                        }
-                        RecordedArtifactSurfaceRequirement::General => {
-                            require_detached_artifact_surface_plan(plan)
-                        }
-                        RecordedArtifactSurfaceRequirement::ZeroResident => {
-                            require_zero_resident_artifact_surface_plan(plan)
-                        }
-                        RecordedArtifactSurfaceRequirement::Detached => {
-                            require_detached_artifact_surface_plan(plan)
-                        }
-                        RecordedArtifactSurfaceRequirement::ScrollContentOnly => {
-                            require_scroll_content_artifact_surface_plan(plan)
-                        }
+                    let plan = if plan.nodes().is_empty() {
+                        Ok(plan)
+                    } else {
+                        require_detached_artifact_surface_plan(plan)
                     }
                     .map_err(RecordedArtifactCandidateRejection::Prepare)?;
                     #[cfg(test)]
@@ -1035,56 +989,12 @@ fn prepare_recorded_artifact_candidate(
     }
 }
 
-fn require_zero_resident_artifact_surface_plan(
-    plan: crate::view::paint::PreparedArtifactSurfaceRasterPlan,
-) -> Result<
-    crate::view::paint::PreparedArtifactSurfaceRasterPlan,
-    RecordedArtifactSurfacePrepareError,
-> {
-    if !plan.nodes().is_empty() {
-        return Err(
-            RecordedArtifactSurfacePrepareError::DetachedSurfacesUnsupported {
-                candidates: plan.nodes().len(),
-            },
-        );
-    }
-    Ok(plan)
-}
-
-fn require_scroll_content_artifact_surface_plan(
-    plan: crate::view::paint::PreparedArtifactSurfaceRasterPlan,
-) -> Result<
-    crate::view::paint::PreparedArtifactSurfaceRasterPlan,
-    RecordedArtifactSurfacePrepareError,
-> {
-    // All three plan-side rejections are unreachable for current
-    // ScrollContent-only production inputs. An authored scroll container with
-    // no scroll snapshot is rejected earlier by the recorder as
-    // LegacyBoundary(ScrollContainer), so no empty raster plan is created. A
-    // valid recording derives at least one ScrollContent surface. The detached
-    // role gate therefore protects future Surface DAG roles, while the role
-    // check below protects agreement between source admission and derivation.
-    let plan = require_detached_artifact_surface_plan(plan)?;
-    if let Some(node) = plan.nodes().iter().find(|node| {
-        node.identity().role != crate::view::paint::RetainedSurfaceRasterRole::ScrollContent
-    }) {
-        return Err(
-            RecordedArtifactSurfacePrepareError::UnsupportedScrollContentSurfaceRole {
-                surface: node.source(),
-                role: node.identity().role,
-            },
-        );
-    }
-    Ok(plan)
-}
-
 fn record_auto_detached_surface_candidate(
     arena: &crate::view::node_arena::NodeArena,
     roots: &[crate::view::node_arena::NodeKey],
     property_trees: &crate::view::compositor::PropertyTrees,
     paint_generations: &crate::view::compositor::PaintGenerationTracker,
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
-    requirement: RecordedArtifactSurfaceRequirement,
     recording_cache: Option<&mut crate::view::paint::RecordingCache>,
     mut planning_cache: Option<&mut crate::view::paint::PlanningCache>,
 ) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
@@ -1112,7 +1022,7 @@ fn record_auto_detached_surface_candidate(
         cache.observe_property_changes(property_trees);
         cache.observe_recording_changes(arena);
     }
-    prepare_recorded_artifact_candidate(outcome, raster_context, requirement, planning_cache)
+    prepare_recorded_artifact_candidate(outcome, raster_context, planning_cache)
 }
 
 fn select_retained_auto_frame(
@@ -1142,7 +1052,6 @@ fn select_retained_auto_frame(
             artifact_surface_max_texture_dimension_2d,
             artifact_surface_max_texture_bytes,
         ),
-        RecordedArtifactSurfaceRequirement::General,
         recording_cache,
         planning_cache,
     ) {
@@ -2513,10 +2422,22 @@ impl Viewport {
                 )
                 .expect("surface present sink should register");
         }
-        crate::view::paint::work_profile::count("owner_scope_replays", self.compositor.recording_cache.scope_hits);
-        crate::view::paint::work_profile::count("scope_store_replays", self.compositor.recording_cache.scope_store_hits);
-        crate::view::paint::work_profile::count("scope_store_effect_updates", self.compositor.recording_cache.scope_store_effect_updates);
-        crate::view::paint::work_profile::count("property_closure_replays", self.compositor.recording_cache.property_closure_hits);
+        crate::view::paint::work_profile::count(
+            "owner_scope_replays",
+            self.compositor.recording_cache.scope_hits,
+        );
+        crate::view::paint::work_profile::count(
+            "scope_store_replays",
+            self.compositor.recording_cache.scope_store_hits,
+        );
+        crate::view::paint::work_profile::count(
+            "scope_store_effect_updates",
+            self.compositor.recording_cache.scope_store_effect_updates,
+        );
+        crate::view::paint::work_profile::count(
+            "property_closure_replays",
+            self.compositor.recording_cache.property_closure_hits,
+        );
         crate::view::paint::work_profile::count(
             "record_replays",
             self.compositor.recording_cache.hits,
@@ -2525,11 +2446,26 @@ impl Viewport {
             "record_misses",
             self.compositor.recording_cache.misses,
         );
-        crate::view::paint::work_profile::count("relation_replays", self.compositor.planning_cache.relation_hits);
-        crate::view::paint::work_profile::count("graph_replays", self.compositor.planning_cache.graph_hits);
-        crate::view::paint::work_profile::count("coverage_replays", self.compositor.planning_cache.coverage_hits);
-        crate::view::paint::work_profile::count("placement_replays", self.compositor.planning_cache.placement_hits);
-        crate::view::paint::work_profile::count("raster_span_replays", self.compositor.planning_cache.raster_span_hits());
+        crate::view::paint::work_profile::count(
+            "relation_replays",
+            self.compositor.planning_cache.relation_hits,
+        );
+        crate::view::paint::work_profile::count(
+            "graph_replays",
+            self.compositor.planning_cache.graph_hits,
+        );
+        crate::view::paint::work_profile::count(
+            "coverage_replays",
+            self.compositor.planning_cache.coverage_hits,
+        );
+        crate::view::paint::work_profile::count(
+            "placement_replays",
+            self.compositor.planning_cache.placement_hits,
+        );
+        crate::view::paint::work_profile::count(
+            "raster_span_replays",
+            self.compositor.planning_cache.raster_span_hits(),
+        );
         crate::view::paint::work_profile::count(
             "geometry_replays",
             self.compositor.planning_cache.geometry_hits,
@@ -3486,3 +3422,11 @@ fn unpack_root_set(root: &crate::ui::RsxNode) -> Vec<&crate::ui::RsxNode> {
 
 #[cfg(feature = "renderer-test-support")]
 pub(super) mod downstream_test_support;
+
+#[cfg(test)]
+mod telemetry_test_support;
+
+#[cfg(test)]
+mod surface_plan_test_support;
+#[cfg(test)]
+use surface_plan_test_support::require_zero_resident_artifact_surface_plan;

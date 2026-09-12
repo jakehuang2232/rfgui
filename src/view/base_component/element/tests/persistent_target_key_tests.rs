@@ -80,3 +80,5 @@ fn full_viewport_persistent_target_uses_exact_physical_descriptor_and_pair() {
     assert!(declared.contains(&color_key));
     assert!(declared.contains(&color_key.depth_stencil().unwrap()));
 }
+
+use slotmap::Key;

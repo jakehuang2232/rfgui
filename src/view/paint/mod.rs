@@ -78,10 +78,7 @@ pub(crate) use coverage_manifest::{
 pub(crate) use frame_recorder::{
     ForcedFrameArtifactError, FrameArtifactDebugBoundary, FrameArtifactDebugBoundaryKind,
     FrameArtifactEligibility, FrameArtifactFallbackReason, FrameArtifactRecordOutcome,
-    RendererMode, record_clip_enabled_frame_artifact, record_closed_single_target_frame_artifact,
-    record_frame_artifact, record_property_neutral_frame_artifact,
-    record_root_group_opacity_frame_artifact, record_surface_dag_frame_artifact,
-    record_surface_dag_frame_artifact_cached,
+    RendererMode, record_surface_dag_frame_artifact, record_surface_dag_frame_artifact_cached,
 };
 
 #[allow(unused_imports)]
@@ -103,8 +100,6 @@ pub(crate) use surface_dag::{
     SurfaceDagExecutionRoot, SurfaceDagExecutionTargetId, SurfaceDagNode, SurfaceDagNodeId,
     SurfaceDagNodeKind, SurfaceDagSceneRoot, SurfaceDagSceneRootId, SurfaceDagTargetId,
     SurfaceMaterializationDecision, SurfaceMaterializationOutcome,
-    derive_artifact_surface_coverage_forest, derive_artifact_surface_transition_requests,
-    reconstruct_surface_dag,
 };
 #[cfg(test)]
 pub(crate) fn canonical_manifest_matches_for_test(
@@ -135,3 +130,27 @@ pub(crate) mod work_profile;
 
 mod recording_cache;
 pub(crate) use recording_cache::RecordingCache;
+
+#[cfg(test)]
+pub(crate) use frame_recorder::record_clip_enabled_frame_artifact;
+
+#[cfg(test)]
+pub(crate) use frame_recorder::record_closed_single_target_frame_artifact;
+
+#[cfg(test)]
+pub(crate) use frame_recorder::record_frame_artifact;
+
+#[cfg(test)]
+pub(crate) use frame_recorder::record_property_neutral_frame_artifact;
+
+#[cfg(test)]
+pub(crate) use frame_recorder::record_root_group_opacity_frame_artifact;
+
+#[cfg(test)]
+pub(crate) use surface_dag::derive_artifact_surface_coverage_forest;
+
+#[cfg(test)]
+pub(crate) use surface_dag::derive_artifact_surface_transition_requests;
+
+#[cfg(test)]
+pub(crate) use surface_dag::reconstruct_surface_dag;
