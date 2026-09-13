@@ -154,7 +154,7 @@ struct TextPreparedState {
     globals_bind_group: wgpu::BindGroup,
     mask_draw: Option<std::rc::Rc<PreparedTextDraw>>,
     color_draw: Option<std::rc::Rc<PreparedTextDraw>>,
-    scissor_rect: Option<[u32; 4]>,
+    scissor_rect: [u32; 4],
     stencil_clip_id: Option<u8>,
 }
 
@@ -573,9 +573,10 @@ impl GraphicsPass for TextPreparedInputPass {
             }
             return;
         };
-        if let Some(scissor) = prepared.scissor_rect {
-            ctx.set_scissor_rect(scissor[0], scissor[1], scissor[2], scissor[3]);
-        }
+        // Dynamic scissor state survives merged passes. An unclipped text
+        // batch must restore the full target after a clipped draw.
+        let scissor = prepared.scissor_rect;
+        ctx.set_scissor_rect(scissor[0], scissor[1], scissor[2], scissor[3]);
         // Merged graphics passes retain dynamic stencil state. Text outside
         // a clip must restore the base reference after an earlier clip pass.
         ctx.set_stencil_reference(u32::from(prepared.stencil_clip_id.unwrap_or(0)));
@@ -649,7 +650,8 @@ fn prepare_text_prepared_input_pass(
         explicit_logical_scissor,
         target_origin,
         target.physical_size,
-    );
+    )
+    .unwrap_or([0, 0, target.physical_size.0, target.physical_size.1]);
     let stencil_clip_id = params
         .stencil_clip_id
         .or(input.pass_context.stencil_clip_id);
