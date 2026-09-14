@@ -8,6 +8,10 @@ use crate::view::base_component::EventTarget;
 use super::Text;
 
 impl EventTarget for Text {
+    fn hover_update_needed(&self, _hovered: bool) -> bool {
+        false
+    }
+
     fn cursor(&self) -> Cursor {
         self.cursor
     }

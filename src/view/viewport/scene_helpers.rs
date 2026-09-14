@@ -504,24 +504,36 @@ pub(crate) fn update_hover_state(
         key: crate::view::node_arena::NodeKey,
         target_key: Option<crate::view::node_arena::NodeKey>,
     ) -> (bool, bool) {
-        arena
-            .mutate_element_ref_with_invalidation(key, |element, cx| {
-                let mut contains_target = target_key == Some(key);
-                let mut changed = false;
-                let children: Vec<_> = element.children().to_vec();
-                for child_key in children.into_iter().rev() {
-                    let (child_contains_target, child_changed) =
-                        walk(cx.arena(), child_key, target_key);
-                    contains_target |= child_contains_target;
-                    changed |= child_changed;
-                }
-                changed |= element.set_hovered(contains_target);
-                if changed {
-                    cx.invalidate(element.local_dirty_flags());
-                }
-                (contains_target, changed)
-            })
-            .unwrap_or((false, false))
+        // Inspect first: merely acquiring the mutable arena handle records a
+        // paint mutation, even if set_hovered later reports no change. Walk the
+        // live tree each time so replacement nodes and ancestor hover are current.
+        let Some(node) = arena.get(key) else {
+            return (false, false);
+        };
+        let children = node.element.children().to_vec();
+        drop(node);
+        let mut contains_target = target_key == Some(key);
+        let mut changed = false;
+        for child in children.into_iter().rev() {
+            let (contains, child_changed) = walk(arena, child, target_key);
+            contains_target |= contains;
+            changed |= child_changed;
+        }
+        let needs_update = arena
+            .get(key)
+            .is_some_and(|node| node.element.hover_update_needed(contains_target));
+        if needs_update {
+            changed |= arena
+                .mutate_element_ref_with_invalidation(key, |element, cx| {
+                    let changed = element.set_hovered(contains_target);
+                    if changed {
+                        cx.invalidate(element.local_dirty_flags());
+                    }
+                    changed
+                })
+                .unwrap_or(false);
+        }
+        (contains_target, changed)
     }
 
     walk(arena, root_key, target_key).1

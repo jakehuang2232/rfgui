@@ -331,6 +331,10 @@ fn set_platform_ime_cursor_rect(text_area: &TextArea, meta: &EventMeta, arena: &
 }
 
 impl EventTarget for TextArea {
+    fn hover_update_needed(&self, _hovered: bool) -> bool {
+        false
+    }
+
     fn cursor(&self) -> crate::style::Cursor {
         self.cursor
     }

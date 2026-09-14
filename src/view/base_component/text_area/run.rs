@@ -564,12 +564,20 @@ impl Renderable for TextAreaLineBreak {
 }
 
 impl EventTarget for TextAreaTextRun {
+    fn hover_update_needed(&self, _hovered: bool) -> bool {
+        false
+    }
+
     fn cursor(&self) -> Cursor {
         self.cursor
     }
 }
 
-impl EventTarget for TextAreaLineBreak {}
+impl EventTarget for TextAreaLineBreak {
+    fn hover_update_needed(&self, _hovered: bool) -> bool {
+        false
+    }
+}
 
 impl ElementTrait for TextAreaTextRun {
     fn supports_retained_command_replay(&self) -> bool {

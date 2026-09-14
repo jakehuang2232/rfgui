@@ -343,6 +343,10 @@ impl EventTarget for Element {
         canceled
     }
 
+    fn hover_update_needed(&self, hovered: bool) -> bool {
+        self.is_hovered != hovered
+    }
+
     fn set_hovered(&mut self, hovered: bool) -> bool {
         if self.is_hovered == hovered {
             return false;

@@ -371,6 +371,10 @@ impl Renderable for TextAreaProjectionSegment {
 }
 
 impl EventTarget for TextAreaProjectionSegment {
+    fn hover_update_needed(&self, _hovered: bool) -> bool {
+        false
+    }
+
     // Transparent: events pass through to children.
 }
 

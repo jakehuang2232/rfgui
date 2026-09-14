@@ -593,6 +593,9 @@ macro_rules! forward_event_target {
         fn cancel_pointer_interaction(&mut self) -> bool {
             self.$field.cancel_pointer_interaction()
         }
+        fn hover_update_needed(&self, hovered: bool) -> bool {
+            self.$field.hover_update_needed(hovered)
+        }
         fn set_hovered(&mut self, hovered: bool) -> bool {
             self.$field.set_hovered(hovered)
         }

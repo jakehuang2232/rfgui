@@ -2271,6 +2271,11 @@ pub trait EventTarget {
     fn cancel_pointer_interaction(&mut self) -> bool {
         false
     }
+    /// Return false only when setting this hover value has no effect, including
+    /// side effects. Unknown hosts conservatively keep mutable dispatch.
+    fn hover_update_needed(&self, _hovered: bool) -> bool {
+        true
+    }
     fn set_hovered(&mut self, _hovered: bool) -> bool {
         false
     }
