@@ -334,3 +334,5 @@ mod preedit_tests;
 mod reconciliation_tests;
 mod selection_geometry_tests;
 mod source_and_wrap_tests;
+
+mod occurrence_order_tests;

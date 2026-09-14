@@ -246,8 +246,10 @@ impl TextArea {
         let mut run_queue: std::collections::VecDeque<NodeKey> = std::collections::VecDeque::new();
         let mut line_break_queue: std::collections::VecDeque<NodeKey> =
             std::collections::VecDeque::new();
-        let mut proj_buckets: rustc_hash::FxHashMap<RsxNodeIdentity, Vec<(NodeKey, RsxNode)>> =
-            rustc_hash::FxHashMap::default();
+        let mut proj_buckets: rustc_hash::FxHashMap<
+            RsxNodeIdentity,
+            std::collections::VecDeque<(NodeKey, RsxNode)>,
+        > = rustc_hash::FxHashMap::default();
         for (key, slot) in old_children.iter().zip(old_slots.into_iter()) {
             match slot {
                 ChildSlot::Run => run_queue.push_back(*key),
@@ -259,7 +261,7 @@ impl TextArea {
                     proj_buckets
                         .entry(identity)
                         .or_default()
-                        .push((*key, last_node));
+                        .push_back((*key, last_node));
                 }
             }
         }
@@ -359,9 +361,12 @@ impl TextArea {
                     let segment_index = new_children.len();
                     let scope = [self.stable_id(), 0x5445_5832, segment_index as u64];
 
-                    // Identity-keyed lookup against previous projection slots.
+                    // Equal unkeyed identities are matched by occurrence order. A
+                    // stack would swap siblings on every rebuild and invalidate
+                    // otherwise unchanged artifact command ordering. Explicit keys
+                    // still choose their own bucket when projections move.
                     let reused_key = if let Some(bucket) = proj_buckets.get_mut(&identity) {
-                        bucket.pop()
+                        bucket.pop_front()
                     } else {
                         None
                     };
